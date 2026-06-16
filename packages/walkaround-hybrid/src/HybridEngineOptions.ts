@@ -621,21 +621,12 @@ export interface HybridEngineOptions extends EngineOptions {
    *   Manifestation: slightly over-energised indirect on high-M regions (e.g.
    *   static camera convergence) relative to low-M (camera motion onset).
    *
-   * **Bias source 4 — Centroid p̂ in the canonical ReSTIR-DI target function**
-   *   File: `shaders/restirPHat.wgsl.ts`, function `restir_di_compute_phat_xi`,
-   *   line: `let centroid = (e.vA + e.vB + e.vC) / 3.0;`
-   *   The DI target distribution p̂ used during RIS selection AND GI-pass
-   *   visibility evaluation evaluates the emitter geometry term from the
-   *   triangle centroid, not from the actual sampled point `xi` stored in the
-   *   reservoir. For area lights with moderate subtended angle (compact rect-
-   *   area sources, small sphere lights) the centroid approximation is accurate;
-   *   for large-area emitters or when the receiver is close to the light the
-   *   centroid direction can differ meaningfully from `xi`'s direction, causing
-   *   the p̂ used in `W = w_sum / (M × p̂)` to be slightly wrong. The emitter
-   *   candidate loop in `ris.wgsl.ts` (lines around `let pHat = luminance(ls.Le
-   *   * brdf * G)`) samples the actual surface point, but the canonical p̂ helper
-   *   uses the centroid — this discrepancy is the recognised bias. NOTE: this
-   *   bias is shared between ON and OFF; `restirPtReuse: true` does NOT fix it.
+   * **Former bias source 4 — centroid p̂ in the canonical ReSTIR-DI target function**
+   *   This is closed in the current shader: `restir_di_compute_phat_xi()` evaluates
+   *   the target at the reservoir's stored sampled point `xi`, and RIS/finalization
+   *   use the same xi-aware p̂ path. It remains documented here only because older
+   *   audits called it out as an ON/OFF-shared bias; do not count it among the
+   *   current default-path bias sources unless that helper regresses.
    *
    * ─────────────────────────────────────────────────────────────────────────
    * WHEN TO ENABLE `restirPtReuse: true`

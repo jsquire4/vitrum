@@ -1,13 +1,10 @@
 // gltfCompression.test.ts — GLTF-02: KHR_draco_mesh_compression +
 // EXT_meshopt_compression via host-supplied decoder hooks.
 //
-// The package ships NO decoder, so these tests prove the HOOK CONTRACT with
-// stub decoders: fixtures declare the extensions over trivial byte blobs, the
-// stub hooks return known typed arrays, and we assert the decoded geometry
-// lands in core primitives exactly as the equivalent uncompressed file would
-// (including accessor normalization, morph interplay, and animation
-// accessors). Real-decoder integration (draco3d / meshoptimizer) is a host
-// concern — see README "Compressed geometry".
+// The package ships NO runtime decoder, so most tests prove the HOOK CONTRACT
+// with stub decoders. The final smoke tests also run real dev-only draco3d /
+// meshoptimizer codecs through those same host hooks to prevent the hook shape
+// from drifting away from actual decoder packages.
 
 import { describe, it, expect } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
@@ -15,6 +12,8 @@ import type { GltfJson } from './gltfTypes.js';
 import type { DracoDecodeFn, DracoDecodeResult, MeshoptDecodeFn } from './compression.js';
 import { sampleAnimationClip } from '@vitrum/core';
 import type { MeshPrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
+import draco3d from 'draco3d';
+import { MeshoptDecoder, MeshoptEncoder } from 'meshoptimizer';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Fixture helpers (mirrors gltfAdapter.test.ts)
@@ -52,6 +51,19 @@ function concatBuffers(...bufs: ArrayBuffer[]): ArrayBuffer {
   return out.buffer;
 }
 
+function viewArrayBuffer(view: ArrayBufferView): ArrayBuffer {
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+  return copy.buffer;
+}
+
+function expectArrayClose(actual: ArrayLike<number>, expected: readonly number[], digits = 5): void {
+  expect(actual.length).toBe(expected.length);
+  for (let i = 0; i < expected.length; i += 1) {
+    expect(actual[i]).toBeCloseTo(expected[i]!, digits);
+  }
+}
+
 /** Layout chunks sequentially in one buffer and emit matching bufferViews. */
 function layoutBuffer(chunks: ArrayBuffer[]): {
   buffer: ArrayBuffer;
@@ -73,6 +85,75 @@ const TRI_UVS = [0, 0, 1, 0, 0, 1];
 const TRI_INDICES = [0, 1, 2];
 /** The "compressed" payload — a trivial sentinel blob the stub hooks receive. */
 const COMPRESSED_BLOB = [0xde, 0xc0, 0xde, 0x01];
+
+interface DracoInt8ArrayLike {
+  GetValue(index: number): number;
+}
+
+interface DracoInt32ArrayLike {
+  GetValue(index: number): number;
+}
+
+interface DracoFloat32ArrayLike {
+  size(): number;
+  GetValue(index: number): number;
+}
+
+interface DracoStatusLike {
+  ok(): boolean;
+  error_msg(): string;
+}
+
+interface DracoEncoderLike {
+  SetSpeedOptions(encode: number, decode: number): void;
+  EncodeMeshToDracoBuffer(mesh: unknown, out: DracoInt8ArrayLike): number;
+}
+
+interface DracoMeshBuilderLike {
+  AddFacesToMesh(mesh: unknown, faceCount: number, indices: Uint32Array): void;
+  AddFloatAttributeToMesh(
+    mesh: unknown,
+    attributeType: number,
+    pointCount: number,
+    componentCount: number,
+    values: Float32Array,
+  ): number;
+}
+
+interface DracoDecoderLike {
+  DecodeBufferToMesh(buffer: unknown, mesh: unknown): DracoStatusLike;
+  GetAttributeByUniqueId(mesh: unknown, uniqueId: number): unknown;
+  GetAttributeFloatForAllPoints(mesh: unknown, attribute: unknown, out: DracoFloat32ArrayLike): void;
+  GetFaceFromMesh(mesh: unknown, faceIndex: number, out: DracoInt32ArrayLike): void;
+}
+
+interface DracoMeshLike {
+  num_faces(): number;
+  num_points(): number;
+}
+
+interface DracoDecoderBufferLike {
+  Init(data: Int8Array, byteLength: number): void;
+}
+
+interface DracoEncoderModuleLike {
+  POSITION: number;
+  NORMAL: number;
+  Encoder: new () => DracoEncoderLike;
+  MeshBuilder: new () => DracoMeshBuilderLike;
+  Mesh: new () => unknown;
+  DracoInt8Array: new () => DracoInt8ArrayLike;
+  destroy(value: unknown): void;
+}
+
+interface DracoDecoderModuleLike {
+  Decoder: new () => DracoDecoderLike;
+  DecoderBuffer: new () => DracoDecoderBufferLike;
+  Mesh: new () => DracoMeshLike;
+  DracoFloat32Array: new () => DracoFloat32ArrayLike;
+  DracoInt32Array: new () => DracoInt32ArrayLike;
+  destroy(value: unknown): void;
+}
 
 // ────────────────────────────────────────────────────────────────────────────
 // Draco fixtures
@@ -188,11 +269,142 @@ function makeUncompressedTriGltf(): { gltf: GltfJson; buffers: Map<number, Array
   return { gltf, buffers: new Map([[0, buffer]]) };
 }
 
+async function makeRealDracoGltf(): Promise<{
+  gltf: GltfJson;
+  buffers: Map<number, ArrayBuffer>;
+  decode: DracoDecodeFn;
+}> {
+  const encoderModule = await draco3d.createEncoderModule({}) as DracoEncoderModuleLike;
+  const decoderModule = await draco3d.createDecoderModule({}) as DracoDecoderModuleLike;
+  const builder = new encoderModule.MeshBuilder();
+  const mesh = new encoderModule.Mesh();
+  const encoder = new encoderModule.Encoder();
+  const encoded = new encoderModule.DracoInt8Array();
+
+  builder.AddFacesToMesh(mesh, 1, new Uint32Array(TRI_INDICES));
+  const positionId = builder.AddFloatAttributeToMesh(
+    mesh,
+    encoderModule.POSITION,
+    3,
+    3,
+    new Float32Array(TRI_POSITIONS),
+  );
+  const normalId = builder.AddFloatAttributeToMesh(
+    mesh,
+    encoderModule.NORMAL,
+    3,
+    3,
+    new Float32Array(TRI_NORMALS),
+  );
+  encoder.SetSpeedOptions(10, 10);
+  const encodedLength = encoder.EncodeMeshToDracoBuffer(mesh, encoded);
+  if (encodedLength <= 0) {
+    throw new Error('draco3d failed to encode the triangle fixture');
+  }
+  const compressed = new Int8Array(encodedLength);
+  for (let i = 0; i < encodedLength; i += 1) compressed[i] = encoded.GetValue(i);
+  encoderModule.destroy(encoded);
+  encoderModule.destroy(encoder);
+  encoderModule.destroy(mesh);
+  encoderModule.destroy(builder);
+
+  const gltf: GltfJson = {
+    asset: { version: '2.0' },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    meshes: [{
+      name: 'real-draco-tri',
+      primitives: [{
+        attributes: { POSITION: 0, NORMAL: 1 },
+        indices: 2,
+        extensions: {
+          KHR_draco_mesh_compression: {
+            bufferView: 0,
+            attributes: { POSITION: positionId, NORMAL: normalId },
+          },
+        },
+      }],
+    }],
+    accessors: [
+      { componentType: 5126, count: 3, type: 'VEC3' },
+      { componentType: 5126, count: 3, type: 'VEC3' },
+      { componentType: 5125, count: 3, type: 'SCALAR' },
+    ],
+    bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: compressed.byteLength }],
+    buffers: [{ byteLength: compressed.byteLength }],
+    extensionsUsed: ['KHR_draco_mesh_compression'],
+    extensionsRequired: ['KHR_draco_mesh_compression'],
+  };
+
+  const decode: DracoDecodeFn = (bytes, attributeIds) => {
+    const buffer = new decoderModule.DecoderBuffer();
+    const decoder = new decoderModule.Decoder();
+    const meshOut = new decoderModule.Mesh();
+    const byteView = new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    buffer.Init(byteView, byteView.byteLength);
+    const status = decoder.DecodeBufferToMesh(buffer, meshOut);
+    if (!status.ok()) {
+      throw new Error(status.error_msg());
+    }
+    const readAttribute = (uniqueId: number): Float32Array => {
+      const attr = decoder.GetAttributeByUniqueId(meshOut, uniqueId);
+      const data = new decoderModule.DracoFloat32Array();
+      decoder.GetAttributeFloatForAllPoints(meshOut, attr, data);
+      const out = new Float32Array(data.size());
+      for (let i = 0; i < out.length; i += 1) out[i] = data.GetValue(i);
+      decoderModule.destroy(data);
+      return out;
+    };
+    const face = new decoderModule.DracoInt32Array();
+    const indices = new Uint32Array(meshOut.num_faces() * 3);
+    for (let f = 0; f < meshOut.num_faces(); f += 1) {
+      decoder.GetFaceFromMesh(meshOut, f, face);
+      const base = f * 3;
+      indices[base] = face.GetValue(0);
+      indices[base + 1] = face.GetValue(1);
+      indices[base + 2] = face.GetValue(2);
+    }
+    decoderModule.destroy(face);
+    const result: DracoDecodeResult = {
+      attributes: {
+        POSITION: readAttribute(attributeIds.POSITION ?? positionId),
+        NORMAL: readAttribute(attributeIds.NORMAL ?? normalId),
+      },
+      indices,
+    };
+    decoderModule.destroy(meshOut);
+    decoderModule.destroy(decoder);
+    decoderModule.destroy(buffer);
+    return result;
+  };
+
+  return {
+    gltf,
+    buffers: new Map([[0, viewArrayBuffer(compressed)]]),
+    decode,
+  };
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // KHR_draco_mesh_compression
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('KHR_draco_mesh_compression hooks (GLTF-02)', () => {
+  it('real draco3d encoded payload imports through the documented host hook', async () => {
+    const { gltf, buffers, decode } = await makeRealDracoGltf();
+
+    const result = await gltfToScene(gltf, { buffers, dracoDecode: decode });
+
+    expect(result.warnings.some(w => w.includes('SKIPPED'))).toBe(false);
+    expect(result.scene.primitives).toHaveLength(1);
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    expect(primitive.kind).toBe('mesh');
+    expectArrayClose(primitive.positions, TRI_POSITIONS, 4);
+    expectArrayClose(primitive.normals, TRI_NORMALS, 4);
+    expect(Array.from(primitive.indices!)).toEqual(TRI_INDICES);
+  });
+
   it('stub-decoded geometry matches the equivalent uncompressed import exactly', async () => {
     const compressed = makeDracoGltf();
     const reference = makeUncompressedTriGltf();
@@ -462,6 +674,100 @@ function makeMeshoptGltf(opts: MeshoptFixtureOpts = {}): {
   return { gltf, buffers };
 }
 
+async function makeRealMeshoptGltf(): Promise<{
+  gltf: GltfJson;
+  buffers: Map<number, ArrayBuffer>;
+  decode: MeshoptDecodeFn;
+}> {
+  await MeshoptEncoder.ready;
+  await MeshoptDecoder.ready;
+  const positionBytes = new Uint8Array(f32Buffer(TRI_POSITIONS));
+  const indexBytes = new Uint8Array(u16Buffer(TRI_INDICES));
+  const compressedPositions = MeshoptEncoder.encodeGltfBuffer(
+    positionBytes,
+    3,
+    12,
+    'ATTRIBUTES',
+  );
+  const compressedIndices = MeshoptEncoder.encodeGltfBuffer(
+    indexBytes,
+    3,
+    2,
+    'TRIANGLES',
+  );
+  const gltf: GltfJson = {
+    asset: { version: '2.0' },
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    meshes: [{ name: 'real-meshopt-tri', primitives: [{ attributes: { POSITION: 0 }, indices: 1 }] }],
+    accessors: [
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 1, componentType: 5123, count: 3, type: 'SCALAR' },
+    ],
+    bufferViews: [
+      {
+        buffer: 0,
+        byteOffset: 0,
+        byteLength: 36,
+        byteStride: 12,
+        extensions: {
+          EXT_meshopt_compression: {
+            buffer: 1,
+            byteOffset: 0,
+            byteLength: compressedPositions.byteLength,
+            byteStride: 12,
+            count: 3,
+            mode: 'ATTRIBUTES',
+          },
+        },
+      },
+      {
+        buffer: 0,
+        byteOffset: 36,
+        byteLength: 6,
+        extensions: {
+          EXT_meshopt_compression: {
+            buffer: 2,
+            byteOffset: 0,
+            byteLength: compressedIndices.byteLength,
+            byteStride: 2,
+            count: 3,
+            mode: 'TRIANGLES',
+          },
+        },
+      },
+    ],
+    buffers: [
+      { byteLength: 0, extensions: { EXT_meshopt_compression: { fallback: true } } },
+      { byteLength: compressedPositions.byteLength },
+      { byteLength: compressedIndices.byteLength },
+    ],
+    extensionsUsed: ['EXT_meshopt_compression'],
+    extensionsRequired: ['EXT_meshopt_compression'],
+  };
+  const decode: MeshoptDecodeFn = (compressed, count, byteStride, mode, filter) => {
+    const target = new Uint8Array(count * byteStride);
+    MeshoptDecoder.decodeGltfBuffer(
+      target,
+      count,
+      byteStride,
+      compressed,
+      mode,
+      filter === 'NONE' ? undefined : filter,
+    );
+    return target;
+  };
+  return {
+    gltf,
+    buffers: new Map([
+      [1, viewArrayBuffer(compressedPositions)],
+      [2, viewArrayBuffer(compressedIndices)],
+    ]),
+    decode,
+  };
+}
+
 /** Stub meshopt decoder dispatching on (count, stride): returns reference bytes. */
 const meshoptTriHook: MeshoptDecodeFn = (_compressed, count, byteStride) => {
   if (byteStride === 12 && count === 3) return new Uint8Array(f32Buffer(TRI_POSITIONS));
@@ -476,6 +782,18 @@ const meshoptTriHook: MeshoptDecodeFn = (_compressed, count, byteStride) => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('EXT_meshopt_compression hooks (GLTF-02)', () => {
+  it('real meshoptimizer encoded payload imports through the documented host hook', async () => {
+    const { gltf, buffers, decode } = await makeRealMeshoptGltf();
+
+    const result = await gltfToScene(gltf, { buffers, meshoptDecode: decode });
+
+    expect(result.warnings.some(w => w.includes('SKIPPED'))).toBe(false);
+    expect(result.scene.primitives).toHaveLength(1);
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    expect(Array.from(primitive.positions)).toEqual(TRI_POSITIONS);
+    expect(Array.from(primitive.indices!)).toEqual(TRI_INDICES);
+  });
+
   it('ATTRIBUTES + TRIANGLES bufferViews decode through the hook into core geometry', async () => {
     const { gltf, buffers } = makeMeshoptGltf();
     const calls: Array<{ bytes: number[]; count: number; stride: number; mode: string; filter: string }> = [];

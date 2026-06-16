@@ -145,6 +145,7 @@ export async function loadGltfForEngine<
     animationTargets: asset.animationTargets,
     ...(asset.convertedMaterials !== undefined ? { convertedMaterials: asset.convertedMaterials } : {}),
     ...(asset.materialVariantBindings !== undefined ? { materialVariantBindings: asset.materialVariantBindings } : {}),
+    ...(asset.instancingBindings !== undefined ? { instancingBindings: asset.instancingBindings } : {}),
   });
 
   let engine = options.engine;

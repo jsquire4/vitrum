@@ -1555,6 +1555,12 @@ Evidence:
   punctual lights, transmission/ior/volume/specular/sheen/clearcoat/
   iridescence/anisotropy/dispersion/emissive_strength, texture_transform, and
   opt-in texture-source extensions.
+- Draco and meshopt host-hook signatures are now proven against actual codec
+  packages in tests: dev-only `draco3d` and `meshoptimizer` fixtures encode tiny
+  compressed payloads, decode them through `opts.dracoDecode` /
+  `opts.meshoptDecode`, and assert the resulting Vitrum geometry. This closes
+  the "only synthetic hooks" concern for hook shape; broader real-world
+  compressed asset sweeps remain validation/proof work.
 - `KHR_materials_dispersion` now maps to the core dispersion field.
 - `KHR_texture_basisu`, `EXT_texture_webp`, and `MSFT_texture_dds` are
   represented as host-decode-required alternate texture-source paths when the
@@ -1598,12 +1604,18 @@ Evidence:
   `InstancedMeshPrimitive` with `nodeWorld * instanceTRS` baked into each
   instance matrix, required use is accepted, compatibility reports the extension
   as supported plus the expected native `instanced-mesh` primitive kind, and
-  `GltfSceneController` stores local instance matrices so node/ancestor
-  animation patches `instances[]` rather than an ignored `transform`.
+  both direct and `loadGltfForEngine()` bridge-created `GltfSceneController`
+  instances store local instance matrices so node/ancestor animation patches
+  `instances[]` rather than an ignored `transform`.
   Malformed accessors, no-transform instance payloads, and skinned/morphed
   instancing still emit an `ignored-gpu-instancing` diagnostic and import the
   base mesh/skinned representation once because core has no instanced-skinned /
   instanced-morphed primitive contract yet.
+- Point/line fallback is closed through both converter entry points:
+  `loadGltfAsset()` now forwards `pointLineFallbackRadius` to `gltfToScene()`,
+  so public loader and `loadGltfForEngine()` callers can control generated cube
+  / prism thickness for `POINTS`, `LINES`, `LINE_LOOP`, and `LINE_STRIP`
+  fallback geometry instead of silently using the derived radius.
 - 2026-06-16 follow-up: the broad UV2+ material-texture gap is narrowed. `uv1`
   remains the core/backend native second UV lane, but `gltfToScene()` now
   losslessly remaps a primitive material that references exactly one higher

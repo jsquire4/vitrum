@@ -18,7 +18,7 @@ import {
   rankGltfBackends,
 } from './index.js';
 import type { DecodeGltfTexturePixelsFn, GltfAssetFetchResponse, GltfJson } from './index.js';
-import type { MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
+import type { InstancedMeshPrimitive, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
 
 function f32Buffer(values: number[]): ArrayBuffer {
   const buf = new ArrayBuffer(values.length * 4);
@@ -166,6 +166,67 @@ function makeInlineMaterialVariantGltf(): { gltf: GltfJson; buffers: Map<number,
   };
 }
 
+function makeInlineAnimatedInstancedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const instanceTranslations = f32Buffer([
+    2, 0, 0,
+    0, 3, 0,
+  ]);
+  const times = f32Buffer([0, 1]);
+  const nodeTranslations = f32Buffer([
+    10, 0, 0,
+    14, 0, 0,
+  ]);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      extensionsUsed: ['EXT_mesh_gpu_instancing'],
+      extensionsRequired: ['EXT_mesh_gpu_instancing'],
+      nodes: [{
+        mesh: 0,
+        translation: [10, 0, 0],
+        extensions: {
+          EXT_mesh_gpu_instancing: {
+            attributes: { TRANSLATION: 1 },
+          },
+        },
+      }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'VEC3' },
+        { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 3, componentType: 5126, count: 2, type: 'VEC3' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteLength: positions.byteLength },
+        { buffer: 1, byteLength: instanceTranslations.byteLength },
+        { buffer: 2, byteLength: times.byteLength },
+        { buffer: 3, byteLength: nodeTranslations.byteLength },
+      ],
+      buffers: [
+        { byteLength: positions.byteLength },
+        { byteLength: instanceTranslations.byteLength },
+        { byteLength: times.byteLength },
+        { byteLength: nodeTranslations.byteLength },
+      ],
+      animations: [{
+        name: 'instance-slide',
+        samplers: [{ input: 2, output: 3, interpolation: 'LINEAR' }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+      }],
+    },
+    buffers: new Map([
+      [0, positions],
+      [1, instanceTranslations],
+      [2, times],
+      [3, nodeTranslations],
+    ]),
+  };
+}
+
 function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
@@ -306,6 +367,23 @@ describe('loadGltfAsset', () => {
       }),
     ]));
     expect(result.recommendedBackend.backend).toBe('pt-webgl2');
+  });
+
+  it('forwards pointLineFallbackRadius into generated point/line meshes', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      mode: 0,
+    };
+
+    const asset = await loadGltfAsset(gltf, {
+      buffers,
+      pointLineFallbackRadius: 0.25,
+    });
+
+    const primitive = asset.scene.primitives[0] as MeshPrimitive;
+    expect(primitive.positions.length).toBeGreaterThan(9);
+    expect(Array.from(primitive.positions.slice(0, 3))).toEqual([0.25, -0.25, -0.25]);
   });
 
   it('throws a deterministic error for relative external resources without a baseUri', async () => {
@@ -1547,6 +1625,38 @@ describe('loadGltfForEngine', () => {
       }),
     );
     expect((result.controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
+  });
+
+  it('preserves EXT_mesh_gpu_instancing metadata on bridge-created controllers', async () => {
+    const { gltf, buffers } = makeInlineAnimatedInstancedGltf();
+    const engine = { setScene: vi.fn(), updatePrimitive: vi.fn(), reset: vi.fn() };
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      engine,
+      backend: 'pt-webgl2',
+      attachScene: false,
+    });
+
+    const primitive = result.controller.scene.primitives[0] as InstancedMeshPrimitive;
+    expect(primitive.kind).toBe('instanced-mesh');
+
+    const frame = result.controller.applyAnimation('instance-slide', 0.5);
+
+    expect(frame.usedSetScene).toBe(false);
+    expect(engine.setScene).not.toHaveBeenCalled();
+    expect(engine.updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(engine.reset).toHaveBeenCalledTimes(1);
+    const patch = frame.primitivePatches[0]!.patch as {
+      instances: ReadonlyArray<Float32Array>;
+      transform?: Float32Array;
+    };
+    expect(patch.transform).toBeUndefined();
+    expect(patch.instances).toHaveLength(2);
+    expect(patch.instances[0]![12]).toBeCloseTo(14);
+    expect(patch.instances[0]![13]).toBeCloseTo(0);
+    expect(patch.instances[1]![12]).toBeCloseTo(12);
+    expect(patch.instances[1]![13]).toBeCloseTo(3);
   });
 
   it('can reject a selected backend before construction when compatibility would drop material fidelity', async () => {

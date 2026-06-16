@@ -122,6 +122,7 @@ export async function loadGltfAsset(
     ...(options.meshoptDecode ? { meshoptDecode: options.meshoptDecode } : {}),
     ...(options.textureSourceExtensions ? { textureSourceExtensions: options.textureSourceExtensions } : {}),
     ...(options.materialVariant !== undefined ? { materialVariant: options.materialVariant } : {}),
+    ...(options.pointLineFallbackRadius !== undefined ? { pointLineFallbackRadius: options.pointLineFallbackRadius } : {}),
   };
   const sceneResult = await gltfToScene(parsed.gltf, sceneOptions);
   const textureDecodeReport = buildTextureDecodeReport(sceneResult.scene);

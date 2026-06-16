@@ -128,7 +128,7 @@ via `HybridEngineOptions.restirPtReuse: true`.
 | B1 | **Jacobian clamp `[0.1, 10]`** | `shaders/jacobianShift.wgsl.ts` — `return clamp(J, 0.1, 10.0)` | Systematic over/under-weighting of neighbours with extreme solid-angle ratios (depth-discontinuity edges in the indirect channel). Stationary — does not grow with frame count. |
 | B2 | **No reconnection-visibility ray** | `shaders/spatialGi.wgsl.ts` (OFF, `SPATIAL_GI_WGSL`) and `shaders/temporalGi.wgsl.ts` (OFF, `TEMPORAL_GI_WGSL`) — reuse weight applied without occlusion test | Indirect light bleeds through geometry at depth discontinuities; occluded neighbours contribute energy they should not. Partially suppressed by the normal/depth consistency test but not eliminated. |
 | B3 | **No full GBH MIS** | `spatialGi.wgsl.ts` and `temporalGi.wgsl.ts` (OFF variants) — weight `w_q = pHatZ * rQ.W * Mq * J` with no MIS denominator | Contribution weights do not sum to 1 (Lin 2022 GBH sense); slightly over-energised indirect where M counts differ across pixels. |
-| B4 | **Centroid p̂** (shared ON and OFF) | `shaders/restirPHat.wgsl.ts` — `let centroid = (e.vA + e.vB + e.vC) / 3.0` | DI target distribution uses emitter centroid instead of sampled point xi; small error for compact lights, larger for wide-area sources at close range. Not fixed by enabling GRIS. |
+| Former B4 | **Centroid p̂** (closed) | `shaders/restirPHat.wgsl.ts` — `restir_di_compute_phat_xi(...)` | Current shaders evaluate p̂ at the reservoir's stored sampled point `xi`; this row remains only as a historical audit note and should not be counted as an active default-path bias unless the xi-aware helper regresses. |
 
 ### Cost of enabling `restirPtReuse: true`
 

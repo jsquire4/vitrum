@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF bridge instancing animation metadata, 2026-06-16)
+
+- **Bridge-created glTF controllers now preserve `EXT_mesh_gpu_instancing` animation metadata:** `loadGltfForEngine()` forwards `instancingBindings` from `loadGltfAsset()` into `GltfSceneController`, so the one-call API patches `InstancedMeshPrimitive.instances[]` when an instanced node or ancestor animates instead of emitting an invalid ordinary `transform` patch for the instanced primitive. `gltfAssetApi.test` now covers the public bridge path, complementing the direct controller test.
+- **High-level glTF loading now honors point/line fallback sizing:** `loadGltfAsset()` forwards `pointLineFallbackRadius` into `gltfToScene()`, so the public loader and `loadGltfForEngine()` path use the host-selected generated-mesh thickness for glTF `POINTS` / line topology fallback instead of silently falling back to the derived radius.
+- **Compressed glTF hook tests now include real codec smoke coverage:** `gltfCompression.test` keeps the runtime adapter dependency-free, but uses dev-only `draco3d` and `meshoptimizer` fixtures to encode/decode tiny Draco and meshopt payloads through the documented host hook APIs.
+
+### Fixed (walkaround GRIS bias wording, 2026-06-16)
+
+- **Stale centroid-pHat bias text was reconciled:** `HybridEngineOptions` and `@vitrum/walkaround-hybrid` README now describe the old centroid-pHat row as closed by the xi-aware `restir_di_compute_phat_xi()` path instead of listing it as an active ReSTIR-DI/GI bias.
+
 ### Fixed (glTF animated tangent patches, 2026-06-16)
 
 - **glTF morph and skin animation patches now carry solved tangents:** `GltfSceneController` includes `solveSkin()`'s posed tangent stream when it emits morph-weight or skeleton animation patches, so tangent-space material maps do not keep stale rest-pose tangents after runtime glTF animation. `sceneController.test` covers both morph `TANGENT` deltas and skinned pose patches.
