@@ -441,6 +441,46 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
+  it('emits a structured warning when setScene drops an unreadable atlas-backed material map', async () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const scene = consumedOnlyScene();
+      const prim = scene.primitives[0]!;
+      engine.setScene({
+        ...scene,
+        primitives: [
+          {
+            ...prim,
+            id: 'gpu-only-map',
+            material: {
+              ...prim.material,
+              baseColorMap: { handle: { id: 'gpu-only-texture' } },
+            },
+          } as unknown as ScenePrimitive,
+        ],
+      });
+
+      await vi.waitFor(() => {
+        const warning = structured.find((w) =>
+          w.code === 'walkaround-hybrid.unreadable-material-texture-map',
+        );
+        expect(warning?.method).toBe('setScene');
+        expect(warning?.details).toMatchObject({
+          materialIndex: 0,
+          field: 'baseColorMap',
+          colorSpace: 'srgb',
+          fallback: 'map ignored',
+        });
+      });
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('emits structured warnings for unknown updateLighting keys', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({

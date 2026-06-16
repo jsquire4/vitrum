@@ -395,6 +395,56 @@ function meshoptFallbackBufferSample(opts: { fallbackStub?: boolean } = {}): Glt
   };
 }
 
+function optionalDracoSample(opts: { withFallback?: boolean; required?: boolean } = {}): GltfJson {
+  return {
+    asset: { version: '2.0', generator: 'KhronosSampleModels/DracoFallback-like' },
+    extensionsUsed: ['KHR_draco_mesh_compression'],
+    ...(opts.required ? { extensionsRequired: ['KHR_draco_mesh_compression'] } : {}),
+    scene: 0,
+    scenes: [{ nodes: [0] }],
+    nodes: [{ mesh: 0 }],
+    meshes: [{
+      primitives: [{
+        attributes: { POSITION: 0, NORMAL: 1 },
+        indices: 2,
+        extensions: {
+          KHR_draco_mesh_compression: {
+            bufferView: 3,
+            attributes: { POSITION: 10, NORMAL: 11 },
+          },
+        },
+      }],
+    }],
+    accessors: [
+      {
+        ...(opts.withFallback ? { bufferView: 0 } : {}),
+        componentType: 5126,
+        count: 3,
+        type: 'VEC3',
+      },
+      {
+        ...(opts.withFallback ? { bufferView: 1 } : {}),
+        componentType: 5126,
+        count: 3,
+        type: 'VEC3',
+      },
+      {
+        ...(opts.withFallback ? { bufferView: 2 } : {}),
+        componentType: 5123,
+        count: 3,
+        type: 'SCALAR',
+      },
+    ],
+    bufferViews: [
+      { buffer: 0, byteOffset: 0, byteLength: 36 },
+      { buffer: 0, byteOffset: 36, byteLength: 36 },
+      { buffer: 0, byteOffset: 72, byteLength: 6 },
+      { buffer: 0, byteOffset: 78, byteLength: 64 },
+    ],
+    buffers: [{ uri: 'draco-fallback.bin', byteLength: 142 }],
+  };
+}
+
 function reportFor(gltf: GltfJson): GltfFeatureReport {
   const report = analyzeGltfAsset(gltf);
   expect(report.assetVersion).toBe('2.0');
@@ -685,6 +735,54 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
         name: 'EXT_meshopt_compression',
         support: 'requires-hook',
         path: 'bufferViews[0].extensions.EXT_meshopt_compression',
+      }),
+    ]));
+  });
+
+  it('treats optional Draco assets with real fallback accessors as hook-free compatible', () => {
+    const report = reportFor(optionalDracoSample({ withFallback: true }));
+    const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+
+    expect(report.primitives.usesDraco).toBe(true);
+    expect(report.extensions.requiresHook).toEqual([]);
+    expect(webgl2.requiresHookCount).toBe(0);
+    expect(webgl2.unsupportedCount).toBe(0);
+    expect(webgl2.issues.some((issue) =>
+      issue.category === 'extension' &&
+      issue.name === 'KHR_draco_mesh_compression' &&
+      issue.support === 'requires-hook',
+    )).toBe(false);
+  });
+
+  it('keeps optional Draco assets without fallback accessors in requires-hook space', () => {
+    const report = reportFor(optionalDracoSample());
+    const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+
+    expect(report.primitives.usesDraco).toBe(true);
+    expect(report.extensions.requiresHook).toEqual(['KHR_draco_mesh_compression']);
+    expect(webgl2.requiresHookCount).toBe(1);
+    expect(webgl2.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'extension',
+        name: 'KHR_draco_mesh_compression',
+        support: 'requires-hook',
+      }),
+    ]));
+  });
+
+  it('keeps required Draco assets in requires-hook space even when fallback accessors exist', () => {
+    const report = reportFor(optionalDracoSample({ withFallback: true, required: true }));
+    const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+
+    expect(report.primitives.usesDraco).toBe(true);
+    expect(report.extensions.requiresHook).toEqual(['KHR_draco_mesh_compression']);
+    expect(webgl2.requiresHookCount).toBe(1);
+    expect(webgl2.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'extension',
+        name: 'KHR_draco_mesh_compression',
+        support: 'requires-hook',
+        path: 'extensionsRequired[0]',
       }),
     ]));
   });

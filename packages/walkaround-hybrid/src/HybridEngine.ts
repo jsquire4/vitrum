@@ -81,6 +81,7 @@ import {
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
 } from './restir/bvhCore.js';
+import type { MaterialTextureAtlasDiagnostic } from './pipeline/materialTextureAtlas.js';
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
 import { solveSkin } from '@vitrum/core';
 import { readRgba16fWalkaround } from './util/gpuReadback.js';
@@ -212,6 +213,8 @@ export class HybridEngine implements Engine {
   private _warnedMaterialFields = new Set<string>();
   /** Tracks which fractional alpha-blend primitive sets have already warned. */
   private _warnedAlphaBlendApproximationIds = new Set<string>();
+  /** Tracks atlas-backed material texture drops already reported to hosts. */
+  private _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
   private _internalWidth:        number;
@@ -882,6 +885,34 @@ export class HybridEngine implements Engine {
     });
   }
 
+  private _warnMaterialTextureAtlasDiagnostics(
+    diagnostics: readonly MaterialTextureAtlasDiagnostic[],
+    method: 'setScene' | 'updatePrimitive',
+  ): void {
+    for (const diagnostic of diagnostics) {
+      const key = `${method}:${diagnostic.materialIndex}:${diagnostic.field}:${diagnostic.colorSpace}`;
+      if (this._warnedMaterialTextureAtlasDiagnostics.has(key)) continue;
+      this._warnedMaterialTextureAtlasDiagnostics.add(key);
+      this._warn({
+        code: 'walkaround-hybrid.unreadable-material-texture-map',
+        backend: 'walkaround-hybrid',
+        phase: method,
+        method,
+        message:
+          `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
+          `${diagnostic.materialIndex} has a texture handle that is not CPU-readable; ` +
+          `the map is ignored by the material atlas. Provide a raw {width,height,data} ` +
+          `or DataTexture-shaped handle before setScene/updatePrimitive for native map sampling.`,
+        details: {
+          materialIndex: diagnostic.materialIndex,
+          field: diagnostic.field,
+          colorSpace: diagnostic.colorSpace,
+          fallback: 'map ignored',
+        },
+      });
+    }
+  }
+
   /**
    * Replace the scene. Triggers a full pipeline reinitialisation
    * (BVH rebuild + ReSTIR pipeline re-init).
@@ -1152,6 +1183,10 @@ export class HybridEngine implements Engine {
     this._bvhBuffers = result.bvhBuffers;
     this._lastScene = result.updatedScene;
     this._renderScene = sceneWithAnalyticMeshFallback(result.updatedScene);
+    this._warnMaterialTextureAtlasDiagnostics(
+      result.bvhBuffers.materialTextureAtlas.diagnostics,
+      'updatePrimitive',
+    );
     if (result.refreshRcMaterials === true) {
       this._rc?.refreshMaterialsFromCore(result.bvhBuffers.coreMaterials);
     }
@@ -2434,6 +2469,7 @@ export class HybridEngine implements Engine {
 
       publishBvh:             (bvh) => {
         self._bvhBuffers = bvh;
+        self._warnMaterialTextureAtlasDiagnostics(bvh.materialTextureAtlas.diagnostics, 'setScene');
         propagateBvhToGiSubsystems({
           ddgi: self._ddgi,
           rc: self._rc,

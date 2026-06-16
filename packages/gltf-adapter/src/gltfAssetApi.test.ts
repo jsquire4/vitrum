@@ -1250,12 +1250,6 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         path: 'extensionsUsed[0]',
       }),
       expect.objectContaining({
-        category: 'extension',
-        name: 'KHR_draco_mesh_compression',
-        support: 'requires-hook',
-        path: 'extensionsUsed[1]',
-      }),
-      expect.objectContaining({
         category: 'scene',
         name: 'cameras',
         support: 'unsupported',
@@ -1292,6 +1286,11 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
       }),
     ]));
+    expect(compatibility.issues.some((issue) =>
+      issue.category === 'extension' &&
+      issue.name === 'KHR_draco_mesh_compression' &&
+      issue.support === 'requires-hook',
+    )).toBe(false);
   });
 });
 

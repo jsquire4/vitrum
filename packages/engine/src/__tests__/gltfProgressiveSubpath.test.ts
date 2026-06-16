@@ -1,11 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GltfJson } from '@vitrum/gltf-adapter';
 import type { MeshPrimitive, TextureRef } from '@vitrum/core';
 
 const createProgressiveEngineMock = vi.hoisted(() => vi.fn());
+const probeAdapterProfileMock = vi.hoisted(() => vi.fn());
 
 vi.mock('../createProgressiveEngine.js', () => ({
   createProgressiveEngine: createProgressiveEngineMock,
+}));
+
+vi.mock('../adapterProfile.js', () => ({
+  probeAdapterProfile: probeAdapterProfileMock,
 }));
 
 import {
@@ -49,6 +54,25 @@ function makeInlineTexturedTriangleGltf(): { gltf: GltfJson; buffers: Map<number
 }
 
 describe('@vitrum/engine/gltf progressive helper', () => {
+  beforeEach(() => {
+    createProgressiveEngineMock.mockReset();
+    probeAdapterProfileMock.mockReset();
+    probeAdapterProfileMock.mockResolvedValue({
+      hasWebGPU: true,
+      hybridCapable: true,
+      hybridLiteCapable: true,
+      ptWebgpuTier: 'lite',
+      maxStorageBuffersPerStage: 16,
+      maxStorageTexturesPerStage: 8,
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      hasWebGL2: true,
+      recommendedRealtimeTier: 'ultra',
+      recommendedHeroBackend: 'pt-webgpu-lite',
+      limits: Object.freeze({}),
+    });
+  });
+
   it('loads a glTF scene and wires its controller into createProgressiveEngine', async () => {
     const { gltf, buffers } = makeInlineTexturedTriangleGltf();
     const canvas = {} as HTMLCanvasElement;
@@ -139,5 +163,22 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     expect(textureHandle.width).toBe(2);
     expect(textureHandle.height).toBe(1);
     expect(textureHandle.data).toBeInstanceOf(Float32Array);
+  });
+
+  it('applies strict runtime pt-webgpu tier checks before creating a progressive engine', async () => {
+    const { gltf, buffers } = makeInlineTexturedTriangleGltf();
+    delete gltf.cameras;
+
+    await expect(loadGltfWithProgressiveEngine(gltf, {
+      buffers,
+      compatibilityMode: 'reject-unsupported',
+      engineOptions: {
+        canvas: {} as HTMLCanvasElement,
+        seedFromRealtime: false,
+      },
+    })).rejects.toThrow(/pt-webgpu.*lite.*reject-unsupported.*baseColorMap=unsupported/);
+
+    expect(probeAdapterProfileMock).toHaveBeenCalledTimes(1);
+    expect(createProgressiveEngineMock).not.toHaveBeenCalled();
   });
 });

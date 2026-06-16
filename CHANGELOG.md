@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF/OIT predictable-tail closures, 2026-06-16)
+
+- **Progressive glTF loading now honors strict pt-webgpu runtime tiers:** `loadGltfWithProgressiveEngine()` now applies the same `pt-webgpu` full-vs-lite compatibility gate as `loadGltfWithEngine()` before creating the progressive handoff engine, so `reject-unsupported` / `reject-degraded` cannot pass a lite adapter through the progressive subpath and fail later.
+- **Optional Draco fallback analysis matches import behavior:** `analyzeGltfAsset()` no longer marks declaration-only Draco usage or optional Draco primitives with complete uncompressed fallback accessors as `requires-hook`. Required Draco assets and optional Draco primitives without fallback accessors still require a host decoder hook.
+- **Transparent OIT sky lighting is material-aware:** `@vitrum/walkaround-hybrid` transparent blend layers now use a deterministic material-lobe HDRI estimate for camera-visible sky/environment lighting, including specular, clearcoat, sheen, anisotropy, iridescence, and `envMapIntensity`. The scalar no-HDRI fallback remains conservative diffuse, and transparent ReSTIR/GI participation is still a validation/promotion tail.
+- **Unreadable walkaround material maps now use structured warnings:** `packMaterialTextureAtlas()` carries diagnostics for CPU-unreadable texture handles, and `HybridEngine` emits them through `onWarning` as `walkaround-hybrid.unreadable-material-texture-map` during initial scene BVH publication and material-rebuild updates instead of relying on a packer-local console warning.
+
 ### Fixed (inverse/walkaround learned tails, 2026-06-16)
 
 - **Scoped adjoint + transparent/NRC startup tails closed:** `@vitrum/pt-webgpu` path-replay inverse sessions now keep map-free opaque `shadingModel:'unlit'` `baseColor` on the analytic route as a primary-hit contribution identity while mapped or non-baseColor unlit targets still downgrade to finite difference. `@vitrum/walkaround-hybrid` transparent-OIT direct sun now casts through the shared cast-shadow-aware scene visibility query instead of using an unshadowed sun BRDF. Opt-in NRC now exposes `trainedSteps/warmupSteps` in its config UBO and keeps DDGI suffix radiance in the visible reservoir until completed trainer windows satisfy the warm-up gate, while still gathering spread-fired training records immediately.

@@ -36,6 +36,28 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[0]).toBe(0);
   });
 
+  it('reports unreadable atlas-backed map handles as diagnostics and disables metadata', () => {
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle: { id: 'gpu-only-texture' } },
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableBaseColorLayerCount).toBe(0);
+    expect(atlas.baseColorMetaData[0]).toBe(-1);
+    expect(atlas.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'unreadable-material-texture-map',
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+      }),
+    ]);
+  });
+
   it('packs per-triangle wrap and KHR_texture_transform metadata', () => {
     const handle = {
       width: 1,

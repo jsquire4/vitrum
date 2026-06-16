@@ -3,7 +3,7 @@ import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
 const MATERIAL_MAP_META_TEXELS_PER_TRI = 53;
 
-type AtlasMapField =
+export type AtlasMapField =
   | 'baseColorMap'
   | 'normalMap'
   | 'roughnessMap'
@@ -25,7 +25,15 @@ type AtlasMapField =
   | 'iridescenceThicknessMap'
   | 'thicknessMap'
   | 'bumpMap';
-type AtlasColorSpace = 'srgb' | 'linear';
+export type AtlasColorSpace = 'srgb' | 'linear';
+
+export interface MaterialTextureAtlasDiagnostic {
+  readonly code: 'unreadable-material-texture-map';
+  readonly materialIndex: number;
+  readonly field: AtlasMapField;
+  readonly colorSpace: AtlasColorSpace;
+  readonly message: string;
+}
 
 const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly colorSpace: AtlasColorSpace }[] = [
   { field: 'baseColorMap', colorSpace: 'srgb' },
@@ -79,6 +87,7 @@ export interface MaterialTextureAtlasPayload {
   readonly readableIridescenceThicknessLayerCount: number;
   readonly readableThicknessLayerCount: number;
   readonly readableBumpLayerCount: number;
+  readonly diagnostics: readonly MaterialTextureAtlasDiagnostic[];
 }
 
 export interface MaterialTextureAtlasGpu {
@@ -273,6 +282,7 @@ export function packMaterialTextureAtlas(
 ): MaterialTextureAtlasPayload {
   const readable = new Map<unknown, Partial<Record<AtlasColorSpace, { readonly layer: number; readonly pixels: RawPixels }>>>();
   const ordered: { readonly handle: unknown; readonly pixels: RawPixels; readonly colorSpace: AtlasColorSpace }[] = [];
+  const diagnostics: MaterialTextureAtlasDiagnostic[] = [];
   const fieldLayers: Record<AtlasMapField, Set<number>> = {
     baseColorMap: new Set<number>(),
     normalMap: new Set<number>(),
@@ -297,7 +307,12 @@ export function packMaterialTextureAtlas(
     bumpMap: new Set<number>(),
   };
 
-  const collect = (material: MaterialSpec, field: AtlasMapField, colorSpace: AtlasColorSpace): void => {
+  const collect = (
+    material: MaterialSpec,
+    materialIndex: number,
+    field: AtlasMapField,
+    colorSpace: AtlasColorSpace,
+  ): void => {
     const ref = asTextureRef(material[field]);
     if (ref?.handle == null) return;
     let perHandle = readable.get(ref.handle);
@@ -308,10 +323,15 @@ export function packMaterialTextureAtlas(
     }
     const pixels = readHandlePixels(ref.handle);
     if (pixels == null) {
-      console.warn(
-        `[walkaround-hybrid] ${field} texture handle is not readable ` +
+      diagnostics.push({
+        code: 'unreadable-material-texture-map',
+        materialIndex,
+        field,
+        colorSpace,
+        message:
+          `${field} texture handle is not CPU-readable ` +
           '(expected raw {width,height,data} or DataTexture-shaped image); the map is ignored.',
-      );
+      });
       return;
     }
     const layer = ordered.length;
@@ -322,11 +342,11 @@ export function packMaterialTextureAtlas(
     fieldLayers[field].add(layer);
   };
 
-  for (const material of materials) {
+  materials.forEach((material, materialIndex) => {
     for (const { field, colorSpace } of ATLAS_MAP_FIELDS) {
-      collect(material, field, colorSpace);
+      collect(material, materialIndex, field, colorSpace);
     }
-  }
+  });
 
   const atlasDim = Math.max(1, ...ordered.map((entry) => Math.max(entry.pixels.width, entry.pixels.height)));
   const atlasLayerCount = Math.max(1, ordered.length);
@@ -551,6 +571,7 @@ export function packMaterialTextureAtlas(
     readableIridescenceThicknessLayerCount: fieldLayers.iridescenceThicknessMap.size,
     readableThicknessLayerCount: fieldLayers.thicknessMap.size,
     readableBumpLayerCount: fieldLayers.bumpMap.size,
+    diagnostics,
   };
 }
 

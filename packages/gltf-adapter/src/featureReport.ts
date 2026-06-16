@@ -674,6 +674,9 @@ function extensionRequiresHostHook(
   selectedTextureSourceExtensions: ReadonlySet<string>,
 ): boolean {
   if (!EXTENSIONS_REQUIRING_HOST_HOOK.has(ext)) return false;
+  if (ext === 'KHR_draco_mesh_compression') {
+    return dracoCompressionRequiresHostHook(gltf, required.includes(ext));
+  }
   if (ext === 'EXT_meshopt_compression') {
     return meshoptCompressionRequiresHostHook(gltf, required.includes(ext));
   }
@@ -693,6 +696,31 @@ function extensionRequiresHostHook(
     texture.source === undefined &&
     textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
   );
+}
+
+function dracoCompressionRequiresHostHook(gltf: GltfJson, isRequired: boolean): boolean {
+  if (isRequired) return true;
+
+  for (const mesh of gltf.meshes ?? []) {
+    for (const primitive of mesh.primitives ?? []) {
+      if (primitive.extensions?.KHR_draco_mesh_compression === undefined) continue;
+      if (!dracoPrimitiveHasRealFallback(gltf, primitive)) return true;
+    }
+  }
+
+  return false;
+}
+
+function dracoPrimitiveHasRealFallback(
+  gltf: GltfJson,
+  primitive: NonNullable<NonNullable<GltfJson['meshes']>[number]['primitives']>[number],
+): boolean {
+  const accessorIndices = [
+    ...Object.values(primitive.attributes ?? {}).filter((value): value is number => typeof value === 'number'),
+    ...(primitive.indices !== undefined ? [primitive.indices] : []),
+  ];
+  return accessorIndices.length > 0 &&
+    accessorIndices.every((accessorIndex) => gltf.accessors?.[accessorIndex]?.bufferView !== undefined);
 }
 
 function meshoptCompressionRequiresHostHook(gltf: GltfJson, isRequired: boolean): boolean {

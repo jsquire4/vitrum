@@ -3,9 +3,16 @@ import { describe, expect, it } from 'vitest';
 import { TRANSPARENT_OIT_MODULE, TRANSPARENT_OIT_WGSL } from '../shaders/transparentOit.wgsl.js';
 
 describe('transparent OIT material parity', () => {
-  it('shades camera-visible blend layers with the extension-aware material BRDF for direct sun', () => {
+  it('shades camera-visible blend layers with extension-aware material BRDFs for sky and direct sun', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, materialWord: u32) -> vec3f');
     expect(TRANSPARENT_OIT_WGSL).toContain('let payload = sampleRestirDIMaterialPayloadForHit(hit, normals.smoothNormal, normal, scalarBase, materialWord);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerSkyRadiance(payload: RestirDIMaterialPayload, normal: vec3f, wo: vec3f) -> vec3f');
+    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerEnvSampleRadiance(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('if (!envHasMap()) {');
+    expect(TRANSPARENT_OIT_WGSL).toContain('return envRadiance(normal) * max(payload.envMapIntensity, 0.0) * payload.albedo * INV_PI;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let d1 = oitEnvSampleDir(normal,  0.70,  0.00);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('return avg * (2.0 * PI / 5.0);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let skyAmbient = oitLayerSkyRadiance(payload, normal, wo);');
     expect(TRANSPARENT_OIT_WGSL).toContain('let sunBrdf = evalGGXWithSpecularClearcoatSheen(');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.specular.rgb,');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.anisotropy.x,');
@@ -21,6 +28,7 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('oitLayerRadiance(hit, hitPos, primaryRay.direction, word);');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('sunDiffuse');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('vec3f(ubo.sunIntensity) * albedo * INV_PI');
+    expect(TRANSPARENT_OIT_WGSL).not.toContain('let skyAmbient = envRadiance(normal) * payload.albedo * INV_PI;');
   });
 
   it('keeps camera-visible emissive/light-map terms while declaring BRDF dependencies', () => {

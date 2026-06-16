@@ -7,12 +7,13 @@
  * composites them over the already-denoised opaque/background radiance.
  *
  * Lighting policy: transparent layer radiance is an intentionally cheap
- * camera-visible approximation. The direct sun term uses the same atlas-backed
- * material-lobe BRDF as opaque shade/ReSTIR material scoring, with the same
- * castShadow-aware scene visibility query as opaque direct sun. Sky ambient,
- * emissive, and light-map terms remain first-hit camera-visible approximations.
- * ReSTIR/GI participation remains handled by the existing stochastic traversal
- * path until transparent GI has its own validation row.
+ * camera-visible approximation. The sky/environment and direct sun terms use
+ * the same atlas-backed material-lobe BRDF as opaque shade/ReSTIR material
+ * scoring; direct sun also uses the same castShadow-aware scene visibility
+ * query as opaque shade. Emissive and light-map terms remain first-hit
+ * camera-visible approximations. ReSTIR/GI participation remains handled by
+ * the existing stochastic traversal path until transparent GI has its own
+ * validation row.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -84,12 +85,74 @@ fn oitLayerNormals(hit: IntersectionResult) -> OitLayerNormals {
   return normals;
 }
 
+fn oitEnvSampleDir(n: vec3f, tangentScale: f32, bitangentScale: f32) -> vec3f {
+  var up = vec3f(0.0, 1.0, 0.0);
+  if (abs(n.y) > 0.95) {
+    up = vec3f(1.0, 0.0, 0.0);
+  }
+  let tangent = safe_normalize(cross(up, n));
+  let bitangent = cross(n, tangent);
+  return safe_normalize(n + tangent * tangentScale + bitangent * bitangentScale);
+}
+
+fn oitLayerEnvSampleRadiance(
+  payload: RestirDIMaterialPayload,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  let brdf = evalGGXWithSpecularClearcoatSheen(
+    payload.albedo,
+    payload.rough,
+    payload.metal,
+    payload.specular.rgb,
+    payload.specular.a,
+    payload.anisotropy.x,
+    payload.anisotropy.y,
+    payload.iridescence,
+    payload.clearcoat.x,
+    payload.clearcoat.y,
+    payload.sheen.a,
+    payload.sheenRoughness,
+    payload.sheen.rgb,
+    normal,
+    payload.clearcoatNormal,
+    wo,
+    wi,
+  );
+  return envRadiance(wi) * max(payload.envMapIntensity, 0.0) * brdf;
+}
+
+fn oitLayerSkyRadiance(payload: RestirDIMaterialPayload, normal: vec3f, wo: vec3f) -> vec3f {
+  if (!envHasMap()) {
+    return envRadiance(normal) * max(payload.envMapIntensity, 0.0) * payload.albedo * INV_PI;
+  }
+
+  // Deterministic five-tap hemisphere estimate for HDRI-backed transparent
+  // layers. This keeps the pass temporally stable while letting clearcoat,
+  // sheen, anisotropy, iridescence, and envMapIntensity affect camera-visible
+  // alpha-blended sky light instead of falling back to a diffuse normal lookup.
+  let d0 = normal;
+  let d1 = oitEnvSampleDir(normal,  0.70,  0.00);
+  let d2 = oitEnvSampleDir(normal, -0.70,  0.00);
+  let d3 = oitEnvSampleDir(normal,  0.00,  0.70);
+  let d4 = oitEnvSampleDir(normal,  0.00, -0.70);
+  let avg =
+      oitLayerEnvSampleRadiance(payload, normal, wo, d0)
+    + oitLayerEnvSampleRadiance(payload, normal, wo, d1)
+    + oitLayerEnvSampleRadiance(payload, normal, wo, d2)
+    + oitLayerEnvSampleRadiance(payload, normal, wo, d3)
+    + oitLayerEnvSampleRadiance(payload, normal, wo, d4);
+  return avg * (2.0 * PI / 5.0);
+}
+
 fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, materialWord: u32) -> vec3f {
   let scalarBase = decodeMaterialColor(hit.matColorPacked).rgb;
   let uv1 = materialAtlasUv1ForHit(hit);
   let normals = oitLayerNormals(hit);
   let normal = normals.shadingNormal;
   let payload = sampleRestirDIMaterialPayloadForHit(hit, normals.smoothNormal, normal, scalarBase, materialWord);
+  let wo = safe_normalize(-rayDir);
 
   let emitCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
   let emissive = sampleEmissiveMap(
@@ -100,8 +163,7 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   );
   let baked = sampleLightMap(hit.indices.w, hit.uv, uv1);
 
-  let skyAmbient = envRadiance(normal) * payload.albedo * INV_PI;
-  let wo = safe_normalize(-rayDir);
+  let skyAmbient = oitLayerSkyRadiance(payload, normal, wo);
   let toSun = safe_normalize(ubo.sunDirection);
   let sunBrdf = evalGGXWithSpecularClearcoatSheen(
     payload.albedo,

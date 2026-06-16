@@ -457,6 +457,33 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning when an atlas-backed map is unreadable', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap: { handle: { id: 'gpu-only-texture' } },
+        },
+      });
+
+      const warning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.unreadable-material-texture-map',
+      );
+      expect(warning?.method).toBe('updatePrimitive');
+      expect(warning?.details).toMatchObject({
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+        fallback: 'map ignored',
+      });
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) rebuilds material texture atlas when atlas-backed maps change', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

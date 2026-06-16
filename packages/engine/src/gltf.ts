@@ -139,6 +139,12 @@ export async function loadGltfWithProgressiveEngine(
     backend: 'pt-webgpu',
     attachScene: false,
   });
+  await assertStrictPtWebgpuTier(
+    'pt-webgpu',
+    adapterOptions.compatibilityMode ?? 'best-effort',
+    loaded.asset,
+    adapterOptions,
+  );
   const engine = await createProgressiveEngine({
     ...engineOptions,
     scene: loaded.asset.scene,

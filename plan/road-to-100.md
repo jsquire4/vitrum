@@ -8,7 +8,7 @@
 
 ## Where we actually are
 
-> **Updated 2026-06-16 after the latest code-first closure wave (commits d9415357, 8d29d387, bc6b023f plus the receiver-lobe GI target wave).**
+> **Updated 2026-06-16 after the latest code-first closure wave (commits d9415357, 8d29d387, bc6b023f plus the receiver-lobe GI target wave and glTF/OIT predictable-tail closures).**
 > Per `plan/v1-closure-plan-2026-06-10.md §0`, "100%" = everything fully implemented.
 > **R7a-R7d campaign additions:** behavioral gate (26/26 pass, permanent CI); anisotropic
 > GGX (A-item closed — `materialAnisotropy` now renders); engine error surface (`onError` —
@@ -46,9 +46,9 @@
 > predictions cannot replace DDGI suffix radiance.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped direct-light/unlit-primary slice; walkaround transparent
-> GI promotion plus validation of first-hit sky/light-map approximations
-> after direct-sun material-lobe + visibility closure,
-> finite-emitter/light-map promotion decisions, and rich-material GI GPU A/B evidence;
+> GI/shadow promotion plus validation of no-HDRI sky fallback, first-hit
+> light-map/emissive approximations, finite-emitter/light-map promotion
+> decisions, and rich-material GI GPU A/B evidence;
 > real
 > production neural checkpoints and NRC/neural quality/default-tier decisions;
 > validation-backed promotion decisions for GRIS, BDPT/pt-webgpu fidelity rows,
@@ -321,7 +321,7 @@ buckets that the A–D framing was missing:**
   pt-webgpu AO/bump/light maps, shadow flags, authored/generated tangent.xyzw
   consumption, and walkaround atlas/rich-lobe consumption for the current
 	  map-backed material rows. Remaining broad-residual rows are displacement,
-	  receiveShadow, transparent sky/light-map/GI promotion, UV-varying emissive/light-map promotion,
+	  receiveShadow, transparent no-HDRI sky fallback/light-map/emissive/GI/shadow promotion, UV-varying emissive/light-map promotion,
   unsupported specialty fields (spectral/scattering/layered/thin-film), and
   backend-specific approximation/proof rows ledgered in `BACKEND_PROMISE_LEDGER`.
   The former pt-webgl2 `TextureRef.texCoord`/`alphaMap.transform` warning is closed:
@@ -702,8 +702,9 @@ mask discard / fully-transparent blend endpoints in `bvh_material` bit 2;
 `traceSceneFirstHitAlphaMask` skips those triangles for primary + GI first-hit
 visibility; the cast-shadow mask skips bit 2 in occlusion rays; and
 `HybridEngine.setScene` emits `walkaround-hybrid.alpha-blend-approximation` for
-fractional `alphaMode:'blend'` because transparent sky/light-map terms and
-GI/shadow participation remain approximate. Readable `alphaMap` cutout is
+fractional `alphaMode:'blend'` because no-HDRI sky fallback,
+light-map/emissive terms, and GI/shadow participation remain approximate.
+Readable `alphaMap` cutout is
 atlas-backed; camera-visible fractional blend now uses the transparent-OIT pass
 after `indirect-combine` and before temporal accumulation, and its direct-sun
 term consumes the same atlas-backed GGX/clearcoat/sheen/aniso/iridescence
@@ -713,7 +714,7 @@ material payload as opaque shade/ReSTIR material scoring.
 |------|------|---------|
 | Pack alphaMode + cutoff | ✅ CODE CLOSED for scalar cutout + alpha-map metadata: `packingHelpers.ts` bit 2 in `bvh_material`; `materialTextureAtlas.ts` stores alpha mode/opacity/cutoff metadata; tests in `roughMetalPacking.test.ts` and `materialTextureAtlas.test.ts` | Fractional blend remains approximate, but no longer fully opaque |
 | Shade discard | ✅ CODE CLOSED as traversal discard: `materialAtlas.wgsl.ts` `traceSceneFirstHitAlphaMaskTextured`; RIS/shade/temporal/spatial/GI/NRC first-hit paths use it | Discard happens before ReSTIR reservoir writes |
-| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, shades direct sun through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | Transparent sky/light-map terms remain realtime approximations; ReSTIR/GI/shadow participation still uses the existing stochastic/coverage semantics until validated separately |
+| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, shades direct sun through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, uses a deterministic five-tap material-lobe HDRI estimate for camera-visible sky/environment lighting, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | Transparent no-HDRI sky fallback plus light-map/emissive terms remain first-hit approximations; ReSTIR/GI/shadow participation still uses the existing stochastic/coverage semantics until validated separately |
 | ~~`alphaMap`~~ | ✅ CODE CLOSED/approximate: readable alpha maps are linear atlas layers with per-map UV, transform, wrap, and alphaMode/opacity/cutoff metadata. Mask uses `opacity * baseColorMap.a * alphaMap.r < alphaCutoff`; blend coverage feeds the transparent-OIT pass for camera-visible composition and remains approximate for GI/shadow participation. | Keep warning until transparent lighting/GI promotion lands |
 
 #### 3D — Texture atlas (non-optional for walkaround material 100%)
@@ -760,7 +761,7 @@ deliberately unsupported until a true geometry/BVH displacement path exists.
 
 | Component | File(s) | Notes |
 |-----------|---------|-------|
-| Atlas build | ✅ FOURTH SLICE: `pipeline/materialTextureAtlas.ts` | `baseColorMap`, `emissiveMap`, specular-color, and sheen-color raw/DataTexture handles are inverse-sRGB decoded into linear RGBA32F array layers; `normalMap`, `bumpMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `transmissionMap`, `thicknessMap`, `lightMap`, specular-intensity, clearcoat, clearcoat-roughness, clearcoat-normal, sheen-roughness, anisotropy, iridescence, and iridescence-thickness maps are packed as linear map layers and sampled from their glTF channels. Scalar `envMapIntensity` is packed in atlas metadata and consumed by HDRI ReSTIR-DI scoring/reuse/resolve. Displacement and the spectral/layered/scattering families stay explicit unsupported warnings, not silent atlas drops. |
+| Atlas build | ✅ FOURTH SLICE: `pipeline/materialTextureAtlas.ts` | `baseColorMap`, `emissiveMap`, specular-color, and sheen-color raw/DataTexture handles are inverse-sRGB decoded into linear RGBA32F array layers; `normalMap`, `bumpMap`, `roughnessMap`, `metallicMap`, `aoMap`, `alphaMap`, `transmissionMap`, `thicknessMap`, `lightMap`, specular-intensity, clearcoat, clearcoat-roughness, clearcoat-normal, sheen-roughness, anisotropy, iridescence, and iridescence-thickness maps are packed as linear map layers and sampled from their glTF channels. Scalar `envMapIntensity` is packed in atlas metadata and consumed by HDRI ReSTIR-DI scoring/reuse/resolve. Unreadable CPU texture handles emit `walkaround-hybrid.unreadable-material-texture-map` through `onWarning` at scene load/material rebuild with `fallback:"map ignored"`; displacement and the spectral/layered/scattering families stay explicit unsupported warnings, not silent atlas drops. |
 | UV buffer | ✅ FIRST SLICE: `bvhCore.ts`, `shared-bvh/worldSpaceMerge.ts` | uv0 rides `bvh_position.w`; uv1 rides `bvh_normal.w` using the same packed 16:16 unorm convention. |
 | Tangent buffer | ✅ FOURTH SLICE: `shared-bvh/worldSpaceMerge.ts`, `restir/bvhCore.ts`, `pipeline/bvhTangentTexture.ts`, `materialAtlas.wgsl.ts` | TLAS packs forward `packSceneFromCore().tangents`; merged-world packs transform authored/generated tangent directions and flips handedness for mirrored transforms; walkaround uploads the vec4 stream as scene binding 22 (`rgba32float` texture) and the normal/clearcoat-normal TBN path prefers it before falling back to UV-gradient derivation. Ledger rows stay approximate for reservoir/GI/PDF scope, not because tangent data is dropped. |
 | Bind group | ✅ FOURTH SLICE: `bindGroupDescriptors.ts`, `bindGroupBuilders.ts`, `BvhBufferHost.ts` | Scene bindings 20-22 add a shared material-map atlas + metadata + tangent texture as textures, not storage buffers, preserving the storage-buffer budget. |
@@ -827,7 +828,7 @@ loadGltfForEngine(url, { fetch, dracoDecode, meshoptDecode, decodeImage, decodeT
 | ~~Replace triangle-only auto~~ ✅ DONE for glTF assets | `createEngineScale.ts` `pickBackend` uses the glTF recommendation when `prefer:'auto'`; explicit `prefer` still wins, and WebGL-only hosts fall back to `pt-webgl2` for WebGPU recommendations. Test: `createEngineScale.test.ts`. | Non-glTF scenes still use the 500k-triangle heuristic |
 | ~~`VitrumCanvas` `gltf` prop~~ ✅ DONE (bridge parity deepened 2026-06-16) | `VitrumCanvas.tsx` now accepts `gltf` + bridge-level `gltfOptions`, loads through `loadGltfWithEngine()` instead of the asset-only loader, forwards decoder hooks / texture decode settings / compatibility modes into the same one-call glTF path, then hands the prepared engine and glTF controller to `attachVitrum`. `attachVitrum` now accepts a preconstructed engine plus structural scene controller and re-targets the controller after device-loss auto-recreate. Tests: `vitrumCanvasMount.test.tsx`, `attachVitrumLoop.test.ts`. | Direct `scene` remains supported; `gltf` is the creation-time alternative. |
 | ~~`ProgressiveHandoffCoordinator` + glTF~~ ✅ DONE | `progressiveHandoff.ts`, `createProgressiveEngine.ts`, `progressiveHandoff.test.ts` | Structural `controller` option advances once per `frame()` (default 1/60s or host delta callback) and receives a synthetic patch target that forwards `setScene` / `updatePrimitive` to both engines through the coordinator's existing scene-authority/reset path. Empty-animation glTF controllers are skipped safely; `createProgressiveEngine` forwards the controller options. |
-| ~~Shared-device handoff one-call helper~~ ✅ CODE CLOSED | `@vitrum/engine/gltf` now exports `loadGltfWithProgressiveEngine()`, which loads the asset, targets the `pt-webgpu` compatibility profile, builds the glTF controller, and passes that controller plus the imported scene into `createProgressiveEngine()`; test: `gltfProgressiveSubpath.test.ts` | Texture transcoding/upload policy still follows the adapter/backend handles; built-in Basis/GPU texture transcoding remains the separate `KHR_texture_basisu` row |
+| ~~Shared-device handoff one-call helper~~ ✅ CODE CLOSED | `@vitrum/engine/gltf` now exports `loadGltfWithProgressiveEngine()`, which loads the asset, targets the `pt-webgpu` compatibility profile, applies the same strict full-vs-lite runtime-tier gate as `loadGltfWithEngine()`, builds the glTF controller, and passes that controller plus the imported scene into `createProgressiveEngine()`; test: `gltfProgressiveSubpath.test.ts` | Texture transcoding/upload policy still follows the adapter/backend handles; built-in Basis/GPU texture transcoding remains the separate `KHR_texture_basisu` row |
 | ~~One-call CPU texture decode bridge~~ ✅ CODE CLOSED | `loadGltfForEngine()` / `loadGltfWithEngine()` / `loadGltfWithProgressiveEngine()` accept `decodeTextures`, `decodePixels`, `textureTarget`, `maxTextureSize`, and NPOT warning options. When decode is requested, the bridge calls `loadGltfAndDecodeTextures()` before engine construction/attachment and returns `decodedTextureCount`, `unchangedTextureCount`, `textureDecodeDiagnostics`, and `textureDecodeWarnings` beside the decoded-scene `textureDecodeReport`. Tests: `gltfAssetApi.test.ts`, `gltfSubpathExport.test.ts`, `gltfProgressiveSubpath.test.ts`. | Default remains report-only unless decode-specific options are supplied, preserving existing host behavior. |
 | ~~Examples~~ ✅ DONE | `examples/gltf-viewer/` | Self-contained Vite app now exercises `loadGltfWithEngine()`, backend recommendation, `textureDecodeReport`, controller attachment, and the capture protocol. |
 
@@ -899,7 +900,7 @@ pt-webgpu frame.
 | ~~`EXT_meshopt_compression` fallback buffer~~ ✅ CODE/TEST CLOSED | Optional meshopt bufferViews with real fallback buffers import without a decode hook (`gltfCompression.test.ts`) and now analyze as hook-free compatible in the Khronos-style sweep (`featureReport.ts`, `gltfKhronosSweep.test.ts`); required meshopt or fallback-stub assets still require a host hook. |
 | ~~Multiple UV sets~~ ✅ POLICY/TEST CLOSED | `TEXCOORD_1` imports/consumes as `uv1`; `TEXCOORD_2+` material textures produce structured `unsupported` compatibility issues with source paths, now pinned by `gltfKhronosSweep.test.ts`. | Native UV-set-2+ sampling remains future contract work because core `Scene` carries only `uvs` / `uv1`; arbitrary-glTF strict modes reject before render instead of silently sampling the wrong UV set. |
 | ~~`KHR_materials_emissive_strength`~~ ✅ CODE/TEST CLOSED | Imports to `MaterialSpec.emissiveIntensity`; planner now asserts the scalar is supported on pt-webgl2, pt-webgpu full/lite, and walkaround. Backend evidence: pt-webgl2 packs `s2.a` and GLSL multiplies emission; pt-webgpu material packing and implicit emitter tests pre-multiply intensity; walkaround/shared-BVH `materialSpecEmissiveLe` now defaults missing intensity to ×1 and tests HDR `emissive · emissiveIntensity` classification. |
-| ~~Draco `extensionsRequired` without hook~~ ✅ CODE/TEST CLOSED | Required Draco assets now throw without `opts.dracoDecode` even when uncompressed fallback accessors exist; optional Draco assets still import complete fallback accessors or warn/skip when no fallback exists. | Keep the host-supplied decoder contract; Vitrum intentionally does not bundle a Draco decoder. |
+| ~~Draco hook/fallback policy~~ ✅ CODE/TEST CLOSED | Import and analysis now agree: required Draco assets require `opts.dracoDecode` even when fallback accessors exist; declaration-only optional Draco and optional Draco primitives with complete uncompressed fallback accessors are hook-free; optional Draco primitives without usable fallback accessors still report `requires-hook`. | Keep the host-supplied decoder contract; Vitrum intentionally does not bundle a Draco decoder. |
 
 ---
 

@@ -144,11 +144,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   `Lo` and temporal previous-domain recast falls back to geometry when exact
   previous-camera reconstruction is unavailable.
 - Later 2026-06-16 follow-up: transparent OIT direct sun is now
-  cast-shadow-aware. The camera-visible transparent layer pass still uses a
-  first-hit approximation for sky ambient, emissive, and light-map terms and does
-  not promote transparent ReSTIR/GI participation, but the direct-sun material
-  lobe now matches the opaque path's scene-visibility convention via
-  `traceSceneAnyCastMask` with `castShadow:false` respected and glass skipped.
+  cast-shadow-aware, and HDRI sky/environment lighting now uses a deterministic
+  five-tap material-lobe estimate for camera-visible transparent layers. The
+  no-HDRI fallback, emissive, and light-map terms remain first-hit
+  approximations, and transparent ReSTIR/GI/shadow participation is still not
+  promoted, but direct sun matches the opaque path's scene-visibility convention
+  via `traceSceneAnyCastMask` with `castShadow:false` respected and glass skipped.
 - Follow-up 2026-06-15: neural/NRC production posture is explicit. Neural graph
   weights are validated for layer coverage, lengths, and finite values before
   GPU allocation; the tracked `starter-v1.vitrum-model` and
@@ -164,13 +165,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   keeps the DDGI suffix radiance in the visible reservoir until completed trainer
   windows reach the warm-up threshold. NRC remains off by default and still
   needs quality/convergence A/B before any default-tier promotion.
-- Follow-up 2026-06-15: the top Road summary was reconciled with the detailed
-  ledger. Closed items such as DDGI glossy bounce and stale NRC structural
-  defects were removed from the headline remaining-work list, while the honest
-  remaining tails are now analytic-adjoint breadth, walkaround OIT sky/light-map
-  plus GI/shadow promotion after direct-sun material-lobe closure,
-  rich-material GI validation/promotion, neural/NRC production quality, and
-  validation-backed fidelity promotions.
+- Follow-up 2026-06-15/16: the top Road summary was reconciled with the detailed
+  ledger. Closed items such as DDGI glossy bounce, stale NRC structural defects,
+  strict progressive glTF tiering, optional Draco fallback analysis, and
+  transparent HDRI sky material-lobe OIT no longer appear as open implementation
+  gaps. The honest remaining tails are now analytic-adjoint breadth,
+  walkaround transparent no-HDRI sky fallback/light-map/emissive plus GI/shadow
+  promotion, rich-material GI validation/promotion, neural/NRC production
+  quality, and validation-backed fidelity promotions.
 - Follow-up 2026-06-15: the glTF texture decode bridge now has a real
   WebGPU-target path. `decodeSceneTextures(target:"webgpu")` resolves raw image
   handles through `decodePixels` into CPU-readable float handles instead of
@@ -889,6 +891,13 @@ Closure:
   `pt-webgl2.hdri-unreadable`, and
   `pt-webgl2.texture-ambiguous-pixel-stride` during both `setScene()` and the
   `updateEnvironment()` fast path.
+- 2026-06-16 follow-up: walkaround-hybrid material-atlas drops for unreadable
+  CPU texture handles now surface through the same programmatic warning channel
+  as `walkaround-hybrid.unreadable-material-texture-map` during initial
+  `setScene()` BVH publication and `updatePrimitive({ material })` rebuilds,
+  with material slot, field, color-space role, and `fallback:"map ignored"`
+  details. The packer keeps a diagnostic payload instead of relying on a local
+  console-only warning.
 - Internal debug/resource chatter remains console-only by design; it is not a
   contract-affecting degradation.
 
@@ -1546,11 +1555,12 @@ Evidence:
   and temporal accumulation consumes that composited output. 2026-06-16
   follow-up: OIT direct-sun layer radiance now consumes the same atlas-backed
   GGX/clearcoat/sheen/aniso/iridescence material payload as opaque
-  shade/ReSTIR material scoring instead of a diffuse-only sun term. The
-  structured warning remains because camera-visible sky/light-map terms are
-  first-hit approximations and ReSTIR/GI/shadow participation is still approximate, including
-  `updatePrimitive(id, { material })` patches that mutate a primitive into
-  fractional blend.
+  shade/ReSTIR material scoring instead of a diffuse-only sun term, and HDRI
+  sky/environment lighting uses a deterministic five-tap material-lobe estimate.
+  The structured warning remains because no-HDRI sky fallback, light-map, and
+  emissive terms are first-hit approximations and ReSTIR/GI/shadow participation
+  is still approximate, including `updatePrimitive(id, { material })` patches
+  that mutate a primitive into fractional blend.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow and direct-light power: `materialTextureAtlas.ts`
   packs emissive maps as sRGB-decoded atlas layers with per-map
