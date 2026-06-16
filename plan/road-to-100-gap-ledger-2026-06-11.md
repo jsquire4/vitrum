@@ -1660,6 +1660,12 @@ Evidence:
   instancing still emit an `ignored-gpu-instancing` diagnostic and import the
   base mesh/skinned representation once because core has no instanced-skinned /
   instanced-morphed primitive contract yet.
+- 2026-06-16 follow-up: compatibility preflight now reports that combined
+  skin/morph + `EXT_mesh_gpu_instancing` edge as
+  `EXT_mesh_gpu_instancing.skinnedOrMorphed=unsupported` with the node extension
+  path, so `loadGltfForEngine(..., compatibilityMode:'reject-unsupported')`
+  rejects before constructing an engine. Best-effort import keeps the structured
+  `ignored-gpu-instancing` diagnostic and one skinned/morphed primitive fallback.
 - Point/line fallback is closed through both converter entry points:
   `loadGltfAsset()` now forwards `pointLineFallbackRadius` to `gltfToScene()`,
   so public loader and `loadGltfForEngine()` callers can control generated cube

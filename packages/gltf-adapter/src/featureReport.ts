@@ -68,6 +68,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasMorphTargets: boolean;
   readonly hasMorphTargetTangents: boolean;
   readonly hasSkins: boolean;
+  readonly hasInstancedSkinnedOrMorphed: boolean;
   readonly hasVertexColors: boolean;
   readonly ignoredVertexColorSets: readonly string[];
   readonly hasUv1: boolean;
@@ -469,6 +470,22 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  if (report.primitives.hasInstancedSkinnedOrMorphed) {
+    addIssue({
+      category: 'primitive',
+      name: 'EXT_mesh_gpu_instancing.skinnedOrMorphed',
+      support: 'unsupported',
+      path: firstSourcePath(
+        report.primitives.issuePaths,
+        'instancedSkinnedOrMorphed',
+        'nodes',
+      ),
+      message:
+        'glTF EXT_mesh_gpu_instancing on skinned or morphed meshes is not representable in the core Scene contract yet; ' +
+        'the importer falls back to one skinned/morphed primitive and ignores the instance transforms.',
+    });
+  }
+
   if (report.primitives.hasVertexColors) {
     const support = VERTEX_COLOR_SUPPORT[profileId];
     if (support === 'native') {
@@ -866,6 +883,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   let hasUv1 = false;
   let hasJointAttrs = false;
   let hasInstancing = false;
+  let hasInstancedSkinnedOrMorphed = false;
 
   for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
     for (const [primitiveIndex, primitive] of (mesh.primitives ?? []).entries()) {
@@ -917,7 +935,16 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
     if (node.mesh === undefined || node.extensions?.EXT_mesh_gpu_instancing === undefined) continue;
     hasInstancing = true;
-    addSourcePath(issuePaths, 'kind:instanced-mesh', `nodes[${nodeIndex}].extensions.EXT_mesh_gpu_instancing`);
+    const instancingPath = `nodes[${nodeIndex}].extensions.EXT_mesh_gpu_instancing`;
+    addSourcePath(issuePaths, 'kind:instanced-mesh', instancingPath);
+    const mesh = gltf.meshes?.[node.mesh];
+    const meshHasMorphTargets = (mesh?.primitives ?? []).some((primitive) =>
+      (primitive.targets?.length ?? 0) > 0,
+    );
+    if (node.skin !== undefined || meshHasMorphTargets) {
+      hasInstancedSkinnedOrMorphed = true;
+      addSourcePath(issuePaths, 'instancedSkinnedOrMorphed', instancingPath);
+    }
   }
   for (const bv of gltf.bufferViews ?? []) {
     if (bv.extensions?.['EXT_meshopt_compression']) usesMeshopt = true;
@@ -940,6 +967,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     hasMorphTargets,
     hasMorphTargetTangents,
     hasSkins,
+    hasInstancedSkinnedOrMorphed,
     hasVertexColors,
     ignoredVertexColorSets: sorted(ignoredVertexColorSets),
     hasUv1,

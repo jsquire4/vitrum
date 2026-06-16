@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF instanced morph/skinning compatibility truthfulness, 2026-06-16)
+
+- **glTF compatibility preflight now rejects instanced skinned/morphed meshes explicitly:** `analyzeGltfAsset()` marks `EXT_mesh_gpu_instancing` on skinned or morphed meshes as `EXT_mesh_gpu_instancing.skinnedOrMorphed=unsupported`, matching the importer behavior that falls back to a single skinned/morphed primitive because the core Scene contract has no instanced skinned/morphed primitive kind yet. `loadGltfForEngine(..., compatibilityMode:'reject-unsupported')` now fails before constructing an engine for this combined case instead of relying on the later `ignored-gpu-instancing` degraded import diagnostic.
+
 ### Fixed (glTF opacity report truthfulness, 2026-06-16)
 
 - **glTF feature reports now match opaque alpha conversion semantics:** `analyzeGltfAsset()` only reports `opacity` for `baseColorFactor[3]` / legacy spec-gloss `diffuseFactor[3]` when the material uses `alphaMode:"MASK"` or `"BLEND"`, matching `gltfToScene()`'s conversion rule. Opaque materials with alpha below 1 keep the RGB base color but no longer imply a converted opacity field in backend compatibility reports.

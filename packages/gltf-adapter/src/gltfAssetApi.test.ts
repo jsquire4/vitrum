@@ -101,6 +101,54 @@ function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
   };
 }
 
+function addMorphedGpuInstancing(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+): void {
+  const morphDeltas = f32Buffer([0, 0, 0.1, 0, 0, 0.1, 0, 0, 0.1]);
+  const instanceTranslations = f32Buffer([
+    0, 0, 0,
+    2, 0, 0,
+  ]);
+  const morphAccessor = gltf.accessors?.length ?? 0;
+  const instanceAccessor = morphAccessor + 1;
+  const morphBufferView = gltf.bufferViews?.length ?? 0;
+  const instanceBufferView = morphBufferView + 1;
+  const morphBuffer = gltf.buffers?.length ?? 0;
+  const instanceBuffer = morphBuffer + 1;
+  gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+  gltf.extensionsRequired = ['EXT_mesh_gpu_instancing'];
+  gltf.nodes![0] = {
+    ...gltf.nodes![0]!,
+    extensions: {
+      EXT_mesh_gpu_instancing: {
+        attributes: { TRANSLATION: instanceAccessor },
+      },
+    },
+  };
+  gltf.meshes![0]!.primitives[0] = {
+    ...gltf.meshes![0]!.primitives[0]!,
+    targets: [{ POSITION: morphAccessor }],
+  };
+  gltf.accessors = [
+    ...(gltf.accessors ?? []),
+    { bufferView: morphBufferView, componentType: 5126, count: 3, type: 'VEC3' },
+    { bufferView: instanceBufferView, componentType: 5126, count: 2, type: 'VEC3' },
+  ];
+  gltf.bufferViews = [
+    ...(gltf.bufferViews ?? []),
+    { buffer: morphBuffer, byteOffset: 0, byteLength: morphDeltas.byteLength },
+    { buffer: instanceBuffer, byteOffset: 0, byteLength: instanceTranslations.byteLength },
+  ];
+  gltf.buffers = [
+    ...(gltf.buffers ?? []),
+    { byteLength: morphDeltas.byteLength },
+    { byteLength: instanceTranslations.byteLength },
+  ];
+  buffers.set(morphBuffer, morphDeltas);
+  buffers.set(instanceBuffer, instanceTranslations);
+}
+
 function makeInlineVertexColorGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const colors = f32Buffer([1, 0, 0, 0, 1, 0, 0, 0, 1]);
@@ -1481,6 +1529,31 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     )).toBe(false);
   });
 
+  it('reports EXT_mesh_gpu_instancing on morphed meshes as an unsupported combined primitive case', () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addMorphedGpuInstancing(gltf, buffers);
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.extensions.supported).toContain('EXT_mesh_gpu_instancing');
+    expect(report.primitives.hasMorphTargets).toBe(true);
+    expect(report.primitives.hasInstancedSkinnedOrMorphed).toBe(true);
+    expect(report.primitives.expectedPrimitiveKinds).toEqual(
+      expect.arrayContaining(['mesh', 'skinned-mesh', 'instanced-mesh']),
+    );
+    expect(report.primitives.issuePaths.instancedSkinnedOrMorphed).toEqual([
+      'nodes[0].extensions.EXT_mesh_gpu_instancing',
+    ]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'EXT_mesh_gpu_instancing.skinnedOrMorphed',
+      support: 'unsupported',
+      path: 'nodes[0].extensions.EXT_mesh_gpu_instancing',
+    }));
+  });
+
   it('attaches source paths to compatibility issues, including cameras and double-sided materials', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
@@ -2107,6 +2180,22 @@ describe('loadGltfForEngine', () => {
       compatibilityMode: 'reject-degraded',
       createEngine,
     })).rejects.toThrow('primitive:mode:1=fallback-generated-mesh at meshes[0].primitives[0].mode');
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects instanced morphed meshes in reject-unsupported mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addMorphedGpuInstancing(gltf, buffers);
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'primitive:EXT_mesh_gpu_instancing.skinnedOrMorphed=unsupported at nodes[0].extensions.EXT_mesh_gpu_instancing',
+    );
     expect(createEngine).not.toHaveBeenCalled();
   });
 
