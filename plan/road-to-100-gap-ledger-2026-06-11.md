@@ -1793,9 +1793,10 @@ Closure:
   closed for the current professional contract: deterministic, source-pathed,
   and test-covered. 2026-06-16 follow-up: pt-webgl2 `solveSkinPrimitives()`
   now preserves `solveSkin()`'s posed tangents, including `morphTargetTangents`,
-  instead of dropping them before attribute packing. Full renderer promotion
-  still requires GPU-native tangent skinning / broader backend evidence, so
-  compatibility remains approximate instead of native.
+  instead of dropping them before attribute packing; `GltfSceneController` also
+  emits solved tangents in runtime morph-weight and skeleton animation patches.
+  Full renderer promotion still requires GPU-native tangent skinning / broader
+  backend evidence, so compatibility remains approximate instead of native.
 - Controller-side morph playback is closed under `GLTF-API-04`.
 
 ### GLTF-05 - glTF primitive modes

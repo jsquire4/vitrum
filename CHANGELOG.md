@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF animated tangent patches, 2026-06-16)
+
+- **glTF morph and skin animation patches now carry solved tangents:** `GltfSceneController` includes `solveSkin()`'s posed tangent stream when it emits morph-weight or skeleton animation patches, so tangent-space material maps do not keep stale rest-pose tangents after runtime glTF animation. `sceneController.test` covers both morph `TANGENT` deltas and skinned pose patches.
+
 ### Fixed (pt-webgl2 skinned tangent consumption, 2026-06-16)
 
 - **CPU-solved skinned tangents now reach the WebGL2 path tracer:** `@vitrum/pt-webgl2` preserves `solveSkin()`'s posed tangent stream for skinned meshes, including `morphTargetTangents` blended by core, instead of dropping tangents and forcing the attribute packer to derive a fallback frame. `skinSolve.test` now pins the backend pre-pass against the shared core solver.

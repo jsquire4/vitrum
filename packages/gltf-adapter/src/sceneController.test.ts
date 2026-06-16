@@ -131,7 +131,17 @@ function animatedInstancedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBu
 function morphGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const packed = packF32([
     [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    [
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ],
     [1, 0, 0, 1, 0, 0, 1, 0, 0],
+    [
+      0, 1, 0,
+      0, 1, 0,
+      0, 1, 0,
+    ],
     [0, 1],
     [0, 1],
     [0, 0],
@@ -145,26 +155,28 @@ function morphGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
       nodes: [{ mesh: 0 }],
       meshes: [{
         weights: [0],
-        primitives: [{ attributes: { POSITION: 0 }, targets: [{ POSITION: 1 }] }],
+        primitives: [{ attributes: { POSITION: 0, TANGENT: 1 }, targets: [{ POSITION: 2, TANGENT: 3 }] }],
       }],
       accessors: [
         { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
-        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
-        { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
-        { bufferView: 3, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC4' },
+        { bufferView: 2, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 3, componentType: 5126, count: 3, type: 'VEC3' },
         { bufferView: 4, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 5, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 6, componentType: 5126, count: 2, type: 'SCALAR' },
       ],
       bufferViews: packed.views,
       buffers: [{ byteLength: packed.buffer.byteLength }],
       animations: [
         {
           name: 'morph-on',
-          samplers: [{ input: 2, output: 3, interpolation: 'LINEAR' }],
+          samplers: [{ input: 4, output: 5, interpolation: 'LINEAR' }],
           channels: [{ sampler: 0, target: { node: 0, path: 'weights' } }],
         },
         {
           name: 'morph-off',
-          samplers: [{ input: 2, output: 4, interpolation: 'LINEAR' }],
+          samplers: [{ input: 4, output: 6, interpolation: 'LINEAR' }],
           channels: [{ sampler: 0, target: { node: 0, path: 'weights' } }],
         },
       ],
@@ -243,6 +255,11 @@ function manualSkinnedInput(): {
   const identity = identityMat4();
   const meshTransform = identityMat4();
   meshTransform[12] = 5;
+  const restTangents = new Float32Array([
+    1, 0, 0, 1,
+    1, 0, 0, 1,
+    1, 0, 0, 1,
+  ]);
   const skinIndices = new Uint32Array(12);
   const skinWeights = new Float32Array(12);
   for (let vertex = 0; vertex < 3; vertex += 1) skinWeights[vertex * 4] = 1;
@@ -251,6 +268,7 @@ function manualSkinnedInput(): {
     id: 'skin-prim',
     positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
     normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+    tangents: restTangents,
     material: MATERIAL,
     transform: asMat4(meshTransform),
     skinIndices,
@@ -505,9 +523,12 @@ describe('GltfSceneController', () => {
     const patch = frame.primitivePatches[0]!.patch as {
       morphWeights: Float32Array;
       positions: Float32Array;
+      tangents: Float32Array;
     };
     expect(patch.morphWeights[0]).toBeCloseTo(0.25);
     expect(Array.from(patch.positions)).toEqual([0.25, 0, 0, 1.25, 0, 0, 0.25, 1, 0]);
+    expect(patch.tangents).toBeInstanceOf(Float32Array);
+    expect(patch.tangents[1]).toBeGreaterThan(0);
   });
 
   it('samples morph-weight channels, solves the promoted skinned primitive, and patches deformed geometry', async () => {
@@ -520,9 +541,13 @@ describe('GltfSceneController', () => {
     const patch = frame.primitivePatches[0]!.patch as {
       morphWeights: Float32Array;
       positions: Float32Array;
+      tangents: Float32Array;
     };
     expect(patch.morphWeights[0]).toBeCloseTo(1);
     expect(Array.from(patch.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
+    expect(patch.tangents).toBeInstanceOf(Float32Array);
+    expect(patch.tangents[1]).toBeGreaterThan(0);
+    expect((controller.scene.primitives[0] as SkinnedMeshPrimitive).tangents![1]).toBeGreaterThan(0);
     expect((controller.scene.primitives[0] as SkinnedMeshPrimitive).morphWeights![0]).toBeCloseTo(1);
   });
 
@@ -535,9 +560,15 @@ describe('GltfSceneController', () => {
     const patch = frame.primitivePatches[0]!.patch as {
       bones: Float32Array;
       positions: Float32Array;
+      tangents: Float32Array;
     };
     expect(patch.bones[12]).toBeCloseTo(1);
     expect(Array.from(patch.positions)).toEqual([1, 0, 0, 2, 0, 0, 1, 1, 0]);
+    expect(Array.from(patch.tangents)).toEqual([
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ]);
     const world = transformPoint(
       (controller.scene.primitives[0] as SkinnedMeshPrimitive).transform,
       patch.positions[0]!,

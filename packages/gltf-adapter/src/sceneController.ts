@@ -607,6 +607,7 @@ export class GltfSceneController {
       morphWeights,
       positions: solved.positions,
       normals: solved.normals,
+      ...(solved.tangents ? { tangents: solved.tangents } : {}),
     } as Partial<ScenePrimitive>;
   }
 
@@ -664,6 +665,7 @@ export class GltfSceneController {
       bones,
       positions: solved.positions,
       normals: solved.normals,
+      ...(solved.tangents ? { tangents: solved.tangents } : {}),
     } as Partial<ScenePrimitive>;
   }
 }
