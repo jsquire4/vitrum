@@ -30,6 +30,10 @@
  *  - map-free KHR_materials_sheen controls (`sheen`, `sheenColor`, and
  *    `sheenRoughness`) for the additive, map-free direct-light sheen lobe.
  *    Sheen colour/roughness maps remain outside this oracle.
+ *  - map-free scalar KHR_materials_iridescence (`iridescence`) through the
+ *    thin-film-modified base F0 used by the opaque direct-light specular and
+ *    diffuse partition. Iridescence maps, thickness maps, and IOR/thickness
+ *    parameter gradients remain outside this oracle.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
  *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
  *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
@@ -73,6 +77,134 @@ function fresnelSchlick(cosTheta: number, f0: Vec3): Vec3 {
     f0[0] + (1.0 - f0[0]) * m5,
     f0[1] + (1.0 - f0[1]) * m5,
     f0[2] + (1.0 - f0[2]) * m5,
+  ];
+}
+
+function iridXyzToRec709(xyz: Vec3): Vec3 {
+  return [
+    3.2404542 * xyz[0] - 1.5371385 * xyz[1] - 0.4985314 * xyz[2],
+    -0.9692660 * xyz[0] + 1.8760108 * xyz[1] + 0.0415560 * xyz[2],
+    0.0556434 * xyz[0] - 0.2040259 * xyz[1] + 1.0572252 * xyz[2],
+  ];
+}
+
+function iridFresnel0ToIor(f0: Vec3): Vec3 {
+  return f0.map((v) => {
+    const sqrtF0 = Math.sqrt(Math.min(Math.max(v, 0.0), 0.9999));
+    return (1.0 + sqrtF0) / (1.0 - sqrtF0);
+  }) as unknown as Vec3;
+}
+
+function iridIorToFresnel0Scalar(transmittedIor: number, incidentIor: number): number {
+  const r = (transmittedIor - incidentIor) / (transmittedIor + incidentIor);
+  return r * r;
+}
+
+function iridIorToFresnel0Vec(transmittedIor: Vec3, incidentIor: number): Vec3 {
+  return [
+    ((transmittedIor[0] - incidentIor) / (transmittedIor[0] + incidentIor)) ** 2,
+    ((transmittedIor[1] - incidentIor) / (transmittedIor[1] + incidentIor)) ** 2,
+    ((transmittedIor[2] - incidentIor) / (transmittedIor[2] + incidentIor)) ** 2,
+  ];
+}
+
+function iridSchlickScalar(cosTheta: number, f0: number): number {
+  const m = Math.min(Math.max(1.0 - cosTheta, 0.0), 1.0);
+  const m2 = m * m;
+  return f0 + (1.0 - f0) * m2 * m2 * m;
+}
+
+function iridSchlickVec(cosTheta: number, f0: Vec3): Vec3 {
+  return fresnelSchlick(cosTheta, f0);
+}
+
+function iridEvalSensitivity(OPD: number, shift: Vec3): Vec3 {
+  const phase = 2.0 * PI * OPD * 1.0e-9;
+  const val: Vec3 = [5.4856e-13, 4.4201e-13, 5.2481e-13];
+  const pos: Vec3 = [1.6810e+06, 1.7953e+06, 2.2084e+06];
+  const vari: Vec3 = [4.3278e+09, 9.3046e+09, 6.6121e+09];
+  const xyz: [number, number, number] = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    xyz[c] = val[c]! * Math.sqrt(2.0 * PI * vari[c]!) *
+      Math.cos(pos[c]! * phase + shift[c]!) *
+      Math.exp(-phase * phase * vari[c]!);
+  }
+  xyz[0] += 9.7470e-14 * Math.sqrt(2.0 * PI * 4.5282e+09) *
+    Math.cos(2.2399e+06 * phase + shift[0]) *
+    Math.exp(-4.5282e+09 * phase * phase);
+  return iridXyzToRec709([xyz[0] / 1.0685e-7, xyz[1] / 1.0685e-7, xyz[2] / 1.0685e-7]);
+}
+
+function evalIridescence(
+  outsideIOR: number,
+  eta2: number,
+  cosTheta1: number,
+  thicknessNm: number,
+  baseF0: Vec3,
+): Vec3 {
+  const t = Math.min(Math.max(thicknessNm / 0.03, 0.0), 1.0);
+  const smooth = t * t * (3.0 - 2.0 * t);
+  const iridescenceIor = outsideIOR + (eta2 - outsideIOR) * smooth;
+  const sinTheta2Sq = ((outsideIOR / iridescenceIor) ** 2) *
+    Math.max(0.0, 1.0 - cosTheta1 * cosTheta1);
+  const cosTheta2Sq = 1.0 - sinTheta2Sq;
+  if (cosTheta2Sq < 0.0) return [1, 1, 1];
+  const cosTheta2 = Math.sqrt(cosTheta2Sq);
+
+  const R0Scalar = iridIorToFresnel0Scalar(iridescenceIor, outsideIOR);
+  const R12 = iridSchlickScalar(cosTheta1, R0Scalar);
+  const T121 = 1.0 - R12;
+  const phi12 = iridescenceIor < outsideIOR ? PI : 0.0;
+  const phi21 = PI - phi12;
+
+  const baseIOR = iridFresnel0ToIor(baseF0);
+  const R1Vec = iridIorToFresnel0Vec(baseIOR, iridescenceIor);
+  const R23 = iridSchlickVec(cosTheta2, R1Vec);
+  const phi23: Vec3 = [
+    baseIOR[0] < iridescenceIor ? PI : 0.0,
+    baseIOR[1] < iridescenceIor ? PI : 0.0,
+    baseIOR[2] < iridescenceIor ? PI : 0.0,
+  ];
+  const OPD = 2.0 * iridescenceIor * thicknessNm * cosTheta2;
+  const phi: Vec3 = [phi21 + phi23[0], phi21 + phi23[1], phi21 + phi23[2]];
+  const R123: Vec3 = [
+    Math.min(Math.max(R12 * R23[0], 1e-5), 0.9999),
+    Math.min(Math.max(R12 * R23[1], 1e-5), 0.9999),
+    Math.min(Math.max(R12 * R23[2], 1e-5), 0.9999),
+  ];
+  const r123: Vec3 = [Math.sqrt(R123[0]), Math.sqrt(R123[1]), Math.sqrt(R123[2])];
+  const Rs: Vec3 = [
+    (T121 * T121) * R23[0] / (1.0 - R123[0]),
+    (T121 * T121) * R23[1] / (1.0 - R123[1]),
+    (T121 * T121) * R23[2] / (1.0 - R123[2]),
+  ];
+  const out: [number, number, number] = [R12 + Rs[0], R12 + Rs[1], R12 + Rs[2]];
+  let Cm: [number, number, number] = [Rs[0] - T121, Rs[1] - T121, Rs[2] - T121];
+  for (let m = 1; m <= 2; m++) {
+    Cm = [Cm[0] * r123[0], Cm[1] * r123[1], Cm[2] * r123[2]];
+    const Sm = iridEvalSensitivity(m * OPD, [m * phi[0], m * phi[1], m * phi[2]]);
+    out[0] += Cm[0] * 2.0 * Sm[0];
+    out[1] += Cm[1] * 2.0 * Sm[1];
+    out[2] += Cm[2] * 2.0 * Sm[2];
+  }
+  return [Math.max(out[0], 0.0), Math.max(out[1], 0.0), Math.max(out[2], 0.0)];
+}
+
+function iridescenceModifiedF0(
+  baseF0: Vec3,
+  iridescence: number,
+  iridescenceIor: number,
+  thicknessMin: number,
+  thicknessMax: number,
+  cosTheta: number,
+): Vec3 {
+  if (iridescence < 1e-4) return baseF0;
+  const thicknessNm = thicknessMin + (thicknessMax - thicknessMin) * Math.min(Math.max(cosTheta, 0.0), 1.0);
+  const iridF = evalIridescence(1.0, iridescenceIor, cosTheta, thicknessNm, baseF0);
+  return [
+    baseF0[0] + (iridF[0] - baseF0[0]) * iridescence,
+    baseF0[1] + (iridF[1] - baseF0[1]) * iridescence,
+    baseF0[2] + (iridF[2] - baseF0[2]) * iridescence,
   ];
 }
 
@@ -177,6 +309,34 @@ export function evaluateBrdf(
     out[c] = diff + spec;
   }
   return out;
+}
+
+function evaluateBrdfWithF0(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  f0: Vec3,
+): Vec3 {
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  const nDotV = Math.max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const nDotH = Math.max(dot(normal, h), 0.0);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const f = fresnelSchlick(vDotH, f0);
+  const alpha = Math.max(roughness * roughness, 1e-3);
+  const d = ggxD(nDotH, alpha);
+  const g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+  const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
+  const kd0 = 1.0 - metallic;
+  return [
+    ((1.0 - f[0]) * kd0 * baseColor[0] * INV_PI) + specScale * f[0],
+    ((1.0 - f[1]) * kd0 * baseColor[1] * INV_PI) + specScale * f[1],
+    ((1.0 - f[2]) * kd0 * baseColor[2] * INV_PI) + specScale * f[2],
+  ];
 }
 
 function evalClearcoatLobe(
@@ -295,6 +455,39 @@ export function evaluateBrdfWithSheen(
   );
   const sh = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, wo, wi);
   return [base[0] + sh[0], base[1] + sh[1], base[2] + sh[2]];
+}
+
+/**
+ * Map-free forward mirror of the KHR_materials_iridescence scalar path in the
+ * opaque isotropic direct-light domain. Iridescence modifies the base F0 before
+ * the Cook-Torrance diffuse/specular partition; clearcoat/sheen/maps are omitted.
+ */
+export function evaluateBrdfWithIridescence(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  iridescence: number,
+  iridescenceIor: number,
+  iridescenceThicknessMin: number,
+  iridescenceThicknessMax: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const baseF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  const f0 = iridescenceModifiedF0(
+    baseF0,
+    iridescence,
+    iridescenceIor,
+    iridescenceThicknessMin,
+    iridescenceThicknessMax,
+    vDotH,
+  );
+  return evaluateBrdfWithF0(baseColor, roughness, metallic, normal, wo, wi, f0);
 }
 
 // ── analytic partials ────────────────────────────────────────────────────────
@@ -640,6 +833,38 @@ export function dBrdf_dSheenRoughness(
     sheen * sheenColor[1] * dD_dRough * vis,
     sheen * sheenColor[2] * dD_dRough * vis,
   ];
+}
+
+/**
+ * Analytic ∂(evaluateBrdfFull)_c / ∂iridescence for the map-free
+ * KHR_materials_iridescence scalar. Directions, IOR, thickness range, and
+ * texture-free material state are frozen; the derivative is the existing F0
+ * partial with dF0/dIridescence = F_iridescent - F0_base.
+ */
+export function dBrdf_dIridescence(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  iridescenceIor: number,
+  iridescenceThicknessMin: number,
+  iridescenceThicknessMax: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const baseF0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  const thicknessNm = iridescenceThicknessMin +
+    (iridescenceThicknessMax - iridescenceThicknessMin) * Math.min(Math.max(vDotH, 0.0), 1.0);
+  const iridF = evalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);
+  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, [
+    iridF[0] - baseF0[0],
+    iridF[1] - baseF0[1],
+    iridF[2] - baseF0[2],
+  ]);
 }
 
 function dBrdf_dSpecularF0(

@@ -14,6 +14,7 @@ import {
 	  evaluateBrdf,
 	  evaluateBrdfWithClearcoat,
 	  evaluateBrdfWithSheen,
+	  evaluateBrdfWithIridescence,
 	  dBrdf_dBaseColor,
 	  dBrdf_dRoughness,
 	  dBrdf_dMetallic,
@@ -24,6 +25,7 @@ import {
 	  dBrdf_dSheen,
 	  dBrdf_dSheenColor,
 	  dBrdf_dSheenRoughness,
+	  dBrdf_dIridescence,
 	} from '../inverse/brdfAdjoint.js';
 import {
   PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
@@ -330,6 +332,54 @@ describe('BRDF adjoint — analytic KHR_materials_sheen partials == finite diffe
   });
 });
 
+describe('BRDF adjoint — analytic KHR_materials_iridescence scalar partial == finite difference', () => {
+  const cfg = {
+    baseColor: [0.42, 0.31, 0.22] as V3,
+    roughness: 0.38,
+    metallic: 0.12,
+    normal: normalize([0.06, 0.16, 1]),
+    wo: normalize([0.25, -0.2, 1]),
+    wi: normalize([-0.28, 0.22, 1]),
+    iridescence: 0.45,
+    iridescenceIor: 1.35,
+    iridescenceThicknessMin: 110,
+    iridescenceThicknessMax: 360,
+    specularColor: [0.72, 0.85, 0.66] as V3,
+    specularIntensity: 0.7,
+  };
+
+  it('matches FD for map-free scalar iridescence over the unclamped interior', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dIridescence(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.iridescenceIor,
+      cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    const fp = evaluateBrdfWithIridescence(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.iridescence + h, cfg.iridescenceIor, cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fm = evaluateBrdfWithIridescence(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.iridescence - h, cfg.iridescenceIor, cfg.iridescenceThicknessMin,
+      cfg.iridescenceThicknessMax, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+});
+
 describe('BRDF adjoint — analytic Lambert cross-check (pure diffuse)', () => {
   it('dBrdf/dBaseColor of a pure-diffuse (metallic=0) surface ≈ (1-F)/π on the diagonal', () => {
     // For metallic=0: f0 = 0.04 everywhere, F is achromatic, diffuse term
@@ -406,6 +456,13 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 	    expect(wgsl).toContain('return adjointSheenLobe(sheen, sheenRoughness, vec3f(1.0), normal, wo, wi);');
 	    expect(wgsl).toContain('let dD_dQ = powTerm * (1.0 + (2.0 + q) * logSin) / (2.0 * PI);');
 	    expect(wgsl).toContain('let dQ_dAlpha = -1.0 / (alpha * alpha);');
+	  });
+
+	  it('iridescence partial mirrors the thin-film F0 scalar derivative', () => {
+	    expect(wgsl).toContain('fn dBrdf_dIridescence(');
+	    expect(wgsl).toContain('fn adjointEvalIridescence(');
+	    expect(wgsl).toContain('let iridF = adjointEvalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);');
+	    expect(wgsl).toContain('return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, iridF - baseF0);');
 	  });
 
   it('gradient atomics use the i32 fixed-point scale shared with NRC (2^20)', () => {

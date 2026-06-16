@@ -12,7 +12,7 @@
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
  * optimized parameter is in the currently differentiable set (baseColor,
  * roughness, metallic, emissive, specularColor, specularIntensity, clearcoat,
- * clearcoatRoughness, sheen, sheenColor, sheenRoughness).
+ * clearcoatRoughness, sheen, sheenColor, sheenRoughness, iridescence).
  * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
  * partials match the FD oracle to f32 precision, the chain rule + fixed-point
  * accumulation match an on-device finite-difference, and
@@ -30,6 +30,8 @@
  *    and `clearcoatRoughness`;
  *  - the additive, map-free KHR_materials_sheen lobe w.r.t. `sheen`,
  *    `sheenColor`, and `sheenRoughness`;
+ *  - map-free KHR_materials_iridescence scalar through the thin-film-modified
+ *    base F0 in the opaque direct-light domain;
  *  - the additive emission term w.r.t. `emissive` (rgb) — a CONTRIBUTION-level
  *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
@@ -256,6 +258,102 @@ fn dBrdf_dSpecularIntensity(
 ) -> vec3f {
   let dF0 = 0.04 * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * (1.0 - metallic);
   return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, dF0);
+}
+
+// ── analytic KHR_materials_iridescence scalar partial ───────────────────────
+// Mirrors inverse/brdfAdjoint.ts:dBrdf_dIridescence. This is map-free scalar
+// iridescence only: IOR/thickness are frozen, no iridescence maps, no anisotropy.
+fn adjointIridXyzToRec709(xyz: vec3f) -> vec3f {
+  return vec3f(
+     3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z,
+    -0.9692660 * xyz.x + 1.8760108 * xyz.y + 0.0415560 * xyz.z,
+     0.0556434 * xyz.x - 0.2040259 * xyz.y + 1.0572252 * xyz.z,
+  );
+}
+fn adjointIridFresnel0ToIor(f0: vec3f) -> vec3f {
+  let sqrtF0 = sqrt(clamp(f0, vec3f(0.0), vec3f(0.9999)));
+  return (vec3f(1.0) + sqrtF0) / (vec3f(1.0) - sqrtF0);
+}
+fn adjointIridIorToFresnel0Scalar(transmittedIor: f32, incidentIor: f32) -> f32 {
+  let r = (transmittedIor - incidentIor) / (transmittedIor + incidentIor);
+  return r * r;
+}
+fn adjointIridIorToFresnel0Vec(transmittedIor: vec3f, incidentIor: f32) -> vec3f {
+  let r = (transmittedIor - vec3f(incidentIor)) / (transmittedIor + vec3f(incidentIor));
+  return r * r;
+}
+fn adjointIridSchlickScalar(cosTheta: f32, f0: f32) -> f32 {
+  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let m2 = m * m;
+  return f0 + (1.0 - f0) * m2 * m2 * m;
+}
+fn adjointIridSchlickVec(cosTheta: f32, f0: vec3f) -> vec3f {
+  let m = clamp(1.0 - cosTheta, 0.0, 1.0);
+  let m2 = m * m;
+  return f0 + (vec3f(1.0) - f0) * m2 * m2 * m;
+}
+fn adjointIridEvalSensitivity(OPD: f32, shift: vec3f) -> vec3f {
+  let phase = 2.0 * PI * OPD * 1.0e-9;
+  let val = vec3f(5.4856e-13, 4.4201e-13, 5.2481e-13);
+  let pos = vec3f(1.6810e+06, 1.7953e+06, 2.2084e+06);
+  let vari = vec3f(4.3278e+09, 9.3046e+09, 6.6121e+09);
+  var xyz = val * sqrt(2.0 * PI * vari) * cos(pos * phase + shift) * exp(-phase * phase * vari);
+  xyz.x = xyz.x + 9.7470e-14 * sqrt(2.0 * PI * 4.5282e+09)
+      * cos(2.2399e+06 * phase + shift.x) * exp(-4.5282e+09 * phase * phase);
+  xyz = xyz / 1.0685e-7;
+  return adjointIridXyzToRec709(xyz);
+}
+fn adjointEvalIridescence(
+  outsideIOR: f32,
+  eta2: f32,
+  cosTheta1: f32,
+  thicknessNm: f32,
+  baseF0: vec3f,
+) -> vec3f {
+  let iridescenceIor = mix(outsideIOR, eta2, smoothstep(0.0, 0.03, thicknessNm));
+  let sinTheta2Sq = (outsideIOR / iridescenceIor) * (outsideIOR / iridescenceIor)
+      * max(0.0, 1.0 - cosTheta1 * cosTheta1);
+  let cosTheta2Sq = 1.0 - sinTheta2Sq;
+  if (cosTheta2Sq < 0.0) { return vec3f(1.0); }
+  let cosTheta2 = sqrt(cosTheta2Sq);
+  let R0_scalar = adjointIridIorToFresnel0Scalar(iridescenceIor, outsideIOR);
+  let R12 = adjointIridSchlickScalar(cosTheta1, R0_scalar);
+  let T121 = 1.0 - R12;
+  let phi12 = select(0.0, PI, iridescenceIor < outsideIOR);
+  let phi21 = PI - phi12;
+  let baseIOR = adjointIridFresnel0ToIor(clamp(baseF0, vec3f(0.0), vec3f(0.9999)));
+  let R1_vec = adjointIridIorToFresnel0Vec(baseIOR, iridescenceIor);
+  let R23 = adjointIridSchlickVec(cosTheta2, R1_vec);
+  var phi23 = vec3f(0.0);
+  phi23.x = select(0.0, PI, baseIOR.x < iridescenceIor);
+  phi23.y = select(0.0, PI, baseIOR.y < iridescenceIor);
+  phi23.z = select(0.0, PI, baseIOR.z < iridescenceIor);
+  let OPD = 2.0 * iridescenceIor * thicknessNm * cosTheta2;
+  let phi = vec3f(phi21) + phi23;
+  let R123 = clamp(R12 * R23, vec3f(1e-5), vec3f(0.9999));
+  let r123 = sqrt(R123);
+  let Rs = (T121 * T121) * R23 / (vec3f(1.0) - R123);
+  var I = vec3f(R12) + Rs;
+  var Cm = Rs - vec3f(T121);
+  for (var m = 1; m <= 2; m = m + 1) {
+    Cm = Cm * r123;
+    let Sm = 2.0 * adjointIridEvalSensitivity(f32(m) * OPD, f32(m) * phi);
+    I = I + Cm * Sm;
+  }
+  return max(I, vec3f(0.0));
+}
+fn dBrdf_dIridescence(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  specularColor: vec3f, specularIntensity: f32,
+  iridescenceIor: f32, iridescenceThicknessMin: f32, iridescenceThicknessMax: f32,
+) -> vec3f {
+  let h = safe_normalize(wi + wo);
+  let vDotH = max(dot(wo, h), 0.0);
+  let baseF0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  let thicknessNm = mix(iridescenceThicknessMin, iridescenceThicknessMax, clamp(vDotH, 0.0, 1.0));
+  let iridF = adjointEvalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);
+  return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, iridF - baseF0);
 }
 
 // ── analytic KHR_materials_clearcoat partials ───────────────────────────────

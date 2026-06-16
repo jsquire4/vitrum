@@ -164,6 +164,11 @@ export interface AdjointGradientRequest {
  *    direct lobe controls through the additive Charlie lobe. Sheen maps and
  *    sheen-roughness maps stay on finite difference until the adjoint pass
  *    mirrors those texture derivatives.
+ *  - `iridescence` — map-free KHR_materials_iridescence scalar through the
+ *    thin-film-modified base F0 in the same scoped opaque direct-light domain.
+ *    `iridescenceIor`, thickness range, iridescence maps, and thickness maps
+ *    stay on finite difference until their derivatives are mirrored and
+ *    validated.
  *
  * `ior` is deliberately NOT here — it optimizes via finite difference (correct,
  * just slower) and has a GPU-validated analytic partial (`dFrDielectric_dIor` —
@@ -177,8 +182,8 @@ export interface AdjointGradientRequest {
  * engine's `computeAdjointGradient` hook must actually accumulate that field's
  * gradient and the field needs proof appropriate to its risk. baseColor,
  * roughness, and emissive have GPU inverse-fit captures; specular, metallic,
- * scalar clearcoat and map-free sheen controls are CPU-FD-oracle + shader-gate covered and
- * remain on the recapture tail.
+ * scalar clearcoat, map-free sheen controls, and scalar iridescence are
+ * CPU-FD-oracle + shader-gate covered and remain on the recapture tail.
  */
 const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'baseColor',
@@ -193,6 +198,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'sheen',
   'sheenColor',
   'sheenRoughness',
+  'iridescence',
 ]);
 
 interface ParamSlot {
@@ -292,11 +298,16 @@ export class PtWebgpuInverseSession implements InverseSession {
     // never receives a silently-wrong gradient. The two adjoint stages
     // the hook relies on (partials; chain rule + accumulation) are GPU-validated
     // on lavapipe (V24); an engine exposing the hook vouches for the re-trace.
+    const iridescenceOptimizedPrimitiveIds = new Set(
+      this.#slots
+        .filter((s) => s.target.domain === 'materials' && s.target.field === 'iridescence')
+        .map((s) => s.target.id),
+    );
     const allEligible = this.#slots.every(
       (s) =>
         s.target.domain === 'materials' &&
         ADJOINT_ELIGIBLE_FIELDS.has(s.target.field) &&
-        isPathReplayCompatibleTarget(scene, s.target),
+        isPathReplayCompatibleTarget(scene, s.target, iridescenceOptimizedPrimitiveIds),
     );
     this.#method =
       requestedMethod === 'path-replay' && hooks.computeAdjointGradient != null && allEligible
@@ -447,9 +458,14 @@ export class PtWebgpuInverseSession implements InverseSession {
   }
 }
 
-function isPathReplayCompatibleTarget(scene: Scene, target: ResolvedParamTarget): boolean {
+function isPathReplayCompatibleTarget(
+  scene: Scene,
+  target: ResolvedParamTarget,
+  iridescenceOptimizedPrimitiveIds: ReadonlySet<string>,
+): boolean {
   const prim = findPrimitive(scene, target.id);
   if (prim == null) return false;
+  if (!isPathReplayTriangleBackedPrimitive(prim)) return false;
   const m = prim.material;
   if (target.field === 'baseColor' && isPathReplayCompatibleUnlitBaseColorMaterial(m)) {
     return true;
@@ -457,7 +473,25 @@ function isPathReplayCompatibleTarget(scene: Scene, target: ResolvedParamTarget)
   if (target.field === 'emissive' || target.field === 'emissiveIntensity') {
     return isPathReplayCompatibleEmissiveMaterial(m);
   }
+  if (target.field === 'iridescence') {
+    return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleIridescenceMaterial(m);
+  }
+  if (iridescenceOptimizedPrimitiveIds.has(target.id)) return false;
   return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleBrdfMaterial(m);
+}
+
+function isIdentityMat4(transform: Float32Array): boolean {
+  const expected = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  if (transform.length < 16) return false;
+  for (let i = 0; i < 16; i += 1) {
+    if (Math.abs((transform[i] ?? 0) - expected[i]!) > 1e-6) return false;
+  }
+  return true;
+}
+
+function isPathReplayTriangleBackedPrimitive(primitive: ScenePrimitive): boolean {
+  if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') return false;
+  return primitive.transform == null || isIdentityMat4(primitive.transform);
 }
 
 function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean {
@@ -486,6 +520,19 @@ function isPathReplayCompatibleBrdfMaterial(m: MaterialSpec): boolean {
   if (m.opacity != null && m.opacity < 1) return false;
   if ((m.transmission ?? 0) > 1e-6) return false;
   if ((m.iridescence ?? 0) > 1e-6) return false;
+  if ((m.anisotropy ?? 0) > 1e-6) return false;
+  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
+  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
+  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
+  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
+  return !hasPathReplayUnsupportedMap(m);
+}
+
+function isPathReplayCompatibleIridescenceMaterial(m: MaterialSpec): boolean {
+  if (m.shadingModel === 'unlit') return false;
+  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
+  if (m.opacity != null && m.opacity < 1) return false;
+  if ((m.transmission ?? 0) > 1e-6) return false;
   if ((m.anisotropy ?? 0) > 1e-6) return false;
   if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
   if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;

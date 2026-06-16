@@ -8,6 +8,7 @@
 // and the pure loss/Adam helpers.
 
 import { describe, it, expect } from 'vitest';
+import { asMat4 } from '@vitrum/core';
 import type { Scene, InverseSessionOptions, MaterialSpec, SceneEmitter } from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
@@ -511,7 +512,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
 
   it.each([
     ['transmission', { transmission: 0.25 }],
-    ['iridescence', { iridescence: 0.25 }],
     ['anisotropy', { anisotropy: 0.25 }],
     ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
     ['emissive map on a lit BRDF target', { emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
@@ -756,6 +756,108 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     ]);
     expect(session.currentValues()[2]).toEqual([expect.closeTo(0.57, 6)]);
     session.dispose();
+  });
+
+  it('resolves map-free scalar iridescence to path-replay when it is the optimized field', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                iridescence: 0.41,
+                iridescenceIor: 1.35,
+                iridescenceThicknessRange: [120, 360] as [number, number],
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.iridescence', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.41, 6)]);
+    session.dispose();
+  });
+
+  it('keeps coupled BRDF params on finite-difference while iridescence is being optimized', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, iridescence: 0.0 } }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(4) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.baseColor', kind: 'rgb' },
+        { path: 'materials.panel.iridescence', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
+  it('degrades to finite-difference for primitive targets the adjoint pass cannot replay as triangles', () => {
+    const fake = makeFakeEngine();
+    const identity = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]));
+    const translated = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      2, 0, 0, 1,
+    ]));
+    const baseMesh = fake.scene.primitives[0]!;
+    if (baseMesh.kind !== 'mesh') throw new Error('test fixture expected a mesh primitive');
+    const cases: Scene['primitives'] = [
+      {
+        kind: 'analytic',
+        id: 'panel',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 1]),
+        material: baseMesh.material,
+      },
+      {
+        kind: 'instanced-mesh',
+        id: 'panel',
+        positions: baseMesh.positions,
+        normals: baseMesh.normals,
+        material: baseMesh.material,
+        instances: [identity],
+      },
+      {
+        ...baseMesh,
+        transform: translated,
+      },
+    ];
+    for (const primitive of cases) {
+      fake.scene = { ...fake.scene, primitives: [primitive] };
+      const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+      const session = new PtWebgpuInverseSession(hooks, {
+        target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+        parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+        method: 'path-replay',
+      });
+      expect(session.method).toBe('finite-difference');
+      session.dispose();
+    }
   });
 
   it('passes specular adjoint params to the hook with the expected flat offsets', async () => {

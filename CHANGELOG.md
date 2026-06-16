@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu iridescence adjoint truthfulness, 2026-06-16)
+
+- **Map-free scalar iridescence now participates in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored partials for KHR_materials_iridescence `iridescence`, reading packed material vec4 #25 and differentiating the thin-film-modified base F0 in the existing opaque direct-light replay domain. `inverseSession` only routes the targeted scalar iridescence fit to `path-replay`; coupled BRDF+iridescence sessions, iridescence maps, IOR/thickness gradients, anisotropy, transmission, layered/volume/spectral materials, alpha visibility, environment/soft-sun terms, indirect paths, and stochastic area sampling still degrade to finite difference. The same routing guard now rejects analytic primitives, instanced meshes, and transformed meshes because the replay shader intersects raw triangle buffers only.
+
 ### Fixed (glTF/walkaround asset-tail closures, 2026-06-16)
 
 - **glTF generated tangents now honor the selected tangent-space UV set:** `@vitrum/gltf-adapter` generates fallback tangents from `TEXCOORD_1` when a normal/clearcoat-normal/bump map selects `texCoord:1`; `texCoord:2+` and mixed tangent-space map UV channels now emit structured diagnostics instead of silently generating a wrong UV0 tangent frame.
