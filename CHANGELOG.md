@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround Welford allocation hygiene, 2026-06-16)
+
+- **Non-Welford denoisers no longer allocate full-size Welford aux textures:** `@vitrum/walkaround-hybrid` now threads a Welford ping-pong allocation policy through frame resource creation. The default `atrous-variance` path keeps full-resolution `varianceBufferAux` and `atrousVarianceEstimateTexture`, while `svgf-real`, `oidn-final`, `neural`, and raw/no-denoiser modes receive legal 1x1 placeholders for those unused aux resources. The always-read `varianceBuffer` stays full-resolution, and `hdrTotalTexture` remains full-size because shade writes it through the standard frame bind group.
+
 ### Fixed (walkaround transparent OIT composition, 2026-06-16)
 
 - **Camera-visible `alphaMode:'blend'` is no longer stochastic-only:** `@vitrum/walkaround-hybrid` now has a transparent-OIT pass between `indirect-combine` and `temporalAccum`. The opaque shade pass skips fractional blend layers, the new pass ray-walks those layers front-to-back using atlas-backed baseColor/alphaMap/vertex alpha coverage, composites them over the denoised opaque result, and feeds that composited radiance into temporal accumulation. The alpha warning now reflects the remaining approximation: transparent-layer lighting plus ReSTIR/GI/shadow participation, not missing camera-visible composition.

@@ -157,6 +157,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   normalized base/clearcoat/sheen sampled-PDF accounting, iridescence F0
   zero-default behavior, and the explicit sheen-PDF cosine approximation
   posture. GPU material-furnace/reference A/B remains open.
+- Follow-up 2026-06-16: the H24 Welford aux allocation residue is code-closed
+  for non-Welford denoisers. `WalkaroundGPUPipeline` now passes
+  `welfordPingPong:false` for non-`atrous-variance` modes, so
+  `varianceBufferAux` and `atrousVarianceEstimateTexture` collapse to legal
+  1x1 placeholders while the default Welford denoiser keeps full-size
+  resources. `varianceBuffer` and `hdrTotalTexture` intentionally remain
+  full-size because they are part of the standard frame graph.
 - `attachVitrum` now sizes the canvas backing store from CSS size × DPR before
   `createEngine()` runs and forwards `onWarning` through the facade.
 - `createProgressiveEngine.onError` now mirrors the same

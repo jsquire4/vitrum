@@ -10,6 +10,13 @@ export function createCommonFrameResources(
   device: GPUDevice,
   width: number,
   height: number,
+  options?: {
+    /** Full-res Welford ping-pong + estimate textures are only needed by
+     *  `atrous-variance`. Other denoisers keep legal 1x1 placeholders because
+     *  SampleBudgetPass reads only `varianceBuffer` when no denoiser exposes a
+     *  Welford ping index. Defaults to true for legacy direct callers. */
+    readonly welfordPingPong?: boolean;
+  },
 ): CommonFrameResources {
   const hdrColorTexture = device.createTexture({
     size: [width, height],
@@ -121,10 +128,13 @@ export function createCommonFrameResources(
   });
 
   const varianceBuffer = createVarianceBuffer(device, width, height);
-  const varianceBufferAux = createVarianceBuffer(device, width, height);
+  const fullWelfordPingPong = options?.welfordPingPong !== false;
+  const varianceAuxW = fullWelfordPingPong ? width : 1;
+  const varianceAuxH = fullWelfordPingPong ? height : 1;
+  const varianceBufferAux = createVarianceBuffer(device, varianceAuxW, varianceAuxH);
   const atrousVarianceEstimateTexture = device.createTexture({
     label: 'atrous-variance-estimate',
-    size: [width, height],
+    size: [varianceAuxW, varianceAuxH],
     format: 'rgba32float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });

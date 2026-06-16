@@ -1088,6 +1088,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       gtaoDownscale: this._gtaoDownscale,
       svgfEnabled: this._denoiserMode === 'svgf-real',
       restirPtReuse: this._restirPtReuseStructural,
+      welfordPingPong: this._denoiserMode === 'atrous-variance',
     });
 
     // ── Resolve the checkerboard half-res-shading flag ─────────────────────
@@ -1503,6 +1504,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       // fixed for the pipeline's lifetime, so a resize keeps the same policy.
       svgfEnabled: this._denoiserMode === 'svgf-real',
       restirPtReuse: this._restirPtReuseStructural,
+      welfordPingPong: this._denoiserMode === 'atrous-variance',
     });
     // W9 — re-allocate PPG resolution-dependent buffers + re-upload the
     // (unchanged) sTree topology so the new bind groups have valid GPU

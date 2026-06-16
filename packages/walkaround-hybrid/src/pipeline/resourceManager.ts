@@ -467,6 +467,11 @@ export interface FrameResourceOptions {
   readonly svgfEnabled?: boolean;
   /** Allocate the widened 30-u32 GRIS/ReSTIR-PT GI reservoir layout. */
   readonly restirPtReuse?: boolean;
+  /** Allocate full-res Welford ping-pong/variance-estimate textures. This is
+   *  needed only by the `atrous-variance` denoiser; other modes keep 1x1
+   *  placeholders while preserving the FrameResources shape. Defaults to true
+   *  so direct callers keep the legacy allocation policy. */
+  readonly welfordPingPong?: boolean;
 }
 
 /**
@@ -485,7 +490,9 @@ export function createFrameResources(
   H: number,
   options?: FrameResourceOptions,
 ): FrameResources {
-  const common = createCommonFrameResources(device, W, H);
+  const common = createCommonFrameResources(device, W, H, {
+    welfordPingPong: options?.welfordPingPong ?? true,
+  });
   const restirDI = createRestirDIFrameResources(device, W, H);
   const restirGI = createRestirGIFrameResources(device, W, H, {
     restirPtReuse: options?.restirPtReuse === true,
