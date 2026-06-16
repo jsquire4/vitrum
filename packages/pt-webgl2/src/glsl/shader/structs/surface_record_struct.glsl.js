@@ -34,7 +34,7 @@ export const surface_record_struct = /* glsl */`
 		float dispersionStrength;
 		float sssSigmaT;
 		float sssAnisotropyG;
-		vec3 sssAlbedo;
+		vec3 sssSigmaS;
 		bool hasSpectralAttenuation;
 		vec3 activeLayerTransmission;
 		bool hasActiveLayer;

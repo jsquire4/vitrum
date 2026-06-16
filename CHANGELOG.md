@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 scattering coefficient semantics, 2026-06-16)
+
+- **`scatteringCoefficientRGB` is now consumed as per-channel σ_s:** `@vitrum/pt-webgl2` no longer packs the field as SSS albedo or ignores RGB-only scattering during activation. The material texture now stores a scalar-majorant `sssSigmaT` plus per-channel `sssSigmaS`, and the GLSL SSS path derives medium albedo as σ_s/σ_t using attenuation-derived σ_a. The backend ledger still marks the row approximate until the scalar-majorant single-scatter model has visual promotion.
+
 ### Fixed (glTF/OIT predictable-tail closures, 2026-06-16)
 
 - **Progressive glTF loading now honors strict pt-webgpu runtime tiers:** `loadGltfWithProgressiveEngine()` now applies the same `pt-webgpu` full-vs-lite compatibility gate as `loadGltfWithEngine()` before creating the progressive handoff engine, so `reject-unsupported` / `reject-degraded` cannot pass a lite adapter through the progressive subpath and fail later.

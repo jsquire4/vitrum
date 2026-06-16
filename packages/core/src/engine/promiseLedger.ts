@@ -564,8 +564,9 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   dispersionAbbeNumber: 'native',
   scatteringCoefficient: 'native',
   scatteringAnisotropy: 'native',
-  // REINTERPRETED as the SSS/volume albedo (s16 sssAlbedo), not a per-channel
-  // σ_s override — materially different semantics from the contract field.
+  // Consumed as authored per-channel σ_s (s16 sssSigmaS) with a scalar-majorant
+  // WebGL SSS free-flight path; approximate until visual promotion proves the
+  // simplified single-scatter model against reference scenes.
   scatteringCoefficientRGB: 'approximate',
   // transmission tint + per-face roughness override ARE consumed; the per-face
   // `normalMap`/`normalScale` sub-fields are never packed (no atlas entry).

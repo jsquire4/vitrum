@@ -87,7 +87,7 @@ three-mesh-bvh's 4 GLSL chunk files (`common_functions` 94, `bvh_struct_definiti
 | s3 | emissive.rgb / emissiveMap | s13 | alphaMap / opacity / alphaTest / side* |
 | s4 | normalMap / normalScale.xy / clearcoat | s14 | matte / castShadow / vertexColors\|(flat<<1) / flags* |
 | s5 | clearcoatMap / ccRoughness / ccRoughnessMap / ccNormalMap | s15 | sssSigmaT / sssAnisotropyG / dispersionStrength / thinFilmEnabled |
-| s6 | ccNormalScale.xy / pad / sheen | s16 | sssAlbedo.rgb / thinFilmLayerCount |
+| s6 | ccNormalScale.xy / pad / sheen | s16 | sssSigmaS.rgb / thinFilmLayerCount |
 | s7 | sheenColor.rgb / sheenColorMap | s17 | thinFilmIncidentIor / angleDependent / 0 / packedFeatureFlags* |
 | s8 | sheenRoughness / sheenRoughnessMap / iridescenceMap / iridThicknessMap | s18 | frontLayerTransmission.rgb / frontLayerRoughness |
 | s9 | iridescence / iridescenceIOR / iridThicknessRange.xy | s19 | backLayerTransmission.rgb / backLayerRoughness |

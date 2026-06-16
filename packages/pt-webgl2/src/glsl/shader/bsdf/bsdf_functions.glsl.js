@@ -443,6 +443,12 @@ export const bsdf_functions = /* glsl */`
 		return vec3( mediumAlbedoHero( rgb, heroWavelength ) );
 	}
 
+	vec3 attenuationSigmaA( vec3 attColor, float attDist ) {
+		if ( attDist <= 0.0 || attDist > 1e19 ) return vec3( 0.0 );
+		vec3 transmittance = clamp( attColor, vec3( 1e-4 ), vec3( 1.0 ) );
+		return max( - log( transmittance ) / attDist, vec3( 0.0 ) );
+	}
+
 	vec3 transmissionAttenuationThroughput(
 		sampler2D materialsTex,
 		float dist,
@@ -693,15 +699,24 @@ export const bsdf_functions = /* glsl */`
 	ScatterRecord sssSample( vec3 worldWo, SurfaceRecord surf, float heroWavelength ) {
 
 		// Per-material SSS parameters come from the SurfaceRecord (packed from the
-		// MaterialsTexture: material.sssSigmaT/sssAnisotropyG/sssAlbedo via
+		// MaterialsTexture: material.sssSigmaT/sssAnisotropyG/sssSigmaS via
 		// get_surface_record_function, surface_record_struct). The legacy global
-		// uniforms u_sssSigmaT/u_sssAlbedo/u_sssAnisotropyG were NEVER assigned
-		// per-material — only their constructor defaults (sigmaT=0, g=0, albedo=0.9)
+		// legacy global SSS uniforms were NEVER assigned per-material — only their
+		// constructor defaults (sigmaT=0, g=0, albedo=0.9)
 		// — so reading them collapsed SSS to a degenerate Beer-Lambert=1 term with a
 		// fixed albedo (the per-material magnitudes were packed + gated on but never
 		// consumed). surf.* IS the per-material data and is already in scope here.
-		float tScatter = sampleExponentialDistance( rand( 17 ), surf.sssSigmaT, 1e6 );
-		float beerLambert = exp( - surf.sssSigmaT * tScatter );
+		vec3 sigmaS = max( surf.sssSigmaS, vec3( 0.0 ) );
+		vec3 sigmaA = attenuationSigmaA( surf.attenuationColor, surf.attenuationDistance );
+		vec3 sigmaT = max( sigmaA + sigmaS, vec3( 0.0 ) );
+		float sigmaTMajorant = max( surf.sssSigmaT, max( sigmaT.x, max( sigmaT.y, sigmaT.z ) ) );
+		float tScatter = sampleExponentialDistance( rand( 17 ), sigmaTMajorant, 1e6 );
+		float beerLambert = exp( - sigmaTMajorant * tScatter );
+		vec3 mediumAlbedo = vec3(
+			sigmaT.x > 1e-6 ? sigmaS.x / sigmaT.x : 0.0,
+			sigmaT.y > 1e-6 ? sigmaS.y / sigmaT.y : 0.0,
+			sigmaT.z > 1e-6 ? sigmaS.z / sigmaT.z : 0.0
+		);
 
 		vec3 rd = normalize( - worldWo ); // refracted direction approximation
 		vec3 scatterDir = sampleHG_glsl( rand( 18 ), rand( 19 ), surf.sssAnisotropyG, rd );
@@ -714,7 +729,7 @@ export const bsdf_functions = /* glsl */`
 		// gate this is the paper-accurate sigmoid reflectance of the representative medium
 		// albedo; otherwise the legacy smoothstep tent projection. Beer-Lambert attenuation
 		// stays an explicit scalar factor so units (reflectance × transmittance) are preserved.
-		sssRec.throughput = mediumAlbedoThroughput( surf.sssAlbedo, heroWavelength ) * beerLambert;
+		sssRec.throughput = mediumAlbedoThroughput( mediumAlbedo, heroWavelength ) * beerLambert;
 		return sssRec;
 
 	}

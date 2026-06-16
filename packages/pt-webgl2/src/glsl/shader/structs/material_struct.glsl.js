@@ -80,7 +80,7 @@ export const material_struct = /* glsl */ `
 		uint flags;
 		float sssSigmaT;
 		float sssAnisotropyG;
-		vec3 sssAlbedo;
+		vec3 sssSigmaS;
 		float dispersionStrength;
 		float thinFilmEnabled;
 		float thinFilmLayerCount;
@@ -322,7 +322,7 @@ export const material_struct = /* glsl */ `
 		m.sssAnisotropyG = s15.g;
 		m.dispersionStrength = s15.b;
 		m.thinFilmEnabled = s15.a;
-		m.sssAlbedo = s16.rgb;
+		m.sssSigmaS = s16.rgb;
 		m.thinFilmLayerCount = s16.a;
 		m.thinFilmIncidentIor = max( s17.r, 1.0 );
 		m.thinFilmAngleDependent = s17.g > 0.5;

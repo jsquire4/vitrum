@@ -193,11 +193,20 @@ describe('composeTraceGlsl', () => {
     const helper = idx('float sampleExponentialDistance( float xi, float sigmaT, float maxDistance )');
     const hgPdf = idx('float hg_phase( float cosTheta, float g )');
     const hgSampler = idx('vec3 sampleHG_glsl( float u1, float u2, float g, vec3 forward )');
-    const call = idx('float tScatter = sampleExponentialDistance( rand( 17 ), surf.sssSigmaT, 1e6 );');
+    const call = idx('float tScatter = sampleExponentialDistance( rand( 17 ), sigmaTMajorant, 1e6 );');
     expect(helper).toBeLessThan(call);
     expect(hgPdf).toBeLessThan(call);
     expect(hgSampler).toBeLessThan(call);
     expect(src).not.toContain('sampleExponential( rand( 17 )');
+  });
+
+  it('D10: SSS consumes packed sigmaS and derives albedo in shader', () => {
+    expect(src).toContain('vec3 sssSigmaS;');
+    expect(src).toContain('surf.sssSigmaS = material.sssSigmaS;');
+    expect(src).toContain('vec3 sigmaS = max( surf.sssSigmaS, vec3( 0.0 ) );');
+    expect(src).toContain('vec3 sigmaA = attenuationSigmaA( surf.attenuationColor, surf.attenuationDistance );');
+    expect(src).toContain('sigmaS.x / sigmaT.x');
+    expect(src).not.toContain('sssAlbedo');
   });
 
   it('Phase 6: pt-webgl2 NEE strategy uses one selector variate for analytic/mesh/env slots', () => {

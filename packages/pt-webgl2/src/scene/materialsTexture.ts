@@ -61,6 +61,8 @@ const SPECTRAL_GRID_END_NM = 780.0;
 
 // Thin-film stack: 35 layers × [ior, thicknessNm, extinction].
 const THIN_FILM_LAYER_LIMIT = 35;
+const ATTENUATION_TRANSMITTANCE_EPSILON = 1e-4;
+const MEDIUM_EPSILON = 1e-6;
 
 /** ceil(sqrt(n)) — the square dimension that holds `n` texels row-major (mirrors fork). */
 function squareDim(texelCount: number): number {
@@ -69,6 +71,55 @@ function squareDim(texelCount: number): number {
 
 function finiteOr(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) ? Number(value) : fallback;
+}
+
+function nonNegativeFinite(value: number | undefined, fallback = 0.0): number {
+  return Math.max(0.0, finiteOr(value, fallback));
+}
+
+function sigmaAFromAttenuation(attenuationColor: Vec3, attenuationDistance: number): Vec3 {
+  if (!Number.isFinite(attenuationDistance) || attenuationDistance <= 0.0) {
+    return [0.0, 0.0, 0.0];
+  }
+  const sigmaAChannel = (channel: number): number => {
+    const transmittance = Math.min(
+      Math.max(finiteOr(channel, 1.0), ATTENUATION_TRANSMITTANCE_EPSILON),
+      1.0,
+    );
+    return Math.max(-Math.log(transmittance) / attenuationDistance, 0.0);
+  };
+  return [
+    sigmaAChannel(attenuationColor[0]),
+    sigmaAChannel(attenuationColor[1]),
+    sigmaAChannel(attenuationColor[2]),
+  ];
+}
+
+function resolveSssMedium(
+  m: PackedMaterialSpec,
+  attenuationColor: Vec3,
+  attenuationDistance: number,
+): { readonly active: boolean; readonly sigmaTMax: number; readonly sigmaS: Vec3 } {
+  const scalarSigmaS = nonNegativeFinite(m.scatteringCoefficient, 0.0);
+  const sigmaS: Vec3 = m.scatteringCoefficientRGB
+    ? [
+        nonNegativeFinite(m.scatteringCoefficientRGB[0], 0.0),
+        nonNegativeFinite(m.scatteringCoefficientRGB[1], 0.0),
+        nonNegativeFinite(m.scatteringCoefficientRGB[2], 0.0),
+      ]
+    : [scalarSigmaS, scalarSigmaS, scalarSigmaS];
+  const sigmaA = sigmaAFromAttenuation(attenuationColor, attenuationDistance);
+  const sigmaTMax = Math.max(
+    sigmaA[0] + sigmaS[0],
+    sigmaA[1] + sigmaS[1],
+    sigmaA[2] + sigmaS[2],
+  );
+  const sigmaSMax = Math.max(sigmaS[0], sigmaS[1], sigmaS[2]);
+  return {
+    active: sigmaSMax > MEDIUM_EPSILON,
+    sigmaTMax: Math.max(sigmaTMax, 0.0),
+    sigmaS,
+  };
 }
 
 /**
@@ -284,6 +335,7 @@ function packScalarSlots(
   const anisotropyRotation = m.anisotropyRotation ?? 0.0;
   const attenuationColor: Vec3 = m.attenuationColor ?? DEFAULT_ATTENUATION_COLOR;
   const attenuationDistance = m.attenuationDistance ?? Infinity;
+  const sssMedium = resolveSssMedium(m, attenuationColor, attenuationDistance);
   const thickness = m.thickness ?? 0.0;
   const opacity = m.opacity ?? 1.0;
   const alphaTest = m.alphaMode === 'mask' ? (m.alphaCutoff ?? 0.5) : 0.0;
@@ -389,36 +441,27 @@ function packScalarSlots(
   data[index++] = m.vertexColors === true ? 1 : 0;
   {
     let flags = Number(transparent);
-    const scatteringCoeff = m.scatteringCoefficient ?? 0.0;
-    if (scatteringCoeff > 0.0) flags |= TRANSLUCENT_BIT;
+    if (sssMedium.active) flags |= TRANSLUCENT_BIT;
     if (m.shadingModel === 'unlit') flags |= UNLIT_BIT;
     data[index++] = flags;
   }
 
   // sample 15 — sssSigmaT / sssAnisotropyG / dispersionStrength / thinFilmEnabled
-  const scatteringCoeff = m.scatteringCoefficient ?? 0.0;
   const scatteringAnisotropy = m.scatteringAnisotropy ?? 0.0;
   const dispersionAbbe = m.dispersionAbbeNumber ?? 0.0;
   const dispersionStrength = dispersionStrengthFromAbbe(ior, dispersionAbbe);
   const thinFilmLayers = m.thinFilmStack?.layers ?? [];
   const thinFilmLayerCount = Math.min(thinFilmLayers.length, THIN_FILM_LAYER_LIMIT);
   const thinFilmEnabled = thinFilmLayerCount > 0 ? 1.0 : 0.0;
-  data[index++] = scatteringCoeff;
+  data[index++] = sssMedium.sigmaTMax;
   data[index++] = scatteringAnisotropy;
   data[index++] = dispersionStrength;
   data[index++] = thinFilmEnabled;
 
-  // sample 16 — sssAlbedo.rgb / thinFilmLayerCount
-  const scatterAlbedo = m.scatteringCoefficientRGB;
-  if (scatterAlbedo) {
-    data[index++] = scatterAlbedo[0];
-    data[index++] = scatterAlbedo[1];
-    data[index++] = scatterAlbedo[2];
-  } else {
-    data[index++] = 0.9;
-    data[index++] = 0.9;
-    data[index++] = 0.9;
-  }
+  // sample 16 — sssSigmaS.rgb / thinFilmLayerCount.
+  data[index++] = sssMedium.sigmaS[0];
+  data[index++] = sssMedium.sigmaS[1];
+  data[index++] = sssMedium.sigmaS[2];
   data[index++] = thinFilmLayerCount;
 
   // sample 17 — thinFilmIncidentIor / angleDependent / anisotropyRotation / packedFeatureFlags

@@ -168,7 +168,7 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     expect(d[texel(0, 2, 3)]).toBe(1.0);
   });
 
-  it('scatteringCoefficient sets the TRANSLUCENT flag bit (s14.a) and s15 SSS drives', () => {
+  it('scatteringCoefficientRGB packs per-channel sigmaS override and majorant sigmaT', () => {
     const sss: MaterialSpec = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
@@ -176,19 +176,54 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
       scatteringCoefficient: 2.5,
       scatteringAnisotropy: 0.3,
       scatteringCoefficientRGB: [0.7, 0.8, 0.9],
+      attenuationColor: [0.5, 0.25, 1.0],
+      attenuationDistance: 2.0,
     };
     const d = packMaterialsTexture([sss]).data;
     const flags = d[texel(0, 14, 3)]!;
     expect((flags & (1 << 4)) !== 0).toBe(true); // TRANSLUCENT_BIT
-    // s15 = sssSigmaT / sssAnisotropyG / dispersionStrength / thinFilmEnabled.
-    expect(d[texel(0, 15, 0)]).toBeCloseTo(2.5, 6);
+    // s15.r is the scalar SSS free-flight majorant max(σ_a + σ_s).
+    const sigmaTR = -Math.log(0.5) / 2.0 + 0.7;
+    const sigmaTG = -Math.log(0.25) / 2.0 + 0.8;
+    const sigmaTB = 0.9;
+    expect(d[texel(0, 15, 0)]).toBeCloseTo(Math.max(sigmaTR, sigmaTG, sigmaTB), 6);
     expect(d[texel(0, 15, 1)]).toBeCloseTo(0.3, 6);
     expect(d[texel(0, 15, 3)]).toBe(0); // no thin-film stack
-    // s16 = sssAlbedo.rgb / thinFilmLayerCount.
+    // s16 = sssSigmaS.rgb / thinFilmLayerCount.
     expect(d[texel(0, 16, 0)]).toBeCloseTo(0.7, 6);
     expect(d[texel(0, 16, 1)]).toBeCloseTo(0.8, 6);
     expect(d[texel(0, 16, 2)]).toBeCloseTo(0.9, 6);
     expect(d[texel(0, 16, 3)]).toBe(0); // 0 layers
+  });
+
+  it('scatteringCoefficientRGB alone activates translucent SSS and packs sigmaS', () => {
+    const sss: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      scatteringCoefficientRGB: [0.0, 0.3, 0.2],
+    };
+    const d = packMaterialsTexture([sss]).data;
+    const flags = d[texel(0, 14, 3)]!;
+    expect((flags & (1 << 4)) !== 0).toBe(true);
+    expect(d[texel(0, 15, 0)]).toBeCloseTo(0.3, 6);
+    expect(d[texel(0, 16, 0)]).toBeCloseTo(0.0, 6);
+    expect(d[texel(0, 16, 1)]).toBeCloseTo(0.3, 6);
+    expect(d[texel(0, 16, 2)]).toBeCloseTo(0.2, 6);
+  });
+
+  it('scalar scatteringCoefficient falls back to isotropic sigmaS packing', () => {
+    const sss: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      scatteringCoefficient: 0.35,
+    };
+    const d = packMaterialsTexture([sss]).data;
+    expect(d[texel(0, 15, 0)]).toBeCloseTo(0.35, 6);
+    expect(d[texel(0, 16, 0)]).toBeCloseTo(0.35, 6);
+    expect(d[texel(0, 16, 1)]).toBeCloseTo(0.35, 6);
+    expect(d[texel(0, 16, 2)]).toBeCloseTo(0.35, 6);
   });
 
   it('shadingModel=unlit sets the UNLIT flag bit (s14.a)', () => {
