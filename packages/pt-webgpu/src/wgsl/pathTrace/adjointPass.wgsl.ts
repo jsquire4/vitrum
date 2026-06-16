@@ -15,13 +15,14 @@
  * render vs target), so the pass only needs the DERIVATIVES of the shading.
  *
  * Scope (Phase 1, matching the differentiable set): single bounce, brute-force
- * intersection (Phase-1 inverse scenes are small — Cornell-scale), POINT + RECT-
- * AREA lights (spot/mesh-area + multi-bounce indirect are a deliberate follow-up —
- * GPU-VALIDATED 2026-06-03: both light types give a gradient that sign-matches the
- * full-render FD + drives a converging fit; the missing terms only shrink the
- * magnitude, which Adam's scale-invariance absorbs), summed deterministically over
- * all lights (no MC light selection: the adjoint is the deterministic expectation;
- * rect-area lights are center-sampled). baseColor (rgb) + roughness. The shading
+ * intersection (Phase-1 inverse scenes are small — Cornell-scale), directional
+ * delta + point + spot + center-sampled rect/disc-area direct lights. Mesh-area,
+ * environment, indirect, soft-sun angular diameter, and mapped/transmissive/
+ * layered/volume/spectral material terms remain deliberate finite-difference
+ * fallbacks until their source terms are mirrored here and GPU-validated.
+ * Direct lights are summed deterministically over all eligible lights (no MC
+ * light selection: the adjoint is the deterministic expectation; finite area
+ * lights are center-sampled). baseColor (rgb) + roughness. The shading
  * normal is faced toward the viewer (the same flip the forward shade prologue
  * applies). The primary-ray jitter sequence matches the inverse baseline render:
  * sample `s` uses `frameSeed = 0x5eed5eed + s`, `frameIndex = 0`, then the pass
@@ -52,8 +53,8 @@ export const ADJOINT_FIELD_EMISSIVE = 2;
 export const ADJOINT_FIELD_SPECULAR_COLOR = 3;
 export const ADJOINT_FIELD_SPECULAR_INTENSITY = 4;
 
-/** AdjointParams UBO size in bytes (mat4 + vec4 + 2×uvec4). */
-export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16;
+/** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
+export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
 
 export const PT_WEBGPU_ADJOINT_PASS_WGSL = /* wgsl */ `
 const PI = 3.14159265358979;
@@ -79,6 +80,10 @@ struct AdjointParams {
   channels:    u32,
   rectAreaLightCount: u32,
   sampleCount: u32,
+  directionalLightCount: u32,
+  spotLightCount: u32,
+  _pad0: u32,
+  _pad1: u32,
 }
 
 @group(0) @binding(0) var<uniform>             params:        AdjointParams;
@@ -94,6 +99,10 @@ struct AdjointParams {
 @group(0) @binding(9) var<storage, read>       adjointParamDescs: array<vec4u>;
 // rect-area lights: per light {position, uAxis, vAxis, radiance} (4 vec4 stride).
 @group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
+// directional lights: per light {towardLight+angularDiameter, irradiance+mean} (2 vec4 stride).
+@group(0) @binding(11) var<storage, read>      directionalLights: array<vec4f>;
+// spot lights: per light {position, axis+cosOuter, radiance+cosInner, distance+decay+shadowFlag} (4 vec4 stride).
+@group(0) @binding(12) var<storage, read>      spotLights: array<vec4f>;
 
 // ── BRDF primitives ──────────────────────────────────────────────────────────
 const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
@@ -198,6 +207,41 @@ fn anyHit(ro: vec3f, rd: vec3f, tMax: f32) -> bool {
   return false;
 }
 
+struct DirectLightAdjoint {
+  baseColor: vec3f,
+  roughness: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+}
+
+fn directLightAdjoint(
+  dLoss_dR: vec3f,
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  nDotL: f32,
+  Li: vec3f,
+) -> DirectLightAdjoint {
+  let gBaseColor = dLoss_dR * dBrdf_dBaseColorWithSpecular(
+    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+  ) * nDotL * Li;
+  let gRough = dot(dLoss_dR, dBrdf_dRoughnessWithSpecular(
+    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+  ) * nDotL * Li);
+  let gSpecularColor = dLoss_dR * dBrdf_dSpecularColor(
+    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+  ) * nDotL * Li;
+  let gSpecularIntensity = dot(dLoss_dR, dBrdf_dSpecularIntensity(
+    baseColor, roughness, metallic, n, wo, wi, specularColor,
+  ) * nDotL * Li);
+  return DirectLightAdjoint(gBaseColor, gRough, gSpecularColor, gSpecularIntensity);
+}
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3u) {
   if (gid.x >= params.width || gid.y >= params.height) { return; }
@@ -246,12 +290,35 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // gradient when ITS primary-hit material is the optimized emissive primitive.
     let dRendered_dEmissivePerUnitIntensity = dContribution_dEmissive(vec3f(1.0), 1.0); // = (1,1,1)
 
-    // Single-bounce direct lighting, summed deterministically over all point lights.
-    // H51-D: stride 3 (3 vec4 = 12 f32): position, radiance, [distance, decay, 0, 0]
+    // Single-bounce direct lighting, summed deterministically over every direct
+    // light source the scoped adjoint pass mirrors.
     var gBaseColor = vec3f(0.0);
     var gRough = 0.0;
     var gSpecularColor = vec3f(0.0);
     var gSpecularIntensity = 0.0;
+    for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
+      let dBase = di * 2u;
+      let dDirAD = directionalLights[dBase];
+      let dIrrMean = directionalLights[dBase + 1u];
+      if (dIrrMean.w <= 1e-6) { continue; }
+      // Delta directional adjoint: exact for angularDiameter≈0. Soft-sun cone
+      // scenes are kept on finite-difference by inverseSession routing; if this
+      // pass is called directly anyway, use the cone center as a stable estimate.
+      let wi = safe_normalize(dDirAD.xyz);
+      let directionalShadowDisabled = dDirAD.w < 0.0;
+      let nDotL = max(0.0, dot(n, wi));
+      if (nDotL <= 0.0) { continue; }
+      if (!directionalShadowDisabled && anyHit(pos + n * 1e-3, wi, 1e30)) { continue; }
+      let lg = directLightAdjoint(
+        dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+        nDotL, dIrrMean.rgb,
+      );
+      gBaseColor = gBaseColor + lg.baseColor;
+      gRough = gRough + lg.roughness;
+      gSpecularColor = gSpecularColor + lg.specularColor;
+      gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+    }
+
     for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
       let lp = pointLights[pi * 3u].xyz;
       let rad = pointLights[pi * 3u + 1u].rgb;
@@ -265,23 +332,49 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let wi = toPoint / dist;
       let nDotL = max(0.0, dot(n, wi));
       if (nDotL <= 0.0) { continue; }
-      if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
+      if (ptExtra.z <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
       let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
       let Li = rad * attenuation;
-      // ∂rendered_c/∂baseColor_c = dBrdf_dBaseColor_c · nDotL · Li_c (diagonal).
-      gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColorWithSpecular(
-        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-      ) * nDotL * Li;
-      // ∂loss/∂roughness = Σ_c dLoss_dR_c · dBrdf_dRoughness_c · nDotL · Li_c.
-      gRough = gRough + dot(dLoss_dR, dBrdf_dRoughnessWithSpecular(
-        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-      ) * nDotL * Li);
-      gSpecularColor = gSpecularColor + dLoss_dR * dBrdf_dSpecularColor(
-        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-      ) * nDotL * Li;
-      gSpecularIntensity = gSpecularIntensity + dot(dLoss_dR, dBrdf_dSpecularIntensity(
-        baseColor, roughness, metallic, n, wo, wi, specularColor,
-      ) * nDotL * Li);
+      let lg = directLightAdjoint(
+        dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+        nDotL, Li,
+      );
+      gBaseColor = gBaseColor + lg.baseColor;
+      gRough = gRough + lg.roughness;
+      gSpecularColor = gSpecularColor + lg.specularColor;
+      gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+    }
+
+    for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
+      let sb = si * 4u;
+      let spos = spotLights[sb].xyz;
+      let saxis = spotLights[sb + 1u];
+      let sradW = spotLights[sb + 2u];
+      let spExtra = spotLights[sb + 3u];
+      let spotDir = safe_normalize(saxis.xyz);
+      let cosOuter = saxis.w;
+      let cosInner = sradW.w;
+      let toSpot = spos - pos;
+      let dist2 = max(dot(toSpot, toSpot), 1e-5);
+      let dist = sqrt(dist2);
+      if (spExtra.x > 0.0 && dist > spExtra.x) { continue; }
+      let wi = toSpot / dist;
+      let coneCos = dot(-wi, spotDir);
+      if (coneCos < cosOuter) { continue; }
+      let nDotL = max(0.0, dot(n, wi));
+      if (nDotL <= 0.0) { continue; }
+      if (spExtra.z <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; }
+      let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
+      let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -spExtra.y), spExtra.y > 0.01);
+      let Li = sradW.rgb * softness * attenuation;
+      let lg = directLightAdjoint(
+        dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+        nDotL, Li,
+      );
+      gBaseColor = gBaseColor + lg.baseColor;
+      gRough = gRough + lg.roughness;
+      gSpecularColor = gSpecularColor + lg.specularColor;
+      gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
     }
 
     // Rect-area lights: deterministic CENTER-sample of the same geometric term the
@@ -294,7 +387,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let rpos = rectAreaLights[rb].xyz;
       let ru = rectAreaLights[rb + 1u].xyz;
       let rv = rectAreaLights[rb + 2u].xyz;
-      let rad = rectAreaLights[rb + 3u].rgb;
+      let rshape = rectAreaLights[rb + 3u];
+      let rad = rshape.rgb;
+      let isDisc = abs(rshape.w - 1.0) < 0.5;
       let toLight = rpos - pos;
       let dist2 = max(dot(toLight, toLight), 1e-6);
       let dist = sqrt(dist2);
@@ -304,21 +399,21 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let lightNormal = safe_normalize(cross(ru, rv));
       let cosLight = max(dot(lightNormal, -wi), 0.0);
       if (cosLight <= 0.0) { continue; }
-      if (anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
-      let area = max(4.0 * length(cross(ru, rv)), 1e-6);
+      if (rectAreaLights[rb].w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
+      let area = select(
+        max(4.0 * length(cross(ru, rv)), 1e-6),
+        max(PI * dot(ru, ru), 1e-6),
+        isDisc,
+      );
       let Li = rad * (cosLight * area / dist2);
-      gBaseColor = gBaseColor + dLoss_dR * dBrdf_dBaseColorWithSpecular(
-        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-      ) * nDotL * Li;
-      gRough = gRough + dot(dLoss_dR, dBrdf_dRoughnessWithSpecular(
-        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-      ) * nDotL * Li);
-      gSpecularColor = gSpecularColor + dLoss_dR * dBrdf_dSpecularColor(
-        baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
-      ) * nDotL * Li;
-      gSpecularIntensity = gSpecularIntensity + dot(dLoss_dR, dBrdf_dSpecularIntensity(
-        baseColor, roughness, metallic, n, wo, wi, specularColor,
-      ) * nDotL * Li);
+      let lg = directLightAdjoint(
+        dLoss_dR, baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+        nDotL, Li,
+      );
+      gBaseColor = gBaseColor + lg.baseColor;
+      gRough = gRough + lg.roughness;
+      gSpecularColor = gSpecularColor + lg.specularColor;
+      gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
     }
 
     // Scatter into the gradient slot of every param that targets THIS hit's material

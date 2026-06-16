@@ -82,6 +82,10 @@ const shaders = [];
     "../../packages/pt-webgpu/src/wgsl/seedBlit.wgsl.ts"
   );
 
+  const { PT_WEBGPU_ADJOINT_PASS_WGSL } = await import(
+    "../../packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts"
+  );
+
   const {
     composeRestirPtProducerWgsl,
     composeRestirPtTemporalWgsl,
@@ -131,6 +135,15 @@ const shaders = [];
     name: "pt-webgpu/seed-blit",
     wgsl: PT_WEBGPU_SEED_BLIT_WGSL,
     entryPoint: "main",
+  });
+
+  // Standalone inverse-rendering adjoint pass. Compile-only gate: the pass binds
+  // a focused one-group read subset with many storage buffers, so pipeline
+  // creation is adapter-limit-sensitive; module compilation still catches WGSL
+  // syntax/type drift.
+  shaders.push({
+    name: "pt-webgpu/adjoint-pass",
+    wgsl: PT_WEBGPU_ADJOINT_PASS_WGSL,
   });
 
   // A4 — SPPM photon-emission pass (full-tier only; @group(3) bindings 6/7/8).

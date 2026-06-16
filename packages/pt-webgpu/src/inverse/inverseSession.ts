@@ -19,8 +19,9 @@
  * chain rule + fixed-point accumulation match an on-device finite-difference.
  * The session requests 'path-replay' only when the engine provides the hook,
  * every parameter is in the adjoint-differentiable set, and every target
- * material stays within the point-direct-light base/specular domain this pass mirrors
- * (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive /
+ * material stays within the direct-light base/specular domain this pass mirrors
+ * (delta directional, point, spot, and center-sampled rect/disc area lights;
+ * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive /
  * specularColor / specularIntensity); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
@@ -87,9 +88,10 @@ export interface InverseEngineHooks {
    * and returns the flat gradient. Replaces the N-render FD probe loop with one
    * baseline render + one adjoint pass. The session only requests this when the
    * hook exists, every parameter is adjoint-eligible, and every target material
-   * stays inside the adjoint-compatible point-direct-light domain (`ADJOINT_ELIGIBLE_FIELDS`:
-   * material baseColor / roughness / emissive / specularColor /
-   * specularIntensity); otherwise it reports + uses
+   * stays inside the adjoint-compatible direct-light domain (delta directional,
+   * point, spot, and center-sampled rect/disc area lights;
+   * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive /
+   * specularColor / specularIntensity); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
    * only graduates to path-replay once its end-to-end inverse fit converges.
@@ -481,10 +483,20 @@ function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
 function isPathReplayCompatibleLighting(scene: Scene): boolean {
   if ((scene.environment?.kind ?? 'none') !== 'none') return false;
   // The path-replay pass differentiates deterministic direct-light terms for
-  // point lights and center-sampled rect-area lights. Other finite/non-point
-  // families still fall back to finite difference until their source terms are
-  // implemented in adjointPass.wgsl and validated end-to-end.
-  return scene.emitters.every((e) => e.kind === 'point' || e.kind === 'rect-area');
+  // delta directional, point, spot, and center-sampled rect/disc-area lights.
+  // Soft-sun angular-diameter directionals, mesh-area, and environment lighting
+  // stay on finite difference until their stochastic/source terms are mirrored
+  // and validated end-to-end.
+  return scene.emitters.every((e) => {
+    if (e.kind === 'point' || e.kind === 'spot' || e.kind === 'rect-area' || e.kind === 'disc-area') {
+      return true;
+    }
+    if (e.kind === 'directional') {
+      const angularDiameter = e.angularDiameter;
+      return angularDiameter == null || !Number.isFinite(angularDiameter) || angularDiameter <= 1e-6;
+    }
+    return false;
+  });
 }
 
 // ── path resolution / field validation ────────────────────────────────────────

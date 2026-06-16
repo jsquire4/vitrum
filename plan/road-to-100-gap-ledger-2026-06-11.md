@@ -92,13 +92,24 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
 
 Follow-up Codex closure sweeps (WSL Node 24.13.0):
 
-- Follow-up 2026-06-15: pt-webgpu inverse rendering no longer over-promises
-  analytic path replay. `inverseSession` only selects replay for the direct-light
-  domains the implementation actually differentiates (point plus center-sampled
-  rect-area), and falls back to finite difference for map-heavy materials,
-  transmission, layered lobes, spectral/volume cases, environments,
-  directional/spot/mesh-area lights, and other unsupported source terms. Focused
-  inverse-session tests pin the promoted rect-area path and every downgrade case.
+- Follow-up 2026-06-15: pt-webgpu inverse rendering stopped over-promising
+  analytic path replay. At this intermediate point, `inverseSession` selected
+  replay only for point plus center-sampled rect-area direct lights and fell back
+  to finite difference for map-heavy materials, transmission, layered lobes,
+  spectral/volume cases, environments, directional/spot/mesh-area lights, and
+  other unsupported source terms. Focused inverse-session tests pinned the
+  promoted rect-area path and every downgrade case; the 2026-06-16 follow-up
+  below is the current broader direct-light scope.
+- Follow-up 2026-06-16: the same pt-webgpu path-replay slice was implemented
+  for delta directional, spot, and native disc-area direct lights too. The adjoint
+  pass now binds packed directional/spot buffers, consumes directional/spot counts
+  from a widened UBO, honors point/spot/rect/disc emitter shadow-disable lanes,
+  and uses the native disc `πr²` center-sample area. `inverseSession` now selects
+  replay for delta directional, point, spot, and center-sampled rect/disc-area
+  scenes; it still keeps soft-sun angular diameter, mesh-area, environment,
+  indirect, mapped/transmissive/layered/spectral/volume, and extension-lobe
+  material domains on finite difference until those adjoints are implemented and
+  validated.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including
@@ -1718,12 +1729,13 @@ Remaining:
   `clearcoat`, `clearcoatRoughness`, `sheenColor`, `sheenRoughness`,
   `iridescence`, `iridescenceIor`, `anisotropy`, `anisotropyRotation`) through
   the finite-difference baseline and explicitly degrade requested path-replay
-  sessions back to finite-difference for those fields. A later same-day
-  tightening makes path-replay point-direct-light only; environment, rect/disc
-  area, spot, directional, and mesh-area lighting now also resolve to the
-  finite-difference baseline instead of the scoped adjoint pass. Analytic
-  path-replay adjoints remain open until their contribution/PDF/light-source
-  gradients are implemented and converging inverse fits validate them.
+  sessions back to finite-difference for those fields. 2026-06-16 follow-up:
+  scoped light-source path replay now covers delta directional, point, spot, and
+  center-sampled rect/disc-area direct lights. Analytic path-replay adjoints
+  remain open for environment, mesh-area, soft-sun angular diameter, indirect
+  paths, maps/transmission/layers/volume/spectral material domains, and full
+  extension-lobe contribution/PDF gradients until converging inverse fits validate
+  them.
 - Material-furnace/reference A/B promotion for the sampled eye, ReSTIR-PT, and
   BDPT paths now structurally implemented. The local extension-lobe CPU oracle
   is closed; the remaining promotion evidence is GPU/reference-render based.

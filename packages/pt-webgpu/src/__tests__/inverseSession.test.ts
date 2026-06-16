@@ -471,12 +471,46 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       direction: [0, -1, 0] as [number, number, number],
       angle: 0.5,
     }]],
+    ['disc-area', [{
+      kind: 'disc-area' as const,
+      id: 'disc-light',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      position: [0, 1, 0] as [number, number, number],
+      normal: [0, -1, 0] as [number, number, number],
+      radius: 0.5,
+    }]],
+  ])('keeps path-replay for %s direct-light scenes now covered by the adjoint pass', (_label, emitters) => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters,
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    session.dispose();
+  });
+
+  it.each([
     ['mesh-area', [{
       kind: 'mesh-area' as const,
       id: 'mesh-light',
       color: [1, 1, 1] as [number, number, number],
       intensity: 1,
       meshId: 'panel',
+    }]],
+    ['soft directional', [{
+      kind: 'directional' as const,
+      id: 'soft-sun',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      direction: [0, -1, 0] as [number, number, number],
+      angularDiameter: 0.01,
     }]],
   ])('degrades to finite-difference for lighting outside adjoint pass scope: %s', (_label, emitters) => {
     const fake = makeFakeEngine();

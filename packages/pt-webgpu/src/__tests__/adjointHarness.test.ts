@@ -81,7 +81,16 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dBaseColorWithSpecular(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColor(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensity(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('directionalLights');              // delta directional NEE
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let directionalShadowDisabled = dDirAD.w < 0.0');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('spotLights');                     // spot NEE
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var si = 0u; si < params.spotLightCount; si = si + 1u)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('rectAreaLights');                  // rect-area NEE
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let isDisc = abs(rshape.w - 1.0) < 0.5');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('max(PI * dot(ru, ru), 1e-6)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('rectAreaLights[rb].w <= 0.5 && anyHit');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('cosLight * area / dist2');         // area geometric term
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBaseColor.x * invReplaySamples)'); // per-param scatter
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples)');
@@ -90,8 +99,8 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     // emissiveIntensity rides in the descriptor `.w` (bitcast f32) and folds in.
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gEmissive.x * invReplaySamples)');
-    // The UBO is mat4 + vec4 + 2×uvec4 = 112 bytes; the field codes are stable.
-    expect(ADJOINT_PARAMS_UBO_BYTES).toBe(112);
+    // The UBO is mat4 + vec4 + 3×uvec4 = 128 bytes; the field codes are stable.
+    expect(ADJOINT_PARAMS_UBO_BYTES).toBe(128);
     expect(ADJOINT_FIELD_BASECOLOR).toBe(0);
     expect(ADJOINT_FIELD_ROUGHNESS).toBe(1);
     expect(ADJOINT_FIELD_EMISSIVE).toBe(2);

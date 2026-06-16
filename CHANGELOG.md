@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu direct-light adjoint breadth, 2026-06-16)
+
+- **Path-replay adjoint now covers more direct-light source families:** `@vitrum/pt-webgpu` adjoint replay now differentiates material base/specular params under delta directional, point, spot, and center-sampled rect/disc-area direct lighting. The pass consumes packed directional/spot buffers, honors point/spot/rect/disc emitter `castShadow:false` lanes, and uses the native disc area term. Inverse-session routing now allows those covered source families while keeping soft-sun angular diameter, mesh-area, environment, indirect, mapped/transmissive/layered/volume/spectral, and extension-lobe material domains on finite difference until their adjoints are implemented and validated.
+
 ### Fixed (VitrumCanvas glTF bridge parity, 2026-06-16)
 
 - **React glTF loading now uses the engine-aware bridge:** `<VitrumCanvas gltf=...>` now calls `loadGltfWithEngine()` instead of the asset-only loader, so decoder hooks, texture decode options, compatibility modes, strict pt-webgpu tier checks, and controller metadata use the same path as `@vitrum/engine/gltf`. `attachVitrum` now accepts a preconstructed engine plus structural scene controller, uses that engine for the RAF lifecycle, and re-targets the controller after device-loss auto-recreate.

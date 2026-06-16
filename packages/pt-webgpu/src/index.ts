@@ -1913,7 +1913,8 @@ class PTEngineWebGPU implements Engine {
    * pixel it re-traces the frozen-seed primary ray (brute-force closest-hit) and
    * accumulates `∂loss/∂θ` for the optimized material params through the
    * GPU-validated partials + fixed-point `adjointScatter`:
-   *  - baseColor / roughness — single-bounce point + rect-area direct-light NEE
+   *  - baseColor / roughness — single-bounce directional + point + spot +
+   *    center-sampled rect/disc-area direct-light NEE
    *    (the BRDF partials `dBrdf_dBaseColor` / `dBrdf_dRoughness`);
    *  - emissive — the camera-DIRECT emission at the primary hit (NOT a NEE term):
    *    `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity` (dContribution_dEmissive

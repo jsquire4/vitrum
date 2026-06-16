@@ -21,10 +21,10 @@
 > binding(9), `sppmGatherProgressive` update rule (N′=N+α·M; R′²=R²·ratio; τ′=(τ+Φ_M)·ratio),
 > buffer reset on camera/scene/reset, Cesàro accumulator argument, 36 TS-mirror tests.
 > **Latest closure wave:** pt-webgpu inverse path replay now only advertises the
-> direct-light domains it actually supports (point plus center-sampled rect-area)
-> and falls back to finite difference for maps, transmission, layered,
-> spectral/volume, environment, directional, spot, mesh-area, and other unsupported
-> light/material cases; walkaround material truth was tightened so textured
+> direct-light domains it actually supports (delta directional, point, spot, and
+> center-sampled rect/disc-area) and falls back to finite difference for maps,
+> transmission, layered, spectral/volume, soft-sun, environment, mesh-area,
+> indirect, and other unsupported light/material cases; walkaround material truth was tightened so textured
 > alpha blend emits structured approximation warnings and the ledger no longer
 > claims native rows where GI reuse still used stored-Lo/proxy targeting; neural
 > weights are validated before allocation, the tracked research checkpoints are
@@ -37,7 +37,7 @@
 > lobe-specific unit-proof tail but does **not** close GPU material-furnace /
 > reference-render promotion.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
-> point/center-rect direct-light slice; walkaround OIT-grade alpha blend,
+> delta-directional/point/spot/center-area direct-light slice; walkaround OIT-grade alpha blend,
 > finite-emitter/light-map promotion decisions, and rich-material GI GPU A/B evidence;
 > real
 > production neural checkpoints and NRC/neural quality/default-tier decisions;
@@ -607,7 +607,7 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 | BDPT | `bdptConnection.wgsl.ts`, `bdptLightSubpath.wgsl.ts` | ✅ eye↔light connection uses full helpers; light-subpath scatter now reuses `sampleNextBounceDirection`, records clearcoat-normal-aware forward/reverse BSDF densities, carries row-4 hit-local material payloads plus a front-face side bit, and samples mapped base/vertexColor/AO/ORM/transmission/normal/bump/clearcoat-normal/extension/specular/anisotropy fields at surface light vertices. ✅ 2026-06-15 parity wave adds shade-prologue-equivalent layer tint/roughness, thin-film reflect tint, Cauchy IOR, and spectral reflectance scalar to that light-side material domain. **Open:** independent radiometric/material-furnace oracle coverage. |
 | SPPM / caustics | `caustic.wgsl.ts`, `sppmBindings.wgsl.ts` | ✅ receiver-side SPPM/caustic BRDF/PDF helper propagation closed; MNEE cone-vs-BSDF MIS now uses the sampled-density helper for the BRDF alternative |
 | ReSTIR-PT | `restirPtProducer.wgsl.ts`, `restirPtCompose.wgsl.ts`, `reservoirPtHero.wgsl.ts`, `restirPtResolve.wgsl.ts` | ✅ producer direct/onward paths use full helpers; ✅ scalar-lobe reservoir payload/target/resolve now uses full visible-domain helpers, including `KHR_materials_specular` scalar colour/intensity and `clearcoatNormalV` (`ReservoirPTHero` 56-word layout); ✅ visible-vertex payload now mirrors the main shade prologue for alpha pass-through, baseColor/AO/roughness+metallic/normal/bump/clearcoat-normal/transmission/extension scalar maps, layer tint/roughness, thin-film, and spectral albedo; ✅ suffix/reconnection vertices now alpha-skip and decode the same hit-local material-map/layer/thin-film/spectral domain before Lo evaluation, using the mapped suffix normal for the reservoir geometry and mapped clearcoat normal for clearcoat BRDF/PDF paths; ✅ producer source sampler now samples a normalized base/clearcoat/sheen lobe mixture and stores the matching `pdfSrc`, with the clearcoat lobe sampled/PDFed against the mapped clearcoat normal. |
-| Adjoint | `adjointPass.wgsl.ts`, `pathTraceAdjoint.wgsl.ts` | ◻/✅ `req.samples` is consumed by replaying the frozen inverse sample sequence and averaging gradients. 2026-06-15 follow-up: path-replay now differentiates KHR_materials_specular `specularColor` / `specularIntensity`, reads packed material vec4 #27, and downgrades to finite difference for material/light domains the adjoint pass cannot honestly mirror. Runtime selection is point-direct-light only. Still OPEN for full-path parity because clearcoat/sheen/iridescence/aniso/transmission/maps/layers/volume/spectral, environment/rect/disc-area/spot/directional/mesh-area light terms, indirect paths, and full material-lobe A/B proofs remain outside this scoped adjoint. |
+| Adjoint | `adjointPass.wgsl.ts`, `pathTraceAdjoint.wgsl.ts` | ◻/✅ `req.samples` is consumed by replaying the frozen inverse sample sequence and averaging gradients. 2026-06-15 follow-up: path-replay now differentiates KHR_materials_specular `specularColor` / `specularIntensity`, reads packed material vec4 #27, and downgrades to finite difference for material/light domains the adjoint pass cannot honestly mirror. 2026-06-16 follow-up: runtime selection now covers delta directional, point, spot, and center-sampled rect/disc-area direct lights; the adjoint pass binds packed directional/spot buffers, honors point/spot/rect/disc emitter shadow-disable lanes, and uses the native disc area term. Still OPEN for full-path parity because clearcoat/sheen/iridescence/aniso/transmission/maps/layers/volume/spectral, environment/mesh-area/soft-sun light terms, indirect paths, and full material-lobe A/B proofs remain outside this scoped adjoint. |
 | Present | `present.wgsl.ts` tonemap only — no BSDF | N/A |
 
 **Footgun:** Fixing megakernel only used to leave BDPT/SPPM/ReSTIR-PT wrong for glTF clearcoat scenes on specialty paths. The clearcoat-normal map now reaches the megakernel, BDPT light-side surface vertices, and ReSTIR-PT reservoir/resolve/source-PDF/suffix-Lo paths; BDPT's light-side material domain now also applies layer tint/roughness, thin-film reflect tint, Cauchy IOR, and spectral reflectance scalar. The remaining class is clearcoat/sheen/iridescence/aniso inverse-adjoint derivatives plus proof/A-B coverage, not just missed function calls.

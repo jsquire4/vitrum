@@ -7,7 +7,7 @@
  *     on mapAsync rejection (H14-D leak-guard accounting with adjointCreated /
  *     adjointDestroyed counters — these counters may be consumed by telemetry
  *     and tests; the semantics are preserved verbatim).
- *   - UBO packing (invViewProj + cameraPos + counts).
+ *   - UBO packing (invViewProj + cameraPos + direct-light counts).
  *   - Dispatch + copyBufferToBuffer readback.
  *
  * The engine holds one lazy instance (`#adjointPass`) and delegates the
@@ -46,7 +46,8 @@ export class AdjointPass {
    * per pixel it re-traces the frozen-seed primary ray (brute-force closest-hit)
    * and accumulates `∂loss/∂θ` for the optimized material params through the
    * GPU-validated partials + fixed-point `adjointScatter`:
-   *  - baseColor / roughness — single-bounce point + rect-area direct-light NEE
+   *  - baseColor / roughness — single-bounce directional + point + spot +
+   *    center-sampled rect/disc-area direct-light NEE
    *    (the BRDF partials `dBrdf_dBaseColor` / `dBrdf_dRoughness`);
    *  - emissive — the camera-DIRECT emission at the primary hit (NOT a NEE term):
    *    `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity`.
@@ -78,7 +79,7 @@ export class AdjointPass {
     const { width, height, channels, params, gradientLength, dLoss_dRendered } = req;
     const sampleCount = Math.max(1, Math.floor(req.samples));
 
-    // AdjointParams UBO: invViewProj(mat4) + cameraPos(vec4) + 2×uvec4 of counts.
+    // AdjointParams UBO: invViewProj(mat4) + cameraPos(vec4) + 3×uvec4 of counts.
     const vp = multiplyMat4(last.projMatrix, last.viewMatrix);
     const invVp = invertMat4(asMat4(vp));
     if (invVp == null) {
@@ -100,6 +101,8 @@ export class AdjointPass {
     uboU[25] = channels >>> 0;
     uboU[26] = sb.rectAreaLightCount >>> 0;
     uboU[27] = sampleCount >>> 0;
+    uboU[28] = sb.directionalLightCount >>> 0;
+    uboU[29] = sb.spotLightCount >>> 0;
 
     // adjointParamDescs: per param {matId, fieldCode, gradOffset, w}. For an
     // emissive param `w` carries the FIXED emissiveIntensity (bitcast f32) the
@@ -172,6 +175,8 @@ export class AdjointPass {
         { binding: 8, resource: { buffer: gradBuf } },
         { binding: 9, resource: { buffer: descBuf } },
         { binding: 10, resource: { buffer: sb.rectAreaLightsBuffer } },
+        { binding: 11, resource: { buffer: sb.directionalLightsBuffer } },
+        { binding: 12, resource: { buffer: sb.spotLightsBuffer } },
       ],
     });
 
