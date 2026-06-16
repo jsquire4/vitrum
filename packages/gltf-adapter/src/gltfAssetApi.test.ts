@@ -166,6 +166,62 @@ function makeInlineMaterialVariantGltf(): { gltf: GltfJson; buffers: Map<number,
   };
 }
 
+function makeInlineTexturedVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const imageBytes = bytes([0x89, 0x50, 0x4e, 0x47]);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_materials_variants'],
+      extensionsRequired: ['KHR_materials_variants'],
+      extensions: {
+        KHR_materials_variants: {
+          variants: [{ name: 'textured' }],
+        },
+      },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }],
+            },
+          },
+        }],
+      }],
+      materials: [
+        { name: 'base red', pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+        {
+          name: 'variant textured',
+          pbrMetallicRoughness: {
+            baseColorFactor: [1, 1, 1, 1],
+            baseColorTexture: { index: 0 },
+          },
+        },
+      ],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 1, mimeType: 'image/png' }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 1, byteOffset: 0, byteLength: imageBytes.byteLength },
+      ],
+      buffers: [
+        { byteLength: positions.byteLength },
+        { byteLength: imageBytes.byteLength },
+      ],
+    },
+    buffers: new Map([
+      [0, positions],
+      [1, imageBytes],
+    ]),
+  };
+}
+
 function makeInlineAnimatedInstancedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const instanceTranslations = f32Buffer([
@@ -988,6 +1044,80 @@ describe('decodeSceneTextures', () => {
       }),
     ]);
   });
+
+  it('bakes spec-gloss alpha roughness for the webgpu texture target', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 2,
+      height: 1,
+      data: new Uint8Array([
+        255, 0, 0, 128,
+        0, 255, 0, 64,
+      ]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      textureTarget: 'webgpu',
+      decodePixels,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.decodedTextureCount).toBe(2);
+    expect(result.unchangedTextureCount).toBe(0);
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.textureDecodeWarnings).toEqual([]);
+    expect(result.textureDecodeReport.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        materialField: 'specularColorMap',
+        handleColorSpace: 'srgb',
+        handleKind: 'pixel-data',
+        backendReadiness: expect.objectContaining({ ptWebgpu: 'ready' }),
+      }),
+      expect.objectContaining({
+        materialField: 'roughnessMap',
+        handleColorSpace: 'linear',
+        handleKind: 'pixel-data',
+        backendReadiness: expect.objectContaining({ ptWebgpu: 'ready' }),
+      }),
+    ]));
+
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    const specular = primitive.material.specularColorMap as TextureRef;
+    const roughness = primitive.material.roughnessMap as TextureRef;
+    expect(roughness.handle).not.toBe(specular.handle);
+    expect(roughness.texCoord).toBe(1);
+    expect(roughness.transform).toEqual({
+      offset: [0.25, 0.5],
+      scale: [2, 3],
+      rotation: 0.125,
+    });
+    const specularHandle = specular.handle as { __vitrum_hint__: { colorSpace: string } };
+    const roughnessHandle = roughness.handle as {
+      data: Float32Array;
+      __vitrum_hint__: { colorSpace: string };
+    };
+    expect(specularHandle.__vitrum_hint__.colorSpace).toBe('srgb');
+    expect(roughnessHandle.__vitrum_hint__.colorSpace).toBe('linear');
+
+    const first = 1 - 0.5 * (128 / 255);
+    const second = 1 - 0.5 * (64 / 255);
+    expect(Array.from(roughnessHandle.data.slice(0, 4))).toEqual([
+      expect.closeTo(first),
+      expect.closeTo(first),
+      expect.closeTo(first),
+      1,
+    ]);
+    expect(Array.from(roughnessHandle.data.slice(4, 8))).toEqual([
+      expect.closeTo(second),
+      expect.closeTo(second),
+      expect.closeTo(second),
+      1,
+    ]);
+  });
 });
 
 describe('analyzeGltfAsset and compatibility ranking', () => {
@@ -1625,6 +1755,52 @@ describe('loadGltfForEngine', () => {
       }),
     );
     expect((result.controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
+  });
+
+  it('keeps inactive material variants decoded before controller variant patches', async () => {
+    const { gltf, buffers } = makeInlineTexturedVariantGltf();
+    const engine = { setScene: vi.fn(), updatePrimitive: vi.fn(), reset: vi.fn() };
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 64, 255, 255]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      engine,
+      backend: 'pt-webgl2',
+      decodePixels,
+      attachScene: false,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.decodedTextureCount).toBe(1);
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.textureDecodeReport.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        primitiveId: 'gltf-material-1',
+        materialField: 'baseColorMap',
+        path: 'materials[1].pbrMetallicRoughness.baseColorTexture',
+        handleKind: 'pixel-data',
+        handleColorSpace: 'linear',
+      }),
+    ]));
+
+    const frame = result.controller.setVariant('textured');
+
+    expect(frame.usedSetScene).toBe(false);
+    expect(engine.updatePrimitive).toHaveBeenCalledTimes(1);
+    const patch = engine.updatePrimitive.mock.calls[0]![1] as { material: MeshPrimitive['material'] };
+    const baseColorMap = patch.material.baseColorMap as TextureRef;
+    const handle = baseColorMap.handle as { data: Float32Array; __vitrum_hint__: { colorSpace: string } };
+    expect(handle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
+    expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
+    expect(handle.data[2]).toBeCloseTo(1);
   });
 
   it('preserves EXT_mesh_gpu_instancing metadata on bridge-created controllers', async () => {

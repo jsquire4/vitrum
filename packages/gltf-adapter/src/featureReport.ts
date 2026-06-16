@@ -529,7 +529,7 @@ export function evaluateGltfBackendProfileCompatibility(
       ),
       message:
         'Archived specular-glossiness texture RGB is imported as specularColorMap, ' +
-        'and glossiness-in-alpha requires the CPU-linear decode bridge to bake a roughnessMap; ' +
+        'and glossiness-in-alpha requires the texture decode bridge to bake a roughnessMap; ' +
         'before that bake, scalar glossinessFactor drives roughness.',
     });
   }

@@ -6,6 +6,7 @@
 // returns a structured feature report, and ranks the shipping backends against
 // the asset's actual feature use.
 
+import type { MaterialSpec, MeshPrimitive, Scene, ScenePrimitive } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import { gltfToScene, type GltfToSceneOptions, type GltfToSceneResult } from './gltfToScene.js';
 import { parseGlb } from './glbParser.js';
@@ -143,23 +144,134 @@ export async function loadGltfAndDecodeTextures(
   options: LoadGltfAndDecodeTexturesOptions = {},
 ): Promise<GltfDecodedAssetResult> {
   const asset = await loadGltfAsset(input, options);
-  const decoded = await decodeSceneTextures(asset.scene, {
+  const decodeOptions: DecodeSceneTexturesOptions = {
     target: options.textureTarget ?? 'cpu-linear',
     ...(options.decodePixels ? { decodePixels: options.decodePixels } : {}),
     ...(options.maxTextureSize !== undefined ? { maxTextureSize: options.maxTextureSize } : {}),
     ...(options.warnOnNpotRepeatWrap !== undefined ? { warnOnNpotRepeatWrap: options.warnOnNpotRepeatWrap } : {}),
     ...(options.onTextureDiagnostic ? { onDiagnostic: options.onTextureDiagnostic } : {}),
     ...(options.onTextureWarning ? { onWarning: options.onTextureWarning } : {}),
-  });
+  };
+  const decoded = await decodeSceneTextures(asset.scene, decodeOptions);
+  const convertedMaterials = asset.convertedMaterials === undefined
+    ? undefined
+    : await decodeConvertedMaterials(
+      asset.convertedMaterials,
+      asset.scene,
+      decoded.scene,
+      decodeOptions,
+    );
+  const sceneWithMaterialTable = convertedMaterials === undefined
+    ? decoded.scene
+    : appendInactiveMaterialPrimitives(decoded.scene, convertedMaterials.materials);
   return {
     ...asset,
     scene: decoded.scene,
-    textureDecodeReport: decoded.report,
-    decodedTextureCount: decoded.decodedCount,
-    unchangedTextureCount: decoded.unchangedCount,
-    textureDecodeDiagnostics: decoded.diagnostics,
-    textureDecodeWarnings: decoded.warnings,
+    ...(convertedMaterials !== undefined ? { convertedMaterials: convertedMaterials.materials } : {}),
+    textureDecodeReport: buildTextureDecodeReport(sceneWithMaterialTable),
+    decodedTextureCount: decoded.decodedCount + (convertedMaterials?.decodedCount ?? 0),
+    unchangedTextureCount: decoded.unchangedCount + (convertedMaterials?.unchangedCount ?? 0),
+    textureDecodeDiagnostics: [
+      ...decoded.diagnostics,
+      ...(convertedMaterials?.diagnostics ?? []),
+    ],
+    textureDecodeWarnings: [
+      ...decoded.warnings,
+      ...(convertedMaterials?.warnings ?? []),
+    ],
   };
+}
+
+interface DecodeConvertedMaterialsResult {
+  readonly materials: readonly MaterialSpec[];
+  readonly decodedCount: number;
+  readonly unchangedCount: number;
+  readonly diagnostics: readonly DecodeSceneTextureDiagnostic[];
+  readonly warnings: readonly string[];
+}
+
+async function decodeConvertedMaterials(
+  materials: readonly MaterialSpec[],
+  originalScene: Scene,
+  decodedScene: Scene,
+  options: DecodeSceneTexturesOptions,
+): Promise<DecodeConvertedMaterialsResult> {
+  const activeMaterialMap = new Map<MaterialSpec, MaterialSpec>();
+  for (let i = 0; i < originalScene.primitives.length; i += 1) {
+    const original = originalScene.primitives[i];
+    const decoded = decodedScene.primitives[i];
+    if (original !== undefined && decoded !== undefined) {
+      activeMaterialMap.set(materialForPrimitive(original), materialForPrimitive(decoded));
+    }
+  }
+
+  const decodedMaterials = materials.slice();
+  const pending: Array<{ index: number; material: MaterialSpec }> = [];
+  for (let i = 0; i < materials.length; i += 1) {
+    const material = materials[i]!;
+    const activeDecoded = activeMaterialMap.get(material);
+    if (activeDecoded !== undefined) {
+      decodedMaterials[i] = activeDecoded;
+    } else {
+      pending.push({ index: i, material });
+    }
+  }
+
+  if (pending.length === 0) {
+    return { materials: decodedMaterials, decodedCount: 0, unchangedCount: 0, diagnostics: [], warnings: [] };
+  }
+
+  const decoded = await decodeSceneTextures(materialsToSyntheticScene(pending), options);
+  for (let i = 0; i < pending.length; i += 1) {
+    const primitive = decoded.scene.primitives[i];
+    if (primitive !== undefined) {
+      decodedMaterials[pending[i]!.index] = materialForPrimitive(primitive);
+    }
+  }
+
+  return {
+    materials: decodedMaterials,
+    decodedCount: decoded.decodedCount,
+    unchangedCount: decoded.unchangedCount,
+    diagnostics: decoded.diagnostics,
+    warnings: decoded.warnings,
+  };
+}
+
+function appendInactiveMaterialPrimitives(
+  scene: Scene,
+  materials: readonly MaterialSpec[],
+): Scene {
+  const activeMaterials = new Set(scene.primitives.map((primitive) => materialForPrimitive(primitive)));
+  const inactive = materials
+    .map((material, index) => ({ index, material }))
+    .filter(({ material }) => !activeMaterials.has(material));
+  if (inactive.length === 0) return scene;
+  const synthetic = materialsToSyntheticScene(inactive);
+  return {
+    ...scene,
+    primitives: [...scene.primitives, ...synthetic.primitives],
+  };
+}
+
+function materialsToSyntheticScene(
+  materials: readonly { readonly index: number; readonly material: MaterialSpec }[],
+): Scene {
+  return {
+    primitives: materials.map(({ index, material }) => ({
+      kind: 'mesh',
+      id: `gltf-material-${index}`,
+      positions: new Float32Array(),
+      normals: new Float32Array(),
+      material,
+    } satisfies MeshPrimitive)),
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
+function materialForPrimitive(primitive: ScenePrimitive): MaterialSpec {
+  return primitive.material;
 }
 
 async function parseInput(

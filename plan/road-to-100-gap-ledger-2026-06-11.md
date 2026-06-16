@@ -1452,6 +1452,11 @@ Status:
   `loadGltfAndDecodeTextures()` before engine construction or attachment, and the
   result carries decoded counts, `textureDecodeDiagnostics`, and
   `textureDecodeWarnings`.
+- Decoded loads now also decode the importer `convertedMaterials` table before
+  controller creation. Inactive `KHR_materials_variants` materials no longer
+  reintroduce raw/opaque texture handles through later `setVariant()` patches,
+  and `textureDecodeReport` includes those inactive decoded entries as synthetic
+  `gltf-material-N` rows.
 - Abort signals and deterministic fetch/base-URI errors are wired.
 
 Closure:
@@ -1573,6 +1578,10 @@ Evidence:
   analysis before ranking/enforcement.
 - `KHR_materials_variants` now supports a `materialVariant` selection option and
   falls back to base materials when no active variant is selected.
+- Runtime material-variant switching now uses the decoded material table when
+  texture decode was requested, so `GltfSceneController.setVariant()` patches
+  backend-ready decoded texture handles instead of the raw handles from the
+  original inactive material definitions.
 - `KHR_materials_unlit` now maps to the core `MaterialSpec.shadingModel`
   contract field and compatibility scoring reports `shadingModel` through each
   backend's material support matrix. pt-webgl2, pt-webgpu, and
@@ -1631,12 +1640,13 @@ Evidence:
 Closure:
 - Decide per extension: implement, require host hook, translate approximately,
   or reject with a structured compatibility error.
-- Completed follow-up: CPU-linear texture-bake parity for
+- Completed follow-up: texture-bake parity for
   `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture`
-  glossiness-in-alpha now exists when the host supplies `decodePixels`.
+  glossiness-in-alpha now exists for both `cpu-linear` and `webgpu` texture
+  targets when the host supplies `decodePixels`.
 - Completed follow-up: the engine bridge no longer keeps the
   `specularGlossinessTexture.glossinessAlpha` compatibility issue active after
-  that CPU-linear bake succeeds; `reject-degraded` still rejects the broader
+  that decoded roughness bake succeeds; `reject-degraded` still rejects the broader
   archived spec-gloss model-conversion issue unless the caller accepts that
   approximation.
 - Add core fields only when at least one backend consumes them or the
@@ -1849,13 +1859,13 @@ Closure:
   and backend-readiness diagnostics across the same material-map family. The
   follow-up fixed walkaround `thicknessMap` readiness drift and added a
   source-pathed `KHR_materials_dispersion` unsupported compatibility assertion.
-- The specular-glossiness texture-alpha bake is closed: the CPU-linear decode
-  path derives a `roughnessMap` from
+- The specular-glossiness texture-alpha bake is closed: the texture decode
+  path derives a linear `roughnessMap` from
   `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.a` using
   `1 - glossinessFactor * alpha`, preserves texCoord / transform / wrap
-  metadata, suppresses only the now-satisfied `glossinessAlpha` compatibility
-  issue, and now has both direct decode and `loadGltfForEngine()` attachment
-  tests.
+  metadata, works for both `cpu-linear` and `webgpu` texture targets, suppresses
+  only the now-satisfied `glossinessAlpha` compatibility issue, and now has
+  direct decode plus `loadGltfForEngine()` attachment tests.
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
   transparent lighting/GI/shadow promotion plus
   displacement/spectral/layered/scattering promotion if those ever become

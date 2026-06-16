@@ -379,7 +379,7 @@ function _parseSpecularGlossinessExt(
         'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture. The RGB ' +
         'specular map is imported as specularColorMap. Raw import uses scalar ' +
         'glossinessFactor for roughness until loadGltfAndDecodeTextures() or ' +
-        'decodeSceneTextures(target:"cpu-linear") can bake glossiness-in-alpha ' +
+        'decodeSceneTextures() can bake glossiness-in-alpha ' +
         'into a roughnessMap.',
     );
   }

@@ -90,6 +90,12 @@ factory; the adapter selects/checks the backend, creates a
 `GltfSceneController`, attaches the scene when requested, and forwards the same
 `textureDecodeReport` returned by `loadGltfAsset`.
 
+When texture decode is requested, `loadGltfForEngine()` decodes inactive
+`KHR_materials_variants` materials as well as the currently active scene. Variant
+switches therefore patch backend-ready decoded handles instead of reintroducing
+raw image handles later; those material-table entries appear in
+`textureDecodeReport` as synthetic `gltf-material-<index>` rows.
+
 When the controller applies animation or material-variant patches through an
 incremental `updatePrimitive()` target, it calls the target's optional
 `reset()` hook after the patch batch. Engine targets therefore invalidate PT
@@ -160,7 +166,7 @@ asset's feature report.
 | `KHR_materials_pbrSpecularGlossiness.diffuseFactor` | `baseColor` + `opacity` (legacy conversion) |
 | `KHR_materials_pbrSpecularGlossiness.specularFactor` | `specularColor` |
 | `KHR_materials_pbrSpecularGlossiness.glossinessFactor` | `roughness = 1 - glossinessFactor` |
-| `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` | `specularColorMap`; `loadGltfAndDecodeTextures()` / `decodeSceneTextures(target:'cpu-linear')` can bake alpha glossiness into `roughnessMap` |
+| `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` | `specularColorMap`; `loadGltfAndDecodeTextures()` / `decodeSceneTextures()` can bake alpha glossiness into a linear `roughnessMap` for `cpu-linear` and `webgpu` texture targets |
 | `KHR_materials_sheen.sheenColorFactor` | `sheenColor` |
 | `KHR_materials_sheen.sheenRoughnessFactor` | `sheenRoughness` |
 | `KHR_materials_sheen.sheenColorTexture` | `sheenColorMap` |

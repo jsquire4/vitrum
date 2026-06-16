@@ -482,7 +482,6 @@ function maybeBakeSpecGlossRoughnessMap(
     readonly specGlossBakes: SpecGlossRoughnessBakeCache;
   },
 ): TextureRef | null {
-  if (context.options.target !== 'cpu-linear') return null;
   const specGloss = material.extensions?.KHR_materials_pbrSpecularGlossiness;
   if (!isRecord(specGloss) || !isRecord(specGloss.specularGlossinessTexture)) return null;
   const sourceRef = material.specularColorMap;

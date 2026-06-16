@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF WebGPU spec-gloss roughness bake, 2026-06-16)
+
+- **WebGPU-target glTF texture decode now bakes legacy spec-gloss alpha roughness:** `decodeSceneTextures(target:'webgpu')` / `loadGltfAndDecodeTextures({ textureTarget:'webgpu' })` now synthesize the same linear `roughnessMap` from `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.a` that the CPU-linear path already produced, while preserving the decoded `specularColorMap` handle in sRGB form for WebGPU upload.
+- **Decoded glTF loads now keep inactive material variants decoded:** `loadGltfAndDecodeTextures()` decodes the importer `convertedMaterials` table in addition to the active scene, and `loadGltfForEngine()` forwards that decoded table into `GltfSceneController`. Switching a `KHR_materials_variants` material after a decoded load no longer reintroduces raw/opaque texture handles through an incremental `updatePrimitive()` patch, and `textureDecodeReport` includes `gltf-material-N` rows for decoded inactive variant materials.
+
 ### Fixed (glTF bridge instancing animation metadata, 2026-06-16)
 
 - **Bridge-created glTF controllers now preserve `EXT_mesh_gpu_instancing` animation metadata:** `loadGltfForEngine()` forwards `instancingBindings` from `loadGltfAsset()` into `GltfSceneController`, so the one-call API patches `InstancedMeshPrimitive.instances[]` when an instanced node or ancestor animates instead of emitting an invalid ordinary `transform` patch for the instanced primitive. `gltfAssetApi.test` now covers the public bridge path, complementing the direct controller test.
@@ -327,7 +332,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (glTF spec-gloss texture alpha, 2026-06-15)
 
-- **`@vitrum/gltf-adapter` archived specular-glossiness texture bake:** `loadGltfAndDecodeTextures()` / `decodeSceneTextures(target:'cpu-linear')` now synthesize a linear `roughnessMap` from `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` alpha using `roughness = 1 - glossinessFactor * alpha`, preserving texCoord, `KHR_texture_transform`, and sampler wrap metadata. Pre-decode planning still reports the legacy extension as approximate because a host pixel decoder is required for the bake.
+- **`@vitrum/gltf-adapter` archived specular-glossiness texture bake:** `loadGltfAndDecodeTextures()` / `decodeSceneTextures()` now synthesize a linear `roughnessMap` from `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture` alpha using `roughness = 1 - glossinessFactor * alpha`, preserving texCoord, `KHR_texture_transform`, and sampler wrap metadata. Pre-decode planning still reports the legacy extension as approximate because a host pixel decoder is required for the bake.
 
 ### Fixed (skinned morph tangent consumption, 2026-06-15)
 
