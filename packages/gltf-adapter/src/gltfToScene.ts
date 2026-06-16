@@ -24,6 +24,8 @@
 //     host samples clips (sampleAnimationClip) and pushes updates.
 //   - KHR_lights_punctual → SceneEmitter[] (point, spot, directional;
 //     world-transform applied to position/direction).
+//   - EXT_mesh_gpu_instancing → InstancedMeshPrimitive for static mesh nodes
+//     (TRANSLATION/ROTATION/SCALE accessors; nodeWorld baked into instances).
 //
 //   - KHR_draco_mesh_compression / EXT_meshopt_compression → resolved via
 //     HOST-SUPPLIED decoder hooks (opts.dracoDecode / opts.meshoptDecode; the
@@ -44,10 +46,21 @@
 //   - KHR_lights_punctual extension
 //     https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_lights_punctual/README.md
 
-import type {
-  Scene, ScenePrimitive, SceneEmitter, MaterialSpec, Mat4, AnimationClip,
+import {
+  asMat4,
+  type AnimationClip,
+  type MaterialSpec,
+  type Mat4,
+  type Scene,
+  type SceneEmitter,
+  type ScenePrimitive,
 } from '@vitrum/core';
-import type { GltfJson, GltfPrimitive, KhrLightsPunctualRoot } from './gltfTypes.js';
+import type {
+  GltfJson,
+  GltfNode,
+  GltfPrimitive,
+  KhrLightsPunctualRoot,
+} from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
 import {
   buildTextureHandleMap,
@@ -58,7 +71,7 @@ import {
 } from './textures.js';
 import { parseGlb } from './glbParser.js';
 import { unpackAccessorFloat, unpackAccessorUint32 } from './accessors.js';
-import { buildWorldTransforms, mat4Invert, mat4Mul } from './transforms.js';
+import { buildWorldTransforms, composeTrsMat4, mat4Invert, mat4Mul } from './transforms.js';
 import { convertMaterial, GLTF_DEFAULT_MATERIAL } from './materials.js';
 import { generateFlatNormals } from './normals.js';
 import { generateTangents } from './tangents.js';
@@ -92,6 +105,7 @@ const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   'KHR_materials_variants',
   'KHR_materials_pbrSpecularGlossiness',
   'KHR_texture_transform',
+  'EXT_mesh_gpu_instancing',
 ]);
 
 export interface GltfToSceneOptions {
@@ -493,17 +507,16 @@ export async function gltfToScene(
   for (const [nodeIdx, worldMat] of worldTransforms) {
     const node = gltfNodes[nodeIdx];
     if (!node || node.mesh === undefined) continue;
-    if (node.extensions?.EXT_mesh_gpu_instancing !== undefined) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'ignored-gpu-instancing',
-        path: `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`,
-        message:
-          `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing, ` +
-          'but this adapter does not import accessor-driven instance transforms yet. ' +
-          'The base mesh is imported once with the node transform; instance attributes are ignored.',
-      });
-    }
+    const instanceTransforms = _extractMeshGpuInstancing(
+      gltf,
+      buffers,
+      nodeIdx,
+      node,
+      worldMat,
+      warnings,
+      diagnostics,
+    );
+    let instanceFallbackWarned = false;
 
     const mesh = gltfMeshes[node.mesh];
     if (!mesh) continue;
@@ -790,9 +803,26 @@ export async function gltfToScene(
         );
       }
 
+      let primitiveInstances = instanceTransforms;
+      if (primitiveInstances && skinArg) {
+        if (!instanceFallbackWarned) {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'ignored-gpu-instancing',
+            path: `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`,
+            message:
+              `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
+              'on a skinned or morphed mesh. @vitrum/core has no instanced skinned/morphed primitive ' +
+              'contract yet, so the mesh is imported once with its normal skin/morph representation.',
+          });
+          instanceFallbackWarned = true;
+        }
+        primitiveInstances = undefined;
+      }
+
       primitives.push(_buildPrimitive(
         id, worldMat, positions, normals, indices,
-        uvs, uv1, finalTangents, colors, material, skinArg, morph,
+        uvs, uv1, finalTangents, colors, material, skinArg, morph, primitiveInstances,
       ));
     }
   }
@@ -975,6 +1005,165 @@ function materialNeedsTangentFrame(material: MaterialSpec): boolean {
     material.bumpMap !== undefined;
 }
 
+const GPU_INSTANCE_ATTRIBUTE_SPECS = {
+  TRANSLATION: { type: 'VEC3' },
+  ROTATION: { type: 'VEC4' },
+  SCALE: { type: 'VEC3' },
+} as const;
+
+function _extractMeshGpuInstancing(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  nodeIdx: number,
+  node: GltfNode,
+  worldMat: Mat4,
+  warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
+): readonly Mat4[] | undefined {
+  const extension = node.extensions?.EXT_mesh_gpu_instancing;
+  if (extension === undefined) return undefined;
+  const pathBase = `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`;
+  const attributes = isObject(extension) ? extension.attributes : undefined;
+  if (!isObject(extension) || !isObject(attributes)) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'ignored-gpu-instancing',
+      path: pathBase,
+      message:
+        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
+        'without an attributes object. The base mesh is imported once with the node transform.',
+    });
+    return undefined;
+  }
+
+  const attrs = attributes;
+  let failed = false;
+  let instanceCount: number | undefined;
+
+  const fail = (path: string, message: string): void => {
+    failed = true;
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'ignored-gpu-instancing',
+      path,
+      message,
+    });
+  };
+
+  const readAccessor = (
+    semantic: keyof typeof GPU_INSTANCE_ATTRIBUTE_SPECS,
+  ): Float32Array | undefined => {
+    const rawAccessorIndex = attrs[semantic];
+    if (rawAccessorIndex === undefined) return undefined;
+    const attrPath = `${pathBase}.attributes.${semantic}`;
+    if (typeof rawAccessorIndex !== 'number' || !Number.isInteger(rawAccessorIndex) || rawAccessorIndex < 0) {
+      fail(
+        attrPath,
+        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
+          `${semantic} must reference a non-negative accessor index. The base mesh is imported once.`,
+      );
+      return undefined;
+    }
+    const accessorIndex = rawAccessorIndex;
+    const accessor = gltf.accessors?.[accessorIndex];
+    const spec = GPU_INSTANCE_ATTRIBUTE_SPECS[semantic];
+    if (!accessor) {
+      fail(
+        attrPath,
+        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
+          `${semantic} references missing accessor ${accessorIndex}. The base mesh is imported once.`,
+      );
+      return undefined;
+    }
+    if (accessor.type !== spec.type) {
+      fail(
+        attrPath,
+        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
+          `${semantic} accessor must be ${spec.type}, got ${accessor.type}. The base mesh is imported once.`,
+      );
+      return undefined;
+    }
+    if (instanceCount === undefined) {
+      instanceCount = accessor.count;
+    } else if (accessor.count !== instanceCount) {
+      fail(
+        attrPath,
+        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
+          `${semantic} count ${accessor.count} does not match instance count ${instanceCount}. ` +
+          'The base mesh is imported once.',
+      );
+      return undefined;
+    }
+    try {
+      return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings);
+    } catch (e) {
+      fail(
+        attrPath,
+        `[vitrum/gltf-adapter] Failed to read EXT_mesh_gpu_instancing ${semantic} for ` +
+          `node "${node.name ?? nodeIdx}": ${String(e)} The base mesh is imported once.`,
+      );
+      return undefined;
+    }
+  };
+
+  const translations = readAccessor('TRANSLATION');
+  const rotations = readAccessor('ROTATION');
+  const scales = readAccessor('SCALE');
+
+  for (const key of Object.keys(attrs)) {
+    if (key in GPU_INSTANCE_ATTRIBUTE_SPECS) continue;
+    warnings.push(
+      `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
+        `attribute "${key}" is custom/non-transform data and is ignored.`,
+    );
+  }
+
+  if (failed) return undefined;
+  if (instanceCount === undefined || instanceCount <= 0) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'ignored-gpu-instancing',
+      path: `${pathBase}.attributes`,
+      message:
+        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
+        'without TRANSLATION, ROTATION, or SCALE accessors. The base mesh is imported once.',
+    });
+    return undefined;
+  }
+
+  const instances: Mat4[] = [];
+  for (let i = 0; i < instanceCount; i += 1) {
+    const t: [number, number, number] = translations
+      ? [
+          translations[i * 3 + 0] ?? 0,
+          translations[i * 3 + 1] ?? 0,
+          translations[i * 3 + 2] ?? 0,
+        ]
+      : [0, 0, 0];
+    const r: [number, number, number, number] = rotations
+      ? [
+          rotations[i * 4 + 0] ?? 0,
+          rotations[i * 4 + 1] ?? 0,
+          rotations[i * 4 + 2] ?? 0,
+          rotations[i * 4 + 3] ?? 1,
+        ]
+      : [0, 0, 0, 1];
+    const s: [number, number, number] = scales
+      ? [
+          scales[i * 3 + 0] ?? 1,
+          scales[i * 3 + 1] ?? 1,
+          scales[i * 3 + 2] ?? 1,
+        ]
+      : [1, 1, 1];
+    instances.push(asMat4(mat4Mul(worldMat, composeTrsMat4(t, r, s))));
+  }
+  return instances;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 /**
  * Attempt to unpack a float accessor, returning `undefined` and appending a
  * warning on failure.  Used for optional attributes (NORMAL, TEXCOORD_*, etc.)
@@ -1088,6 +1277,7 @@ function _buildPrimitive(
     bindMatrixInverse?: Float32Array;
   },
   morph?: MorphData,
+  instances?: readonly Mat4[],
 ): ScenePrimitive {
   const base = {
     id,
@@ -1099,12 +1289,12 @@ function _buildPrimitive(
     ...(colors ? { colors } : {}),
     ...(indices ? { indices } : {}),
     material,
-    transform: worldMat,
   };
   if (skin) {
     return {
       kind: 'skinned-mesh' as const,
       ...base,
+      transform: worldMat,
       skinIndices: skin.skinIndices,
       skinWeights: skin.skinWeights,
       bones: skin.bones,
@@ -1119,7 +1309,14 @@ function _buildPrimitive(
       } : {}),
     };
   }
-  return { kind: 'mesh' as const, ...base };
+  if (instances) {
+    return {
+      kind: 'instanced-mesh' as const,
+      ...base,
+      instances,
+    };
+  }
+  return { kind: 'mesh' as const, ...base, transform: worldMat };
 }
 
 // ── Morph-target extraction (GLTF-04) ────────────────────────────────────────

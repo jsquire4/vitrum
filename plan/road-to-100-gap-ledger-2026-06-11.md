@@ -1479,10 +1479,15 @@ Evidence:
 - Morph-target `TANGENT` deltas are preserved on the core primitive contract and
   are compatibility-scored as approximate backend tangent-space shading data
   rather than silently ignored primitive data.
-- `EXT_mesh_gpu_instancing` is explicitly unsupported rather than silently
-  ignored: optional node-level use emits an adapter warning and imports the base
-  mesh once, compatibility reports an unsupported extension issue at the node
-  source path, and required use stays a hard `extensionsRequired` rejection.
+- `EXT_mesh_gpu_instancing` static import is code/test closed: valid node-level
+  TRANSLATION/ROTATION/SCALE accessors import to core `InstancedMeshPrimitive`
+  with `nodeWorld * instanceTRS` baked into each instance matrix, required use is
+  accepted, and compatibility reports the extension as supported plus the
+  expected native `instanced-mesh` primitive kind. Malformed accessors,
+  no-transform instance payloads, and skinned/morphed instancing still emit an
+  `ignored-gpu-instancing` diagnostic and import the base mesh/skinned
+  representation once because core has no animated/instanced-skinned contract
+  yet.
 
 Closure:
 - Decide per extension: implement, require host hook, translate approximately,

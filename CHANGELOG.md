@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF EXT_mesh_gpu_instancing native import, 2026-06-16)
+
+- **Static glTF GPU instancing now imports natively:** `@vitrum/gltf-adapter` maps valid node-level `EXT_mesh_gpu_instancing` TRANSLATION/ROTATION/SCALE accessors to core `InstancedMeshPrimitive` records, baking `nodeWorld * instanceTRS` into each instance matrix. `extensionsRequired: ['EXT_mesh_gpu_instancing']` is now accepted, feature reporting predicts the native `instanced-mesh` primitive kind, and malformed/skinned/morphed instancing paths keep structured fallback diagnostics instead of silently dropping instance intent.
+
 ### Fixed (pt-webgl2 emissive mesh NEE parity, 2026-06-16)
 
 - **Plain glTF-style emissive meshes now feed WebGL2 triangle-light NEE:** `@vitrum/pt-webgl2` now synthesizes mesh-area triangle lights from nonzero material `emissive * emissiveIntensity`, so emissive meshes no longer rely only on path-hit luck unless hosts authored an explicit `mesh-area` emitter. CPU-readable `emissiveMap` handles modulate the synthesized radiance by their sRGB-decoded average RGB; black readable maps suppress the implicit light, and opaque/unreadable handles warn while keeping scalar emissive fallback. Scalar `updatePrimitive({ material })` fast paths now repack the mesh-light texture when material emission changes, without rebuilding BVH geometry.

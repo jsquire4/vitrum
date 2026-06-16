@@ -49,7 +49,19 @@ export interface GltfNode {
   scale?: [number, number, number];
   /** Instance morph-target weights; overrides the mesh-level `weights`. */
   weights?: number[];
-  extensions?: Record<string, unknown>;
+  extensions?: {
+    EXT_mesh_gpu_instancing?: GltfMeshGpuInstancingExtension;
+    [key: string]: unknown;
+  };
+}
+
+export interface GltfMeshGpuInstancingExtension {
+  attributes?: {
+    TRANSLATION?: number;
+    ROTATION?: number;
+    SCALE?: number;
+    [key: string]: number | undefined;
+  };
 }
 
 /** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */

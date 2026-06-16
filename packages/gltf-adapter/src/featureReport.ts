@@ -60,7 +60,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly byMode: Readonly<Record<string, number>>;
   readonly unsupportedModes: readonly string[];
   readonly attributeSemantics: readonly string[];
-  readonly expectedPrimitiveKinds: readonly ('mesh' | 'skinned-mesh')[];
+  readonly expectedPrimitiveKinds: readonly ('mesh' | 'skinned-mesh' | 'instanced-mesh')[];
   readonly usesDraco: boolean;
   readonly usesMeshopt: boolean;
   readonly hasTangents: boolean;
@@ -193,6 +193,7 @@ const REQUIRED_EXTENSION_SUPPORT = new Set([
   'KHR_texture_basisu',
   'EXT_texture_webp',
   'MSFT_texture_dds',
+  'EXT_mesh_gpu_instancing',
 ]);
 
 const EXTENSIONS_REQUIRING_HOST_HOOK = new Set([
@@ -787,6 +788,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   let hasVertexColors = false;
   let hasUv1 = false;
   let hasJointAttrs = false;
+  let hasInstancing = false;
 
   for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
     for (const [primitiveIndex, primitive] of (mesh.primitives ?? []).entries()) {
@@ -829,19 +831,25 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     }
   }
   (gltf.skins ?? []).forEach((_, index) => addSourcePath(issuePaths, 'kind:skinned-mesh', `skins[${index}]`));
+  for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
+    if (node.mesh === undefined || node.extensions?.EXT_mesh_gpu_instancing === undefined) continue;
+    hasInstancing = true;
+    addSourcePath(issuePaths, 'kind:instanced-mesh', `nodes[${nodeIndex}].extensions.EXT_mesh_gpu_instancing`);
+  }
   for (const bv of gltf.bufferViews ?? []) {
     if (bv.extensions?.['EXT_meshopt_compression']) usesMeshopt = true;
   }
   const hasSkins = (gltf.skins?.length ?? 0) > 0 || hasJointAttrs;
-  const expectedPrimitiveKinds = new Set<'mesh' | 'skinned-mesh'>();
+  const expectedPrimitiveKinds = new Set<'mesh' | 'skinned-mesh' | 'instanced-mesh'>();
   expectedPrimitiveKinds.add('mesh');
   if (hasSkins || hasMorphTargets) expectedPrimitiveKinds.add('skinned-mesh');
+  if (hasInstancing) expectedPrimitiveKinds.add('instanced-mesh');
   return {
     total,
     byMode: Object.fromEntries([...byMode.entries()].sort()),
     unsupportedModes: sorted(unsupportedModes),
     attributeSemantics: sorted(attributeSemantics),
-    expectedPrimitiveKinds: sorted(expectedPrimitiveKinds) as ('mesh' | 'skinned-mesh')[],
+    expectedPrimitiveKinds: sorted(expectedPrimitiveKinds),
     usesDraco,
     usesMeshopt,
     hasTangents,

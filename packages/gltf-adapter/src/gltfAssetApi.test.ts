@@ -1170,9 +1170,11 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
   });
 
-  it('reports EXT_mesh_gpu_instancing as an explicit unsupported extension with node source path', () => {
+  it('reports EXT_mesh_gpu_instancing as native instanced-mesh input with node source path', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
+      extensionsUsed: ['EXT_mesh_gpu_instancing'],
+      extensionsRequired: ['EXT_mesh_gpu_instancing'],
       nodes: [{
         mesh: 0,
         extensions: {
@@ -1190,14 +1192,27 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       }],
     });
 
-    expect(report.extensions.unsupportedOptional).toContain('EXT_mesh_gpu_instancing');
+    expect(report.extensions.supported).toContain('EXT_mesh_gpu_instancing');
+    expect(report.extensions.unsupportedOptional).not.toContain('EXT_mesh_gpu_instancing');
+    expect(report.extensions.unsupportedRequired).not.toContain('EXT_mesh_gpu_instancing');
+    expect(report.extensions.sourcePaths.EXT_mesh_gpu_instancing).toContain(
+      'nodes[0].extensions.EXT_mesh_gpu_instancing',
+    );
+    expect(report.primitives.expectedPrimitiveKinds).toEqual(
+      expect.arrayContaining(['mesh', 'instanced-mesh']),
+    );
+    expect(report.primitives.issuePaths['kind:instanced-mesh']).toEqual([
+      'nodes[0].extensions.EXT_mesh_gpu_instancing',
+    ]);
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
-    expect(compatibility.issues).toContainEqual(expect.objectContaining({
-      category: 'extension',
-      name: 'EXT_mesh_gpu_instancing',
-      support: 'unsupported',
-      path: 'nodes[0].extensions.EXT_mesh_gpu_instancing',
-    }));
+    expect(compatibility.issues.some((issue) =>
+      issue.category === 'extension' &&
+      issue.name === 'EXT_mesh_gpu_instancing',
+    )).toBe(false);
+    expect(compatibility.issues.some((issue) =>
+      issue.category === 'primitive' &&
+      issue.name === 'instanced-mesh',
+    )).toBe(false);
   });
 
   it('attaches source paths to compatibility issues, including cameras and double-sided materials', () => {

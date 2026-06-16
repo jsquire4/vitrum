@@ -23,6 +23,7 @@ import { solveSkin } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import type {
   DirectionalEmitter,
+  InstancedMeshPrimitive,
   MeshPrimitive,
   PointEmitter,
   SkinnedMeshPrimitive,
@@ -115,6 +116,43 @@ function makeMinimalTriangleGltf(): { gltf: GltfJson; buffers: Map<number, Array
     buffers: [{ byteLength: posBuf.byteLength }],
   };
   return { gltf, buffers: new Map([[0, posBuf]]) };
+}
+
+function appendF32Accessor(
+  fixture: { gltf: GltfJson; buffers: Map<number, ArrayBuffer> },
+  values: number[],
+  type: NonNullable<GltfJson['accessors']>[number]['type'],
+  count: number,
+): number {
+  const data = f32Buffer(values);
+  const base = fixture.buffers.get(0) ?? new ArrayBuffer(0);
+  const byteOffset = base.byteLength;
+  const packed = concatBuffers(base, data);
+  fixture.buffers.set(0, packed);
+
+  fixture.gltf.bufferViews ??= [];
+  const bufferView = fixture.gltf.bufferViews.length;
+  fixture.gltf.bufferViews.push({
+    buffer: 0,
+    byteOffset,
+    byteLength: data.byteLength,
+  });
+
+  fixture.gltf.accessors ??= [];
+  const accessorIndex = fixture.gltf.accessors.length;
+  fixture.gltf.accessors.push({
+    bufferView,
+    componentType: 5126,
+    count,
+    type,
+  });
+
+  fixture.gltf.buffers ??= [{ byteLength: 0 }];
+  fixture.gltf.buffers[0] = {
+    ...(fixture.gltf.buffers[0] ?? {}),
+    byteLength: packed.byteLength,
+  };
+  return accessorIndex;
 }
 
 function makeNormalMappedTriangleGltf(
@@ -251,15 +289,27 @@ describe('minimal triangle', () => {
     expect(scene.environment.kind).toBe('none');
   });
 
-  it('warns when optional EXT_mesh_gpu_instancing is ignored instead of silently dropping instances', async () => {
-    const { gltf, buffers } = makeMinimalTriangleGltf();
+  it('imports EXT_mesh_gpu_instancing as a core InstancedMeshPrimitive', async () => {
+    const fixture = makeMinimalTriangleGltf();
+    const { gltf, buffers } = fixture;
+    const translationAccessor = appendF32Accessor(
+      fixture,
+      [
+        2, 0, 0,
+        0, 3, 0,
+      ],
+      'VEC3',
+      2,
+    );
     gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+    gltf.extensionsRequired = ['EXT_mesh_gpu_instancing'];
     gltf.nodes![0] = {
       ...gltf.nodes![0]!,
+      translation: [10, 0, 0],
       extensions: {
         EXT_mesh_gpu_instancing: {
           attributes: {
-            TRANSLATION: 1,
+            TRANSLATION: translationAccessor,
           },
         },
       },
@@ -268,11 +318,58 @@ describe('minimal triangle', () => {
     const { scene, warnings } = await gltfToScene(gltf, { buffers });
 
     expect(scene.primitives).toHaveLength(1);
-    expect(warnings.some((warning) =>
-      warning.includes('EXT_mesh_gpu_instancing') &&
-      warning.includes('imported once') &&
-      warning.includes('instance attributes are ignored'),
-    )).toBe(true);
+    const prim = scene.primitives[0] as InstancedMeshPrimitive;
+    expect(prim.kind).toBe('instanced-mesh');
+    expect('transform' in prim).toBe(false);
+    expect(prim.instances).toHaveLength(2);
+    expect(prim.instances[0]![12]).toBeCloseTo(12, 5);
+    expect(prim.instances[0]![13]).toBeCloseTo(0, 5);
+    expect(prim.instances[1]![12]).toBeCloseTo(10, 5);
+    expect(prim.instances[1]![13]).toBeCloseTo(3, 5);
+    expect(warnings.some((warning) => warning.includes('EXT_mesh_gpu_instancing'))).toBe(false);
+  });
+
+  it('falls back to one mesh with a structured diagnostic when EXT_mesh_gpu_instancing accessors disagree', async () => {
+    const fixture = makeMinimalTriangleGltf();
+    const { gltf, buffers } = fixture;
+    const translationAccessor = appendF32Accessor(
+      fixture,
+      [
+        2, 0, 0,
+        0, 3, 0,
+      ],
+      'VEC3',
+      2,
+    );
+    const scaleAccessor = appendF32Accessor(
+      fixture,
+      [1, 1, 1],
+      'VEC3',
+      1,
+    );
+    gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      extensions: {
+        EXT_mesh_gpu_instancing: {
+          attributes: {
+            TRANSLATION: translationAccessor,
+            SCALE: scaleAccessor,
+          },
+        },
+      },
+    };
+
+    const { scene, diagnostics } = await gltfToScene(gltf, { buffers });
+
+    expect(scene.primitives).toHaveLength(1);
+    expect(scene.primitives[0]!.kind).toBe('mesh');
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'ignored-gpu-instancing',
+      path: 'nodes[0].extensions.EXT_mesh_gpu_instancing.attributes.SCALE',
+      message: expect.stringContaining('does not match instance count'),
+    }));
   });
 
   it('generates tangents for a normal-mapped primitive that omits TANGENT', async () => {
