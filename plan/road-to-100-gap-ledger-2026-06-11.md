@@ -50,8 +50,8 @@ Patched and source-reviewed in this wave, with focused typecheck/tests passing:
   through the same `TextureRef.texCoord` path that pt-webgl2 and pt-webgpu
   consume.
 - WEBGL2-01 pt-webgl2 consumes authored tangent XYZW, derives nonzero fallback
-  handedness, guards legacy zero handedness in GLSL, and avoids reusing
-  rest-pose tangents after CPU skinning.
+  handedness, guards legacy zero handedness in GLSL, preserves CPU-solved posed
+  tangents after skinning, and avoids stale rest-pose tangent reuse.
 - WEBGL2-04 glTF metallicRoughnessTexture maps to both roughness and metallic
   material-map refs while relying on backend atlas dedupe for storage.
 - PTWG-01 pt-webgpu fatal `error` state blocks further engine operations.
@@ -1791,9 +1791,11 @@ Status:
 Closure:
 - Treat morph-tangent data preservation plus CPU-solved backend consumption as
   closed for the current professional contract: deterministic, source-pathed,
-  and test-covered. Full renderer promotion still requires GPU-native tangent
-  skinning / broader backend evidence, so compatibility remains approximate
-  instead of native.
+  and test-covered. 2026-06-16 follow-up: pt-webgl2 `solveSkinPrimitives()`
+  now preserves `solveSkin()`'s posed tangents, including `morphTargetTangents`,
+  instead of dropping them before attribute packing. Full renderer promotion
+  still requires GPU-native tangent skinning / broader backend evidence, so
+  compatibility remains approximate instead of native.
 - Controller-side morph playback is closed under `GLTF-API-04`.
 
 ### GLTF-05 - glTF primitive modes

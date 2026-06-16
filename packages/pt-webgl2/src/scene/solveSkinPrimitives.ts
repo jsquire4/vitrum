@@ -1,12 +1,13 @@
 // solveSkinPrimitives.ts — pre-pass that replaces skinned-mesh rest-pose
-// positions/normals with CPU-solved posed positions before scene ingestion.
+// positions/normals/tangents with CPU-solved posed geometry before scene ingestion.
 //
 // WHY here, not in shared-bvh:
 //   `mergeWorldSpaceFromCore` reads `primitive.positions` and `primitive.normals`
 //   directly without awareness of the skinning solver.  The cleanest seam is a
 //   pre-pass that produces a new Scene whose skinned-mesh primitives carry SOLVED
-//   positions so the rest of the pipeline (mergeWorldSpaceFromCore, BVH packers,
-//   attribute packers) is position-agnostic.
+//   positions/normals/tangents so the rest of the pipeline
+//   (mergeWorldSpaceFromCore, BVH packers, attribute packers) is
+//   skinning-agnostic.
 //
 // CONTRACT:
 //   • Primitives that are NOT skinned-mesh are returned as-is (referential
@@ -33,9 +34,9 @@ import type { Scene, ScenePrimitive } from '@vitrum/core';
 import { solveSkin } from '@vitrum/core';
 
 /**
- * Replace each `skinned-mesh` primitive's rest-pose `positions` and `normals`
- * with the CPU-solved posed values from {@link solveSkin}.  All other
- * primitives and all scene-level fields are returned unchanged.
+ * Replace each `skinned-mesh` primitive's rest-pose `positions`, `normals`, and
+ * optional `tangents` with the CPU-solved posed values from {@link solveSkin}.
+ * All other primitives and all scene-level fields are returned unchanged.
  *
  * The returned primitives still carry `kind: 'skinned-mesh'` so downstream
  * code that filters by kind continues to work; only the geometry arrays are
@@ -58,16 +59,17 @@ export function solveSkinPrimitives(scene: Scene): Scene {
       return prim;
     }
 
-    const { positions, normals } = solveSkin(prim);
+    const { positions, normals, tangents } = solveSkin(prim);
     anyResolved = true;
-    // Return a new object that shares every field except positions/normals, which
-    // are now the solved (posed) geometry.  Rest-pose tangents are deliberately
-    // dropped: until tangent skinning is explicit, the attribute packer should
-    // derive tangents from the solved surface instead of consuming stale rest
-    // directions. The rest-pose arrays on the original prim are still referenced
-    // by the host — we do NOT mutate them.
-    const { tangents: _restTangents, ...posed } = prim;
-    return { ...posed, positions, normals };
+    // Return a new object that shares every field except solved geometry arrays.
+    // Core solveSkin() now handles tangent morphing + skinning, so preserve its
+    // posed tangent frame when present instead of falling back to derived frames.
+    return {
+      ...prim,
+      positions,
+      normals,
+      ...(tangents != null ? { tangents } : {}),
+    };
   });
 
   if (!anyResolved) return scene;

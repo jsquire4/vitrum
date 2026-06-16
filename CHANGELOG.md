@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 skinned tangent consumption, 2026-06-16)
+
+- **CPU-solved skinned tangents now reach the WebGL2 path tracer:** `@vitrum/pt-webgl2` preserves `solveSkin()`'s posed tangent stream for skinned meshes, including `morphTargetTangents` blended by core, instead of dropping tangents and forcing the attribute packer to derive a fallback frame. `skinSolve.test` now pins the backend pre-pass against the shared core solver.
+
 ### Fixed (pt-webgl2 analytic primitive fallback, 2026-06-16)
 
 - **Analytic primitives now render on `@vitrum/pt-webgl2` via generated mesh fallback:** `setScene()` accepts core `AnalyticPrimitive` shapes (`sphere`, `box`, `capsule`, `cylinder`, `h-channel-came`) and tessellates them with `analyticPrimitiveToMesh()` before the WebGL2 triangle-BVH upload path. Capabilities and `BACKEND_PROMISE_LEDGER` now report `analytic` / analytic-shape rows as `fallback-generated-mesh` instead of unsupported, and `ledgerVsCapabilities` plus `engineContract` pin the runtime behavior.
