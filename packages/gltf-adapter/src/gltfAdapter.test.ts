@@ -19,6 +19,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { GltfImportError, gltfToScene } from './gltfToScene.js';
+import { analyzeGltfAsset } from './featureReport.js';
 import { solveSkin } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import type {
@@ -1008,6 +1009,56 @@ describe('material field mapping', () => {
     const { scene } = await gltfToScene(gltf, { buffers });
     const mat = (scene.primitives[0] as MeshPrimitive).material;
     expect(mat.alphaMode).toBe('blend');
+  });
+
+  it('ignores baseColor alpha for opaque materials in conversion and feature reporting', async () => {
+    const { gltf, buffers } = makeGltfWithMaterial({
+      pbrMetallicRoughness: { baseColorFactor: [0.8, 0.6, 0.4, 0.35] },
+    });
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    expect(mat.baseColor).toEqual([0.8, 0.6, 0.4]);
+    expect(mat.alphaMode).toBe('opaque');
+    expect(mat.opacity).toBeUndefined();
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.materialFields).toContain('baseColor');
+    expect(report.materials.materialFields).not.toContain('opacity');
+  });
+
+  it('maps and reports baseColor alpha as opacity for BLEND materials', async () => {
+    const { gltf, buffers } = makeGltfWithMaterial({
+      alphaMode: 'BLEND',
+      pbrMetallicRoughness: { baseColorFactor: [0.8, 0.6, 0.4, 0.35] },
+    });
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    expect(mat.alphaMode).toBe('blend');
+    expect(mat.opacity).toBeCloseTo(0.35);
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.materialFields).toContain('opacity');
+    expect(report.materials.issuePaths['field:opacity']).toEqual([
+      'materials[0].pbrMetallicRoughness.baseColorFactor[3]',
+    ]);
+  });
+
+  it('ignores spec-gloss diffuse alpha for opaque materials in conversion and feature reporting', async () => {
+    const { gltf, buffers } = makeGltfWithMaterial({
+      extensions: {
+        KHR_materials_pbrSpecularGlossiness: {
+          diffuseFactor: [0.2, 0.4, 0.6, 0.25],
+        },
+      },
+    });
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    expect(mat.baseColor).toEqual([0.2, 0.4, 0.6]);
+    expect(mat.alphaMode).toBe('opaque');
+    expect(mat.opacity).toBeUndefined();
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.materialFields).not.toContain('opacity');
   });
 
   it('maps KHR_materials_sheen', async () => {

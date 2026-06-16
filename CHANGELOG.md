@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF opacity report truthfulness, 2026-06-16)
+
+- **glTF feature reports now match opaque alpha conversion semantics:** `analyzeGltfAsset()` only reports `opacity` for `baseColorFactor[3]` / legacy spec-gloss `diffuseFactor[3]` when the material uses `alphaMode:"MASK"` or `"BLEND"`, matching `gltfToScene()`'s conversion rule. Opaque materials with alpha below 1 keep the RGB base color but no longer imply a converted opacity field in backend compatibility reports.
+
 ### Fixed (glTF emissive-map PDF truthfulness, 2026-06-16)
 
 - **glTF backend compatibility now surfaces emissive-texture emitter PDF approximation explicitly:** `evaluateGltfBackendCompatibility()` reports an `emissiveMap.texelPdf` approximate material issue whenever a backend imports glTF `emissiveTexture` but cannot guarantee exact texel-space emitter alias tables/PDFs across all direct, GI, RC, DDGI, and fallback sampling paths. `pt-webgpu-lite` still reports the base `emissiveMap` row as unsupported instead of adding this narrower approximation issue. A focused pt-webgl2 test now ties CPU-readable emissive-map micro-triangle packing to the mesh-area forward/sample PDF parity proof. Exact texel-alias emitter PDFs remain a promotion tail; this closes the silent planner/reporting ambiguity.

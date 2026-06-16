@@ -1030,9 +1030,11 @@ function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
     currentMaterialIndex = materialIndex;
     const matPath = `materials[${materialIndex}]`;
     const pbr = mat.pbrMetallicRoughness;
+    const effectiveAlphaMode = mat.alphaMode ?? 'OPAQUE';
+    const usesMaterialAlpha = effectiveAlphaMode === 'MASK' || effectiveAlphaMode === 'BLEND';
     if (pbr?.baseColorFactor) {
       addField('baseColor', `${matPath}.pbrMetallicRoughness.baseColorFactor`);
-      if ((pbr.baseColorFactor[3] ?? 1) < 1) {
+      if (usesMaterialAlpha && (pbr.baseColorFactor[3] ?? 1) < 1) {
         addField('opacity', `${matPath}.pbrMetallicRoughness.baseColorFactor[3]`);
       }
     }
@@ -1147,7 +1149,9 @@ function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
       addField('baseColor', specGloss.diffuseFactor !== undefined ? `${specGlossPath}.diffuseFactor` : specGlossPath);
       addField('roughness', specGloss.glossinessFactor !== undefined ? `${specGlossPath}.glossinessFactor` : specGlossPath);
       addField('metallic', specGlossPath);
-      if (specGloss.diffuseFactor?.[3] !== undefined && specGloss.diffuseFactor[3] < 1) addField('opacity', `${specGlossPath}.diffuseFactor[3]`);
+      if (usesMaterialAlpha && specGloss.diffuseFactor?.[3] !== undefined && specGloss.diffuseFactor[3] < 1) {
+        addField('opacity', `${specGlossPath}.diffuseFactor[3]`);
+      }
       if (specGloss.specularFactor !== undefined) addField('specularColor', `${specGlossPath}.specularFactor`);
       addTexture('baseColorMap', specGloss.diffuseTexture, `${specGlossPath}.diffuseTexture`);
       addTexture('specularColorMap', specGloss.specularGlossinessTexture, `${specGlossPath}.specularGlossinessTexture`);
