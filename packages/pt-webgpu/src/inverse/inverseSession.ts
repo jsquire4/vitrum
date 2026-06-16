@@ -244,6 +244,8 @@ const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'attenuationDistance',
 ]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
+const PATH_REPLAY_NORMAL_ONLY_FIELDS = new Set(['normalScale', 'bumpScale', 'clearcoatNormalScale']);
+const PATH_REPLAY_ENVIRONMENT_ONLY_FIELDS = new Set(['envMapIntensity']);
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -681,7 +683,11 @@ function diagnosePathReplaySlot(
 function pathReplayFiniteDifferenceOnlyFieldIssue(
   field: string,
 ): {
-  readonly code: 'path-replay-unsupported-transport' | 'path-replay-unsupported-visibility';
+  readonly code:
+    | 'path-replay-unsupported-transport'
+    | 'path-replay-unsupported-visibility'
+    | 'path-replay-unsupported-normal'
+    | 'path-replay-unsupported-environment';
   readonly message: string;
   readonly details: Record<string, string | readonly string[]>;
 } | null {
@@ -706,6 +712,30 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
         field,
         finiteDifferenceReason: 'visibility',
         affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
+      },
+    };
+  }
+  if (PATH_REPLAY_NORMAL_ONLY_FIELDS.has(field)) {
+    return {
+      code: 'path-replay-unsupported-normal',
+      message:
+        'which changes shading normals that the scoped path-replay adjoint does not mirror yet',
+      details: {
+        field,
+        finiteDifferenceReason: 'normal',
+        affectedTerms: ['normal-map-frame', 'bump-gradient', 'clearcoat-normal-frame'],
+      },
+    };
+  }
+  if (PATH_REPLAY_ENVIRONMENT_ONLY_FIELDS.has(field)) {
+    return {
+      code: 'path-replay-unsupported-environment',
+      message:
+        'which changes environment lighting that the scoped path-replay adjoint does not mirror yet',
+      details: {
+        field,
+        finiteDifferenceReason: 'environment',
+        affectedTerms: ['environment-lighting', 'env-map-sampling'],
       },
     };
   }

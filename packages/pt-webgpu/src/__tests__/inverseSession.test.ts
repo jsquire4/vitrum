@@ -1471,14 +1471,18 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       'normalScale',
       'bumpScale',
       'clearcoatNormalScale',
-      'envMapIntensity',
     ]) {
       expect(session.diagnostics).toContainEqual(expect.objectContaining({
-        code: 'path-replay-unsupported-field',
+        code: 'path-replay-unsupported-normal',
         path: `materials.panel.${field}`,
-        details: { field },
+        details: expect.objectContaining({ field, finiteDifferenceReason: 'normal' }),
       }));
     }
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-environment',
+      path: 'materials.panel.envMapIntensity',
+      details: expect.objectContaining({ field: 'envMapIntensity', finiteDifferenceReason: 'environment' }),
+    }));
     session.dispose();
   });
 

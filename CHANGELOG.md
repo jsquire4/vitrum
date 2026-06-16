@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu inverse fallback diagnostic specificity, 2026-06-16)
+
+- **Path-replay inverse fallbacks now classify normal/env scalar controls explicitly:** requested `method:'path-replay'` sessions for `materials.<id>.normalScale`, `bumpScale`, and `clearcoatNormalScale` now report `path-replay-unsupported-normal`, while `materials.<id>.envMapIntensity` reports `path-replay-unsupported-environment`. These controls still optimize through finite difference; the change makes arbitrary-asset inverse diagnostics more machine-readable.
+
 ### Fixed (glTF skin attribute compatibility truthfulness, 2026-06-16)
 
 - **glTF skin attributes now report the same semantics the importer uses:** `analyzeGltfAsset()` no longer predicts `skinned-mesh` support from raw `JOINTS_0` / `WEIGHTS_0` attributes alone. Skinning now requires a node that binds `skin` plus both joint and weight streams; unbound skin attributes report `skinAttributesWithoutNodeSkin=unsupported`, incomplete streams report `incompleteSkinAttributes=unsupported`, and best-effort import returns structured `ignored-skin-attributes` / `incomplete-skin-attributes` diagnostics while importing the primitive as a static mesh.

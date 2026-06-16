@@ -100,6 +100,8 @@ export interface InverseSessionDiagnostic {
     | 'path-replay-unsupported-field'
     | 'path-replay-unsupported-transport'
     | 'path-replay-unsupported-visibility'
+    | 'path-replay-unsupported-normal'
+    | 'path-replay-unsupported-environment'
     | 'path-replay-unsupported-primitive'
     | 'path-replay-unsupported-material'
     | 'path-replay-unsupported-lighting'
