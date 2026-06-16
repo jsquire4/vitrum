@@ -21,7 +21,8 @@
  * layered/volume/spectral mapped material terms remain deliberate
  * finite-difference fallbacks until their source terms are mirrored here and
  * GPU-validated. Mapped terms replayed here are scoped to the camera-direct
- * emissive texel multiplier for `emissive` / `emissiveIntensity`, plus
+ * emissive texel multiplier for `emissive` / `emissiveIntensity`, primary-hit
+ * light-map radiance for `lightMapIntensity`, plus
  * baseColorMap / COLOR_0 / aoMap, roughnessMap / metallicMap, clearcoat/sheen/
  * iridescence/anisotropy maps, and specular color/intensity local factors used
  * by lit direct BRDF derivatives.
@@ -82,6 +83,7 @@ export const ADJOINT_FIELD_EMITTER_COLOR = 16;
 export const ADJOINT_FIELD_EMITTER_INTENSITY = 17;
 export const ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE = 18;
 export const ADJOINT_FIELD_AO_MAP_INTENSITY = 19;
+export const ADJOINT_FIELD_LIGHT_MAP_INTENSITY = 20;
 
 export const ADJOINT_EMITTER_TARGET_DIRECTIONAL = 1;
 export const ADJOINT_EMITTER_TARGET_POINT = 2;
@@ -101,6 +103,8 @@ const ADJOINT_MATERIAL_TEX_UV_METALLIC =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 4;
 const ADJOINT_MATERIAL_TEX_UV_AO =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 5;
+const ADJOINT_MATERIAL_TEX_UV_LIGHT =
+  MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 6;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT = MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS =
   MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
@@ -237,6 +241,7 @@ const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = ${ADJOINT_MATERIAL_TEX_UV_EMISSIVE}u;
 const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS = ${ADJOINT_MATERIAL_TEX_UV_ROUGHNESS}u;
 const ADJOINT_MATERIAL_TEX_UV_METALLIC = ${ADJOINT_MATERIAL_TEX_UV_METALLIC}u;
 const ADJOINT_MATERIAL_TEX_UV_AO = ${ADJOINT_MATERIAL_TEX_UV_AO}u;
+const ADJOINT_MATERIAL_TEX_UV_LIGHT = ${ADJOINT_MATERIAL_TEX_UV_LIGHT}u;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT = ${ADJOINT_MATERIAL_TEX_UV_CLEARCOAT}u;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS = ${ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS}u;
 const ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR = ${ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR}u;
@@ -474,6 +479,22 @@ fn sampleAdjointAo(matId: u32, triIndex: u32, baryVW: vec2f) -> AdjointAoSample 
     materialTexDescriptors[base + 15u].zw,
   ).r, 0.0, 1.0);
   return AdjointAoSample(mix(1.0, r, intensity), r - 1.0);
+}
+
+fn sampleAdjointLightMapRadiancePerUnitIntensity(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 16u >= arrayLength(&materialTexDescriptors)) { return vec3f(0.0); }
+  let idx = i32(materialTexDescriptors[base + 3u].z);
+  if (idx < 0) { return vec3f(0.0); }
+  return sampleAdjointMaterialLayerLinear(
+    idx,
+    base,
+    triIndex,
+    baryVW,
+    ADJOINT_MATERIAL_TEX_UV_LIGHT,
+    materialTexDescriptors[base + 10u].xy,
+    materialTexDescriptors[base + 16u].xy,
+  ).rgb;
 }
 
 fn sampleAdjointClearcoatTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
@@ -985,6 +1006,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // gradient when ITS primary-hit material is the optimized emissive primitive.
     let dRendered_dEmissivePerUnitIntensity = dContribution_dEmissive(vec3f(1.0), 1.0); // = (1,1,1)
     let emissiveTexel = sampleAdjointEmissiveTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb;
+    let lightMapRadiancePerUnitIntensity = sampleAdjointLightMapRadiancePerUnitIntensity(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z));
 
     // Single-bounce direct lighting, summed deterministically over every direct
     // light source the scoped adjoint pass mirrors.
@@ -1351,6 +1373,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let gAoBase = baseColor * baseColorNoAoFactor * aoSample.dFactor_dIntensity;
         let gAoMapIntensity = select(dot(gBaseColor, gAoBase), dot(dLoss_dR, gAoBase), isUnlit);
         adjointScatter(gradOffset, gAoMapIntensity * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_LIGHT_MAP_INTENSITY}u) {
+        let gLightMapIntensity = dot(
+          dLoss_dR,
+          dContribution_dEmissiveIntensity(vec3f(1.0), lightMapRadiancePerUnitIntensity),
+        );
+        adjointScatter(gradOffset, gLightMapIntensity * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT}u) {
         adjointScatter(gradOffset, gClearcoat * clearcoatFactor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT_ROUGHNESS}u) {

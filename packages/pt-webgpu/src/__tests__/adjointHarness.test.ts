@@ -35,6 +35,7 @@ import {
   ADJOINT_FIELD_ANISOTROPY,
   ADJOINT_FIELD_ANISOTROPY_ROTATION,
   ADJOINT_FIELD_AO_MAP_INTENSITY,
+  ADJOINT_FIELD_LIGHT_MAP_INTENSITY,
   ADJOINT_FIELD_EMITTER_COLOR,
   ADJOINT_FIELD_EMITTER_INTENSITY,
   ADJOINT_EMITTER_TARGET_DIRECTIONAL,
@@ -279,6 +280,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_EMITTER_INTENSITY).toBe(17);
     expect(ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE).toBe(18);
     expect(ADJOINT_FIELD_AO_MAP_INTENSITY).toBe(19);
+    expect(ADJOINT_FIELD_LIGHT_MAP_INTENSITY).toBe(20);
     expect(ADJOINT_EMITTER_TARGET_DIRECTIONAL).toBe(1);
     expect(ADJOINT_EMITTER_TARGET_POINT).toBe(2);
     expect(ADJOINT_EMITTER_TARGET_SPOT).toBe(3);
@@ -299,6 +301,8 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE;');
     expect(ADJOINT_PASS_TS).toContain("case 'aoMapIntensity':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_AO_MAP_INTENSITY;');
+    expect(ADJOINT_PASS_TS).toContain("case 'lightMapIntensity':");
+    expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_LIGHT_MAP_INTENSITY;');
     expect(ADJOINT_PASS_TS).toContain("case 'anisotropy':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ANISOTROPY;');
     expect(ADJOINT_PASS_TS).toContain("case 'anisotropyRotation':");
@@ -308,5 +312,13 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('adjointEmitterTargetForScene(scene, p.id)');
     expect(ADJOINT_PASS_TS).toContain('kind: ADJOINT_EMITTER_TARGET_POINT');
     expect(ADJOINT_PASS_TS).toContain('kind: ADJOINT_EMITTER_TARGET_RECT');
+  });
+
+  it('path-replay adjoint shader samples light maps for primary-hit intensity gradients', () => {
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_LIGHT');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointLightMapRadiancePerUnitIntensity');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let lightMapRadiancePerUnitIntensity = sampleAdjointLightMapRadiancePerUnitIntensity');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_LIGHT_MAP_INTENSITY}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dContribution_dEmissiveIntensity(vec3f(1.0), lightMapRadiancePerUnitIntensity)');
   });
 });

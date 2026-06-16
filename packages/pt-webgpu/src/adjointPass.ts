@@ -38,6 +38,7 @@ import {
   ADJOINT_FIELD_ANISOTROPY,
   ADJOINT_FIELD_ANISOTROPY_ROTATION,
   ADJOINT_FIELD_AO_MAP_INTENSITY,
+  ADJOINT_FIELD_LIGHT_MAP_INTENSITY,
   ADJOINT_FIELD_EMITTER_COLOR,
   ADJOINT_FIELD_EMITTER_INTENSITY,
   ADJOINT_EMITTER_TARGET_DIRECTIONAL,
@@ -70,10 +71,12 @@ export class AdjointPass {
    *  - baseColor / roughness / metallic / specular / clearcoat / sheen scalar controls —
    *    single-bounce directional + point + spot + stochastic area-measure rect/disc/mesh-area
    *    direct-light NEE (the BRDF partials in `pathTraceAdjoint.wgsl.ts`);
-   *  - emissive / emissiveIntensity — the camera-DIRECT emission at the primary
-   *    hit (NOT a NEE term): `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity`
-   *    and `∂loss/∂emissiveIntensity = dot(dLoss_dR, emissive)`, both modulated
-   *    by the hit-local emissiveMap texel when one is authored.
+   *  - emissive / emissiveIntensity / lightMapIntensity — the camera-DIRECT
+   *    emission at the primary hit (NOT a NEE term): `∂loss/∂emissive_c =
+   *    dLoss_dR_c · emissiveIntensity`, `∂loss/∂emissiveIntensity =
+   *    dot(dLoss_dR, emissive)`, and `∂loss/∂lightMapIntensity =
+   *    dot(dLoss_dR, lightMapRadiance)`, modulated by the hit-local readable
+   *    texture texels when authored.
    *
    * The pipeline is lazily compiled and cached on the first call.
    * Transient buffers are allocated per step and destroyed in the finally block
@@ -178,6 +181,9 @@ export class AdjointPass {
           break;
         case 'aoMapIntensity':
           fieldCode = ADJOINT_FIELD_AO_MAP_INTENSITY;
+          break;
+        case 'lightMapIntensity':
+          fieldCode = ADJOINT_FIELD_LIGHT_MAP_INTENSITY;
           break;
         case 'emissive':
           fieldCode = ADJOINT_FIELD_EMISSIVE;

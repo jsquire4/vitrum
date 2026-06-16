@@ -180,13 +180,17 @@ export interface AdjointGradientRequest {
  *    to the min/max endpoints.
  *  - `aoMapIntensity` — local derivative of glTF AO's
  *    `mix(1, sampledR, intensity)` baseColor multiplier.
+ *  - `lightMapIntensity` — additive primary-hit baked-radiance partial:
+ *    `∂rendered/∂lightMapIntensity = lightMapRadianceTexel` in the same
+ *    camera-direct emission slot as `emissive`, with no direct-light requirement.
  *  - baseColorMap/COLOR_0, roughnessMap/metallicMap, AO, specular
  *    color/intensity maps, clearcoat/sheen maps, iridescence/thickness maps,
- *    and anisotropy maps are replayed as local chain-rule factors for the lit
- *    BRDF domain above. Additive primary-hit emissiveMap/lightMap terms are
- *    allowed on BRDF/unlit targets because they do not change the derivative
- *    of those optimized fields; dLossDRendered already contains their forward
- *    contribution. Alpha, transmission, normal/bump, displacement, and
+ *    anisotropy maps, and light maps are replayed as local chain-rule factors
+ *    for the lit BRDF / primary-hit emission domains above. Additive primary-hit
+ *    emissiveMap/lightMap terms are allowed on BRDF/unlit targets because they
+ *    do not change the derivative of those optimized fields; dLossDRendered
+ *    already contains their forward contribution. Alpha, transmission,
+ *    normal/bump, displacement, and
  *    clearcoat-normal maps remain finite-difference fallbacks until their
  *    visibility/transport/normal terms are mirrored.
  *  - `anisotropy` / `anisotropyRotation` — map-free scalar anisotropic-GGX
@@ -207,7 +211,7 @@ export interface AdjointGradientRequest {
  * gradient and the field needs proof appropriate to its risk. baseColor,
  * roughness, and emissive have GPU inverse-fit captures; specular, metallic,
  * scalar clearcoat, sheen controls, scalar iridescence,
- * scalar iridescenceIor, and anisotropy controls are
+ * scalar iridescenceIor, anisotropy controls, and lightMapIntensity are
  * CPU-FD-oracle + shader-gate covered and remain on the recapture tail.
  */
 const ADJOINT_ELIGIBLE_FIELDS = new Set([
@@ -215,6 +219,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'roughness',
   'metallic',
   'aoMapIntensity',
+  'lightMapIntensity',
   'emissive',
   'emissiveIntensity',
   'specularColor',
@@ -347,7 +352,7 @@ export class PtWebgpuInverseSession implements InverseSession {
     // adjoint-differentiable set, and every target material to stay in the
     // compatible direct-light domain, or a mapped/unmapped unlit baseColor primary-hit
     // fit (`ADJOINT_ELIGIBLE_FIELDS`: material
-    // baseColor / roughness / metallic / aoMapIntensity / emissive /
+    // baseColor / roughness / metallic / aoMapIntensity / lightMapIntensity / emissive /
     // emissiveIntensity / specularColor / specularIntensity / clearcoat / sheen /
     // iridescence / iridescenceThicknessRange / anisotropy slices — see its doc
     // for scoped map coverage and exclusions). Any shortfall
@@ -550,6 +555,9 @@ function isPathReplayCompatibleTarget(
   if (target.field === 'aoMapIntensity') {
     const needsLighting = pathReplayTargetRequiresLighting(target.field, m);
     return (!needsLighting || isPathReplayCompatibleLighting(scene)) && isPathReplayCompatibleAoMapIntensityMaterial(m);
+  }
+  if (target.field === 'lightMapIntensity') {
+    return isPathReplayCompatibleLightMapIntensityMaterial(m);
   }
   if (
     target.field === 'iridescence' ||
@@ -879,6 +887,9 @@ function pathReplayMaterialIssue(
   if (field === 'aoMapIntensity') {
     return materialIssueForAoMapIntensity(material);
   }
+  if (field === 'lightMapIntensity') {
+    return materialIssueForLightMapIntensity(material);
+  }
   if (field === 'iridescence' || field === 'iridescenceIor' || field === 'iridescenceThicknessRange') {
     return materialIssueForIridescence(material);
   }
@@ -932,6 +943,18 @@ function materialIssueForAoMapIntensity(
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
     return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+  }
+  return null;
+}
+
+function materialIssueForLightMapIntensity(
+  material: MaterialSpec,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
+  if (common != null) return common;
+  const maps = listPathReplayEmissiveUnsupportedMaps(material);
+  if (maps.length > 0) {
+    return { message: `transport/visibility maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
   }
   return null;
 }
@@ -1002,6 +1025,7 @@ function materialIssueCommon(
 
 function pathReplayTargetRequiresLighting(field: string, material: MaterialSpec): boolean {
   if (field === 'emissive' || field === 'emissiveIntensity') return false;
+  if (field === 'lightMapIntensity') return false;
   if (field === 'baseColor' && isPathReplayCompatibleUnlitBaseColorMaterial(material)) return false;
   if (field === 'aoMapIntensity' && material.shadingModel === 'unlit') return false;
   return true;
@@ -1105,6 +1129,17 @@ function isPathReplayCompatibleAoMapIntensityMaterial(m: MaterialSpec): boolean 
   if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
   if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
   return !hasPathReplayTransportOrGeometryMap(m);
+}
+
+function isPathReplayCompatibleLightMapIntensityMaterial(m: MaterialSpec): boolean {
+  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
+  if (m.opacity != null && m.opacity < 1) return false;
+  if ((m.transmission ?? 0) > 1e-6) return false;
+  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
+  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
+  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
+  if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
+  return !hasPathReplayEmissiveTargetUnsupportedMap(m);
 }
 
 function isPathReplayCompatibleIridescenceMaterial(m: MaterialSpec): boolean {
