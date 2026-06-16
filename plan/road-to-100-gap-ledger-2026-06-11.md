@@ -1050,13 +1050,14 @@ Evidence:
   on one global WebGL array sampler.
   `untestedMaterialMaps.test.ts`, `materialsTexture.test.ts`, and
   `shader-gate` pin the path.
-- Layered front/back material fields are honestly approximate for pt-webgl2:
-  `promiseLedger.ts` marks `frontLayer` / `backLayer` approximate for scalar
-  transmission/roughness, while `index.ts` emits structured
-  `pt-webgl2.unsupported-material-fields` warnings for the nested normal-map
-  subfields (`frontLayer.normalMap`, `frontLayer.normalScale`,
-  `backLayer.normalMap`, `backLayer.normalScale`). `engineContract.test.ts`
-  pins that path-level diagnostic.
+- Layered front/back material fields are honestly approximate for pt-webgl2 and
+  pt-webgpu: `promiseLedger.ts` marks `frontLayer` / `backLayer` approximate
+  for scalar transmission/roughness, while each backend emits structured
+  unsupported-material warnings for the nested normal-map subfields
+  (`frontLayer.normalMap`, `frontLayer.normalScale`, `backLayer.normalMap`,
+  `backLayer.normalScale`). pt-webgl2 pins the path-level diagnostic in
+  `engineContract.test.ts`; pt-webgpu pins setScene + material-update collection
+  through `liteTierCapabilities.test.ts` and `SceneMutationRouter`.
 - Surface anisotropy support is now source-verified for pt-webgl2:
   `promiseLedger.ts` marks `anisotropy`, `anisotropyRotation`, and
   `anisotropyMap` native after reserved-lane pack/decode, atlas/UV/wrap
@@ -1837,7 +1838,9 @@ Do not carry these as open gaps unless the code regresses again.
   vertex-color texture, visible baseColor modulation, and traversal alpha
   coverage; compatibility is `approximate` because realtime GI reservoirs are
   not full secondary path-tracer material transport. pt-webgpu-lite remains an
-  honest structured-unsupported path for glTF vertex colors.
+  honest structured-unsupported path for glTF vertex colors, and direct
+  pt-webgpu lite `setScene` now warns on `Scene.primitives[].colors` even when
+  hosts bypass the glTF adapter.
 - pt-webgpu full-tier material texture mutation stale: stale. Texture-map changes
   are rejected from the material fast path and fall through to repack.
 - Blanket "pt-webgpu lite has no point/spot/rect/HDRI support": stale. Initial

@@ -63,6 +63,24 @@ function makeLiteDeviceForSetScene(): GPUDevice {
   } as unknown as GPUDevice;
 }
 
+/** A full-tier device with the GPU stubs needed to call setScene(). */
+function makeFullDeviceForSetScene(): GPUDevice {
+  installGpuConstStubs();
+  return {
+    limits: {
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      maxStorageTexturesPerShaderStage: 8,
+    },
+    queue: { writeBuffer: vi.fn(), writeTexture: vi.fn() },
+    createBuffer: vi.fn(() => ({ destroy: vi.fn() })),
+    createCommandEncoder: vi.fn(),
+    ...textureStubMethods(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    lost: new Promise<never>(() => {}),
+  } as unknown as GPUDevice;
+}
+
 describe('H12: lite-tier capabilities truth', () => {
   it('lite tier: supportedAnalyticShapes is empty', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -466,6 +484,109 @@ describe('H12: lite-tier capabilities truth', () => {
             'envMapIntensity',
             'anisotropy',
           ]),
+        }),
+      }),
+    ]));
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('setScene warns when layered materials include unconsumed per-face normal fields', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'layered',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [0.8, 0.2, 0.1],
+            roughness: 0.3,
+            metallic: 0,
+            frontLayer: {
+              transmission: [0.9, 0.8, 0.7],
+              roughness: 0.2,
+              normalMap: { handle: { id: 'front-normal' } },
+              normalScale: 0.75,
+            },
+            backLayer: {
+              transmission: [0.7, 0.8, 0.9],
+              roughness: 0.6,
+              normalMap: { handle: { id: 'back-normal' } },
+              normalScale: 0.5,
+            },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw — expected */
+    }
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.unsupported-material-fields',
+        details: expect.objectContaining({
+          fields: expect.arrayContaining([
+            'frontLayer.normalMap',
+            'frontLayer.normalScale',
+            'backLayer.normalMap',
+            'backLayer.normalScale',
+          ]),
+        }),
+      }),
+    ]));
+    expect(structured.some((w) =>
+      w.code === 'pt-webgpu.unsupported-material-fields' &&
+      Array.isArray(w.details?.fields) &&
+      (w.details.fields.includes('frontLayer') || w.details.fields.includes('backLayer')),
+    )).toBe(false);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('lite tier: setScene warns when authored COLOR_0 vertex colors would be dropped', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'colored',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          colors: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw — expected */
+    }
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.lite-unsupported-vertex-colors',
+        details: expect.objectContaining({
+          primitiveIds: ['colored'],
         }),
       }),
     ]));

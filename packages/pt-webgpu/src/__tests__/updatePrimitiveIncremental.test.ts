@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import type { EngineWarning, Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
@@ -224,6 +224,59 @@ describe('pt-webgpu incremental primitive updates', () => {
     const lastWrite = writeBuffer.mock.calls[writeBuffer.mock.calls.length - 1];
     const writeByteOffset = lastWrite?.[1];
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
+  });
+
+  it('warns when material patches include unconsumed layered normal subfields', async () => {
+    installWebGpuConstStubs();
+    const { device } = makeStubDevice();
+    const structured: EngineWarning[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const engine = await createPTEngine_WebGPU({
+        device,
+        onWarning: (w) => structured.push(w),
+      });
+      engine.setScene(makeScene());
+      structured.length = 0;
+
+      engine.updatePrimitive?.('mesh-a', {
+        material: {
+          baseColor: [0.2, 0.7, 0.9],
+          roughness: 0.05,
+          metallic: 0.4,
+          frontLayer: {
+            transmission: [0.9, 0.8, 0.7],
+            roughness: 0.2,
+            normalMap: { handle: { id: 'front-normal' } },
+            normalScale: 0.75,
+          },
+          backLayer: {
+            transmission: [0.7, 0.8, 0.9],
+            roughness: 0.6,
+            normalMap: { handle: { id: 'back-normal' } },
+            normalScale: 0.5,
+          },
+        },
+      });
+
+      expect(structured).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'pt-webgpu.unsupported-material-fields',
+          method: 'updatePrimitive',
+          details: expect.objectContaining({
+            id: 'mesh-a',
+            fields: expect.arrayContaining([
+              'frontLayer.normalMap',
+              'frontLayer.normalScale',
+              'backLayer.normalMap',
+              'backLayer.normalScale',
+            ]),
+          }),
+        }),
+      ]));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('lite tier material patches fall back to a merged-scene repack', async () => {

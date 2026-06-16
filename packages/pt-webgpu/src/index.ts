@@ -128,6 +128,15 @@ function collectUnsupportedDisplacementFields(scene: Scene): string[] {
   return Array.from(fields).sort();
 }
 
+function collectUnsupportedLayerNormalFields(
+  fields: Set<string>,
+  prefix: 'frontLayer' | 'backLayer',
+  layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
+): void {
+  if (layer?.normalMap != null) fields.add(`${prefix}.normalMap`);
+  if (layer?.normalScale != null) fields.add(`${prefix}.normalScale`);
+}
+
 // CAP-01 — the remaining material fields this backend silently drops, derived
 // from the ledger's per-field support matrix so warning + capability rows can
 // never drift. Displacement keeps its own dedicated warning; `extensions` is
@@ -206,8 +215,19 @@ function collectUnsupportedMaterialFields(scene: Scene, traceTier: PtWebgpuTrace
     for (const field of unsupportedFields) {
       if (material[field] != null) fields.add(field);
     }
+    collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
+    collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
   }
   return Array.from(fields).sort();
+}
+
+function collectVertexColorPrimitiveIds(scene: Scene): string[] {
+  const ids: string[] = [];
+  for (const primitive of scene.primitives) {
+    const colors = (primitive as { readonly colors?: Float32Array }).colors;
+    if (colors != null && colors.length > 0) ids.push(primitive.id);
+  }
+  return ids.sort();
 }
 
 export interface PTEngineWebGPUOptions extends EngineOptions {
@@ -1106,6 +1126,20 @@ class PTEngineWebGPU implements Engine {
             `lite tier renders only the first directional; the remaining ${directionalEmitters.length - 1} will be silently ignored. ` +
             'Use the full tier for multi-directional lighting.',
           details: { count: directionalEmitters.length, ignored: directionalEmitters.length - 1 },
+        });
+      }
+      const vertexColorPrimitiveIds = collectVertexColorPrimitiveIds(scene);
+      if (vertexColorPrimitiveIds.length > 0) {
+        this.#warn({
+          code: 'pt-webgpu.lite-unsupported-vertex-colors',
+          backend: 'pt-webgpu',
+          phase: 'setScene',
+          method: 'setScene',
+          message:
+            `[vitrum/pt-webgpu] Lite tier: scene contains ${vertexColorPrimitiveIds.length} primitive(s) with ` +
+            'vertex colors (COLOR_0), but the lite shader layout omits the full-tier vertex-color binding. ' +
+            'Use the full tier to preserve authored vertex colors.',
+          details: { primitiveIds: vertexColorPrimitiveIds },
         });
       }
     }

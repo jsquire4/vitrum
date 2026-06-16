@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu compatibility diagnostics, 2026-06-16)
+
+- **pt-webgpu no longer silently drops two direct-Scene feature cases:** setScene now emits structured warnings when layered materials include unsupported `frontLayer` / `backLayer` normal-map subfields, and the lite tier now warns when primitives carry authored `COLOR_0` vertex colors that require the full-tier vertex-color binding. Material update patches use the same nested-layer field detection as setScene.
+
 ### Fixed (walkaround Welford allocation hygiene, 2026-06-16)
 
 - **Non-Welford denoisers no longer allocate full-size Welford aux textures:** `@vitrum/walkaround-hybrid` now threads a Welford ping-pong allocation policy through frame resource creation. The default `atrous-variance` path keeps full-resolution `varianceBufferAux` and `atrousVarianceEstimateTexture`, while `svgf-real`, `oidn-final`, `neural`, and raw/no-denoiser modes receive legal 1x1 placeholders for those unused aux resources. The always-read `varianceBuffer` stays full-resolution, and `hdrTotalTexture` remains full-size because shade writes it through the standard frame bind group.
