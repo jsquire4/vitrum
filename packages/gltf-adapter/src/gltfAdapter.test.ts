@@ -315,7 +315,7 @@ describe('minimal triangle', () => {
       },
     };
 
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, instancingBindings } = await gltfToScene(gltf, { buffers });
 
     expect(scene.primitives).toHaveLength(1);
     const prim = scene.primitives[0] as InstancedMeshPrimitive;
@@ -326,6 +326,14 @@ describe('minimal triangle', () => {
     expect(prim.instances[0]![13]).toBeCloseTo(0, 5);
     expect(prim.instances[1]![12]).toBeCloseTo(10, 5);
     expect(prim.instances[1]![13]).toBeCloseTo(3, 5);
+    expect(instancingBindings).toHaveLength(1);
+    expect(instancingBindings?.[0]).toMatchObject({
+      primitiveId: 'gltf-prim-0',
+      nodeIndex: 0,
+    });
+    expect(instancingBindings?.[0]?.localInstanceTransforms).toHaveLength(2);
+    expect(instancingBindings?.[0]?.localInstanceTransforms[0]![12]).toBeCloseTo(2, 5);
+    expect(instancingBindings?.[0]?.localInstanceTransforms[1]![13]).toBeCloseTo(3, 5);
     expect(warnings.some((warning) => warning.includes('EXT_mesh_gpu_instancing'))).toBe(false);
   });
 

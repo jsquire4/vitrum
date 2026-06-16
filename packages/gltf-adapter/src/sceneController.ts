@@ -11,6 +11,7 @@ import {
   sampleAnimationClip,
   solveSkin,
   type AnimationClip,
+  type InstancedMeshPrimitive,
   type MaterialSpec,
   type Mat4,
   type SampledChannel,
@@ -19,7 +20,7 @@ import {
   type SkinnedMeshPrimitive,
 } from '@vitrum/core';
 import type { GltfJson, GltfNode, GltfPrimitive } from './gltfTypes.js';
-import type { GltfMaterialVariantBinding, GltfToSceneResult } from './gltfToScene.js';
+import type { GltfInstancingBinding, GltfMaterialVariantBinding, GltfToSceneResult } from './gltfToScene.js';
 import { GLTF_DEFAULT_MATERIAL } from './materials.js';
 import {
   IDENTITY_MAT4,
@@ -150,6 +151,7 @@ export class GltfSceneController {
   readonly #basePrimitiveById: Map<string, ScenePrimitive>;
   readonly #convertedMaterials: readonly MaterialSpec[];
   readonly #materialVariantBindings: readonly GltfMaterialVariantBinding[];
+  readonly #instancingBindingsByPrimitiveId: ReadonlyMap<string, GltfInstancingBinding>;
   readonly #skinBindingsByPrimitiveId: ReadonlyMap<string, SkinBinding>;
   readonly #warnings: string[] = [];
   readonly #warnedMatrixOverrideNodes = new Set<number>();
@@ -165,6 +167,9 @@ export class GltfSceneController {
     this.#basePrimitiveById = new Map(input.scene.primitives.map((p) => [String(p.id), p]));
     this.#convertedMaterials = input.convertedMaterials ?? [];
     this.#materialVariantBindings = input.materialVariantBindings ?? [];
+    this.#instancingBindingsByPrimitiveId = new Map(
+      (input.instancingBindings ?? []).map((binding) => [binding.primitiveId, binding]),
+    );
     this.#skinBindingsByPrimitiveId = buildSkinBindings(input.gltf, this.#nodeToPrimitiveIds);
     this.#engine = options.engine;
     if (options.engine && (options.setSceneOnAttach ?? true)) {
@@ -516,6 +521,14 @@ export class GltfSceneController {
       for (const id of primitiveIds) {
         const current = findPrimitive(this.#scene, id);
         if (!current) continue;
+        const instancingBinding = this.#instancingBindingsByPrimitiveId.get(id);
+        if (instancingBinding && isInstancedMesh(current)) {
+          const instances = buildAnimatedInstanceTransforms(world, instancingBinding.localInstanceTransforms);
+          if (!instanceMatricesAlmostEqual(current.instances, instances)) {
+            mergePrimitivePatch(patchMap, id, { instances } as Partial<ScenePrimitive>);
+          }
+          continue;
+        }
         if (!mat4AlmostEqual(primitiveTransform(current), world)) {
           mergePrimitivePatch(patchMap, id, { transform: world } as Partial<ScenePrimitive>);
         }
@@ -952,6 +965,26 @@ function primitiveTransform(primitive: ScenePrimitive): Mat4 | undefined {
   return primitive.transform;
 }
 
+function buildAnimatedInstanceTransforms(
+  nodeWorld: Mat4,
+  localInstances: ReadonlyArray<Mat4>,
+): readonly Mat4[] {
+  return localInstances.map((local) => asMat4(mat4Mul(nodeWorld, local)));
+}
+
+function instanceMatricesAlmostEqual(
+  a: ReadonlyArray<Mat4>,
+  b: ReadonlyArray<Mat4>,
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const ai = a[i];
+    const bi = b[i];
+    if (!ai || !bi || !matArrayAlmostEqual(ai, bi)) return false;
+  }
+  return true;
+}
+
 function patchMorphWeights(patch: Partial<ScenePrimitive> | undefined): Float32Array | undefined {
   const value = (patch as { readonly morphWeights?: unknown } | undefined)?.morphWeights;
   return value instanceof Float32Array ? value : undefined;
@@ -972,6 +1005,10 @@ function matArrayAlmostEqual(a: ArrayLike<number>, b: ArrayLike<number>, eps = 1
 
 function isSkinnedMesh(primitive: ScenePrimitive | undefined): primitive is SkinnedMeshPrimitive {
   return primitive?.kind === 'skinned-mesh';
+}
+
+function isInstancedMesh(primitive: ScenePrimitive | undefined): primitive is InstancedMeshPrimitive {
+  return primitive?.kind === 'instanced-mesh';
 }
 
 function fitMorphWeights(

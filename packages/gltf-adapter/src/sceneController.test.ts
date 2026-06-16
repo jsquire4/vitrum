@@ -8,6 +8,7 @@ import {
 import {
   asMat4,
   type AnimationClip,
+  type InstancedMeshPrimitive,
   type MaterialSpec,
   type MeshPrimitive,
   type Scene,
@@ -75,6 +76,54 @@ function animatedHierarchyGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBu
           channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
         },
       ],
+    },
+  };
+}
+
+function animatedInstancedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const packed = packF32([
+    [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    [
+      2, 0, 0,
+      0, 3, 0,
+    ],
+    [0, 1],
+    [
+      10, 0, 0,
+      14, 0, 0,
+    ],
+  ]);
+  return {
+    buffers: new Map([[0, packed.buffer]]),
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      extensionsUsed: ['EXT_mesh_gpu_instancing'],
+      extensionsRequired: ['EXT_mesh_gpu_instancing'],
+      nodes: [{
+        mesh: 0,
+        translation: [10, 0, 0],
+        extensions: {
+          EXT_mesh_gpu_instancing: {
+            attributes: { TRANSLATION: 1 },
+          },
+        },
+      }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'VEC3' },
+        { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 3, componentType: 5126, count: 2, type: 'VEC3' },
+      ],
+      bufferViews: packed.views,
+      buffers: [{ byteLength: packed.buffer.byteLength }],
+      animations: [{
+        name: 'instance-slide',
+        samplers: [{ input: 2, output: 3, interpolation: 'LINEAR' }],
+        channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+      }],
     },
   };
 }
@@ -297,6 +346,36 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(2);
     expect(frame.warnings.some((w) => w.includes('falling back to setScene'))).toBe(true);
     expect(frame.warnings.some((w) => w.includes('geometry patch rejected'))).toBe(true);
+  });
+
+  it('patches EXT_mesh_gpu_instancing instances when the node animates', async () => {
+    const { gltf, buffers } = animatedInstancedGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const updatePrimitive = vi.fn();
+    const reset = vi.fn();
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.applyAnimation('instance-slide', 0.5, {
+      engine: { setScene: vi.fn(), updatePrimitive, reset },
+    });
+
+    expect(frame.usedSetScene).toBe(false);
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(reset).toHaveBeenCalledTimes(1);
+    const patch = frame.primitivePatches[0]!.patch as {
+      instances: ReadonlyArray<Float32Array>;
+      transform?: Float32Array;
+    };
+    expect(patch.transform).toBeUndefined();
+    expect(patch.instances).toHaveLength(2);
+    expect(patch.instances[0]![12]).toBeCloseTo(14);
+    expect(patch.instances[0]![13]).toBeCloseTo(0);
+    expect(patch.instances[1]![12]).toBeCloseTo(12);
+    expect(patch.instances[1]![13]).toBeCloseTo(3);
+    const primitive = controller.scene.primitives[0] as InstancedMeshPrimitive;
+    expect(primitive.kind).toBe('instanced-mesh');
+    expect(primitive.instances[0]![12]).toBeCloseTo(14);
+    expect(primitive.instances[1]![13]).toBeCloseTo(3);
   });
 
   it('switches KHR_materials_variants via material-only primitive patches', async () => {

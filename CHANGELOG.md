@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (glTF EXT_mesh_gpu_instancing native import, 2026-06-16)
 
-- **Static glTF GPU instancing now imports natively:** `@vitrum/gltf-adapter` maps valid node-level `EXT_mesh_gpu_instancing` TRANSLATION/ROTATION/SCALE accessors to core `InstancedMeshPrimitive` records, baking `nodeWorld * instanceTRS` into each instance matrix. `extensionsRequired: ['EXT_mesh_gpu_instancing']` is now accepted, feature reporting predicts the native `instanced-mesh` primitive kind, and malformed/skinned/morphed instancing paths keep structured fallback diagnostics instead of silently dropping instance intent.
+- **glTF GPU instancing now imports and animates natively:** `@vitrum/gltf-adapter` maps valid node-level `EXT_mesh_gpu_instancing` TRANSLATION/ROTATION/SCALE accessors to core `InstancedMeshPrimitive` records, baking `nodeWorld * instanceTRS` into each instance matrix. `extensionsRequired: ['EXT_mesh_gpu_instancing']` is now accepted, feature reporting predicts the native `instanced-mesh` primitive kind, `GltfSceneController` patches `instances[]` for animated instanced nodes/ancestors, and malformed/skinned/morphed instancing paths keep structured fallback diagnostics instead of silently dropping instance intent.
 
 ### Fixed (pt-webgl2 emissive mesh NEE parity, 2026-06-16)
 

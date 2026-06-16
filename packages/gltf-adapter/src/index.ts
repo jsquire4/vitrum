@@ -10,6 +10,7 @@ export { GltfImportError, gltfToScene } from './gltfToScene.js';
 export type {
   GltfImportDiagnostic,
   GltfImportDiagnosticCode,
+  GltfInstancingBinding,
   GltfMaterialVariantBinding,
   GltfToSceneOptions,
   GltfToSceneResult,

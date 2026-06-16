@@ -24,8 +24,9 @@
 //     host samples clips (sampleAnimationClip) and pushes updates.
 //   - KHR_lights_punctual → SceneEmitter[] (point, spot, directional;
 //     world-transform applied to position/direction).
-//   - EXT_mesh_gpu_instancing → InstancedMeshPrimitive for static mesh nodes
-//     (TRANSLATION/ROTATION/SCALE accessors; nodeWorld baked into instances).
+//   - EXT_mesh_gpu_instancing → InstancedMeshPrimitive for mesh nodes
+//     (TRANSLATION/ROTATION/SCALE accessors; nodeWorld baked into instances;
+//     local instance matrices are returned for GltfSceneController animation).
 //
 //   - KHR_draco_mesh_compression / EXT_meshopt_compression → resolved via
 //     HOST-SUPPLIED decoder hooks (opts.dracoDecode / opts.meshoptDecode; the
@@ -222,13 +223,13 @@ export interface GltfToSceneResult {
    * to the primitive ids created from that node's mesh:
    *
    *   - `translation` / `rotation` / `scale` channels: re-compose the node's
-   *     local TRS from the sampled values, then push the new world transform
-   *     through `engine.updatePrimitive(primId, { transform })` for each
-   *     mapped primitive. NOTE: the adapter flattens the node hierarchy into
-   *     world transforms at import; channels animating an ANCESTOR of a mesh
-   *     node (or a joint node) have no mapped primitives — hosts that need
-   *     full scene-graph animation must retain the GltfJson hierarchy and
-   *     recompute world transforms themselves.
+   *     local TRS from the sampled values, then push either
+   *     `{ transform }` for ordinary mesh-like primitives or `{ instances }`
+   *     for `EXT_mesh_gpu_instancing` primitives (using the returned
+   *     `instancingBindings` local matrices) through `engine.updatePrimitive`.
+   *     Channels animating an ANCESTOR of a mesh node are handled by
+   *     `GltfSceneController`, which retains the glTF hierarchy and recomputes
+   *     world transforms.
    *   - `weights` channels: write the sampled vector into the skinned
    *     primitive's `morphWeights`, re-run `solveSkin` (@vitrum/core), and
    *     push the deformed `positions`/`normals` through `updatePrimitive`.
@@ -257,6 +258,13 @@ export interface GltfToSceneResult {
    * only primitives affected by KHR_materials_variants.
    */
   readonly materialVariantBindings?: ReadonlyArray<GltfMaterialVariantBinding>;
+  /**
+   * Primitive provenance for `EXT_mesh_gpu_instancing`. Each local instance
+   * matrix is the accessor-authored TRS before the node world transform is
+   * applied. `GltfSceneController` uses these to update `InstancedMeshPrimitive`
+   * instance matrices when a node or ancestor animates.
+   */
+  readonly instancingBindings?: ReadonlyArray<GltfInstancingBinding>;
   /** Non-fatal issues encountered during conversion. Inspect these for skipped
    *  primitives, unsupported extensions, missing buffers, sparse patches, etc. */
   readonly warnings: string[];
@@ -271,6 +279,12 @@ export interface GltfMaterialVariantBinding {
   readonly meshIndex: number;
   readonly primitiveIndex: number;
   readonly baseMaterialIndex?: number;
+}
+
+export interface GltfInstancingBinding {
+  readonly primitiveId: string;
+  readonly nodeIndex: number;
+  readonly localInstanceTransforms: ReadonlyArray<Mat4>;
 }
 
 export type GltfImportDiagnosticCode =
@@ -498,6 +512,7 @@ export async function gltfToScene(
   const primitives: ScenePrimitive[] = [];
   const animationTargets: Record<string, string[]> = {};
   const materialVariantBindings: GltfMaterialVariantBinding[] = [];
+  const instancingBindings: GltfInstancingBinding[] = [];
   let primIdCounter = 0;
 
   const gltfNodes = gltf.nodes ?? [];
@@ -803,7 +818,7 @@ export async function gltfToScene(
         );
       }
 
-      let primitiveInstances = instanceTransforms;
+      let primitiveInstances = instanceTransforms?.worldInstanceTransforms;
       if (primitiveInstances && skinArg) {
         if (!instanceFallbackWarned) {
           emitImportDiagnostic(warnings, diagnostics, {
@@ -818,6 +833,13 @@ export async function gltfToScene(
           instanceFallbackWarned = true;
         }
         primitiveInstances = undefined;
+      }
+      if (primitiveInstances && instanceTransforms) {
+        instancingBindings.push({
+          primitiveId: id,
+          nodeIndex: nodeIdx,
+          localInstanceTransforms: instanceTransforms.localInstanceTransforms,
+        });
       }
 
       primitives.push(_buildPrimitive(
@@ -890,6 +912,7 @@ export async function gltfToScene(
     animationTargets,
     convertedMaterials: coreMaterials,
     materialVariantBindings,
+    instancingBindings,
     warnings,
     diagnostics,
   };
@@ -1011,6 +1034,11 @@ const GPU_INSTANCE_ATTRIBUTE_SPECS = {
   SCALE: { type: 'VEC3' },
 } as const;
 
+interface MeshGpuInstancingTransforms {
+  readonly worldInstanceTransforms: readonly Mat4[];
+  readonly localInstanceTransforms: readonly Mat4[];
+}
+
 function _extractMeshGpuInstancing(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
@@ -1019,7 +1047,7 @@ function _extractMeshGpuInstancing(
   worldMat: Mat4,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
-): readonly Mat4[] | undefined {
+): MeshGpuInstancingTransforms | undefined {
   const extension = node.extensions?.EXT_mesh_gpu_instancing;
   if (extension === undefined) return undefined;
   const pathBase = `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`;
@@ -1131,7 +1159,8 @@ function _extractMeshGpuInstancing(
     return undefined;
   }
 
-  const instances: Mat4[] = [];
+  const worldInstanceTransforms: Mat4[] = [];
+  const localInstanceTransforms: Mat4[] = [];
   for (let i = 0; i < instanceCount; i += 1) {
     const t: [number, number, number] = translations
       ? [
@@ -1155,9 +1184,11 @@ function _extractMeshGpuInstancing(
           scales[i * 3 + 2] ?? 1,
         ]
       : [1, 1, 1];
-    instances.push(asMat4(mat4Mul(worldMat, composeTrsMat4(t, r, s))));
+    const local = asMat4(composeTrsMat4(t, r, s));
+    localInstanceTransforms.push(local);
+    worldInstanceTransforms.push(asMat4(mat4Mul(worldMat, local)));
   }
-  return instances;
+  return { worldInstanceTransforms, localInstanceTransforms };
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
