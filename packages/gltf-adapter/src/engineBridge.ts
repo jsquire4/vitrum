@@ -82,6 +82,16 @@ export interface LoadGltfForEngineOptions<
   readonly backend?: GltfEngineSelection;
 
   /**
+   * Concrete runtime profile when the host already knows the backend tier.
+   * This is most useful for adapter-only hosts that construct `pt-webgpu`
+   * themselves and know that the negotiated device is lite-tier. The profile
+   * must belong to the selected backend family; for example, `backend:'pt-webgpu'`
+   * may be validated as `runtimeProfile:'pt-webgpu-lite'`, but it cannot be
+   * redirected to a WebGL or walkaround profile.
+   */
+  readonly runtimeProfile?: GltfBackendProfileId;
+
+  /**
    * Compatibility gate for the selected backend.
    * - best-effort: return diagnostics, never reject for optional degradation.
    * - reject-unsupported: throw when the selected backend has unsupported rows.
@@ -131,7 +141,7 @@ export async function loadGltfForEngine<
     : await loadGltfAsset(input, options);
   const selected = selectBackendTarget(asset, options.backend ?? 'recommended');
   const selectedBackend = selected.backend;
-  let selectedProfileId = selected.profileId;
+  let selectedProfileId = resolveRuntimeProfile(selectedBackend, selected.profileId, options.runtimeProfile);
   const compatibilityMode = options.compatibilityMode ?? 'best-effort';
   enforceCompatibility(asset, selectedBackend, selectedProfileId, compatibilityMode, options);
 
@@ -237,6 +247,26 @@ function selectBackendTarget(
     return { backend: 'pt-webgpu', profileId: 'pt-webgpu-lite' };
   }
   return { backend: selection, profileId: selection };
+}
+
+function resolveRuntimeProfile(
+  selectedBackend: BackendId,
+  selectedProfileId: GltfBackendProfileId,
+  runtimeProfile: GltfBackendProfileId | undefined,
+): GltfBackendProfileId {
+  if (runtimeProfile === undefined) return selectedProfileId;
+  const runtimeBackend = backendFromProfileId(runtimeProfile);
+  if (runtimeBackend !== selectedBackend) {
+    throw new Error(
+      `[vitrum/gltf-adapter] runtimeProfile ${formatBackendProfile(runtimeBackend, runtimeProfile)} ` +
+        `does not match selected backend ${formatBackendProfile(selectedBackend, selectedProfileId)}.`,
+    );
+  }
+  return runtimeProfile;
+}
+
+function backendFromProfileId(profileId: GltfBackendProfileId): BackendId {
+  return profileId === 'pt-webgpu-lite' ? 'pt-webgpu' : profileId;
 }
 
 function enforceCompatibility<

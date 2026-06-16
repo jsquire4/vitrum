@@ -1559,6 +1559,26 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).toHaveBeenCalledTimes(1);
   });
 
+  it('lets adapter-only hosts narrow a pt-webgpu selection to the runtime lite profile', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const engine = { backendId: 'pt-webgpu' as const, setScene: vi.fn() };
+    const createEngine = vi.fn(async ({ backend }) => {
+      expect(backend).toBe('pt-webgpu');
+      return engine;
+    });
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgpu',
+      runtimeProfile: 'pt-webgpu-lite',
+      createEngine,
+    });
+
+    expect(result.backend).toBe('pt-webgpu');
+    expect(result.profileId).toBe('pt-webgpu-lite');
+    expect(createEngine).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects direct pt-webgpu-lite strict loads before constructing unsupported COLOR_0 scenes', async () => {
     const { gltf, buffers } = makeInlineVertexColorGltf();
     const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
@@ -1570,6 +1590,39 @@ describe('loadGltfForEngine', () => {
       createEngine,
     })).rejects.toThrow(
       'Selected backend "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: primitive:vertexColors=unsupported',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('uses runtime pt-webgpu-lite compatibility before constructing map-heavy pt-webgpu scenes', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgpu',
+      runtimeProfile: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'Selected backend "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: material:baseColorMap=unsupported',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects a runtime profile from a different backend family', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      runtimeProfile: 'pt-webgpu-lite',
+      createEngine,
+    })).rejects.toThrow(
+      'runtimeProfile "pt-webgpu" profile "pt-webgpu-lite" does not match selected backend "pt-webgl2"',
     );
 
     expect(createEngine).not.toHaveBeenCalled();

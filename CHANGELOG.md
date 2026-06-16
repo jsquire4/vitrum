@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF runtime backend profile bridge, 2026-06-16)
+
+- **Adapter-only glTF loads can now validate against the actual pt-webgpu runtime tier:** `loadGltfForEngine()` accepts `runtimeProfile`, constrained to the selected backend family, so hosts that construct `pt-webgpu` outside `@vitrum/engine/gltf` can validate strict loads against `pt-webgpu-lite` before engine creation. Cross-backend profile mismatches throw immediately instead of silently validating the wrong profile.
+
 ### Fixed (walkaround texture-alpha shadow predicates, 2026-06-16)
 
 - **Walkaround opaque/ReSTIR/GI shadow visibility now evaluates atlas alpha coverage:** `@vitrum/walkaround-hybrid` routes shade direct-light shadows, ReSTIR-DI visibility, ReSTIR-GI visibility, NRC GI visibility, and GRIS temporal/spatial reconnection visibility through a material-atlas shadow walk. The new path preserves `castShadow:false` and `skipGlass` semantics while evaluating readable `baseColorMap.a`, `alphaMap.r`, vertex alpha, opacity, and mask/blend coverage at the actual blocker hit. Transparent layers still do not participate as ReSTIR/GI/DDGI/RC transport vertices, and exact texel-PDF emissive selection remains an open tail.

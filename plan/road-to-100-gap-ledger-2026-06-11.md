@@ -1515,6 +1515,11 @@ Closure:
   returns that backend and reruns strict compatibility against it before
   calling `setScene()`. Factory fallback can still proceed in best-effort mode,
   but strict mode no longer validates against one backend and attaches another.
+- Adapter-only hosts that negotiate `pt-webgpu` themselves can pass
+  `runtimeProfile:"pt-webgpu-lite"` to `loadGltfForEngine()` while keeping
+  `backend:"pt-webgpu"` as the engine factory target. The bridge constrains
+  runtime profiles to the selected backend family and reruns strict compatibility
+  against that concrete profile before construction.
 - Strict bridge modes now consume converter diagnostics and texture-readiness
   reports as well as compatibility rows. Structural skips (`missing-position`,
   unresolved compression, unreadable attributes/indices, unsupported primitive
@@ -2091,7 +2096,9 @@ Do not carry these as open gaps unless the code regresses again.
   "pt-webgpu-lite" })`. The factory still receives `backend:"pt-webgpu"`, but
   strict compatibility uses the lite profile row, so adapter-only one-call loads
   reject lite-unsupported assets before engine construction just like
-  `@vitrum/engine/gltf`'s runtime-tier gate.
+  `@vitrum/engine/gltf`'s runtime-tier gate. A later 2026-06-16 follow-up also
+  added `runtimeProfile:"pt-webgpu-lite"` for hosts that select `backend:
+  "pt-webgpu"` but already know the negotiated runtime tier.
 - Unknown required glTF extensions now fail with structure instead of a plain
   throw: `gltfToScene` raises `GltfImportError` carrying an
   `unsupported-required-extension` diagnostic at the exact
