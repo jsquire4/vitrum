@@ -27,6 +27,8 @@ import {
   ADJOINT_FIELD_SPECULAR_INTENSITY,
   ADJOINT_FIELD_METALLIC,
   ADJOINT_FIELD_EMISSIVE_INTENSITY,
+  ADJOINT_FIELD_CLEARCOAT,
+  ADJOINT_FIELD_CLEARCOAT_ROUGHNESS,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
@@ -48,8 +50,8 @@ export class AdjointPass {
    * per pixel it re-traces the frozen-seed primary ray (brute-force closest-hit)
    * and accumulates `∂loss/∂θ` for the optimized material params through the
    * GPU-validated partials + fixed-point `adjointScatter`:
-   *  - baseColor / roughness / metallic / specular controls — single-bounce
-   *    directional + point + spot + center-sampled rect/disc/mesh-area
+   *  - baseColor / roughness / metallic / specular / clearcoat scalar controls —
+   *    single-bounce directional + point + spot + center-sampled rect/disc/mesh-area
    *    direct-light NEE (the BRDF partials in `pathTraceAdjoint.wgsl.ts`);
    *  - emissive / emissiveIntensity — the camera-DIRECT emission at the primary
    *    hit (NOT a NEE term): `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity`
@@ -123,20 +125,35 @@ export class AdjointPass {
       if (matId == null) {
         throw new Error(`computeAdjointGradient: no material index for primitive "${p.id}".`);
       }
-      const fieldCode =
-        p.field === 'roughness'
-          ? ADJOINT_FIELD_ROUGHNESS
-          : p.field === 'metallic'
-            ? ADJOINT_FIELD_METALLIC
-          : p.field === 'emissive'
-            ? ADJOINT_FIELD_EMISSIVE
-            : p.field === 'emissiveIntensity'
-              ? ADJOINT_FIELD_EMISSIVE_INTENSITY
-            : p.field === 'specularColor'
-              ? ADJOINT_FIELD_SPECULAR_COLOR
-              : p.field === 'specularIntensity'
-                ? ADJOINT_FIELD_SPECULAR_INTENSITY
-                : ADJOINT_FIELD_BASECOLOR;
+      let fieldCode = ADJOINT_FIELD_BASECOLOR;
+      switch (p.field) {
+        case 'roughness':
+          fieldCode = ADJOINT_FIELD_ROUGHNESS;
+          break;
+        case 'metallic':
+          fieldCode = ADJOINT_FIELD_METALLIC;
+          break;
+        case 'emissive':
+          fieldCode = ADJOINT_FIELD_EMISSIVE;
+          break;
+        case 'emissiveIntensity':
+          fieldCode = ADJOINT_FIELD_EMISSIVE_INTENSITY;
+          break;
+        case 'clearcoat':
+          fieldCode = ADJOINT_FIELD_CLEARCOAT;
+          break;
+        case 'clearcoatRoughness':
+          fieldCode = ADJOINT_FIELD_CLEARCOAT_ROUGHNESS;
+          break;
+        case 'specularColor':
+          fieldCode = ADJOINT_FIELD_SPECULAR_COLOR;
+          break;
+        case 'specularIntensity':
+          fieldCode = ADJOINT_FIELD_SPECULAR_INTENSITY;
+          break;
+        default:
+          break;
+      }
       const descBase = i * 8;
       descs[descBase + 0] = matId >>> 0;
       descs[descBase + 1] = fieldCode;

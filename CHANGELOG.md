@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu clearcoat adjoint breadth, 2026-06-16)
+
+- **Map-free clearcoat scalars now participate in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored partials for `clearcoat` and `clearcoatRoughness`, reads packed material vec4 #23 in the adjoint pass, scatters explicit field codes across the existing deterministic direct-light replay loops, and routes map-free opaque inverse sessions for those fields to `path-replay`. Clearcoat maps/normal maps, sheen, iridescence, anisotropy, transmission, environment, indirect, and stochastic area sampling remain finite-difference or validation tails.
+
 ### Fixed (walkaround emissive-map DI payloads, 2026-06-16)
 
 - **Merged ReSTIR-DI now evaluates emissive-map texels at the selected light sample:** `@vitrum/walkaround-hybrid` packs a valid source-triangle lane for merged-BVH material-backed emitters, keeps CPU-readable map averages for CDF/light-tree power, and uses a shared WGSL helper in RIS, pHat reuse, and final shade to sample `emissiveMap` at the stored triangle `xi`. TLAS/analytic emitters conservatively keep the averaged `Le` fallback, and exact texel-PDF selection plus GI/RC/DDGI texel-space emission remain approximate.
@@ -180,7 +184,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added (pt-webgpu inverse rendering, 2026-06-15)
 
-- **Finite-difference extension-lobe material params:** `@vitrum/pt-webgpu` inverse sessions now accept common scalar/RGB material extension fields for finite-difference optimization, including specular, clearcoat, sheen, iridescence, and anisotropy controls. Path-replay remains limited to the validated baseColor/roughness/emissive set and still degrades to finite-difference for these extension fields until analytic adjoints are implemented.
+- **Finite-difference extension-lobe material params:** `@vitrum/pt-webgpu` inverse sessions now accept common scalar/RGB material extension fields for optimization, including specular, clearcoat, sheen, iridescence, and anisotropy controls. This was the initial finite-difference-safe landing; later 2026-06-15/16 bullets promote specular controls and map-free clearcoat scalars into the scoped path-replay direct-light domain, while sheen/iridescence/anisotropy and mapped variants remain finite-difference.
 
 ### Fixed (D1 source reconciliation, 2026-06-15)
 

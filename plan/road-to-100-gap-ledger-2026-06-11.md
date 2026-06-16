@@ -134,6 +134,17 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   deliberately narrow: opaque, unmapped, no transmission, no spectral/scattering,
   no layered/thin-film/generic extensions. Unlit non-baseColor parameters and
   mapped unlit baseColor remain finite-difference.
+- Later 2026-06-16 follow-up: map-free scalar `clearcoat` and
+  `clearcoatRoughness` joined the same scoped pt-webgpu direct-light
+  path-replay domain. The CPU oracle now mirrors the additive fixed-F0
+  KHR_materials_clearcoat lobe and finite-difference-checks both scalar
+  partials; the WGSL partial bundle mirrors that math; the adjoint pass reads
+  packed material vec4 #23, scatters explicit clearcoat field codes across the
+  covered deterministic direct-light loops, and `inverseSession` selects replay
+  for those two fields when the material/light gates pass. Clearcoat maps,
+  clearcoat normal maps, sheen/iridescence/aniso, transmission, environment,
+  indirect, stochastic area sampling, and GPU inverse-fit recapture remain open
+  proof/implementation tails.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including

@@ -20,10 +20,12 @@ import {
   ADJOINT_FIELD_ROUGHNESS,
   ADJOINT_FIELD_EMISSIVE,
   ADJOINT_FIELD_SPECULAR_COLOR,
-  ADJOINT_FIELD_SPECULAR_INTENSITY,
-  ADJOINT_FIELD_METALLIC,
-  ADJOINT_FIELD_EMISSIVE_INTENSITY,
-} from '../wgsl/pathTrace/adjointPass.wgsl.js';
+	  ADJOINT_FIELD_SPECULAR_INTENSITY,
+	  ADJOINT_FIELD_METALLIC,
+	  ADJOINT_FIELD_EMISSIVE_INTENSITY,
+	  ADJOINT_FIELD_CLEARCOAT,
+	  ADJOINT_FIELD_CLEARCOAT_ROUGHNESS,
+	} from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 describe('adjoint harness (V24 GPU partials A/B)', () => {
   it('packs an input into the 16-float vec4-aligned AdjIn record', () => {
@@ -83,9 +85,12 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m26 = materials[matId * MATERIAL_VEC4_STRIDE + 26u]');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dBaseColorWithSpecular(');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dMetallic(');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColor(');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensity(');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dMetallic(');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColor(');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensity(');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m23 = materials[matId * MATERIAL_VEC4_STRIDE + 23u]');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dClearcoat(');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dClearcoatRoughness(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('directionalLights');              // delta directional NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let directionalShadowDisabled = dDirAD.w < 0.0');
@@ -104,7 +109,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let gUnlitBaseColor = dLoss_dR');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let gBase = select(gBaseColor, gUnlitBaseColor, isUnlit)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBase.x * invReplaySamples)'); // per-param scatter
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gMetallic * invReplaySamples)');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gMetallic * invReplaySamples)');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoat * invReplaySamples)');
+	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoatRoughness * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples)');
     // Emissive is the camera-DIRECT primary-hit partial (NOT a NEE term): the fixed
@@ -121,7 +128,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_EMISSIVE).toBe(2);
     expect(ADJOINT_FIELD_SPECULAR_COLOR).toBe(3);
     expect(ADJOINT_FIELD_SPECULAR_INTENSITY).toBe(4);
-    expect(ADJOINT_FIELD_METALLIC).toBe(5);
-    expect(ADJOINT_FIELD_EMISSIVE_INTENSITY).toBe(6);
-  });
+	    expect(ADJOINT_FIELD_METALLIC).toBe(5);
+	    expect(ADJOINT_FIELD_EMISSIVE_INTENSITY).toBe(6);
+	    expect(ADJOINT_FIELD_CLEARCOAT).toBe(7);
+	    expect(ADJOINT_FIELD_CLEARCOAT_ROUGHNESS).toBe(8);
+	  });
 });

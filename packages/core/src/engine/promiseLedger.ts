@@ -670,8 +670,9 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // SPEC-01 — scalar factors are packed in material vec4 #27 and consumed by the
   // ordinary PT BRDF/PDF paths, MNEE/SPPM receiver paths, ReSTIR-PT visible-domain
   // reservoirs/resolve, and BDPT eye/light + light-subpath surface scattering.
-  // Approximate until inverse/adjoint gradients and remaining reference/furnace
-  // proof gates carry the same scalar/material-lobe coherence.
+  // Scalar path-replay adjoints exist for the direct-light inverse slice, but
+  // the row stays approximate until mapped/specialty adjoints and remaining
+  // reference/furnace proof gates carry the same scalar/material-lobe coherence.
   specularIntensity: 'approximate',
   specularColor: 'approximate',
   envMapIntensity: 'native',

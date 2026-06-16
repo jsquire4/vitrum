@@ -24,6 +24,9 @@
  *  - KHR_materials_specular dielectric F0 controls (`specularColor` and
  *    `specularIntensity`) plus metallic through the same frozen direct-light
  *    BRDF partial.
+ *  - scalar KHR_materials_clearcoat controls (`clearcoat` and
+ *    `clearcoatRoughness`) for the additive, map-free direct-light clearcoat
+ *    lobe. Clearcoat normal maps remain outside this oracle.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
  *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
  *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
@@ -171,6 +174,58 @@ export function evaluateBrdf(
     out[c] = diff + spec;
   }
   return out;
+}
+
+function evalClearcoatLobe(
+  clearcoat: number,
+  clearcoatRoughness: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): Vec3 {
+  if (clearcoat < 1e-4) return [0, 0, 0];
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  const nDotV = Math.max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const nDotH = Math.max(dot(normal, h), 0.0);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const f = fresnelSchlick(vDotH, [0.04, 0.04, 0.04]);
+  const alpha = Math.max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  const d = ggxD(nDotH, alpha);
+  const g = smithG1(nDotV, clearcoatRoughness) * smithG1(nDotL, clearcoatRoughness);
+  const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
+  return [clearcoat * f[0] * specScale, clearcoat * f[1] * specScale, clearcoat * f[2] * specScale];
+}
+
+/**
+ * Map-free forward mirror of `evaluateBrdfFull(... clearcoat, clearcoatRoughness,
+ * sheen=0, iridescence=0, anisotropy=0)`. Used by the clearcoat adjoint FD gate.
+ */
+export function evaluateBrdfWithClearcoat(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  clearcoat: number,
+  clearcoatRoughness: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  const base = evaluateBrdf(
+    baseColor,
+    roughness,
+    metallic,
+    normal,
+    wo,
+    wi,
+    specularColor,
+    specularIntensity,
+  );
+  const cc = evalClearcoatLobe(clearcoat, clearcoatRoughness, normal, wo, wi);
+  return [base[0] + cc[0], base[1] + cc[1], base[2] + cc[2]];
 }
 
 // ── analytic partials ────────────────────────────────────────────────────────
@@ -384,6 +439,70 @@ export function dBrdf_dSpecularIntensity(
     0.04 * clamp01(specularColor[1]) * (1.0 - metallic),
     0.04 * clamp01(specularColor[2]) * (1.0 - metallic),
   ]);
+}
+
+/**
+ * Analytic ∂(evaluateBrdfFull)_c / ∂clearcoat for the additive map-free
+ * KHR_materials_clearcoat lobe. The returned value is the per-unit lobe kernel;
+ * callers still multiply by NdotL and incident radiance.
+ */
+export function dBrdf_dClearcoat(
+  clearcoatRoughness: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): Vec3 {
+  return evalClearcoatLobe(1.0, clearcoatRoughness, normal, wo, wi);
+}
+
+/**
+ * Analytic ∂(evaluateBrdfFull)_c / ∂clearcoatRoughness for the additive
+ * map-free KHR_materials_clearcoat lobe. This mirrors `evalClearcoatLobe` with
+ * frozen directions and no clearcoat normal map.
+ */
+export function dBrdf_dClearcoatRoughness(
+  clearcoat: number,
+  clearcoatRoughness: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): Vec3 {
+  if (clearcoat < 1e-4) return [0, 0, 0];
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  const nDotV = Math.max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const nDotH = Math.max(dot(normal, h), 0.0);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const f = fresnelSchlick(vDotH, [0.04, 0.04, 0.04]);
+
+  const alpha = Math.max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  const alphaClamped = clearcoatRoughness * clearcoatRoughness < 1e-3;
+  const dAlpha_dRough = alphaClamped ? 0.0 : 2.0 * clearcoatRoughness;
+
+  const a2 = alpha * alpha;
+  const den = nDotH * nDotH * (a2 - 1.0) + 1.0;
+  const dD_da2 = (den - 2.0 * a2 * (nDotH * nDotH)) / Math.max(PI * den * den * den, 1e-12);
+  const da2_dRough = 2.0 * alpha * dAlpha_dRough;
+  const dD_dRough = dD_da2 * da2_dRough;
+  const d = ggxD(nDotH, alpha);
+
+  const k = (clearcoatRoughness + 1.0) * (clearcoatRoughness + 1.0) * 0.125;
+  const dk_dRough = (clearcoatRoughness + 1.0) * 0.25;
+  const g1 = (x: number): number => x / Math.max(x * (1.0 - k) + k, 1e-6);
+  const dG1_dRough = (x: number): number => {
+    const denom = x * (1.0 - k) + k;
+    if (denom <= 1e-6) return 0.0;
+    return (-x * (1.0 - x) / (denom * denom)) * dk_dRough;
+  };
+  const g1V = g1(nDotV);
+  const g1L = g1(nDotL);
+  const g = g1V * g1L;
+  const dG_dRough = dG1_dRough(nDotV) * g1L + g1V * dG1_dRough(nDotL);
+
+  const invDenom = 1.0 / Math.max(4.0 * nDotV * nDotL, 1e-6);
+  const dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
+  return [clearcoat * f[0] * dSpecScale, clearcoat * f[1] * dSpecScale, clearcoat * f[2] * dSpecScale];
 }
 
 function dBrdf_dSpecularF0(

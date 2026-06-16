@@ -155,6 +155,9 @@ export interface AdjointGradientRequest {
  *    the diffuse/specular partition and the specular Fresnel colour for
  *    non-metallic and partially-metallic surfaces; fully metallic surfaces still
  *    source F0 from baseColor and therefore have zero derivative here.
+ *  - `clearcoat`, `clearcoatRoughness` — map-free KHR_materials_clearcoat direct
+ *    lobe controls. Clearcoat maps and clearcoatNormalMap stay on finite
+ *    difference until the adjoint pass mirrors texture/normal-map sampling.
  *
  * `ior` is deliberately NOT here — it optimizes via finite difference (correct,
  * just slower) and has a GPU-validated analytic partial (`dFrDielectric_dIor` —
@@ -167,8 +170,9 @@ export interface AdjointGradientRequest {
  * NOTE: adding a field here makes `inverseSession` REQUEST path-replay; the
  * engine's `computeAdjointGradient` hook must actually accumulate that field's
  * gradient and the field needs proof appropriate to its risk. baseColor,
- * roughness, and emissive have GPU inverse-fit captures; specular and metallic
- * are CPU-FD-oracle + shader-gate covered and remain on the recapture tail.
+ * roughness, and emissive have GPU inverse-fit captures; specular, metallic,
+ * and scalar clearcoat controls are CPU-FD-oracle + shader-gate covered and
+ * remain on the recapture tail.
  */
 const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'baseColor',
@@ -178,6 +182,8 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'emissiveIntensity',
   'specularColor',
   'specularIntensity',
+  'clearcoat',
+  'clearcoatRoughness',
 ]);
 
 interface ParamSlot {
@@ -470,7 +476,7 @@ function isPathReplayCompatibleBrdfMaterial(m: MaterialSpec): boolean {
   if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
   if (m.opacity != null && m.opacity < 1) return false;
   if ((m.transmission ?? 0) > 1e-6) return false;
-  if ((m.clearcoat ?? 0) > 1e-6 || (m.sheen ?? 0) > 1e-6 || (m.iridescence ?? 0) > 1e-6) return false;
+  if ((m.sheen ?? 0) > 1e-6 || (m.iridescence ?? 0) > 1e-6) return false;
   if ((m.anisotropy ?? 0) > 1e-6) return false;
   if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
   if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;

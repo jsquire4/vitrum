@@ -11,13 +11,16 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  evaluateBrdf,
-  dBrdf_dBaseColor,
-  dBrdf_dRoughness,
-  dBrdf_dMetallic,
-  dBrdf_dSpecularColor,
-  dBrdf_dSpecularIntensity,
-} from '../inverse/brdfAdjoint.js';
+	  evaluateBrdf,
+	  evaluateBrdfWithClearcoat,
+	  dBrdf_dBaseColor,
+	  dBrdf_dRoughness,
+	  dBrdf_dMetallic,
+	  dBrdf_dSpecularColor,
+	  dBrdf_dSpecularIntensity,
+	  dBrdf_dClearcoat,
+	  dBrdf_dClearcoatRoughness,
+	} from '../inverse/brdfAdjoint.js';
 import {
   PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
   ADJOINT_GRAD_FP,
@@ -192,6 +195,59 @@ describe('BRDF adjoint — analytic KHR_materials_specular partials == finite di
       const fd = (fp[c]! - fm[c]!) / (2 * h);
       expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
     }
+	});
+});
+
+describe('BRDF adjoint — analytic KHR_materials_clearcoat partials == finite difference', () => {
+  const cfg = {
+    baseColor: [0.45, 0.32, 0.23] as V3,
+    roughness: 0.52,
+    metallic: 0.15,
+    normal: normalize([0.05, 0.2, 1]),
+    wo: normalize([0.25, -0.15, 1]),
+    wi: normalize([-0.3, 0.2, 1]),
+    clearcoat: 0.48,
+    clearcoatRoughness: 0.42,
+    specularColor: [0.8, 0.7, 0.5] as V3,
+    specularIntensity: 0.75,
+  };
+
+  it('matches FD for clearcoat over the unclamped interior', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dClearcoat(
+      cfg.clearcoatRoughness, cfg.normal, cfg.wo, cfg.wi,
+    );
+    const fp = evaluateBrdfWithClearcoat(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.clearcoat + h, cfg.clearcoatRoughness, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fm = evaluateBrdfWithClearcoat(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.clearcoat - h, cfg.clearcoatRoughness, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+
+  it('matches FD for clearcoatRoughness over the unclamped interior', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dClearcoatRoughness(
+      cfg.clearcoat, cfg.clearcoatRoughness, cfg.normal, cfg.wo, cfg.wi,
+    );
+    const fp = evaluateBrdfWithClearcoat(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.clearcoat, cfg.clearcoatRoughness + h, cfg.specularColor, cfg.specularIntensity,
+    );
+    const fm = evaluateBrdfWithClearcoat(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.clearcoat, cfg.clearcoatRoughness - h, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (fp[c]! - fm[c]!) / (2 * h);
+      expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+    }
   });
 });
 
@@ -248,12 +304,20 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
     expect(wgsl).toContain('let dSpec = specScale * dfc;');
   });
 
-  it('specular partials use the KHR_materials_specular dielectric F0 derivative', () => {
-    expect(wgsl).toContain('fn adjointMaterialSpecularF0(');
-    expect(wgsl).toContain('let dF0 = vec3f(0.04 * clamp(specularIntensity, 0.0, 1.0) * (1.0 - metallic));');
-    expect(wgsl).toContain('let dF0 = 0.04 * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * (1.0 - metallic);');
-    expect(wgsl).toContain('return dF0 * (1.0 - m5) * (vec3f(specScale) - kd0 * baseColor * INV_PI);');
-  });
+	  it('specular partials use the KHR_materials_specular dielectric F0 derivative', () => {
+	    expect(wgsl).toContain('fn adjointMaterialSpecularF0(');
+	    expect(wgsl).toContain('let dF0 = vec3f(0.04 * clamp(specularIntensity, 0.0, 1.0) * (1.0 - metallic));');
+	    expect(wgsl).toContain('let dF0 = 0.04 * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * (1.0 - metallic);');
+	    expect(wgsl).toContain('return dF0 * (1.0 - m5) * (vec3f(specScale) - kd0 * baseColor * INV_PI);');
+	  });
+
+	  it('clearcoat partials mirror the additive fixed-F0 clearcoat lobe', () => {
+	    expect(wgsl).toContain('fn dBrdf_dClearcoat(');
+	    expect(wgsl).toContain('fn dBrdf_dClearcoatRoughness(');
+	    expect(wgsl).toContain('return adjointClearcoatLobe(1.0, clearcoatRoughness, normal, wo, wi);');
+	    expect(wgsl).toContain('let f = fresnelSchlick(vDotH, vec3f(0.04));');
+	    expect(wgsl).toContain('let dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;');
+	  });
 
   it('gradient atomics use the i32 fixed-point scale shared with NRC (2^20)', () => {
     expect(ADJOINT_GRAD_FP).toBe(1048576);

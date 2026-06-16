@@ -11,20 +11,23 @@
  * resolves the effective method to 'path-replay' (NOT finite-difference)
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
  * optimized parameter is in the currently differentiable set (baseColor,
- * roughness, metallic, emissive, specularColor, specularIntensity).
+ * roughness, metallic, emissive, specularColor, specularIntensity, clearcoat,
+ * clearcoatRoughness).
  * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
  * partials match the FD oracle to f32 precision, the chain rule + fixed-point
  * accumulation match an on-device finite-difference, and
  * baseColor/roughness/emissive end-to-end inverse fits converge + sign-match
  * the full-render FD (`v24-inverse-fit.mjs`, `v24-emissive-fit.mjs`). Later
- * specular/metallic partials are CPU-FD-oracle + WGSL-shape + shader-gate
- * covered until their GPU inverse-fit recaptures land.
+ * specular/metallic/clearcoat partials are CPU-FD-oracle + WGSL-shape +
+ * shader-gate covered until their GPU inverse-fit recaptures land.
  *
  * Emits the WGSL functions that compute the analytic partials of:
  *  - the Cook-Torrance BRDF (`evaluateBrdf`) w.r.t. `baseColor` (rgb) and
  *    `roughness` (scalar), for a FROZEN sampled direction `wi`;
  *  - the opaque base-BRDF `metallic` scalar through the diffuse/specular
  *    partition and F0 blend;
+ *  - the additive, map-free KHR_materials_clearcoat lobe w.r.t. `clearcoat`
+ *    and `clearcoatRoughness`;
  *  - the additive emission term w.r.t. `emissive` (rgb) — a CONTRIBUTION-level
  *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
@@ -251,6 +254,81 @@ fn dBrdf_dSpecularIntensity(
 ) -> vec3f {
   let dF0 = 0.04 * clamp(specularColor, vec3f(0.0), vec3f(1.0)) * (1.0 - metallic);
   return dBrdf_dSpecularF0(baseColor, roughness, metallic, normal, wo, wi, dF0);
+}
+
+// ── analytic KHR_materials_clearcoat partials ───────────────────────────────
+// Mirrors inverse/brdfAdjoint.ts:dBrdf_dClearcoat*. This is the additive
+// clearcoat lobe only: no clearcoat normal map, no clearcoat maps, frozen wi.
+fn adjointClearcoatLobe(
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  if (clearcoat < 1e-4) { return vec3f(0.0); }
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 0.0);
+  let f = fresnelSchlick(vDotH, vec3f(0.04));
+  let alpha = max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  let d = ggxD(nDotH, alpha);
+  let g = smithG1(nDotV, clearcoatRoughness) * smithG1(nDotL, clearcoatRoughness);
+  let specScale = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
+  return clearcoat * f * specScale;
+}
+fn dBrdf_dClearcoat(
+  clearcoatRoughness: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  return adjointClearcoatLobe(1.0, clearcoatRoughness, normal, wo, wi);
+}
+fn dBrdf_dClearcoatRoughness(
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  if (clearcoat < 1e-4) { return vec3f(0.0); }
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 0.0);
+  let f = fresnelSchlick(vDotH, vec3f(0.04));
+
+  let alpha = max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  let alphaClamped = (clearcoatRoughness * clearcoatRoughness) < 1e-3;
+  let dAlpha_dRough = select(2.0 * clearcoatRoughness, 0.0, alphaClamped);
+
+  let a2 = alpha * alpha;
+  let den = nDotH * nDotH * (a2 - 1.0) + 1.0;
+  let dD_da2 = (den - 2.0 * a2 * (nDotH * nDotH)) / max(PI * den * den * den, 1e-12);
+  let da2_dRough = 2.0 * alpha * dAlpha_dRough;
+  let dD_dRough = dD_da2 * da2_dRough;
+  let d = ggxD(nDotH, alpha);
+
+  let k = (clearcoatRoughness + 1.0) * (clearcoatRoughness + 1.0) * 0.125;
+  let dk_dRough = (clearcoatRoughness + 1.0) * 0.25;
+  let g1V = smithG1(nDotV, clearcoatRoughness);
+  let g1L = smithG1(nDotL, clearcoatRoughness);
+  let denV = nDotV * (1.0 - k) + k;
+  let denL = nDotL * (1.0 - k) + k;
+  let dG1V = select((-nDotV * (1.0 - nDotV) / (denV * denV)) * dk_dRough, 0.0, denV <= 1e-6);
+  let dG1L = select((-nDotL * (1.0 - nDotL) / (denL * denL)) * dk_dRough, 0.0, denL <= 1e-6);
+  let g = g1V * g1L;
+  let dG_dRough = dG1V * g1L + g1V * dG1L;
+
+  let invDenom = 1.0 / max(4.0 * nDotV * nDotL, 1e-6);
+  let dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
+  return clearcoat * f * dSpecScale;
 }
 
 // ── analytic ∂(contribution)_c / ∂emissive_c (diagonal identity) ────────────
