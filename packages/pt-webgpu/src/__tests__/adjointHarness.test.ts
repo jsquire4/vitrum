@@ -133,12 +133,15 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('rectAreaLights');                  // rect-area NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let isDisc = abs(rshape.w - 1.0) < 0.5');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('max(PI * dot(ru, ru), 1e-6)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn adjointConcentricDiscSample');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let xi1 = rand_f32(&rng)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('area = max(PI * r * r, 1e-6)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('rectAreaLights[rb].w <= 0.5 && anyHit');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('cosLight * area / dist2');         // area geometric term
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let lightPdf = dist2 / max(cosLight * area, 1e-6)'); // area PDF
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('meshAreaLights');                  // mesh-area NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u)');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let center = (a + b + c) * (1.0 / 3.0)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let su = sqrt(r1)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('let center = (a + b + c) * (1.0 / 3.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('mr.w <= 0.5 && anyHit');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let descKind = d.w & 255u');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('targetSlot >= d.x + descCount');
@@ -269,6 +272,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_EMITTER_TARGET_POINT).toBe(2);
     expect(ADJOINT_EMITTER_TARGET_SPOT).toBe(3);
     expect(ADJOINT_EMITTER_TARGET_RECT).toBe(4);
+    expect(ADJOINT_EMITTER_TARGET_MESH).toBe(5);
   });
 
   it('engine adjoint PASS binds the material texture replay resources', () => {

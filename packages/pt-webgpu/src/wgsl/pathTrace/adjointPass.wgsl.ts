@@ -16,7 +16,7 @@
  *
  * Scope (Phase 1, matching the differentiable set): single bounce, brute-force
  * intersection (Phase-1 inverse scenes are small — Cornell-scale), directional
- * delta + point + spot + center-sampled rect/disc/mesh-area direct lights.
+ * delta + point + spot + stochastic area-measure rect/disc/mesh-area direct lights.
  * Environment, indirect, soft-sun angular diameter, and BRDF/transmissive/
  * layered/volume/spectral mapped material terms remain deliberate
  * finite-difference fallbacks until their source terms are mirrored here and
@@ -25,9 +25,10 @@
  * baseColorMap / COLOR_0 / aoMap, roughnessMap / metallicMap, clearcoat/sheen/
  * iridescence/anisotropy maps, and specular color/intensity local factors used
  * by lit direct BRDF derivatives.
- * Direct lights are summed deterministically over all eligible lights (no MC
- * light selection: the adjoint is the deterministic expectation; finite area
- * lights are center-sampled). baseColor/roughness/metallic/specular/clearcoat/
+ * Direct lights are summed over all eligible lights (no MC light selection:
+ * the adjoint estimates the direct-light expectation for each source; finite
+ * area lights use the same area-measure surface samples as the forward NEE
+ * branch). baseColor/roughness/metallic/specular/clearcoat/
  * sheen scalar params share this direct-light BRDF path. Map-free unlit baseColor is a primary-hit
  * contribution-level identity (`radiance += throughput * baseColor`) and is
  * scattered without requiring any light. The shading normal is faced toward the viewer
@@ -613,6 +614,23 @@ fn sampleAdjointAnisotropyTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> A
   return out;
 }
 
+// Mirror of kernelCore.wgsl.ts concentricDiscSample for adjoint-pass standalone
+// composition. The caller remaps xi from [0,1]² to [-1,1]².
+fn adjointConcentricDiscSample(xi: vec2f) -> vec2f {
+  let a = xi.x;
+  let b = xi.y;
+  var cr: f32;
+  var cphi: f32;
+  if (abs(a) >= abs(b)) {
+    cr = a;
+    cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
+  } else {
+    cr = b;
+    cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
+  }
+  return vec2f(cr * cos(cphi), cr * sin(cphi));
+}
+
 // ── the GPU-validated BRDF partials + adjointScatter (gradAccum at binding 8) ──
 ${PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL}
 
@@ -1118,11 +1136,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
 
-    // Rect-area lights: deterministic CENTER-sample of the same geometric term the
-    // forward area NEE integrates (brdf·nDotL·radiance·cosLight·area/dist²). One
-    // sample is a biased-but-correct-direction estimate of the area integral — good
-    // enough for the gradient direction (Adam handles the magnitude). GPU-validated
-    // on a camera-near rect-area light (directly lights the visible target).
+    // Rect/disc-area lights: stochastic area-measure replay of the same geometric
+    // term the forward NEE integrates (brdf·nDotL·radiance / pdf_area). The pass
+    // still sums every light rather than replaying forward light-selection MIS,
+    // but it no longer approximates finite emitters by their centers.
     for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
       let rb = ri * 4u;
       let rpos = rectAreaLights[rb].xyz;
@@ -1131,7 +1148,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let rshape = rectAreaLights[rb + 3u];
       let rad = rshape.rgb;
       let isDisc = abs(rshape.w - 1.0) < 0.5;
-      let toLight = rpos - pos;
+      let xi1 = rand_f32(&rng);
+      let xi2 = rand_f32(&rng);
+      var lpos: vec3f;
+      var area: f32;
+      if (isDisc) {
+        let r = length(ru);
+        let disc = adjointConcentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));
+        lpos = rpos + ru * disc.x + rv * disc.y;
+        area = max(PI * r * r, 1e-6);
+      } else {
+        lpos = rpos + ru * (xi1 * 2.0 - 1.0) + rv * (xi2 * 2.0 - 1.0);
+        area = max(4.0 * length(cross(ru, rv)), 1e-6);
+      }
+      let toLight = lpos - pos;
       let dist2 = max(dot(toLight, toLight), 1e-6);
       let dist = sqrt(dist2);
       let wi = toLight / dist;
@@ -1141,12 +1171,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let cosLight = max(dot(lightNormal, -wi), 0.0);
       if (cosLight <= 0.0) { continue; }
       if (rectAreaLights[rb].w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
-      let area = select(
-        max(4.0 * length(cross(ru, rv)), 1e-6),
-        max(PI * dot(ru, ru), 1e-6),
-        isDisc,
-      );
-      let Li = rad * (cosLight * area / dist2);
+      let lightPdf = dist2 / max(cosLight * area, 1e-6);
+      let Li = rad / max(lightPdf, 1e-6);
       let lg = directLightAdjoint(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1170,7 +1196,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
-        let areaFactor = cosLight * area / dist2;
+        let areaFactor = 1.0 / max(lightPdf, 1e-6);
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1185,21 +1211,26 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
 
-    // Mesh-area lights: deterministic CENTER-sample of each packed emissive
-    // triangle. This mirrors the rect/disc scoped adjoint: it differentiates a
-    // stable direct-light estimate without pretending to cover the stochastic
-    // full triangle sampler or light-selection MIS yet.
+    // Mesh-area lights: stochastic uniform triangle-area replay of each packed
+    // emissive triangle. This mirrors the forward NEE triangle sampler without
+    // pretending to cover light-selection MIS or exact emissive texel-PDFs.
     for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
       let mb = mi * 4u;
       let a = meshAreaLights[mb].xyz;
       let b = meshAreaLights[mb + 1u].xyz;
       let c = meshAreaLights[mb + 2u].xyz;
       let mr = meshAreaLights[mb + 3u];
-      let center = (a + b + c) * (1.0 / 3.0);
+      let r1 = rand_f32(&rng);
+      let r2 = rand_f32(&rng);
+      let su = sqrt(r1);
+      let uu = 1.0 - su;
+      let vv = r2 * su;
+      let ww = 1.0 - uu - vv;
+      let lpos = a * uu + b * vv + c * ww;
       let edgeCross = cross(b - a, c - a);
       let area = max(0.5 * length(edgeCross), 1e-6);
       let lightNormal = safe_normalize(edgeCross);
-      let toLight = center - pos;
+      let toLight = lpos - pos;
       let dist2 = max(dot(toLight, toLight), 1e-6);
       let dist = sqrt(dist2);
       let wi = toLight / dist;
@@ -1208,7 +1239,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let cosLight = max(dot(lightNormal, -wi), 0.0);
       if (cosLight <= 0.0) { continue; }
       if (mr.w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; }
-      let Li = mr.rgb * (cosLight * area / dist2);
+      let lightPdf = dist2 / max(cosLight * area, 1e-6);
+      let Li = mr.rgb / max(lightPdf, 1e-6);
       let lg = directLightAdjoint(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1232,7 +1264,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
-        let areaFactor = cosLight * area / dist2;
+        let areaFactor = 1.0 / max(lightPdf, 1e-6);
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,

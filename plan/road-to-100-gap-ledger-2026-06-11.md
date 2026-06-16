@@ -104,13 +104,15 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   for delta directional, spot, and native disc-area direct lights too. The adjoint
   pass now binds packed directional/spot buffers, consumes directional/spot counts
   from a widened UBO, honors point/spot/rect/disc emitter shadow-disable lanes,
-  and uses the native disc `πr²` center-sample area. Later 2026-06-16 follow-up:
+  and initially used center-sampled finite area terms. Later 2026-06-16 follow-up:
   mesh-area direct lights joined the same scoped path via the existing packed
-  mesh-triangle buffer and a deterministic center-sampled triangle area term.
-  `inverseSession` now selects replay for delta directional, point, spot, and
-  center-sampled rect/disc/mesh-area scenes; it still keeps soft-sun angular
-  diameter, environment, indirect, most mapped/transmissive/layered/spectral/volume,
-  full stochastic area sampling, and extension-lobe material domains on finite
+  mesh-triangle buffer. Latest 2026-06-16 follow-up: finite area replay now uses
+  stochastic area-measure rect/disc samples and uniform triangle barycentrics with
+  solid-angle area PDFs instead of center points. `inverseSession` now selects
+  replay for delta directional, point, spot, and stochastic area-measure
+  rect/disc/mesh-area scenes; it still keeps soft-sun angular diameter,
+  environment, indirect, most mapped/transmissive/layered/spectral/volume,
+  forward light-selection MIS parity, and extension-lobe material domains on finite
   difference until those adjoints are implemented and validated. The current map
   exceptions are scoped camera-direct emissiveMap replay, baseColorMap/COLOR_0
   local chain factors for baseColor fits, roughnessMap/metallicMap local chain
@@ -200,7 +202,7 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   factor. This is intentionally limited to the documented glTF-style local
   albedo multiplier; alpha visibility, light maps, transmission/thickness,
   normal/bump/displacement, clearcoat-normal, layered/volume/spectral,
-  environment, indirect, and full stochastic area sampling remain outside the
+  environment, indirect, and forward light-selection MIS parity remain outside the
   scoped path-replay domain.
 - Later 2026-06-16 follow-up: map-free scalar `clearcoat` and
   `clearcoatRoughness` joined the same scoped pt-webgpu direct-light
@@ -2038,9 +2040,9 @@ Remaining:
   the finite-difference baseline and explicitly degrade requested path-replay
   sessions back to finite-difference for those fields. 2026-06-16 follow-up:
   scoped light-source path replay now covers delta directional, point, spot, and
-  center-sampled rect/disc/mesh-area direct lights. Analytic path-replay adjoints
-  remain open for environment, soft-sun angular diameter, full stochastic area
-  sampling, indirect paths, remaining nonlocal/path-changing maps,
+  stochastic area-measure rect/disc/mesh-area direct lights. Analytic path-replay adjoints
+  remain open for environment, soft-sun angular diameter, forward light-selection
+  MIS parity, indirect paths, remaining nonlocal/path-changing maps,
   transmission/layers/volume/spectral material domains, and full extension-lobe
   contribution/PDF gradients until converging
   inverse fits validate them.

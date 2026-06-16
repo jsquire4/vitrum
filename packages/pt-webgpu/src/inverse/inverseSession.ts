@@ -20,7 +20,8 @@
  * The session requests 'path-replay' only when the engine provides the hook,
  * every parameter is in the adjoint-differentiable set, and every target
  * material stays within the direct-light base/specular/extension-lobe domain this pass mirrors
- * (delta directional, point, spot, and center-sampled rect/disc area lights), or
+ * (delta directional, point, spot, and stochastic area-measure rect/disc/mesh
+ * area lights), or
  * is a baseColorMap / COLOR_0-aware `shadingModel:'unlit'` baseColor primary-hit fit;
  * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
  * emissive / specularColor / specularIntensity / clearcoat / sheen /
@@ -93,7 +94,7 @@ export interface InverseEngineHooks {
    * baseline render + one adjoint pass. The session only requests this when the
    * hook exists, every parameter is adjoint-eligible, and every target material
    * stays inside the adjoint-compatible direct-light domain (delta directional,
-   * point, spot, and center-sampled rect/disc/mesh area lights;
+   * point, spot, and stochastic area-measure rect/disc/mesh area lights;
    * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
    * emissive / specularColor / specularIntensity / clearcoat / sheen /
    * map-free iridescence / map-free anisotropy controls); otherwise it reports + uses
@@ -1101,7 +1102,7 @@ function listPathReplayEmissiveUnsupportedMaps(m: MaterialSpec): readonly string
 function isPathReplayCompatibleLighting(scene: Scene): boolean {
   if ((scene.environment?.kind ?? 'none') !== 'none') return false;
   // The path-replay pass differentiates deterministic direct-light terms for
-  // delta directional, point, spot, and center-sampled rect/disc/mesh-area lights.
+  // delta directional, point, spot, and stochastic area-measure rect/disc/mesh-area lights.
   // Soft-sun angular-diameter directionals and environment lighting
   // stay on finite difference until their stochastic/source terms are mirrored
   // and validated end-to-end.

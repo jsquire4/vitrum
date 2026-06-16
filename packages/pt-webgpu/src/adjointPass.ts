@@ -66,7 +66,7 @@ export class AdjointPass {
    * and accumulates `∂loss/∂θ` for the optimized material params through the
    * GPU-validated partials + fixed-point `adjointScatter`:
    *  - baseColor / roughness / metallic / specular / clearcoat / sheen scalar controls —
-   *    single-bounce directional + point + spot + center-sampled rect/disc/mesh-area
+   *    single-bounce directional + point + spot + stochastic area-measure rect/disc/mesh-area
    *    direct-light NEE (the BRDF partials in `pathTraceAdjoint.wgsl.ts`);
    *  - emissive / emissiveIntensity — the camera-DIRECT emission at the primary
    *    hit (NOT a NEE term): `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity`
