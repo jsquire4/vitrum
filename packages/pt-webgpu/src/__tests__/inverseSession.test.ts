@@ -69,10 +69,16 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
       const mat = fake.scene.primitives[0]!.material;
       const transmission = mat.transmission ?? 0;
       const thickness = mat.thickness ?? 0;
+      const opacity = mat.alphaMode === 'mask' || mat.alphaMode === 'blend'
+        ? mat.opacity ?? 1
+        : 0;
+      const alphaCutoff = mat.alphaMode === 'mask'
+        ? mat.alphaCutoff ?? 0.5
+        : 0;
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
-        rgb[p * 3 + 0] = mat.baseColor[0] + transmission;
-        rgb[p * 3 + 1] = mat.baseColor[1] + thickness;
+        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity;
+        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + alphaCutoff;
         rgb[p * 3 + 2] = mat.baseColor[2];
       }
       return { rgb, channels: 3 as const };
@@ -236,6 +242,47 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
     expect(session.currentValues()[1]![0]).toBeLessThanOrEqual(0.5);
     expect(fake.scene.primitives[0]!.material.transmission).toBeCloseTo(session.currentValues()[0]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.thickness).toBeCloseTo(session.currentValues()[1]![0]!, 6);
+    session.dispose();
+  });
+
+  it('optimizes scalar alpha coverage controls through finite differences', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'mask',
+                opacity: 0.7,
+                alphaCutoff: 0.8,
+              },
+            }
+          : pr,
+      ),
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.2, 0.2, 0.2]),
+      parameters: [
+        { path: 'materials.panel.opacity', kind: 'scalar', max: 0.5 },
+        { path: 'materials.panel.alphaCutoff', kind: 'scalar', max: 0.4 },
+      ],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.7, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.8, 6)]);
+
+    const result = await session.step();
+    expect(result.gradient[0]![0]).toBeGreaterThan(0);
+    expect(result.gradient[1]![0]).toBeGreaterThan(0);
+    expect(session.currentValues()[0]![0]).toBeLessThanOrEqual(0.5);
+    expect(session.currentValues()[1]![0]).toBeLessThanOrEqual(0.400001);
+    expect(fake.scene.primitives[0]!.material.opacity).toBeCloseTo(session.currentValues()[0]![0]!, 6);
+    expect(fake.scene.primitives[0]!.material.alphaCutoff).toBeCloseTo(session.currentValues()[1]![0]!, 6);
     session.dispose();
   });
 
@@ -834,6 +881,50 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       code: 'path-replay-unsupported-field',
       path: 'materials.panel.thickness',
       details: { field: 'thickness' },
+    }));
+    session.dispose();
+  });
+
+  it('keeps alpha coverage params on finite-difference until path replay mirrors visibility', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'mask',
+                opacity: 0.75,
+                alphaCutoff: 0.4,
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.opacity', kind: 'scalar' },
+        { path: 'materials.panel.alphaCutoff', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.75, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.4, 6)]);
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-field',
+      path: 'materials.panel.opacity',
+      details: { field: 'opacity' },
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-field',
+      path: 'materials.panel.alphaCutoff',
+      details: { field: 'alphaCutoff' },
     }));
     session.dispose();
   });
