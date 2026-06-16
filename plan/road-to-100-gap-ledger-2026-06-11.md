@@ -112,8 +112,9 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   diameter, environment, indirect, most mapped/transmissive/layered/spectral/volume,
   full stochastic area sampling, and extension-lobe material domains on finite
   difference until those adjoints are implemented and validated. The current map
-  exceptions are scoped camera-direct emissiveMap replay and baseColorMap/COLOR_0
-  local chain factors for baseColor fits, described below.
+  exceptions are scoped camera-direct emissiveMap replay, baseColorMap/COLOR_0
+  local chain factors for baseColor fits, and roughnessMap/metallicMap local
+  chain factors for ORM fits, described below.
 - Later 2026-06-16 follow-up: scalar `metallic` joined the same scoped
   path-replay domain. The CPU oracle differentiates the opaque base-BRDF diffuse
   fade-out and F0 blend, the emitted WGSL mirrors it, the engine scatters the new
@@ -144,6 +145,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   routing is deliberately narrow: opaque, no other material maps, no transmission,
   no spectral/scattering, no layered/thin-film/generic extensions. Unlit
   non-baseColor parameters and non-baseColor mapped terms remain finite-difference.
+- Next 2026-06-16 follow-up: roughnessMap and metallicMap joined that same
+  scoped direct-light adjoint treatment. The adjoint pass now binds the linear
+  material texture array, mirrors the forward ORM sampler (roughness G, metallic
+  B, with each map's UV/transform/wrap metadata), evaluates BRDF partials with
+  the hit-local mapped roughness/metallic values, and scatters scalar gradients
+  through the local G/B chain factors. Normal/bump/AO/light/alpha/transmission
+  maps and extension-lobe maps remain finite-difference until their source terms,
+  normals, visibility, emission, or lobe-specific derivatives are mirrored.
 - Later 2026-06-16 follow-up: map-free scalar `clearcoat` and
   `clearcoatRoughness` joined the same scoped pt-webgpu direct-light
   path-replay domain. The CPU oracle now mirrors the additive fixed-F0

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu roughness/metallic-map adjoint replay, 2026-06-16)
+
+- **Roughness and metallic maps now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` binds the linear material texture array into `adjointPass`, mirrors the forward ORM sampler for roughness G and metallic B with each map's UV/transform/wrap metadata, evaluates lit direct-light BRDF partials with the hit-local mapped roughness/metallic values, and applies the same local G/B chain factors to scalar `roughness` and `metallic` gradients. Normal/bump/AO/light/alpha/transmission and extension-lobe maps remain finite-difference tails until their nonlocal or lobe-specific terms are mirrored and validated.
+
 ### Fixed (pt-webgpu baseColor-map adjoint replay, 2026-06-16)
 
 - **Base-color texture and `COLOR_0` factors now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` binds the existing vertex-color stream into `adjointPass`, mirrors the baseColorMap texture descriptor/UV/transform/wrap sampler used by the material path, evaluates lit direct-light BRDF partials with `baseColor * baseColorMap * COLOR_0`, and applies the same local chain-rule factor to RGB `baseColor` gradients, including unlit primary-hit fits. Other material maps, alpha visibility, transmission, layered/volume/spectral cases, environment/soft-sun terms, indirect paths, stochastic area sampling, and GPU inverse-fit recaptures remain finite-difference or validation tails.

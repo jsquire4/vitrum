@@ -135,13 +135,18 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('mr.w <= 0.5 && anyHit');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointBaseColorTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointVertexColor');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointOrmTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let baseColorFactor = sampleAdjointVertexColor(hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb *');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sampleAdjointBaseColorTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveBaseColor = baseColor * baseColorFactor');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let ormFactor = sampleAdjointOrmTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z))');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveRoughness = clamp(roughness * ormFactor.g, 0.02, 1.0)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let effectiveMetallic = clamp(metallic * ormFactor.b, 0.0, 1.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let gUnlitBaseColor = dLoss_dR * baseColorFactor');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let gBase = select(gBaseColor * baseColorFactor, gUnlitBaseColor, isUnlit)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBase.x * invReplaySamples)'); // per-param scatter
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gMetallic * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gRough * ormFactor.g * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gMetallic * ormFactor.b * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoat * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoatRoughness * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSheen * invReplaySamples)');
@@ -161,9 +166,12 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(16) var                      materialTextures');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(17) var                      materialTexSampler');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(18) var<storage, read>       meshVertexColors');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(19) var                      materialTexturesLinear');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_VEC4_STRIDE = 82u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_BASE_COLOR = 19u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = 21u;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS = 25u;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_METALLIC = 27u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointEmissiveTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveTexel = sampleAdjointEmissiveTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');
@@ -198,6 +206,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('binding: 16, resource: sb.materialTextureView');
     expect(ADJOINT_PASS_TS).toContain('binding: 17, resource: sb.materialTextureSampler');
     expect(ADJOINT_PASS_TS).toContain('binding: 18, resource: { buffer: sb.colorsBuffer }');
+    expect(ADJOINT_PASS_TS).toContain('binding: 19, resource: sb.materialLinearTextureView');
     expect(ADJOINT_PASS_TS).toContain("case 'iridescenceIor':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_IRIDESCENCE_IOR;');
     expect(ADJOINT_PASS_TS).toContain("case 'anisotropy':");

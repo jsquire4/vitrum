@@ -498,6 +498,38 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when a lit BRDF material uses roughness/metallic maps in the scoped adjoint domain', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                roughness: 0.7,
+                metallic: 0.5,
+                roughnessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 0.6, 1, 1]) } },
+                metallicMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 0.4, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.roughness', kind: 'scalar' },
+        { path: 'materials.panel.metallic', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    session.dispose();
+  });
+
   it.each([
     ['transmission', { transmission: 0.25 }],
     ['anisotropy', { anisotropy: 0.25 }],
