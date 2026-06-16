@@ -80,7 +80,11 @@
 > downgrade with structured diagnostics. Latest diagnostic cleanup: finite-
 > difference-only scalar inverse fields now distinguish transport tails
 > (`ior`/`transmission`/`thickness`) from visibility tails
-> (`opacity`/`alphaCutoff`) via contract-level diagnostic codes.
+> (`opacity`/`alphaCutoff`) via contract-level diagnostic codes. Latest RC
+> emitter follow-up: RC probe-cast emitter NEE now receives the main material
+> atlas and samples UV0 material-backed emissive texels through the packed
+> `EmitterTri` source-triangle/subdivision lanes, falling back to scalar `Le`
+> for unmapped emitters, omitted atlas bindings, and UV1-only map cases.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped direct-light/unlit-primary slice; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive
@@ -805,9 +809,12 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   plus bounded barycentric micro-emitter subdivision for material-backed walkaround
   ReSTIR-DI emitters and implicit PT mesh lights rather than whole-texture average
   power, and DDGI mesh-area emitter NEE samples material-atlas emissive texels
-  when TLAS source-triangle metadata is available, but still does not build full
-  texel-alias emitter PDFs; analytic/extra emitter mapped payloads plus RC and
-  non-NEE GI/DDGI emission still use averaged `Le`,
+  when TLAS source-triangle metadata is available. 2026-06-16 RC follow-up:
+  RC probe-cast emitter NEE now samples UV0 material-backed emissive texels from
+  the shared material atlas via `EmitterTri` source-triangle/subdivision metadata
+  instead of always using averaged `Le`. These paths still do not build full
+  texel-alias emitter PDFs; analytic/extra emitter mapped payloads, UV1-only RC
+  emissive maps, and non-NEE GI/DDGI emission remain approximate,
 GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
 transparent blend now has camera-visible OIT composition with direct sun plus

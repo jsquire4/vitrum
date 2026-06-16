@@ -1406,6 +1406,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._initialized ? this._bvhHost.envBindings() : null;
   }
 
+  /** Material atlas views for RC material-backed emitter NEE. Null before init. */
+  getMaterialAtlasBindings(): {
+    materialTextureAtlasView: GPUTextureView;
+    materialMapMetaTextureView: GPUTextureView;
+  } | null {
+    return this._initialized ? this._bvhHost.materialAtlasBindings() : null;
+  }
+
   /** WS1 — live merged per-vertex normal buffer for GPU skinning writes. */
   getBvhNormalBuffer(): GPUBuffer | null {
     return this._initialized ? this._bvhHost.getBvhNormalBuffer() : null;

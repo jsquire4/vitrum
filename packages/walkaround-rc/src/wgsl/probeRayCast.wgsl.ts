@@ -294,6 +294,144 @@ struct RCLightBuffer {
 // lightCount == 0 ⇒ loop is a no-op. Host binds the same DDGIProbeLights-style
 // buffer (packRCLights) or a 1040-byte zero placeholder when no fixtures exist.
 @group(0) @binding(15) var<storage, read>      rc_lights:                RCLightBuffer;
+// RC material-backed emitter NEE (2026-06-16): optional material atlas views
+// forwarded from the main pipeline. Placeholder meta has layer=-1, so helper
+// calls fall back to scalar EmitterTri.Le when the caller omits these bindings.
+@group(0) @binding(16) var                      rc_materialTextureAtlas: texture_2d_array<f32>;
+@group(0) @binding(17) var                      rc_materialMapMeta:      texture_2d<f32>;
+
+const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
+const RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
+
+fn rcMaterialMetaCoord(texel: u32) -> vec2i {
+  let dims = textureDimensions(rc_materialMapMeta);
+  let w = max(dims.x, 1u);
+  return vec2i(i32(texel % w), i32(texel / w));
+}
+
+fn rcWrapMaterialUv1(v: f32, mode: u32) -> f32 {
+  if (mode == 1u) {
+    return clamp(v, 0.0, 1.0);
+  }
+  if (mode == 2u) {
+    return 1.0 - abs(fract(v * 0.5) * 2.0 - 1.0);
+  }
+  return fract(v);
+}
+
+fn rcWrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
+  let wrapS = wrapPacked & 0x3u;
+  let wrapT = (wrapPacked >> 2u) & 0x3u;
+  return vec2f(rcWrapMaterialUv1(uv.x, wrapS), rcWrapMaterialUv1(uv.y, wrapT));
+}
+
+fn rcPackedUvFromVec4(v: vec4f) -> vec2f {
+  return unpack2x16unorm(bitcast<u32>(v.w));
+}
+
+fn rcEmitterSubdivWeightAt(i: u32, j: u32, level: u32) -> vec3f {
+  let invLevel = 1.0 / f32(max(level, 1u));
+  let u = f32(i) * invLevel;
+  let v = f32(j) * invLevel;
+  return vec3f(1.0 - u - v, u, v);
+}
+
+fn rcEmitterParentBarycentricFromLocal(localBary: vec3f, levelF: f32, ordinalF: f32) -> vec3f {
+  let level = min(16u, max(1u, u32(round(max(levelF, 1.0)))));
+  if (level <= 1u) {
+    return localBary;
+  }
+
+  let ordinal = u32(round(max(ordinalF, 0.0)));
+  var cursor = 0u;
+  for (var i = 0u; i < level; i = i + 1u) {
+    for (var j = 0u; j < level - i; j = j + 1u) {
+      let a = rcEmitterSubdivWeightAt(i, j, level);
+      let b = rcEmitterSubdivWeightAt(i + 1u, j, level);
+      let c = rcEmitterSubdivWeightAt(i, j + 1u, level);
+      if (cursor == ordinal) {
+        return localBary.x * a + localBary.y * b + localBary.z * c;
+      }
+      cursor = cursor + 1u;
+
+      if (i + j < level - 1u) {
+        let d = rcEmitterSubdivWeightAt(i + 1u, j + 1u, level);
+        if (cursor == ordinal) {
+          return localBary.x * b + localBary.y * d + localBary.z * c;
+        }
+        cursor = cursor + 1u;
+      }
+    }
+  }
+
+  return localBary;
+}
+
+fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f) -> vec4f {
+  let metaDims = textureDimensions(rc_materialMapMeta);
+  let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
+  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+    return vec4f(-1.0);
+  }
+  let meta0 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
+  let layer = i32(meta0.x);
+  if (layer < 0 || u32(layer) >= textureNumLayers(rc_materialTextureAtlas)) {
+    return vec4f(-1.0);
+  }
+  let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
+  // RC currently binds the packed position stream but not the packed normal/UV1
+  // stream, so UV1-authored emissive maps intentionally fall back to UV0 here.
+  // The metadata remains honored for transforms and wrap modes.
+  let meta1 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel + 1u), 0);
+  let scaled = uv0 * meta1.xy;
+  let transformed = vec2f(
+    scaled.x * meta1.z - scaled.y * meta1.w,
+    scaled.x * meta1.w + scaled.y * meta1.z,
+  ) + meta0.zw;
+  let wrapped = rcWrapMaterialUv(transformed, wrapPacked);
+  let dims = textureDimensions(rc_materialTextureAtlas);
+  let texel = vec2i(
+    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
+    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
+  );
+  return textureLoad(rc_materialTextureAtlas, texel, layer, 0);
+}
+
+fn rcSampleEmitterLeAtBary(e: EmitterTri, localBary: vec3f, scalarEmission: vec3f) -> vec3f {
+  let encodedSourceTri = i32(round(e._padA));
+  if (encodedSourceTri == -1) {
+    return scalarEmission;
+  }
+  let mirroredSourceTri = encodedSourceTri < -1;
+  let sourceTri = select(encodedSourceTri, -encodedSourceTri - 2, mirroredSourceTri);
+  let triIndex = u32(sourceTri);
+  if (triIndex >= arrayLength(&rc_geom_index)) {
+    return scalarEmission;
+  }
+  let tri = rc_geom_index[triIndex].xyz;
+  if (tri.x >= arrayLength(&rc_geom_position) || tri.y >= arrayLength(&rc_geom_position) || tri.z >= arrayLength(&rc_geom_position)) {
+    return scalarEmission;
+  }
+
+  var bary = rcEmitterParentBarycentricFromLocal(localBary, e._padB, e._padC);
+  if (mirroredSourceTri) {
+    bary = vec3f(bary.z, bary.y, bary.x);
+  }
+
+  let uv0a = rcPackedUvFromVec4(rc_geom_position[tri.x]);
+  let uv0b = rcPackedUvFromVec4(rc_geom_position[tri.y]);
+  let uv0c = rcPackedUvFromVec4(rc_geom_position[tri.z]);
+  let uv0 = bary.x * uv0a + bary.y * uv0b + bary.z * uv0c;
+  let texel = rcSampleMaterialAtlasRawAtOffset(
+    triIndex,
+    RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
+    uv0,
+  );
+  if (texel.x < 0.0) {
+    return scalarEmission;
+  }
+  return scalarEmission * texel.rgb;
+}
 
 ${RC_NEE_POINTSPOT_WGSL}
 

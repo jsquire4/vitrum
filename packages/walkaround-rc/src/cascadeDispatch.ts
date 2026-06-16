@@ -68,6 +68,9 @@ interface DispatchHandles {
   mergeBindGroups: GPUBindGroup[];
   /** Owned placeholder env texture when caller provided none. */
   placeholderEnvTexture?: GPUTexture;
+  /** Owned placeholder material atlas textures when caller provided none. */
+  placeholderMaterialAtlasTexture?: GPUTexture;
+  placeholderMaterialMetaTexture?: GPUTexture;
 }
 
 interface DispatchBindingSignature {
@@ -83,6 +86,8 @@ interface DispatchBindingSignature {
   readonly roomSize: readonly [number, number, number];
   readonly envTextureView: GPUTextureView | null;
   readonly envSampler: GPUSampler | null;
+  readonly materialTextureAtlasView: GPUTextureView | null;
+  readonly materialMapMetaTextureView: GPUTextureView | null;
   readonly tlasNodesBuf: GPUBuffer | null;
   readonly tlasInstanceIndicesBuf: GPUBuffer | null;
   readonly tlasBlasRootsBuf: GPUBuffer | null;
@@ -137,6 +142,12 @@ export interface RCDispatchOptsRaw {
    *  view + sampler. Pass `null` to use the dispatcher's 1×1 black placeholder. */
   envTextureView?:    GPUTextureView | null;
   envSampler?:        GPUSampler | null;
+
+  /** Material texture atlas + per-triangle map metadata for UV-varying
+   *  material-backed emitter radiance. When omitted, RC falls back to the
+   *  scalar `EmitterTri.Le` path for every emitter sample. */
+  materialTextureAtlasView?: GPUTextureView | null;
+  materialMapMetaTextureView?: GPUTextureView | null;
 
   frameSeed:          number;
   /** Möller–Trumbore coplanarity threshold. Default 1e-5. */
@@ -323,6 +334,8 @@ function bindingSignature(opts: RCDispatchOptsRaw): DispatchBindingSignature {
     roomSize: [...opts.roomSize] as [number, number, number],
     envTextureView: opts.envTextureView ?? null,
     envSampler: opts.envSampler ?? null,
+    materialTextureAtlasView: opts.materialTextureAtlasView ?? null,
+    materialMapMetaTextureView: opts.materialMapMetaTextureView ?? null,
     tlasNodesBuf: opts.tlasNodesBuf ?? null,
     tlasInstanceIndicesBuf: opts.tlasInstanceIndicesBuf ?? null,
     tlasBlasRootsBuf: opts.tlasBlasRootsBuf ?? null,
@@ -350,6 +363,8 @@ function sameBindingSignature(
     sameVec3(a.roomSize, b.roomSize) &&
     a.envTextureView === b.envTextureView &&
     a.envSampler === b.envSampler &&
+    a.materialTextureAtlasView === b.materialTextureAtlasView &&
+    a.materialMapMetaTextureView === b.materialMapMetaTextureView &&
     a.tlasNodesBuf === b.tlasNodesBuf &&
     a.tlasInstanceIndicesBuf === b.tlasInstanceIndicesBuf &&
     a.tlasBlasRootsBuf === b.tlasBlasRootsBuf &&
@@ -489,7 +504,7 @@ export class RCDispatcher {
 
   // ─── Private helpers ────────────────────────────────────────────────────────
 
-  /** Cast pass: BVH+mat SSBOs, cascade out, env, uniforms, optional TLAS (C2), analytic lights (A7). */
+  /** Cast pass: BVH+mat SSBOs, cascade out, env, uniforms, optional TLAS (C2), analytic lights (A7), material atlas (RC mapped emitters). */
   private _castBindGroupLayout(device: GPUDevice): GPUBindGroupLayout {
     return device.createBindGroupLayout({
       label: 'rc-cast-bgl',
@@ -513,6 +528,8 @@ export class RCDispatcher {
         // 16-byte header + up to 16 × 64-byte entries = 1040 bytes; a 1040-byte zero
         // placeholder is bound when the scene has no point/spot fixtures.
         { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_lights
+        { binding: 16, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // rc_materialTextureAtlas
+        { binding: 17, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d' } },       // rc_materialMapMeta
       ],
     });
   }
@@ -548,6 +565,8 @@ export class RCDispatcher {
         pass.cascadeParamsBuf.destroy();
       }
       this._handles.placeholderEnvTexture?.destroy();
+      this._handles.placeholderMaterialAtlasTexture?.destroy();
+      this._handles.placeholderMaterialMetaTexture?.destroy();
       this._handles = null;
     }
     this._bindingSignature = null;
@@ -608,6 +627,59 @@ export class RCDispatcher {
   }
 
   /**
+   * Resolve optional material-atlas bindings for RC's material-backed emitter
+   * NEE. The placeholder meta texture is filled with layer=-1 so shader helper
+   * calls fall back to scalar EmitterTri.Le when no atlas was supplied.
+   */
+  private _resolveMaterialAtlasBindingRaw(
+    device: GPUDevice,
+    opts: RCDispatchOptsRaw,
+  ): {
+    materialTextureAtlasView: GPUTextureView;
+    materialMapMetaTextureView: GPUTextureView;
+    placeholderMaterialAtlasTexture?: GPUTexture;
+    placeholderMaterialMetaTexture?: GPUTexture;
+  } {
+    if (opts.materialTextureAtlasView && opts.materialMapMetaTextureView) {
+      return {
+        materialTextureAtlasView: opts.materialTextureAtlasView,
+        materialMapMetaTextureView: opts.materialMapMetaTextureView,
+      };
+    }
+    const atlasTexture = device.createTexture({
+      label: 'rc-material-atlas-placeholder',
+      size: { width: 1, height: 1, depthOrArrayLayers: 1 },
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: atlasTexture },
+      new Float32Array([1, 1, 1, 1]),
+      { bytesPerRow: 16, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+    const metaTexture = device.createTexture({
+      label: 'rc-material-meta-placeholder',
+      size: { width: 2, height: 1 },
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: metaTexture },
+      // First meta texel: layer=-1 => absent map. Second texel is unused transform.
+      new Float32Array([-1, 0, 0, 0, 1, 1, 1, 0]),
+      { bytesPerRow: 32 },
+      { width: 2, height: 1 },
+    );
+    return {
+      materialTextureAtlasView: atlasTexture.createView({ label: 'rc-material-atlas-placeholder-view', dimension: '2d-array' }),
+      materialMapMetaTextureView: metaTexture.createView({ label: 'rc-material-meta-placeholder-view' }),
+      placeholderMaterialAtlasTexture: atlasTexture,
+      placeholderMaterialMetaTexture: metaTexture,
+    };
+  }
+
+  /**
    * Build all pipelines and bind groups (one-time setup).
    * Called lazily on first `dispatchFrameRaw()`.
    *
@@ -637,9 +709,16 @@ export class RCDispatcher {
 
     const bvhBindings = this._resolveBvhBindings(device, opts);
     const { envTextureView, envSampler, placeholderEnvTexture } = this._resolveEnvBindingRaw(device, opts);
+    const {
+      materialTextureAtlasView,
+      materialMapMetaTextureView,
+      placeholderMaterialAtlasTexture,
+      placeholderMaterialMetaTexture,
+    } = this._resolveMaterialAtlasBindingRaw(device, opts);
 
     const { castPasses, castBindGroups } = this._buildCastPasses(
       device, opts, castBGL, castPipelineLayout, bvhBindings, envTextureView, envSampler,
+      materialTextureAtlasView, materialMapMetaTextureView,
     );
     const { mergePasses, mergeBindGroups } = this._buildMergePasses(
       device, opts, mergeBGL, mergePipelineLayout,
@@ -653,6 +732,8 @@ export class RCDispatcher {
       castBindGroups,
       mergeBindGroups,
       ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
+      ...(placeholderMaterialAtlasTexture ? { placeholderMaterialAtlasTexture } : {}),
+      ...(placeholderMaterialMetaTexture ? { placeholderMaterialMetaTexture } : {}),
     };
   }
 
@@ -704,6 +785,8 @@ export class RCDispatcher {
     bvhBindings: ReturnType<typeof RCDispatcher.prototype._resolveBvhBindings>,
     envTextureView: GPUTextureView,
     envSampler: GPUSampler,
+    materialTextureAtlasView: GPUTextureView,
+    materialMapMetaTextureView: GPUTextureView,
   ): { castPasses: CastPassHandles[]; castBindGroups: GPUBindGroup[] } {
     const {
       bvhBuf, idxBuf, posBuf, matBuf, triMatBuf,
@@ -783,6 +866,8 @@ export class RCDispatcher {
           { binding: 13, resource: { buffer: tlasL2wBuf } },
           { binding: 14, resource: { buffer: emittersBuf } },
           { binding: 15, resource: { buffer: lightsBuf } },  // A7: rc_lights
+          { binding: 16, resource: materialTextureAtlasView },
+          { binding: 17, resource: materialMapMetaTextureView },
         ],
       });
 

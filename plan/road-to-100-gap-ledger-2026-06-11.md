@@ -1743,8 +1743,12 @@ Evidence:
   falling back to averaged radiance. DDGI probe primary rays now also skip
   atlas-backed alpha-mask holes and fractional blend layers through
   `ddgiTraceFirstHitAlphaMaskTextured`. Analytic/extra emitters intentionally
-  retain averaged `Le`. Exact UV-varying texel-PDF selection and GI/RC/DDGI
-  texel-space emission are still approximate rather than native parity.
+  retain averaged `Le`. Later 2026-06-16 follow-up: RC probe-cast emitter NEE
+  receives the shared material atlas and samples UV0 material-backed emissive
+  texels through the packed source-triangle/subdivision lanes, with scalar
+  fallback for omitted atlas bindings, unmapped emitters, and UV1-only cases.
+  Exact UV-varying texel-PDF selection and full GI/RC/DDGI texel-space emission
+  are still approximate rather than native parity.
 - pt-webgpu readable `emissiveMap` now feeds implicit mesh-area NEE power:
   `emitterPacking.ts` uses shared UV-local readable-map quadrature for synthesized
   emissive-mesh triangle radiance, keeps the average/scalar helper for the geometry

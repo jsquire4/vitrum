@@ -56,4 +56,16 @@ describe('RC light-eval WGSL contract', () => {
       'if ((sMat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) != 0u)',
     );
   });
+
+  it('samples mapped material-backed emitter radiance for RC emitter NEE', () => {
+    const emitterNee = functionBody(PROBE_RAY_CAST_WGSL, 'rcEmitterNEE');
+    expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(16) var                      rc_materialTextureAtlas: texture_2d_array<f32>;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(17) var                      rc_materialMapMeta:      texture_2d<f32>;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSampleEmitterLeAtBary(e: EmitterTri, localBary: vec3f, scalarEmission: vec3f) -> vec3f');
+    expect(PROBE_RAY_CAST_WGSL).toContain('let encodedSourceTri = i32(round(e._padA));');
+    expect(PROBE_RAY_CAST_WGSL).toContain('return scalarEmission * texel.rgb;');
+    expect(emitterNee).toContain('let localBary = vec3f(1.0 - su, su * (1.0 - s1), su * s1);');
+    expect(emitterNee).toContain('let Le = rcSampleEmitterLeAtBary(e, localBary, e.Le);');
+    expect(emitterNee).toContain('Lo = Lo + albedo * 0.31831 * Le * G * e.area;');
+  });
 });

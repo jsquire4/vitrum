@@ -115,7 +115,8 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, 
     let s0 = pcgHashToF32(seed0 ^ (ei * 0x9E3779B9u + 0x1u));
     let s1 = pcgHashToF32(seed0 * 7919u ^ (ei * 0x85EBCA6Bu + 0x2u));
     let su = sqrt(s0);
-    let pos = (1.0 - su) * e.vA + (su * (1.0 - s1)) * e.vB + (su * s1) * e.vC;
+    let localBary = vec3f(1.0 - su, su * (1.0 - s1), su * s1);
+    let pos = localBary.x * e.vA + localBary.y * e.vB + localBary.z * e.vC;
 
     let toL    = pos - hitPos;
     let dist2  = max(dot(toL, toL), 1e-8);
@@ -135,7 +136,8 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, 
     }
 
     let G = (cosSurf * cosLight) / dist2;
-    Lo = Lo + albedo * 0.31831 * e.Le * G * e.area;   // 0.31831 = 1/π
+    let Le = rcSampleEmitterLeAtBary(e, localBary, e.Le);
+    Lo = Lo + albedo * 0.31831 * Le * G * e.area;   // 0.31831 = 1/π
   }
   return Lo;
 }

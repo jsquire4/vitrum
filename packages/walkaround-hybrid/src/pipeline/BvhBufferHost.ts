@@ -275,6 +275,21 @@ export class BvhBufferHost {
     };
   }
 
+  /** Material atlas views for RC/DDGI side-channel material sampling. Null before
+   *  `uploadInitial`. These are the exact views used by the main scene bind
+   *  group, so RC material-backed emitter NEE sees the same texture decode,
+   *  wrap, and transform metadata as shade/ReSTIR. */
+  materialAtlasBindings(): {
+    materialTextureAtlasView: GPUTextureView;
+    materialMapMetaTextureView: GPUTextureView;
+  } | null {
+    if (this._materialTextureAtlas == null) return null;
+    return {
+      materialTextureAtlasView: this._materialTextureAtlas.atlasTextureView,
+      materialMapMetaTextureView: this._materialTextureAtlas.baseColorMetaTextureView,
+    };
+  }
+
   sceneBindGroupResources(): SceneBindGroupResources {
     if (!this.initialized) {
       throw new Error('[BvhBufferHost] uploadInitial must run before sceneBindGroupResources');

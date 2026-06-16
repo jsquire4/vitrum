@@ -102,6 +102,9 @@ interface RCFrameInputs {
    *  `envSampler` should be forwarded here when an HDRI is active. */
   readonly envTextureView?:     GPUTextureView | null;
   readonly envSampler?:         GPUSampler | null;
+  /** Material atlas views for UV-varying material-backed emitter NEE. */
+  readonly materialTextureAtlasView?: GPUTextureView | null;
+  readonly materialMapMetaTextureView?: GPUTextureView | null;
   /** A7 (2026-06-10): packed point/spot analytic lights buffer and count.
    *  Use `packRCLights()` to build. Omit ⇒ fixtures produce no RC radiance. */
   readonly lightsBuf?:          GPUBuffer | null;
@@ -464,6 +467,12 @@ export class RCSubsystem implements PipelineSubsystem {
       // A7: env texture forwarded from the main pipeline (placeholder if absent).
       ...(inputs.envTextureView != null && inputs.envSampler != null
         ? { envTextureView: inputs.envTextureView, envSampler: inputs.envSampler }
+        : {}),
+      ...(inputs.materialTextureAtlasView != null && inputs.materialMapMetaTextureView != null
+        ? {
+            materialTextureAtlasView: inputs.materialTextureAtlasView,
+            materialMapMetaTextureView: inputs.materialMapMetaTextureView,
+          }
         : {}),
       ...(inputs.emittersBuf != null
         ? { emittersBuf: inputs.emittersBuf, emitterCount: inputs.emitterCount ?? 0 }

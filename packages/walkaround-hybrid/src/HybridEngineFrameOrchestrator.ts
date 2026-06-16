@@ -434,6 +434,7 @@ function dispatchRcAndSetInputs(
     // env sample reads the real HDRI (or the 1×1 black placeholder when
     // no HDRI is active — byte-identical env-less).
     const rcEnvBindings = pipeline.getEnvBindings();
+    const rcMaterialAtlasBindings = pipeline.getMaterialAtlasBindings();
 
     deps.subsystems.rc.dispatchFrame({
       sunDirection: deps.lighting.primaryLightDir,
@@ -447,6 +448,12 @@ function dispatchRcAndSetInputs(
       // A7: forward env texture so RC env sampling is live (placeholder if null).
       ...(rcEnvBindings != null
         ? { envTextureView: rcEnvBindings.textureView, envSampler: rcEnvBindings.sampler }
+        : {}),
+      ...(rcMaterialAtlasBindings != null
+        ? {
+            materialTextureAtlasView: rcMaterialAtlasBindings.materialTextureAtlasView,
+            materialMapMetaTextureView: rcMaterialAtlasBindings.materialMapMetaTextureView,
+          }
         : {}),
     });
     pipeline.setRCInputs(deps.subsystems.rc.buildRCInputs(deps.flags.rcWeight));

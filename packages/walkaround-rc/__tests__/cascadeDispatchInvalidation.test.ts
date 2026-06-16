@@ -16,6 +16,10 @@ function makeExternalBuffer(label: string): GPUBuffer {
   return { label, destroy: vi.fn() } as unknown as GPUBuffer;
 }
 
+function makeExternalView(label: string): GPUTextureView {
+  return { label } as unknown as GPUTextureView;
+}
+
 function makeMockDevice() {
   const destroyBuffer = vi.fn();
   const createBindGroup = vi.fn(() => ({}));
@@ -113,5 +117,32 @@ describe('RCDispatcher binding cache invalidation', () => {
     });
     expect(createBindGroup.mock.calls.length).toBeGreaterThan(bindGroupsAfterTlas);
     expect(destroyBuffer.mock.calls.length).toBeGreaterThan(destroysAfterTlas);
+  });
+
+  it('binds material-atlas views and rebuilds when they change', () => {
+    installWebGpuConstants();
+    const { device, createBindGroup } = makeMockDevice();
+    const dispatcher = new RCDispatcher(DIMS);
+    const opts = {
+      ...baseOpts(device),
+      materialTextureAtlasView: makeExternalView('atlas-a'),
+      materialMapMetaTextureView: makeExternalView('meta-a'),
+    };
+
+    dispatcher.dispatchFrameRaw(opts);
+    const createBindGroupCalls = createBindGroup.mock.calls as unknown as Array<[
+      { entries: Array<{ binding: number; resource: unknown }> },
+    ]>;
+    const firstEntries = createBindGroupCalls[0]![0].entries;
+    expect(firstEntries.some((entry) => entry.binding === 16 && entry.resource === opts.materialTextureAtlasView)).toBe(true);
+    expect(firstEntries.some((entry) => entry.binding === 17 && entry.resource === opts.materialMapMetaTextureView)).toBe(true);
+    const bindGroupsAfterFirst = createBindGroup.mock.calls.length;
+
+    dispatcher.dispatchFrameRaw({
+      ...opts,
+      frameSeed: 2,
+      materialTextureAtlasView: makeExternalView('atlas-b'),
+    });
+    expect(createBindGroup.mock.calls.length).toBeGreaterThan(bindGroupsAfterFirst);
   });
 });
