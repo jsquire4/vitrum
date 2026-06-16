@@ -332,6 +332,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
     const session = new PtWebgpuInverseSession(hooks, eligibleOpts());
     expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
     session.dispose();
   });
 
@@ -394,8 +395,16 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
 
   it('degrades to finite-difference when the engine provides NO adjoint hook', () => {
     const fake = makeFakeEngine();
-    const session = new PtWebgpuInverseSession(fake.hooks, eligibleOpts());
+    const diagnostics: unknown[] = [];
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      ...eligibleOpts(),
+      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    });
     expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-hook-missing',
+    }));
+    expect(diagnostics).toEqual(session.diagnostics);
     session.dispose();
   });
 
@@ -408,6 +417,11 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
     expect(session.method).toBe('finite-difference'); // emitter intensity isn't a Phase-1 BSDF param
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-param-domain',
+      path: 'emitters.lamp.intensity',
+      details: expect.objectContaining({ domain: 'emitters' }),
+    }));
     session.dispose();
   });
 
@@ -468,6 +482,11 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
     expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-material',
+      path: 'materials.panel.emissive',
+      details: expect.objectContaining({ unsupportedMaterialFields: expect.arrayContaining(['alphaMap']) }),
+    }));
     session.dispose();
   });
 
@@ -800,6 +819,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
     expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-material',
+      path: 'materials.panel.baseColor',
+    }));
     session.dispose();
   });
 
@@ -816,6 +839,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
     expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-lighting',
+      details: expect.objectContaining({ environmentKind: 'hdri' }),
+    }));
     session.dispose();
   });
 
@@ -914,6 +941,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
     expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-lighting',
+      details: expect.objectContaining({ emitterId: 'soft-sun', emitterKind: 'directional' }),
+    }));
     session.dispose();
   });
 
@@ -1213,6 +1244,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         method: 'path-replay',
       });
       expect(session.method).toBe('finite-difference');
+      expect(session.diagnostics).toContainEqual(expect.objectContaining({
+        code: 'path-replay-unsupported-primitive',
+        path: 'materials.panel.baseColor',
+      }));
       session.dispose();
     }
   });

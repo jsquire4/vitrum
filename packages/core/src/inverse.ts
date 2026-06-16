@@ -87,6 +87,25 @@ export type InverseLoss = 'l2' | 'l1' | 'ssim' | 'lpips';
 /** Gradient strategy. See the module header for the literature mapping. */
 export type InverseGradientMethod = 'finite-difference' | 'path-replay';
 
+/** Structured reason an inverse-rendering backend downgraded or scoped a
+ * requested optimization path. These diagnostics are intentionally contract
+ * level, not backend-log strings, so hosts can surface predictable UI and
+ * compatibility reports for arbitrary assets. */
+export interface InverseSessionDiagnostic {
+  readonly severity: 'info' | 'warning';
+  readonly code:
+    | 'path-replay-hook-missing'
+    | 'path-replay-unsupported-param-domain'
+    | 'path-replay-unsupported-field'
+    | 'path-replay-unsupported-primitive'
+    | 'path-replay-unsupported-material'
+    | 'path-replay-unsupported-lighting';
+  /** Parameter path, scene path, or backend-local path the diagnostic refers to. */
+  readonly path?: string;
+  readonly message: string;
+  readonly details?: Record<string, string | number | boolean | readonly string[]>;
+}
+
 /** Optimizer hyper-parameters. Defaults match a small-vector Adam
  *  (Kingma & Ba 2015). `learningRate` is the only knob most hosts set. */
 export interface InverseOptimizerConfig {
@@ -123,6 +142,10 @@ export interface InverseSessionOptions {
   readonly samplesPerStep?: number;
   /** Optimizer hyper-parameters. */
   readonly optimizer?: InverseOptimizerConfig;
+  /** Optional structured diagnostics emitted during session creation, most
+   *  commonly when a requested `'path-replay'` session downgrades to
+   *  `'finite-difference'` for a specific asset/material/light feature. */
+  readonly onDiagnostic?: (diagnostic: InverseSessionDiagnostic) => void;
 }
 
 /** A decoded target image: interleaved float RGB(A) in scanline order. */
@@ -181,6 +204,11 @@ export interface InverseSession {
    *  'finite-difference' for a parameter kind it can't yet differentiate, and
    *  reports the effective method here). */
   readonly method: InverseGradientMethod;
+
+  /** Creation-time diagnostics for method downgrades or scoped inverse-rendering
+   *  support. Empty/omitted means the requested method was accepted without a
+   *  compatibility caveat. */
+  readonly diagnostics?: readonly InverseSessionDiagnostic[];
 
   /** Advance the optimizer by one step: render at the target resolution,
    *  measure the loss, compute the gradient (finite-difference re-renders or a

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu inverse downgrade diagnostics, 2026-06-16)
+
+- **Path-replay inverse fallbacks now report structured reasons:** `InverseSessionOptions.onDiagnostic` and `InverseSession.diagnostics` expose exact downgrade causes when `@vitrum/pt-webgpu` falls back from requested `method:'path-replay'` to finite difference: missing adjoint hook, emitter-domain params, unsupported fields, non-triangle/non-identity primitives, unsupported material transport/maps, environment lighting, and soft directional lights. This improves arbitrary-scene predictability; it does not promote the remaining adjoint math tails.
+
 ### Fixed (emissive-map selection power + DDGI alpha probe hits, 2026-06-16)
 
 - **Material-backed emissive meshes now use UV-local selection power:** shared CPU helpers sample readable `emissiveMap` payloads at KHR-transform/wrap-aware UVs and estimate per-triangle emission with deterministic quadrature. Walkaround ReSTIR-DI uses that estimate for emitter CDF/light-tree power while keeping scalar packed `Le` for hit-local shader texel evaluation; `pt-webgpu` and `pt-webgl2` implicit mesh-area lights now pack UV-local triangle radiance instead of whole-texture averages. This narrows textured-emitter selection error; exact texel-alias PDFs remain a promotion tail.

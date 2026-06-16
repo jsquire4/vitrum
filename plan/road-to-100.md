@@ -28,7 +28,9 @@
 > clearcoatMap/clearcoatRoughnessMap, sheenColorMap/sheenRoughnessMap,
 > iridescenceMap/iridescenceThicknessMap, anisotropyMap, and aoMap local chain/state
 > factors, plus transmission, layered, spectral/volume, soft-sun, environment,
-> indirect, and other unsupported light/material cases; walkaround material truth was tightened so textured
+> indirect, and other unsupported light/material cases; inverse sessions now
+> expose structured downgrade diagnostics when requested path replay falls back
+> to finite difference; walkaround material truth was tightened so textured
 > alpha blend emits structured approximation warnings and the ledger no longer
 > claims native rows where GI reuse still used stored-Lo/proxy targeting; neural
 > weights are validated before allocation, the tracked research checkpoints are

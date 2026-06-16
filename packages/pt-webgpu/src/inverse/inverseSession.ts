@@ -43,6 +43,7 @@ import type {
   InverseStepResult,
   InverseParam,
   InverseGradientMethod,
+  InverseSessionDiagnostic,
   Scene,
   ScenePrimitive,
   SceneEmitter,
@@ -258,6 +259,7 @@ export class PtWebgpuInverseSession implements InverseSession {
   readonly #lossFn: typeof l2Loss;
   readonly #lossKind: 'l2' | 'l1';
   readonly #method: InverseGradientMethod;
+  readonly #diagnostics: readonly InverseSessionDiagnostic[];
   readonly #samplesPerStep: number;
   readonly #fdEpsilon: number;
   readonly #slots: ParamSlot[];
@@ -328,12 +330,17 @@ export class PtWebgpuInverseSession implements InverseSession {
         )
         .map((s) => s.target.id),
     );
-    const allEligible = this.#slots.every(
-      (s) =>
-        s.target.domain === 'materials' &&
-        ADJOINT_ELIGIBLE_FIELDS.has(s.target.field) &&
-        isPathReplayCompatibleTarget(scene, s.target, iridescenceOptimizedPrimitiveIds),
-    );
+    const pathReplayDiagnostics = requestedMethod === 'path-replay'
+      ? collectPathReplayDiagnostics(scene, this.#slots, {
+          hasHook: hooks.computeAdjointGradient != null,
+          iridescenceOptimizedPrimitiveIds,
+        })
+      : [];
+    this.#diagnostics = pathReplayDiagnostics;
+    for (const diagnostic of pathReplayDiagnostics) {
+      opts.onDiagnostic?.(diagnostic);
+    }
+    const allEligible = pathReplayDiagnostics.length === 0;
     this.#method =
       requestedMethod === 'path-replay' && hooks.computeAdjointGradient != null && allEligible
         ? 'path-replay'
@@ -370,6 +377,10 @@ export class PtWebgpuInverseSession implements InverseSession {
 
   get method(): InverseGradientMethod {
     return this.#method;
+  }
+
+  get diagnostics(): readonly InverseSessionDiagnostic[] {
+    return this.#diagnostics;
   }
 
   currentValues(): readonly (readonly number[])[] {
@@ -508,6 +519,288 @@ function isPathReplayCompatibleTarget(
   return isPathReplayCompatibleLighting(scene) && isPathReplayCompatibleBrdfMaterial(m);
 }
 
+function collectPathReplayDiagnostics(
+  scene: Scene,
+  slots: readonly ParamSlot[],
+  options: {
+    readonly hasHook: boolean;
+    readonly iridescenceOptimizedPrimitiveIds: ReadonlySet<string>;
+  },
+): InverseSessionDiagnostic[] {
+  const diagnostics: InverseSessionDiagnostic[] = [];
+  if (!options.hasHook) {
+    diagnostics.push({
+      severity: 'info',
+      code: 'path-replay-hook-missing',
+      message:
+        '[vitrum/pt-webgpu] InverseSession requested path-replay, but this engine instance ' +
+        'does not expose the adjoint gradient hook; using finite-difference.',
+    });
+  }
+
+  for (const slot of slots) {
+    diagnostics.push(...diagnosePathReplaySlot(scene, slot, options.iridescenceOptimizedPrimitiveIds));
+  }
+  return diagnostics;
+}
+
+function diagnosePathReplaySlot(
+  scene: Scene,
+  slot: ParamSlot,
+  iridescenceOptimizedPrimitiveIds: ReadonlySet<string>,
+): InverseSessionDiagnostic[] {
+  const path = slot.param.path;
+  const target = slot.target;
+  if (target.domain !== 'materials') {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-param-domain',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" targets ${target.domain}; ` +
+        'path-replay currently differentiates material parameters only, so this parameter uses finite-difference.',
+      details: { domain: target.domain },
+    }];
+  }
+  if (!ADJOINT_ELIGIBLE_FIELDS.has(target.field)) {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-field',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" targets material field ` +
+        `"${target.field}", which is not in the path-replay differentiable field set; ` +
+        'using finite-difference.',
+      details: { field: target.field },
+    }];
+  }
+
+  const prim = findPrimitive(scene, target.id);
+  if (prim == null) return [];
+  const primitiveIssue = pathReplayPrimitiveIssue(prim);
+  if (primitiveIssue != null) {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-primitive',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" targets primitive "${target.id}", ` +
+        `${primitiveIssue.message}; using finite-difference.`,
+      details: primitiveIssue.details,
+    }];
+  }
+
+  const materialIssue = pathReplayMaterialIssue(prim.material, target.field, iridescenceOptimizedPrimitiveIds.has(target.id));
+  if (materialIssue != null) {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-material',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" is outside the scoped path-replay ` +
+        `material domain (${materialIssue.message}); using finite-difference.`,
+      details: materialIssue.details,
+    }];
+  }
+
+  if (pathReplayTargetRequiresLighting(target.field, prim.material)) {
+    const lightingIssue = pathReplayLightingIssue(scene);
+    if (lightingIssue != null) {
+      return [{
+        severity: 'info',
+        code: 'path-replay-unsupported-lighting',
+        path,
+        message:
+          `[vitrum/pt-webgpu] InverseSession path "${path}" needs the direct-light replay domain, ` +
+          `${lightingIssue.message}; using finite-difference.`,
+        details: lightingIssue.details,
+      }];
+    }
+  }
+  return [];
+}
+
+function pathReplayPrimitiveIssue(
+  primitive: ScenePrimitive,
+): { message: string; details: Record<string, string | boolean> } | null {
+  if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') {
+    return {
+      message: `primitive kind "${primitive.kind}" is not triangle-backed for path-replay`,
+      details: { primitiveKind: primitive.kind },
+    };
+  }
+  if (primitive.transform != null && !isIdentityMat4(primitive.transform)) {
+    return {
+      message: 'non-identity primitive transforms are not mirrored by the adjoint replay pass',
+      details: { primitiveKind: primitive.kind, nonIdentityTransform: true },
+    };
+  }
+  return null;
+}
+
+function pathReplayMaterialIssue(
+  material: MaterialSpec,
+  field: string,
+  iridescenceCoupled: boolean,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  if (field === 'baseColor' && isPathReplayCompatibleUnlitBaseColorMaterial(material)) return null;
+  if (field === 'emissive' || field === 'emissiveIntensity') {
+    return materialIssueForEmissive(material);
+  }
+  if (field === 'iridescence' || field === 'iridescenceIor') {
+    return materialIssueForIridescence(material);
+  }
+  if (field === 'anisotropy' || field === 'anisotropyRotation') {
+    return materialIssueForAnisotropy(material);
+  }
+  if (iridescenceCoupled) {
+    return {
+      message: 'another optimized parameter on this material targets iridescence, which is coupled to this BRDF field',
+      details: { reason: 'coupled-iridescence-parameter' },
+    };
+  }
+  return materialIssueForBrdf(material);
+}
+
+function materialIssueForEmissive(
+  material: MaterialSpec,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  if (material.shadingModel === 'unlit') {
+    return { message: 'unlit materials use the baseColor primary-hit path, not emissive adjoints', details: { reason: 'unlit' } };
+  }
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
+  if (common != null) return common;
+  const maps = listPathReplayEmissiveUnsupportedMaps(material);
+  if (maps.length > 0) {
+    return { message: `transport/visibility maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+  }
+  return null;
+}
+
+function materialIssueForBrdf(
+  material: MaterialSpec,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  if (material.shadingModel === 'unlit') {
+    return { message: 'unlit materials only support path-replay for baseColor primary-hit fitting', details: { reason: 'unlit' } };
+  }
+  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: false });
+  if (common != null) return common;
+  const maps = listPathReplayTransportOrGeometryMaps(material);
+  if (maps.length > 0) {
+    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+  }
+  return null;
+}
+
+function materialIssueForIridescence(
+  material: MaterialSpec,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  if (material.shadingModel === 'unlit') {
+    return { message: 'unlit materials do not evaluate the iridescence direct-light lobe', details: { reason: 'unlit' } };
+  }
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: false });
+  if (common != null) return common;
+  const maps = listPathReplayTransportOrGeometryMaps(material);
+  if (maps.length > 0) {
+    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+  }
+  return null;
+}
+
+function materialIssueForAnisotropy(
+  material: MaterialSpec,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  if (material.shadingModel === 'unlit') {
+    return { message: 'unlit materials do not evaluate the anisotropic direct-light lobe', details: { reason: 'unlit' } };
+  }
+  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
+  if (common != null) return common;
+  const maps = listPathReplayTransportOrGeometryMaps(material);
+  if (maps.length > 0) {
+    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+  }
+  return null;
+}
+
+function materialIssueCommon(
+  material: MaterialSpec,
+  options: { readonly allowIridescence: boolean; readonly allowAnisotropy: boolean },
+): { message: string; details: Record<string, string | number> } | null {
+  if (material.alphaMode != null && material.alphaMode !== 'opaque') {
+    return { message: `alphaMode "${material.alphaMode}" changes visibility/coverage`, details: { field: 'alphaMode', value: material.alphaMode } };
+  }
+  if (material.opacity != null && material.opacity < 1) {
+    return { message: 'opacity below 1 changes visibility/coverage', details: { field: 'opacity', value: material.opacity } };
+  }
+  if ((material.transmission ?? 0) > 1e-6) {
+    return { message: 'transmission transport is not replayed', details: { field: 'transmission', value: material.transmission ?? 0 } };
+  }
+  if (!options.allowIridescence && (material.iridescence ?? 0) > 1e-6) {
+    return { message: 'iridescence is coupled to the optimized BRDF field', details: { field: 'iridescence', value: material.iridescence ?? 0 } };
+  }
+  if (!options.allowAnisotropy && (material.anisotropy ?? 0) > 1e-6) {
+    return { message: 'anisotropy is coupled to the optimized BRDF field', details: { field: 'anisotropy', value: material.anisotropy ?? 0 } };
+  }
+  if (material.frontLayer != null || material.backLayer != null || material.thinFilmStack != null) {
+    return { message: 'layered/thin-film material stacks are not replayed', details: { field: 'layeredMaterial' } };
+  }
+  if (material.spectralAttenuation != null || material.dispersionAbbeNumber != null) {
+    return { message: 'spectral/dispersion material transport is not replayed', details: { field: 'spectralOrDispersion' } };
+  }
+  if ((material.scatteringCoefficient ?? 0) > 0 || material.scatteringCoefficientRGB != null) {
+    return { message: 'volume/scattering material transport is not replayed', details: { field: 'scattering' } };
+  }
+  if (material.extensions != null && Object.keys(material.extensions).length > 0) {
+    return { message: 'opaque MaterialSpec.extensions are not replayed by the adjoint pass', details: { field: 'extensions' } };
+  }
+  return null;
+}
+
+function pathReplayTargetRequiresLighting(field: string, material: MaterialSpec): boolean {
+  if (field === 'emissive' || field === 'emissiveIntensity') return false;
+  if (field === 'baseColor' && isPathReplayCompatibleUnlitBaseColorMaterial(material)) return false;
+  return true;
+}
+
+function pathReplayLightingIssue(
+  scene: Scene,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  const environmentKind = scene.environment?.kind ?? 'none';
+  if (environmentKind !== 'none') {
+    return {
+      message: `environment kind "${environmentKind}" is not replayed by the adjoint direct-light pass`,
+      details: { environmentKind },
+    };
+  }
+  const unsupported = scene.emitters.find((e) => {
+    if (
+      e.kind === 'point' ||
+      e.kind === 'spot' ||
+      e.kind === 'rect-area' ||
+      e.kind === 'disc-area' ||
+      e.kind === 'mesh-area'
+    ) {
+      return false;
+    }
+    if (e.kind === 'directional') {
+      const angularDiameter = e.angularDiameter;
+      return angularDiameter != null && Number.isFinite(angularDiameter) && angularDiameter > 1e-6;
+    }
+    return true;
+  });
+  if (unsupported == null) return null;
+  return {
+    message: `emitter "${unsupported.id}" (${unsupported.kind}) is outside the deterministic direct-light replay domain`,
+    details: {
+      emitterId: unsupported.id,
+      emitterKind: unsupported.kind,
+      ...(unsupported.kind === 'directional' && unsupported.angularDiameter != null
+        ? { angularDiameter: unsupported.angularDiameter }
+        : {}),
+    },
+  };
+}
+
 function isIdentityMat4(transform: Float32Array): boolean {
   const expected = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   if (transform.length < 16) return false;
@@ -583,27 +876,35 @@ function isPathReplayCompatibleAnisotropyMaterial(m: MaterialSpec): boolean {
 }
 
 function hasPathReplayTransportOrGeometryMap(m: MaterialSpec): boolean {
-  return (
-    m.normalMap != null ||
-    m.transmissionMap != null ||
-    m.thicknessMap != null ||
-    m.alphaMap != null ||
-    m.clearcoatNormalMap != null ||
-    m.bumpMap != null ||
-    m.displacementMap != null
-  );
+  return listPathReplayTransportOrGeometryMaps(m).length > 0;
 }
 
 function hasPathReplayEmissiveTargetUnsupportedMap(m: MaterialSpec): boolean {
-  return (
-    m.alphaMap != null ||
-    m.normalMap != null ||
-    m.bumpMap != null ||
-    m.clearcoatNormalMap != null ||
-    m.displacementMap != null ||
-    m.transmissionMap != null ||
-    m.thicknessMap != null
-  );
+  return listPathReplayEmissiveUnsupportedMaps(m).length > 0;
+}
+
+function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string[] {
+  const out: string[] = [];
+  if (m.normalMap != null) out.push('normalMap');
+  if (m.transmissionMap != null) out.push('transmissionMap');
+  if (m.thicknessMap != null) out.push('thicknessMap');
+  if (m.alphaMap != null) out.push('alphaMap');
+  if (m.clearcoatNormalMap != null) out.push('clearcoatNormalMap');
+  if (m.bumpMap != null) out.push('bumpMap');
+  if (m.displacementMap != null) out.push('displacementMap');
+  return out;
+}
+
+function listPathReplayEmissiveUnsupportedMaps(m: MaterialSpec): readonly string[] {
+  const out: string[] = [];
+  if (m.alphaMap != null) out.push('alphaMap');
+  if (m.normalMap != null) out.push('normalMap');
+  if (m.bumpMap != null) out.push('bumpMap');
+  if (m.clearcoatNormalMap != null) out.push('clearcoatNormalMap');
+  if (m.displacementMap != null) out.push('displacementMap');
+  if (m.transmissionMap != null) out.push('transmissionMap');
+  if (m.thicknessMap != null) out.push('thicknessMap');
+  return out;
 }
 
 function isPathReplayCompatibleLighting(scene: Scene): boolean {

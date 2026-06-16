@@ -118,6 +118,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   for specular fits, clearcoat/sheen map local chain factors, iridescence/thickness
   map local state, and anisotropy-map strength/rotation local state, described
   below.
+- Later 2026-06-16 follow-up: requested `method:'path-replay'` sessions now
+  expose structured creation diagnostics when they resolve to finite difference:
+  missing adjoint hook, emitter-domain parameters, unsupported fields,
+  unsupported/non-identity primitives, unsupported material maps/transport,
+  environment lighting, and soft directional lights. This closes the API
+  truthfulness gap for arbitrary scenes without promoting the remaining adjoint
+  math tails.
 - Later 2026-06-16 follow-up: scalar `metallic` joined the same scoped
   path-replay domain. The CPU oracle differentiates the opaque base-BRDF diffuse
   fade-out and F0 blend, the emitted WGSL mirrors it, the engine scatters the new
