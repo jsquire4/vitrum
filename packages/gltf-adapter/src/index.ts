@@ -6,7 +6,7 @@
 // Re-exports the GltfJson type for hosts that parse glTF JSON before passing it in.
 // RawImageHandle is exported so hosts can type-narrow in non-browser environments.
 
-export { gltfToScene } from './gltfToScene.js';
+export { GltfImportError, gltfToScene } from './gltfToScene.js';
 export type {
   GltfImportDiagnostic,
   GltfImportDiagnosticCode,

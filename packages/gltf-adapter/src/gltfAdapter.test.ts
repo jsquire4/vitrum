@@ -18,7 +18,7 @@
 //   14. KHR_lights_punctual → SceneEmitter[] (point, spot, directional; world-transform applied)
 
 import { describe, it, expect, vi } from 'vitest';
-import { gltfToScene } from './gltfToScene.js';
+import { GltfImportError, gltfToScene } from './gltfToScene.js';
 import { solveSkin } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import type {
@@ -774,6 +774,16 @@ describe('material field mapping', () => {
     await expect(gltfToScene(gltf, { buffers })).rejects.toThrow(
       /extensionsRequired includes unsupported extension "VENDOR_required_extension"/,
     );
+    await expect(gltfToScene(gltf, { buffers })).rejects.toBeInstanceOf(GltfImportError);
+    await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
+      name: 'GltfImportError',
+      diagnostics: [{
+        severity: 'error',
+        code: 'unsupported-required-extension',
+        path: 'extensionsRequired[0]',
+        message: expect.stringContaining('VENDOR_required_extension'),
+      }],
+    });
   });
 });
 

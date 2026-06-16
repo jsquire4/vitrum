@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **pt-webgpu no longer silently drops two direct-Scene feature cases:** setScene now emits structured warnings when layered materials include unsupported `frontLayer` / `backLayer` normal-map subfields, and the lite tier now warns when primitives carry authored `COLOR_0` vertex colors that require the full-tier vertex-color binding. Material update patches use the same nested-layer field detection as setScene.
 - **Direct glTF bridge can target runtime profiles:** `loadGltfForEngine({ ... }, { backend: 'pt-webgpu-lite' })` now validates against the constrained lite profile while still passing `backend:'pt-webgpu'` to the injected engine factory. Strict adapter-only callers can now reject lite-unsupported assets such as `COLOR_0` scenes before constructing an engine, matching the engine-wrapper runtime-tier gate.
+- **Required-extension failures are structured:** unknown entries in `extensionsRequired` now throw `GltfImportError` with an `unsupported-required-extension` diagnostic and exact `extensionsRequired[i]` path, instead of a plain unstructured `Error`.
 
 ### Fixed (walkaround Welford allocation hygiene, 2026-06-16)
 

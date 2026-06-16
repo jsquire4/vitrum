@@ -1847,6 +1847,10 @@ Do not carry these as open gaps unless the code regresses again.
   strict compatibility uses the lite profile row, so adapter-only one-call loads
   reject lite-unsupported assets before engine construction just like
   `@vitrum/engine/gltf`'s runtime-tier gate.
+- Unknown required glTF extensions now fail with structure instead of a plain
+  throw: `gltfToScene` raises `GltfImportError` carrying an
+  `unsupported-required-extension` diagnostic at the exact
+  `extensionsRequired[i]` source path.
 - pt-webgpu full-tier material texture mutation stale: stale. Texture-map changes
   are rejected from the material fast path and fall through to repack.
 - Blanket "pt-webgpu lite has no point/spot/rect/HDRI support": stale. Initial

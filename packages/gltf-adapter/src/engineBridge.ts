@@ -290,6 +290,7 @@ function formatBackendProfile(backend: BackendId, profileId: GltfBackendProfileI
 
 const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new Set([
   'scene-not-found',
+  'unsupported-required-extension',
   'unsupported-primitive-mode',
   'unresolved-compression',
   'missing-position',

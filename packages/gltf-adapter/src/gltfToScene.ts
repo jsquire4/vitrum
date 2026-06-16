@@ -261,6 +261,7 @@ export interface GltfMaterialVariantBinding {
 
 export type GltfImportDiagnosticCode =
   | 'unsupported-version'
+  | 'unsupported-required-extension'
   | 'ignored-camera'
   | 'double-sided-material'
   | 'skin-rest-pose'
@@ -274,10 +275,20 @@ export type GltfImportDiagnosticCode =
   | 'empty-triangulated-primitive';
 
 export interface GltfImportDiagnostic {
-  readonly severity: 'warning';
+  readonly severity: 'warning' | 'error';
   readonly code: GltfImportDiagnosticCode;
   readonly path: string;
   readonly message: string;
+}
+
+export class GltfImportError extends Error {
+  readonly diagnostics: readonly GltfImportDiagnostic[];
+
+  constructor(message: string, diagnostics: readonly GltfImportDiagnostic[]) {
+    super(message);
+    this.name = 'GltfImportError';
+    this.diagnostics = diagnostics;
+  }
 }
 
 function emitImportDiagnostic(
@@ -356,12 +367,19 @@ export async function gltfToScene(
     });
   }
 
-  for (const ext of gltf.extensionsRequired ?? []) {
+  const requiredExtensions = gltf.extensionsRequired ?? [];
+  for (let i = 0; i < requiredExtensions.length; i += 1) {
+    const ext = requiredExtensions[i]!;
     if (!isRequiredExtensionSupported(ext, opts.textureSourceExtensions)) {
-      throw new Error(
+      const message =
         `[vitrum/gltf-adapter] extensionsRequired includes unsupported extension "${ext}". ` +
-          'Required glTF extensions cannot be safely ignored.',
-      );
+        'Required glTF extensions cannot be safely ignored.';
+      throw new GltfImportError(message, [{
+        severity: 'error',
+        code: 'unsupported-required-extension',
+        path: `extensionsRequired[${i}]`,
+        message,
+      }]);
     }
   }
 
