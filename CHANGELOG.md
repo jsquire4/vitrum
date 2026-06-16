@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (walkaround transparent OIT composition, 2026-06-16)
 
-- **Camera-visible `alphaMode:'blend'` is no longer stochastic-only:** `@vitrum/walkaround-hybrid` now has a transparent-OIT pass between `indirect-combine` and `temporalAccum`. The opaque shade pass skips fractional blend layers, the new pass ray-walks those layers front-to-back using atlas-backed baseColor/alphaMap/vertex alpha coverage, composites them over the denoised opaque result, and feeds that composited radiance into temporal accumulation. The alpha warning now reflects the remaining approximation: transparent-layer lighting plus ReSTIR/GI/shadow participation, not missing camera-visible composition.
+- **Camera-visible `alphaMode:'blend'` is no longer stochastic-only:** `@vitrum/walkaround-hybrid` now has a transparent-OIT pass between `indirect-combine` and `temporalAccum`. The opaque shade pass skips fractional blend layers, the new pass ray-walks those layers front-to-back using atlas-backed baseColor/alphaMap/vertex alpha coverage, composites them over the denoised opaque result, and feeds that composited radiance into temporal accumulation. The transparent direct-sun term now reuses the atlas-backed material payload plus the extension-aware GGX/clearcoat/sheen/aniso/iridescence BRDF instead of a diffuse-only sun approximation. The alpha warning now reflects the remaining approximation: transparent sky/light-map terms plus ReSTIR/GI/shadow participation, not missing camera-visible composition.
 
 ### Fixed (pt-webgpu direct-light adjoint breadth, 2026-06-16)
 

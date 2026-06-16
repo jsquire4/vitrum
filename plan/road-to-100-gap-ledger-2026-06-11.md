@@ -141,7 +141,8 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
 - Follow-up 2026-06-15: the top Road summary was reconciled with the detailed
   ledger. Closed items such as DDGI glossy bounce and stale NRC structural
   defects were removed from the headline remaining-work list, while the honest
-  remaining tails are now analytic-adjoint breadth, walkaround OIT and
+  remaining tails are now analytic-adjoint breadth, walkaround OIT sky/light-map
+  plus GI/shadow promotion after direct-sun material-lobe closure,
   rich-material GI validation/promotion, neural/NRC production quality, and
   validation-backed fidelity promotions.
 - Follow-up 2026-06-15: the glTF texture decode bridge now has a real
@@ -1493,10 +1494,14 @@ Evidence:
   routes through the transparent-OIT pass (`transparentOit.wgsl.ts`) after
   `indirect-combine`; the opaque shade pass skips fractional blend layers, OIT
   ray-walks those layers front-to-back, writes `transparentCompositeTexture`,
-  and temporal accumulation consumes that composited output. The structured
-  warning remains because transparent-layer lighting plus ReSTIR/GI/shadow
-  participation are still approximate, including `updatePrimitive(id, { material
-  })` patches that mutate a primitive into fractional blend.
+  and temporal accumulation consumes that composited output. 2026-06-16
+  follow-up: OIT direct-sun layer radiance now consumes the same atlas-backed
+  GGX/clearcoat/sheen/aniso/iridescence material payload as opaque
+  shade/ReSTIR material scoring instead of a diffuse-only sun term. The
+  structured warning remains because transparent sky/light-map terms plus
+  ReSTIR/GI/shadow participation are still approximate, including
+  `updatePrimitive(id, { material })` patches that mutate a primitive into
+  fractional blend.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow and direct-light power: `materialTextureAtlas.ts`
   packs emissive maps as sRGB-decoded atlas layers with per-map

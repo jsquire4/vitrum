@@ -42,7 +42,8 @@
 > reference-render promotion.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current center-sampled direct-light slice; walkaround transparent
-> lighting/GI/shadow promotion, finite-emitter/light-map promotion decisions, and rich-material GI GPU A/B evidence;
+> sky/light-map plus GI/shadow promotion after direct-sun material-lobe closure,
+> finite-emitter/light-map promotion decisions, and rich-material GI GPU A/B evidence;
 > real
 > production neural checkpoints and NRC/neural quality/default-tier decisions;
 > validation-backed promotion decisions for GRIS, BDPT/pt-webgpu fidelity rows,
@@ -696,16 +697,18 @@ mask discard / fully-transparent blend endpoints in `bvh_material` bit 2;
 `traceSceneFirstHitAlphaMask` skips those triangles for primary + GI first-hit
 visibility; the cast-shadow mask skips bit 2 in occlusion rays; and
 `HybridEngine.setScene` emits `walkaround-hybrid.alpha-blend-approximation` for
-fractional `alphaMode:'blend'` because transparent-layer lighting and GI/shadow
-participation remain approximate. Readable `alphaMap` cutout is atlas-backed;
-camera-visible fractional blend now uses the transparent-OIT pass after
-`indirect-combine` and before temporal accumulation.
+fractional `alphaMode:'blend'` because transparent sky/light-map terms and
+GI/shadow participation remain approximate. Readable `alphaMap` cutout is
+atlas-backed; camera-visible fractional blend now uses the transparent-OIT pass
+after `indirect-combine` and before temporal accumulation, and its direct-sun
+term consumes the same atlas-backed GGX/clearcoat/sheen/aniso/iridescence
+material payload as opaque shade/ReSTIR material scoring.
 
 | Step | Code | Footgun |
 |------|------|---------|
 | Pack alphaMode + cutoff | ✅ CODE CLOSED for scalar cutout + alpha-map metadata: `packingHelpers.ts` bit 2 in `bvh_material`; `materialTextureAtlas.ts` stores alpha mode/opacity/cutoff metadata; tests in `roughMetalPacking.test.ts` and `materialTextureAtlas.test.ts` | Fractional blend remains approximate, but no longer fully opaque |
 | Shade discard | ✅ CODE CLOSED as traversal discard: `materialAtlas.wgsl.ts` `traceSceneFirstHitAlphaMaskTextured`; RIS/shade/temporal/spatial/GI/NRC first-hit paths use it | Discard happens before ReSTIR reservoir writes |
-| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | Transparent layer lighting is a realtime approximation; ReSTIR/GI/shadow participation still uses the existing stochastic/coverage semantics until validated separately |
+| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, shades direct sun through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | Transparent sky/light-map terms remain realtime approximations; ReSTIR/GI/shadow participation still uses the existing stochastic/coverage semantics until validated separately |
 | ~~`alphaMap`~~ | ✅ CODE CLOSED/approximate: readable alpha maps are linear atlas layers with per-map UV, transform, wrap, and alphaMode/opacity/cutoff metadata. Mask uses `opacity * baseColorMap.a * alphaMap.r < alphaCutoff`; blend coverage feeds the transparent-OIT pass for camera-visible composition and remains approximate for GI/shadow participation. | Keep warning until transparent lighting/GI promotion lands |
 
 #### 3D — Texture atlas (non-optional for walkaround material 100%)

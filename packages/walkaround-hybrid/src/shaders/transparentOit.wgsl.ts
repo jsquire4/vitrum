@@ -7,9 +7,11 @@
  * composites them over the already-denoised opaque/background radiance.
  *
  * Lighting policy: transparent layer radiance is an intentionally cheap
- * camera-visible approximation (base color under sky/sun ambient + emissive
- * and light maps). ReSTIR/GI participation remains handled by the existing
- * stochastic traversal path until transparent GI has its own validation row.
+ * camera-visible approximation. The direct sun term uses the same atlas-backed
+ * material-lobe BRDF as opaque shade/ReSTIR material scoring; sky ambient,
+ * emissive, and light-map terms remain first-hit camera-visible approximations.
+ * ReSTIR/GI/shadow participation remains handled by the existing stochastic
+ * traversal path until transparent GI has its own validation row.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -50,7 +52,12 @@ fn oitHitIsMaskDiscarded(hit: IntersectionResult, alpha: MaterialAlphaCoverage) 
   return false;
 }
 
-fn oitLayerNormal(hit: IntersectionResult) -> vec3f {
+struct OitLayerNormals {
+  smoothNormal: vec3f,
+  shadingNormal: vec3f,
+};
+
+fn oitLayerNormals(hit: IntersectionResult) -> OitLayerNormals {
   let n_isTlas = ubo.bvhMode == 1u;
   let n_base = hit.instanceIndex * 4u;
   let n_ok = n_isTlas && n_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
@@ -69,15 +76,19 @@ fn oitLayerNormal(hit: IntersectionResult) -> vec3f {
     tlasInstanceWorldToLocal[n_i + 1u],
     tlasInstanceWorldToLocal[n_i + 2u],
   );
-  return applyBumpMapForHit(hit, applyNormalMapForHit(hit, smoothNormal));
+  let normalMapped = applyNormalMapForHit(hit, smoothNormal);
+  var normals: OitLayerNormals;
+  normals.smoothNormal = smoothNormal;
+  normals.shadingNormal = applyBumpMapForHit(hit, normalMapped);
+  return normals;
 }
 
-fn oitLayerRadiance(hit: IntersectionResult, rayDir: vec3f) -> vec3f {
+fn oitLayerRadiance(hit: IntersectionResult, rayDir: vec3f, materialWord: u32) -> vec3f {
   let scalarBase = decodeMaterialColor(hit.matColorPacked).rgb;
   let uv1 = materialAtlasUv1ForHit(hit);
-  let vertexColor = sampleVertexColorForHit(hit);
-  let albedo = sampleBaseColorMap(hit.indices.w, hit.uv, uv1, scalarBase * vertexColor.rgb);
-  let normal = oitLayerNormal(hit);
+  let normals = oitLayerNormals(hit);
+  let normal = normals.shadingNormal;
+  let payload = sampleRestirDIMaterialPayloadForHit(hit, normals.smoothNormal, normal, scalarBase, materialWord);
 
   let emitCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
   let emissive = sampleEmissiveMap(
@@ -88,11 +99,30 @@ fn oitLayerRadiance(hit: IntersectionResult, rayDir: vec3f) -> vec3f {
   );
   let baked = sampleLightMap(hit.indices.w, hit.uv, uv1);
 
-  let skyAmbient = envRadiance(normal) * albedo * INV_PI;
-  let nDotSun = max(0.0, dot(normal, ubo.sunDirection));
-  let sunDiffuse = vec3f(ubo.sunIntensity) * albedo * INV_PI * nDotSun;
+  let skyAmbient = envRadiance(normal) * payload.albedo * INV_PI;
+  let wo = safe_normalize(-rayDir);
+  let sunBrdf = evalGGXWithSpecularClearcoatSheen(
+    payload.albedo,
+    payload.rough,
+    payload.metal,
+    payload.specular.rgb,
+    payload.specular.a,
+    payload.anisotropy.x,
+    payload.anisotropy.y,
+    payload.iridescence,
+    payload.clearcoat.x,
+    payload.clearcoat.y,
+    payload.sheen.a,
+    payload.sheenRoughness,
+    payload.sheen.rgb,
+    normal,
+    payload.clearcoatNormal,
+    wo,
+    safe_normalize(ubo.sunDirection),
+  );
+  let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf;
   let viewFacing = 0.35 + 0.65 * abs(dot(normal, -rayDir));
-  return (skyAmbient + sunDiffuse) * viewFacing + emissive + baked;
+  return (skyAmbient + sunDirect) * viewFacing + emissive + baked;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -141,7 +171,7 @@ fn transparentOitMain(@builtin(global_invocation_id) gid: vec3u) {
 
     if (alpha.mode == 2u && alpha.coverage > 0.001 && alpha.coverage < 0.999) {
       let a = clamp(alpha.coverage, 0.0, 1.0);
-      let layerRadiance = oitLayerRadiance(hit, primaryRay.direction);
+      let layerRadiance = oitLayerRadiance(hit, primaryRay.direction, word);
       accum = accum + layerRadiance * a * transmittance;
       transmittance = transmittance * (1.0 - a);
       traveled = traveled + hit.dist + step;
@@ -159,5 +189,5 @@ fn transparentOitMain(@builtin(global_invocation_id) gid: vec3u) {
 export const TRANSPARENT_OIT_MODULE: WgslModule = {
   name: 'transparentOit',
   source: TRANSPARENT_OIT_WGSL,
-  requires: ['common', 'materialAtlas', 'environmentSample'],
+  requires: ['common', 'materialAtlas', 'environmentSample', 'ggxBrdf'],
 };
