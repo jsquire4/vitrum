@@ -468,7 +468,7 @@ function isPathReplayCompatibleEmissiveMaterial(m: MaterialSpec): boolean {
   if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
   if (m.opacity != null && m.opacity < 1) return false;
   if ((m.transmission ?? 0) > 1e-6) return false;
-  return m.emissiveMap == null && m.alphaMap == null;
+  return m.alphaMap == null;
 }
 
 function isPathReplayCompatibleBrdfMaterial(m: MaterialSpec): boolean {

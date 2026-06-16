@@ -17,9 +17,11 @@
  * Scope (Phase 1, matching the differentiable set): single bounce, brute-force
  * intersection (Phase-1 inverse scenes are small — Cornell-scale), directional
  * delta + point + spot + center-sampled rect/disc/mesh-area direct lights.
- * Environment, indirect, soft-sun angular diameter, and mapped/transmissive/
- * layered/volume/spectral material terms remain deliberate finite-difference
- * fallbacks until their source terms are mirrored here and GPU-validated.
+ * Environment, indirect, soft-sun angular diameter, and BRDF/transmissive/
+ * layered/volume/spectral mapped material terms remain deliberate
+ * finite-difference fallbacks until their source terms are mirrored here and
+ * GPU-validated. The only mapped term replayed here is the camera-direct
+ * emissive texel multiplier for `emissive` / `emissiveIntensity`.
  * Direct lights are summed deterministically over all eligible lights (no MC
  * light selection: the adjoint is the deterministic expectation; finite area
  * lights are center-sampled). baseColor/roughness/metallic/specular/clearcoat
@@ -40,6 +42,11 @@
  * Ref: Vicini 2021 (Path Replay Backprop); Möller-Trumbore 1997 (intersection).
  */
 import { PCG_WGSL } from '@vitrum/shared-samplers';
+import {
+  MATERIAL_TEX_UV_META_VEC4_OFFSET,
+  MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
+  MATERIAL_TEX_VEC4_STRIDE,
+} from '../../scene/materialTextures.js';
 import { PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL } from './pathTraceAdjoint.wgsl.js';
 
 /** Field codes in the adjointParams descriptor (matches inverseSession fields). */
@@ -62,6 +69,9 @@ export const ADJOINT_FIELD_CLEARCOAT_ROUGHNESS = 8;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
+
+const ADJOINT_MATERIAL_TEX_UV_EMISSIVE =
+  MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
 
 export const PT_WEBGPU_ADJOINT_PASS_WGSL = /* wgsl */ `
 const PI = 3.14159265358979;
@@ -117,6 +127,13 @@ struct AdjointParams {
 @group(0) @binding(12) var<storage, read>      spotLights: array<vec4f>;
 // mesh-area lights: per triangle {a, b, c, radiance+shadowFlag} (4 vec4 stride).
 @group(0) @binding(13) var<storage, read>      meshAreaLights: array<vec4f>;
+// Emissive-map replay subset: mirrors the forward sRGB material texture sampler
+// only for camera-direct emissive partials. BRDF/scalar maps still route through
+// finite difference until their full shading/PDF terms are replayed here.
+@group(0) @binding(14) var<storage, read>      meshUvs: array<vec4f>;
+@group(0) @binding(15) var<storage, read>      materialTexDescriptors: array<vec4f>;
+@group(0) @binding(16) var                      materialTextures: texture_2d_array<f32>;
+@group(0) @binding(17) var                      materialTexSampler: sampler;
 
 // ── BRDF primitives ──────────────────────────────────────────────────────────
 const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
@@ -153,6 +170,97 @@ fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   let m2 = m * m;
   let m5 = m2 * m2 * m;
   return f0 + (vec3f(1.0) - f0) * m5;
+}
+
+// ── emissive texture replay subset (mirror of material.wgsl sampleEmissiveTexture) ──
+const ADJOINT_MATERIAL_TEX_VEC4_STRIDE = ${MATERIAL_TEX_VEC4_STRIDE}u;
+const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = ${ADJOINT_MATERIAL_TEX_UV_EMISSIVE}u;
+
+fn adjointWrapTextureCoord(coord: f32, mode: f32) -> f32 {
+  let m = u32(mode);
+  if (m == 1u) {
+    return min(clamp(coord, 0.0, 1.0), 0.999999);
+  }
+  if (m == 2u) {
+    let period = coord - 2.0 * floor(coord * 0.5);
+    let mirrored = select(2.0 - period, period, period <= 1.0);
+    return min(max(mirrored, 0.0), 0.999999);
+  }
+  return fract(coord);
+}
+
+fn sampleAdjointMaterialLayer(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f) -> vec4f {
+  if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
+    return vec4f(1.0);
+  }
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
+  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
+  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
+  let uvMeta = materialTexDescriptors[base + uvMetaOffset];
+  let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
+  let texCoord = u32(uvMeta.x);
+  let rawUv = select(ch0, ch1, texCoord == 1u);
+  let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
+  let rot = uvMeta.w;
+  let c = cos(rot);
+  let s = sin(rot);
+  let sx = xform.z;
+  let sy = xform.w;
+  let rawA = select(uva.xy, uva.zw, texCoord == 1u);
+  let rawB = select(uvb.xy, uvb.zw, texCoord == 1u);
+  let rawC = select(uvc.xy, uvc.zw, texCoord == 1u);
+  let uvA = vec2f(
+    sx * c * rawA.x + sx * s * rawA.y + xform.x,
+    -sy * s * rawA.x + sy * c * rawA.y + xform.y,
+  );
+  let uvB = vec2f(
+    sx * c * rawB.x + sx * s * rawB.y + xform.x,
+    -sy * s * rawB.x + sy * c * rawB.y + xform.y,
+  );
+  let uvC = vec2f(
+    sx * c * rawC.x + sx * s * rawC.y + xform.x,
+    -sy * s * rawC.x + sy * c * rawC.y + xform.y,
+  );
+  let uv = vec2f(
+    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
+    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
+  );
+  let wrappedUv = vec2f(adjointWrapTextureCoord(uv.x, wrapMode.x), adjointWrapTextureCoord(uv.y, wrapMode.y));
+  let fittedUv = wrappedUv * uvFitScale;
+  let texDim = vec2f(textureDimensions(materialTextures, 0));
+  let mipCount = f32(textureNumLevels(materialTextures));
+  let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
+  let pa = positions[tri.x].xyz;
+  let pb = positions[tri.y].xyz;
+  let pc = positions[tri.z].xyz;
+  let worldArea = max(0.5 * length(cross(pb - pa, pc - pa)), 1e-8);
+  let hitPos = pa * u + pb * v + pc * w;
+  let cameraDistance = max(length(hitPos - params.cameraPos.xyz), 1e-3);
+  let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
+  let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
+  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
+  return textureSampleLevel(materialTextures, materialTexSampler, fittedUv, layerIdx, lod);
+}
+
+fn sampleAdjointEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  return sampleAdjointMaterialLayer(
+    i32(materialTexDescriptors[base].w),
+    base,
+    triIndex,
+    baryVW,
+    ADJOINT_MATERIAL_TEX_UV_EMISSIVE,
+    materialTexDescriptors[base + 7u].zw,
+    materialTexDescriptors[base + 13u].zw,
+  );
 }
 
 // ── the GPU-validated BRDF partials + adjointScatter (gradAccum at binding 8) ──
@@ -291,20 +399,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let hit = closestHit(ray.origin, ray.direction);
     if (!hit.valid) { continue; }
 
-	    let matId = triMaterialIds[hit.tri];
-	    let m0 = materials[matId * MATERIAL_VEC4_STRIDE];
-	    let m1 = materials[matId * MATERIAL_VEC4_STRIDE + 1u];
-	    let m23 = materials[matId * MATERIAL_VEC4_STRIDE + 23u];
-	    let m26 = materials[matId * MATERIAL_VEC4_STRIDE + 26u];
-	    let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u];
-	    let baseColor = m0.rgb;
-	    let roughness = clamp(m0.w, 0.02, 1.0);
-	    let metallic = clamp(m1.w, 0.0, 1.0);
-	    let isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u;
-	    let specularColor = m27.rgb;
-	    let specularIntensity = clamp(m27.w, 0.0, 1.0);
-	    let clearcoat = clamp(m23.x, 0.0, 1.0);
-	    let clearcoatRoughness = clamp(m23.y, 0.0, 1.0);
+    let matId = triMaterialIds[hit.tri];
+    let m0 = materials[matId * MATERIAL_VEC4_STRIDE];
+    let m1 = materials[matId * MATERIAL_VEC4_STRIDE + 1u];
+    let m23 = materials[matId * MATERIAL_VEC4_STRIDE + 23u];
+    let m26 = materials[matId * MATERIAL_VEC4_STRIDE + 26u];
+    let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u];
+    let baseColor = m0.rgb;
+    let roughness = clamp(m0.w, 0.02, 1.0);
+    let metallic = clamp(m1.w, 0.0, 1.0);
+    let isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u;
+    let specularColor = m27.rgb;
+    let specularIntensity = clamp(m27.w, 0.0, 1.0);
+    let clearcoat = clamp(m23.x, 0.0, 1.0);
+    let clearcoatRoughness = clamp(m23.y, 0.0, 1.0);
 
     let idx = indices[hit.tri];
     let nGeo = safe_normalize(hit.bary.x * normals[idx.x].xyz + hit.bary.y * normals[idx.y].xyz + hit.bary.z * normals[idx.z].xyz);
@@ -325,16 +433,17 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // the matId match in the scatter loop, so a pixel only contributes to the emissive
     // gradient when ITS primary-hit material is the optimized emissive primitive.
     let dRendered_dEmissivePerUnitIntensity = dContribution_dEmissive(vec3f(1.0), 1.0); // = (1,1,1)
+    let emissiveTexel = sampleAdjointEmissiveTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb;
 
     // Single-bounce direct lighting, summed deterministically over every direct
     // light source the scoped adjoint pass mirrors.
     var gBaseColor = vec3f(0.0);
     var gRough = 0.0;
-	    var gSpecularColor = vec3f(0.0);
-	    var gSpecularIntensity = 0.0;
-	    var gMetallic = 0.0;
-	    var gClearcoat = 0.0;
-	    var gClearcoatRoughness = 0.0;
+    var gSpecularColor = vec3f(0.0);
+    var gSpecularIntensity = 0.0;
+    var gMetallic = 0.0;
+    var gClearcoat = 0.0;
+    var gClearcoatRoughness = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -533,19 +642,19 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset + 2u, gSpecularColor.z * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_SPECULAR_INTENSITY}u) {
         adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples);
-	      } else if (d.y == ${ADJOINT_FIELD_METALLIC}u) {
-	        adjointScatter(gradOffset, gMetallic * invReplaySamples);
-	      } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT}u) {
-	        adjointScatter(gradOffset, gClearcoat * invReplaySamples);
-	      } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT_ROUGHNESS}u) {
-	        adjointScatter(gradOffset, gClearcoatRoughness * invReplaySamples);
-	      } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
+      } else if (d.y == ${ADJOINT_FIELD_METALLIC}u) {
+        adjointScatter(gradOffset, gMetallic * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT}u) {
+        adjointScatter(gradOffset, gClearcoat * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT_ROUGHNESS}u) {
+        adjointScatter(gradOffset, gClearcoatRoughness * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
         // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
         // folds intensity into emissive.rgb, so the host hands the fixed
         // emissiveIntensity in the descriptor's .w (bitcast f32); the partial per
         // unit intensity is (1,1,1) at the primary hit (throughput = 1).
         let emissiveIntensity = bitcast<f32>(d.w);
-        let gEmissive = dLoss_dR * dRendered_dEmissivePerUnitIntensity * emissiveIntensity;
+        let gEmissive = dLoss_dR * dRendered_dEmissivePerUnitIntensity * emissiveTexel * emissiveIntensity;
         adjointScatter(gradOffset, gEmissive.x * invReplaySamples);
         adjointScatter(gradOffset + 1u, gEmissive.y * invReplaySamples);
         adjointScatter(gradOffset + 2u, gEmissive.z * invReplaySamples);
@@ -560,7 +669,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         );
         let gIntensity = dot(
           dLoss_dR,
-          dContribution_dEmissiveIntensity(vec3f(1.0), emissiveRgb),
+          dContribution_dEmissiveIntensity(vec3f(1.0), emissiveRgb * emissiveTexel),
         );
         adjointScatter(gradOffset, gIntensity * invReplaySamples);
       } else {

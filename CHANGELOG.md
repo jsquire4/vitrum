@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu emissive-map adjoint replay, 2026-06-16)
+
+- **Camera-direct emissive maps now participate in path-replay adjoint:** `@vitrum/pt-webgpu` binds the existing full-tier UV/texture descriptor/sRGB texture resources into `adjointPass`, mirrors the forward emissive-map sampler including per-map UV set, transform, wrap, heterogeneous-layer fit, and explicit LOD, and multiplies both RGB `emissive` and scalar `emissiveIntensity` gradients by the hit-local emissive texel. `inverseSession` now keeps opaque emissive/emissiveIntensity fits with `emissiveMap` on `path-replay`; alpha maps, BRDF/material maps, transmission, environment/indirect paths, stochastic area terms, and extension-lobe adjoints remain finite-difference tails.
+
 ### Fixed (glTF secondary vertex color diagnostics, 2026-06-16)
 
 - **`COLOR_1+` is no longer silently ignored:** `@vitrum/gltf-adapter` now emits structured `ignored-vertex-color-set` diagnostics from `gltfToScene()` for secondary vertex color attributes and reports them as unsupported primitive compatibility issues from `analyzeGltfAsset()`. `COLOR_0` remains the imported core color stream; multi-color-set rendering is still unsupported rather than silently collapsed.

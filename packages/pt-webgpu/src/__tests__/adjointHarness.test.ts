@@ -3,6 +3,7 @@
 // EXECUTED GPU == CPU-oracle A/B runs on real hardware (wsl-gpu
 // scripts/adjoint-validate.ts, lavapipe: max relative err ~2e-7 = f32 precision);
 // here we pin the host-side packing + that the kernel bundles the real partials.
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   ADJOINT_HARNESS_WGSL,
@@ -20,12 +21,14 @@ import {
   ADJOINT_FIELD_ROUGHNESS,
   ADJOINT_FIELD_EMISSIVE,
   ADJOINT_FIELD_SPECULAR_COLOR,
-	  ADJOINT_FIELD_SPECULAR_INTENSITY,
-	  ADJOINT_FIELD_METALLIC,
-	  ADJOINT_FIELD_EMISSIVE_INTENSITY,
-	  ADJOINT_FIELD_CLEARCOAT,
-	  ADJOINT_FIELD_CLEARCOAT_ROUGHNESS,
-	} from '../wgsl/pathTrace/adjointPass.wgsl.js';
+  ADJOINT_FIELD_SPECULAR_INTENSITY,
+  ADJOINT_FIELD_METALLIC,
+  ADJOINT_FIELD_EMISSIVE_INTENSITY,
+  ADJOINT_FIELD_CLEARCOAT,
+  ADJOINT_FIELD_CLEARCOAT_ROUGHNESS,
+} from '../wgsl/pathTrace/adjointPass.wgsl.js';
+
+const ADJOINT_PASS_TS = readFileSync(new URL('../adjointPass.ts', import.meta.url), 'utf8');
 
 describe('adjoint harness (V24 GPU partials A/B)', () => {
   it('packs an input into the 16-float vec4-aligned AdjIn record', () => {
@@ -85,12 +88,12 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m26 = materials[matId * MATERIAL_VEC4_STRIDE + 26u]');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dBaseColorWithSpecular(');
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dMetallic(');
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColor(');
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensity(');
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m23 = materials[matId * MATERIAL_VEC4_STRIDE + 23u]');
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dClearcoat(');
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dClearcoatRoughness(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dMetallic(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColor(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensity(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m23 = materials[matId * MATERIAL_VEC4_STRIDE + 23u]');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dClearcoat(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dClearcoatRoughness(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('directionalLights');              // delta directional NEE
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let directionalShadowDisabled = dDirAD.w < 0.0');
@@ -109,18 +112,28 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let gUnlitBaseColor = dLoss_dR');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let gBase = select(gBaseColor, gUnlitBaseColor, isUnlit)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBase.x * invReplaySamples)'); // per-param scatter
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gMetallic * invReplaySamples)');
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoat * invReplaySamples)');
-	    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoatRoughness * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gMetallic * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoat * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gClearcoatRoughness * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples)');
     // Emissive is the camera-DIRECT primary-hit partial (NOT a NEE term): the fixed
-    // emissiveIntensity rides in the descriptor `.w` (bitcast f32) and folds in.
+    // emissiveIntensity rides in the descriptor `.w` (bitcast f32) and folds in;
+    // camera-direct emissive maps are sampled with the forward sRGB UV metadata.
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(14) var<storage, read>      meshUvs');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(15) var<storage, read>      materialTexDescriptors');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(16) var                      materialTextures');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(17) var                      materialTexSampler');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_VEC4_STRIDE = 82u;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = 21u;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointEmissiveTexture');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveTexel = sampleAdjointEmissiveTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dRendered_dEmissivePerUnitIntensity * emissiveTexel * emissiveIntensity');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gEmissive.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let descBase = k * 2u');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_EMISSIVE_INTENSITY}u`);
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dContribution_dEmissiveIntensity(vec3f(1.0), emissiveRgb)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dContribution_dEmissiveIntensity(vec3f(1.0), emissiveRgb * emissiveTexel)');
     // The UBO is mat4 + vec4 + 3×uvec4 = 128 bytes; the field codes are stable.
     expect(ADJOINT_PARAMS_UBO_BYTES).toBe(128);
     expect(ADJOINT_FIELD_BASECOLOR).toBe(0);
@@ -128,9 +141,16 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_EMISSIVE).toBe(2);
     expect(ADJOINT_FIELD_SPECULAR_COLOR).toBe(3);
     expect(ADJOINT_FIELD_SPECULAR_INTENSITY).toBe(4);
-	    expect(ADJOINT_FIELD_METALLIC).toBe(5);
-	    expect(ADJOINT_FIELD_EMISSIVE_INTENSITY).toBe(6);
-	    expect(ADJOINT_FIELD_CLEARCOAT).toBe(7);
-	    expect(ADJOINT_FIELD_CLEARCOAT_ROUGHNESS).toBe(8);
-	  });
+    expect(ADJOINT_FIELD_METALLIC).toBe(5);
+    expect(ADJOINT_FIELD_EMISSIVE_INTENSITY).toBe(6);
+    expect(ADJOINT_FIELD_CLEARCOAT).toBe(7);
+    expect(ADJOINT_FIELD_CLEARCOAT_ROUGHNESS).toBe(8);
+  });
+
+  it('engine adjoint PASS binds the emissive texture replay resources', () => {
+    expect(ADJOINT_PASS_TS).toContain('binding: 14, resource: { buffer: sb.uvsBuffer }');
+    expect(ADJOINT_PASS_TS).toContain('binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer }');
+    expect(ADJOINT_PASS_TS).toContain('binding: 16, resource: sb.materialTextureView');
+    expect(ADJOINT_PASS_TS).toContain('binding: 17, resource: sb.materialTextureSampler');
+  });
 });

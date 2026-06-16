@@ -126,8 +126,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   widened to two vec4 records per parameter so it can carry UNFACTORED emissive
   RGB and keep the intensity-zero derivative valid; inverse-session routing
   selects path replay for `materials.<id>.emissiveIntensity` under the existing
-  opaque/unmapped emissive predicate. Emissive maps and non-primary/indirect
-  emission gradients remain finite-difference tails.
+  opaque/unmapped emissive predicate. Later same-day follow-up: camera-direct
+  `emissiveMap` modulation is now replayed too. `adjointPass` binds the existing
+  UV/texture descriptor/sRGB texture resources, samples the hit-local emissive
+  texel through the same per-map UV/transform/wrap/fit metadata as the forward
+  material path, and multiplies both RGB `emissive` and scalar
+  `emissiveIntensity` gradients by that texel. Alpha-map visibility,
+  non-primary/indirect emission, and BRDF/material-map gradients remain
+  finite-difference tails.
 - Later 2026-06-16 follow-up: map-free `shadingModel:"unlit"` `baseColor`
   joined the safe pt-webgpu path-replay adjoint domain as a primary-hit
   contribution identity (`radiance += throughput * baseColor`). The routing is

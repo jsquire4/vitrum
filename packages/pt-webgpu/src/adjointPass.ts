@@ -55,7 +55,8 @@ export class AdjointPass {
    *    direct-light NEE (the BRDF partials in `pathTraceAdjoint.wgsl.ts`);
    *  - emissive / emissiveIntensity — the camera-DIRECT emission at the primary
    *    hit (NOT a NEE term): `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity`
-   *    and `∂loss/∂emissiveIntensity = dot(dLoss_dR, emissive)`.
+   *    and `∂loss/∂emissiveIntensity = dot(dLoss_dR, emissive)`, both modulated
+   *    by the hit-local emissiveMap texel when one is authored.
    *
    * The pipeline is lazily compiled and cached on the first call.
    * Transient buffers are allocated per step and destroyed in the finally block
@@ -210,6 +211,10 @@ export class AdjointPass {
         { binding: 11, resource: { buffer: sb.directionalLightsBuffer } },
         { binding: 12, resource: { buffer: sb.spotLightsBuffer } },
         { binding: 13, resource: { buffer: sb.meshAreaLightsBuffer } },
+        { binding: 14, resource: { buffer: sb.uvsBuffer } },
+        { binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer } },
+        { binding: 16, resource: sb.materialTextureView },
+        { binding: 17, resource: sb.materialTextureSampler },
       ],
     });
 

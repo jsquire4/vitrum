@@ -422,6 +422,66 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay for camera-direct emissive params with an emissiveMap', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                emissive: [0.25, 0.5, 0.75],
+                emissiveIntensity: 2,
+                emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 1, 0.25, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(4) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.emissive', kind: 'rgb' },
+        { path: 'materials.panel.emissiveIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([0.25, 0.5, 0.75]);
+    expect(session.currentValues()[1]).toEqual([2]);
+    session.dispose();
+  });
+
+  it('keeps alpha-mapped emissive params on finite-difference because visibility is not replayed', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                emissive: [1, 1, 1],
+                alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
   it('degrades to finite-difference when a path-replay material uses unsupported maps', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -455,6 +515,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     ['iridescence', { iridescence: 0.25 }],
     ['anisotropy', { anisotropy: 0.25 }],
     ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
+    ['emissive map on a lit BRDF target', { emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['clearcoat map', { clearcoatMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['clearcoat normal map', { clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
     ['specular map', { specularColorMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],

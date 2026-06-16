@@ -629,6 +629,9 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   metallicMap: 'native',
   transmissionMap: 'native',
   thicknessMap: 'approximate',
+  // Forward paths sample emissive maps natively. Inverse path-replay now also
+  // replays the camera-direct emissive texel multiplier for emissive /
+  // emissiveIntensity, while non-primary/indirect emission remains FD.
   emissiveMap: 'native',
   alphaMap: 'native',
   aoMap: 'native',
