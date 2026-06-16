@@ -79,8 +79,9 @@
  *  alphaMap               materialAtlas.wgsl samples readable alpha maps in
  *                           primary traversal, RIS, and GI bounce casts; mask
  *                           uses opacity * baseColorMap.a * alphaMap.r <
- *                           alphaCutoff, while blend uses deterministic
- *                           stochastic coverage for fractional opacity.
+ *                           alphaCutoff. Fractional blend camera composition is
+ *                           handled by the transparent-OIT pass; ReSTIR/GI and
+ *                           shadow participation remain approximate.
  *  lightMap               materialAtlas.wgsl samples readable linear light maps
  *                           as camera-visible baked outgoing radiance only.
  *  lightMapIntensity      stored in light-map atlas metadata and multiplied into
@@ -266,8 +267,9 @@ export function collectUnconsumedMaterialFields(
  * Return primitive ids whose material asks for nontrivial `alphaMode:'blend'`.
  * The scalar alpha traversal path can faithfully discard fully-transparent
  * blend endpoints (`opacity <= 0`) and mask cutouts (`opacity < alphaCutoff`),
- * but it does not implement order-independent alpha composition for partial or
- * texture-driven coverage. HybridEngine turns this into a structured warning.
+ * and the transparent-OIT pass camera-composites partial coverage. HybridEngine
+ * still emits a structured warning because transparent-layer lighting plus
+ * ReSTIR/GI/shadow participation remain approximate.
  */
 export function collectApproximateAlphaBlendPrimitiveIds(
   primitives: ReadonlyArray<{

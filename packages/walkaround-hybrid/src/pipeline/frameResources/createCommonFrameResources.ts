@@ -28,6 +28,12 @@ export function createCommonFrameResources(
     format: 'rgba16float',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
+  const transparentCompositeTexture = device.createTexture({
+    label: 'transparentComposite',
+    size: [width, height],
+    format: 'rgba16float',
+    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
+  });
   const hdrTotalTexture = device.createTexture({
     label: 'hdrTotal',
     size: [width, height],
@@ -185,6 +191,7 @@ export function createCommonFrameResources(
     albedoTexture,
     hdrIndirectTexture,
     combinedDenoisedTexture,
+    transparentCompositeTexture,
     indirectDenoisedPingTexture,
     indirectDenoisedPongTexture,
     indirectAccumPingTexture,

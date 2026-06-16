@@ -42,6 +42,7 @@ import {
   TemporalAccumPass,
   TemporalGIReservoirPass,
   TemporalReservoirPass,
+  TransparentOitPass,
 } from '../src/pipeline/passes/index.js';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
 import {
@@ -93,6 +94,7 @@ function buildPipelineRegistry(): PassRegistry {
   reg.register(new IndirectTemporalAccumPass(stubPipeline, stubPingPong));
   reg.register(new AtrousIndirectPass(stubPipeline, stubUboRef));
   reg.register(new IndirectCombinePass(stubPipeline));
+  reg.register(new TransparentOitPass(stubPipeline));
   reg.register(new TemporalAccumPass(stubPipeline, stubUboRef));
   reg.register(new ResolvePass(stubPipeline, stubUboRef, false));
   reg.register(new CompositePass(stubRenderPipeline, stubUboRef));
@@ -126,6 +128,7 @@ const GOLDEN_REGISTERED_IDS = [
   'indirect-temporal-accum',
   'atrous-indirect-3',
   'indirect-combine',
+  'transparent-oit',
   'temporalAccum',
   'resolve',
   'composite',
@@ -175,6 +178,7 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'indirect-combine',
       'motion-vectors',
       'ppg-update',
+      'transparent-oit',
       'temporalAccum',
       'resolve',
       'composite',
@@ -216,6 +220,7 @@ describe('WalkaroundGPUPipeline — pass-registration characterization', () => {
       'indirect-combine',
       'motion-vectors',
       'ppg-update',
+      'transparent-oit',
       'temporalAccum',
       'resolve',
       'composite',

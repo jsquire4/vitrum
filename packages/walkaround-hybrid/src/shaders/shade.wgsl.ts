@@ -216,7 +216,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
   let primaryRay = generatePrimaryRay_common(pix.x, pix.y, dims.x, dims.y, ubo.cameraPos, invVP);
-  let primaryHit = traceSceneFirstHitAlphaMaskTextured(
+  let primaryHit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
     ubo.bvhMode, ubo.tlasNodeCount,
     &bvh_index, &bvh_position, &bvh,
     &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,

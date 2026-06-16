@@ -51,6 +51,7 @@ import {
   TEMPORAL_GI_MODULE,
   TEMPORAL_GI_GRIS_MODULE,
   TEMPORAL_MODULE,
+  TRANSPARENT_OIT_MODULE,
   WGSL_MODULES,
 } from './wgslModules.js';
 import {
@@ -73,6 +74,7 @@ import {
   getSpatialGiBindGroupLayout,
   getIndirectCombineBindGroupLayout,
   getIndirectTemporalAccumBindGroupLayout,
+  getTransparentOitBindGroupLayout,
   getLightTreeBindGroupLayout,
   getRegirBuildBindGroupLayout,
   getNrcBindGroupLayout,
@@ -127,6 +129,8 @@ interface CompiledPipelines {
   spatialGiPipeline: GPUComputePipeline;
   /** Sprint 18 — indirect-blur + combine pass. */
   indirectCombinePipeline: GPUComputePipeline;
+  /** Camera-visible transparent layer composition over combined radiance. */
+  transparentOitPipeline: GPUComputePipeline;
   /** Sprint 18 follow-up — pre-atrous temporal accumulator on indirect. */
   indirectTemporalAccumPipeline: GPUComputePipeline;
   /** ReGIR grid-build kernel (Boksansky 2021). Opt-in via `opts.regirEnabled`;
@@ -199,6 +203,7 @@ export async function compilePipelines(
   const resolveSM       = device.createShaderModule({ label: 'resolve',       code: composeWgsl(RESOLVE_MODULE,        wgslModules) });
   const cbPrefillSM     = device.createShaderModule({ label: 'cb-prefill',    code: composeWgsl(CB_PREFILL_MODULE,     wgslModules) });
   const motionVectorsSM = device.createShaderModule({ label: 'motion-vectors', code: composeWgsl(MOTION_VECTORS_MODULE, wgslModules) });
+  const transparentOitSM = device.createShaderModule({ label: 'transparent-oit', code: composeWgsl(TRANSPARENT_OIT_MODULE, wgslModules) });
 
   // Check for compile errors on every shader module before proceeding.
   const modules: [string, GPUShaderModule][] = [
@@ -206,6 +211,7 @@ export async function compilePipelines(
     ['shade', shadeSM], ['atrous', atrousSM],
     ['comp-vert', compVertSM], ['comp-frag', compFragSM],
     ['sample-budget', sampleBudgetSM], ['resolve', resolveSM], ['cb-prefill', cbPrefillSM], ['motion-vectors', motionVectorsSM],
+    ['transparent-oit', transparentOitSM],
   ];
   for (const [label, sm] of modules) {
     const info = await sm.getCompilationInfo();
@@ -306,6 +312,14 @@ export async function compilePipelines(
   const indirectTemporalAccumLayout = device.createPipelineLayout({
     bindGroupLayouts: [getIndirectTemporalAccumBindGroupLayout(device, bglCache)],
   });
+  const transparentOitLayout = device.createPipelineLayout({
+    bindGroupLayouts: [
+      getFrameBindGroupLayout(device, bglCache),
+      getSceneBindGroupLayout(device, bglCache),
+      getUboBindGroupLayout(device, bglCache),
+      getTransparentOitBindGroupLayout(device, bglCache),
+    ],
+  });
 
   // Sprint 15 — GTAO shader modules (needed by PIPELINE_SPECS table below).
   const gtaoSM = device.createShaderModule({ label: 'gtao', code: composeWgsl(GTAO_MODULE, wgslModules) });
@@ -347,6 +361,7 @@ export async function compilePipelines(
     { key: 'gtaoPipeline',                 module: gtaoSM,               layout: gtaoLayout,                 entryPoint: 'gtaoMain'                 },
     { key: 'gtaoUpsamplePipeline',         module: gtaoUpsampleSM,       layout: gtaoUpsampleLayout,         entryPoint: 'gtaoUpsampleMain'         },
     { key: 'indirectCombinePipeline',      module: indirectCombineSM,    layout: indirectCombineLayout,      entryPoint: 'indirectCombineMain'      },
+    { key: 'transparentOitPipeline',       module: transparentOitSM,     layout: transparentOitLayout,       entryPoint: 'transparentOitMain'       },
     { key: 'indirectTemporalAccumPipeline',module: indirectTemporalAccumSM, layout: indirectTemporalAccumLayout, entryPoint: 'indirectTemporalAccumMain' },
     { key: 'accumPipeline',                module: accumSM,              layout: accumLayout,                entryPoint: 'temporalAccumMain'        },
   ] as const;

@@ -12,13 +12,13 @@
  *       spatial-2, gi-ris, gi-temporal, gi-spatial-1, gi-spatial-2, shade,
  *       gtao, gtao-upsample, motion-vectors, atrous-0..2, indirect-temporal-accum,
  *       atrous-indirect-0..3, indirect-combine, ddgi-border-irr,
- *       ddgi-border-vis, temporalAccum, resolve, composite
+ *       ddgi-border-vis, transparent-oit, temporalAccum, resolve, composite
  *   • atrous-variance (29): sample-budget, …shade, gtao+upsample,
  *       motion-vectors, welford-temporal, atrous-variance-variance,
  *       atrous-variance-atrous-0..2, indirect-temporal-accum,
  *       atrous-indirect-0..3, indirect-combine, ddgi-border-irr,
- *       ddgi-border-vis, temporalAccum, resolve, composite
- *       (MAX_PASS_COUNT = 34 is the svgf-real+PPG+ReGIR worst case)
+ *       ddgi-border-vis, transparent-oit, temporalAccum, resolve, composite
+ *       (MAX_PASS_COUNT = 36 is the svgf-real+PPG+ReGIR worst case)
  *
  * Sprint 9 adaptive-sampling wire-in adds `sample-budget` (prepended) and
  * `resolve` (inserted between temporalAccum and composite). Both passes
@@ -92,6 +92,7 @@ export type PassLabel =
   | 'indirect-combine'
   | 'ddgi-border-irr'
   | 'ddgi-border-vis'
+  | 'transparent-oit'
   // T2.H3 — PPG paper-faithful (Müller 2017) opt-in update pass
   | 'ppg-update'
   | 'temporalAccum'
@@ -104,7 +105,7 @@ export type PassLabel =
  * allocation survives every runtime layout. Verify against `buildPassLayout`
  * if you add a pass.
  */
-export const MAX_PASS_COUNT = 35;
+export const MAX_PASS_COUNT = 36;
 
 interface PassLayoutOptions {
   /** T2.H2: 'neural' falls through to 'atrous-variance' pass layout (InferenceGraph is

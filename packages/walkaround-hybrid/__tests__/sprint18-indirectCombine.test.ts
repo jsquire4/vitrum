@@ -147,10 +147,10 @@ describe('Sprint 18 — pass-layout placement', () => {
       const combine = layout.labels.indexOf('indirect-combine');
       const accum   = layout.labels.indexOf('temporalAccum');
       expect(combine).toBeGreaterThanOrEqual(0);
-      // Item 3 (DDGI border fill): ddgi-border-irr and ddgi-border-vis now sit
-      // between indirect-combine and temporalAccum so the border is filled
-      // before temporal accumulation reads the atlas.
-      expect(accum).toBe(combine + 3);
+      // Item 3 (DDGI border fill): ddgi-border-irr and ddgi-border-vis sit
+      // after indirect-combine, and transparent-oit now sits before
+      // temporalAccum so the camera-visible alpha composite feeds history.
+      expect(accum).toBe(combine + 4);
     }
   });
 

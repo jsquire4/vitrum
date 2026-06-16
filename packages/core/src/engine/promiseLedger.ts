@@ -358,8 +358,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   shadingModel: 'approximate',
   // Cutout coverage: scalar mask uses opacity < alphaCutoff; readable alphaMap
   // handles are sampled in the atlas-backed primary/RIS/GI traversal path.
-  // Blend supports only the fully-transparent endpoint and warns for fractional
-  // coverage because order-independent composition is not implemented.
+  // Fractional blend is camera-composited by walkaround's transparent-OIT pass,
+  // but lighting/GI/shadow participation remains approximate.
   alphaMode: 'approximate',
   alphaCutoff: 'approximate',
   opacity: 'approximate',
@@ -388,7 +388,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // first-hit baked outgoing radiance. Approximate because finite-emitter power
   // is still scalar at classification time, GI receiver/reuse targets remain a
   // proxy around stored Lo rather than a full receiver-lobe reservoir, lightMap
-  // is camera-visible only, and alpha blend has no OIT path.
+  // is camera-visible only, and transparent blend lighting/GI/shadow semantics
+  // remain approximate.
   roughnessMap: 'approximate',
   metallicMap: 'approximate',
   normalMap: 'approximate',

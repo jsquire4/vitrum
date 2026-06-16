@@ -26,6 +26,7 @@ import {
   TemporalAccumPass,
   TemporalGIReservoirPass,
   TemporalReservoirPass,
+  TransparentOitPass,
 } from '../src/pipeline/passes/index.js';
 import { PassRegistry } from '../src/pipeline/PassRegistry.js';
 import type { PassGateOptions } from '../src/pipeline/Pass.js';
@@ -207,10 +208,16 @@ describe('Pass entries — W1-R5 shape invariants', () => {
     expect(p.dependencies).toEqual(['atrous-indirect-3']);
   });
 
-  it('TemporalAccumPass: depends on indirect-combine', () => {
+  it('TransparentOitPass: depends on indirect-combine', () => {
+    const p = new TransparentOitPass(stubPipeline);
+    expect(p.id).toBe('transparent-oit');
+    expect(p.dependencies).toEqual(['indirect-combine']);
+  });
+
+  it('TemporalAccumPass: depends on transparent-oit', () => {
     const p = new TemporalAccumPass(stubPipeline, stubUboRef);
     expect(p.id).toBe('temporalAccum');
-    expect(p.dependencies).toEqual(['indirect-combine']);
+    expect(p.dependencies).toEqual(['transparent-oit']);
   });
 
   it('ResolvePass: depends on temporalAccum', () => {
@@ -236,7 +243,7 @@ describe('Pass entries — W1-R5 shape invariants', () => {
 });
 
 describe('Pass entries — topological registration', () => {
-  it('all 19 passes register + sort with no cycles', () => {
+  it('all 20 passes register + sort with no cycles', () => {
     const reg = new PassRegistry();
     reg.register(new SampleBudgetPass(stubPipeline, stubUboRef, stubUboRef));
     reg.register(new RISPass(stubPipeline));
@@ -255,11 +262,12 @@ describe('Pass entries — topological registration', () => {
     reg.register(new IndirectTemporalAccumPass(stubPipeline, stubPingPong));
     reg.register(new AtrousIndirectPass(stubPipeline, stubUboRef));
     reg.register(new IndirectCombinePass(stubPipeline));
+    reg.register(new TransparentOitPass(stubPipeline));
     reg.register(new TemporalAccumPass(stubPipeline, stubUboRef));
     reg.register(new ResolvePass(stubPipeline, stubUboRef, false));
     reg.register(new CompositePass(stubRenderPipeline, stubUboRef));
     reg.register(new PPGUpdatePass(stubPipeline));
-    expect(reg.size()).toBe(19);
+    expect(reg.size()).toBe(20);
     const order = reg.sortedPasses().map((p) => p.id);
     // Spot-check the topo: sample-budget first, composite last.
     expect(order[0]).toBe('sample-budget');
@@ -273,6 +281,9 @@ describe('Pass entries — topological registration', () => {
     expect(idx('denoiser-adapter')).toBeLessThan(idx('indirect-temporal-accum'));
     // indirect-combine comes after atrous-indirect-3.
     expect(idx('indirect-combine')).toBeGreaterThan(idx('atrous-indirect-3'));
+    // transparent-oit bridges indirect-combine and temporalAccum.
+    expect(idx('transparent-oit')).toBeGreaterThan(idx('indirect-combine'));
+    expect(idx('temporalAccum')).toBeGreaterThan(idx('transparent-oit'));
     // temporalAccum after indirect-combine.
     expect(idx('temporalAccum')).toBeGreaterThan(idx('indirect-combine'));
     // resolve after temporalAccum.

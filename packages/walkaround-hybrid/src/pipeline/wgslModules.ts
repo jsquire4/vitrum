@@ -85,6 +85,7 @@ import { GTAO_MODULE } from '../shaders/gtao.wgsl.js';
 import { GTAO_UPSAMPLE_MODULE } from '../shaders/gtaoUpsample.wgsl.js';
 import { INDIRECT_COMBINE_MODULE } from '../shaders/indirectCombine.wgsl.js';
 import { INDIRECT_TEMPORAL_ACCUM_MODULE } from '../shaders/indirectTemporalAccum.wgsl.js';
+import { TRANSPARENT_OIT_MODULE } from '../shaders/transparentOit.wgsl.js';
 import { COMPOSITE_VERT_MODULE, COMPOSITE_FRAG_MODULE } from '../shaders/composite.wgsl.js';
 import { DDGI_SAMPLE_MODULE, DDGI_GRID_UBO_MODULE } from '../ddgi/ddgiSampleWgsl.js';
 import { ENVIRONMENT_SAMPLE_MODULE } from '../shaders/environmentSample.wgsl.js';
@@ -122,6 +123,7 @@ export {
   GTAO_UPSAMPLE_MODULE,
   INDIRECT_COMBINE_MODULE,
   INDIRECT_TEMPORAL_ACCUM_MODULE,
+  TRANSPARENT_OIT_MODULE,
   COMPOSITE_VERT_MODULE,
   COMPOSITE_FRAG_MODULE,
   PPG_UPDATE_MODULE,
@@ -308,6 +310,7 @@ export const WGSL_MODULES: ReadonlyMap<string, WgslModule> = new Map<string, Wgs
   // Sprint 18 — indirect channel
   [INDIRECT_COMBINE_MODULE.name, INDIRECT_COMBINE_MODULE],
   [INDIRECT_TEMPORAL_ACCUM_MODULE.name, INDIRECT_TEMPORAL_ACCUM_MODULE],
+  [TRANSPARENT_OIT_MODULE.name, TRANSPARENT_OIT_MODULE],
 
   // Composite (vert + frag)
   [COMPOSITE_VERT_MODULE.name, COMPOSITE_VERT_MODULE],

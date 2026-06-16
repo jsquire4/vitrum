@@ -40,6 +40,7 @@ export { DenoiserAdapterPass } from './DenoiserAdapterPass.js';
 export { IndirectTemporalAccumPass } from './IndirectTemporalAccumPass.js';
 export { AtrousIndirectPass } from './AtrousIndirectPass.js';
 export { IndirectCombinePass } from './IndirectCombinePass.js';
+export { TransparentOitPass } from './TransparentOitPass.js';
 export { TemporalAccumPass } from './TemporalAccumPass.js';
 export { ResolvePass } from './ResolvePass.js';
 export { CompositePass } from './CompositePass.js';

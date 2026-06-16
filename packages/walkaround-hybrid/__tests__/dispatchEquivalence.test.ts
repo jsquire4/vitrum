@@ -28,6 +28,7 @@ import { MotionVectorsPass } from '../src/pipeline/passes/MotionVectorsPass.js';
 import { GTAOUpsamplePass } from '../src/pipeline/passes/GTAOUpsamplePass.js';
 import { IndirectCombinePass } from '../src/pipeline/passes/IndirectCombinePass.js';
 import { IndirectTemporalAccumPass } from '../src/pipeline/passes/IndirectTemporalAccumPass.js';
+import { TransparentOitPass } from '../src/pipeline/passes/TransparentOitPass.js';
 import { TemporalAccumPass } from '../src/pipeline/passes/TemporalAccumPass.js';
 import { ResolvePass } from '../src/pipeline/passes/ResolvePass.js';
 import { SampleBudgetPass } from '../src/pipeline/passes/SampleBudgetPass.js';
@@ -596,6 +597,7 @@ describe('Theme-E ordering safety — composePassLabels == dispatch order (#7)',
     reg.register(new IndirectTemporalAccumPass(stubPipeline, { value: 0 }));
     reg.register(new AtrousIndirectPass(stubPipeline, stubUbo));
     reg.register(new IndirectCombinePass(stubPipeline));
+    reg.register(new TransparentOitPass(stubPipeline));
     reg.register(new TemporalAccumPass(stubPipeline, stubUbo));
     reg.register(new ResolvePass(stubPipeline, stubUbo, false));
     reg.register(new CompositePass(stubRender, stubUbo));

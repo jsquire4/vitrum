@@ -452,3 +452,25 @@ export function getIndirectCombineBindGroupLayout(
   });
   return cache.indirectCombine;
 }
+
+/**
+ * Camera-visible transparent composition pass BGL. Matches
+ * `transparentOit.wgsl.ts` group(3):
+ *   0 — opaque/background combined radiance (rgba16float, sampled)
+ *   1 — transparent-composited output (rgba16float, write-only storage)
+ *
+ * Kept as a dedicated group so the shader can also bind the standard frame,
+ * scene, and UBO groups without adding to their already budget-sensitive
+ * resource sets.
+ */
+export function getTransparentOitBindGroupLayout(
+  device: GPUDevice,
+  cache: BGLCache,
+): GPUBindGroupLayout {
+  if (cache.transparentOit) return cache.transparentOit;
+  cache.transparentOit = device.createBindGroupLayout({
+    label: 'transparent-oit-bgl',
+    entries: bglEntriesFor('transparentOit'),
+  });
+  return cache.transparentOit;
+}

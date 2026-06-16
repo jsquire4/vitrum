@@ -216,6 +216,7 @@ const shaders = [];
     GTAO_UPSAMPLE_MODULE,
     INDIRECT_COMBINE_MODULE,
     INDIRECT_TEMPORAL_ACCUM_MODULE,
+    TRANSPARENT_OIT_MODULE,
     COMPOSITE_VERT_MODULE,
     COMPOSITE_FRAG_MODULE,
     PPG_UPDATE_MODULE: _PPG_UPDATE_MODULE,
@@ -285,6 +286,7 @@ const shaders = [];
   // Indirect channel
   addWh("indirectCombine", INDIRECT_COMBINE_MODULE);
   addWh("indirectTemporalAccum", INDIRECT_TEMPORAL_ACCUM_MODULE);
+  addWh("transparentOit", TRANSPARENT_OIT_MODULE);
 
   // Adaptive-sampling Welford temporal
   addWh("welfordTemporal", WELFORD_TEMPORAL_MODULE);

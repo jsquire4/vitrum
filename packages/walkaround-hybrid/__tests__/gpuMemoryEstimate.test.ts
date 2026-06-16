@@ -278,11 +278,11 @@ describe('estimateFrameResourcesMemory — 1920×1080 HybridEngine', () => {
     const MB = 1024 * 1024;
     const r32uint = breakdown.byTextureFormat.r32uint ?? 0;
     expect(r32uint).toBeGreaterThan(16 * MB);
-    // rgba16float dominates — full-res HDR ping-pong fleet (10+ textures
-    // at 8 bytes / texel × ~2M pixels).
+    // rgba16float dominates — full-res HDR ping-pong fleet (now including the
+    // transparent OIT composition target) at 8 bytes / texel × ~2M pixels.
     const rgba16f = breakdown.byTextureFormat.rgba16float ?? 0;
     expect(rgba16f).toBeGreaterThan(80 * MB);
-    expect(rgba16f).toBeLessThan(320 * MB);
+    expect(rgba16f).toBeLessThan(340 * MB);
   });
 
   it('byBufferUsage shows storage > uniform (reservoir buffers >> UBOs)', () => {

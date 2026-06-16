@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround transparent OIT composition, 2026-06-16)
+
+- **Camera-visible `alphaMode:'blend'` is no longer stochastic-only:** `@vitrum/walkaround-hybrid` now has a transparent-OIT pass between `indirect-combine` and `temporalAccum`. The opaque shade pass skips fractional blend layers, the new pass ray-walks those layers front-to-back using atlas-backed baseColor/alphaMap/vertex alpha coverage, composites them over the denoised opaque result, and feeds that composited radiance into temporal accumulation. The alpha warning now reflects the remaining approximation: transparent-layer lighting plus ReSTIR/GI/shadow participation, not missing camera-visible composition.
+
 ### Fixed (pt-webgpu direct-light adjoint breadth, 2026-06-16)
 
 - **Path-replay adjoint now covers more direct-light source families:** `@vitrum/pt-webgpu` adjoint replay now differentiates material base/specular params under delta directional, point, spot, and center-sampled rect/disc-area direct lighting. The pass consumes packed directional/spot buffers, honors point/spot/rect/disc emitter `castShadow:false` lanes, and uses the native disc area term. Inverse-session routing now allows those covered source families while keeping soft-sun angular diameter, mesh-area, environment, indirect, mapped/transmissive/layered/volume/spectral, and extension-lobe material domains on finite difference until their adjoints are implemented and validated.
@@ -41,7 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (walkaround material truthfulness, 2026-06-15)
 
-- **Texture-driven alpha blend diagnostics:** `@vitrum/walkaround-hybrid` now emits `walkaround-hybrid.alpha-blend-approximation` for `alphaMode:'blend'` materials whose partial coverage comes from `baseColorMap` or `alphaMap`, not just scalar `opacity`, while still skipping the fully transparent endpoint. The walkaround ledger text was reconciled to the current DI/GI material implementation: rich DI, GI suffix payloads, and receiver-lobe GI targets are implemented, but finite-emitter power, light-map scope, OIT composition, and GPU A/B promotion evidence keep the rows `approximate`.
+- **Texture-driven alpha blend diagnostics:** `@vitrum/walkaround-hybrid` now emits `walkaround-hybrid.alpha-blend-approximation` for `alphaMode:'blend'` materials whose partial coverage comes from `baseColorMap` or `alphaMap`, not just scalar `opacity`, while still skipping the fully transparent endpoint. The walkaround ledger text was reconciled to the current DI/GI material implementation: rich DI, GI suffix payloads, and receiver-lobe GI targets are implemented, but finite-emitter power, light-map scope, transparent lighting/GI/shadow scope, and GPU A/B promotion evidence keep the rows `approximate`.
 
 ### Fixed (walkaround ReSTIR-GI material parity, 2026-06-15)
 
@@ -122,7 +126,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (walkaround material diagnostics, 2026-06-15)
 
 - **`@vitrum/walkaround-hybrid` unsupported material-field diagnostics:** analytic primitives now participate in the unconsumed-material scan before their render-scene mesh fallback, and `updatePrimitive(id, { material })` runs the same structured `walkaround-hybrid.unconsumed-material-fields` warning path as `setScene()`. Unsupported displacement fields remain unsupported, but no longer slip through analytic or material-only mutation paths silently.
-- **`@vitrum/walkaround-hybrid` fractional alpha-blend mutation diagnostics:** `updatePrimitive(id, { material })` now emits the same structured `walkaround-hybrid.alpha-blend-approximation` warning as `setScene()` when a material patch introduces fractional `alphaMode:'blend'`, so incremental material edits cannot silently bypass the sorted/weighted-transparency limitation.
+- **`@vitrum/walkaround-hybrid` fractional alpha-blend mutation diagnostics:** `updatePrimitive(id, { material })` now emits the same structured `walkaround-hybrid.alpha-blend-approximation` warning as `setScene()` when a material patch introduces fractional `alphaMode:'blend'`, so incremental material edits cannot silently bypass the transparent lighting/GI/shadow approximation warning.
 
 ### Tests (mutation observability, 2026-06-15)
 
@@ -253,7 +257,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added (walkaround alphaMap atlas cutout, 2026-06-14)
 
-- **`@vitrum/walkaround-hybrid` alphaMap cutout consumption:** readable alpha maps now pack into the material texture atlas as linear R-channel layers with per-triangle alphaMode/opacity/alphaCutoff metadata. RIS, shade, temporal/spatial primary casts, ReSTIR-GI, and NRC GI now use `traceSceneFirstHitAlphaMaskTextured`, so `alphaMode:'mask'` applies `opacity * alphaMap.r < alphaCutoff` before reservoir writes. Fractional `alphaMode:'blend'` remains an approximate warning until an order-independent composite path lands.
+- **`@vitrum/walkaround-hybrid` alphaMap cutout consumption:** readable alpha maps now pack into the material texture atlas as linear R-channel layers with per-triangle alphaMode/opacity/alphaCutoff metadata. RIS, shade, temporal/spatial primary casts, ReSTIR-GI, and NRC GI now use `traceSceneFirstHitAlphaMaskTextured`, so `alphaMode:'mask'` applies `opacity * alphaMap.r < alphaCutoff` before reservoir writes. Fractional `alphaMode:'blend'` is now camera-composited by the transparent-OIT pass, with transparent lighting/GI/shadow participation still approximate.
 - **`@vitrum/walkaround-hybrid` baseColorTexture alpha coverage:** textured alpha traversal now multiplies baseColorMap `.a` with optional `alphaMap.r`, so ordinary glTF `alphaMode:'MASK'|'BLEND'` assets that store coverage in `pbrMetallicRoughness.baseColorTexture.a` are honored without fabricating a separate `alphaMap`. `gltfAdapter.test.ts` pins the adapter boundary and `materialTextureAtlas.test.ts` pins the atlas/shader path.
 - **`@vitrum/walkaround-hybrid` emissiveMap visible glow:** readable emissive maps now pack into the material texture atlas as sRGB-decoded layers with per-map UV, transform, and wrap metadata. The shade pass multiplies camera-visible emissive surface glow by the map. Direct-light emitter power and GI payloads still use scalar emissive radiance, so the promise ledger grades this as approximate.
 - **`@vitrum/walkaround-hybrid` transmissionMap glass gating:** readable transmission maps now pack into the material texture atlas as linear R-channel layers with per-map UV, transform, and wrap metadata. Shade, RIS, ReSTIR-GI, and NRC GI classify glass from `scalarTransmission * transmissionMap.r`. Direct-light candidate payloads, emitter power, and GI payload lanes still use scalar transmission, so the promise ledger grades this as approximate.

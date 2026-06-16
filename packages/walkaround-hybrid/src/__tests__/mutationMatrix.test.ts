@@ -364,7 +364,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning for fractional alpha blend approximation', () => {
+  it('updatePrimitive(material) emits a structured warning for residual alpha blend approximation', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       const transparentMaterial = {

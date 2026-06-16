@@ -388,8 +388,9 @@ describe('buildPassLayout — DDGI border fill slots', () => {
     expect(layout.index('ddgi-border-irr')).toBeLessThan(layout.index('ddgi-border-vis'));
   });
 
-  it('ddgi-border-vis comes before temporalAccum', () => {
+  it('ddgi-border-vis comes before transparent-oit and temporalAccum', () => {
     const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
+    expect(layout.index('ddgi-border-vis')).toBeLessThan(layout.index('transparent-oit'));
     expect(layout.index('ddgi-border-vis')).toBeLessThan(layout.index('temporalAccum'));
   });
 
@@ -398,24 +399,27 @@ describe('buildPassLayout — DDGI border fill slots', () => {
     expect(layout.index('ddgi-border-irr')).toBeGreaterThan(layout.index('indirect-combine'));
   });
 
-  it('atrous-variance layout reports 32 slots (31 + trailing opt-in regir-build)', () => {
+  it('atrous-variance layout reports 33 slots (32 + trailing opt-in regir-build)', () => {
     // 2026-06-06: the dead ppg-guide pass was removed from the order table
     // (G-P1.1) — every layout dropped exactly one slot.
     // 2026-06-10: cb-prefill inserted before denoiser-adapter (+1 slot).
+    // 2026-06-16: transparent-oit inserted before temporalAccum (+1 slot).
     const layout = buildPassLayout({ denoiserMode: 'atrous-variance' });
-    expect(layout.slotCount).toBe(32);
+    expect(layout.slotCount).toBe(33);
     expect(layout.slotCount).toBeLessThanOrEqual(MAX_PASS_COUNT);
   });
 
-  it('atrous layout reports 30 slots (29 + trailing opt-in regir-build)', () => {
+  it('atrous layout reports 31 slots (30 + trailing opt-in regir-build)', () => {
     // 2026-06-10: cb-prefill inserted before denoiser-adapter (+1 slot).
+    // 2026-06-16: transparent-oit inserted before temporalAccum (+1 slot).
     const layout = buildPassLayout({ denoiserMode: 'atrous' });
-    expect(layout.slotCount).toBe(30);
+    expect(layout.slotCount).toBe(31);
   });
 
-  it('MAX_PASS_COUNT is 35 (includes cb-prefill + the trailing opt-in regir-build slot)', () => {
+  it('MAX_PASS_COUNT is 36 (includes transparent-oit + the trailing opt-in regir-build slot)', () => {
     // 2026-06-10: cb-prefill added (+1).
-    expect(MAX_PASS_COUNT).toBe(35);
+    // 2026-06-16: transparent-oit added (+1).
+    expect(MAX_PASS_COUNT).toBe(36);
   });
 });
 

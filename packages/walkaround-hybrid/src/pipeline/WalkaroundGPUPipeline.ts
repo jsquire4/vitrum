@@ -98,6 +98,7 @@ import {
   TemporalAccumPass,
   TemporalGIReservoirPass,
   TemporalReservoirPass,
+  TransparentOitPass,
 } from './passes/index.js';
 import type { PingPongRef } from './passes/passRefs.js';
 import {
@@ -236,6 +237,7 @@ function registerPasses(
     deps.atrousIndirectUboRef,
   ));
   registry.register(new IndirectCombinePass(compiled.indirectCombinePipeline));
+  registry.register(new TransparentOitPass(compiled.transparentOitPipeline));
   registry.register(new TemporalAccumPass(compiled.accumPipeline, deps.accumUboRef));
   registry.register(new ResolvePass(compiled.resolvePipeline, deps.resolveUboRef, deps.checkerboard));
   const compositePass = new CompositePass(compiled.compositePipeline, deps.compositeUboRef);

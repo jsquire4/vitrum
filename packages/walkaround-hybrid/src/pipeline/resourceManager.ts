@@ -114,6 +114,14 @@ export interface CommonFrameResources {
    */
   combinedDenoisedTexture: GPUTexture;
   /**
+   * Camera-visible alpha blend composition target. The transparent-OIT pass
+   * reads `combinedDenoisedTexture` as the opaque/background radiance, walks
+   * fractional `alphaMode:'blend'` layers front-to-back, and writes the
+   * composited radiance here. `TemporalAccumPass` consumes this texture after
+   * the pass publishes it through `frameState.combinedDenoised`.
+   */
+  transparentCompositeTexture: GPUTexture;
+  /**
    * Sprint 18 — indirect-channel à-trous ping-pong pair.  Four iterations
    * with widening step (1, 2, 4, 8) on hdrIndirectTexture produce a smooth
    * indirect signal that the indirect-combine pass sums with the direct
@@ -551,6 +559,7 @@ function buildDestroyQueue(r: FrameResources): DestroyableResource[] {
     // common (Sprint-18 indirect / combined / hdrTotal / indirect ping-pong / albedo)
     r.common.hdrIndirectTexture,
     r.common.combinedDenoisedTexture,
+    r.common.transparentCompositeTexture,
     r.common.hdrTotalTexture,
     r.common.indirectDenoisedPingTexture,
     r.common.indirectDenoisedPongTexture,

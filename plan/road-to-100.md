@@ -37,8 +37,8 @@
 > lobe-specific unit-proof tail but does **not** close GPU material-furnace /
 > reference-render promotion.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
-> delta-directional/point/spot/center-area direct-light slice; walkaround OIT-grade alpha blend,
-> finite-emitter/light-map promotion decisions, and rich-material GI GPU A/B evidence;
+> delta-directional/point/spot/center-area direct-light slice; walkaround transparent
+> lighting/GI/shadow promotion, finite-emitter/light-map promotion decisions, and rich-material GI GPU A/B evidence;
 > real
 > production neural checkpoints and NRC/neural quality/default-tier decisions;
 > validation-backed promotion decisions for GRIS, BDPT/pt-webgpu fidelity rows,
@@ -311,7 +311,7 @@ buckets that the A–D framing was missing:**
   pt-webgpu AO/bump/light maps, shadow flags, authored/generated tangent.xyzw
   consumption, and walkaround atlas/rich-lobe consumption for the current
   map-backed material rows. Remaining broad-residual rows are displacement,
-  receiveShadow, OIT-grade alpha blend, UV-varying emissive/light-map promotion,
+  receiveShadow, transparent lighting/GI/shadow promotion, UV-varying emissive/light-map promotion,
   unsupported specialty fields (spectral/scattering/layered/thin-film), and
   backend-specific approximation/proof rows ledgered in `BACKEND_PROMISE_LEDGER`.
   The former pt-webgl2 `TextureRef.texCoord`/`alphaMap.transform` warning is closed:
@@ -688,18 +688,19 @@ Walkaround now has **scalar cutout alpha** (`alphaMode` / `alphaCutoff` /
 `opacity`) as an approximate material tier: `packBVHRoughMetalFromCore` encodes
 mask discard / fully-transparent blend endpoints in `bvh_material` bit 2;
 `traceSceneFirstHitAlphaMask` skips those triangles for primary + GI first-hit
-rays; the cast-shadow mask skips bit 2 in occlusion rays; and
+visibility; the cast-shadow mask skips bit 2 in occlusion rays; and
 `HybridEngine.setScene` emits `walkaround-hybrid.alpha-blend-approximation` for
-fractional `alphaMode:'blend'`, which is approximated with deterministic
-stochastic alpha coverage in alpha-aware traversal. Readable `alphaMap` cutout
-is now atlas-backed; sorted/weighted transparent composition remains open.
+fractional `alphaMode:'blend'` because transparent-layer lighting and GI/shadow
+participation remain approximate. Readable `alphaMap` cutout is atlas-backed;
+camera-visible fractional blend now uses the transparent-OIT pass after
+`indirect-combine` and before temporal accumulation.
 
 | Step | Code | Footgun |
 |------|------|---------|
 | Pack alphaMode + cutoff | ✅ CODE CLOSED for scalar cutout + alpha-map metadata: `packingHelpers.ts` bit 2 in `bvh_material`; `materialTextureAtlas.ts` stores alpha mode/opacity/cutoff metadata; tests in `roughMetalPacking.test.ts` and `materialTextureAtlas.test.ts` | Fractional blend remains approximate, but no longer fully opaque |
 | Shade discard | ✅ CODE CLOSED as traversal discard: `materialAtlas.wgsl.ts` `traceSceneFirstHitAlphaMaskTextured`; RIS/shade/temporal/spatial/GI/NRC first-hit paths use it | Discard happens before ReSTIR reservoir writes |
-| Composite blend | `composite.wgsl.ts` | Swapchain `rgba8unorm` blend state — walkaround writes swapchain via composite |
-| ~~`alphaMap`~~ | ✅ CODE CLOSED/approximate: readable alpha maps are linear atlas layers with per-map UV, transform, wrap, and alphaMode/opacity/cutoff metadata. Mask uses `opacity * baseColorMap.a * alphaMap.r < alphaCutoff`; blend uses deterministic stochastic coverage from the same product. | Sorted/weighted transparent composition remains open |
+| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | Transparent layer lighting is a realtime approximation; ReSTIR/GI/shadow participation still uses the existing stochastic/coverage semantics until validated separately |
+| ~~`alphaMap`~~ | ✅ CODE CLOSED/approximate: readable alpha maps are linear atlas layers with per-map UV, transform, wrap, and alphaMode/opacity/cutoff metadata. Mask uses `opacity * baseColorMap.a * alphaMap.r < alphaCutoff`; blend coverage feeds the transparent-OIT pass for camera-visible composition and remains approximate for GI/shadow participation. | Keep warning until transparent lighting/GI promotion lands |
 
 #### 3D — Texture atlas (non-optional for walkaround material 100%)
 
@@ -737,8 +738,9 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
 emissive-map direct power uses a CPU-readable average rather than texel-exact
 emitter PDFs, GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
-alpha blend has no OIT composition, and baked light maps' non-camera paths still
-use scalar packed lanes. Bump maps now feed
+transparent blend now has camera-visible OIT composition but transparent
+lighting/GI/shadow participation still follows the approximate realtime lanes,
+and baked light maps' non-camera paths still use scalar packed lanes. Bump maps now feed
 shade-owned, DI, and GI suffix visible-normal payloads; displacement maps remain
 deliberately unsupported until a true geometry/BVH displacement path exists.
 
@@ -981,7 +983,7 @@ separate Deno/WebGPU harness issue to be cleared first.
 | Category | Fields | Walkaround work |
 |----------|--------|-----------------|
 | Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, envMapIntensity, shadingModel, extensions | `shadingModel` verified `approximate`; mesh-area Le override, DDGI material-emissive direct probe hits, and HDRI envMapIntensity scaling closed; remaining scalar work belongs to atlas/lobe parity rows |
-| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend uses stochastic coverage; sorted/weighted transparent composition remains open |
+| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend camera composition code-closed via transparent OIT; transparent lighting/GI/shadow participation remains approximate |
 | Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
 | Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate after shade-owned, ReSTIR-DI, GI suffix, and receiver-lobe GI target consumption; native promotion still needs material-furnace/reference A/B where applicable |
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |

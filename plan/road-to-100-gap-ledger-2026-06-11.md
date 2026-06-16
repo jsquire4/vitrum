@@ -1463,12 +1463,14 @@ Evidence:
   `traceSceneFirstHitAlphaMaskTextured` applies `opacity * alphaMap.r <
   alphaCutoff` in RIS, shade, temporal/spatial primary casts, ReSTIR-GI, and
   NRC GI paths. The shared cast-shadow mask still skips scalar bit 2 for
-  occlusion rays; fractional blend uses deterministic stochastic coverage and
-  still emits `walkaround-hybrid.alpha-blend-approximation` because sorted or
-  weighted transparent composition remains open. 2026-06-15 follow-up: the same
-  structured warning now fires for `updatePrimitive(id, { material })` patches
-  that mutate a primitive into fractional blend, so incremental glTF/controller
-  material edits cannot bypass the approximation diagnostic.
+  occlusion rays. 2026-06-16 follow-up: camera-visible fractional blend now
+  routes through the transparent-OIT pass (`transparentOit.wgsl.ts`) after
+  `indirect-combine`; the opaque shade pass skips fractional blend layers, OIT
+  ray-walks those layers front-to-back, writes `transparentCompositeTexture`,
+  and temporal accumulation consumes that composited output. The structured
+  warning remains because transparent-layer lighting plus ReSTIR/GI/shadow
+  participation are still approximate, including `updatePrimitive(id, { material
+  })` patches that mutate a primitive into fractional blend.
 - walkaround-hybrid readable `emissiveMap` is code-closed/approximate for
   camera-visible emitter glow and direct-light power: `materialTextureAtlas.ts`
   packs emissive maps as sRGB-decoded atlas layers with per-map
@@ -1621,7 +1623,7 @@ Closure:
   issue, and now has both direct decode and `loadGltfForEngine()` attachment
   tests.
 - Remaining work belongs to `GLTF-API-05` and `GLTF-API-06`:
-  walkaround sorted/weighted transparent composition plus
+  transparent lighting/GI/shadow promotion plus
   displacement/spectral/layered/scattering promotion if those ever become
   walkaround goals, and backend material-consumption parity.
 

@@ -2,7 +2,7 @@
  * TemporalAccumPass — EMA blend of the combined per-channel denoised
  * radiance against the previous-frame accumulator.
  *
- * Reads `frameState.combinedDenoised` (from indirect-combine), reads the
+ * Reads `frameState.combinedDenoised` (from transparent-oit), reads the
  * previous-frame `readAccum` (from frameState — set by the orchestrator
  * before the loop), writes the next-frame accumulator. Alpha = 1.0 on the
  * first frame (history discarded) and `_temporalAccumAlpha` thereafter
@@ -30,7 +30,7 @@ import { dispatchSingleBindGroup } from './dispatchHelpers.js';
 
 export class TemporalAccumPass implements Pass {
   readonly id = 'temporalAccum' as const;
-  readonly dependencies: readonly string[] = ['indirect-combine'];
+  readonly dependencies: readonly string[] = ['transparent-oit'];
   readonly passLabels: readonly PassLabel[] = ['temporalAccum'];
 
   private readonly _pipeline: GPUComputePipeline;

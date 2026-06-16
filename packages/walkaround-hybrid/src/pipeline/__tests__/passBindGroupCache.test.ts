@@ -8,6 +8,7 @@ vi.mock('../bindGroupBuilders.js', async () => {
     buildPreparedAccumBindGroup: vi.fn(() => ({ label: 'temporal-accum-bg' })),
     buildSampleBudgetBindGroup: vi.fn(() => ({ label: 'sample-budget-bg' })),
     buildIndirectTemporalAccumBindGroup: vi.fn(() => ({ label: 'indirect-temporal-bg' })),
+    buildTransparentOitBindGroup: vi.fn(() => ({ label: 'transparent-oit-bg' })),
     buildPpgUpdateBindGroups: vi.fn(() => [{ label: 'ppg-bg0' }, { label: 'ppg-bg1' }]),
     buildRegirBuildBindGroup: vi.fn(() => ({ label: 'regir-bg' })),
   };
@@ -21,6 +22,7 @@ import {
   buildPpgUpdateBindGroups,
   buildRegirBuildBindGroup,
   buildSampleBudgetBindGroup,
+  buildTransparentOitBindGroup,
 } from '../bindGroupBuilders.js';
 import { GTAOUpsamplePass } from '../passes/GTAOUpsamplePass.js';
 import { IndirectTemporalAccumPass } from '../passes/IndirectTemporalAccumPass.js';
@@ -28,6 +30,7 @@ import { PPGUpdatePass } from '../passes/PPGUpdatePass.js';
 import { ReGIRBuildPass } from '../passes/ReGIRBuildPass.js';
 import { SampleBudgetPass } from '../passes/SampleBudgetPass.js';
 import { TemporalAccumPass } from '../passes/TemporalAccumPass.js';
+import { TransparentOitPass } from '../passes/TransparentOitPass.js';
 
 function texture(label: string): GPUTexture & { createView: ReturnType<typeof vi.fn> } {
   return {
@@ -59,6 +62,7 @@ function baseCtx(overrides: Record<string, unknown> = {}) {
     motionVectorTexture: texture('motion'),
     resolvedTexture: texture('resolved'),
     hdrIndirectTexture: texture('hdr-indirect'),
+    transparentCompositeTexture: texture('transparent-composite'),
     indirectAccumPingTexture: texture('indirect-ping'),
     indirectAccumPongTexture: texture('indirect-pong'),
     uboBuffer: buffer('ubo'),
@@ -178,6 +182,26 @@ describe('pass bind-group cache', () => {
     pass.dispatch(ctx);
 
     expect(buildIndirectTemporalAccumBindGroup).toHaveBeenCalledTimes(2);
+  });
+
+  it('publishes the transparent composition texture and reuses its bind group', () => {
+    const combined = texture('combined');
+    const { ctx, common, pass: computePass } = baseCtx({
+      frameState: { combinedDenoised: combined },
+      frameBindGroup: { label: 'frame-bg' },
+      sceneBindGroup: { label: 'scene-bg' },
+      uboBindGroup: { label: 'ubo-bg' },
+    });
+    const pass = new TransparentOitPass({} as GPUComputePipeline);
+
+    pass.dispatch(ctx);
+    (ctx as { frameState: { combinedDenoised: GPUTexture } }).frameState.combinedDenoised = combined;
+    pass.dispatch(ctx);
+
+    expect(buildTransparentOitBindGroup).toHaveBeenCalledTimes(1);
+    expect((ctx as { frameState: { combinedDenoised: unknown } }).frameState.combinedDenoised)
+      .toBe(common.transparentCompositeTexture);
+    expect(computePass.setBindGroup).toHaveBeenCalledWith(3, { label: 'transparent-oit-bg' });
   });
 
   it('caches tuple-valued PPG update bind groups', () => {

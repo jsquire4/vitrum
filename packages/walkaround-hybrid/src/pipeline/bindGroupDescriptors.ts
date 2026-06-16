@@ -27,7 +27,7 @@
  * per binding, no per-call mutation) live here:
  *   frame · scene · ubo · gtao · gtaoUpsample · temporalGi · spatialGi ·
  *   indirectCombine · indirectTemporalAccum · motionVectors · resolve ·
- *   sampleBudget · composite
+ *   transparentOit · sampleBudget · composite
  *
  * The three NON-uniform builders stay HAND-WRITTEN in `bindGroupBuilders.ts`
  * (they do work no descriptor can express):
@@ -82,6 +82,7 @@ export type BindGroupTableId =
   | 'spatialGi'
   | 'indirectCombine'
   | 'indirectTemporalAccum'
+  | 'transparentOit'
   | 'motionVectors'
   | 'resolve'
   | 'sampleBudget'
@@ -297,6 +298,15 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 0, kind: 'tex', note: 'currentRaw (hdrIndirectTexture)' },
       { binding: 1, kind: 'tex', note: 'prevAccum (previous frame accumulator output)' },
       { binding: 2, kind: 'storage-tex:rgba16float', note: 'outAccum (this frame accumulator output)' },
+    ],
+  },
+  {
+    id: 'transparentOit',
+    label: 'transparent-oit',
+    visibility: 'compute',
+    entries: [
+      { binding: 0, kind: 'tex', note: 'opaque/background combined radiance' },
+      { binding: 1, kind: 'storage-tex:rgba16float', note: 'transparent-composited radiance out' },
     ],
   },
   {

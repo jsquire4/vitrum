@@ -703,12 +703,24 @@ fn materialAlphaBlendCoverageHash(hit: IntersectionResult) -> f32 {
   return f32((word >> 22u) ^ word) / 4294967296.0;
 }
 
-fn materialAlphaDiscardedForHit(
+struct MaterialAlphaCoverage {
+  mode: u32,
+  coverage: f32,
+  cutoff: f32,
+  scalarDiscarded: u32,
+};
+
+fn materialAlphaCoverageForHit(
   hit: IntersectionResult,
   materialWord: u32,
-) -> bool {
-  if (materialScalarAlphaDiscardedFromWord(materialWord)) {
-    return true;
+) -> MaterialAlphaCoverage {
+  var out: MaterialAlphaCoverage;
+  out.mode = 0u;
+  out.coverage = 1.0;
+  out.cutoff = 0.0;
+  out.scalarDiscarded = select(0u, 1u, materialScalarAlphaDiscardedFromWord(materialWord));
+  if (out.scalarDiscarded != 0u) {
+    return out;
   }
 
   let coverageMeta = textureLoad(
@@ -716,9 +728,9 @@ fn materialAlphaDiscardedForHit(
     baseColorMapMetaCoord(hit.indices.w * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET),
     0,
   );
-  let mode = u32(max(coverageMeta.x, 0.0) + 0.5);
-  if (mode == 0u) {
-    return false;
+  out.mode = u32(max(coverageMeta.x, 0.0) + 0.5);
+  if (out.mode == 0u) {
+    return out;
   }
 
   let uv1 = materialAtlasUv1ForHit(hit);
@@ -728,15 +740,50 @@ fn materialAlphaDiscardedForHit(
   let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
   let vertexColorAlpha = sampleVertexColorForHit(hit).a;
   let opacity = clamp(coverageMeta.y, 0.0, 1.0);
-  let cutoff = clamp(coverageMeta.z, 0.0, 1.0);
-  let coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
-  if (mode == 1u) {
-    return coverage < cutoff;
+  out.cutoff = clamp(coverageMeta.z, 0.0, 1.0);
+  out.coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
+  return out;
+}
+
+fn materialAlphaDiscardedForHit(
+  hit: IntersectionResult,
+  materialWord: u32,
+) -> bool {
+  let alpha = materialAlphaCoverageForHit(hit, materialWord);
+  if (alpha.scalarDiscarded != 0u) {
+    return true;
   }
-  if (mode == 2u) {
-    return coverage < 1.0 && materialAlphaBlendCoverageHash(hit) >= coverage;
+
+  if (alpha.mode == 0u) {
+    return false;
   }
-  return coverage <= 0.0;
+  if (alpha.mode == 1u) {
+    return alpha.coverage < alpha.cutoff;
+  }
+  if (alpha.mode == 2u) {
+    return alpha.coverage < 1.0 && materialAlphaBlendCoverageHash(hit) >= alpha.coverage;
+  }
+  return alpha.coverage <= 0.0;
+}
+
+fn materialAlphaDiscardedForOpaquePass(
+  hit: IntersectionResult,
+  materialWord: u32,
+) -> bool {
+  let alpha = materialAlphaCoverageForHit(hit, materialWord);
+  if (alpha.scalarDiscarded != 0u) {
+    return true;
+  }
+  if (alpha.mode == 0u) {
+    return false;
+  }
+  if (alpha.mode == 1u) {
+    return alpha.coverage < alpha.cutoff;
+  }
+  if (alpha.mode == 2u) {
+    return alpha.coverage < 0.999;
+  }
+  return alpha.coverage <= 0.0;
 }
 
 fn traceSceneFirstHitAlphaMaskTextured(
@@ -795,6 +842,71 @@ fn traceSceneFirstHitAlphaMaskTextured(
       0,
     ).r;
     if (materialAlphaDiscardedForHit(exhausted, word)) {
+      exhausted.didHit = false;
+    }
+  }
+  if (exhausted.didHit) {
+    exhausted.dist = exhausted.dist + traveled;
+  }
+  return exhausted;
+}
+
+fn traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh: ptr<storage, array<BVHNode>, read>,
+  tlasNodes: ptr<storage, array<BVHNode>, read>,
+  tlasInstanceIndices: ptr<storage, array<u32>, read>,
+  tlasBlasRoots: ptr<storage, array<u32>, read>,
+  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
+  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
+  ray: Ray,
+  triEps: f32,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+) -> IntersectionResult {
+  var walkRay = ray;
+  var traveled = 0.0;
+  let step = max(1e-4, triEps * 4.0);
+  for (var i = 0u; i < 32u; i = i + 1u) {
+    var hit = traceSceneFirstHit(
+      bvhMode, tlasNodeCount,
+      bvh_index, bvh_position, bvh,
+      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+      walkRay, triEps,
+    );
+    if (!hit.didHit) {
+      return hit;
+    }
+    let word = textureLoad(
+      materialMask,
+      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
+      0,
+    ).r;
+    if (!materialAlphaDiscardedForOpaquePass(hit, word)) {
+      hit.dist = hit.dist + traveled;
+      return hit;
+    }
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = ray.origin + ray.direction * traveled;
+  }
+  var exhausted = traceSceneFirstHit(
+    bvhMode, tlasNodeCount,
+    bvh_index, bvh_position, bvh,
+    tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+    tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+    walkRay, triEps,
+  );
+  if (exhausted.didHit) {
+    let word = textureLoad(
+      materialMask,
+      vec2i(i32(exhausted.indices.w % materialMaskWidth), i32(exhausted.indices.w / materialMaskWidth)),
+      0,
+    ).r;
+    if (materialAlphaDiscardedForOpaquePass(exhausted, word)) {
       exhausted.didHit = false;
     }
   }

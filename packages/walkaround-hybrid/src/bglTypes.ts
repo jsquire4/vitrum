@@ -20,7 +20,7 @@ export type BGLKey =
   | 'hybridLayers' | 'sampleBudget' | 'resolve' | 'motionVectors'
   | 'shadeHybridLayers' | 'risGiFrame'
   | 'gtao' | 'gtaoUpsample' | 'temporalGi' | 'spatialGi'
-  | 'indirectCombine' | 'indirectTemporalAccum'
+  | 'indirectCombine' | 'indirectTemporalAccum' | 'transparentOit'
   | 'lightTree' | 'regirBuild' | 'nrc' | 'cbPrefill';
 
 /**

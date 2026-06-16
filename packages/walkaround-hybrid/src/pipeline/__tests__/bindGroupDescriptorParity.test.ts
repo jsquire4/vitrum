@@ -35,6 +35,7 @@ import {
   getSpatialGiBindGroupLayout,
   getIndirectCombineBindGroupLayout,
   getIndirectTemporalAccumBindGroupLayout,
+  getTransparentOitBindGroupLayout,
   type BGLCache,
 } from '../bindGroupLayouts.js';
 import {
@@ -52,6 +53,7 @@ import {
   buildSpatialGiBindGroup,
   buildIndirectTemporalAccumBindGroup,
   buildIndirectCombineBindGroup,
+  buildTransparentOitBindGroup,
 } from '../bindGroupBuilders.js';
 
 // ── Recording stub device ────────────────────────────────────────────────────
@@ -144,6 +146,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
   spatialGi: (d, c) => buildSpatialGiBindGroup(d, c, buf, buf, buf, 'spatial-gi-bg-1'),
   indirectTemporalAccum: (d, c) => buildIndirectTemporalAccumBindGroup(d, c, view, view, view),
   indirectCombine: (d, c) => buildIndirectCombineBindGroup(d, c, view, view, view, view),
+  transparentOit: (d, c) => buildTransparentOitBindGroup(d, c, view, view),
 };
 
 const LAYOUT_FACTORIES: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => GPUBindGroupLayout> = {
@@ -161,6 +164,7 @@ const LAYOUT_FACTORIES: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => 
   spatialGi: getSpatialGiBindGroupLayout,
   indirectTemporalAccum: getIndirectTemporalAccumBindGroupLayout,
   indirectCombine: getIndirectCombineBindGroupLayout,
+  transparentOit: getTransparentOitBindGroupLayout,
 };
 
 describe('bind-group descriptor parity (T9-stepB)', () => {

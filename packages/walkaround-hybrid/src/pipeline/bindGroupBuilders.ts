@@ -30,6 +30,7 @@ import {
   getTemporalGiBindGroupLayout,
   getSpatialGiBindGroupLayout,
   getIndirectCombineBindGroupLayout,
+  getTransparentOitBindGroupLayout,
   getIndirectTemporalAccumBindGroupLayout,
   getLightTreeBindGroupLayout,
   getRegirBuildBindGroupLayout,
@@ -730,6 +731,20 @@ export function buildIndirectCombineBindGroup(
     hdrIndirectView,      // 1
     combinedOutView,      // 2
     albedoView,           // 3 Item 24 — re-modulate by albedo (Schied 2017 §4.1)
+  ]);
+}
+
+// ── Transparent OIT bind group ───────────────────────────────────────────────
+
+export function buildTransparentOitBindGroup(
+  device: GPUDevice,
+  cache: BGLCache,
+  backgroundView: GPUTextureView,
+  transparentOutView: GPUTextureView,
+): GPUBindGroup {
+  return buildBindGroupFromTable(device, 'transparentOit', getTransparentOitBindGroupLayout(device, cache), [
+    backgroundView,
+    transparentOutView,
   ]);
 }
 

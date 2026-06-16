@@ -408,7 +408,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('emits a structured warning for fractional and texture-driven alpha blend approximation', () => {
+  it('emits a structured warning for residual alpha blend approximation', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),

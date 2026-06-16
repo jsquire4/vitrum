@@ -87,6 +87,7 @@ const NON_DENOISER_PASS_ORDER: readonly NonDenoiserPassEntry[] = Object.freeze([
     ],
   },
   { id: 'indirect-combine', labels: ['indirect-combine'] },
+  { id: 'transparent-oit', labels: ['transparent-oit'] },
   { id: 'temporalAccum', labels: ['temporalAccum'] },
   { id: 'resolve', labels: ['resolve'] },
   { id: 'composite', labels: ['composite'] },
