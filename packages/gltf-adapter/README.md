@@ -112,7 +112,7 @@ asset's feature report.
 | GLB binary container | Supported |
 | .gltf JSON + pre-fetched buffers | Supported |
 | POSITION / NORMAL / TEXCOORD_0 / TEXCOORD_1 | Supported |
-| TANGENT / COLOR_0 | Supported. Authored TANGENT is preserved; tangent-space mapped primitives without TANGENT synthesize xyzw tangents from POSITION/NORMAL/TEXCOORD_0. COLOR_0 is imported and compatibility-reported: pt-webgl2 and full-tier pt-webgpu consume it natively; walkaround-hybrid consumes it approximately in visible baseColor/alpha; pt-webgpu lite reports a structured unsupported issue. |
+| TANGENT / COLOR_0 | Supported. Authored TANGENT is preserved; tangent-space mapped primitives without TANGENT synthesize xyzw tangents from POSITION/NORMAL/TEXCOORD_0. COLOR_0 is imported and compatibility-reported: pt-webgl2 and full-tier pt-webgpu consume it natively; walkaround-hybrid consumes it approximately in visible baseColor/alpha; pt-webgpu lite reports a structured unsupported issue. Secondary vertex color sets (`COLOR_1+`) are not imported and emit structured ignored-data diagnostics. |
 | Indices (UINT16 / UINT32 / UINT8) | Supported |
 | Flat normal generation (NORMAL absent) | Supported |
 | Sparse accessors | Supported (all component types) |

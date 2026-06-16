@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF secondary vertex color diagnostics, 2026-06-16)
+
+- **`COLOR_1+` is no longer silently ignored:** `@vitrum/gltf-adapter` now emits structured `ignored-vertex-color-set` diagnostics from `gltfToScene()` for secondary vertex color attributes and reports them as unsupported primitive compatibility issues from `analyzeGltfAsset()`. `COLOR_0` remains the imported core color stream; multi-color-set rendering is still unsupported rather than silently collapsed.
+
 ### Fixed (walkaround transparent OIT analytic lights, 2026-06-16)
 
 - **Transparent blend layers now receive analytic point/spot direct light:** `@vitrum/walkaround-hybrid` transparent OIT binds the existing `analytic_lights` texture and adds a deterministic point/spot NEE loop using the atlas-backed GGX/specular/clearcoat/sheen/aniso/iridescence payload, inverse-square falloff, spot cone attenuation, and the shared cast-shadow-aware visibility query. Area-emitter/ReSTIR direct light, transparent GI/RC/DDGI/ReSTIR-GI participation, alpha-map-aware shadow filtering, and first-hit emissive/light-map semantics remain explicit approximation tails.

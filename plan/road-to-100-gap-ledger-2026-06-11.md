@@ -1959,7 +1959,10 @@ Do not carry these as open gaps unless the code regresses again.
   `attributesArray` layer 3 with the material `vertexColors` flag enabled for
   affected material slots. pt-webgpu full consumed the same core `colors` stream
   on 2026-06-14 via shared-bvh rgba packing, group(3)/binding(11), baseColor
-  modulation, and alpha pass-through. walkaround-hybrid consumed the same core
+  modulation, and alpha pass-through. 2026-06-16 follow-up: `COLOR_1+`
+  secondary vertex-color attributes now surface as structured
+  `ignored-vertex-color-set` import diagnostics and unsupported planner issues
+  instead of being silently ignored. walkaround-hybrid consumed the same core
   colors stream on 2026-06-15 via shared-bvh/world-space RGBA packing, a scene
   vertex-color texture, visible baseColor modulation, and traversal alpha
   coverage; compatibility is `approximate` because realtime GI reservoirs are

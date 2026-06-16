@@ -665,6 +665,28 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     ]));
   });
 
+  it('reports secondary vertex color sets as unsupported ignored data', () => {
+    const gltf = minimalTriangle();
+    gltf.meshes![0]!.primitives[0]!.attributes.COLOR_1 = 1;
+    gltf.accessors!.push({ bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' });
+    gltf.bufferViews!.push({ buffer: 0, byteOffset: 36, byteLength: 36 });
+    gltf.buffers![0]!.byteLength = 72;
+
+    const report = reportFor(gltf);
+    const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+
+    expect(report.primitives.ignoredVertexColorSets).toEqual(['COLOR_1']);
+    expect(webgl2.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'COLOR_1',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[0].attributes.COLOR_1',
+      }),
+    ]));
+    expect(webgl2.unsupportedCount).toBeGreaterThanOrEqual(1);
+  });
+
   it('keeps Draco and no-base alternate texture-source assets in requires-hook space', () => {
     const report = reportFor(compressedAndAlternateSources());
     const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');

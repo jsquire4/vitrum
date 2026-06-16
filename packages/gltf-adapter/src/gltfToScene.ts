@@ -303,6 +303,7 @@ export type GltfImportDiagnosticCode =
   | 'missing-position'
   | 'unreadable-position'
   | 'unreadable-indices'
+  | 'ignored-vertex-color-set'
   | 'empty-triangulated-primitive';
 
 export interface GltfImportDiagnostic {
@@ -545,6 +546,7 @@ export async function gltfToScene(
     const { bones, boneInverses } = skinData ?? {};
 
     for (const [primitiveIndex, prim] of mesh.primitives.entries()) {
+      const primitivePath = `meshes[${node.mesh}].primitives[${primitiveIndex}]`;
       // Mode check — TRIANGLES (4, default), TRIANGLE_STRIP (5) and
       // TRIANGLE_FAN (6) are supported (strip/fan are triangulated into an
       // indexed triangle list below). Point/line modes are skipped: the core
@@ -695,6 +697,18 @@ export async function gltfToScene(
         gltf, buffers, prim.attributes['COLOR_0'],
         `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings,
       );
+      for (const attrName of Object.keys(prim.attributes).sort()) {
+        if (/^COLOR_[1-9][0-9]*$/.test(attrName)) {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'ignored-vertex-color-set',
+            path: `${primitivePath}.attributes.${attrName}`,
+            message:
+              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ${attrName}, ` +
+              'but the core Scene contract currently imports only COLOR_0. This secondary vertex-color set is ignored.',
+          });
+        }
+      }
 
       // ── Skinning attributes ────────────────────────────────────────────────
       // Only unpacked when this node has a skin; JOINTS_0 / WEIGHTS_0 without a
@@ -759,7 +773,6 @@ export async function gltfToScene(
         materialIndex !== undefined && materialIndex < coreMaterials.length
           ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
           : GLTF_DEFAULT_MATERIAL;
-      const primitivePath = `meshes[${node.mesh}].primitives[${primitiveIndex}]`;
       const finalTangents = tangents ?? _maybeGenerateTangents(
         positions,
         normals,

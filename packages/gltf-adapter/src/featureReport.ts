@@ -68,6 +68,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasMorphTargetTangents: boolean;
   readonly hasSkins: boolean;
   readonly hasVertexColors: boolean;
+  readonly ignoredVertexColorSets: readonly string[];
   readonly hasUv1: boolean;
   readonly issuePaths: Readonly<Record<string, readonly string[]>>;
 }
@@ -468,6 +469,18 @@ export function evaluateGltfBackendProfileCompatibility(
     }
   }
 
+  for (const semantic of report.primitives.ignoredVertexColorSets) {
+    addIssue({
+      category: 'primitive',
+      name: semantic,
+      support: 'unsupported',
+      path: firstSourcePath(report.primitives.issuePaths, `ignoredVertexColorSet:${semantic}`, 'meshes'),
+      message:
+        `glTF ${semantic} secondary vertex-color sets are not imported; ` +
+        'the core Scene contract currently preserves COLOR_0 only.',
+    });
+  }
+
   if (report.sceneGraph.cameras > 0) {
     addIssue({
       category: 'scene',
@@ -814,6 +827,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   let hasMorphTargets = false;
   let hasMorphTargetTangents = false;
   let hasVertexColors = false;
+  const ignoredVertexColorSets = new Set<string>();
   let hasUv1 = false;
   let hasJointAttrs = false;
   let hasInstancing = false;
@@ -836,6 +850,9 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
         if (semantic === 'COLOR_0') {
           hasVertexColors = true;
           addSourcePath(issuePaths, 'vertexColors', `${primitivePath}.attributes.COLOR_0`);
+        } else if (/^COLOR_[1-9][0-9]*$/.test(semantic)) {
+          ignoredVertexColorSets.add(semantic);
+          addSourcePath(issuePaths, `ignoredVertexColorSet:${semantic}`, `${primitivePath}.attributes.${semantic}`);
         }
         if (semantic === 'TEXCOORD_1') hasUv1 = true;
         if (semantic === 'JOINTS_0' || semantic === 'WEIGHTS_0') {
@@ -885,6 +902,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     hasMorphTargetTangents,
     hasSkins,
     hasVertexColors,
+    ignoredVertexColorSets: sorted(ignoredVertexColorSets),
     hasUv1,
     issuePaths: sourcePathRecord(issuePaths),
   };
