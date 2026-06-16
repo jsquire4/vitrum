@@ -1292,7 +1292,7 @@ describe('sparse accessor', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('non-triangle primitive mode', () => {
-  it('skips POINTS primitives and emits a warning', async () => {
+  it('imports POINTS primitives as fallback-generated meshes and emits a warning', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const gltf: GltfJson = {
       asset: { version: '2.0' },
@@ -1310,9 +1310,11 @@ describe('non-triangle primitive mode', () => {
       buffers: [{ byteLength: posBuf.byteLength }],
     };
     const { scene, warnings } = await gltfToScene(gltf, { buffers: new Map([[0, posBuf]]) });
-    // Only the TRIANGLES primitive should survive.
-    expect(scene.primitives).toHaveLength(1);
-    expect(warnings.some(w => w.includes('POINTS'))).toBe(true);
+    expect(scene.primitives).toHaveLength(2);
+    expect(scene.primitives[0]?.kind).toBe('mesh');
+    const points = scene.primitives[0] as MeshPrimitive;
+    expect(points.positions.length).toBeGreaterThan(TRIANGLE_POSITIONS.length);
+    expect(warnings.some(w => w.includes('POINTS') && w.includes('fallback-generated mesh'))).toBe(true);
   });
 });
 

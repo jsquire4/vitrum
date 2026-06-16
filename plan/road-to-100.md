@@ -419,7 +419,7 @@ buckets that the A–D framing was missing:**
 | **Walkaround** | Every `MaterialSpec` key graded `native`/`approximate` in `WALKAROUND_MATERIALS` is consumed in GPU shaders; `CONSUMED_MATERIAL_FIELDS` (`consumedMaterialFields.ts`) matches ledger exactly; emitter/environment/shadow grades match runtime; P0 walkaround bugs (W-HYB-01..03, H25-H29) closed. |
 | **Arbitrary glTF** | For any asset in Khronos sample set + internal hero fixtures: `loadGltfAsset` succeeds or throws structurally; `evaluateGltfBackendCompatibility(selectedBackend).unsupportedCount === 0` for used features OR `compatibilityMode` rejects before render; rendered output passes material-furnace + reference gate on **recommended** backend; `prefer:'auto'` uses feature report, not triangle count alone. |
 
-**Explicit non-goals** (otherwise "100%" is undefined): point/line primitives, displacement tessellation, production neural weights, true Hachisuka SPPM (A4-progressive shipped — separate from this campaign), cross-host GPU certification.
+**Explicit non-goals** (otherwise "100%" is undefined): displacement tessellation, production neural weights, true Hachisuka SPPM (A4-progressive shipped — separate from this campaign), cross-host GPU certification. glTF point/line topology is no longer a non-goal: it imports as explicit fallback-generated mesh geometry.
 
 ### Why plans stall at ~85% (gaps this spec closes)
 
@@ -518,7 +518,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 | ~~Direct pt-webgpu-lite bridge targeting~~ ✅ DONE | `gltf-adapter/src/engineBridge.ts`; `gltfAssetApi.test.ts` | Direct adapter callers can now pass `backend:"pt-webgpu-lite"` to validate against the lite profile while the injected engine factory still receives the real backend id `pt-webgpu`. Strict lite-profile loads reject unsupported rows such as `COLOR_0` before constructing an engine, matching the engine-wrapper runtime-tier gate. |
 | ~~Required extension import errors~~ ✅ DONE | `gltfToScene.ts`; `gltfAdapter.test.ts` | Unknown `extensionsRequired[]` entries now throw `GltfImportError` with an `unsupported-required-extension` diagnostic and exact `extensionsRequired[i]` path, preserving the hard fail while making the reason machine-readable. |
 | ~~Sparse accessors~~ ✅ DONE | `accessors.ts`, `accessors.test.ts`, `gltfAdapter.test.ts`, `gltfModesMorphsAnimations.test.ts` | Sparse patches now have focused coverage for base+pure-sparse accessors, unsigned-byte sparse indices, byte offsets, strided base data, normalized values, integer index accessors, and out-of-range/invalid sparse-index diagnostics. |
-| ~~Point/line modes~~ ✅ DONE | Product decision: keep unsupported; `gltfPointLinePrimitivePolicy.test.ts` pins structured compatibility issues + warn-skip import | Don't "half support" — either add `ScenePrimitive` kind later or keep rejecting |
+| ~~Point/line modes~~ ✅ DONE | `gltfToScene.ts` imports `POINTS`, `LINES`, `LINE_LOOP`, and `LINE_STRIP` as fallback-generated triangle mesh geometry; `featureReport.ts` reports `fallbackGeneratedModes`; `gltfPointLinePrimitivePolicy.test.ts` pins compatibility + import diagnostics | Approximation is explicit: `reject-unsupported` accepts, `reject-degraded` rejects; native point/line primitive kinds remain optional future promotion |
 
 #### 1D — Runtime controller (`sceneController.ts`)
 
@@ -871,7 +871,7 @@ loadGltfForEngine(url, { fetch, dracoDecode, meshoptDecode, decodeImage, decodeT
 | `reject-unsupported` | Any used field `unsupported` on selected backend |
 | `reject-degraded` | Any non-`native` issue including `approximate`, `requires-hook` without hook |
 
-✅ **DONE (2026-06-12):** `engineBridge.ts` strict modes now reject selected-backend unsupported primitive modes through the same compatibility issue stream as material/extension rows, and the thrown diagnostic preserves the source path (`primitive:mode:1=unsupported at meshes[0].primitives[0].mode`). Test: `gltfAssetApi.test.ts` rejects a point/line-mode asset before invoking the injected engine factory.
+✅ **UPDATED (2026-06-16):** `engineBridge.ts` strict modes now distinguish unsupported primitive modes from fallback-generated point/line topology. Unknown modes still reject under `reject-unsupported`; `POINTS`/`LINES`/`LINE_LOOP`/`LINE_STRIP` import as `fallback-generated-mesh`, so `reject-unsupported` accepts them while `reject-degraded` rejects with a source-pathed compatibility issue (`primitive:mode:1=fallback-generated-mesh at meshes[0].primitives[0].mode`).
 
 #### 4C — Texture handle contract (all backends)
 

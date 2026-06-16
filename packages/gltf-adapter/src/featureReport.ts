@@ -59,6 +59,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly total: number;
   readonly byMode: Readonly<Record<string, number>>;
   readonly unsupportedModes: readonly string[];
+  readonly fallbackGeneratedModes: readonly string[];
   readonly attributeSemantics: readonly string[];
   readonly expectedPrimitiveKinds: readonly ('mesh' | 'skinned-mesh' | 'instanced-mesh')[];
   readonly usesDraco: boolean;
@@ -216,7 +217,8 @@ const TEXTURE_SOURCE_EXTENSIONS = new Set<string>(TEXTURE_SOURCE_EXTENSION_NAMES
 
 const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
-const UNSUPPORTED_PRIMITIVE_MODES = new Set([0, 1, 2, 3]);
+const FALLBACK_GENERATED_PRIMITIVE_MODES = new Set([0, 1, 2, 3]);
+const SUPPORTED_GLTF_PRIMITIVE_MODES = new Set([0, 1, 2, 3, 4, 5, 6]);
 const VERTEX_COLOR_SUPPORT: Readonly<Record<GltfBackendProfileId, BackendSupportMode>> = Object.freeze({
   'pt-webgl2': 'native',
   'pt-webgpu': 'native',
@@ -438,7 +440,19 @@ export function evaluateGltfBackendProfileCompatibility(
       name: `mode:${mode}`,
       support: 'unsupported',
       path: firstSourcePath(report.primitives.issuePaths, `mode:${mode}`, 'meshes'),
-      message: `glTF primitive mode ${mode} has no core primitive representation.`,
+      message: `glTF primitive mode ${mode} has no Vitrum adapter representation.`,
+    });
+  }
+
+  for (const mode of report.primitives.fallbackGeneratedModes) {
+    addIssue({
+      category: 'primitive',
+      name: `mode:${mode}`,
+      support: 'fallback-generated-mesh',
+      path: firstSourcePath(report.primitives.issuePaths, `mode:${mode}`, 'meshes'),
+      message:
+        `glTF primitive mode ${mode} is imported as generated triangle mesh fallback geometry ` +
+        'because @vitrum/core has no native point/line primitive contract.',
     });
   }
 
@@ -821,6 +835,7 @@ function classifyImage(image: GltfImage, index: number): GltfResourceUse {
 function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   const byMode = new Map<string, number>();
   const unsupportedModes = new Set<string>();
+  const fallbackGeneratedModes = new Set<string>();
   const attributeSemantics = new Set<string>();
   const issuePaths: SourcePathMap = new Map();
   let total = 0;
@@ -843,7 +858,10 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
       const mode = primitive.mode ?? 4;
       const modeKey = String(mode);
       byMode.set(modeKey, (byMode.get(modeKey) ?? 0) + 1);
-      if (UNSUPPORTED_PRIMITIVE_MODES.has(mode)) {
+      if (FALLBACK_GENERATED_PRIMITIVE_MODES.has(mode)) {
+        fallbackGeneratedModes.add(modeKey);
+        addSourcePath(issuePaths, `mode:${modeKey}`, `${primitivePath}.mode`);
+      } else if (!SUPPORTED_GLTF_PRIMITIVE_MODES.has(mode)) {
         unsupportedModes.add(modeKey);
         addSourcePath(issuePaths, `mode:${modeKey}`, `${primitivePath}.mode`);
       }
@@ -896,6 +914,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     total,
     byMode: Object.fromEntries([...byMode.entries()].sort()),
     unsupportedModes: sorted(unsupportedModes),
+    fallbackGeneratedModes: sorted(fallbackGeneratedModes),
     attributeSemantics: sorted(attributeSemantics),
     expectedPrimitiveKinds: sorted(expectedPrimitiveKinds),
     usesDraco,

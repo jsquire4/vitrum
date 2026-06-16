@@ -483,11 +483,13 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   remains a warned, structured approximate downgrade until pixels are decoded,
   and the CPU-linear texture decode bridge now bakes alpha glossiness into a
   generated linear `roughnessMap` (RGB replicated, G-channel compatible).
-- The seventh arbitrary-glTF primitive-policy slice landed in
-  `@vitrum/gltf-adapter`: `POINTS`, `LINES`, `LINE_LOOP`, and `LINE_STRIP`
-  now have a focused policy fixture proving deterministic skip warnings and
-  structured `mode:<n>` unsupported compatibility issues. The glTF adapter
-  suite is now 138 tests.
+- The seventh arbitrary-glTF primitive-policy slice first made point/line
+  topology truthfulness structured, and the 2026-06-16 closure wave promoted it
+  from skip/reject to renderable fallback geometry in `@vitrum/gltf-adapter`:
+  `POINTS`, `LINES`, `LINE_LOOP`, and `LINE_STRIP` now import as
+  `fallback-generated-mesh` triangle geometry with source-pathed
+  `fallback-generated-primitive-mode` diagnostics. `reject-unsupported` accepts
+  those assets; `reject-degraded` still rejects the topology approximation.
 - The eighth arbitrary-glTF contract slice landed across `@vitrum/core` and
   `@vitrum/gltf-adapter`: `MaterialSpec.shadingModel?: 'pbr' | 'unlit'` is now
   a first-class contract field and `KHR_materials_unlit` imports to
@@ -1799,19 +1801,19 @@ Closure:
 Status:
 - TRIANGLES imports directly.
 - TRIANGLE_STRIP and TRIANGLE_FAN are triangulated into indexed triangle lists.
-- POINTS/LINES/LINE_LOOP/LINE_STRIP still warn and skip because core has no
-  point/line primitive; this is now structured in both compatibility reporting
-  as `mode:<n>` unsupported primitive issues and import diagnostics as
-  `unsupported-primitive-mode` entries with `meshes[n].primitives[m].mode`
-  paths.
+- POINTS/LINES/LINE_LOOP/LINE_STRIP now import as generated triangle mesh
+  fallback geometry. POINTS become tiny cubes; line modes become thin
+  rectangular prisms. The adapter reports this as `fallback-generated-mesh`
+  compatibility plus `fallback-generated-primitive-mode` import diagnostics with
+  `meshes[n].primitives[m].mode` paths.
 
 Closure:
-- Treat strip/fan as closed.
-- Treat point/line modes as closed for the current professional contract:
-  unsupported, deterministic, and test-covered by
-  `packages/gltf-adapter/src/gltfPointLinePrimitivePolicy.test.ts`.
-- Optional future promotion: add generated fallback geometry or native point/line
-  primitive kinds, then promote the compatibility rows with render tests.
+- Treat all glTF primitive modes 0-6 as closed for the current professional
+  contract: native triangle list, triangulated strip/fan, or deterministic
+  fallback-generated mesh for point/line modes.
+- Optional future promotion: add native point/line primitive kinds if exact
+  topology semantics become a first-class core contract. Until then the
+  approximation is explicit and machine-readable.
 
 ### GLTF-06 - glTF material mapping needs parity audit
 

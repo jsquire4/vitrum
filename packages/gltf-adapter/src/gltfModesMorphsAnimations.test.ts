@@ -197,11 +197,14 @@ describe('TRIANGLE_STRIP / TRIANGLE_FAN import (GLTF-05)', () => {
     expect(warnings.some(w => w.includes('no non-degenerate triangles'))).toBe(true);
   });
 
-  it('LINES (1) is still skipped with a warning', async () => {
+  it('LINES (1) imports as fallback-generated mesh with a warning', async () => {
     const { gltf, buffers } = makeModeGltf(1, STRIP_POSITIONS);
     const { scene, warnings } = await gltfToScene(gltf, { buffers });
-    expect(scene.primitives).toHaveLength(0);
-    expect(warnings.some(w => w.includes('LINES'))).toBe(true);
+    expect(scene.primitives).toHaveLength(1);
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(prim.positions.length).toBeGreaterThan(STRIP_POSITIONS.length);
+    expect(prim.indices?.length).toBeGreaterThan(0);
+    expect(warnings.some(w => w.includes('LINES') && w.includes('fallback-generated mesh'))).toBe(true);
   });
 });
 

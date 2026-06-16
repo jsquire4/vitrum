@@ -1271,7 +1271,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       expect.objectContaining({
         category: 'primitive',
         name: 'mode:1',
-        support: 'unsupported',
+        support: 'fallback-generated-mesh',
         path: 'meshes[0].primitives[0].mode',
       }),
       expect.objectContaining({
@@ -1688,7 +1688,28 @@ describe('loadGltfForEngine', () => {
     ]);
   });
 
-  it('rejects unsupported point/line primitive modes before constructing an engine', async () => {
+  it('allows point/line fallback meshes in reject-unsupported mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      mode: 1,
+    };
+    const setScene = vi.fn();
+    const createEngine = vi.fn(async () => ({ setScene }));
+
+    await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    });
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(setScene).toHaveBeenCalledTimes(1);
+    const scene = setScene.mock.calls[0]?.[0] as { primitives?: Array<{ positions: Float32Array }> };
+    expect(scene.primitives?.[0]?.positions.length).toBeGreaterThan(9);
+  });
+
+  it('rejects point/line fallback meshes in reject-degraded mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {
       ...gltf.meshes![0]!.primitives[0]!,
@@ -1699,9 +1720,9 @@ describe('loadGltfForEngine', () => {
     await expect(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
-      compatibilityMode: 'reject-unsupported',
+      compatibilityMode: 'reject-degraded',
       createEngine,
-    })).rejects.toThrow('primitive:mode:1=unsupported at meshes[0].primitives[0].mode');
+    })).rejects.toThrow('primitive:mode:1=fallback-generated-mesh at meshes[0].primitives[0].mode');
     expect(createEngine).not.toHaveBeenCalled();
   });
 

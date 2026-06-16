@@ -38,8 +38,9 @@
 //
 // Primitive modes: TRIANGLES (4) is converted directly; TRIANGLE_STRIP (5) and
 // TRIANGLE_FAN (6) are triangulated into indexed triangle lists (winding per
-// glTF §3.7.2.1, degenerates dropped). POINTS/LINES/LINE_LOOP/LINE_STRIP emit
-// a warning and the primitive is skipped (core has no point/line primitive).
+// glTF §3.7.2.1, degenerates dropped). POINTS/LINES/LINE_LOOP/LINE_STRIP are
+// imported as deterministic fallback-generated meshes (tiny cubes / thin line
+// prisms) and reported as approximate topology fidelity.
 //
 // References:
 //   - glTF 2.0 specification (Khronos Group)
@@ -86,6 +87,11 @@ import {
   sequentialIndices,
   triangulateTopology,
 } from './triangulation.js';
+import {
+  buildPointLineFallbackGeometry,
+  isPointLineMode,
+  pointLineModeName,
+} from './primitiveModeFallback.js';
 
 const GLTF_PRIMITIVE_MODE_TRIANGLES = 4;
 
@@ -237,6 +243,14 @@ export interface GltfToSceneOptions {
    * `extensionsRequired`.
    */
   readonly meshoptDecode?: MeshoptDecodeFn;
+
+  /**
+   * Half-width, in asset units, for generated mesh fallback geometry used when
+   * importing glTF POINTS/LINES/LINE_LOOP/LINE_STRIP primitive modes. When
+   * omitted, the adapter derives a small deterministic size from the primitive
+   * bounding-box diagonal.
+   */
+  readonly pointLineFallbackRadius?: number;
 }
 
 export interface GltfToSceneResult {
@@ -327,6 +341,7 @@ export type GltfImportDiagnosticCode =
   | 'scene-not-found'
   | 'ignored-gpu-instancing'
   | 'unsupported-primitive-mode'
+  | 'fallback-generated-primitive-mode'
   | 'unresolved-compression'
   | 'missing-position'
   | 'unreadable-position'
@@ -576,28 +591,24 @@ export async function gltfToScene(
 
     for (const [primitiveIndex, prim] of mesh.primitives.entries()) {
       const primitivePath = `meshes[${node.mesh}].primitives[${primitiveIndex}]`;
-      // Mode check — TRIANGLES (4, default), TRIANGLE_STRIP (5) and
-      // TRIANGLE_FAN (6) are supported (strip/fan are triangulated into an
-      // indexed triangle list below). Point/line modes are skipped: the core
-      // Scene contract has no point/line primitive.
+      // Mode check — native triangle modes plus deterministic generated-mesh
+      // fallback for point/line modes. Unknown modes are still skipped.
       const mode = prim.mode ?? GLTF_PRIMITIVE_MODE_TRIANGLES;
       if (
         mode !== GLTF_PRIMITIVE_MODE_TRIANGLES &&
         mode !== GLTF_MODE_TRIANGLE_STRIP &&
-        mode !== GLTF_MODE_TRIANGLE_FAN
+        mode !== GLTF_MODE_TRIANGLE_FAN &&
+        !isPointLineMode(mode)
       ) {
-        const modeNames: Record<number, string> = {
-          0: 'POINTS', 1: 'LINES', 2: 'LINE_LOOP', 3: 'LINE_STRIP',
-        };
         emitImportDiagnostic(warnings, diagnostics, {
           severity: 'warning',
           code: 'unsupported-primitive-mode',
           path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
           message:
             `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unsupported ` +
-            `mode ${mode} (${modeNames[mode] ?? 'UNKNOWN'}). Only TRIANGLES (4), ` +
-            'TRIANGLE_STRIP (5) and TRIANGLE_FAN (6) are supported (core has no ' +
-            'point/line primitive). This primitive is SKIPPED.',
+            `mode ${mode} (${pointLineModeName(mode)}). Supported modes are POINTS (0), ` +
+            'LINES (1), LINE_LOOP (2), LINE_STRIP (3), TRIANGLES (4), ' +
+            'TRIANGLE_STRIP (5) and TRIANGLE_FAN (6). This primitive is SKIPPED.',
         });
         continue;
       }
@@ -703,26 +714,26 @@ export async function gltfToScene(
             'Generating flat normals.',
         );
       }
-      const normals: Float32Array = normAttempt ?? generateFlatNormals(positions, indices);
+      let normals: Float32Array = normAttempt ?? generateFlatNormals(positions, indices);
 
       // UVs — optional.
-      const uvs = _tryUnpackFloat(
+      let uvs = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TEXCOORD_0'],
         `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings,
       );
-      const uv1 = _tryUnpackFloat(
+      let uv1 = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TEXCOORD_1'],
         `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings,
       );
 
       // Tangents — optional (xyzw per vertex).
-      const tangents = _tryUnpackFloat(
+      let tangents = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TANGENT'],
         `TANGENT for "${mesh.name ?? node.mesh}"`, warnings,
       );
 
       // Vertex colors — optional (COLOR_0).
-      const colors = _tryUnpackFloat(
+      let colors = _tryUnpackFloat(
         gltf, buffers, prim.attributes['COLOR_0'],
         `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings,
       );
@@ -784,7 +795,7 @@ export async function gltfToScene(
       }
 
       // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT deltas + node/mesh weights.
-      const morph = _extractMorphTargets(
+      let morph = _extractMorphTargets(
         gltf, buffers, prim.targets, node.weights ?? mesh.weights,
         positions.length / 3, `${mesh.name ?? node.mesh}`, warnings,
       );
@@ -813,11 +824,54 @@ export async function gltfToScene(
         primitivePath,
         mesh.name ?? node.mesh,
       );
+      uv1 = uvResolvedMaterial.uv1;
+      if (isPointLineMode(mode)) {
+        const originalVertexCount = Math.floor(positions.length / 3);
+        const fallback = buildPointLineFallbackGeometry(
+          positions,
+          indices,
+          mode,
+          opts.pointLineFallbackRadius,
+        );
+        if (fallback == null) {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'empty-triangulated-primitive',
+            path: `meshes[${node.mesh}].primitives[${primitiveIndex}]`,
+            message:
+              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
+              `${pointLineModeName(mode)} primitive could not produce non-degenerate fallback mesh geometry. ` +
+              'Primitive SKIPPED.',
+          });
+          continue;
+        }
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'fallback-generated-primitive-mode',
+          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
+          message:
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive mode ${mode} ` +
+            `(${pointLineModeName(mode)}) was imported as fallback-generated mesh geometry ` +
+            `(radius ${fallback.radius}). Topology fidelity is approximate, but the primitive is renderable.`,
+        });
+        uvs = remapVec2Attribute(uvs, fallback.sourceVertices);
+        uv1 = remapVec2Attribute(uv1, fallback.sourceVertices);
+        colors = remapVertexColors(colors, originalVertexCount, fallback.sourceVertices);
+        tangents = undefined;
+        if (skinIndices && skinWeights) {
+          skinIndices = remapVec4UintAttribute(skinIndices, fallback.sourceVertices);
+          skinWeights = remapVec4FloatAttribute(skinWeights, fallback.sourceVertices);
+        }
+        morph = remapMorphData(morph, fallback.sourceVertices);
+        positions = fallback.positions;
+        normals = fallback.normals;
+        indices = fallback.indices;
+      }
       const finalTangents = tangents ?? _maybeGenerateTangents(
         positions,
         normals,
         uvs,
-        uvResolvedMaterial.uv1,
+        uv1,
         indices,
         uvResolvedMaterial.material,
         `${mesh.name ?? node.mesh}`,
@@ -1474,6 +1528,82 @@ function _resolvePrimitiveUvMaterial(
     });
   }
   return { material: dropped, ...(uv1 ? { uv1 } : {}) };
+}
+
+function remapVec2Attribute(
+  attr: Float32Array | undefined,
+  sourceVertices: Uint32Array,
+): Float32Array | undefined {
+  if (attr == null) return undefined;
+  const out = new Float32Array(sourceVertices.length * 2);
+  for (let i = 0; i < sourceVertices.length; i += 1) {
+    const src = sourceVertices[i]! * 2;
+    out[i * 2 + 0] = attr[src + 0] ?? 0;
+    out[i * 2 + 1] = attr[src + 1] ?? 0;
+  }
+  return out;
+}
+
+function remapVertexColors(
+  colors: Float32Array | undefined,
+  sourceVertexCount: number,
+  sourceVertices: Uint32Array,
+): Float32Array | undefined {
+  if (colors == null || sourceVertexCount <= 0) return undefined;
+  const components = Math.max(1, Math.floor(colors.length / sourceVertexCount));
+  const out = new Float32Array(sourceVertices.length * components);
+  for (let i = 0; i < sourceVertices.length; i += 1) {
+    const src = sourceVertices[i]! * components;
+    const dst = i * components;
+    for (let c = 0; c < components; c += 1) out[dst + c] = colors[src + c] ?? (c === 3 ? 1 : 0);
+  }
+  return out;
+}
+
+function remapVec4UintAttribute(values: Uint32Array, sourceVertices: Uint32Array): Uint32Array {
+  const out = new Uint32Array(sourceVertices.length * 4);
+  for (let i = 0; i < sourceVertices.length; i += 1) {
+    const src = sourceVertices[i]! * 4;
+    out.set(values.subarray(src, src + 4), i * 4);
+  }
+  return out;
+}
+
+function remapVec4FloatAttribute(values: Float32Array, sourceVertices: Uint32Array): Float32Array {
+  const out = new Float32Array(sourceVertices.length * 4);
+  for (let i = 0; i < sourceVertices.length; i += 1) {
+    const src = sourceVertices[i]! * 4;
+    out.set(values.subarray(src, src + 4), i * 4);
+  }
+  return out;
+}
+
+function remapMorphData(
+  morph: MorphData | undefined,
+  sourceVertices: Uint32Array,
+): MorphData | undefined {
+  if (morph == null) return undefined;
+  return {
+    morphTargets: morph.morphTargets.map((target) => remapVec3Attribute(target, sourceVertices)),
+    ...(morph.morphTargetNormals != null
+      ? { morphTargetNormals: morph.morphTargetNormals.map((target) => remapVec3Attribute(target, sourceVertices)) }
+      : {}),
+    ...(morph.morphTargetTangents != null
+      ? { morphTargetTangents: morph.morphTargetTangents.map((target) => remapVec3Attribute(target, sourceVertices)) }
+      : {}),
+    morphWeights: new Float32Array(morph.morphWeights),
+  };
+}
+
+function remapVec3Attribute(values: Float32Array, sourceVertices: Uint32Array): Float32Array {
+  const out = new Float32Array(sourceVertices.length * 3);
+  for (let i = 0; i < sourceVertices.length; i += 1) {
+    const src = sourceVertices[i]! * 3;
+    out[i * 3 + 0] = values[src + 0] ?? 0;
+    out[i * 3 + 1] = values[src + 1] ?? 0;
+    out[i * 3 + 2] = values[src + 2] ?? 0;
+  }
+  return out;
 }
 
 /**

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF point/line fallback geometry, 2026-06-16)
+
+- **Point and line primitive modes now import as generated mesh fallback:** `@vitrum/gltf-adapter` converts glTF `POINTS`, `LINES`, `LINE_LOOP`, and `LINE_STRIP` into deterministic triangle meshes (tiny cubes for points, thin rectangular prisms for line segments) instead of skipping them. The adapter preserves source-path diagnostics as `fallback-generated-primitive-mode`, reports compatibility as `fallback-generated-mesh`, keeps `reject-unsupported` usable for these assets, and still lets `reject-degraded` reject the topology approximation. Generated vertices replicate UV, UV1, COLOR_0, skin weights, and morph deltas from their source vertices where those streams exist.
+
 ### Fixed (glTF high-UV material remap, 2026-06-16)
 
 - **Single high material UV sets now import predictably:** `@vitrum/gltf-adapter` remaps a primitive material that references one `TEXCOORD_N` beyond UV1 into the core `uv1` lane when that primitive has a readable `TEXCOORD_N` accessor and no material-visible `texCoord:1` conflict. The adapter clones the primitive material refs to `texCoord:1`, feeds tangent generation from the remapped UVs, and compatibility analysis no longer rejects those lossless cases. Conflicting or missing high-UV cases now drop the affected texture fields with structured `ignored-material-texcoord` diagnostics instead of silently sampling UV0.
@@ -348,7 +352,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **`@vitrum/engine` + `@vitrum/gltf-adapter`:** progressive glTF loading tests now assert `textureDecodeReport` and warning passthrough, while the texture sweep covers enabled `MSFT_texture_dds` alternate-source selection through `loadGltfAsset()` without losing material-map report entries.
 - **`@vitrum/gltf-adapter`:** `loadGltfAndDecodeTextures()` now invokes `decodeSceneTextures()` when a host `decodePixels` hook is supplied, returning decoded/unchanged texture counts, structured diagnostics/warnings, and a refreshed backend-readiness report instead of acting as a report-only alias.
-- **`@vitrum/gltf-adapter` + `@vitrum/engine/gltf`:** glTF import warnings now include a structured `diagnostics` array with stable codes and source paths for converter-owned degradations such as ignored cameras, rest-pose skins, unsupported point/line primitives, ignored GPU instancing, missing scenes, unresolved compression, and skipped required geometry. `loadGltfForEngine()` and `loadGltfWithProgressiveEngine()` pass those diagnostics through.
+- **`@vitrum/gltf-adapter` + `@vitrum/engine/gltf`:** glTF import warnings now include a structured `diagnostics` array with stable codes and source paths for converter-owned degradations such as ignored cameras, rest-pose skins, point/line fallback topology, ignored GPU instancing, missing scenes, unresolved compression, and skipped required geometry. `loadGltfForEngine()` and `loadGltfWithProgressiveEngine()` pass those diagnostics through.
 - **`@vitrum/gltf-adapter` texture decode max-size handling:** `decodeSceneTextures(target:'cpu-linear', { maxTextureSize })` now downsamples oversized decoded raw-image payloads with deterministic nearest-neighbor sampling before backend upload, while preserving a structured source-path diagnostic with original and resized dimensions.
 
 ### Added (pt-webgl2 resize API, 2026-06-14)

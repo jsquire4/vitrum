@@ -120,7 +120,7 @@ asset's feature report.
 | Node hierarchy / nested TRS + matrix | Supported → flattened world transforms |
 | Primitive mode TRIANGLES (4) | Supported |
 | Primitive modes TRIANGLE_STRIP (5) / TRIANGLE_FAN (6) | Supported → triangulated to an indexed triangle list (glTF §3.7.2.1 winding; degenerates dropped; indexed + non-indexed) |
-| Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP) | Warn + skip (core has no point/line primitive) |
+| Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP) | Supported as `fallback-generated-mesh`: POINTS become tiny cubes and line modes become thin rectangular prisms. `reject-unsupported` accepts them; `reject-degraded` rejects the topology approximation. Override the generated half-width with `pointLineFallbackRadius` when asset scale requires it. |
 | KHR_draco_mesh_compression | Supported via `opts.dracoDecode` hook. Without a hook: uncompressed fallback accessors when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
 | EXT_meshopt_compression | Supported via `opts.meshoptDecode` hook (bufferView-level — geometry, animation and image consumers all see decompressed data). Without a hook: spec fallback buffer when present (warn), else warn + skip; throws if in `extensionsRequired` with no fallback |
 | EXT_mesh_gpu_instancing | Supported for mesh nodes → core `InstancedMeshPrimitive` with `nodeWorld * instanceTRS` baked into each instance matrix. Required use is accepted. `GltfSceneController` patches `instances[]` when the instanced node or an ancestor animates. Malformed accessors or skinned/morphed instancing warn and import the base mesh once because core has no instanced skinned/morphed primitive contract yet. |

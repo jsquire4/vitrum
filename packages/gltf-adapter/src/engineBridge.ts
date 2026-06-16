@@ -303,6 +303,7 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'unsupported-version',
   'ignored-camera',
   'ignored-gpu-instancing',
+  'fallback-generated-primitive-mode',
 ]);
 
 function importDiagnosticFailures(
