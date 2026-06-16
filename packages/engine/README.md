@@ -28,9 +28,11 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 ```
 
 For glTF/GLB hosts, pass `gltf` instead of a prebuilt core scene. The component
-loads through `@vitrum/gltf-adapter`, forwards the imported scene to the same
-`attachVitrum` lifecycle, and passes the asset recommendation into
-`createEngine` so `prefer="auto"` follows the compatibility planner.
+loads through the engine-aware `loadGltfWithEngine()` bridge, so `gltfOptions`
+can carry decoder hooks, texture decode settings, compatibility modes, and
+backend choices. The prepared engine and glTF controller are handed to the same
+`attachVitrum` lifecycle, preserving RAF/resize/device-loss behavior while
+keeping `prefer="auto"` on the compatibility planner.
 
 ```tsx
 <VitrumCanvas

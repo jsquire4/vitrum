@@ -15,7 +15,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Window } from 'happy-dom';
 import type { Scene } from '@vitrum/core';
-import type { GltfAssetResult, GltfJson } from '@vitrum/gltf-adapter';
+import type { GltfAssetResult, GltfForEngineResult, GltfJson } from '@vitrum/gltf-adapter';
+import type { EngineWithBackendId } from '../src/createEngine.js';
 import type { CameraLike } from '../src/lifecycle/vanilla.js';
 import type { AttachVitrumHandle } from '../src/lifecycle/vanilla.js';
 
@@ -111,6 +112,65 @@ function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
       buffers: [{ byteLength: positions.byteLength }],
     },
     buffers: new Map([[0, positions]]),
+  };
+}
+
+function makeMockEngine(): EngineWithBackendId {
+  return {
+    backendId: 'pt-webgl2',
+    state: 'ready',
+    capabilities: { presentationMode: 'offscreen-texture' },
+    setScene: vi.fn(),
+    renderFrame: vi.fn(() => ({ kind: 'skipped', samplesAccumulated: 0, isConverged: false })),
+    reset: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    dispose: vi.fn(),
+  } as unknown as EngineWithBackendId;
+}
+
+function makeMockGltfAsset(gltf: GltfJson, scene: Scene): GltfAssetResult {
+  return {
+    gltf,
+    sceneIndex: 0,
+    scene,
+    warnings: [],
+    diagnostics: [],
+    animations: [],
+    animationTargets: {},
+    featureReport: {},
+    backendCompatibility: [],
+    recommendedBackend: { backend: 'pt-webgl2' },
+    textureDecodeReport: {
+      mapCount: 0,
+      uniqueHandleCount: 0,
+      rawImageCount: 0,
+      opaqueHandleCount: 0,
+      cpuReadableCount: 0,
+      rawImageRefs: [],
+      entries: [],
+    },
+  } as unknown as GltfAssetResult;
+}
+
+function makeMockGltfForEngineResult(
+  asset: GltfAssetResult,
+  engine: EngineWithBackendId,
+  controller: { attachEngine: ReturnType<typeof vi.fn>; warnings: readonly string[] },
+): GltfForEngineResult<EngineWithBackendId> {
+  return {
+    asset,
+    backend: engine.backendId,
+    engine,
+    controller: controller as unknown as GltfForEngineResult<EngineWithBackendId>['controller'],
+    attached: true,
+    textureDecodeReport: asset.textureDecodeReport,
+    decodedTextureCount: 0,
+    unchangedTextureCount: 0,
+    textureDecodeDiagnostics: [],
+    textureDecodeWarnings: [],
+    warnings: [],
+    diagnostics: asset.diagnostics,
   };
 }
 
@@ -257,19 +317,29 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     expect(secondDispose).toHaveBeenCalled();
   });
 
-  it('loads the gltf prop and forwards the imported asset hint to attachVitrum', async () => {
+  it('loads the gltf prop through the engine bridge and forwards the prepared engine/controller to attachVitrum', async () => {
     const { createRoot } = await import('react-dom/client');
     const React = await import('react');
     const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
 
     const vanillaModule = await import('../src/lifecycle/vanilla.js');
     const attachSpy = vi.spyOn(vanillaModule, 'attachVitrum').mockResolvedValue(makeMockHandle());
+    const gltfModule = await import('../src/gltf.js');
 
     const { gltf, buffers } = makeInlineTriangleGltf();
-    let loadedAsset: GltfAssetResult | undefined;
-    const onGltfLoaded = vi.fn((asset: GltfAssetResult) => {
-      loadedAsset = asset;
-    });
+    const importedScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const engine = makeMockEngine();
+    const controller = { attachEngine: vi.fn(), warnings: [] };
+    const asset = makeMockGltfAsset(gltf, importedScene);
+    const bridgeResult = makeMockGltfForEngineResult(asset, engine, controller);
+    const loadSpy = vi.spyOn(gltfModule, 'loadGltfWithEngine').mockResolvedValue(bridgeResult);
+    const decodePixels = vi.fn();
+    const advanced = { denoiser: 'atrous-variance' as const };
+    const onGltfLoaded = vi.fn();
 
     const container = happyWindow.document.createElement('div') as unknown as Element;
     happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
@@ -277,8 +347,16 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     const root = createRoot(container);
     root.render(React.createElement(VitrumCanvas, {
       gltf,
-      gltfOptions: { buffers },
+      gltfOptions: {
+        buffers,
+        compatibilityMode: 'reject-degraded',
+        decodeTextures: true,
+        decodePixels,
+      },
       camera: CAMERA,
+      prefer: 'quality',
+      advanced,
+      debug: true,
       onGltfLoaded,
     }));
     await happyWindow.happyDOM.waitUntilComplete();
@@ -286,12 +364,34 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     await happyWindow.happyDOM.waitUntilComplete();
 
     expect(onGltfLoaded).toHaveBeenCalledTimes(1);
+    expect(onGltfLoaded).toHaveBeenCalledWith(asset, bridgeResult);
+    expect(loadSpy).toHaveBeenCalledWith(
+      gltf,
+      expect.objectContaining({
+        buffers,
+        compatibilityMode: 'reject-degraded',
+        decodeTextures: true,
+        decodePixels,
+        attachScene: false,
+        engineOptions: expect.objectContaining({
+          prefer: 'quality',
+          advanced,
+          debug: true,
+        }),
+      }),
+    );
+    const bridgeOptions = loadSpy.mock.calls[0]![1]!;
+    expect(bridgeOptions.engineOptions?.canvas).toBeInstanceOf(Object);
     expect(attachSpy).toHaveBeenCalledTimes(1);
     const opts = attachSpy.mock.calls[0]![0];
-    expect(loadedAsset).toBeDefined();
-    expect(opts.scene).toBe(loadedAsset!.scene);
-    expect(opts.gltfAsset).toBe(loadedAsset);
+    expect(opts.scene).toBe(importedScene);
+    expect(opts.gltfAsset).toBe(asset);
+    expect(opts.engine).toBe(engine);
+    expect(opts.sceneController).toBe(controller);
     expect(opts.gltfAsset?.recommendedBackend?.backend).toBe('pt-webgl2');
+    expect(opts.prefer).toBe('quality');
+    expect(opts.advanced).toBe(advanced);
+    expect(opts.debug).toBe(true);
 
     root.unmount();
   });

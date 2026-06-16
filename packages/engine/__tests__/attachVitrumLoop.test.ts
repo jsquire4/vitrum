@@ -13,6 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Window } from 'happy-dom';
 import type { Engine, FrameInput, FrameOutput } from '@vitrum/core';
+import type { EngineWithBackendId } from '../src/createEngine.js';
 import {
   toPhysicalViewport,
   resolveQualityOption,
@@ -193,6 +194,46 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     vi.restoreAllMocks();
     // Restore for next test
     vi.spyOn(createEngineModule, 'createEngine').mockImplementation(originalCreateEngine);
+  });
+
+  it('uses a supplied engine and re-targets a supplied scene controller without constructing another engine', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+    const createSpy = vi.spyOn(createEngineModule, 'createEngine')
+      .mockRejectedValue(new Error('createEngine should not be called for supplied engines'));
+
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    const { asMat4 } = await import('@vitrum/core');
+    const identity = asMat4(new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]));
+    const camera = {
+      updateMatrixWorld: vi.fn(),
+      matrixWorldInverse: { elements: identity },
+      projectionMatrix: { elements: identity },
+      position: { x: 0, y: 0, z: 0 },
+    };
+    const scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const engine = Object.assign(makeMockEngine(), { backendId: 'pt-webgl2' as const }) as EngineWithBackendId;
+    const sceneController = { attachEngine: vi.fn() };
+
+    const handle = await attachVitrum({
+      canvas,
+      scene,
+      camera,
+      engine,
+      sceneController,
+    });
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(handle.engine).toBe(engine);
+    expect(handle.backendId).toBe('pt-webgl2');
+    expect(sceneController.attachEngine).toHaveBeenCalledWith(engine, { setScene: false });
+
+    handle.dispose();
+    expect(engine.dispose).toHaveBeenCalled();
   });
 
   it('H30 — CSS size × DPR backing store is applied before createEngine runs', async () => {

@@ -184,6 +184,22 @@ export type QualityOption =
   | (() => NonNullable<FrameInput['quality']> | undefined);
 
 export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> {
+  /**
+   * Optional already-constructed engine for callers that prepared the scene
+   * through a higher-level bridge before handing off to the lifecycle loop.
+   * The supplied engine must already represent `scene`; attachVitrum will own
+   * its RAF/resize/error subscriptions and dispose it with the handle. Fatal
+   * auto-recreate still falls back to `createEngine()` using the latest tracked
+   * scene.
+   */
+  readonly engine?: EngineWithBackendId;
+  /**
+   * Runtime scene controller to re-target whenever the lifecycle swaps engines
+   * (for example after fatal device-loss auto-recreate). Structural on purpose:
+   * glTF is the first consumer, but the lifecycle helper does not need adapter
+   * runtime imports.
+   */
+  readonly sceneController?: AttachVitrumSceneController;
   /** Engine-level GPU/runtime error callback. Receives errors from the
    *  underlying engine's `onError` subscription (device-lost, GPU validation
    *  errors, WebGL context-lost).  Distinct from `onError` in
@@ -253,6 +269,10 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    *  document.visibilityState !== 'visible'. Set false for hosts that
    *  need to keep accumulating SPP in a backgrounded tab. */
   readonly pauseOnHidden?: boolean;
+}
+
+export interface AttachVitrumSceneController {
+  attachEngine(engine: EngineWithBackendId, options?: { readonly setScene?: boolean }): void;
 }
 
 export interface AttachVitrumHandle {
@@ -361,8 +381,17 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       currentScene = scene;
     };
   };
-  let engine = await buildEngineFromOpts(opts, currentScene);
+  const attachSceneController = (target: EngineWithBackendId): void => {
+    if (opts.sceneController == null) return;
+    try {
+      opts.sceneController.attachEngine(target, { setScene: false });
+    } catch (err) {
+      reportError(err, { phase: 'attach:scene-controller', backend: target.backendId, recoverable: true });
+    }
+  };
+  let engine = opts.engine ?? await buildEngineFromOpts(opts, currentScene);
   trackEngineScene(engine);
+  attachSceneController(engine);
 
   // ── ResizeObserver ───────────────────────────────────────────────────────
   let resizeObserver: ResizeObserver | undefined;
@@ -524,6 +553,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     try {
       engine = await buildEngineFromOpts(opts, currentScene);
       trackEngineScene(engine);
+      attachSceneController(engine);
     } catch (createErr) {
       console.error('[attachVitrum] auto-recreate: createEngine failed:', createErr);
       autoRecreateMachine.recreating = false;

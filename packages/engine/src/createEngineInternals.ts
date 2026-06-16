@@ -61,6 +61,7 @@ export type CreateEngineErrorPhase =
   | 'create:pt-webgpu'
   | 'create:pt-webgl2'
   | 'canvas-configure'
+  | 'attach:scene-controller'
   | 'attach:resize'
   | 'attach:swapchain'
   | 'attach:renderFrame';

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (VitrumCanvas glTF bridge parity, 2026-06-16)
+
+- **React glTF loading now uses the engine-aware bridge:** `<VitrumCanvas gltf=...>` now calls `loadGltfWithEngine()` instead of the asset-only loader, so decoder hooks, texture decode options, compatibility modes, strict pt-webgpu tier checks, and controller metadata use the same path as `@vitrum/engine/gltf`. `attachVitrum` now accepts a preconstructed engine plus structural scene controller, uses that engine for the RAF lifecycle, and re-targets the controller after device-loss auto-recreate.
+
 ### Fixed (engine glTF strict existing-engine path, 2026-06-16)
 
 - **Existing pt-webgpu engines now honor strict glTF runtime-tier gates:** `loadGltfWithEngine()` no longer bypasses `pt-webgpu-lite` compatibility checks when the caller supplies an already-created engine. Existing engines are loaded unattached, checked against the actual runtime tier for `reject-unsupported` / `reject-degraded`, then attached only after the gate accepts the asset. This prevents strict one-call glTF loads from validating through the factory path while silently attaching an incompatible lite-tier engine.

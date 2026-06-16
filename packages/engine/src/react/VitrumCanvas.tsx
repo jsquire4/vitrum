@@ -22,18 +22,27 @@
 import * as React from 'react';
 import type { EngineError, Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
 import {
-  loadGltfAsset,
   type GltfAssetInput,
   type GltfAssetResult,
-  type LoadGltfAssetOptions,
+  type GltfForEngineResult,
 } from '@vitrum/gltf-adapter';
 import type { AttachVitrumHandle, CameraLike } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
 import type {
   CreateEngineErrorEvent,
+  EngineWithBackendId,
   EnginePreference,
   CreateEngineOptions,
 } from '../createEngine.js';
+import {
+  loadGltfWithEngine,
+  type LoadGltfWithEngineOptions,
+} from '../gltf.js';
+
+export type VitrumCanvasGltfOptions = Omit<
+  LoadGltfWithEngineOptions,
+  'engine' | 'engineOptions' | 'attachScene'
+>;
 
 export interface VitrumCanvasProps {
   /** Scene description in the host-agnostic @vitrum/core contract. Required
@@ -47,10 +56,13 @@ export interface VitrumCanvasProps {
   /** Adapter options for `gltf`: buffers, decoder hooks, texture decode hooks,
    *  baseUri, fetch, compatibility policy inputs, etc. Identity changes recreate
    *  the engine, matching `scene` creation-time semantics. */
-  gltfOptions?: LoadGltfAssetOptions;
+  gltfOptions?: VitrumCanvasGltfOptions;
   /** Called after a glTF asset loads successfully and before attachVitrum
    *  resolves. Callback updates do not recreate the engine. */
-  onGltfLoaded?: (asset: GltfAssetResult) => void;
+  onGltfLoaded?: (
+    asset: GltfAssetResult,
+    result: GltfForEngineResult<EngineWithBackendId>,
+  ) => void;
   /** Camera the engine reads each frame. Host mutates this (orbit
    *  controls, scripted animation); the canvas pushes its matrices into
    *  renderFrame on every RAF tick. */
@@ -131,24 +143,39 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
 
       const attach = async (): Promise<void> => {
         const gltfSignal = composeAbortSignal(props.gltfOptions?.signal, abortController?.signal);
-        const gltfAsset = props.gltf !== undefined
-          ? await loadGltfAsset(props.gltf, {
+        const gltfResult = props.gltf !== undefined
+          ? await loadGltfWithEngine(props.gltf, {
               ...(props.gltfOptions ?? {}),
               ...(gltfSignal != null ? { signal: gltfSignal } : {}),
+              attachScene: false,
+              engineOptions: {
+                canvas,
+                ...(props.prefer ? { prefer: props.prefer } : {}),
+                ...(props.advanced != null ? { advanced: props.advanced } : {}),
+                ...(props.debug != null ? { debug: props.debug } : {}),
+                onError: (error, event) => { onErrorRef.current?.(error, event); },
+              },
             })
           : undefined;
         if (cancelled) return;
-        if (gltfAsset !== undefined) {
-          try { onGltfLoadedRef.current?.(gltfAsset); } catch { /* host callback must not propagate — ignore */ }
+        if (gltfResult !== undefined) {
+          if (gltfResult.engine == null) {
+            throw new Error('[VitrumCanvas] loadGltfWithEngine did not return an engine.');
+          }
+          try {
+            onGltfLoadedRef.current?.(gltfResult.asset, gltfResult);
+          } catch { /* host callback must not propagate — ignore */ }
         }
-        const scene = gltfAsset?.scene ?? props.scene;
+        const scene = gltfResult?.asset.scene ?? props.scene;
         if (scene == null) {
           throw new TypeError('[VitrumCanvas] either `scene` or `gltf` must be supplied.');
         }
         const h = await attachVitrum({
           canvas,
           scene,
-          ...(gltfAsset !== undefined ? { gltfAsset } : {}),
+          ...(gltfResult !== undefined ? { gltfAsset: gltfResult.asset } : {}),
+          ...(gltfResult?.engine !== undefined ? { engine: gltfResult.engine } : {}),
+          ...(gltfResult?.controller !== undefined ? { sceneController: gltfResult.controller } : {}),
           camera: props.camera,
           ...(props.prefer ? { prefer: props.prefer } : {}),
           ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
