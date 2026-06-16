@@ -10,16 +10,21 @@
  * CPU oracle by `__tests__/brdfAdjoint.test.ts`. `inverse/inverseSession.ts`
  * resolves the effective method to 'path-replay' (NOT finite-difference)
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
- * optimized parameter is in the Phase-1 differentiable set (material baseColor /
- * roughness / emissive). GPU-validated on lavapipe: the partials match the FD
- * oracle to f32 precision, the chain rule + fixed-point accumulation match an
- * on-device finite-difference, and each field's end-to-end inverse fit converges +
- * sign-matches the full-render FD (baseColor/roughness `v24-inverse-fit.mjs`,
- * emissive `v24-emissive-fit.mjs`).
+ * optimized parameter is in the currently differentiable set (baseColor,
+ * roughness, metallic, emissive, specularColor, specularIntensity).
+ * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
+ * partials match the FD oracle to f32 precision, the chain rule + fixed-point
+ * accumulation match an on-device finite-difference, and
+ * baseColor/roughness/emissive end-to-end inverse fits converge + sign-match
+ * the full-render FD (`v24-inverse-fit.mjs`, `v24-emissive-fit.mjs`). Later
+ * specular/metallic partials are CPU-FD-oracle + WGSL-shape + shader-gate
+ * covered until their GPU inverse-fit recaptures land.
  *
  * Emits the WGSL functions that compute the analytic partials of:
  *  - the Cook-Torrance BRDF (`evaluateBrdf`) w.r.t. `baseColor` (rgb) and
  *    `roughness` (scalar), for a FROZEN sampled direction `wi`;
+ *  - the opaque base-BRDF `metallic` scalar through the diffuse/specular
+ *    partition and F0 blend;
  *  - the additive emission term w.r.t. `emissive` (rgb) — a CONTRIBUTION-level
  *    identity (×emissiveIntensity), NOT a BRDF partial (`dContribution_dEmissive`);
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar)
@@ -173,6 +178,40 @@ fn dBrdf_dRoughnessWithSpecular(
   let invDenom = 1.0 / max(4.0 * nDotV * nDotL, 1e-6);
   let dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
   return f * dSpecScale;
+}
+
+// ── analytic ∂(evaluateBrdf)_c / ∂metallic (per channel) ────────────────────
+fn dBrdf_dMetallic(
+  baseColor: vec3f, roughness: f32, metallic: f32,
+  normal: vec3f, wo: vec3f, wi: vec3f,
+  specularColor: vec3f, specularIntensity: f32,
+) -> vec3f {
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 0.0);
+  let alpha = max(roughness * roughness, 1e-3);
+  let d = ggxD(nDotH, alpha);
+  let g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+  let specScale = (d * g) / max(4.0 * nDotV * nDotL, 1e-6);
+  let kd0 = 1.0 - metallic;
+  let m = clamp(1.0 - vDotH, 0.0, 1.0);
+  let m2 = m * m;
+  let m5 = m2 * m2 * m;
+  var outv = vec3f(0.0);
+  for (var c: u32 = 0u; c < 3u; c = c + 1u) {
+    let bc = baseColor[c];
+    let dielectricF0 = clamp(0.04 * clamp(specularColor[c], 0.0, 1.0) * clamp(specularIntensity, 0.0, 1.0), 0.0, 1.0);
+    let f0c = dielectricF0 + (bc - dielectricF0) * metallic;
+    let fc = f0c + (1.0 - f0c) * m5;
+    let dfc = (1.0 - m5) * (bc - dielectricF0);
+    let dDiff = bc * INV_PI * (-kd0 * dfc - (1.0 - fc));
+    let dSpec = specScale * dfc;
+    outv[c] = dDiff + dSpec;
+  }
+  return outv;
 }
 
 // ── analytic KHR_materials_specular partials ───────────────────────────────

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (pt-webgpu direct-light adjoint breadth, 2026-06-16)
 
 - **Path-replay adjoint now covers more direct-light source families:** `@vitrum/pt-webgpu` adjoint replay now differentiates material base/specular params under delta directional, point, spot, and center-sampled rect/disc/mesh-area direct lighting. The pass consumes packed directional/spot/mesh-area buffers, honors point/spot/rect/disc/mesh emitter `castShadow:false` lanes, and uses native disc area plus packed mesh-triangle area terms. Inverse-session routing now allows those covered source families while keeping soft-sun angular diameter, environment, indirect, mapped/transmissive/layered/volume/spectral, full stochastic area sampling, and extension-lobe material domains on finite difference until their adjoints are implemented and validated.
+- **Metallic path-replay adjoint coverage:** the same scoped direct-light adjoint path now differentiates scalar `metallic` through the opaque base-BRDF diffuse fade-out and F0 blend. The CPU oracle finite-difference test, emitted WGSL shape pins, engine field code, inverse-session routing, pt-webgpu suite, and shader gate cover the new field; GPU inverse-fit recapture remains part of the broader adjoint proof tail.
 
 ### Fixed (VitrumCanvas glTF bridge parity, 2026-06-16)
 

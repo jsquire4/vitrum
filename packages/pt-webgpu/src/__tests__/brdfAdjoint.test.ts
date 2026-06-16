@@ -14,6 +14,7 @@ import {
   evaluateBrdf,
   dBrdf_dBaseColor,
   dBrdf_dRoughness,
+  dBrdf_dMetallic,
   dBrdf_dSpecularColor,
   dBrdf_dSpecularIntensity,
 } from '../inverse/brdfAdjoint.js';
@@ -121,6 +122,24 @@ describe('BRDF adjoint — analytic dBrdf/dRoughness == finite difference', () =
   });
 });
 
+describe('BRDF adjoint — analytic dBrdf/dMetallic == finite difference', () => {
+  it('matches FD to <= 1e-4 over the unclamped metallic interior', () => {
+    const h = 1e-4;
+    for (const cfg of CONFIGS) {
+      if (cfg.metallic <= h || cfg.metallic >= 1 - h) continue;
+      const analytic = dBrdf_dMetallic(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      );
+      const fp = evaluateBrdf(cfg.baseColor, cfg.roughness, cfg.metallic + h, cfg.normal, cfg.wo, cfg.wi);
+      const fm = evaluateBrdf(cfg.baseColor, cfg.roughness, cfg.metallic - h, cfg.normal, cfg.wo, cfg.wi);
+      for (let c = 0; c < 3; c++) {
+        const fd = (fp[c]! - fm[c]!) / (2 * h);
+        expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
+      }
+    }
+  });
+});
+
 describe('BRDF adjoint — analytic KHR_materials_specular partials == finite difference', () => {
   const cfg = {
     baseColor: [0.55, 0.32, 0.18] as V3,
@@ -203,6 +222,7 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
   it('emits both partial functions with the frozen-wi signature', () => {
     expect(wgsl).toContain('fn dBrdf_dBaseColor(');
     expect(wgsl).toContain('fn dBrdf_dRoughness(');
+    expect(wgsl).toContain('fn dBrdf_dMetallic(');
     expect(wgsl).toContain('fn dBrdf_dSpecularColor(');
     expect(wgsl).toContain('fn dBrdf_dSpecularIntensity(');
     // wi is an INPUT, never sampled inside — path-replay freezes it.
@@ -220,6 +240,12 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
     expect(wgsl).toContain('let dk_dRough = (roughness + 1.0) * 0.25;');
     // alpha clamp boundary handled (derivative 0 below roughness²<1e-3).
     expect(wgsl).toContain('let dAlpha_dRough = select(2.0 * roughness, 0.0, alphaClamped);');
+  });
+
+  it('metallic partial differentiates both the diffuse fade-out and F0 blend', () => {
+    expect(wgsl).toContain('let dfc = (1.0 - m5) * (bc - dielectricF0);');
+    expect(wgsl).toContain('let dDiff = bc * INV_PI * (-kd0 * dfc - (1.0 - fc));');
+    expect(wgsl).toContain('let dSpec = specScale * dfc;');
   });
 
   it('specular partials use the KHR_materials_specular dielectric F0 derivative', () => {

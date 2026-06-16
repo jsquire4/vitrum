@@ -112,6 +112,14 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   diameter, environment, indirect, mapped/transmissive/layered/spectral/volume,
   full stochastic area sampling, and extension-lobe material domains on finite
   difference until those adjoints are implemented and validated.
+- Later 2026-06-16 follow-up: scalar `metallic` joined the same scoped
+  path-replay domain. The CPU oracle differentiates the opaque base-BRDF diffuse
+  fade-out and F0 blend, the emitted WGSL mirrors it, the engine scatters the new
+  field code across all covered direct-light loops, and inverse-session routing
+  selects path replay for `materials.<id>.metallic` when the material/light gates
+  pass. This is code-closed for the scoped direct-light analytic path; metallic
+  GPU inverse-fit recapture remains in the proof/promote tail with the other
+  render-changing adjoint work.
 - Follow-up 2026-06-15: walkaround material truthfulness was tightened instead
   of papered over. Textured `alphaMode:"blend"` materials now enter the same
   approximation diagnostic path as scalar fractional opacity, including

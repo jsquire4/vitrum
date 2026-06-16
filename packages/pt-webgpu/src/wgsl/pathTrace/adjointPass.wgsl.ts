@@ -22,9 +22,10 @@
  * fallbacks until their source terms are mirrored here and GPU-validated.
  * Direct lights are summed deterministically over all eligible lights (no MC
  * light selection: the adjoint is the deterministic expectation; finite area
- * lights are center-sampled). baseColor (rgb) + roughness. The shading
- * normal is faced toward the viewer (the same flip the forward shade prologue
- * applies). The primary-ray jitter sequence matches the inverse baseline render:
+ * lights are center-sampled). baseColor/roughness/metallic/specular params share
+ * this direct-light BRDF path. The shading normal is faced toward the viewer
+ * (the same flip the forward shade prologue applies). The primary-ray jitter
+ * sequence matches the inverse baseline render:
  * sample `s` uses `frameSeed = 0x5eed5eed + s`, `frameIndex = 0`, then the pass
  * averages the per-sample derivatives. The sampled directions are FROZEN (path
  * replay differentiates only the continuous shading, never the light/BSDF
@@ -52,6 +53,7 @@ export const ADJOINT_FIELD_ROUGHNESS = 1;
 export const ADJOINT_FIELD_EMISSIVE = 2;
 export const ADJOINT_FIELD_SPECULAR_COLOR = 3;
 export const ADJOINT_FIELD_SPECULAR_INTENSITY = 4;
+export const ADJOINT_FIELD_METALLIC = 5;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
@@ -214,6 +216,7 @@ struct DirectLightAdjoint {
   roughness: f32,
   specularColor: vec3f,
   specularIntensity: f32,
+  metallicGrad: f32,
 }
 
 fn directLightAdjoint(
@@ -241,7 +244,10 @@ fn directLightAdjoint(
   let gSpecularIntensity = dot(dLoss_dR, dBrdf_dSpecularIntensity(
     baseColor, roughness, metallic, n, wo, wi, specularColor,
   ) * nDotL * Li);
-  return DirectLightAdjoint(gBaseColor, gRough, gSpecularColor, gSpecularIntensity);
+  let gMetallic = dot(dLoss_dR, dBrdf_dMetallic(
+    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+  ) * nDotL * Li);
+  return DirectLightAdjoint(gBaseColor, gRough, gSpecularColor, gSpecularIntensity, gMetallic);
 }
 
 @compute @workgroup_size(8, 8)
@@ -298,6 +304,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gRough = 0.0;
     var gSpecularColor = vec3f(0.0);
     var gSpecularIntensity = 0.0;
+    var gMetallic = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -319,6 +326,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gRough = gRough + lg.roughness;
       gSpecularColor = gSpecularColor + lg.specularColor;
       gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+      gMetallic = gMetallic + lg.metallicGrad;
     }
 
     for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
@@ -345,6 +353,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gRough = gRough + lg.roughness;
       gSpecularColor = gSpecularColor + lg.specularColor;
       gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+      gMetallic = gMetallic + lg.metallicGrad;
     }
 
     for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
@@ -377,6 +386,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gRough = gRough + lg.roughness;
       gSpecularColor = gSpecularColor + lg.specularColor;
       gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+      gMetallic = gMetallic + lg.metallicGrad;
     }
 
     // Rect-area lights: deterministic CENTER-sample of the same geometric term the
@@ -416,6 +426,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gRough = gRough + lg.roughness;
       gSpecularColor = gSpecularColor + lg.specularColor;
       gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+      gMetallic = gMetallic + lg.metallicGrad;
     }
 
     // Mesh-area lights: deterministic CENTER-sample of each packed emissive
@@ -450,6 +461,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gRough = gRough + lg.roughness;
       gSpecularColor = gSpecularColor + lg.specularColor;
       gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+      gMetallic = gMetallic + lg.metallicGrad;
     }
 
     // Scatter into the gradient slot of every param that targets THIS hit's material
@@ -472,6 +484,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset + 2u, gSpecularColor.z * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_SPECULAR_INTENSITY}u) {
         adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_METALLIC}u) {
+        adjointScatter(gradOffset, gMetallic * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_EMISSIVE}u) {
         // ∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity. The packed material
         // folds intensity into emissive.rgb, so the host hands the fixed

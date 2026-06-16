@@ -545,6 +545,19 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('resolves metallic to path-replay in the base direct-light adjoint domain', () => {
+    const fake = makeFakeEngine();
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.metallic', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()[0]).toEqual([0]);
+    session.dispose();
+  });
+
   it('passes specular adjoint params to the hook with the expected flat offsets', async () => {
     const fake = makeFakeEngine();
     let captured: AdjointGradientRequest | null = null;

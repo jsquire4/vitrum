@@ -21,6 +21,7 @@ import {
   ADJOINT_FIELD_EMISSIVE,
   ADJOINT_FIELD_SPECULAR_COLOR,
   ADJOINT_FIELD_SPECULAR_INTENSITY,
+  ADJOINT_FIELD_METALLIC,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 describe('adjoint harness (V24 GPU partials A/B)', () => {
@@ -79,6 +80,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0)'); // faceforward
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u]');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dBaseColorWithSpecular(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dMetallic(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColor(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensity(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('directionalLights');              // delta directional NEE
@@ -97,6 +99,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let center = (a + b + c) * (1.0 / 3.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('mr.w <= 0.5 && anyHit');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBaseColor.x * invReplaySamples)'); // per-param scatter
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gMetallic * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularColor.x * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gSpecularIntensity * invReplaySamples)');
     // Emissive is the camera-DIRECT primary-hit partial (NOT a NEE term): the fixed
@@ -110,5 +113,6 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_EMISSIVE).toBe(2);
     expect(ADJOINT_FIELD_SPECULAR_COLOR).toBe(3);
     expect(ADJOINT_FIELD_SPECULAR_INTENSITY).toBe(4);
+    expect(ADJOINT_FIELD_METALLIC).toBe(5);
   });
 });

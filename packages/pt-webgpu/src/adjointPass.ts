@@ -25,6 +25,7 @@ import {
   ADJOINT_FIELD_EMISSIVE,
   ADJOINT_FIELD_SPECULAR_COLOR,
   ADJOINT_FIELD_SPECULAR_INTENSITY,
+  ADJOINT_FIELD_METALLIC,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
@@ -46,9 +47,9 @@ export class AdjointPass {
    * per pixel it re-traces the frozen-seed primary ray (brute-force closest-hit)
    * and accumulates `∂loss/∂θ` for the optimized material params through the
    * GPU-validated partials + fixed-point `adjointScatter`:
-   *  - baseColor / roughness — single-bounce directional + point + spot +
-   *    center-sampled rect/disc-area direct-light NEE
-   *    (the BRDF partials `dBrdf_dBaseColor` / `dBrdf_dRoughness`);
+   *  - baseColor / roughness / metallic / specular controls — single-bounce
+   *    directional + point + spot + center-sampled rect/disc/mesh-area
+   *    direct-light NEE (the BRDF partials in `pathTraceAdjoint.wgsl.ts`);
    *  - emissive — the camera-DIRECT emission at the primary hit (NOT a NEE term):
    *    `∂loss/∂emissive_c = dLoss_dR_c · emissiveIntensity`.
    *
@@ -109,8 +110,8 @@ export class AdjointPass {
     // emissive param `w` carries the FIXED emissiveIntensity (bitcast f32) the
     // pass folds back in (the packed material folds intensity INTO emissive.rgb,
     // so the partial ∂rendered/∂emissive_param = throughput · emissiveIntensity);
-    // baseColor/roughness leave it 0. A Float32 view aliases the same buffer so
-    // the .w slot can hold an f32 the shader reads via bitcast<f32>.
+    // lit BRDF fields leave it 0. A Float32 view aliases the same buffer so the
+    // .w slot can hold an f32 the shader reads via bitcast<f32>.
     const descs = new Uint32Array(Math.max(params.length, 1) * 4);
     const descsF = new Float32Array(descs.buffer);
     for (let i = 0; i < params.length; i++) {
@@ -122,6 +123,8 @@ export class AdjointPass {
       const fieldCode =
         p.field === 'roughness'
           ? ADJOINT_FIELD_ROUGHNESS
+          : p.field === 'metallic'
+            ? ADJOINT_FIELD_METALLIC
           : p.field === 'emissive'
             ? ADJOINT_FIELD_EMISSIVE
             : p.field === 'specularColor'

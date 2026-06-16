@@ -21,8 +21,8 @@
  * every parameter is in the adjoint-differentiable set, and every target
  * material stays within the direct-light base/specular domain this pass mirrors
  * (delta directional, point, spot, and center-sampled rect/disc area lights;
- * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive /
- * specularColor / specularIntensity); any
+ * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
+ * emissive / specularColor / specularIntensity); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
  * silent wrong-gradient path. An engine providing the hook vouches that its
@@ -90,8 +90,8 @@ export interface InverseEngineHooks {
    * hook exists, every parameter is adjoint-eligible, and every target material
    * stays inside the adjoint-compatible direct-light domain (delta directional,
    * point, spot, and center-sampled rect/disc/mesh area lights;
-   * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive /
-   * specularColor / specularIntensity); otherwise it reports + uses
+   * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
+   * emissive / specularColor / specularIntensity); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
    * only graduates to path-replay once its end-to-end inverse fit converges.
@@ -131,6 +131,8 @@ export interface AdjointGradientRequest {
  *
  *  - `baseColor`, `roughness` — the original Phase-1 BSDF partials
  *    (`dBrdf_dBaseColor` / `dBrdf_dRoughness`), GPU-validated end-to-end (V24).
+ *  - `metallic` — the opaque base-BRDF partial through the diffuse fade-out
+ *    and F0 blend in the same direct-light replay domain.
  *  - `emissive` — the camera-direct emission partial `dContribution_dEmissive`
  *    (∂rendered_c/∂emissive_c = throughput · emissiveIntensity, scattered at the
  *    PRIMARY hit where the camera sees the emissive surface directly — NOT a NEE
@@ -157,14 +159,14 @@ export interface AdjointGradientRequest {
  *
  * NOTE: adding a field here makes `inverseSession` REQUEST path-replay; the
  * engine's `computeAdjointGradient` hook must actually accumulate that field's
- * gradient — GPU-VALIDATED BY A CONVERGING INVERSE FIT, not just an in-isolation
- * partial — or the result is a silently-wrong gradient. A field only graduates
- * here once its end-to-end fit converges (baseColor / roughness / emissive /
- * specularColor / specularIntensity have).
+ * gradient and the field needs proof appropriate to its risk. baseColor,
+ * roughness, and emissive have GPU inverse-fit captures; specular and metallic
+ * are CPU-FD-oracle + shader-gate covered and remain on the recapture tail.
  */
 const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'baseColor',
   'roughness',
+  'metallic',
   'emissive',
   'specularColor',
   'specularIntensity',
@@ -260,7 +262,7 @@ export class PtWebgpuInverseSession implements InverseSession {
     // to provide the adjoint hook, every parameter to be in the
     // adjoint-differentiable set, and every target material to stay in the
     // compatible direct-light domain (`ADJOINT_ELIGIBLE_FIELDS`: material
-    // baseColor / roughness / emissive / specularColor / specularIntensity —
+    // baseColor / roughness / metallic / emissive / specularColor / specularIntensity —
     // see its doc for the ior exclusion). Any shortfall
     // degrades to finite-difference and is reported via `method`, so the host
     // never receives a silently-wrong gradient. The two adjoint stages

@@ -22,7 +22,8 @@
  *    a BRDF term, so its partial is a CONTRIBUTION-level identity, not a
  *    `dBrdf_*`. See `dContribution_dEmissive` for the derivation.
  *  - KHR_materials_specular dielectric F0 controls (`specularColor` and
- *    `specularIntensity`) through the same frozen direct-light BRDF partial.
+ *    `specularIntensity`) plus metallic through the same frozen direct-light
+ *    BRDF partial.
  *  - the dielectric Fresnel reflectance `frDielectric` w.r.t. `ior` (scalar).
  *    NOTE: `ior` does NOT enter the opaque `evaluateBrdf` F0 term — dielectric
  *    F0 is controlled by KHR_materials_specular and metallic F0 by baseColor —
@@ -295,6 +296,54 @@ export function dBrdf_dRoughness(
   const invDenom = 1.0 / Math.max(4.0 * nDotV * nDotL, 1e-6);
   const dSpecScale = (dD_dRough * g + d * dG_dRough) * invDenom;
   return [dSpecScale * f[0], dSpecScale * f[1], dSpecScale * f[2]];
+}
+
+/**
+ * Analytic ∂(evaluateBrdf)_c / ∂metallic. Metallic affects both halves of the
+ * opaque Disney base BRDF:
+ *   - diffuse weight `kd0 = 1 - metallic` fades the Lambertian lobe out,
+ *   - F0 blends from dielectric specular controls to baseColor, changing the
+ *     Schlick Fresnel term that drives both specular energy and diffuse
+ *     partitioning.
+ *
+ * The derivative is evaluated in the smooth unclamped interior; the optimizer
+ * clamps metallic to [0,1] after each step, matching the forward material range.
+ */
+export function dBrdf_dMetallic(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  const nDotL = Math.max(dot(normal, wi), 0.0);
+  const nDotV = Math.max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return [0, 0, 0];
+  const h = safeNormalize([wi[0] + wo[0], wi[1] + wo[1], wi[2] + wo[2]]);
+  const nDotH = Math.max(dot(normal, h), 0.0);
+  const vDotH = Math.max(dot(wo, h), 0.0);
+  const alpha = Math.max(roughness * roughness, 1e-3);
+  const d = ggxD(nDotH, alpha);
+  const g = smithG1(nDotV, roughness) * smithG1(nDotL, roughness);
+  const specScale = (d * g) / Math.max(4.0 * nDotV * nDotL, 1e-6);
+  const kd0 = 1.0 - metallic;
+  const m = Math.min(Math.max(1.0 - vDotH, 0.0), 1.0);
+  const m2 = m * m;
+  const m5 = m2 * m2 * m;
+  const out: [number, number, number] = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const dielectricF0 = clamp01(0.04 * clamp01(specularColor[c]!) * clamp01(specularIntensity));
+    const f0c = dielectricF0 + (baseColor[c]! - dielectricF0) * metallic;
+    const fc = f0c + (1.0 - f0c) * m5;
+    const dfc = (1.0 - m5) * (baseColor[c]! - dielectricF0);
+    const dDiff = baseColor[c]! * INV_PI * (-kd0 * dfc - (1.0 - fc));
+    const dSpec = specScale * dfc;
+    out[c] = dDiff + dSpec;
+  }
+  return out;
 }
 
 /**
