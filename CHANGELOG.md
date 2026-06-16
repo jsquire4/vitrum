@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF animation invalidation, 2026-06-16)
+
+- **glTF controller incremental patches now reset engine temporal state:** `GltfSceneController` calls an Engine-like target's optional `reset()` hook after successful incremental animation or material-variant `updatePrimitive()` batches, while `setScene()` fallback keeps the full-scene invalidation path. `ProgressiveHandoffCoordinator` exposes the same reset hook on its synthetic glTF controller target, so realtime/PT handoff animation remains synchronized and stale temporal/converged histories are invalidated through one predictable mutation path.
+
 ### Changed (glTF texture decode reporting, 2026-06-16)
 
 - **Texture decode reports now expose decoded handle color space:** `textureDecodeReport.entries[]` separates the material role `colorSpace` from the decoded payload `handleColorSpace` when the handle supplies a Vitrum color-space hint. This makes `target:'cpu-linear'` vs `target:'webgpu'` auditable: base-color/emissive maps still report the glTF sRGB role, while the decoded handle reports either linear CPU-atlas payloads or sRGB-preserved WebGPU upload payloads. Target-specific decode diagnostics now name the active target instead of hard-coding `cpu-linear`.

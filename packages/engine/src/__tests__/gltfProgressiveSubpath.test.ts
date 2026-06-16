@@ -92,8 +92,9 @@ describe('@vitrum/engine/gltf progressive helper', () => {
         expect.objectContaining({
           primitiveId: 'gltf-prim-0',
           materialField: 'baseColorMap',
-          path: 'scene.primitives[0].material.baseColorMap',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
           colorSpace: 'srgb',
+          handleColorSpace: 'linear',
           handleKind: 'pixel-data',
         }),
       ],
@@ -103,7 +104,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     expect(result.textureDecodeDiagnostics).toEqual([
       expect.objectContaining({
         code: 'decoded-texture-exceeds-max-size',
-        path: 'scene.primitives[0].material.baseColorMap',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
         resizedWidth: 2,
         resizedHeight: 1,
       }),
@@ -119,7 +120,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
       expect.objectContaining({
         severity: 'warning',
         code: 'ignored-camera',
-        path: 'cameras',
+        path: 'cameras[0]',
       }),
     ]));
     expect(createProgressiveEngineMock).toHaveBeenCalledTimes(1);

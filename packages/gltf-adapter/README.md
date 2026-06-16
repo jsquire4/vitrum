@@ -90,6 +90,13 @@ factory; the adapter selects/checks the backend, creates a
 `GltfSceneController`, attaches the scene when requested, and forwards the same
 `textureDecodeReport` returned by `loadGltfAsset`.
 
+When the controller applies animation or material-variant patches through an
+incremental `updatePrimitive()` target, it calls the target's optional
+`reset()` hook after the patch batch. Engine targets therefore invalidate PT
+accumulation / temporal GI history on animated glTF mutations without requiring
+the host to remember an extra reset call; full-scene `setScene()` fallbacks keep
+their normal scene-replacement invalidation semantics.
+
 `compatibilityMode: 'reject-unsupported' | 'reject-degraded'` rejects before
 engine construction when the selected backend cannot satisfy the imported
 asset's feature report.

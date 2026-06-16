@@ -248,13 +248,15 @@ describe('GltfSceneController', () => {
     const { gltf, buffers } = animatedHierarchyGltf();
     const result = await gltfToScene(gltf, { buffers });
     const updatePrimitive = vi.fn();
-    const engine: GltfScenePatchTarget = { setScene: vi.fn(), updatePrimitive };
+    const reset = vi.fn();
+    const engine: GltfScenePatchTarget = { setScene: vi.fn(), updatePrimitive, reset };
     const controller = createGltfSceneController({ gltf, ...result });
 
     const frame = controller.applyAnimation(0, 0.5, { engine });
 
     expect(frame.usedSetScene).toBe(false);
     expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(reset).toHaveBeenCalledTimes(1);
     const patch = frame.primitivePatches[0]!.patch as { transform: Float32Array };
     expect(patch.transform[12]).toBeCloseTo(1);
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(1);
@@ -302,12 +304,13 @@ describe('GltfSceneController', () => {
     const result = await gltfToScene(gltf, { buffers });
     const setScene = vi.fn();
     const updatePrimitive = vi.fn();
+    const resetEngine = vi.fn();
     const controller = createGltfSceneController({ gltf, ...result });
 
     expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
 
     const frame = controller.setVariant('blue', {
-      engine: { setScene, updatePrimitive },
+      engine: { setScene, updatePrimitive, reset: resetEngine },
     });
 
     expect(frame.variantIndex).toBe(0);
@@ -319,6 +322,7 @@ describe('GltfSceneController', () => {
         material: expect.objectContaining({ baseColor: [0, 0, 1] }),
       }),
     );
+    expect(resetEngine).toHaveBeenCalledTimes(1);
     expect(setScene).not.toHaveBeenCalled();
     expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
 

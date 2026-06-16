@@ -245,9 +245,12 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   glTF node hierarchy, evaluate core `AnimationClip`s, recompute hierarchical
   world transforms, rebuild skinned bone matrices from animated joint nodes,
   solve morph weights through `solveSkin()`, and dispatch primitive patches via
-  `updatePrimitive()` with `setScene()` fallback. The controller fixtures cover
-  ancestor-node animation, mutation fallback, morph-weight playback, and skeletal
-  joint playback. The glTF adapter suite is now 163 tests.
+  `updatePrimitive()` with `setScene()` fallback. Successful incremental
+  animation/variant patch batches now call the target's optional `reset()` hook,
+  so engine targets invalidate PT accumulators / temporal GI reservoirs without
+  a second host-side call. The controller fixtures cover ancestor-node
+  animation, reset propagation, mutation fallback, morph-weight playback, and
+  skeletal joint playback.
 - The third arbitrary-glTF extension-policy slice landed in `@vitrum/gltf-adapter`:
   `KHR_materials_dispersion` now imports to `MaterialSpec.dispersionAbbeNumber`
   (`dispersion = 20 / Abbe`), texture-source extensions
@@ -1408,9 +1411,13 @@ Status:
 - `seek()`, `advance(dt)`, active clip selection, `play()` / `pause()` /
   `resume()` / `tick(dt)` clock ownership, looped advance, and applied
   patch/warning reporting are implemented.
+- Successful incremental `updatePrimitive()` batches call the target's optional
+  `reset()` hook, giving Engine-like targets a single predictable invalidation
+  boundary for animation and material-variant mutations. Full-scene fallback
+  still goes through `setScene()`.
 - Fixtures now cover parent-node animation, joint animation, morph weights, and
-  fallback from incremental patches to full `setScene()`, plus pause-as-no-op
-  and resume-from-retained-clock behavior.
+  fallback from incremental patches to full `setScene()`, reset propagation,
+  plus pause-as-no-op and resume-from-retained-clock behavior.
 
 Closure:
 - Closed for single-clip playback and engine mutation orchestration.

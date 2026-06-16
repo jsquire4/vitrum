@@ -39,6 +39,7 @@ export type HandoffPhase =
 export interface ProgressiveHandoffControllerTarget {
   setScene(scene: Scene): void;
   updatePrimitive?(id: string, patch: Partial<ScenePrimitive>): void;
+  reset?(): void;
 }
 
 export interface ProgressiveHandoffControllerAdvanceOptions {
@@ -191,6 +192,7 @@ export class ProgressiveHandoffCoordinator {
   readonly #controllerTarget: ProgressiveHandoffControllerTarget = {
     setScene: (scene) => this.setScene(scene),
     updatePrimitive: (id, patch) => this.updatePrimitive(id, patch),
+    reset: () => this.reset(),
   };
 
   #prev: CameraSnapshot | null = null;

@@ -32,6 +32,7 @@ import {
 export interface GltfScenePatchTarget {
   setScene(scene: Scene): void;
   updatePrimitive?(id: string, patch: Partial<ScenePrimitive>): void;
+  reset?(): void;
 }
 
 export interface GltfSceneControllerInput extends GltfToSceneResult {
@@ -120,6 +121,10 @@ const NODE_ID_PREFIX = 'gltf-node-';
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function resetAfterIncrementalPrimitivePatch(target: GltfScenePatchTarget): void {
+  target.reset?.();
 }
 
 export function createGltfSceneController(
@@ -379,6 +384,7 @@ export class GltfSceneController {
           for (const { id, patch } of primitivePatches) {
             target.updatePrimitive(id, patch);
           }
+          resetAfterIncrementalPrimitivePatch(target);
         } catch (err) {
           const message = errorMessage(err);
           frameWarnings.push(
@@ -543,6 +549,7 @@ export class GltfSceneController {
           for (const { id, patch } of primitivePatches) {
             target.updatePrimitive(id, patch);
           }
+          resetAfterIncrementalPrimitivePatch(target);
         } catch (err) {
           const message = errorMessage(err);
           frameWarnings.push(

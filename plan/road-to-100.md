@@ -869,9 +869,9 @@ pt-webgpu frame.
 
 | Concern | Code | Footgun |
 |---------|------|---------|
-| ReSTIR temporal reset | `HybridEngine.ts` `reset()` on topology change | Controller morph/topology must call `reset` or reservoirs ghost |
+| ~~ReSTIR temporal reset~~ ✅ CODE CLOSED | `GltfSceneController` calls `reset()` after successful incremental animation/variant `updatePrimitive()` batches when the target exposes it; `setScene()` fallback keeps the normal full-scene invalidation path; `ProgressiveHandoffCoordinator` exposes the same reset hook on its synthetic controller target. | Custom non-engine patch targets that intentionally omit `reset()` remain responsible for their own history invalidation |
 | DDGI probe invalidation | `updatePrimitive` material vs transform | Transform refit must invalidate probe cache (`HybridEngineGiPropagation.ts`) |
-| pt-webgpu accum | `renderFrame` motion vectors | Animated scenes need correct `prevView`/`prevProj` in `attachVitrum` |
+| ~~pt-webgpu accum~~ ✅ SOURCE VERIFIED | `attachVitrum` tracks and forwards `prevViewMatrix` / `prevProjMatrix` every RAF tick through `composeAttachVitrumFrameInput()`. | Broader animated real-scene sweeps remain validation tails |
 | Skinning GPU path | `GpuSkinningSubsystem` vs CPU `solveSkin` | Controller uses CPU `solveSkin` — OK; GPU skinning path must receive bone patches too |
 
 #### 4E — Engine integration residue (H31)
