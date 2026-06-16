@@ -1225,6 +1225,51 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     )).toBe(true);
   });
 
+  it('reports emissiveTexture emitter texel-PDF as an approximate compatibility edge', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0] = {
+      emissiveFactor: [1, 1, 1],
+      emissiveTexture: { index: 0 },
+    };
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.textureFields).toContain('emissiveMap');
+
+    const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    const webgl2Issue = webgl2.issues.find((issue) => issue.name === 'emissiveMap.texelPdf');
+    expect(webgl2Issue).toEqual(expect.objectContaining({
+      category: 'material',
+      support: 'approximate',
+      path: 'materials[0].emissiveTexture',
+    }));
+    expect(webgl2Issue?.message).toContain('exact texel-space emitter alias tables/PDFs');
+
+    const webgpuFull = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu');
+    expect(webgpuFull.issues).toContainEqual(expect.objectContaining({
+      category: 'material',
+      name: 'emissiveMap.texelPdf',
+      support: 'approximate',
+      path: 'materials[0].emissiveTexture',
+    }));
+
+    const walkaround = evaluateGltfBackendCompatibility(report, 'walkaround-hybrid');
+    expect(walkaround.issues).toContainEqual(expect.objectContaining({
+      category: 'material',
+      name: 'emissiveMap.texelPdf',
+      support: 'approximate',
+      path: 'materials[0].emissiveTexture',
+    }));
+
+    const lite = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu-lite');
+    expect(lite.issues.some((issue) => issue.name === 'emissiveMap.texelPdf')).toBe(false);
+    expect(lite.issues).toContainEqual(expect.objectContaining({
+      category: 'material',
+      name: 'emissiveMap',
+      support: 'unsupported',
+      path: 'materials[0].emissiveTexture',
+    }));
+  });
+
   it('reports material textures that require UV sets beyond the core Scene contract', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = { index: 0, texCoord: 2 };

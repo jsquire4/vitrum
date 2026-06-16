@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import type { MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
+import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
+import { packMeshAreaLights } from './meshAreaLights.js';
 
 // B4 — MIS-consistency math. The forward emissive-hit MIS weight is only unbiased if
 // the NEE solid-angle pdf the forward path RECONSTRUCTS (meshAreaLightForwardPdf in
@@ -34,6 +37,74 @@ function neeForwardPdf(distSq: number, cosLight: number, totalArea: number): num
 function misHeuristic(a: number, b: number): number {
   const a2 = a * a;
   return a2 / (a2 + b * b);
+}
+
+function fakeMerged(overrides: Partial<WorldSpaceMergeResult> = {}): WorldSpaceMergeResult {
+  const positions = new Float32Array([
+    0, 0, 0, 0,
+    1, 0, 0, 0,
+    1, 0, 1, 0,
+    0, 0, 1, 0,
+  ]);
+  const mergedIndices = new Uint32Array([0, 1, 2, 0, 2, 3]);
+  return {
+    bvhNodes: new Float32Array(),
+    positions,
+    positionStrideFloats: 4,
+    indices: mergedIndices,
+    bvhIndexStride: 3,
+    triMaterialId: new Uint32Array([0, 0]),
+    bvhTriToMergedTri: new Uint32Array([0, 1]),
+    normals: new Float32Array(positions.length),
+    tangents: new Float32Array(positions.length),
+    colors: new Float32Array([
+      1, 1, 1, 1,
+      1, 1, 1, 1,
+      1, 1, 1, 1,
+      1, 1, 1, 1,
+    ]),
+    uvs: new Float32Array(8),
+    mergedIndices,
+    mergedTriMaterialId: new Uint32Array([0, 0]),
+    materials: [],
+    boundingBox: { min: [0, 0, 0], max: [1, 0, 1] },
+    meshVertexRanges: [
+      { name: 'panel', vertexStart: 0, vertexCount: 4, triStart: 0, triCount: 2 },
+    ],
+    vertexCount: 4,
+    triangleCount: 2,
+    ...overrides,
+  };
+}
+
+function material(overrides: Partial<MaterialSpec>): MaterialSpec {
+  return { baseColor: [0.5, 0.5, 0.5], roughness: 1, metallic: 0, ...overrides };
+}
+
+function panelPrimitive(mat: MaterialSpec): MeshPrimitive {
+  return {
+    kind: 'mesh',
+    id: 'panel',
+    positions: new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      1, 0, 1,
+      0, 0, 1,
+    ]),
+    normals: new Float32Array([
+      0, 1, 0,
+      0, 1, 0,
+      0, 1, 0,
+      0, 1, 0,
+    ]),
+    uvs: new Float32Array(8),
+    indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    material: mat,
+  };
+}
+
+function sceneWithPrimitive(primitive: MeshPrimitive): Scene {
+  return { primitives: [primitive], emitters: [], environment: { kind: 'none' } };
 }
 
 describe('B4 mesh-area NEE/forward MIS consistency', () => {
@@ -84,5 +155,39 @@ describe('B4 mesh-area NEE/forward MIS consistency', () => {
     const wForwardScaled = misHeuristic(bsdfPdf, neeRaw / lightsDenom);
     const wForwardUnscaledButConsistent = misHeuristic(bsdfPdf, neeForwardPdf(distSq, cosLight, totalArea) / lightsDenom);
     expect(wForwardScaled).toBeCloseTo(wForwardUnscaledButConsistent, 12);
+  });
+
+  it('uses the textured implicit-emitter pack total area for forward/sample pdf parity', () => {
+    const emissiveMap = {
+      handle: {
+        width: 2,
+        height: 1,
+        data: new Uint8Array([
+          255, 0, 0, 255,
+          0, 255, 0, 255,
+        ]),
+      },
+    };
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [2, 2, 2],
+        emissiveIntensity: 3,
+        emissiveMap,
+      }))),
+      fakeMerged(),
+    );
+
+    expect(out.triLightCount).toBe(8);
+    expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
+    expect(out.data![4]).toBeCloseTo(6, 6);
+    expect(out.data![5]).toBeCloseTo(0, 6);
+    expect(out.warnings).toEqual([]);
+
+    const distSq = 7.5;
+    const cosLight = 0.42;
+    expect(neeForwardPdf(distSq, cosLight, out.totalEmissiveArea)).toBeCloseTo(
+      neeSamplePdf(distSq, cosLight, out.totalEmissiveArea),
+      12,
+    );
   });
 });

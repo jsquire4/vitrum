@@ -580,6 +580,23 @@ export function evaluateGltfBackendProfileCompatibility(
     }
   }
 
+  if (report.materials.textureFields.includes('emissiveMap')) {
+    const support = profile.materialOverrides?.emissiveMap ?? ledger.supportDetails.materials.emissiveMap ?? 'unknown';
+    if (support === 'native' || support === 'approximate') {
+      addIssue({
+        category: 'material',
+        name: 'emissiveMap.texelPdf',
+        support: 'approximate',
+        path: firstSourcePath(report.materials.issuePaths, 'field:emissiveMap', 'materials'),
+        message:
+          `Backend profile ${profile.id} imports glTF emissiveTexture for visible emission, ` +
+          'and CPU-readable maps may be subdivided into UV-local mesh emitter records, ' +
+          'but exact texel-space emitter alias tables/PDFs are not guaranteed across all ' +
+          'direct, GI, RC, DDGI, and fallback sampling paths.',
+      });
+    }
+  }
+
   for (const field of report.materials.materialFields) {
     const support = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
     if (support === 'native') {

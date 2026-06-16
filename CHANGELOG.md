@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF emissive-map PDF truthfulness, 2026-06-16)
+
+- **glTF backend compatibility now surfaces emissive-texture emitter PDF approximation explicitly:** `evaluateGltfBackendCompatibility()` reports an `emissiveMap.texelPdf` approximate material issue whenever a backend imports glTF `emissiveTexture` but cannot guarantee exact texel-space emitter alias tables/PDFs across all direct, GI, RC, DDGI, and fallback sampling paths. `pt-webgpu-lite` still reports the base `emissiveMap` row as unsupported instead of adding this narrower approximation issue. A focused pt-webgl2 test now ties CPU-readable emissive-map micro-triangle packing to the mesh-area forward/sample PDF parity proof. Exact texel-alias emitter PDFs remain a promotion tail; this closes the silent planner/reporting ambiguity.
+
 ### Fixed (glTF material sweep render gate, 2026-06-16)
 
 - **The material-heavy glTF sweep now has a focused `pt-webgpu` render/readback gate:** `tools/gltf-material-sweep` exposes its synthetic base/KHR texture-map fixture and decode hooks, and `tools/behavioral-gate` adds `pt/gltf-material-sweep`. The new lane drives the same asset through `loadGltfForEngine({ decodeTextures:true, textureTarget:'cpu-linear' })`, asserts all 18 decoded texture-report rows and CPU-readable handles survive controller attachment, boots the real `pt-webgpu` backend, renders 8 spp at 64², and requires finite non-black readback with zero GPU validation errors. On lavapipe this proves API/decode/controller/backend boot-readback for the material-heavy asset; full-tier rich-material fidelity and golden-PNG comparison remain promotion evidence.
