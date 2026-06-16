@@ -22,8 +22,9 @@
 > buffer reset on camera/scene/reset, Cesàro accumulator argument, 36 TS-mirror tests.
 > **Latest closure wave:** pt-webgpu inverse path replay now only advertises the
 > direct-light domains it actually supports (delta directional, point, spot, and
-> center-sampled rect/disc/mesh-area) and falls back to finite difference for maps,
-> transmission, layered, spectral/volume, soft-sun, environment,
+> center-sampled rect/disc/mesh-area) and falls back to finite difference for most
+> maps except scoped camera-direct emissiveMap replay and baseColorMap/COLOR_0
+> local chain factors, plus transmission, layered, spectral/volume, soft-sun, environment,
 > indirect, and other unsupported light/material cases; walkaround material truth was tightened so textured
 > alpha blend emits structured approximation warnings and the ledger no longer
 > claims native rows where GI reuse still used stored-Lo/proxy targeting; neural
@@ -44,7 +45,9 @@
 > pt-webgpu path-replay adjoint slice, added map-free scalar `iridescence` to
 > that same direct-light adjoint slice, added map-free scalar `iridescenceIor`
 > via a local thin-film-F0 derivative, added map-free scalar `anisotropy` /
-> `anisotropyRotation` through a local anisotropic-GGX derivative, made transparent-OIT direct sun
+> `anisotropyRotation` through a local anisotropic-GGX derivative, added
+> baseColorMap/COLOR_0 local chain factors for scoped pt-webgpu baseColor
+> path-replay fits, made transparent-OIT direct sun
 > cast-shadow-aware, rejected adjoint path replay for primitive targets the
 > triangle-only replay pass cannot actually hit, added material-lobe analytic point/spot and
 > camera-visible finite-emitter direct lighting to transparent OIT, and

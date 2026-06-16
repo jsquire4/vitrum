@@ -357,7 +357,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps unlit non-baseColor and unlit mapped baseColor on finite-difference', () => {
+  it('keeps unlit mapped baseColor on path-replay but unlit non-baseColor on finite-difference', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -380,21 +380,9 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
       method: 'path-replay',
     });
-    expect(mappedBase.method).toBe('finite-difference');
+    expect(mappedBase.method).toBe('path-replay');
     mappedBase.dispose();
 
-    fake.scene = {
-      ...fake.scene,
-      primitives: fake.scene.primitives.map((pr) =>
-        pr.id === 'panel'
-          ? (() => {
-              const material = { ...pr.material };
-              delete material.baseColorMap;
-              return { ...pr, material };
-            })()
-          : pr,
-      ),
-    };
     const roughness = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [{ path: 'materials.panel.roughness', kind: 'scalar' }],
@@ -483,7 +471,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('degrades to finite-difference when a path-replay material uses unsupported maps', () => {
+  it('keeps path-replay when a lit BRDF material uses baseColorMap in the scoped adjoint domain', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -506,7 +494,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('finite-difference');
+    expect(session.method).toBe('path-replay');
     session.dispose();
   });
 
@@ -514,6 +502,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     ['transmission', { transmission: 0.25 }],
     ['anisotropy', { anisotropy: 0.25 }],
     ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
+    ['AO map', { aoMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['emissive map on a lit BRDF target', { emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['clearcoat map', { clearcoatMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
     ['clearcoat normal map', { clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],

@@ -243,6 +243,7 @@ export class AdjointPass {
         { binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer } },
         { binding: 16, resource: sb.materialTextureView },
         { binding: 17, resource: sb.materialTextureSampler },
+        { binding: 18, resource: { buffer: sb.colorsBuffer } },
       ],
     });
 

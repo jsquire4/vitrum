@@ -21,7 +21,7 @@
  * every parameter is in the adjoint-differentiable set, and every target
  * material stays within the direct-light base/specular domain this pass mirrors
  * (delta directional, point, spot, and center-sampled rect/disc area lights), or
- * is a map-free `shadingModel:'unlit'` baseColor primary-hit fit;
+ * is a baseColorMap / COLOR_0-aware `shadingModel:'unlit'` baseColor primary-hit fit;
  * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
  * emissive / specularColor / specularIntensity / clearcoat / map-free sheen /
  * map-free iridescence / map-free anisotropy controls); any
@@ -134,7 +134,8 @@ export interface AdjointGradientRequest {
  *
  *  - `baseColor`, `roughness` — the original Phase-1 BSDF partials
  *    (`dBrdf_dBaseColor` / `dBrdf_dRoughness`), GPU-validated end-to-end (V24).
- *    `baseColor` also covers map-free `shadingModel:'unlit'` primary hits:
+ *    `baseColor` also covers baseColorMap / COLOR_0-aware
+ *    `shadingModel:'unlit'` primary hits:
  *    forward contributes `throughput · baseColor` and terminates, so the
  *    derivative is the direct contribution-level identity rather than a BRDF
  *    partial or light-domain term.
@@ -170,6 +171,10 @@ export interface AdjointGradientRequest {
  *    derivative of that F0 term. Thickness range, iridescence maps, and
  *    thickness maps stay on finite difference until their derivatives are
  *    mirrored and validated.
+ *  - baseColorMap and COLOR_0 are replayed as local chain-rule factors for the
+ *    lit BRDF domain above. Roughness/metallic/emissive-on-lit-BRDF, alpha,
+ *    transmission, AO, and extension maps remain finite-difference fallbacks
+ *    until their own source terms are mirrored.
  *  - `anisotropy` / `anisotropyRotation` — map-free scalar anisotropic-GGX
  *    controls through a local symmetric derivative of the direct-light specular
  *    lobe. Anisotropy maps stay on finite difference.
@@ -571,7 +576,6 @@ function isPathReplayCompatibleAnisotropyMaterial(m: MaterialSpec): boolean {
 
 function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
   return (
-    m.baseColorMap != null ||
     m.normalMap != null ||
     m.roughnessMap != null ||
     m.metallicMap != null ||

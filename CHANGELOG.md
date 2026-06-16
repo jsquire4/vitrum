@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu baseColor-map adjoint replay, 2026-06-16)
+
+- **Base-color texture and `COLOR_0` factors now participate in scoped path-replay adjoint:** `@vitrum/pt-webgpu` binds the existing vertex-color stream into `adjointPass`, mirrors the baseColorMap texture descriptor/UV/transform/wrap sampler used by the material path, evaluates lit direct-light BRDF partials with `baseColor * baseColorMap * COLOR_0`, and applies the same local chain-rule factor to RGB `baseColor` gradients, including unlit primary-hit fits. Other material maps, alpha visibility, transmission, layered/volume/spectral cases, environment/soft-sun terms, indirect paths, stochastic area sampling, and GPU inverse-fit recaptures remain finite-difference or validation tails.
+
 ### Fixed (pt-webgpu anisotropy adjoint breadth, 2026-06-16)
 
 - **Map-free anisotropy scalars now participate in path-replay adjoint:** `@vitrum/pt-webgpu` adds CPU finite-difference-checked and WGSL-mirrored local partials for KHR_materials_anisotropy `anisotropy` and `anisotropyRotation`, reading the scalar descriptor lanes and differentiating the anisotropic GGX specular lobe in the existing opaque direct-light replay domain. Anisotropy maps, mapped/normal/alpha/transmissive/layered/volume/spectral materials, environment/soft-sun terms, indirect paths, stochastic area sampling, and GPU inverse-fit recaptures remain finite-difference or validation tails.
