@@ -12,7 +12,14 @@
 // (2 texels each), 93..94 = alphaMap transform, 95..96 = anisotropyMap transform,
 // 97 = volume thickness payload, 98..99 = thicknessMap transform,
 // 100..110 = per-map wrap modes (two maps per RGBA texel),
-// 111 = Jakob-Hanika spectral reflectance coefficients + validity flag.
+// 111 = Jakob-Hanika spectral reflectance coefficients + validity flag,
+// 112..118 = front/back layer normal payload:
+//   112 = {frontLayer.normalMap, frontLayer.normalScale,
+//          backLayer.normalMap, backLayer.normalScale}
+//   113..114 = frontLayer.normalMap transform
+//   115..116 = backLayer.normalMap transform
+//   117 = {front wrapS/T, back wrapS/T}
+//   118 = {front texCoord, back texCoord, _, _}
 export const MATERIAL_WRAP_TEXEL_OFFSET = 100;
 
 // Map order shared by the UV-set bitmask and the wrap-mode payload. Bit k in
@@ -43,7 +50,9 @@ export const MATERIAL_MAP_FIELD_ORDER = /** @type {readonly string[]} */ ([
 
 export const MATERIAL_WRAP_TEXELS = Math.ceil(MATERIAL_MAP_FIELD_ORDER.length / 2);
 export const MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET = MATERIAL_WRAP_TEXEL_OFFSET + MATERIAL_WRAP_TEXELS;
-export const MATERIAL_PIXELS = MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET + 1;
+export const MATERIAL_LAYER_NORMAL_TEXEL_OFFSET = MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET + 1;
+export const MATERIAL_LAYER_NORMAL_TEXELS = 7;
+export const MATERIAL_PIXELS = MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + MATERIAL_LAYER_NORMAL_TEXELS;
 
 // UV-set bitmask — packed at texel 86.a (the former pad lane).
 // Bit k set = the k-th map samples uv1 (ATTR_UV1) instead of uv0 (ATTR_UV).

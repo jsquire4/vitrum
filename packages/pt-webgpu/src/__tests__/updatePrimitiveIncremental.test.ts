@@ -226,7 +226,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
-  it('warns when material patches include unconsumed layered normal subfields', async () => {
+  it('rebuilds rather than warning unsupported-material-fields for layered normal patch descriptors', async () => {
     installWebGpuConstStubs();
     const { device } = makeStubDevice();
     const structured: EngineWarning[] = [];
@@ -259,21 +259,16 @@ describe('pt-webgpu incremental primitive updates', () => {
         },
       });
 
-      expect(structured).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          code: 'pt-webgpu.unsupported-material-fields',
-          method: 'updatePrimitive',
-          details: expect.objectContaining({
-            id: 'mesh-a',
-            fields: expect.arrayContaining([
-              'frontLayer.normalMap',
-              'frontLayer.normalScale',
-              'backLayer.normalMap',
-              'backLayer.normalScale',
-            ]),
-          }),
-        }),
-      ]));
+      expect(structured.some((w) =>
+        w.code === 'pt-webgpu.unsupported-material-fields' &&
+        Array.isArray(w.details?.fields) &&
+        (
+          w.details.fields.includes('frontLayer.normalMap') ||
+          w.details.fields.includes('frontLayer.normalScale') ||
+          w.details.fields.includes('backLayer.normalMap') ||
+          w.details.fields.includes('backLayer.normalScale')
+        ),
+      )).toBe(false);
     } finally {
       warn.mockRestore();
     }

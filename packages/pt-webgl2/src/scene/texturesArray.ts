@@ -125,6 +125,25 @@ export function textureColorSpaceForMapKey(key: keyof MaterialSpec): TextureSamp
   return SRGB_MAP_KEYS.has(key) ? 'srgb' : 'linear';
 }
 
+function collectHandle(
+  handles: { handle: unknown; colorSpace: TextureSampleColorSpace }[],
+  seen: Map<unknown, Set<TextureSampleColorSpace>>,
+  ref: { readonly handle?: unknown } | undefined,
+  colorSpace: TextureSampleColorSpace,
+): void {
+  const handle = ref?.handle;
+  if (handle == null) return;
+  let seenSpaces = seen.get(handle);
+  if (seenSpaces == null) {
+    seenSpaces = new Set<TextureSampleColorSpace>();
+    seen.set(handle, seenSpaces);
+  }
+  if (!seenSpaces.has(colorSpace)) {
+    seenSpaces.add(colorSpace);
+    handles.push({ handle, colorSpace });
+  }
+}
+
 /** IEEE-754 half (uint16) → float32 (DataTextures may ship HalfFloat). */
 function halfToFloat(h: number): number {
   const s = (h & 0x8000) >> 15;
@@ -269,19 +288,10 @@ export function packTextureAtlas(
   for (const m of materials) {
     for (const key of SAMPLED_MAP_KEYS) {
       const ref = m[key] as { handle?: unknown } | undefined;
-      const handle = ref?.handle;
-      if (handle == null) continue;
-      const colorSpace = textureColorSpaceForMapKey(key);
-      let seenSpaces = seen.get(handle);
-      if (seenSpaces == null) {
-        seenSpaces = new Set<TextureSampleColorSpace>();
-        seen.set(handle, seenSpaces);
-      }
-      if (!seenSpaces.has(colorSpace)) {
-        seenSpaces.add(colorSpace);
-        handles.push({ handle, colorSpace });
-      }
+      collectHandle(handles, seen, ref, textureColorSpaceForMapKey(key));
     }
+    collectHandle(handles, seen, m.frontLayer?.normalMap, 'linear');
+    collectHandle(handles, seen, m.backLayer?.normalMap, 'linear');
   }
   if (handles.length === 0) return null;
 

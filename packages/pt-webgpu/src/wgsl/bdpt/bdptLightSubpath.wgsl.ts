@@ -645,7 +645,7 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
     let newNormal = safe_normalize(hit.normal);
     // Front-relative shading normal at the new vertex (toward the incoming light dir).
     var nsFront = select(-newNormal, newNormal, isFrontFaceHit);
-    nsFront = applyNormalMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex);
+    nsFront = applyNormalMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex, isFrontFaceHit);
     nsFront = applyBumpMap(matIdx, hit.triIndex, hit.baryVW, nsFront, hit.instanceIndex);
     // Outgoing direction at newPos toward the previous vertex (= -scatterDir).
     let woLp = -scatterDir;

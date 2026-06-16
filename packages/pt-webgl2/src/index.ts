@@ -121,19 +121,8 @@ function collectUnsupportedMaterialFields(scene: Scene): string[] {
     for (const field of UNSUPPORTED_MATERIAL_FIELDS) {
       if (material[field] != null) fields.add(field);
     }
-    collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
-    collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
   }
   return Array.from(fields).sort();
-}
-
-function collectUnsupportedLayerNormalFields(
-  fields: Set<string>,
-  prefix: 'frontLayer' | 'backLayer',
-  layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
-): void {
-  if (layer?.normalMap != null) fields.add(`${prefix}.normalMap`);
-  if (layer?.normalScale != null) fields.add(`${prefix}.normalScale`);
 }
 
 const DEFAULT_MAX_SPP = 4096;

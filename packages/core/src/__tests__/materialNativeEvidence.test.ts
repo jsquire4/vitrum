@@ -137,7 +137,7 @@ const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<strin
       'clearcoatRoughnessMap', 'clearcoatNormalMap', 'sheenColorMap',
       'sheenRoughnessMap', 'iridescenceMap', 'iridescenceThicknessMap',
       'anisotropyMap', 'specularColorMap', 'specularIntensityMap', 'bumpMap',
-      'lightMap',
+      'lightMap', 'frontLayer', 'backLayer',
     ], PT_WEBGL2_TEXTURES),
   },
   'pt-webgpu': {
@@ -155,7 +155,7 @@ const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<strin
     ...group([
       'baseColorMap', 'normalMap', 'roughnessMap', 'metallicMap',
       'transmissionMap', 'emissiveMap', 'alphaMap', 'aoMap', 'anisotropyMap',
-      'bumpMap', 'lightMap',
+      'bumpMap', 'lightMap', 'frontLayer', 'backLayer',
     ], PT_WEBGPU_TEXTURES),
   },
 };

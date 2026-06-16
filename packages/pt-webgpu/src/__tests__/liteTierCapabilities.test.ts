@@ -460,6 +460,16 @@ describe('H12: lite-tier capabilities truth', () => {
             opacity: 0.5,
             envMapIntensity: 0.25,
             anisotropy: 0.5,
+            frontLayer: {
+              transmission: [1, 1, 1],
+              normalMap: { handle: { id: 'front-normal' } },
+              normalScale: 0.75,
+            },
+            backLayer: {
+              transmission: [1, 1, 1],
+              normalMap: { handle: { id: 'back-normal' } },
+              normalScale: 0.5,
+            },
           },
         },
       ],
@@ -483,6 +493,10 @@ describe('H12: lite-tier capabilities truth', () => {
             'opacity',
             'envMapIntensity',
             'anisotropy',
+            'frontLayer.normalMap',
+            'frontLayer.normalScale',
+            'backLayer.normalMap',
+            'backLayer.normalScale',
           ]),
         }),
       }),
@@ -491,7 +505,7 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('setScene warns when layered materials include unconsumed per-face normal fields', async () => {
+  it('full tier: setScene does not warn unsupported-material-fields for per-face layer normal fields', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const engine = await createPTEngine_WebGPU({
@@ -533,23 +547,17 @@ describe('H12: lite-tier capabilities truth', () => {
     } catch {
       /* GPU stubs may throw — expected */
     }
-    expect(structured).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.unsupported-material-fields',
-        details: expect.objectContaining({
-          fields: expect.arrayContaining([
-            'frontLayer.normalMap',
-            'frontLayer.normalScale',
-            'backLayer.normalMap',
-            'backLayer.normalScale',
-          ]),
-        }),
-      }),
-    ]));
     expect(structured.some((w) =>
       w.code === 'pt-webgpu.unsupported-material-fields' &&
       Array.isArray(w.details?.fields) &&
-      (w.details.fields.includes('frontLayer') || w.details.fields.includes('backLayer')),
+      (
+        w.details.fields.includes('frontLayer.normalMap') ||
+        w.details.fields.includes('frontLayer.normalScale') ||
+        w.details.fields.includes('backLayer.normalMap') ||
+        w.details.fields.includes('backLayer.normalScale') ||
+        w.details.fields.includes('frontLayer') ||
+        w.details.fields.includes('backLayer')
+      ),
     )).toBe(false);
     engine.dispose();
     warn.mockRestore();

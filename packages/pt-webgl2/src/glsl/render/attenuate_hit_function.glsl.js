@@ -193,7 +193,28 @@ export const attenuate_hit_function = /* glsl */`
 				// projections can pick up per-pixel surface relief.
 				#if FEATURE_STAINED_GLASS_SHADOW_NORMAL_PERTURBATION
 
-				if ( isShadowRay && material.normalMap != - 1 ) {
+				bool frontFaceHitForNormal = surfaceHit.side == 1.0 || transmission == 0.0;
+				bool hasFaceLayerForNormal = frontFaceHitForNormal ? material.hasFrontLayer : material.hasBackLayer;
+				int activeShadowNormalMap = material.normalMap;
+				mat3 activeShadowNormalMapTransform = material.normalMapTransform;
+				vec2 activeShadowNormalScale = material.normalScale;
+				vec2 activeShadowNormalMapWrap = material.normalMapWrap;
+				vec2 activeShadowNormalUv = ATTENUATE_MAP_UV( 5u );
+				if ( hasFaceLayerForNormal && frontFaceHitForNormal && material.frontLayerNormalMap != - 1 ) {
+					activeShadowNormalMap = material.frontLayerNormalMap;
+					activeShadowNormalMapTransform = material.frontLayerNormalMapTransform;
+					activeShadowNormalScale = material.frontLayerNormalScale;
+					activeShadowNormalMapWrap = material.frontLayerNormalMapWrap;
+					activeShadowNormalUv = material.frontLayerNormalTexCoord > 0.5 ? uv1 : uv;
+				} else if ( hasFaceLayerForNormal && ! frontFaceHitForNormal && material.backLayerNormalMap != - 1 ) {
+					activeShadowNormalMap = material.backLayerNormalMap;
+					activeShadowNormalMapTransform = material.backLayerNormalMapTransform;
+					activeShadowNormalScale = material.backLayerNormalScale;
+					activeShadowNormalMapWrap = material.backLayerNormalMapWrap;
+					activeShadowNormalUv = material.backLayerNormalTexCoord > 0.5 ? uv1 : uv;
+				}
+
+				if ( isShadowRay && activeShadowNormalMap != - 1 ) {
 
 					vec4 tangentSample = textureSampleBarycoord(
 						attributesArray,
@@ -211,10 +232,10 @@ export const attenuate_hit_function = /* glsl */`
 						vec3 tangent = normalize( tangentSample.xyz );
 						float tangentHandedness = tangentSample.w < 0.0 ? -1.0 : 1.0;
 						vec3 bitangent = normalize( cross( faceN, tangent ) * tangentHandedness );
-						vec3 nuvPrime = material.normalMapTransform * vec3( ATTENUATE_MAP_UV( 5u ), 1 );
+						vec3 nuvPrime = activeShadowNormalMapTransform * vec3( activeShadowNormalUv, 1 );
 						vec3 texNormal =
-							sampleMaterialTexture( textures, nuvPrime.xy, material.normalMap, material.normalMapWrap ).xyz * 2.0 - 1.0;
-						texNormal.xy *= material.normalScale;
+							sampleMaterialTexture( textures, nuvPrime.xy, activeShadowNormalMap, activeShadowNormalMapWrap ).xyz * 2.0 - 1.0;
+						texNormal.xy *= activeShadowNormalScale;
 						// World-space perturbation vector in the tangent plane.
 						vec3 dN = tangent * texNormal.x + bitangent * texNormal.y;
 						float perturbStrength = ( material.ior - 1.0 ) * 0.1;

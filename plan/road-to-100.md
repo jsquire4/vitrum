@@ -1007,9 +1007,9 @@ separate Deno/WebGPU harness issue to be cleared first.
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
 | Displacement | displacement* | Permanent unsupported all backends; diagnostics cover setScene, analytic authored materials, and walkaround material-only mutation paths |
 
-**pt-webgl2 ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, `scatteringCoefficientRGB`, `frontLayer`, and `backLayer`; `emitterCastShadow` remains approximate in the shadow matrix.
+**pt-webgl2 ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, and `scatteringCoefficientRGB`; `frontLayer` and `backLayer` are native field-consumption rows after face-selected transmission/roughness plus nested normal-map/normal-scale packing and shader consumption. `emitterCastShadow` remains approximate in the shadow matrix.
 
-**pt-webgpu ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `sheenColorMap`, `sheenRoughnessMap`, `iridescenceMap`, `iridescenceThicknessMap`, `specularColorMap`, `specularIntensityMap`, `specularIntensity`, `specularColor`, `frontLayer`, and `backLayer`; `emitterCastShadow` remains approximate in the shadow matrix.
+**pt-webgpu ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `sheenColorMap`, `sheenRoughnessMap`, `iridescenceMap`, `iridescenceThicknessMap`, `specularColorMap`, `specularIntensityMap`, `specularIntensity`, and `specularColor`; `frontLayer` and `backLayer` are native in the full tier after face-selected layer-normal descriptor/shader support, while the lite tier still emits structured compatibility warnings. `emitterCastShadow` remains approximate in the shadow matrix.
 
 ---
 

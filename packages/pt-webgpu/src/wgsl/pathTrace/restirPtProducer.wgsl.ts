@@ -178,7 +178,7 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
     out.ior = cauchyIorAtLambda(heroLambda, mat.ior, mat.dispersionAbbe);
   }
   out.normal = select(-hit.normal, hit.normal, isFrontFace);
-  out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
+  out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex, isFrontFace);
   out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
   out.clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
 
@@ -751,7 +751,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   let xv = primaryRay.origin + primaryRay.direction * vHit.dist;
   let vIsFront = dot(vHit.normal, primaryRay.direction) < 0.0;
   var nv = select(-vHit.normal, vHit.normal, vIsFront);
-  nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
+  nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex, vIsFront);
   nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
   let clearcoatNormalV = applyClearcoatNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
   let woV = -primaryRay.direction; // eye-side direction at xv

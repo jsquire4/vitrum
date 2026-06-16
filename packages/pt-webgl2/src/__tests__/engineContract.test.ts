@@ -353,7 +353,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('warns when unsupported layered front/back normal fields are supplied (CAP-01)', async () => {
+  it('does not warn unsupported-material-fields for layered front/back normal fields (CAP-01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
@@ -388,16 +388,18 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(structured.some((w) =>
         w.code === 'pt-webgl2.unsupported-material-fields' &&
         Array.isArray(w.details?.fields) &&
-        w.details.fields.includes('frontLayer.normalMap') &&
-        w.details.fields.includes('frontLayer.normalScale') &&
-        w.details.fields.includes('backLayer.normalMap') &&
-        w.details.fields.includes('backLayer.normalScale'),
-      )).toBe(true);
+        (
+          w.details.fields.includes('frontLayer.normalMap') ||
+          w.details.fields.includes('frontLayer.normalScale') ||
+          w.details.fields.includes('backLayer.normalMap') ||
+          w.details.fields.includes('backLayer.normalScale')
+        ),
+      )).toBe(false);
       expect(warn.mock.calls.flat().map(String).some((m) =>
         m.includes('frontLayer.normalMap') &&
         m.includes('backLayer.normalMap') &&
         m.includes('not rendered'),
-      )).toBe(true);
+      )).toBe(false);
     } finally {
       warn.mockRestore();
     }

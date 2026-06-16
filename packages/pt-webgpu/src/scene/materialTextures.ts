@@ -54,6 +54,11 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *  71: {thicknessMapIdx, thicknessUvFit.xy, _}
  *  72: {thicknessWrap.xy, 0, 0}
  *  73-74: thicknessMap UV metadata (A/B, same shape as the map metadata above)
+ *  75: {frontLayerNormalMapIdx, frontLayerNormalScale,
+ *       backLayerNormalMapIdx, backLayerNormalScale}
+ *  76: {frontLayerNormalUvFit.xy, backLayerNormalUvFit.xy}
+ *  77: {frontLayerNormalWrap.xy, backLayerNormalWrap.xy}
+ *  78-81: front/back layer normal UV metadata, 2 vec4s per map.
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -95,6 +100,10 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *   - vec4 #71–#74: KHR_materials_volume thicknessTexture. This is a LINEAR
  *     scalar map sampled from G and multiplied by MaterialSpec.thickness to clamp
  *     the approximate Beer-Lambert slab distance.
+ *   - vec4 #75–#81: RFE-03 front/back layer normal maps. These are LINEAR
+ *     tangent-space normal maps with independent scales, UV metadata, wrap modes,
+ *     and heterogeneous-layer UV-fit scales. Shaders face-select them ahead of
+ *     the top-level normal map when the selected face has a layer normal.
  */
 export const MATERIAL_TEX_UV_META_VEC4_OFFSET = 19;
 export const MATERIAL_TEX_UV_META_VEC4S_PER_MAP = 2;
@@ -110,9 +119,14 @@ export const MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET = 69;
 export const MATERIAL_TEX_THICKNESS_VEC4_OFFSET = 71;
 export const MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET = 72;
 export const MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET = 73;
+export const MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET = 75;
+export const MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET = 76;
+export const MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET = 77;
+export const MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET = 78;
+export const MATERIAL_TEX_LAYER_NORMAL_MAP_COUNT = 2;
 export const MATERIAL_TEX_VEC4_STRIDE =
-  MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET +
-  MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
+  MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET +
+  MATERIAL_TEX_LAYER_NORMAL_MAP_COUNT * MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
@@ -247,6 +261,18 @@ export function applyMaterialTextureUvFitScales(
         descriptors[b + MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4] ?? -1,
       ),
     );
+    const layerNormalBase = b + MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET * 4;
+    const layerNormalFitBase = b + MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET * 4;
+    writeUvFitPair(
+      descriptors,
+      layerNormalFitBase,
+      uvFitScaleFor(linearLayerScales, descriptors[layerNormalBase] ?? -1),
+    );
+    writeUvFitPair(
+      descriptors,
+      layerNormalFitBase + 2,
+      uvFitScaleFor(linearLayerScales, descriptors[layerNormalBase + 2] ?? -1),
+    );
   }
 }
 
@@ -338,6 +364,16 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[thicknessBase + 1] = 1;
     descriptors[thicknessBase + 2] = 1;
     descriptors[thicknessBase + 3] = 0;
+    const layerNormalBase = b + MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET * 4;
+    descriptors[layerNormalBase] = indexOfLinear(m.frontLayer?.normalMap);
+    descriptors[layerNormalBase + 1] = m.frontLayer?.normalScale ?? 1;
+    descriptors[layerNormalBase + 2] = indexOfLinear(m.backLayer?.normalMap);
+    descriptors[layerNormalBase + 3] = m.backLayer?.normalScale ?? 1;
+    const layerNormalFitBase = b + MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET * 4;
+    descriptors[layerNormalFitBase] = 1;
+    descriptors[layerNormalFitBase + 1] = 1;
+    descriptors[layerNormalFitBase + 2] = 1;
+    descriptors[layerNormalFitBase + 3] = 1;
     writeDefaultUvFitPairs(descriptors, b);
     writeDefaultExtensionUvFitPairs(descriptors, b);
     writeWrapPair(descriptors, b + 52, bc);
@@ -362,6 +398,8 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeWrapPair(descriptors, extWrapBase + 14, m.specularIntensityMap);
     writeWrapPair(descriptors, b + MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET * 4, m.clearcoatNormalMap);
     writeWrapPair(descriptors, b + MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET * 4, m.thicknessMap);
+    writeWrapPair(descriptors, b + MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4, m.frontLayer?.normalMap);
+    writeWrapPair(descriptors, b + MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4 + 2, m.backLayer?.normalMap);
     writeUvMeta(descriptors, b, 0, bc);
     writeUvMeta(descriptors, b, 1, m.emissiveMap);
     writeUvMeta(descriptors, b, 2, m.normalMap);
@@ -383,6 +421,8 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeUvMeta(descriptors, b, 7, m.specularIntensityMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
     writeUvMeta(descriptors, b, 0, m.clearcoatNormalMap, MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET);
     writeUvMeta(descriptors, b, 0, m.thicknessMap, MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET);
+    writeUvMeta(descriptors, b, 0, m.frontLayer?.normalMap, MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET);
+    writeUvMeta(descriptors, b, 1, m.backLayer?.normalMap, MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET);
   });
 
   return { sources, linearSources, descriptors };

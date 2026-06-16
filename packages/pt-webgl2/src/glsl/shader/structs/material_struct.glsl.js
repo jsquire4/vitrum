@@ -1,4 +1,5 @@
 import {
+	MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
 	MATERIAL_PIXELS,
 	MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
 } from './materialStride.js';
@@ -90,9 +91,19 @@ export const material_struct = /* glsl */ `
 		vec3 frontLayerTransmission;
 		float frontLayerRoughness;
 		bool hasFrontLayer;
+		int frontLayerNormalMap;
+		vec2 frontLayerNormalScale;
+		mat3 frontLayerNormalMapTransform;
+		vec2 frontLayerNormalMapWrap;
+		float frontLayerNormalTexCoord;
 		vec3 backLayerTransmission;
 		float backLayerRoughness;
 		bool hasBackLayer;
+		int backLayerNormalMap;
+		vec2 backLayerNormalScale;
+		mat3 backLayerNormalMapTransform;
+		vec2 backLayerNormalMapWrap;
+		float backLayerNormalTexCoord;
 		vec3 spectralReflectanceCoeffs;
 		bool hasSpectralReflectance;
 
@@ -337,6 +348,19 @@ export const material_struct = /* glsl */ `
 		m.backLayerRoughness = s19.a;
 		m.spectralReflectanceCoeffs = sSpectralReflectance.xyz;
 		m.hasSpectralReflectance = sSpectralReflectance.w > 0.5;
+		vec4 layerNormal = texelFetch1D( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET}u );
+		m.frontLayerNormalMap = int( round( layerNormal.r ) );
+		m.frontLayerNormalScale = vec2( layerNormal.g );
+		m.backLayerNormalMap = int( round( layerNormal.b ) );
+		m.backLayerNormalScale = vec2( layerNormal.a );
+		m.frontLayerNormalMapTransform = m.frontLayerNormalMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 1}u );
+		m.backLayerNormalMapTransform = m.backLayerNormalMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 3}u );
+		vec4 layerNormalWrap = texelFetch1D( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5}u );
+		m.frontLayerNormalMapWrap = layerNormalWrap.rg;
+		m.backLayerNormalMapWrap = layerNormalWrap.ba;
+		vec4 layerNormalUv = texelFetch1D( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6}u );
+		m.frontLayerNormalTexCoord = layerNormalUv.r;
+		m.backLayerNormalTexCoord = layerNormalUv.g;
 
 		// D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity.
 		vec4 s20 = texelFetch1D( tex, i + 85u );

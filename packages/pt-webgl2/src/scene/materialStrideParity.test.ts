@@ -90,6 +90,14 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(shader).toContain('m.thicknessMap = int( round( s22.g ) );');
     expect(shader).toContain('m.anisotropyMapTransform = m.anisotropyMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 95u );');
     expect(shader).toContain('m.thicknessMapTransform = m.thicknessMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 98u );');
+    expect(shader).toContain('m.frontLayerNormalMap = int( round( layerNormal.r ) );');
+    expect(shader).toContain('m.backLayerNormalMap = int( round( layerNormal.b ) );');
+    expect(shader).toContain('m.frontLayerNormalMapTransform');
+    expect(shader).toContain('m.backLayerNormalMapTransform');
+    expect(shader).toContain('activeNormalMap = material.frontLayerNormalMap;');
+    expect(shader).toContain('activeNormalMap = material.backLayerNormalMap;');
+    expect(shader).toContain('activeNormalUv = material.frontLayerNormalTexCoord > 0.5 ? uv1 : uv;');
+    expect(shader).toContain('sampleMaterialTexture( textures, uvPrime.xy, activeNormalMap, activeNormalMapWrap )');
     expect(shader).toContain('m.anisotropyMapWrap = w9.ba;');
     expect(shader).toContain('m.thicknessMapWrap = w10.rg;');
     expect(shader).toContain('vec3 uvPrime = material.anisotropyMapTransform * vec3( MAP_UV( 19u ), 1 );');

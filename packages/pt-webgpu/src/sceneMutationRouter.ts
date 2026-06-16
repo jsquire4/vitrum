@@ -94,19 +94,7 @@ function collectUnsupportedPatchMaterialFields(
   for (const field of UNSUPPORTED_PATCH_MATERIAL_FIELDS) {
     if (material[field] != null) fields.add(field);
   }
-  const typedMaterial = material as Partial<MaterialSpec>;
-  collectUnsupportedLayerNormalPatchFields(fields, 'frontLayer', typedMaterial.frontLayer);
-  collectUnsupportedLayerNormalPatchFields(fields, 'backLayer', typedMaterial.backLayer);
   return Array.from(fields).sort();
-}
-
-function collectUnsupportedLayerNormalPatchFields(
-  fields: Set<string>,
-  prefix: 'frontLayer' | 'backLayer',
-  layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
-): void {
-  if (layer?.normalMap != null) fields.add(`${prefix}.normalMap`);
-  if (layer?.normalScale != null) fields.add(`${prefix}.normalScale`);
 }
 
 function warnHost(

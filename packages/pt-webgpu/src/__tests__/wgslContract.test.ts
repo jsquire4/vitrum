@@ -256,8 +256,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-15: transmissive dielectrics now share the normalized
     // base/clearcoat/sheen sampled-density helper instead of returning a
     // base-only PDF/sampler before extension lobes can participate.
-    expect(digest).toBe('e44abd8f31f854b586c8c8bcbd3962ff35f42ec92553efea0c9bcaad18945742');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(370454);
+    // Re-pinned 2026-06-16: full-tier material descriptors gained face-selected
+    // front/back layer normal map lanes, and applyNormalMap chooses those lanes
+    // ahead of the top-level normal map when authored.
+    expect(digest).toBe('df0116bc1660b3208d421ad5c234f75980f9ae6918fe6a9ece833fe27da597b6');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(371990);
   });
 });
 
@@ -564,7 +567,7 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('instanceIndex: u32,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('(*hit).instanceIndex = instIdx;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);',
+      'normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex, isFrontFace);',
     );
   });
 

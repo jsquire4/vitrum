@@ -195,10 +195,35 @@ export const get_surface_record_function = /* glsl */`
 		}
 
 		vec3 baseNormal = normal;
+		// frontFace is used to determine transmissive properties and per-face layer selection.
+		bool frontFaceHit = surfaceHit.side == 1.0 || transmission == 0.0;
+		bool hasFaceLayer = frontFaceHit ? material.hasFrontLayer : material.hasBackLayer;
+		vec3 layerTransmission = frontFaceHit ? material.frontLayerTransmission : material.backLayerTransmission;
+		float layerRoughness = frontFaceHit ? material.frontLayerRoughness : material.backLayerRoughness;
+
+		int activeNormalMap = material.normalMap;
+		mat3 activeNormalMapTransform = material.normalMapTransform;
+		vec2 activeNormalScale = material.normalScale;
+		vec2 activeNormalMapWrap = material.normalMapWrap;
+		vec2 activeNormalUv = MAP_UV( 5u );
+		if ( hasFaceLayer && frontFaceHit && material.frontLayerNormalMap != - 1 ) {
+			activeNormalMap = material.frontLayerNormalMap;
+			activeNormalMapTransform = material.frontLayerNormalMapTransform;
+			activeNormalScale = material.frontLayerNormalScale;
+			activeNormalMapWrap = material.frontLayerNormalMapWrap;
+			activeNormalUv = material.frontLayerNormalTexCoord > 0.5 ? uv1 : uv;
+		} else if ( hasFaceLayer && ! frontFaceHit && material.backLayerNormalMap != - 1 ) {
+			activeNormalMap = material.backLayerNormalMap;
+			activeNormalMapTransform = material.backLayerNormalMapTransform;
+			activeNormalScale = material.backLayerNormalScale;
+			activeNormalMapWrap = material.backLayerNormalMapWrap;
+			activeNormalUv = material.backLayerNormalTexCoord > 0.5 ? uv1 : uv;
+		}
+
 		// Sprint 4: P3 — when !useTextures, skip TBN tangent-space transform
 		// (avoids tangent attribute fetch) and use the smooth geometric normal directly.
-		// normalMap = bit 5
-		if ( useTextures && material.normalMap != - 1 ) {
+		// normalMap = bit 5; per-face layer normals use their own UV payload.
+		if ( useTextures && activeNormalMap != - 1 ) {
 
 			vec4 tangentSample = textureSampleBarycoord(
 				attributesArray,
@@ -216,10 +241,10 @@ export const get_surface_record_function = /* glsl */`
 				vec3 bitangent = normalize( cross( normal, tangent ) * tangentHandedness );
 				mat3 vTBN = mat3( tangent, bitangent, normal );
 
-				vec3 uvPrime = material.normalMapTransform * vec3( MAP_UV( 5u ), 1 );
+				vec3 uvPrime = activeNormalMapTransform * vec3( activeNormalUv, 1 );
 				vec3 texNormal =
-					sampleMaterialTexture( textures, uvPrime.xy, material.normalMap, material.normalMapWrap ).xyz * 2.0 - 1.0;
-				texNormal.xy *= material.normalScale;
+					sampleMaterialTexture( textures, uvPrime.xy, activeNormalMap, activeNormalMapWrap ).xyz * 2.0 - 1.0;
+				texNormal.xy *= activeNormalScale;
 				normal = vTBN * texNormal;
 
 			}
@@ -435,11 +460,6 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
-		// frontFace is used to determine transmissive properties and per-face layer selection.
-		bool frontFaceHit = surfaceHit.side == 1.0 || transmission == 0.0;
-		bool hasFaceLayer = frontFaceHit ? material.hasFrontLayer : material.hasBackLayer;
-		vec3 layerTransmission = frontFaceHit ? material.frontLayerTransmission : material.backLayerTransmission;
-		float layerRoughness = frontFaceHit ? material.frontLayerRoughness : material.backLayerRoughness;
 		layerTransmission = clamp( layerTransmission, vec3( 0.0 ), vec3( 1.0 ) );
 		if ( hasFaceLayer && layerRoughness >= 0.0 ) {
 			roughness = clamp( layerRoughness, 0.0, 1.0 );

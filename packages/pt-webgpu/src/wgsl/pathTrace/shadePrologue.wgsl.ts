@@ -212,7 +212,7 @@ export const SHADE_PROLOGUE_ORM_TEX_APPLY_FULL =
  *  is no normal map → byte-identical. Perturbs before firstHitNormal is captured
  *  so the G-buffer normal is the mapped one. */
 export const SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL =
-  `\n    normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);`;
+  `\n    normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex, isFrontFace);`;
 
 /** D3 — AO map: multiply baseColor by the baked occlusion factor (glTF
  *  occlusionTexture, R channel), lerped by aoMapIntensity. sampleAoFactor returns

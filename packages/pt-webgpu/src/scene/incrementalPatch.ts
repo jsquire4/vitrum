@@ -6,7 +6,7 @@
 // `updatePrimitive`/`updateEmitter` and delegates the eligibility decisions
 // here.
 import type { ScenePrimitive } from '@vitrum/core';
-import type { Scene } from '@vitrum/core';
+import type { MaterialSpec, Scene } from '@vitrum/core';
 import type { UploadedSceneBuffers } from './uploadSceneBuffers.js';
 
 /**
@@ -114,6 +114,9 @@ export function canFastPathMaterialPatch(
   for (const field of Object.keys(mat)) {
     if (TEXTURE_MAP_FIELDS.has(field)) return false;
   }
+  const typedMat = patch.material as Partial<MaterialSpec>;
+  if (typedMat.frontLayer?.normalMap != null || typedMat.frontLayer?.normalScale != null) return false;
+  if (typedMat.backLayer?.normalMap != null || typedMat.backLayer?.normalScale != null) return false;
   return true;
 }
 

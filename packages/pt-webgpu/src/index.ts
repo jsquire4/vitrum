@@ -215,8 +215,10 @@ function collectUnsupportedMaterialFields(scene: Scene, traceTier: PtWebgpuTrace
     for (const field of unsupportedFields) {
       if (material[field] != null) fields.add(field);
     }
-    collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
-    collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
+    if (traceTier === 'lite') {
+      collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
+      collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
+    }
   }
   return Array.from(fields).sort();
 }

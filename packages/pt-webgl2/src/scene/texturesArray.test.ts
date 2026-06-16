@@ -54,6 +54,24 @@ describe('packTextureAtlas', () => {
     // layer 0 (the 1×1 white) nearest-upsampled to 2×2 → all white
     expect(Array.from(atlas!.data.slice(0, 16))).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
   });
+
+  it('collects front/back layer normal maps as linear atlas layers', () => {
+    const front = dataTexHandle(new Float32Array([0.5, 0.5, 1, 1]), 1, 1);
+    const back = dataTexHandle(new Float32Array([0.25, 0.5, 1, 1]), 1, 1);
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      frontLayer: { transmission: [1, 1, 1], normalMap: { handle: front } },
+      backLayer: { transmission: [1, 1, 1], normalMap: { handle: back } },
+    };
+    const atlas = packTextureAtlas([material]);
+    expect(atlas).not.toBeNull();
+    expect(atlas!.layerCount).toBe(2);
+    expect(atlas!.layerOfByColorSpace.linear.get(front)).toBe(0);
+    expect(atlas!.layerOfByColorSpace.linear.get(back)).toBe(1);
+    expect(atlas!.layerOfByColorSpace.srgb.size).toBe(0);
+  });
 });
 
 // D10.12: TextureHandleHint — explicit channels/dataType override

@@ -8,6 +8,7 @@ import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import { evaluateSpectrum } from '@vitrum/shared-samplers';
 import {
+  MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
   packMaterialsTexture,
@@ -24,10 +25,11 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     // D3 (2026-06-10): fork base 85 + texels 85..92 (ao/light/bump ids + scalars
     // + envMapIntensity at 85/86, their transforms at 87..92) + alphaMap transform
     // at 93/94 + anisotropyMap transform at 95/96 + thickness payload/transform
-    // at 97..99 + per-map wrap modes at 100..110 + spectral reflectance at 111.
+    // at 97..99 + per-map wrap modes at 100..110 + spectral reflectance at 111
+    // + front/back layer normal payload at 112..118.
     // Single-sourced with every GLSL fetch site via glsl/shader/structs/materialStride.js
     // — see materialStrideParity.test.ts for the packer↔shader guard.
-    expect(MATERIAL_PIXELS).toBe(112);
+    expect(MATERIAL_PIXELS).toBe(119);
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {
@@ -49,7 +51,7 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     const out = packMaterialsTexture([m]);
     expect(out.kind).toBe('rgba32f');
     expect(out.materialCount).toBe(1);
-    // dim = ceil(sqrt(112)) = 11 → backing data is 11*11*4 = 484 floats.
+    // dim = ceil(sqrt(119)) = 11 → backing data is 11*11*4 = 484 floats.
     expect(out.dim).toBe(11);
     expect(out.data.length).toBe(out.dim * out.dim * 4);
 
@@ -267,6 +269,63 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     expect(d[texel(0, 28, 3)]).toBeCloseTo(2.0, 6); // layer1.ior spills into s28.a
     expect(d[texel(0, 29, 0)]).toBeCloseTo(120, 6);
     expect(d[texel(0, 29, 1)]).toBeCloseTo(0.0, 6);
+  });
+
+  it('packs front/back layer normal maps in the appended payload', () => {
+    const frontHandle = {};
+    const backHandle = {};
+    const layerOf = new Map<unknown, number>([
+      [frontHandle, 4],
+      [backHandle, 5],
+    ]);
+    const mat: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      frontLayer: {
+        transmission: [0.9, 0.8, 0.7],
+        normalMap: {
+          handle: frontHandle,
+          texCoord: 1,
+          transform: { offset: [0.25, 0.5], scale: [0.5, 0.25], rotation: Math.PI / 2 },
+          wrapS: 'clamp-to-edge',
+          wrapT: 'mirrored-repeat',
+        },
+        normalScale: 0.75,
+      },
+      backLayer: {
+        transmission: [0.7, 0.8, 0.9],
+        normalMap: {
+          handle: backHandle,
+          texCoord: 0,
+          transform: { offset: [0.1, 0.2], scale: [0.3, 0.4], rotation: 0 },
+          wrapS: 'repeat',
+          wrapT: 'clamp-to-edge',
+        },
+        normalScale: 0.5,
+      },
+    };
+    const d = packMaterialsTexture([mat], layerOf).data;
+    const ln = MATERIAL_LAYER_NORMAL_TEXEL_OFFSET;
+    expect(d[texel(0, ln, 0)]).toBe(4);
+    expect(d[texel(0, ln, 1)]).toBeCloseTo(0.75, 6);
+    expect(d[texel(0, ln, 2)]).toBe(5);
+    expect(d[texel(0, ln, 3)]).toBeCloseTo(0.5, 6);
+    // front transform first row: sx*cos, sx*sin, offsetX.
+    expect(d[texel(0, ln + 1, 0)]).toBeCloseTo(0.0, 6);
+    expect(d[texel(0, ln + 1, 1)]).toBeCloseTo(0.5, 6);
+    expect(d[texel(0, ln + 1, 2)]).toBeCloseTo(0.25, 6);
+    // back transform first row: sx, 0, offsetX.
+    expect(d[texel(0, ln + 3, 0)]).toBeCloseTo(0.3, 6);
+    expect(d[texel(0, ln + 3, 1)]).toBeCloseTo(0.0, 6);
+    expect(d[texel(0, ln + 3, 2)]).toBeCloseTo(0.1, 6);
+    // wrap encoding: repeat=0, clamp=1, mirror=2.
+    expect(d[texel(0, ln + 5, 0)]).toBe(1);
+    expect(d[texel(0, ln + 5, 1)]).toBe(2);
+    expect(d[texel(0, ln + 5, 2)]).toBe(0);
+    expect(d[texel(0, ln + 5, 3)]).toBe(1);
+    expect(d[texel(0, ln + 6, 0)]).toBe(1);
+    expect(d[texel(0, ln + 6, 1)]).toBe(0);
   });
 
   it('spectralAttenuation fills the 32-sample grid (s20..) + sets feature bit 1', () => {
@@ -625,8 +684,8 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     const b: MaterialSpec = { baseColor: [0, 1, 0], roughness: 1, metallic: 0 };
     const out = packMaterialsTexture([a, b]);
     expect(out.materialCount).toBe(2);
-    // dim = ceil(sqrt(210)) = 15 → 15*15*4 = 900 floats.
-    expect(out.dim).toBe(15);
+    // dim = ceil(sqrt(238)) = 16 → 16*16*4 = 1024 floats.
+    expect(out.dim).toBe(16);
     // material 0 color.
     expect(out.data[texel(0, 0, 0)]).toBe(1);
     expect(out.data[texel(0, 0, 1)]).toBe(0);

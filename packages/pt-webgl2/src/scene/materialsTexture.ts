@@ -20,6 +20,7 @@ import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesAr
 
 import {
   MATERIAL_MAP_FIELD_ORDER,
+  MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
   MATERIAL_PIXELS,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
@@ -33,6 +34,7 @@ import {
  *  100..110 + spectral reflectance texel 111). Re-exported for tests and parity guards. */
 export {
   MATERIAL_MAP_FIELD_ORDER,
+  MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
   MATERIAL_PIXELS,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
@@ -269,6 +271,8 @@ interface LayerIds {
   bump: number;
   anisotropy: number;
   thickness: number;
+  frontLayerNormal: number;
+  backLayerNormal: number;
 }
 
 /** D10.8: Resolve all atlas layer ids for a material in one pass (avoids re-calling mapLayer). */
@@ -295,6 +299,8 @@ function packLayerIds(m: MaterialSpec, layerOf: TextureLayerLookup | undefined):
     bump: mapLayer(m.bumpMap, layerOf, 'linear'),
     anisotropy: mapLayer(m.anisotropyMap, layerOf, 'linear'),
     thickness: mapLayer(m.thicknessMap, layerOf, 'linear'),
+    frontLayerNormal: mapLayer(m.frontLayer?.normalMap, layerOf, 'linear'),
+    backLayerNormal: mapLayer(m.backLayer?.normalMap, layerOf, 'linear'),
   };
 }
 
@@ -634,6 +640,29 @@ function packTextureTransforms(
       m[field] as { wrapS?: TextureWrapMode; wrapT?: TextureWrapMode } | undefined,
     );
   }
+
+  // RFE-03 layer normals: appended payload so the historical base-map wrap and
+  // spectral-reflectance lanes stay stable. Layer maps are face-selected shader
+  // overrides; when absent the shader falls back to the ordinary normalMap path.
+  const layerNormal = base + MATERIAL_LAYER_NORMAL_TEXEL_OFFSET * 4;
+  data[layerNormal] = ids.frontLayerNormal;
+  data[layerNormal + 1] = m.frontLayer?.normalScale ?? 1.0;
+  data[layerNormal + 2] = ids.backLayerNormal;
+  data[layerNormal + 3] = m.backLayer?.normalScale ?? 1.0;
+  if (ids.frontLayerNormal >= 0) {
+    writeTransform(data, base, MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 1, m.frontLayer?.normalMap);
+  }
+  if (ids.backLayerNormal >= 0) {
+    writeTransform(data, base, MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 3, m.backLayer?.normalMap);
+  }
+  const layerWrap = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5) * 4;
+  writeWrapPair(data, layerWrap, m.frontLayer?.normalMap);
+  writeWrapPair(data, layerWrap + 2, m.backLayer?.normalMap);
+  const layerUv = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6) * 4;
+  data[layerUv] = m.frontLayer?.normalMap?.texCoord ?? 0;
+  data[layerUv + 1] = m.backLayer?.normalMap?.texCoord ?? 0;
+  data[layerUv + 2] = 0;
+  data[layerUv + 3] = 0;
 }
 
 function packSpectralReflectance(

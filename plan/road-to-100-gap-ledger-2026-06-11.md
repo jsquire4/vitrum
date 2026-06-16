@@ -1093,14 +1093,16 @@ Evidence:
   on one global WebGL array sampler.
   `untestedMaterialMaps.test.ts`, `materialsTexture.test.ts`, and
   `shader-gate` pin the path.
-- Layered front/back material fields are honestly approximate for pt-webgl2 and
-  pt-webgpu: `promiseLedger.ts` marks `frontLayer` / `backLayer` approximate
-  for scalar transmission/roughness, while each backend emits structured
-  unsupported-material warnings for the nested normal-map subfields
+- Layered front/back material fields are now native field-consumption rows for
+  pt-webgl2 and full pt-webgpu: both backends pack and shade face-selected
+  transmission/roughness plus nested normal-map/normal-scale payloads
   (`frontLayer.normalMap`, `frontLayer.normalScale`, `backLayer.normalMap`,
-  `backLayer.normalScale`). pt-webgl2 pins the path-level diagnostic in
-  `engineContract.test.ts`; pt-webgpu pins setScene + material-update collection
-  through `liteTierCapabilities.test.ts` and `SceneMutationRouter`.
+  `backLayer.normalScale`). pt-webgl2 pins the append-only material-stride
+  payload, atlas collection, GLSL decode, surface shading, and attenuation
+  paths; pt-webgpu pins full-tier descriptor lanes, shader selection, and lite
+  tier structured warnings. Renderer-row promotion still waits on runtime A/B,
+  and walkaround layered/spectral/volume families remain approximate or routed
+  to PT.
 - Surface anisotropy support is now source-verified for pt-webgl2:
   `promiseLedger.ts` marks `anisotropy`, `anisotropyRotation`, and
   `anisotropyMap` native after reserved-lane pack/decode, atlas/UV/wrap
@@ -1114,8 +1116,9 @@ Evidence:
   closed-surface attenuation, not exact thin-shell volume integration.
 
 Closure:
-- WEBGL2-04 is closed as an honesty row. Future layered face-normal support
-  would be a fidelity promotion, not a current silent contract gap.
+- WEBGL2-04 is closed as an honesty row. Layered face-normal support is now
+  code-closed for pt-webgl2 and full pt-webgpu; remaining work is visual
+  promotion/proof, not a silent field drop.
 
 ### PTWG-08 - pt-webgpu material and texture infrastructure is partial
 

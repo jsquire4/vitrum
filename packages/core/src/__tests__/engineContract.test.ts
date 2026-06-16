@@ -150,6 +150,8 @@ describe('backend promise ledger', () => {
     expect(gl2.thickness).toBe('approximate');
     expect(gl2.thicknessMap).toBe('approximate');
     expect(gl2.thinFilmStack).toBe('native');
+    expect(gl2.frontLayer).toBe('native');
+    expect(gl2.backLayer).toBe('native');
 
     // pt-webgpu: KHR_materials_specular scalars are consumed by the ordinary PT
     // BRDF/PDF path; extension maps are full-tier-megakernel approximate until
@@ -175,6 +177,8 @@ describe('backend promise ledger', () => {
     expect(gpu.normalScale).toBe('native');
     expect(gpu.anisotropy).toBe('native');
     expect(gpu.scatteringCoefficientRGB).toBe('native');
+    expect(gpu.frontLayer).toBe('native');
+    expect(gpu.backLayer).toBe('native');
     expect(gpu.roughnessMap).toBe('native');
     expect(gpu.metallicMap).toBe('native');
   });

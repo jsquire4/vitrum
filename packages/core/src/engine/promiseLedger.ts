@@ -568,10 +568,10 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // WebGL SSS free-flight path; approximate until visual promotion proves the
   // simplified single-scatter model against reference scenes.
   scatteringCoefficientRGB: 'approximate',
-  // transmission tint + per-face roughness override ARE consumed; the per-face
-  // `normalMap`/`normalScale` sub-fields are never packed (no atlas entry).
-  frontLayer: 'approximate',
-  backLayer: 'approximate',
+  // transmission tint + per-face roughness override + per-face normal map/scale
+  // are packed, face-selected, and sampled by surface + attenuation shaders.
+  frontLayer: 'native',
+  backLayer: 'native',
   // Full TMM evaluation; 35-layer cap (contract sanctions backend caps).
   thinFilmStack: 'native',
   // Scalar KHR_materials_anisotropy is packed into reserved material lanes and
@@ -679,10 +679,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Genuine per-channel σ_s (vec4 #3 → kernel.wgsl sigmaS) — native here,
   // unlike pt-webgl2's albedo reinterpretation.
   scatteringCoefficientRGB: 'native',
-  // transmission tint + per-face roughness override consumed; per-face
-  // `normalMap`/`normalScale` sub-fields never packed.
-  frontLayer: 'approximate',
-  backLayer: 'approximate',
+  // transmission tint + per-face roughness override + per-face normal map/scale
+  // are packed, face-selected, and sampled by the full-tier material path.
+  frontLayer: 'native',
+  backLayer: 'native',
   // Full TMM evaluation; 8-layer cap (contract sanctions backend caps).
   thinFilmStack: 'native',
   anisotropy: 'native',

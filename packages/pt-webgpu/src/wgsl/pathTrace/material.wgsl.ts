@@ -386,7 +386,12 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //  71: {thicknessMapIdx, thicknessUvFit.xy, _}
 //  72: {thicknessWrap.xy, 0, 0}
 //  73-74: thicknessMap UV metadata
-const MATERIAL_TEX_VEC4_STRIDE = 75u;
+//  75: {frontLayerNormalMapIdx, frontLayerNormalScale,
+//       backLayerNormalMapIdx, backLayerNormalScale}
+//  76: {frontLayerNormalUvFit.xy, backLayerNormalUvFit.xy}
+//  77: {frontLayerNormalWrap.xy, backLayerNormalWrap.xy}
+//  78-81: front/back layer-normal UV metadata
+const MATERIAL_TEX_VEC4_STRIDE = 82u;
 const MATERIAL_TEX_UV_BASE_COLOR = 19u;
 const MATERIAL_TEX_UV_EMISSIVE = 21u;
 const MATERIAL_TEX_UV_NORMAL = 23u;
@@ -408,6 +413,11 @@ const MATERIAL_TEX_UV_SPECULAR_COLOR = 63u;
 const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 65u;
 const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 69u;
 const MATERIAL_TEX_UV_THICKNESS = 73u;
+const MATERIAL_TEX_LAYER_NORMAL = 75u;
+const MATERIAL_TEX_LAYER_NORMAL_UV_FIT = 76u;
+const MATERIAL_TEX_LAYER_NORMAL_WRAP = 77u;
+const MATERIAL_TEX_UV_FRONT_LAYER_NORMAL = 78u;
+const MATERIAL_TEX_UV_BACK_LAYER_NORMAL = 80u;
 
 fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
   let m = u32(mode);
@@ -576,11 +586,11 @@ fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, instanc
 // authored. Merged-BLAS / lite / analytic paths pass the invalid instance
 // sentinel and keep the historical local-space tangent.
 // Ref: Lengyel, "Computing Tangent Space Basis Vectors for an Arbitrary Mesh".
-fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32) -> vec3f {
+fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32, isFrontFace: bool) -> vec3f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 14u >= arrayLength(&materialTexDescriptors)) { return geomNormal; }
-  let normalIdx = i32(materialTexDescriptors[base].y);
-  if (normalIdx < 0 || triIndex >= arrayLength(&indices)) { return geomNormal; }
+  var normalIdx = i32(materialTexDescriptors[base].y);
+  if (triIndex >= arrayLength(&indices)) { return geomNormal; }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
@@ -588,9 +598,26 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
   }
   let frame = buildShadingTangentFrame(triIndex, baryVW, geomNormal, instanceIndex);
   if (!frame.valid) { return geomNormal; }
-  let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_NORMAL, materialTexDescriptors[base + 8u].xy, materialTexDescriptors[base + 14u].xy).xyz;
+  var normalUvMetaOffset: u32 = MATERIAL_TEX_UV_NORMAL;
+  var normalUvFitScale = materialTexDescriptors[base + 8u].xy;
+  var normalWrapMode = materialTexDescriptors[base + 14u].xy;
+  var normalScale = materialTexDescriptors[base + 5u].w;
+  if (base + MATERIAL_TEX_UV_BACK_LAYER_NORMAL + 1u < arrayLength(&materialTexDescriptors)) {
+    let layerNormal = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL];
+    let layerIdx = select(i32(layerNormal.z), i32(layerNormal.x), isFrontFace);
+    if (layerIdx >= 0) {
+      normalIdx = layerIdx;
+      normalScale = select(layerNormal.w, layerNormal.y, isFrontFace);
+      normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);
+      let layerUvFit = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL_UV_FIT];
+      normalUvFitScale = select(layerUvFit.zw, layerUvFit.xy, isFrontFace);
+      let layerWrap = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL_WRAP];
+      normalWrapMode = select(layerWrap.zw, layerWrap.xy, isFrontFace);
+    }
+  }
+  if (normalIdx < 0) { return geomNormal; }
+  let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, normalUvMetaOffset, normalUvFitScale, normalWrapMode).xyz;
   var tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
-  let normalScale = materialTexDescriptors[base + 5u].w;
   tn.x = tn.x * normalScale;
   tn.y = tn.y * normalScale;
   let perturbed = frame.tangent * tn.x + frame.bitangent * tn.y + geomNormal * tn.z;
