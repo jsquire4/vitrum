@@ -127,6 +127,21 @@ export interface PackedEmitterArrays {
   readonly meshAreaLightsData: Float32Array;
 }
 
+export interface MeshAreaEmitterAdjointRange {
+  /** First packed mesh-area triangle slot for this explicit emitter before any cap/reorder. */
+  readonly start: number;
+  /** Number of packed non-degenerate triangles this explicit emitter contributes. */
+  readonly count: number;
+  /** Total mesh-area triangle count before the global cap is applied. */
+  readonly totalMeshAreaTriangles: number;
+  /**
+   * True when `packEmitterArrays` will sort/drop triangles by area. In that case
+   * the explicit emitter's source triangles are no longer guaranteed to occupy
+   * the contiguous range reported above, so inverse replay must stay on FD.
+   */
+  readonly capped: boolean;
+}
+
 function pushVec4(
   out: number[],
   v: readonly [number, number, number],
@@ -613,6 +628,40 @@ function synthesizeImplicitEmitters(
     });
   }
   return result;
+}
+
+export function meshAreaEmitterAdjointRangeForScene(
+  scene: Scene,
+  emitterId: string,
+): MeshAreaEmitterAdjointRange | null {
+  const warnings: string[] = [];
+  let cursor = 0;
+  let targetStart = -1;
+  let targetCount = 0;
+  let found = false;
+
+  for (const emitter of scene.emitters) {
+    if (emitter.kind !== 'mesh-area') continue;
+    const count = packMeshAreaTriangles(emitter, scene, warnings).length;
+    if (emitter.id === emitterId) {
+      found = true;
+      targetStart = cursor;
+      targetCount = count;
+    }
+    cursor += count;
+  }
+
+  for (const synthetic of synthesizeImplicitEmitters(scene, undefined, warnings)) {
+    cursor += packMeshAreaTriangles(synthetic, scene, warnings).length;
+  }
+
+  if (!found || targetCount <= 0) return null;
+  return {
+    start: targetStart,
+    count: targetCount,
+    totalMeshAreaTriangles: cursor,
+    capped: cursor > MESH_AREA_LIGHT_TRI_CAP,
+  };
 }
 
 export function packEmitterArrays(scene: Scene): PackedEmitterArrays {

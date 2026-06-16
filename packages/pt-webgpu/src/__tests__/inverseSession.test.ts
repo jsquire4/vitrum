@@ -16,6 +16,7 @@ import {
   type AdjointGradientRequest,
 } from '../inverse/inverseSession.js';
 import { l2Loss, l1Loss, lossValue, Adam, parseParamPath, paramLength } from '../inverse/optimizer.js';
+import { MESH_AREA_LIGHT_TRI_CAP } from '../scene/emitterPacking.js';
 
 // ── a fittable fake forward model ─────────────────────────────────────────────
 //
@@ -530,6 +531,95 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay for uncapped explicit mesh-area emitter color/intensity and passes hook offsets', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mesh-light',
+        color: [0.25, 0.5, 1],
+        intensity: 4,
+        meshId: 'panel',
+      }],
+    };
+    let captured: AdjointGradientRequest | null = null;
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async (req) => {
+        captured = req;
+        return new Float32Array([0.1, 0.2, 0.3, 0.4]);
+      },
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'emitters.mesh-light.color', kind: 'rgb' },
+        { path: 'emitters.mesh-light.intensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    const result = await session.step();
+    expect(captured).not.toBeNull();
+    expect(captured!.params).toEqual([
+      { domain: 'emitters', id: 'mesh-light', field: 'color', offset: 0, length: 3 },
+      { domain: 'emitters', id: 'mesh-light', field: 'intensity', offset: 3, length: 1 },
+    ]);
+    expect(result.gradient).toEqual([
+      [expect.closeTo(0.1, 6), expect.closeTo(0.2, 6), expect.closeTo(0.3, 6)],
+      [expect.closeTo(0.4, 6)],
+    ]);
+    session.dispose();
+  });
+
+  it('keeps capped mesh-area emitter targets on finite-difference because cap sorting breaks contiguous source ranges', () => {
+    const fake = makeFakeEngine();
+    const identity = asMat4([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]);
+    fake.scene = {
+      ...fake.scene,
+      primitives: [{
+        kind: 'instanced-mesh',
+        id: 'panel',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        instances: Array.from({ length: MESH_AREA_LIGHT_TRI_CAP + 1 }, () => identity),
+        material: { baseColor: [0.2, 0.2, 0.2], roughness: 0.5, metallic: 0 },
+      }],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mesh-light',
+        color: [1, 1, 1],
+        intensity: 1,
+        meshId: 'panel',
+      }],
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async () => new Float32Array(1),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'emitters.mesh-light.intensity', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-emitter',
+      path: 'emitters.mesh-light.intensity',
+      details: expect.objectContaining({
+        meshAreaTriangleCount: MESH_AREA_LIGHT_TRI_CAP + 1,
+      }),
+    }));
+    session.dispose();
+  });
+
   it.each([
     ['soft directional', [{
       kind: 'directional' as const,
@@ -539,13 +629,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       direction: [0, -1, 0] as [number, number, number],
       angularDiameter: 0.01,
     }], 'emitters.soft-sun.intensity'],
-    ['mesh-area', [{
-      kind: 'mesh-area' as const,
-      id: 'mesh-light',
-      color: [1, 1, 1] as [number, number, number],
-      intensity: 1,
-      meshId: 'panel',
-    }], 'emitters.mesh-light.intensity'],
   ])('keeps %s emitter targets on finite-difference until their source terms are replayed', (_label, emitters, path) => {
     const fake = makeFakeEngine();
     fake.scene = { ...fake.scene, emitters };

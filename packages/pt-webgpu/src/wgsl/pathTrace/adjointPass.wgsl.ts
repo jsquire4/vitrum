@@ -84,6 +84,7 @@ export const ADJOINT_EMITTER_TARGET_DIRECTIONAL = 1;
 export const ADJOINT_EMITTER_TARGET_POINT = 2;
 export const ADJOINT_EMITTER_TARGET_SPOT = 3;
 export const ADJOINT_EMITTER_TARGET_RECT = 4;
+export const ADJOINT_EMITTER_TARGET_MESH = 5;
 
 /** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
 export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
@@ -156,15 +157,18 @@ struct AdjointParams {
 @group(0) @binding(8) var<storage, read_write> gradAccum:     array<atomic<i32>>;
 // adjointParams:
 //   material fields: {matId, fieldCode, gradOffset, fieldPayloadBits}
-//   emitter fields: {kind-local light slot, fieldCode, gradOffset, emitterTargetKind}
+//   emitter fields: {kind-local light slot/range start, fieldCode, gradOffset, emitterTargetMeta}
 // adjointParamDescs: two vec4u records per optimized param:
 //   record 0: {targetIdOrSlot, fieldCode, gradOffset, fieldPayloadBitsOrEmitterKind}
 //   record 1: {payloadXBits, payloadYBits, payloadZBits, payloadWBits}
 // emissive uses record0.w for fixed emissiveIntensity. emissiveIntensity
 // uses record1.xyz for UNFACTORED emissive RGB so intensity=0 is differentiable.
 // emitter color/intensity use record1.xyz = unfactored emitter color and
-// record1.w = fixed intensity; area-emitter target fields remain finite-difference
-// until stochastic area sampling + mesh-triangle source mapping are replayed.
+// record1.w = fixed intensity; emitterTargetMeta packs target kind in the low
+// 8 bits and a contiguous range count in the upper bits. Mesh-area emitter
+// targets use this only for uncapped explicit emitters whose packed triangles
+// remain contiguous; capped/reordered mesh lights and full stochastic sampling
+// stay on finite difference.
 @group(0) @binding(9) var<storage, read>       adjointParamDescs: array<vec4u>;
 // rect-area lights: per light {position, uAxis, vAxis, radiance} (4 vec4 stride).
 @group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
@@ -806,7 +810,9 @@ fn scatterEmitterRadianceGradient(
     if (d.y != ${ADJOINT_FIELD_EMITTER_COLOR}u && d.y != ${ADJOINT_FIELD_EMITTER_INTENSITY}u) {
       continue;
     }
-    if (d.w != targetKind || d.x != targetSlot) { continue; }
+    let descKind = d.w & 255u;
+    let descCount = max(1u, d.w >> 8u);
+    if (descKind != targetKind || targetSlot < d.x || targetSlot >= d.x + descCount) { continue; }
     let payload = adjointParamDescs[descBase + 1u];
     let emitterColor = vec3f(
       bitcast<f32>(payload.x),
@@ -1225,6 +1231,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
+      if (!isUnlit) {
+        let areaFactor = cosLight * area / dist2;
+        let brdfValue = directLightBrdfValue(
+          effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation,
+        );
+        scatterEmitterRadianceGradient(
+          ${ADJOINT_EMITTER_TARGET_MESH}u,
+          mi,
+          dLoss_dR * brdfValue * (nDotL * areaFactor),
+          invReplaySamples,
+        );
+      }
     }
 
     // Scatter into the gradient slot of every param that targets THIS hit's material

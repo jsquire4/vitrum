@@ -61,6 +61,7 @@ import {
   clampParams,
   type ResolvedParamTarget,
 } from './optimizer.js';
+import { meshAreaEmitterAdjointRangeForScene } from '../scene/emitterPacking.js';
 
 /** The engine hooks an InverseSession needs. The engine implements these with
  *  private access to its scene + GPU pipeline; the session stays decoupled from
@@ -638,7 +639,7 @@ function diagnosePathReplayEmitterSlot(
 
   const emitter = scene.emitters.find((e) => e.id === target.id);
   if (emitter == null) return [];
-  const emitterIssue = pathReplayEmitterTargetIssue(emitter);
+  const emitterIssue = pathReplayEmitterTargetIssue(scene, emitter);
   if (emitterIssue != null) {
     return [{
       severity: 'info',
@@ -698,6 +699,7 @@ function pathReplayPrimitiveIssue(
 }
 
 function pathReplayEmitterTargetIssue(
+  scene: Scene,
   emitter: SceneEmitter,
 ): { message: string; details: Record<string, string | number> } | null {
   switch (emitter.kind) {
@@ -716,11 +718,26 @@ function pathReplayEmitterTargetIssue(
     case 'rect-area':
     case 'disc-area':
       return null;
-    case 'mesh-area':
-      return {
-        message: 'mesh-area emitter targets expand into many triangles and need source-triangle PDF mapping first',
-        details: { emitterKind: emitter.kind },
-      };
+    case 'mesh-area': {
+      const range = meshAreaEmitterAdjointRangeForScene(scene, emitter.id);
+      if (range == null) {
+        return {
+          message: 'mesh-area emitter target produces no contiguous packed triangle range',
+          details: { emitterKind: emitter.kind },
+        };
+      }
+      if (range.capped) {
+        return {
+          message:
+            'mesh-area emitter target is in a globally capped/reordered triangle stream and needs source-triangle PDF mapping first',
+          details: {
+            emitterKind: emitter.kind,
+            meshAreaTriangleCount: range.totalMeshAreaTriangles,
+          },
+        };
+      }
+      return null;
+    }
     default:
       const emitterKind = (emitter as { readonly kind: string }).kind;
       return {

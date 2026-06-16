@@ -42,11 +42,13 @@ import {
   ADJOINT_EMITTER_TARGET_POINT,
   ADJOINT_EMITTER_TARGET_SPOT,
   ADJOINT_EMITTER_TARGET_RECT,
+  ADJOINT_EMITTER_TARGET_MESH,
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import type { FrameInput, Scene } from '@vitrum/core';
 import type { AdjointGradientRequest } from './inverse/inverseSession.js';
+import { meshAreaEmitterAdjointRangeForScene } from './scene/emitterPacking.js';
 
 export class AdjointPass {
   readonly #device: GPUDevice;
@@ -126,13 +128,15 @@ export class AdjointPass {
 
     // adjointParamDescs: two vec4u records per param:
     //   material record 0: {matId, fieldCode, gradOffset, fieldPayloadBits}
-    //   emitter record 0: {kind-local light slot, fieldCode, gradOffset, emitterTargetKind}
+    //   emitter record 0: {kind-local light slot/range start, fieldCode, gradOffset, emitterTargetMeta}
     //   record 1: {payloadXBits, payloadYBits, payloadZBits, payloadWBits}
     // For an emissive param, record0.w carries the FIXED emissiveIntensity
     // (bitcast f32). For an emissiveIntensity param, record1.xyz carries the
     // UNFACTORED material emissive RGB so intensity=0 remains differentiable.
     // Emitter color/intensity params use record1.xyz = unfactored color and
-    // record1.w = fixed intensity. Lit BRDF fields leave payloads 0.
+    // record1.w = fixed intensity. emitterTargetMeta packs kind in the low 8
+    // bits and range count in the upper bits (1 for scalar light streams).
+    // Lit BRDF fields leave payloads 0.
     // A Float32 view aliases the same buffer.
     const descs = new Uint32Array(Math.max(params.length, 1) * 8);
     const descsF = new Float32Array(descs.buffer);
@@ -151,7 +155,7 @@ export class AdjointPass {
         descs[descBase + 0] = target.slot >>> 0;
         descs[descBase + 1] = fieldCode;
         descs[descBase + 2] = p.offset >>> 0;
-        descs[descBase + 3] = target.kind >>> 0;
+        descs[descBase + 3] = encodeAdjointEmitterTargetMeta(target.kind, target.count);
         descsF[descBase + 4] = target.color[0];
         descsF[descBase + 5] = target.color[1];
         descsF[descBase + 6] = target.color[2];
@@ -315,6 +319,7 @@ function adjointEmitterTargetForScene(
 ): {
   readonly kind: number;
   readonly slot: number;
+  readonly count: number;
   readonly color: readonly [number, number, number];
   readonly intensity: number;
 } | null {
@@ -335,6 +340,7 @@ function adjointEmitterTargetForScene(
         return {
           kind: ADJOINT_EMITTER_TARGET_DIRECTIONAL,
           slot,
+          count: 1,
           color: emitter.color,
           intensity: emitter.intensity,
         };
@@ -346,6 +352,7 @@ function adjointEmitterTargetForScene(
         return {
           kind: ADJOINT_EMITTER_TARGET_POINT,
           slot,
+          count: 1,
           color: emitter.color,
           intensity: emitter.intensity,
         };
@@ -357,6 +364,7 @@ function adjointEmitterTargetForScene(
         return {
           kind: ADJOINT_EMITTER_TARGET_SPOT,
           slot,
+          count: 1,
           color: emitter.color,
           intensity: emitter.intensity,
         };
@@ -369,14 +377,34 @@ function adjointEmitterTargetForScene(
         return {
           kind: ADJOINT_EMITTER_TARGET_RECT,
           slot,
+          count: 1,
           color: emitter.color,
           intensity: emitter.intensity,
         };
       }
-      default:
-        if (emitter.id === id) return null;
+      case 'mesh-area': {
+        if (emitter.id !== id) break;
+        const range = meshAreaEmitterAdjointRangeForScene(scene, emitter.id);
+        if (range == null || range.capped) return null;
+        return {
+          kind: ADJOINT_EMITTER_TARGET_MESH,
+          slot: range.start,
+          count: range.count,
+          color: emitter.color,
+          intensity: emitter.intensity,
+        };
+      }
+      default: {
+        const unknownEmitter = emitter as { readonly id?: string };
+        if (unknownEmitter.id === id) return null;
         break;
+      }
     }
   }
   return null;
+}
+
+function encodeAdjointEmitterTargetMeta(kind: number, count: number): number {
+  const safeCount = Math.max(1, Math.min(0x00ffffff, Math.floor(count)));
+  return ((kind & 0xff) | (safeCount << 8)) >>> 0;
 }

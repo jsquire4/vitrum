@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { asMat4, type Scene } from '@vitrum/core';
 import { luminance } from '@vitrum/shared-samplers';
-import { buildLightTreeInputForScene, defaultDirectionalAngularDiameter } from '../scene/emitterPacking.js';
+import {
+  buildLightTreeInputForScene,
+  defaultDirectionalAngularDiameter,
+  meshAreaEmitterAdjointRangeForScene,
+} from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
 function baseScene(): Scene {
@@ -123,6 +127,17 @@ describe('buildPackedScene emitter + environment packing', () => {
     expectVec3Close(tree.centroids[1]!, [1 / 3, 2 / 3, 0]);
     expect(tree.powers[0]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
     expect(tree.powers[1]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
+  });
+
+  it('reports a stable adjoint range for uncapped explicit mesh-area emitters', () => {
+    const scene = quadScene('mesh');
+    const range = meshAreaEmitterAdjointRangeForScene(scene, 'm');
+    expect(range).toEqual({
+      start: 0,
+      count: 2,
+      totalMeshAreaTriangles: 2,
+      capped: false,
+    });
   });
 
   it('subdivides implicit emissive-map mesh lights through the packed-scene path', () => {
