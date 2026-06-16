@@ -125,6 +125,43 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(tree.powers[1]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
   });
 
+  it('subdivides implicit emissive-map mesh lights through the packed-scene path', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'mapped-tri',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0.75, 0, 0.75, 0, 0.75, 0]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.4,
+          metallic: 0,
+          emissive: [2, 2, 2],
+          emissiveIntensity: 3,
+          emissiveMap: {
+            handle: {
+              width: 2,
+              height: 1,
+              data: new Uint8Array([
+                255, 0, 0, 255,
+                0, 255, 0, 255,
+              ]),
+            },
+          },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(scene);
+    expect(packed.meshAreaLightCount).toBe(4);
+    expect(packed.meshAreaLightsData.length).toBe(4 * 16);
+    expectVec3Close(triAt(packed.meshAreaLightsData, 0).r, [0, 6, 0]);
+    expect(packed.warnings).toEqual([]);
+  });
+
   it('expands instanced mesh-area emitters across every instance and triangle', () => {
     const packed = buildPackedScene(quadScene('instanced-mesh'));
     expect(packed.meshAreaLightCount).toBe(4);

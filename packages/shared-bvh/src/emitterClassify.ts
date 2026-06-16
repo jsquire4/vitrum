@@ -42,6 +42,8 @@ type MutableTextureHandleHint = {
   -readonly [K in keyof TextureHandleHint]?: TextureHandleHint[K];
 };
 
+export type BarycentricWeights = readonly [number, number, number];
+
 function halfToFloat(h: number): number {
   const s = (h & 0x8000) >> 15;
   const e = (h & 0x7c00) >> 10;
@@ -79,6 +81,18 @@ function textureHint(handle: ReadableTextureHandle): TextureHandleHint | undefin
     hint.colorSpace = handle.colorSpace;
   }
   return hint;
+}
+
+function readableTextureDimensions(ref: TextureRef | undefined): { width: number; height: number } | null {
+  const handle = ref?.handle as ReadableTextureHandle | null | undefined;
+  if (handle == null) return null;
+  const src = handle.data ?? handle.image?.data;
+  const width = Math.floor(Number(handle.width ?? handle.image?.width ?? 0));
+  const height = Math.floor(Number(handle.height ?? handle.image?.height ?? 0));
+  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
+    return null;
+  }
+  return { width, height };
 }
 
 function averageReadableTextureRgb(
@@ -264,6 +278,54 @@ const TRIANGLE_EMISSIVE_QUADRATURE: readonly [number, number, number][] = [
   [0.5, 0, 0.5],
   [0, 0.5, 0.5],
 ];
+
+/**
+ * Conservative subdivision level for CPU-readable emissive-map triangle lights.
+ * A value of `1` means no split. Higher values split one source triangle into
+ * `level²` barycentric micro-triangles with per-cell radiance estimates.
+ */
+export function emissiveMapTriangleSubdivisionLevel(
+  material: MaterialSpec,
+  maxSubdivision = 4,
+): number {
+  if (material.emissiveMap == null) return 1;
+  const dims = readableTextureDimensions(material.emissiveMap);
+  if (dims == null) return 1;
+  const cappedMax = Math.max(1, Math.floor(maxSubdivision));
+  const texelMajor = Math.max(dims.width, dims.height);
+  if (texelMajor <= 1) return 1;
+  return Math.max(2, Math.min(cappedMax, texelMajor));
+}
+
+/**
+ * Visit the `level²` micro-triangles of a reference triangle in barycentric
+ * coordinates. Orientation is consistent with the parent triangle.
+ */
+export function forEachBarycentricSubTriangle(
+  level: number,
+  visit: (a: BarycentricWeights, b: BarycentricWeights, c: BarycentricWeights) => void,
+): void {
+  const n = Math.max(1, Math.floor(level));
+  const weightAt = (i: number, j: number): BarycentricWeights => {
+    const u = i / n;
+    const v = j / n;
+    return [1 - u - v, u, v];
+  };
+
+  for (let i = 0; i < n; i += 1) {
+    for (let j = 0; j < n - i; j += 1) {
+      const a = weightAt(i, j);
+      const b = weightAt(i + 1, j);
+      const c = weightAt(i, j + 1);
+      visit(a, b, c);
+
+      if (i + j < n - 1) {
+        const d = weightAt(i + 1, j + 1);
+        visit(b, d, c);
+      }
+    }
+  }
+}
 
 function baryUv(
   a: readonly [number, number],

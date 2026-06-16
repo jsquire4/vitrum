@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import {
   classifyTriangleEmitterCore,
+  emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
+  forEachBarycentricSubTriangle,
   materialSpecEmissiveLe,
   materialSpecEmissiveLeAtUv,
 } from '../emitterClassify.js';
@@ -135,6 +137,46 @@ describe('materialSpecEmissiveLe', () => {
     );
 
     expect(le).toEqual([0, 4, 0]);
+  });
+
+  it('chooses a bounded subdivision level for CPU-readable emissive maps', () => {
+    expect(emissiveMapTriangleSubdivisionLevel(material({ emissive: [1, 1, 1] }))).toBe(1);
+    expect(emissiveMapTriangleSubdivisionLevel(material({
+      emissive: [1, 1, 1],
+      emissiveMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([1, 1, 1, 1]),
+          __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+        },
+      },
+    }))).toBe(1);
+    expect(emissiveMapTriangleSubdivisionLevel(material({
+      emissive: [1, 1, 1],
+      emissiveMap: {
+        handle: {
+          width: 8,
+          height: 2,
+          data: new Float32Array(8 * 2 * 4).fill(1),
+          __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+        },
+      },
+    }), 4)).toBe(4);
+  });
+
+  it('enumerates barycentric micro-triangles with conserved area count', () => {
+    const tris: string[] = [];
+    forEachBarycentricSubTriangle(2, (a, b, c) => {
+      tris.push(`${a.join(',')}|${b.join(',')}|${c.join(',')}`);
+      for (const w of [a, b, c]) {
+        expect(w[0] + w[1] + w[2]).toBeCloseTo(1, 12);
+        expect(Math.min(w[0], w[1], w[2])).toBeGreaterThanOrEqual(0);
+      }
+    });
+
+    expect(tris).toHaveLength(4);
+    expect(tris[0]).toBe('1,0,0|0.5,0.5,0|0.5,0,0.5');
   });
 });
 

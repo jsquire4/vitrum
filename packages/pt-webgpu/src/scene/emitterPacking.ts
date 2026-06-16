@@ -1,5 +1,10 @@
 import type { DiscAreaEmitter, Mat4, MaterialSpec, MeshAreaEmitter, Scene, TextureRef } from '@vitrum/core';
-import { estimateMaterialSpecEmissiveLeOverTriangle } from '@vitrum/shared-bvh';
+import {
+  emissiveMapTriangleSubdivisionLevel,
+  estimateMaterialSpecEmissiveLeOverTriangle,
+  forEachBarycentricSubTriangle,
+  type BarycentricWeights,
+} from '@vitrum/shared-bvh';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
 import { environmentParams } from './environmentPacking.js';
@@ -195,6 +200,26 @@ function rawPayloadOfTexture(ref: TextureRef | undefined): RawTexturePayload | n
 function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
   if (uvs == null) return [0, 0];
   return [uvs[vertex * 2] ?? 0, uvs[vertex * 2 + 1] ?? 0];
+}
+
+function baryVec3(a: Vec3, b: Vec3, c: Vec3, w: BarycentricWeights): Vec3 {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
+    a[2] * w[0] + b[2] * w[1] + c[2] * w[2],
+  ];
+}
+
+function baryUv2(
+  a: readonly [number, number],
+  b: readonly [number, number],
+  c: readonly [number, number],
+  w: BarycentricWeights,
+): [number, number] {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
+  ];
 }
 
 function averageSrgbTextureRgb(ref: TextureRef | undefined): Vec3 | null {
@@ -440,21 +465,72 @@ function packMeshAreaTriangles(
         degenerateTriangleCount += 1;
         continue;
       }
-      const triangleRadiance = implicitMaterial == null
-        ? radiance
-        : estimateMaterialSpecEmissiveLeOverTriangle(
-            implicitMaterial,
-            uvAt(primitive.uvs, i0),
-            uvAt(primitive.uvs, i1),
-            uvAt(primitive.uvs, i2),
-            uvAt(primitive.uv1, i0),
-            uvAt(primitive.uv1, i1),
-            uvAt(primitive.uv1, i2),
+      const uv0A = uvAt(primitive.uvs, i0);
+      const uv0B = uvAt(primitive.uvs, i1);
+      const uv0C = uvAt(primitive.uvs, i2);
+      const uv1A = uvAt(primitive.uv1, i0);
+      const uv1B = uvAt(primitive.uv1, i1);
+      const uv1C = uvAt(primitive.uv1, i2);
+
+      const pushTriangle = (
+        triA: Vec3,
+        triB: Vec3,
+        triC: Vec3,
+        tuv0A: readonly [number, number],
+        tuv0B: readonly [number, number],
+        tuv0C: readonly [number, number],
+        tuv1A: readonly [number, number],
+        tuv1B: readonly [number, number],
+        tuv1C: readonly [number, number],
+      ): void => {
+        if (meshTriangleArea(triA, triB, triC) < 1e-12) return;
+        const triangleRadiance = implicitMaterial == null
+          ? radiance
+          : estimateMaterialSpecEmissiveLeOverTriangle(
+              implicitMaterial,
+              tuv0A,
+              tuv0B,
+              tuv0C,
+              tuv1A,
+              tuv1B,
+              tuv1C,
+            );
+        if (
+          triangleRadiance == null ||
+          luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) <
+            IMPLICIT_EMITTER_LUMINANCE_THRESHOLD
+        ) {
+          return;
+        }
+        packed.push({
+          triA,
+          triB,
+          triC,
+          radiance: triangleRadiance,
+          castShadowDisabled,
+        });
+      };
+
+      const subdiv = implicitMaterial == null
+        ? 1
+        : emissiveMapTriangleSubdivisionLevel(implicitMaterial);
+      if (subdiv <= 1) {
+        pushTriangle(a, b, c, uv0A, uv0B, uv0C, uv1A, uv1B, uv1C);
+      } else {
+        forEachBarycentricSubTriangle(subdiv, (wa, wb, wc) => {
+          pushTriangle(
+            baryVec3(a, b, c, wa),
+            baryVec3(a, b, c, wb),
+            baryVec3(a, b, c, wc),
+            baryUv2(uv0A, uv0B, uv0C, wa),
+            baryUv2(uv0A, uv0B, uv0C, wb),
+            baryUv2(uv0A, uv0B, uv0C, wc),
+            baryUv2(uv1A, uv1B, uv1C, wa),
+            baryUv2(uv1A, uv1B, uv1C, wb),
+            baryUv2(uv1A, uv1B, uv1C, wc),
           );
-      if (triangleRadiance == null || luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
-        continue;
+        });
       }
-      packed.push({ triA: a, triB: b, triC: c, radiance: triangleRadiance, castShadowDisabled });
     }
   }
   if (invalidTriangleCount > 0) {
@@ -476,7 +552,7 @@ function packMeshAreaTriangles(
 /**
  * Luminance threshold for implicit mesh-area emitter synthesis (H14-A).
  * A material must have `luminance(emissive · emissiveIntensity · avg(emissiveMap))`
- * ≥ IMPLICIT_EMITTER_THRESHOLD to be treated as an area light by NEE/BDPT. The same
+ * >= IMPLICIT_EMITTER_THRESHOLD to be treated as an area light by NEE/BDPT. The same
  * helper is used by both `packEmitterArrays` (synthesis) and
  * `hasMeshAreaEmitterForPrimitive` (staleness check), so the threshold cannot drift
  * between the two paths.
@@ -492,10 +568,12 @@ const IMPLICIT_EMITTER_LUMINANCE_THRESHOLD = 1e-6;
  * Without this synthesis, an emissive mesh is invisible to NEE/BDPT — the
  * kernel's emissive-on-hit term fires, but the direct-lighting estimators never
  * enumerate it. The synthetic emitters are virtual (id = `__implicit__<primitiveId>`)
- * and carry the material's average emissive radiance as `color · intensity = 1`.
- * CPU-readable emissive maps modulate the radiance by their average sRGB-decoded
- * linear RGB. Opaque/unreadable map handles keep the old scalar fallback and emit
- * a warning from `packEmitterArrays`.
+ * and carry the material's coarse average emissive radiance as `color · intensity = 1`.
+ * During mesh-area packing, CPU-readable emissive maps are re-sampled over each
+ * source triangle (and bounded barycentric micro-triangles for textured emitters)
+ * so direct-light sampling sees localized texel energy instead of one constant
+ * radiance per primitive. Opaque/unreadable map handles keep the scalar fallback
+ * and emit a warning from `packEmitterArrays`.
  *
  * Guard: explicit mesh-area emitters take priority — if a `mesh-area` entry in
  * `scene.emitters` already references a primitive, that primitive is skipped to

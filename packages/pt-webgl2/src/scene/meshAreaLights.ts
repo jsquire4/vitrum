@@ -9,8 +9,11 @@
 //
 //   B4 adds an explicit-connection (NEE) strategy: each explicit `mesh-area`
 //   triangle, plus each ordinary mesh whose material has nonzero emissive energy,
-//   becomes a triangle light the integrator can sample directly. To keep the
-//   result unbiased we MIS-combine the two strategies — the forward emissive hit
+//   becomes one or more triangle lights the integrator can sample directly. CPU-
+//   readable emissive maps use bounded barycentric micro-triangles so UV-varying
+//   emission is spatially localized instead of collapsed to one source-triangle
+//   radiance. To keep the result unbiased we MIS-combine the two strategies —
+//   the forward emissive hit
 //   (BSDF sampling) and the NEE triangle sample — with the balance/power heuristic.
 //
 // Double-count guard / MIS algebra (the crux):
@@ -41,8 +44,11 @@
 
 import type { MaterialSpec, Scene, SceneNodeId, TextureRef, Vec3 } from '@vitrum/core';
 import {
+  emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
+  forEachBarycentricSubTriangle,
   mergeUv1FromCore,
+  type BarycentricWeights,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
 
@@ -79,6 +85,26 @@ function uvAt(uvs: Float32Array | undefined, vi: number): [number, number] {
   if (uvs == null) return [0, 0];
   const b = vi * 2;
   return [uvs[b] ?? 0, uvs[b + 1] ?? 0];
+}
+
+function baryVec3(a: Vec3, b: Vec3, c: Vec3, w: BarycentricWeights): Vec3 {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
+    a[2] * w[0] + b[2] * w[1] + c[2] * w[2],
+  ];
+}
+
+function baryUv2(
+  a: readonly [number, number],
+  b: readonly [number, number],
+  c: readonly [number, number],
+  w: BarycentricWeights,
+): [number, number] {
+  return [
+    a[0] * w[0] + b[0] * w[1] + c[0] * w[2],
+    a[1] * w[0] + b[1] * w[1] + c[1] * w[2],
+  ];
 }
 
 function sub(a: Vec3, b: Vec3): Vec3 {
@@ -275,29 +301,71 @@ export function packMeshAreaLights(
       const v2 = v3(pos, i2, stride);
       const area = 0.5 * length(cross(sub(v1, v0), sub(v2, v0)));
       if (area <= 0) continue; // degenerate triangle — contributes no light
-      const rad = emitter.implicitMaterial == null
-        ? emitter.radiance
-        : estimateMaterialSpecEmissiveLeOverTriangle(
-            emitter.implicitMaterial,
-            uvAt(uv0, i0),
-            uvAt(uv0, i1),
-            uvAt(uv0, i2),
-            uvAt(uv1, i0),
-            uvAt(uv1, i1),
-            uvAt(uv1, i2),
+      const uv0A = uvAt(uv0, i0);
+      const uv0B = uvAt(uv0, i1);
+      const uv0C = uvAt(uv0, i2);
+      const uv1A = uvAt(uv1, i0);
+      const uv1B = uvAt(uv1, i1);
+      const uv1C = uvAt(uv1, i2);
+
+      const pushLight = (
+        tv0: Vec3,
+        tv1: Vec3,
+        tv2: Vec3,
+        tuv0A: readonly [number, number],
+        tuv0B: readonly [number, number],
+        tuv0C: readonly [number, number],
+        tuv1A: readonly [number, number],
+        tuv1B: readonly [number, number],
+        tuv1C: readonly [number, number],
+      ): void => {
+        const triArea = 0.5 * length(cross(sub(tv1, tv0), sub(tv2, tv0)));
+        if (triArea <= 0) return;
+        const rad = emitter.implicitMaterial == null
+          ? emitter.radiance
+          : estimateMaterialSpecEmissiveLeOverTriangle(
+              emitter.implicitMaterial,
+              tuv0A,
+              tuv0B,
+              tuv0C,
+              tuv1A,
+              tuv1B,
+              tuv1C,
+            );
+        if (rad == null || luminanceRgb(rad) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
+          return;
+        }
+        tris.push({
+          v0: tv0,
+          v1: tv1,
+          v2: tv2,
+          rad,
+          area: triArea,
+          castShadowDisabled: emitter.castShadowDisabled,
+        });
+        totalEmissiveArea += triArea;
+      };
+
+      const subdiv = emitter.implicitMaterial == null
+        ? 1
+        : emissiveMapTriangleSubdivisionLevel(emitter.implicitMaterial);
+      if (subdiv <= 1) {
+        pushLight(v0, v1, v2, uv0A, uv0B, uv0C, uv1A, uv1B, uv1C);
+      } else {
+        forEachBarycentricSubTriangle(subdiv, (wa, wb, wc) => {
+          pushLight(
+            baryVec3(v0, v1, v2, wa),
+            baryVec3(v0, v1, v2, wb),
+            baryVec3(v0, v1, v2, wc),
+            baryUv2(uv0A, uv0B, uv0C, wa),
+            baryUv2(uv0A, uv0B, uv0C, wb),
+            baryUv2(uv0A, uv0B, uv0C, wc),
+            baryUv2(uv1A, uv1B, uv1C, wa),
+            baryUv2(uv1A, uv1B, uv1C, wb),
+            baryUv2(uv1A, uv1B, uv1C, wc),
           );
-      if (rad == null || luminanceRgb(rad) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
-        continue;
+        });
       }
-      tris.push({
-        v0,
-        v1,
-        v2,
-        rad,
-        area,
-        castShadowDisabled: emitter.castShadowDisabled,
-      });
-      totalEmissiveArea += area;
     }
   }
 
