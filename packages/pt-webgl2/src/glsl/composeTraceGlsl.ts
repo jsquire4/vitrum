@@ -662,51 +662,62 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 
 // ── Section 3: forward analytic-light hit + NO_HIT/env + surface setup ────
 const RENDER_MAIN_BDPT_EYE = /* glsl */ `
-							// check if we intersect any lights and accumulate the light contribution
-							// TODO: we can add support for light surface rendering in the else condition if we
-							// add the ability to toggle visibility of the the light
-							if ( ! state.firstRay && ! state.transmissiveRay ) {
+							// check if we intersect a finite analytic area-light surface before the scene.
+							// Primary/specular-transmission camera paths get raw visible emission; ordinary
+							// BSDF hits are MIS-weighted against analytic-light NEE.
+							LightRecord forwardAreaLightRec;
+							bool forwardAreaLightHit = false;
+							uint forwardAreaLightIndex = 0u;
+							float forwardAreaLightDist = hitType == NO_HIT ? INFINITY : surfaceHit.dist;
+							// H4 FIX (2026-06-09): the forward-hit MIS light pdf must MATCH the
+							// power-weighted discrete selection NEE actually performs in
+							// randomLightSample:  p_light = lightRec.pdf / lightsDenom * count *
+							// (power_i / sumPower). The previous  lightRec.pdf / lightsDenom
+							// silently assumed UNIFORM selection (count * discretePdf == 1) — exact
+							// only for a single light or equal powers; with >=2 unequal-power area
+							// lights it biased the MIS weight. Latent until H1 uploaded lights.count.
+							float sumLightPower = 0.0;
+							for ( uint pi = 0u; pi < lights.count; pi ++ ) {
+								sumLightPower += max( readLightInfo( lights.tex, pi ).power, 1e-20 );
+							}
+							for ( uint i = 0u; i < lights.count; i ++ ) {
 
 								LightRecord lightRec;
-								float lightDist = hitType == NO_HIT ? INFINITY : surfaceHit.dist;
-								// H4 FIX (2026-06-09): the forward-hit MIS light pdf must MATCH the
-								// power-weighted discrete selection NEE actually performs in
-								// randomLightSample:  p_light = lightRec.pdf / lightsDenom * count *
-								// (power_i / sumPower). The previous  lightRec.pdf / lightsDenom
-								// silently assumed UNIFORM selection (count * discretePdf == 1) — exact
-								// only for a single light or equal powers; with >=2 unequal-power area
-								// lights it biased the MIS weight. Latent until H1 uploaded lights.count.
-								float sumLightPower = 0.0;
-								for ( uint pi = 0u; pi < lights.count; pi ++ ) {
-									sumLightPower += max( readLightInfo( lights.tex, pi ).power, 1e-20 );
-								}
-								for ( uint i = 0u; i < lights.count; i ++ ) {
+								if (
+									intersectLightAtIndex( lights.tex, ray.origin, ray.direction, i, lightRec ) &&
+									lightRec.dist < forwardAreaLightDist
+								) {
 
-									if (
-										intersectLightAtIndex( lights.tex, ray.origin, ray.direction, i, lightRec ) &&
-										lightRec.dist < lightDist
-									) {
-
-										#if FEATURE_MIS
-
-										// weight the contribution
-										// NOTE: Only area lights are supported for forward sampling and can be hit
-										float discreteSelectPdf = sumLightPower > 1e-30
-											? max( readLightInfo( lights.tex, i ).power, 1e-20 ) / sumLightPower
-											: 1.0 / max( float( lights.count ), 1.0 );
-										float lightSamplePdf = lightRec.pdf / lightsDenom * float( lights.count ) * discreteSelectPdf;
-										float misWeight = misHeuristic( scatterRec.pdf, lightSamplePdf );
-										pc_fragColor.rgb += lightRec.emission * throughputRgb * misWeight;
-
-										#else
-
-										pc_fragColor.rgb += lightRec.emission * throughputRgb;
-
-										#endif
-
-									}
+									forwardAreaLightRec = lightRec;
+									forwardAreaLightHit = true;
+									forwardAreaLightIndex = i;
+									forwardAreaLightDist = lightRec.dist;
 
 								}
+
+							}
+							if ( forwardAreaLightHit ) {
+
+								vec3 forwardAreaLightRgb = forwardAreaLightRec.emission * throughputRgb;
+
+								#if FEATURE_MIS
+
+								// NOTE: Only area lights are supported for forward sampling and can be hit.
+								// Camera-visible and transmissive paths have no matching NEE strategy at the
+								// previous vertex, so they keep full emission.
+								if ( ! state.firstRay && ! state.transmissiveRay ) {
+									float discreteSelectPdf = sumLightPower > 1e-30
+										? max( readLightInfo( lights.tex, forwardAreaLightIndex ).power, 1e-20 ) / sumLightPower
+										: 1.0 / max( float( lights.count ), 1.0 );
+									float lightSamplePdf = forwardAreaLightRec.pdf / lightsDenom * float( lights.count ) * discreteSelectPdf;
+									float misWeight = misHeuristic( scatterRec.pdf, lightSamplePdf );
+									forwardAreaLightRgb *= misWeight;
+								}
+
+								#endif
+
+								pc_fragColor.rgb += forwardAreaLightRgb;
+								break;
 
 							}
 
@@ -1032,19 +1043,34 @@ const RENDER_MAIN_CAUSTIC_PHOTON = /* glsl */ `
 
 // ── Section 8: roughness accum + emissive MIS + scatter + throughput + RR ─
 const RENDER_MAIN_SCATTER = /* glsl */ `
-							// accumulate a roughness value to offset diffuse, specular, diffuse rays that have high contribution
-							// to a single pixel resulting in fireflies
-							// TODO: handle transmissive surfaces
-							if ( ! surf.volumeParticle && ! isBelowSurface ) {
+							// accumulate a roughness value to offset glossy rays that have high contribution
+							// to a single pixel resulting in fireflies. Reflected lobes use the ordinary
+							// reflection half vector; rough transmission uses the Disney transmission half
+							// vector in the active normal frame so glass blur feeds the same filter state.
+							if ( ! surf.volumeParticle ) {
 
-								// determine if this is a rough normal or not by checking how far off straight up it is
-								vec3 halfVector = normalize( - ray.direction + scatterRec.direction );
-								state.accumulatedRoughness += max(
-									sin( acosApprox( dot( halfVector, surf.normal ) ) ),
-									sin( acosApprox( dot( halfVector, surf.clearcoatNormal ) ) )
-								);
+								bool sampledTransmissionLobe =
+									surf.transmission > 0.001 &&
+									( isBelowSurface || dot( scatterRec.direction, surf.faceNormal * surfaceHit.side ) < 0.0 );
+								if ( sampledTransmissionLobe ) {
 
-								state.transmissiveRay = false;
+									vec3 transmissionWo = normalize( surf.normalInvBasis * - ray.direction );
+									vec3 transmissionWi = normalize( surf.normalInvBasis * scatterRec.direction );
+									vec3 transmissionHalf = getHalfVector( transmissionWi, transmissionWo, surf.eta );
+									state.accumulatedRoughness += sin( acosApprox( clamp( abs( transmissionHalf.z ), 0.0, 1.0 ) ) );
+
+								} else if ( ! isBelowSurface ) {
+
+									// determine if this is a rough normal or not by checking how far off straight up it is
+									vec3 halfVector = normalize( - ray.direction + scatterRec.direction );
+									state.accumulatedRoughness += max(
+										sin( acosApprox( dot( halfVector, surf.normal ) ) ),
+										sin( acosApprox( dot( halfVector, surf.clearcoatNormal ) ) )
+									);
+
+									state.transmissiveRay = false;
+
+								}
 
 							}
 

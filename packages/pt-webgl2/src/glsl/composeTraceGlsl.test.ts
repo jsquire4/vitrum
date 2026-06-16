@@ -178,6 +178,20 @@ describe('composeTraceGlsl', () => {
     );
   });
 
+  it('renders finite analytic area-light surfaces as visible path terminals', () => {
+    expect(src).not.toContain('TODO: we can add support for light surface rendering');
+    expect(src).toContain('bool forwardAreaLightHit = false;');
+    expect(src).toContain('uint forwardAreaLightIndex = 0u;');
+    expect(src).toContain('lightRec.dist < forwardAreaLightDist');
+    expect(src).toContain('forwardAreaLightDist = lightRec.dist;');
+    expect(src).toContain('if ( forwardAreaLightHit ) {');
+    expect(src).toContain('vec3 forwardAreaLightRgb = forwardAreaLightRec.emission * throughputRgb;');
+    expect(src).toContain('if ( ! state.firstRay && ! state.transmissiveRay ) {');
+    expect(src).toContain('pc_fragColor.rgb += forwardAreaLightRgb;');
+    expect(src).toContain('break;');
+    expect(idx('if ( forwardAreaLightHit ) {')).toBeLessThan(idx('if ( hitType == NO_HIT ) {'));
+  });
+
   it('D11: global homogeneous-medium uniforms and march branch are not in the active shader', () => {
     // FEATURE_FOG remains pinned false for future fog-volume materials, but the old
     // scene-global homogeneous medium path had no host API or uniform upload. Keep it
@@ -253,6 +267,18 @@ describe('composeTraceGlsl', () => {
     expect(old.env).toBeCloseTo(2 / 9, 12);
   });
 
+  it('tracks rough transmission samples in the accumulated roughness filter', () => {
+    expect(src).not.toContain('TODO: handle transmissive surfaces');
+    expect(src).toContain('bool sampledTransmissionLobe =');
+    expect(src).toContain('surf.transmission > 0.001');
+    expect(src).toContain('vec3 transmissionWo = normalize( surf.normalInvBasis * - ray.direction );');
+    expect(src).toContain('vec3 transmissionWi = normalize( surf.normalInvBasis * scatterRec.direction );');
+    expect(src).toContain('vec3 transmissionHalf = getHalfVector( transmissionWi, transmissionWo, surf.eta );');
+    expect(src).toContain(
+      'state.accumulatedRoughness += sin( acosApprox( clamp( abs( transmissionHalf.z ), 0.0, 1.0 ) ) );',
+    );
+  });
+
   it('item 20: iesProfiles uniform is absent from the composed shader (IES removed)', () => {
     // IES profiles are not in the @vitrum/core contract and were always null.
     // The uniform, the struct field, and getPhotometricAttenuation are all deleted.
@@ -262,9 +288,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-	it('D10.4: RENDER_MAIN_SECTIONS join length pin 30367', () => {
+	it('D10.4: RENDER_MAIN_SECTIONS join length pin 31632', () => {
 		const assembled = RENDER_MAIN_SECTIONS.join('');
-		expect(assembled).toHaveLength(30367);
+		expect(assembled).toHaveLength(31632);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');

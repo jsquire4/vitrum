@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 finite-light and rough-transmission path tails, 2026-06-16)
+
+- **Finite analytic area lights are now camera-visible path terminals in `@vitrum/pt-webgl2`:** rect/disc area-light intersections pick the nearest light before scene geometry, add raw emission for primary/specular-transmission camera paths, MIS-weight ordinary BSDF arrivals against analytic-light NEE, and terminate the path instead of also accumulating background or geometry behind the light.
+- **Rough transmissive samples now feed the accumulated roughness filter:** the GLSL megakernel computes a Disney transmission half-vector for rough glass samples, so transmissive lobes participate in the same firefly/glossy-filter state as reflective lobes.
+
 ### Fixed (pt-webgpu inverse downgrade diagnostics, 2026-06-16)
 
 - **Path-replay inverse fallbacks now report structured reasons:** `InverseSessionOptions.onDiagnostic` and `InverseSession.diagnostics` expose exact downgrade causes when `@vitrum/pt-webgpu` falls back from requested `method:'path-replay'` to finite difference: missing adjoint hook, emitter-domain params, unsupported fields, non-triangle/non-identity primitives, unsupported material transport/maps, environment lighting, and soft directional lights. This improves arbitrary-scene predictability; it does not promote the remaining adjoint math tails.
