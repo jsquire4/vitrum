@@ -50,7 +50,7 @@ import type {
   SceneEmitter,
   MaterialSpec,
 } from '@vitrum/core';
-import type { Vec3 } from '@vitrum/core';
+import type { Vec2, Vec3 } from '@vitrum/core';
 import {
   Adam,
   DEFAULT_ADAM,
@@ -112,7 +112,7 @@ interface AdjointParamSlotDesc {
   readonly field: string;
   /** Offset of this slot in the returned flat gradient. */
   readonly offset: number;
-  /** Component count (3 for rgb, 1 for scalar). */
+  /** Component count (3 for rgb, 2 for vec2, 1 for scalar). */
   readonly length: number;
 }
 
@@ -246,6 +246,9 @@ const MATERIAL_RGB_FIELDS = new Set([
   'attenuationColor',
   'specularColor',
   'sheenColor',
+]);
+const MATERIAL_VEC2_FIELDS = new Set([
+  'iridescenceThicknessRange',
 ]);
 const MATERIAL_SCALAR_FIELDS = new Set([
   'roughness',
@@ -1155,14 +1158,19 @@ function validateParam(scene: Scene, param: InverseParam, target: ResolvedParamT
       );
     }
     const isRgb = MATERIAL_RGB_FIELDS.has(target.field);
+    const isVec2 = MATERIAL_VEC2_FIELDS.has(target.field);
     const isScalar = MATERIAL_SCALAR_FIELDS.has(target.field);
-    if (!isRgb && !isScalar) {
+    if (!isRgb && !isVec2 && !isScalar) {
       throw new Error(
         `createInverseSession: material field "${target.field}" (path "${param.path}") is not ` +
-          `optimizable. Supported: ${[...MATERIAL_RGB_FIELDS, ...MATERIAL_SCALAR_FIELDS].join(', ')}.`,
+          `optimizable. Supported: ${[
+            ...MATERIAL_RGB_FIELDS,
+            ...MATERIAL_VEC2_FIELDS,
+            ...MATERIAL_SCALAR_FIELDS,
+          ].join(', ')}.`,
       );
     }
-    assertKind(param, isRgb ? 'rgb' : 'scalar');
+    assertKind(param, isRgb ? 'rgb' : isVec2 ? 'vec2' : 'scalar');
   } else {
     const emitter = scene.emitters.find((e) => e.id === target.id);
     if (emitter == null) {
@@ -1218,6 +1226,8 @@ function defaultClampRange(field: string): [number, number] {
       return [1e-6, Infinity];
     case 'iridescenceIor':
       return [1, 3];
+    case 'iridescenceThicknessRange':
+      return [0, Infinity];
     case 'anisotropyRotation':
       return [0, Math.PI];
     case 'emissive':
@@ -1236,7 +1246,7 @@ function defaultClampRange(field: string): [number, number] {
   }
 }
 
-function assertKind(param: InverseParam, expected: 'rgb' | 'scalar'): void {
+function assertKind(param: InverseParam, expected: 'rgb' | 'vec2' | 'scalar'): void {
   if (param.kind !== expected) {
     throw new Error(
       `createInverseSession: parameter "${param.path}" is declared kind '${param.kind}' ` +
@@ -1275,6 +1285,7 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'sheenRoughness': return [m.sheenRoughness ?? 0];
       case 'iridescence': return [m.iridescence ?? 0];
       case 'iridescenceIor': return [m.iridescenceIor ?? 1.3];
+      case 'iridescenceThicknessRange': return [...(m.iridescenceThicknessRange ?? [100, 400])];
       case 'anisotropy': return [m.anisotropy ?? 0];
       case 'anisotropyRotation': return [m.anisotropyRotation ?? 0];
       case 'normalScale': return [m.normalScale ?? 1];
@@ -1320,6 +1331,13 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'sheenRoughness': return { sheenRoughness: value[0]! };
     case 'iridescence': return { iridescence: value[0]! };
     case 'iridescenceIor': return { iridescenceIor: value[0]! };
+    case 'iridescenceThicknessRange':
+      return {
+        iridescenceThicknessRange: [
+          Math.max(value[0] ?? 100, 0),
+          Math.max(value[1] ?? 400, 0),
+        ] as unknown as Vec2,
+      };
     case 'anisotropy': return { anisotropy: value[0]! };
     case 'anisotropyRotation': return { anisotropyRotation: value[0]! };
     case 'normalScale': return { normalScale: value[0]! };

@@ -165,10 +165,11 @@ export class Adam {
 
 // ── parameter packing / resolution ────────────────────────────────────────────
 
-/** Components for an {@link InverseParam} kind. scalar → 1, rgb → 3. */
+/** Components for an {@link InverseParam} kind. scalar → 1, vec2 → 2, rgb → 3. */
 export function paramLength(p: InverseParam): number {
   switch (p.kind) {
     case 'scalar': return 1;
+    case 'vec2': return 2;
     case 'rgb': return 3;
     case 'texture':
       throw new Error(

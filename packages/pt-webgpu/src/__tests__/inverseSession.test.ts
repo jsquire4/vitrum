@@ -78,12 +78,13 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
         : 0;
       const attenuationDistance = mat.attenuationDistance ?? 0;
       const attenuationColor = mat.attenuationColor ?? [0, 0, 0];
+      const iridescenceThicknessRange = mat.iridescenceThicknessRange ?? [0, 0];
       const normalOrBumpScale = (mat.normalScale ?? 0) + (mat.bumpScale ?? 0) + (mat.clearcoatNormalScale ?? 0);
       const materialMapIntensity = (mat.aoMapIntensity ?? 0) + (mat.lightMapIntensity ?? 0) + (mat.envMapIntensity ?? 0);
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
-        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0]!;
-        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1]!;
+        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0]! + iridescenceThicknessRange[0]! / 1000;
+        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1]! + iridescenceThicknessRange[1]! / 1000;
         rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2]!;
       }
       return { rgb, channels: 3 as const };
@@ -181,6 +182,14 @@ describe('InverseSession — path resolution + validation throws', () => {
       target: targetImage(2, 2, [0, 0, 0]),
       parameters: [{ path: 'materials.panel.baseColor', kind: 'scalar' }],
     })).toThrow(/declared kind 'scalar'/);
+  });
+
+  it('throws when a vec2 material field is declared as scalar', () => {
+    const fake = makeFakeEngine();
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.iridescenceThicknessRange', kind: 'scalar' }],
+    })).toThrow(/declared kind 'scalar'.*'vec2'/);
   });
 
   it('throws on an empty parameter list', () => {
@@ -298,6 +307,48 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
       expect.closeTo(session.currentValues()[0]![0]!, 6),
       expect.closeTo(session.currentValues()[0]![1]!, 6),
       expect.closeTo(session.currentValues()[0]![2]!, 6),
+    ]);
+    session.dispose();
+  });
+
+  it('optimizes vec2 iridescence thickness ranges through finite differences', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                iridescenceThicknessRange: [500, 700],
+              },
+            }
+          : pr,
+      ),
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.2, 0.2, 0.2]),
+      parameters: [
+        { path: 'materials.panel.iridescenceThicknessRange', kind: 'vec2', max: 300 },
+      ],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.currentValues()[0]).toEqual([
+      expect.closeTo(500, 6),
+      expect.closeTo(700, 6),
+    ]);
+
+    const result = await session.step();
+    expect(result.gradient[0]![0]).toBeGreaterThan(0);
+    expect(result.gradient[0]![1]).toBeGreaterThan(0);
+    expect(session.currentValues()[0]![0]).toBeLessThanOrEqual(300.000001);
+    expect(session.currentValues()[0]![1]).toBeLessThanOrEqual(300.000001);
+    expect(fake.scene.primitives[0]!.material.iridescenceThicknessRange).toEqual([
+      expect.closeTo(session.currentValues()[0]![0]!, 6),
+      expect.closeTo(session.currentValues()[0]![1]!, 6),
     ]);
     session.dispose();
   });
@@ -1190,6 +1241,46 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       code: 'path-replay-unsupported-transport',
       path: 'materials.panel.attenuationColor',
       details: expect.objectContaining({ field: 'attenuationColor', finiteDifferenceReason: 'transport' }),
+    }));
+    session.dispose();
+  });
+
+  it('keeps iridescence thickness range on finite-difference until path replay mirrors vec2 thin-film gradients', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                iridescence: 1,
+                iridescenceIor: 1.5,
+                iridescenceThicknessRange: [120, 420],
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.iridescenceThicknessRange', kind: 'vec2' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.currentValues()[0]).toEqual([
+      expect.closeTo(120, 6),
+      expect.closeTo(420, 6),
+    ]);
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-field',
+      path: 'materials.panel.iridescenceThicknessRange',
+      details: expect.objectContaining({ field: 'iridescenceThicknessRange' }),
     }));
     session.dispose();
   });

@@ -42,11 +42,12 @@ import type { BackendTexture } from './frame.js';
  *  selects the target the way the illustrative API in `plan/differentiable-rt.md`
  *  does: `materials.<primitiveId>.<field>` or `emitters.<emitterId>.<field>`.
  *
- *  Phase-0/Phase-1 scope (this wave): scalar and rgb material/emitter params.
+ *  Phase-0/Phase-1 scope (this wave): scalar, vec2, and rgb
+ *  material/emitter params.
  *  `texture` is reserved for Phase 2 (texture optimization) and is part of the
  *  FIXED contract surface now so adding it later is not a breaking change —
  *  backends that don't yet differentiate textures throw on it. */
-export type InverseParamKind = 'scalar' | 'rgb' | 'texture';
+export type InverseParamKind = 'scalar' | 'vec2' | 'rgb' | 'texture';
 
 /** One optimizable parameter. `path` is a dotted address into the live scene
  *  (`'materials.panel-1.roughness'`, `'materials.panel-1.albedo'`,
@@ -63,7 +64,7 @@ export interface InverseParam {
   readonly kind: InverseParamKind;
   /** Optional initial value override. When omitted the session reads the
    *  current scene value as the starting point. Length must match the kind
-   *  (`scalar` → 1, `rgb` → 3). */
+   *  (`scalar` → 1, `vec2` → 2, `rgb` → 3). */
   readonly initial?: readonly number[];
   /** Optional lower clamp (a single scalar applied to EVERY component) enforced
    *  after each optimizer step. e.g. `min: 0` keeps an RGB albedo non-negative. */
