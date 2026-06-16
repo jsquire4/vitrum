@@ -1,9 +1,9 @@
 /**
  * Allowlist of `MaterialSpec` fields that the walkaround-hybrid package
- * actually reads during scene ingestion (BVH packing, emitter list building,
- * DDGI material upload). Every field NOT in this set is silently dropped —
- * callers get a structured warning the first time an engine instance sees
- * those fields.
+ * actually reads during scene ingestion (BVH packing, material atlas upload,
+ * emitter list building, DDGI material upload). Every field NOT in this set is
+ * not consumed by the renderer; callers get a structured warning the first
+ * time an engine instance sees those fields.
  *
  * Derived by reading the actual ingestion code (2026-06-10):
  *
@@ -95,20 +95,18 @@
  *                           analytic, sun, specular-indirect, and DI/GI suffix
  *                           material paths.
  *  specularIntensity      same scalar specular metadata path; approximate
- *                           because GI receiver/reuse targeting is still a
- *                           stored-Lo proxy rather than a full specular-lobe
- *                           reservoir.
+ *                           pending rich-material GI GPU A/B promotion, not
+ *                           because the receiver target ignores the lobe.
  *  specularColorMap      readable sRGB maps multiply scalar `specularColor`
  *                           before shade-owned GGX evaluation.
  *  specularIntensityMap  readable linear maps multiply scalar
  *                           `specularIntensity` from their alpha channel.
  *  clearcoat             stored in material atlas metadata and added as a
  *                           fixed-F0 GGX top-coat lobe in shade-owned direct,
- *                           analytic, sun, specular-indirect, and DI/GI suffix
- *                           material paths.
+ *                           analytic, sun, specular-indirect, DI/GI suffix,
+ *                           and GI receiver-target material paths.
  *  clearcoatRoughness    same scalar clearcoat metadata path; approximate
- *                           because GI receiver/reuse targeting remains a
- *                           proxy around stored Lo.
+ *                           pending rich-material GI GPU A/B promotion.
  *  clearcoatMap          readable linear maps multiply scalar `clearcoat`
  *                           from their red channel before top-coat evaluation.
  *  clearcoatRoughnessMap readable linear maps multiply scalar
@@ -119,10 +117,9 @@
  *  sheen                 stored in material atlas metadata and added as a
  *                           Charlie/Neubelt-Pettineo sheen lobe in shade-owned
  *                           direct, analytic, sun, specular-indirect, and DI/GI
- *                           suffix material paths.
- *  sheenColor            same scalar sheen metadata path; approximate because
- *                           GI receiver/reuse targeting remains a proxy around
- *                           stored Lo.
+ *                           suffix/receiver-target material paths.
+ *  sheenColor            same scalar sheen metadata path; approximate pending
+ *                           rich-material GI GPU A/B promotion.
  *  sheenRoughness        same scalar sheen metadata path.
  *  sheenColorMap         readable sRGB maps multiply scalar `sheenColor`.
  *  sheenRoughnessMap     readable linear maps multiply scalar
@@ -145,9 +142,9 @@
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
  * transmissionMap / thicknessMap / lightMap / specular maps / clearcoat maps /
  * sheen maps / anisotropyMap / iridescence maps / bumpMap,
- * remaining layered BSDF scalars, spectral
- * curves, volume scattering, thin-film stacks, layered BSDF, and extension
- * maps — is IGNORED.
+ * remaining layered BSDF scalars, spectral curves, volume scattering,
+ * thin-film stacks, layered BSDF, and extension maps — is rejected by the
+ * warning/truthfulness surface rather than silently rendered as native.
  */
 
 /** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
@@ -268,7 +265,7 @@ export function collectUnconsumedMaterialFields(
  * The scalar alpha traversal path can faithfully discard fully-transparent
  * blend endpoints (`opacity <= 0`) and mask cutouts (`opacity < alphaCutoff`),
  * and the transparent-OIT pass camera-composites partial coverage. HybridEngine
- * still emits a structured warning because transparent-layer lighting plus
+ * still emits a structured warning because transparent sky/light-map terms plus
  * ReSTIR/GI/shadow participation remain approximate.
  */
 export function collectApproximateAlphaBlendPrimitiveIds(

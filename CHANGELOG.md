@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (ledger truthfulness, 2026-06-16)
+
+- **Walkaround material-support comments no longer carry stale proxy wording:** `consumedMaterialFields.ts` now reflects the implemented GI receiver-lobe material target path, the transparent-OIT direct-sun material-lobe closure, and the existing unsupported-field warning surface. The Road D1 helper-policy row is reconciled as closed: the named helpers are kept with explicit public/test/harness wording instead of being treated as dead runtime code.
+
 ### Fixed (pt-webgpu compatibility diagnostics, 2026-06-16)
 
 - **pt-webgpu no longer silently drops two direct-Scene feature cases:** setScene now emits structured warnings when layered materials include unsupported `frontLayer` / `backLayer` normal-map subfields, and the lite tier now warns when primitives carry authored `COLOR_0` vertex colors that require the full-tier vertex-color binding. Material update patches use the same nested-layer field detection as setScene.
