@@ -184,6 +184,15 @@ describe('ReGIR WGSL — grid build stores the exact per-cell pmf', () => {
     // WRS source weight = target / tree pdf (light-tree-seeded).
     expect(REGIR_BUILD_WGSL).toContain('let w = qHat / draw.pdf;');
   });
+
+  it('uses packed light-tree leaf importance for qHat instead of scalar EmitterTri.Le', () => {
+    expect(REGIR_BUILD_WGSL).toContain('struct RBTreeSample { emitterIndex: i32, pdf: f32, qHat: f32 }');
+    expect(REGIR_BUILD_WGSL).toContain('s.qHat = rb_importance(base, p, dist2Floor);');
+    expect(REGIR_BUILD_WGSL).toContain('let qHat = draw.qHat;');
+    expect(REGIR_WGSL).not.toContain('fn regir_cell_target(');
+    expect(REGIR_BUILD_WGSL).not.toContain('fn rb_cell_target(');
+    expect(REGIR_BUILD_WGSL).not.toContain('luminance(e.Le) * e.area');
+  });
 });
 
 describe('ReGIRCoordinator', () => {

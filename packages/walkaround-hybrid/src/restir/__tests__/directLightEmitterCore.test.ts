@@ -6,6 +6,7 @@ import type {
   Scene,
 } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
+import { LIGHT_TREE_FLOATS_PER_NODE } from '@vitrum/shared-samplers';
 import { buildReSTIRSceneBVHForCoreScene } from '../bvhCore.js';
 import {
   collectMeshAreaEmitterTrisFromCore,
@@ -88,6 +89,21 @@ function decodeEmitters(buffer: ArrayBuffer): DecodedEmitter[] {
     });
   }
   return out;
+}
+
+function decodeLightTreeLeafPowers(buffer: ArrayBuffer, nodeCount: number): number[] {
+  const nodes = new Float32Array(buffer);
+  const leafPairs: { emitterIndex: number; power: number }[] = [];
+  for (let i = 0; i < nodeCount; i += 1) {
+    const base = i * LIGHT_TREE_FLOATS_PER_NODE;
+    const leftChild = nodes[base + 2]!;
+    const rightChild = nodes[base + 3]!;
+    const emitterIndex = nodes[base + 0]!;
+    if (leftChild < 0 && rightChild < 0 && emitterIndex >= 0) {
+      leafPairs.push({ emitterIndex, power: nodes[base + 1]! });
+    }
+  }
+  return leafPairs.sort((a, b) => a.emitterIndex - b.emitterIndex).map((p) => p.power);
 }
 
 function stripPlaceholder(es: DecodedEmitter[]): DecodedEmitter[] {
@@ -239,6 +255,8 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'merged' });
     const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
     const expectedScalarLe: [number, number, number] = [2, 2, 2];
+    const scalarPowerPerMicroEmitter =
+      luminance(expectedScalarLe[0], expectedScalarLe[1], expectedScalarLe[2]) * 0.125;
 
     expect(emitters).toHaveLength(4);
     expect(emitters.reduce((sum, e) => sum + e.area, 0)).toBeCloseTo(0.5, 6);
@@ -251,6 +269,14 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
       expect(e.color[2]).toBeCloseTo(expectedScalarLe[2], 6);
       expect(e.area).toBeCloseTo(0.125, 6);
     }
+    expect(buffers.lightTreeEnabled).toBe(true);
+    const leafPowers = decodeLightTreeLeafPowers(buffers.lightTree.cpuData, buffers.lightTreeNodeCount);
+    expect(leafPowers).toHaveLength(4);
+    for (const power of leafPowers) {
+      expect(power).toBeGreaterThan(0);
+      expect(power).not.toBeCloseTo(scalarPowerPerMicroEmitter, 6);
+    }
+    expect(leafPowers.reduce((sum, p) => sum + p, 0)).toBeCloseTo(buffers.totalEmissivePower, 6);
     expect(buffers.totalEmissivePower).toBeGreaterThan(0);
     expect(new Float32Array(buffers.emitterCdf.cpuData).at(-1)).toBe(1);
   });

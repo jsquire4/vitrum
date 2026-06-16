@@ -837,7 +837,11 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   when TLAS source-triangle metadata is available. 2026-06-16 RC follow-up:
   RC probe-cast emitter NEE now samples UV0/UV1 material-backed emissive texels from
   the shared material atlas via `EmitterTri` source-triangle/subdivision metadata
-  instead of always using averaged `Le`. The glTF compatibility planner now
+  instead of always using averaged `Le`. 2026-06-16 ReGIR follow-up:
+  the grid-build WRS target now uses the chosen packed light-tree leaf
+  importance (`treeInput.powers`, AABB, and cone term) for `qHat`, so mapped
+  material-backed micro-emitters no longer fall back to scalar `EmitterTri.Le`
+  when storing cell `pSel`. The glTF compatibility planner now
   reports this remaining boundary as `emissiveMap.texelPdf: approximate` for
   imported emissive textures instead of letting native visible-emission support
   imply exact emitter-PDF semantics; `HybridEngine.setScene()` and material

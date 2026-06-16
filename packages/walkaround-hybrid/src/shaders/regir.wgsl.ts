@@ -31,9 +31,12 @@
  *     [+1] pSel — the EFFECTIVE per-cell selection pmf of that emitter
  *
  * ─── Unbiasedness (CRITICAL) ─────────────────────────────────────────────────
- * The cell target is `q̂_c(e) = luminance(Le_e)·area_e / max(dist²(x_c, e), floor)`
- * — power × proximity at the cell centroid `x_c`, NO BRDF (the receiver BRDF is
- * unknown at grid-build time; it enters later in the RIS p̂). Each sub-reservoir
+ * The cell target is the packed light-tree leaf importance
+ * `q̂_c(e) = power_e / max(dist²(x_c, e.aabb), floor)` (with the same orientation
+ * cone term as tree traversal). `power_e` is the CPU emitter-distribution power:
+ * scalar for uniform emitters, UV-local/map-aware for emissive-map micro-emitters.
+ * This is power × proximity at the cell centroid `x_c`, NO BRDF (the receiver BRDF
+ * is unknown at grid-build time; it enters later in the RIS p̂). Each sub-reservoir
  * runs WRS over `M` tree draws: candidate `e_i` is drawn with source pdf
  * `p_tree(e_i | x_c)`, RIS weight `w_i = q̂_c(e_i)/p_tree(e_i|x_c)`. The survivor
  * `e*` is (in expectation) distributed ∝ `q̂_c`, and `wSum/M` is an unbiased
@@ -48,7 +51,7 @@
  * candidate from ONE uniformly-chosen survivor; it is not summing over the K.
  *
  * Mirrors `regirBuildSurvivorCPU` / `regirCellPmfExact` in
- * `@vitrum/shared-samplers/src/lightTree.ts` byte-for-byte.
+ * `@vitrum/shared-samplers/src/regir.ts` byte-for-byte.
  *
  * Gate: `ubo.regirEnabled == 0u` ⇒ the grid-build pass early-returns and RIS
  * falls back to the light-tree path BIT-IDENTICALLY (it reads the tree region of
@@ -72,21 +75,6 @@ struct ReGIRCellSample {
   emitterIndex: i32,
   pSel:         f32,   // effective per-cell selection pmf of the chosen emitter
 };
-
-// Cell target q̂_c(e) for the cell centroid x_c: power × proximity, NO BRDF.
-// power = luminance(Le)·area is the SAME quantity the light tree + flat CDF use,
-// and the dist² floor is the SAME ubo.emitterDist2Floor the tree descent +
-// shade geometry term use — so the grid target, tree descent, and RIS p̂ all
-// agree on near-light behaviour.
-fn regir_cell_target(lid: u32, xc: vec3f, dist2Floor: f32) -> f32 {
-  let e = emitters[lid];
-  let power = luminance(e.Le) * e.area;
-  if (power <= 0.0) { return 0.0; }
-  let centroid = (e.vA + e.vB + e.vC) / 3.0;
-  let toC = centroid - xc;
-  let d2 = max(dot(toC, toC), dist2Floor);
-  return power / d2;
-}
 
 // World position → flat cell index. Clamps to the grid AABB so points just
 // outside the padded bounds still map to a border cell (never out-of-range).
@@ -141,9 +129,8 @@ fn regir_sample_cell(p: vec3f, rng: ptr<function, u32>) -> ReGIRCellSample {
 
 /**
  * RIS read-side include-graph entry. `regir` reads the SAME `lightTree`
- * storage binding + the `WalkaroundUBO` (regir* fields) + `emitters` /
- * `luminance` for the target eval, all of which `lightTree` → `common`
- * already provide; declaring `requires: ['lightTree']` pulls in the
+ * storage binding + the `WalkaroundUBO` (regir* fields), both supplied by
+ * `lightTree` → `common`; declaring `requires: ['lightTree']` pulls in the
  * `@group(3)` binding + `sampleLightTree` so RIS composes both seamlessly.
  */
 export const REGIR_MODULE: WgslModule = {
@@ -155,13 +142,10 @@ export const REGIR_MODULE: WgslModule = {
 // ─────────────────────────────────────────────────────────────────────────────
 // Grid-build compute pass (write path). Standalone module: its own bind group
 // declarations (the combined buffer as read_write + emitters + ubo), the WRS
-// helpers, and the `regirBuildMain` entry point. It re-declares the regir read
-// helpers' math inline-free by depending on `regir` for `regir_cell_target` /
-// `regir_cell_centroid` / `regir_survivor_base` — but those reference the
+// helpers, and the `regirBuildMain` entry point. The read path references the
 // READ-ONLY `lightTree` binding, which the build pass binds read_write under a
-// different name. To keep one source of truth for the math WITHOUT a
-// conflicting binding, the build kernel recomputes the survivor base offset
-// locally and writes via its own `regirGridRW` binding.
+// different name, so the build kernel reads tree leaf importance from its own
+// `regirGridRW` binding and recomputes the survivor base offset locally.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const REGIR_BUILD_WGSL = /* wgsl */ `// ============================================================
@@ -220,8 +204,11 @@ fn rb_importance(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
 }
 
 // Light-tree descent reading the tree region of the combined buffer. Mirrors
-// sampleLightTree (lightTree.wgsl) byte-for-byte, but reads from regirGridRW.
-struct RBTreeSample { emitterIndex: i32, pdf: f32 };
+// sampleLightTree (lightTree.wgsl) byte-for-byte, but also returns the chosen
+// leaf's packed light-tree importance as qHat. That preserves map-aware
+// emissive-map powers carried by treeInput.powers instead of falling back to
+// scalar EmitterTri.Le.
+struct RBTreeSample { emitterIndex: i32, pdf: f32, qHat: f32 };
 fn rb_sample_tree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function, u32>) -> RBTreeSample {
   var nodeIdx: u32 = 0u;
   var pdf: f32 = 1.0;
@@ -233,6 +220,7 @@ fn rb_sample_tree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function, 
       var s: RBTreeSample;
       s.emitterIndex = i32(regirGridRW[base + 0u]);
       s.pdf = pdf;
+      s.qHat = rb_importance(base, p, dist2Floor);
       return s;
     }
     let lBase = u32(leftChild) * REGIR_BUILD_STRIDE;
@@ -249,22 +237,12 @@ fn rb_sample_tree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function, 
       nodeIdx = u32(rightChild);
     }
   }
+  let base = nodeIdx * REGIR_BUILD_STRIDE;
   var s: RBTreeSample;
-  s.emitterIndex = i32(regirGridRW[nodeIdx * REGIR_BUILD_STRIDE + 0u]);
+  s.emitterIndex = i32(regirGridRW[base + 0u]);
   s.pdf = pdf;
+  s.qHat = rb_importance(base, p, dist2Floor);
   return s;
-}
-
-// Cell target q̂_c(e) — SAME as regir_cell_target (read module), but using the
-// build pass's own emitter binding.
-fn rb_cell_target(lid: u32, xc: vec3f, dist2Floor: f32) -> f32 {
-  let e = emittersRW[lid];
-  let power = luminance(e.Le) * e.area;
-  if (power <= 0.0) { return 0.0; }
-  let centroid = (e.vA + e.vB + e.vC) / 3.0;
-  let toC = centroid - xc;
-  let d2 = max(dot(toC, toC), dist2Floor);
-  return power / d2;
 }
 
 fn rb_cell_centroid(cellIdx: u32) -> vec3f {
@@ -305,7 +283,7 @@ fn regirBuildMain(@builtin(global_invocation_id) gid: vec3u) {
   for (var i: u32 = 0u; i < M; i = i + 1u) {
     let draw = rb_sample_tree(xc, dist2Floor, ubo.lightTreeNodeCount, &rng);
     if (draw.emitterIndex < 0 || draw.pdf <= 0.0) { continue; }
-    let qHat = rb_cell_target(u32(draw.emitterIndex), xc, dist2Floor);
+    let qHat = draw.qHat;
     if (qHat <= 0.0) { continue; }
     let w = qHat / draw.pdf;
     wSum = wSum + w;
@@ -332,7 +310,7 @@ fn regirBuildMain(@builtin(global_invocation_id) gid: vec3u) {
 
 /**
  * Grid-build include-graph entry. Requires `common` for `WalkaroundUBO`,
- * `EmitterTri`, `luminance`, `pcgInit`/`rand_f32`. Declares its OWN @group(0)
+ * `EmitterTri`, `pcgInit`/`rand_f32`. Declares its OWN @group(0)
  * bindings (combined buffer read_write + emitters + ubo), so it does NOT
  * require the `lightTree` / `regir` read modules (which would re-declare a
  * conflicting read-only `lightTree` binding).
