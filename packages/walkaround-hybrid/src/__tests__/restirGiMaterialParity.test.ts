@@ -5,6 +5,8 @@ import { composeWgsl } from '../pipeline/wgslComposer.js';
 import { RIS_GI_MODULE, RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
 import { buildRisGiNrcModule } from '../shaders/risGiNrc.wgsl.js';
 import { RESTIR_GI_MATERIAL_WGSL } from '../shaders/restirGiMaterial.wgsl.js';
+import { TEMPORAL_GI_GRIS_MODULE, TEMPORAL_GI_MODULE, TEMPORAL_GI_WGSL } from '../shaders/temporalGi.wgsl.js';
+import { SPATIAL_GI_GRIS_MODULE, SPATIAL_GI_MODULE, SPATIAL_GI_WGSL } from '../shaders/spatialGi.wgsl.js';
 
 const nrcModule = buildRisGiNrcModule({
   levels: 1,
@@ -38,6 +40,13 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = diffuseLo;');
   });
 
+  it('defines receiver-lobe p-hat helpers for rich-material GI reuse', () => {
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('fn restir_gi_receiver_phat_from_payload(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('fn restir_gi_receiver_phat_from_surface_or_geometry(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheen(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution = contribution + Lo * specBrdf;');
+  });
+
   it('wires default risGi bounce hits through mapped material payloads', () => {
     expect(RIS_GI_MODULE.requires).toContain('restirGiMaterial');
     expect(RIS_GI_WGSL).toContain('let normalMapped = applyNormalMapForHit(hit, smoothNormal);');
@@ -45,6 +54,8 @@ describe('ReSTIR-GI material parity', () => {
     expect(RIS_GI_WGSL).toContain('let smoothNs = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);');
     expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
+    expect(RIS_GI_WGSL).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
+    expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
     expect(RIS_GI_WGSL).not.toContain('Lo = irrAtXs * xsMat.rgb * INV_PI;');
   });
 
@@ -57,7 +68,25 @@ describe('ReSTIR-GI material parity', () => {
     expect(body).toContain('let ddgiLo = xsPayload.Lo;');
     expect(body).toContain('let xsAlbedo = xsPayload.albedo;');
     expect(body).toContain('let xsRough = xsPayload.rough;');
+    expect(body).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
+    expect(body).toContain('restir_gi_receiver_phat_from_payload(');
     expect(body).not.toContain('let ddgiLo = irrAtXs * xsMat.rgb * INV_PI;');
+  });
+
+  it('wires GI temporal/spatial reuse through receiver-material p-hat', () => {
+    for (const module of [TEMPORAL_GI_MODULE, TEMPORAL_GI_GRIS_MODULE, SPATIAL_GI_MODULE, SPATIAL_GI_GRIS_MODULE]) {
+      expect(module.requires).toContain('restirCastPrimary');
+      expect(module.requires).toContain('restirGiMaterial');
+    }
+    for (const shader of [TEMPORAL_GI_WGSL, SPATIAL_GI_WGSL]) {
+      expect(shader).toContain('@group(1) @binding(0) var<storage, read> bvh');
+      expect(
+        shader.includes('let centerSurf = castPrimary(') ||
+        shader.includes('let curSurf = castPrimary('),
+      ).toBe(true);
+      expect(shader).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
+      expect(shader).toContain('finaliseGIReservoirWFromPHat(');
+    }
   });
 
   it('composes both GI producers with the new material helper', () => {

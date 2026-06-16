@@ -309,10 +309,12 @@ describe('A6: NRC structural fixes — xsRough + reservoir training target (2026
     expect(RIS_GI_NRC_BODY).toContain('@group(1) @binding(14) var bvh_material: texture_2d<u32>');
   });
 
-  it('A6 xsRough: NRC body reads decodeRoughMetal from bvh_material (not hardcoded 1.0)', () => {
-    // The old xsRough = 1.0 must be gone; the real roughness must be decoded.
+  it('A6 xsRough: NRC body reads mapped payload roughness (not hardcoded 1.0)', () => {
+    // The old xsRough = 1.0 must be gone; the real roughness must flow through
+    // the shared GI material payload path.
     expect(RIS_GI_NRC_BODY).not.toContain('let xsRough = 1.0;');
-    expect(RIS_GI_NRC_BODY).toContain('decodeRoughMetal(');
+    expect(RIS_GI_NRC_BODY).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
+    expect(RIS_GI_NRC_BODY).toContain('let xsRough = xsPayload.rough;');
     expect(RIS_GI_NRC_BODY).toContain('bvh_material');
   });
 

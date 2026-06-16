@@ -164,13 +164,11 @@ export async function compilePipelines(
   // GRIS / ReSTIR-PT reconnection-shift reuse is opt-in via the host flag
   // `HybridEngineOptions.restirPtReuse`. The gate is COMPILE-TIME (the flag is
   // fixed at engine creation) because turning it on STRUCTURALLY changes the GI
-  // spatial + temporal passes — they gain a `@group(1)` scene BVH/TLAS group for
-  // the reconnection-visibility ray. Binding a second group / changing the
-  // pipeline layout on the DEFAULT path is what regressed the default render to
-  // an all-black frame (f8df9a4), so when OFF we compose the verbatim Sprint-17
-  // single-group GI passes and build the single-group layout; when ON we compose
-  // the GRIS variants and the two-group layout. See spatialGi.wgsl.ts /
-  // temporalGi.wgsl.ts headers.
+  // spatial + temporal shader bodies and reservoir cache stride. Both default
+  // and GRIS variants now use the same two-group layout: group(1) is the shared
+  // scene/material group needed for receiver-lobe p-hat recasts, while the GRIS
+  // variant also traces reconnection visibility through it. See
+  // spatialGi.wgsl.ts / temporalGi.wgsl.ts headers.
   const grisOn = opts?.restirPtReuse === true;
   const reservoirGiStrideU32 = reservoirGiStrideU32ForRestirPtReuse(grisOn);
   const wgslModules = new Map(WGSL_MODULES);
@@ -282,30 +280,24 @@ export async function compilePipelines(
   const gtaoUpsampleLayout = device.createPipelineLayout({
     bindGroupLayouts: [getGTAOUpsampleBindGroupLayout(device, bglCache)],
   });
-  // Sprint 17 — GI temporal + spatial passes. group(0) is their dedicated
-  // reservoir-buffer + uniform group. When GRIS reuse is ON (restirPtReuse),
-  // group(1) is the SHARED scene BVH/TLAS group so the reconnection-visibility
-  // ray can traverse the scene; the GI shaders then declare those `@group(1)`
-  // bindings. When OFF (default) the layout is single-group — byte-for-byte the
-  // pre-GRIS Sprint-17 pipeline, the known-good default. Storage-buffer budget
-  // (GRIS ON only): group(0) carries 2 reservoir storage buffers, group(1)
-  // carries 11 scene storage buffers → 13 total, well under the
-  // `HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage = 16` floor.
+  // Sprint 17 + rich-material receiver target — GI temporal + spatial passes.
+  // group(0) is their dedicated reservoir-buffer + uniform group. group(1) is
+  // always the shared scene BVH/TLAS/material-atlas group: the default path
+  // recasts receiver material payloads for the GI p-hat, and the GRIS path also
+  // uses it for reconnection visibility. Storage-buffer budget: group(0)
+  // carries 2 reservoir storage buffers, group(1) carries the scene storage
+  // buffers, staying under the full-tier floor.
   const temporalGiLayout = device.createPipelineLayout({
-    bindGroupLayouts: grisOn
-      ? [
-          getTemporalGiBindGroupLayout(device, bglCache),
-          getSceneBindGroupLayout(device, bglCache),
-        ]
-      : [getTemporalGiBindGroupLayout(device, bglCache)],
+    bindGroupLayouts: [
+      getTemporalGiBindGroupLayout(device, bglCache),
+      getSceneBindGroupLayout(device, bglCache),
+    ],
   });
   const spatialGiLayout = device.createPipelineLayout({
-    bindGroupLayouts: grisOn
-      ? [
-          getSpatialGiBindGroupLayout(device, bglCache),
-          getSceneBindGroupLayout(device, bglCache),
-        ]
-      : [getSpatialGiBindGroupLayout(device, bglCache)],
+    bindGroupLayouts: [
+      getSpatialGiBindGroupLayout(device, bglCache),
+      getSceneBindGroupLayout(device, bglCache),
+    ],
   });
   // Sprint 18 — indirect-combine pass uses a single dedicated bind group.
   const indirectCombineLayout = device.createPipelineLayout({
@@ -409,9 +401,9 @@ export async function compilePipelines(
   });
 
   // Sprint 17 — GI temporal + spatial reuse pipelines. Compose the GRIS variant
-  // (adds @group(1) scene bindings + the reconnection-shift branch) only when
-  // restirPtReuse is ON; otherwise compose the verbatim Sprint-17 single-group
-  // pass. The chosen module's bindings MUST match the layout selected above.
+  // (adds the reconnection-shift branch) only when restirPtReuse is ON; otherwise
+  // compose the standard reuse pass. Both variants bind group(1) for
+  // receiver-material p-hat recasts, so the layout is shared.
   const temporalGiSM = device.createShaderModule({
     label: 'temporalGi',
     code: composeWgsl(grisOn ? TEMPORAL_GI_GRIS_MODULE : TEMPORAL_GI_MODULE, wgslModules),

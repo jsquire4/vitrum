@@ -61,10 +61,10 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toContain('sampleCosineHemisphere(normal, &rng)');
   });
 
-  it('uses DDGI-atlas reconnection-vertex radiance estimation', () => {
+  it('uses DDGI-atlas reconnection-vertex radiance estimation through the material payload helper', () => {
     expect(RIS_GI_WGSL).toContain('sampleDDGIAtPoint');
-    // Lo = irrAtXs * matRGB * INV_PI (Lambertian re-radiation)
-    expect(RIS_GI_WGSL).toContain('Lo = irrAtXs * xsMat.rgb * INV_PI');
+    expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
+    expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo');
   });
 
   it('runs the final visibility test on the chosen sample and zeroes W on occlusion', () => {

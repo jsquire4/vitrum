@@ -19,7 +19,7 @@ installWebGPUPolyfills();
 
 import { InferenceGraph } from '../InferenceGraph.js';
 import { buildUNetSpec } from '../unetArchitecture.js';
-import type { ModelWeights, LayerWeights } from '../weights.js';
+import { buildRandomWeightsForSpec, type ModelWeights } from '../weights.js';
 
 interface StubBuffer {
   label: string;
@@ -59,14 +59,7 @@ function makeStubDevice() {
 }
 
 function makeStubWeights(spec: ReturnType<typeof buildUNetSpec>): ModelWeights {
-  const layers: LayerWeights[] = spec.layers
-    .filter(l => l.kind === 'conv2d' || l.kind === 'transposedConv2d')
-    .map(l => ({
-      name: l.name,
-      weights: new Float32Array(4),
-      biases: new Float32Array(4),
-    }));
-  return { layers };
+  return buildRandomWeightsForSpec(spec, 0x1eaf);
 }
 
 describe('InferenceGraph — double-initialize leak guard', () => {

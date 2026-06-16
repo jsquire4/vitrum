@@ -4,13 +4,10 @@
  * Half-resolution (W/2 × H/2) dispatch. group(0) is the dedicated GI reservoir
  * group (current GI reservoir, previous GI reservoir, ubo).
  *
- * GRIS gate (`grisEnabled`) — opt-in via `HybridEngineOptions.restirPtReuse`.
- * When ON, the compile-time pipeline variant (pipelineCompiler `grisOn`) adds a
- * `@group(1)` SHARED scene BVH/TLAS group so the reconnection-visibility ray can
- * traverse the scene; this pass binds it at slot 1 only in that case. When OFF
- * (default) the pipeline is the verbatim Sprint-17 single-group pass and this
- * pass must NOT call `setBindGroup(1, …)` — binding a group the layout does not
- * declare regressed the default render to all-black (f8df9a4).
+ * group(1) is the shared scene BVH/TLAS/material-atlas group. Both default and
+ * GRIS variants bind it now: default temporal reuse recasts the current receiver
+ * material to evaluate the same rich receiver-lobe p-hat the RIS producer uses,
+ * while GRIS additionally uses the group for reconnection visibility.
  */
 
 import { buildTemporalGiBindGroup } from '../bindGroupBuilders.js';
@@ -28,13 +25,9 @@ export class TemporalGIReservoirPass implements Pass {
   readonly passLabels: readonly PassLabel[] = ['gi-temporal'];
 
   private readonly _pipeline: GPUComputePipeline;
-  /** GRIS (restirPtReuse) ON ⇒ bind the scene group at @group(1). Must match
-   *  the compile-time pipeline layout (see pipelineCompiler `grisOn`). */
-  private readonly _grisEnabled: boolean;
 
-  constructor(pipeline: GPUComputePipeline, grisEnabled = false) {
+  constructor(pipeline: GPUComputePipeline, _grisEnabled = false) {
     this._pipeline = pipeline;
-    this._grisEnabled = grisEnabled;
   }
 
   gates(): boolean {
@@ -56,11 +49,10 @@ export class TemporalGIReservoirPass implements Pass {
       resources.restirGI.reservoirGiPreviousBuffer,
       resources.common.uboBuffer,
     ], buildBg) ?? buildBg();
-    // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
-    // ONLY when the GRIS pipeline variant is active. Half-res dispatch.
+    // group(1) — shared scene BVH/TLAS/material atlas. Half-res dispatch.
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gi-temporal', {
       half: true,
-      ...(this._grisEnabled ? { extraGroups: [{ slot: 1, group: sceneBindGroup }] } : {}),
+      extraGroups: [{ slot: 1, group: sceneBindGroup }],
     });
   }
 

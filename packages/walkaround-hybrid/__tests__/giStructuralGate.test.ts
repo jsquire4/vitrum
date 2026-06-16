@@ -3,28 +3,26 @@
  * GRIS black-frame bug (f8df9a4) shipped.
  *
  * Root cause of f8df9a4: the GRIS reconnection-shift reuse (opt-in via
- * `restirPtReuse`) added a `@group(1)` scene BVH/TLAS bind group + a two-group
- * pipeline layout to the GI spatial AND temporal passes UNCONDITIONALLY — even
- * on the DEFAULT (restirPtReuse OFF) path, gated only by a runtime `ubo`
- * check. Binding a new group / changing the pipeline layout STRUCTURALLY altered
- * the default pipeline and regressed the default walkaround render to an
- * all-black frame on real GPUs (Mesa dzn) AND the lavapipe oracle. Neither the
- * unit tests nor the static wgslCompose check caught it: it was a GPU-runtime /
- * pipeline-structure failure.
+ * `restirPtReuse`) changed the GI spatial AND temporal passes UNCONDITIONALLY,
+ * gated only by a runtime `ubo` check. The default path inherited a pipeline
+ * structure and shader branch it could not safely execute, regressing the
+ * default walkaround render to an all-black frame on real GPUs (Mesa dzn) AND
+ * the lavapipe oracle. Neither the unit tests nor the static wgslCompose check
+ * caught it: it was a GPU-runtime / pipeline-structure failure.
  *
  * This test pins the fix: an opt-in feature must NOT change the default pipeline
  * structure at all. It asserts at two layers:
  *
  *   1. SHADER STRUCTURE — composing the spatial + temporal GI WGSL with
- *      restirPtReuse OFF yields text with NO `@group(1)` and NONE of the GRIS
- *      identifiers (sgi_bvh / tgi_bvh / the reconnection-visibility fn / the
- *      grisReuse symbols). With ON, those ARE present.
+ *      restirPtReuse OFF yields text with NONE of the GRIS identifiers
+ *      (reconnection-visibility fn / grisReuse symbols). With ON, those ARE
+ *      present. Both variants now bind `@group(1)` for receiver-lobe p-hat
+ *      material recasts.
  *
  *   2. PIPELINE LAYOUT — running the REAL `compilePipelines` against a recording
  *      mock device, the `temporalGi` + `spatialGi` compute pipelines use a
- *      pipeline layout with exactly ONE bind-group layout when OFF and TWO when
- *      ON. This is the exact structural delta that, when it leaked onto the
- *      default path, produced the black frame.
+ *      two-group layout for both OFF and ON, because receiver-lobe p-hat recasts
+ *      need the scene/material group in the default path too.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -47,34 +45,24 @@ import type { BGLCache } from '../src/pipeline/bindGroupLayouts.js';
 installWebGPUPolyfills();
 
 // GRIS identifiers that MUST NOT appear in the default (OFF) GI passes — these
-// are exactly the symbols the f8df9a4 commit leaked onto the default pipeline.
+// are the branch/math symbols the f8df9a4 commit leaked onto the default path.
 const SPATIAL_GRIS_IDENTS = [
-  '@group(1)',
-  'sgi_bvh',                  // the @group(1) scene BVH binding
   'grisReconnectionVisible',  // the visibility-trace fn
-  'traceSceneAny',            // the BVH traversal the visibility ray calls
   'grisShiftJacobian',        // grisReuse shift symbol
-  'grisTargetAt',             // grisReuse target symbol
   'grisPairwiseDenomNeighbor',// grisReuse pairwise-MIS symbol
 ] as const;
 
-// NB: `traceSceneAny` is NOT a temporal GRIS discriminator — the DEFAULT
-// temporal pass already requires `sceneTraversal` (for the reprojection `Ray` /
-// invertMat4_common), so traceSceneAny is in its closure with or without GRIS.
-// The discriminating GRIS-only symbols are the @group(1) binding + the
-// reconnection-visibility fn + the grisReuse helpers.
 const TEMPORAL_GRIS_IDENTS = [
-  '@group(1)',
-  'tgi_bvh',                  // the @group(1) scene BVH binding
   'tgiReconnectionVisible',   // the visibility-trace fn
   'grisShiftJacobian',
-  'grisTargetAt',
   'grisPairwiseDenomNeighbor',
 ] as const;
 
-describe('GI pass SHADER structure — default (restirPtReuse OFF) is pre-GRIS', () => {
-  it('spatialGi OFF composes with NO @group(1) and NO GRIS identifiers', () => {
+describe('GI pass SHADER structure — default (restirPtReuse OFF) has no GRIS branch', () => {
+  it('spatialGi OFF composes with receiver-lobe group(1) but NO GRIS identifiers', () => {
     const off = composeWgsl(SPATIAL_GI_MODULE, WGSL_MODULES);
+    expect(off).toContain('@group(1)');
+    expect(off).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
     for (const ident of SPATIAL_GRIS_IDENTS) {
       expect(off, `default spatialGi must NOT contain '${ident}'`).not.toContain(ident);
     }
@@ -83,8 +71,10 @@ describe('GI pass SHADER structure — default (restirPtReuse OFF) is pre-GRIS',
     expect(off).toContain('fn spatialGiMain(');
   });
 
-  it('temporalGi OFF composes with NO @group(1) and NO GRIS identifiers', () => {
+  it('temporalGi OFF composes with receiver-lobe group(1) but NO GRIS identifiers', () => {
     const off = composeWgsl(TEMPORAL_GI_MODULE, WGSL_MODULES);
+    expect(off).toContain('@group(1)');
+    expect(off).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
     for (const ident of TEMPORAL_GRIS_IDENTS) {
       expect(off, `default temporalGi must NOT contain '${ident}'`).not.toContain(ident);
     }
@@ -94,6 +84,7 @@ describe('GI pass SHADER structure — default (restirPtReuse OFF) is pre-GRIS',
 
   it('spatialGi ON composes WITH @group(1) and the GRIS identifiers', () => {
     const on = composeWgsl(SPATIAL_GI_GRIS_MODULE, WGSL_MODULES);
+    expect(on).toContain('@group(1)');
     for (const ident of SPATIAL_GRIS_IDENTS) {
       expect(on, `GRIS spatialGi MUST contain '${ident}'`).toContain(ident);
     }
@@ -101,6 +92,7 @@ describe('GI pass SHADER structure — default (restirPtReuse OFF) is pre-GRIS',
 
   it('temporalGi ON composes WITH @group(1) and the GRIS identifiers', () => {
     const on = composeWgsl(TEMPORAL_GI_GRIS_MODULE, WGSL_MODULES);
+    expect(on).toContain('@group(1)');
     for (const ident of TEMPORAL_GRIS_IDENTS) {
       expect(on, `GRIS temporalGi MUST contain '${ident}'`).toContain(ident);
     }
@@ -176,10 +168,10 @@ async function compileAndRecordShaders(
 }
 
 describe('GI pass PIPELINE LAYOUT — group count gated at compile time', () => {
-  it('default (restirPtReuse OFF): temporalGi + spatialGi use a SINGLE-group layout', async () => {
+  it('default (restirPtReuse OFF): temporalGi + spatialGi use the receiver-material two-group layout', async () => {
     const byLabel = await compileAndFind(false);
-    expect(byLabel.temporalGi, 'default temporalGi pipeline must have 1 bind-group layout').toBe(1);
-    expect(byLabel.spatialGi, 'default spatialGi pipeline must have 1 bind-group layout').toBe(1);
+    expect(byLabel.temporalGi, 'default temporalGi pipeline must have 2 bind-group layouts').toBe(2);
+    expect(byLabel.spatialGi, 'default spatialGi pipeline must have 2 bind-group layouts').toBe(2);
   });
 
   it('opt-in (restirPtReuse ON): temporalGi + spatialGi use a TWO-group layout', async () => {

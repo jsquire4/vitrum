@@ -44,7 +44,7 @@ export const RESTIR_CAST_PRIMARY_WGSL = /* wgsl */ `
 // Canonical primary-surface cast used by temporal + spatial.
 //   Generates a primary ray for (px, dims) through (camPos, invVP),
 //   intersects against the BVH, and decodes the hit into a
-//   PrimarySurface (defined in common.wgsl).
+//   PrimarySurface (defined in reservoirGi.wgsl).
 //
 //   See restirCastPrimary.wgsl.ts header for why shade and ris
 //   intentionally retain inline primary casts.
@@ -105,7 +105,7 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
 export const RESTIR_CAST_PRIMARY_MODULE: WgslModule = {
   name: 'restirCastPrimary',
   source: RESTIR_CAST_PRIMARY_WGSL,
-  // Depends on `common` for PrimarySurface, bvh bindings, ubo binding,
-  // generatePrimaryRay_common, bvhIntersectFirstHit, decodeMaterialColor.
-  requires: ['common', 'materialAtlas'],
+  // Focused closure: UBO + traversal/types + PrimarySurface + shared math +
+  // material atlas payloads + camera ray generation.
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialAtlas', 'cameraRays'],
 };

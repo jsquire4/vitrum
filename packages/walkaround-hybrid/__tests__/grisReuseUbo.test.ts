@@ -9,13 +9,11 @@
  *   3. OFF-is-BIT-IDENTICAL — with `restirPtReuse` absent / 0, EVERY UBO byte is
  *      identical to the pre-GRIS packing (the gate byte stays 0), so the GI
  *      spatial/temporal reuse the shader runs is byte-for-byte the legacy path.
- *   4. COMPILE-TIME GRIS gating — the GRIS reconnection shift + @group(1) scene
- *      BVH live in SEPARATE shader variants (SPATIAL_GI_GRIS_WGSL /
- *      TEMPORAL_GI_GRIS_WGSL), composed only when the host opts into
- *      restirPtReuse. The DEFAULT (OFF) variants are the verbatim Sprint-17
- *      legacy reuse with NO @group(1) / no GRIS symbols. (This split is the
- *      f8df9a4 black-frame fix; the structural pipeline-layout guarantee is
- *      pinned by giStructuralGate.test.ts.)
+ *   4. COMPILE-TIME GRIS gating — the GRIS reconnection shift lives in
+ *      SEPARATE shader variants (SPATIAL_GI_GRIS_WGSL / TEMPORAL_GI_GRIS_WGSL),
+ *      composed only when the host opts into restirPtReuse. The DEFAULT (OFF)
+ *      variants now still bind @group(1), because receiver-lobe GI p-hat recasts
+ *      need scene/material payloads, but they contain no GRIS branch.
  *
  * The UBO `restirPtReuse` field is kept (harmless telemetry/consistency) so the
  * offset / packing / OFF-bit-identity contracts below still hold.
@@ -130,16 +128,18 @@ describe('GRIS-OFF bit-identity', () => {
 });
 
 describe('GI reuse shaders — GRIS gated at COMPILE time (separate variants)', () => {
-  it('spatialGi OFF (default) is the legacy reuse with NO GRIS branch / no scene group', () => {
+  it('spatialGi OFF (default) is standard reuse with receiver-lobe scene recast and NO GRIS branch', () => {
     // Legacy clamped-Jacobian reuse only.
     expect(SPATIAL_GI_WGSL).toContain('jacobianReconnectionShift(');
     // The runtime gate is GONE — gating is compile-time-shader-variant now.
     expect(SPATIAL_GI_WGSL).not.toContain('ubo.restirPtReuse == 1u');
-    // No GRIS symbols, no @group(1), no reconnection-visibility ray.
+    // No GRIS symbols or reconnection-visibility ray, but group(1) is now
+    // required for receiver-material p-hat recasts.
     expect(SPATIAL_GI_WGSL).not.toContain('grisShiftJacobian(');
     expect(SPATIAL_GI_WGSL).not.toContain('grisReconnectionVisible(');
     expect(SPATIAL_GI_WGSL).not.toContain('grisPairwiseDenomNeighbor(');
-    expect(SPATIAL_GI_WGSL).not.toContain('@group(1)');
+    expect(SPATIAL_GI_WGSL).toContain('@group(1)');
+    expect(SPATIAL_GI_WGSL).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
   });
 
   it('spatialGi ON (GRIS) carries the shift + reconnection-visibility + full-GBH MIS', () => {
@@ -148,10 +148,10 @@ describe('GI reuse shaders — GRIS gated at COMPILE time (separate variants)', 
     // The spatial pass combines with the EXACT generalized balance heuristic
     // (Σ m_i = 1) rather than the streaming pairwise approximation: it gathers
     // the accepted neighbours and builds the full GBH denominator inline from
-    // the per-domain target grisTargetAt(...), so the streaming pairwise helper
-    // is no longer called here (the pairwise denom drifts off unity for K>1 and
+    // the per-domain receiver-lobe target, so the streaming pairwise helper is
+    // no longer called here (the pairwise denom drifts off unity for K>1 and
     // over-energised the reservoir — the V19 spatial divergence).
-    expect(SPATIAL_GI_GRIS_WGSL).toContain('grisTargetAt(');
+    expect(SPATIAL_GI_GRIS_WGSL).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
     expect(SPATIAL_GI_GRIS_WGSL).not.toContain('grisPairwiseDenomNeighbor(');
     // The GRIS variant declares the @group(1) scene BVH/TLAS group.
     expect(SPATIAL_GI_GRIS_WGSL).toContain('@group(1)');
@@ -160,13 +160,14 @@ describe('GI reuse shaders — GRIS gated at COMPILE time (separate variants)', 
     expect(SPATIAL_GI_GRIS_WGSL).not.toContain('ubo.restirPtReuse == 1u');
   });
 
-  it('temporalGi OFF (default) is the legacy reuse with NO GRIS branch / no scene group', () => {
+  it('temporalGi OFF (default) is standard reuse with receiver-lobe scene recast and NO GRIS branch', () => {
     expect(TEMPORAL_GI_WGSL).toContain('jacobianReconnectionShift(');
     expect(TEMPORAL_GI_WGSL).not.toContain('ubo.restirPtReuse == 1u');
     expect(TEMPORAL_GI_WGSL).not.toContain('grisShiftJacobian(');
     expect(TEMPORAL_GI_WGSL).not.toContain('tgiReconnectionVisible(');
     expect(TEMPORAL_GI_WGSL).not.toContain('grisPairwiseDenomNeighbor(');
-    expect(TEMPORAL_GI_WGSL).not.toContain('@group(1)');
+    expect(TEMPORAL_GI_WGSL).toContain('@group(1)');
+    expect(TEMPORAL_GI_WGSL).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
   });
 
   it('temporalGi ON (GRIS) carries the shift + reconnection-visibility + pairwise MIS', () => {

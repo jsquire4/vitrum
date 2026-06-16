@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround ReSTIR-GI receiver-lobe targets, 2026-06-16)
+
+- **Receiver-lobe ReSTIR-GI target/reuse:** `@vitrum/walkaround-hybrid` GI RIS/NRC producers and temporal/spatial default+GRIS reuse now evaluate candidate and final `pHat` through a material-aware receiver-lobe helper. Diffuse receivers algebraically reduce to the old `luminance(Lo) * cosTheta / pi` target, while rich receivers add the same specular/clearcoat/sheen BRDF proxy used by the GI material-payload path. Default and GRIS GI reuse now bind the scene/material group for receiver recasts; temporal previous-domain recast remains best-effort and falls back to the geometric target when the current UBO cannot reconstruct the previous camera ray exactly. Structural tests, the shader gate, and the full walkaround test suite pass; GPU smoke passed the lavapipe DDGI/RC/ReSTIR-TLAS/DDGI-BVH oracles but the dzn/RTX path timed out during pipeline init, so browser/dzn recapture remains a validation tail.
+
 ### Tests (pt-webgpu material-lobe proof, 2026-06-15)
 
 - **Extension-lobe CPU reference oracles:** `@vitrum/pt-webgpu` now has focused CPU tests for clearcoat zero-default/scalar-linearity, sheen zero-default/color/scalar behavior, normalized base/clearcoat/sheen sampled-PDF accounting, and iridescence F0 zero-default behavior. The tests also lock the current sheen PDF as an explicitly documented cosine approximation until a true Charlie-lobe sampler lands. GPU material-furnace/reference A/B remains a promotion tail, not implied closed by these CPU oracles.
@@ -25,11 +29,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (walkaround material truthfulness, 2026-06-15)
 
-- **Texture-driven alpha blend diagnostics:** `@vitrum/walkaround-hybrid` now emits `walkaround-hybrid.alpha-blend-approximation` for `alphaMode:'blend'` materials whose partial coverage comes from `baseColorMap` or `alphaMap`, not just scalar `opacity`, while still skipping the fully transparent endpoint. The walkaround ledger text was reconciled to the current DI/GI material-payload implementation: rich DI and GI suffix payloads are implemented, but GI receiver/reuse targeting, finite-emitter power, light-map scope, OIT composition, and validation keep the rows `approximate`.
+- **Texture-driven alpha blend diagnostics:** `@vitrum/walkaround-hybrid` now emits `walkaround-hybrid.alpha-blend-approximation` for `alphaMode:'blend'` materials whose partial coverage comes from `baseColorMap` or `alphaMap`, not just scalar `opacity`, while still skipping the fully transparent endpoint. The walkaround ledger text was reconciled to the current DI/GI material implementation: rich DI, GI suffix payloads, and receiver-lobe GI targets are implemented, but finite-emitter power, light-map scope, OIT composition, and GPU A/B promotion evidence keep the rows `approximate`.
 
 ### Fixed (walkaround ReSTIR-GI material parity, 2026-06-15)
 
-- **Material-aware ReSTIR-GI suffix radiance:** `@vitrum/walkaround-hybrid` default and NRC GI-RIS producers now apply atlas-backed smooth/normal/bump normals at primary, post-glass, and bounce vertices, and compute reconnection-vertex `Lo` through the shared material payload. Default diffuse suffixes still use mapped albedo × irradiance/π; rich suffix materials (metal/glossy/specular/clearcoat/sheen/anisotropy/iridescence) use the extension-aware GGX/clearcoat/sheen BRDF proxy. NRC training records now use the same mapped albedo/roughness payload as the suffix query. Reservoir storage remains geometry+Lo; receiver-lobe reservoir targeting and GPU A/B promotion evidence remain validation/closure tail items.
+- **Material-aware ReSTIR-GI suffix radiance:** `@vitrum/walkaround-hybrid` default and NRC GI-RIS producers now apply atlas-backed smooth/normal/bump normals at primary, post-glass, and bounce vertices, and compute reconnection-vertex `Lo` through the shared material payload. Default diffuse suffixes still use mapped albedo × irradiance/π; rich suffix materials (metal/glossy/specular/clearcoat/sheen/anisotropy/iridescence) use the extension-aware GGX/clearcoat/sheen BRDF proxy. NRC training records now use the same mapped albedo/roughness payload as the suffix query. The 2026-06-16 receiver-lobe target wave builds on this path; remaining work is GPU A/B promotion evidence rather than an unimplemented receiver target.
 
 ### Fixed (pt-webgpu lite emitter shadows, 2026-06-15)
 

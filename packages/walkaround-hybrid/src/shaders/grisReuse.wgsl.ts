@@ -52,10 +52,11 @@
  *   m_i = (c_i · p̂_i(z_i))
  *       / Σ_j ( c_j · p̂_j(T_{i→j} z_i) · |∂T_{i→j}/∂·| )
  *
- * where p̂ is the unnormalised target (here the GI target luminance(Lo)·cosθ·INV_PI
- * in the SAME domain the sample lives), c are the per-domain confidence weights
- * (the reservoir M counts), and the shift Jacobian enters every cross term that
- * maps domain i's sample into domain j.
+ * where p̂ is the unnormalised target in the SAME domain the sample lives, c are
+ * the per-domain confidence weights (the reservoir M counts), and the shift
+ * Jacobian enters every cross term that maps domain i's sample into domain j.
+ * Current GI reuse evaluates p̂ through restirGiMaterial's receiver-lobe helper;
+ * the geometric helper below is retained as the diffuse fallback.
  *
  * The per-neighbour resampling weight the reuse loop accumulates is
  *
@@ -119,12 +120,10 @@ fn grisShiftJacobian(
   return gShifted / gBase;
 }
 
-// The GI target function p̂ in the domain whose primary vertex is xv:
+// Legacy geometric GI target function p̂ in the domain whose primary vertex is xv:
 //   p̂(z) = luminance(Lo) · max(0, cos(nv, xv→xs)) · INV_PI
-// This is identical to the per-pixel pHat the existing RIS reuse computes; it
-// is the target the GRIS pairwise-MIS denominator weights each shifted sample
-// by, evaluated in the domain the sample is being mapped INTO. Returns 0 for a
-// degenerate edge (caller treats 0 target as "this term contributes nothing").
+// Rich-material GI reuse now calls restir_gi_receiver_phat_from_surface_or_geometry
+// instead. This helper remains available for diffuse-only fallbacks and tests.
 fn grisTargetAt(xv: vec3f, nv: vec3f, xs: vec3f, Lo: vec3f) -> f32 {
   let d = xs - xv;
   let dist2 = dot(d, d);
@@ -175,11 +174,9 @@ fn grisPairwiseDenomCanonical(
 `;
 
 /** GRIS reconnection-shift + pairwise-MIS WGSL include-graph entry.
- *  `grisTargetAt` calls `luminance` (sharedPrimitives) and uses `INV_PI`
- *  (walkaroundUbo). Declared as `requires` so the topo-sort emits this module
- *  AFTER those definitions — the consuming GI passes also require them, but
- *  the explicit dependency keeps the emit order correct regardless of the root
- *  module's own `requires` ordering. (`inverseSqrt` is a WGSL builtin.) */
+ *  The retained geometric fallback calls `luminance` (sharedPrimitives) and
+ *  uses `INV_PI` (walkaroundUbo). Declared as `requires` so the topo-sort emits
+ *  this module AFTER those definitions. (`inverseSqrt` is a WGSL builtin.) */
 export const GRIS_REUSE_MODULE: WgslModule = {
   name: 'grisReuse',
   source: GRIS_REUSE_WGSL,

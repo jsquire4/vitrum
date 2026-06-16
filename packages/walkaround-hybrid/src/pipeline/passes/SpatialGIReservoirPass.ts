@@ -20,13 +20,11 @@
  * `gi-spatial-2` is kept for BOTH counts so the `shade` dependency + `id` stay
  * stable; a 1-pass config emits only `['gi-spatial-2']`.
  *
- * GRIS gate (`grisEnabled`) — opt-in via `HybridEngineOptions.restirPtReuse`.
- * The pipeline + shader are gated at COMPILE time (pipelineCompiler builds the
- * single-group layout + verbatim Sprint-17 shader when OFF, the two-group layout
- * + GRIS shader when ON). This pass mirrors that: it binds the scene group at
- * `@group(1)` for the reconnection-visibility ray ONLY when ON. Binding a group
- * the pipeline layout does not declare is what regressed the default render to
- * all-black (f8df9a4), so the default path must NOT call `setBindGroup(1, …)`.
+ * GRIS gate (`grisEnabled`) remains compile-time for the GRIS math branch, but
+ * both shader variants now bind the shared scene/material group at `@group(1)`.
+ * The default branch needs it to recast receiver material payloads for rich
+ * ReSTIR-GI receiver-lobe p-hat; the GRIS branch also traces reconnection
+ * visibility through the same group.
  *
  * R2 — `buildPassLayout` MUST be built with the same `giSpatialPasses` so the
  * timestamp slot layout matches the labels emitted here.
@@ -49,14 +47,10 @@ export class SpatialGIReservoirPass implements Pass {
 
   private readonly _pipeline: GPUComputePipeline;
   private readonly _passCount: 1 | 2;
-  /** GRIS (restirPtReuse) ON ⇒ bind the scene group at @group(1). Must match
-   *  the compile-time pipeline layout (see pipelineCompiler `grisOn`). */
-  private readonly _grisEnabled: boolean;
 
-  constructor(pipeline: GPUComputePipeline, passCount: 1 | 2 = 2, grisEnabled = false) {
+  constructor(pipeline: GPUComputePipeline, passCount: 1 | 2 = 2, _grisEnabled = false) {
     this._pipeline = pipeline;
     this._passCount = passCount;
-    this._grisEnabled = grisEnabled;
     this.passLabels = giSpatialPassLabels(passCount);
   }
 
@@ -71,12 +65,9 @@ export class SpatialGIReservoirPass implements Pass {
     const current = resources.restirGI.reservoirGiCurrentBuffer;
     const spatial = resources.restirGI.reservoirGiSpatialBuffer;
 
-    // group(1) — shared scene BVH/TLAS (GRIS reconnection-visibility ray).
-    // ONLY when the GRIS pipeline variant is active. Binding a group the
-    // default-path layout doesn't declare regressed to all-black (f8df9a4).
-    const giExtra = this._grisEnabled
-      ? { extraGroups: [{ slot: 1, group: sceneBindGroup }] as const }
-      : {};
+    // group(1) — shared scene BVH/TLAS/material atlas. Required by both the
+    // default receiver-lobe target and the GRIS reconnection-visibility path.
+    const giExtra = { extraGroups: [{ slot: 1, group: sceneBindGroup }] as const };
 
     // The 7-line dispatch block repeated ×3 across the 2-pass + 1-pass
     // branches, extracted to a local closure. Half-res dispatch.

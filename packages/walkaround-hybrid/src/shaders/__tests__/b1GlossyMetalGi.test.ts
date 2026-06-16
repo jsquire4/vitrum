@@ -91,12 +91,15 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
     expect(RIS_GI_NRC_BODY).not.toContain('if (isGlass || isMetal)');
   });
 
-  it('the GI producer keeps a single luminance target over material-shaded Lo', () => {
-    // p̂ is still formed from reservoir Lo, but Lo is now material-shaded at the
-    // suffix vertex instead of scalar base color only.
+  it('the GI producer targets the receiver lobe over material-shaded Lo', () => {
+    // p̂ is formed from reservoir Lo and the visible receiver material. Diffuse
+    // defaults still reduce to the old Lo*cos/pi target, but glossy/metal/clearcoat
+    // receivers now guide reservoir selection with their consuming lobe.
     expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
-    expect(RIS_GI_WGSL).toContain('luminance(Lo) * cosTheta * INV_PI');
+    expect(RIS_GI_WGSL).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
+    expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain('w = select(0.0, pHat / pCos, pCos > 1e-12);');
   });
 });
 

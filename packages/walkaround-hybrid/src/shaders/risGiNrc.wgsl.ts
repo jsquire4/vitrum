@@ -237,6 +237,20 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     scalarMatColor.rgb,
     sampleTransmissionMapForHit(hit, scalarMatColor.a),
   );
+  let receiverMaterialWordCoord = vec2u(
+    hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+    hit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+  );
+  let receiverMaterialWord = textureLoad(bvh_material, vec2i(receiverMaterialWordCoord), 0).r;
+  let receiverPayload = sampleRestirDIMaterialPayloadForHit(
+    hit,
+    smoothNormal,
+    normal,
+    scalarMatColor.rgb,
+    receiverMaterialWord,
+  );
+  let receiverClearcoatNormal = receiverPayload.clearcoatNormal;
+  let receiverWo = -primaryRay.direction;
   let isGlass = matColor.a > 0.3;
   if (isGlass) {
     storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
@@ -389,7 +403,15 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       Lo = envRadiance(wi);
     }
 
-    let pHat = luminance(Lo) * cosTheta * INV_PI;
+    let pHat = restir_gi_receiver_phat_from_payload(
+      pos,
+      normal,
+      receiverClearcoatNormal,
+      receiverWo,
+      receiverPayload,
+      xs,
+      Lo,
+    );
     if (pHat < 1e-9) { continue; }
 
     var w: f32;
@@ -399,7 +421,8 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
       w = select(0.0, pHat / pSrc, pSrc > 1e-12);
     } else {
-      w = luminance(Lo);
+      let pCos = cosTheta * INV_PI;
+      w = select(0.0, pHat / pCos, pCos > 1e-12);
     }
     updateReservoirGI(&r, xs, ns, Lo, w, &rng);
   }
@@ -422,8 +445,15 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         r.w_sum = 0.0;
         r.W = 0.0;
       } else {
-        let cosThetaZ = max(0.0, dot(r.nv, wiZ));
-        let pHatZ = luminance(r.Lo) * cosThetaZ * INV_PI;
+        let pHatZ = restir_gi_receiver_phat_from_payload(
+          pos,
+          normal,
+          receiverClearcoatNormal,
+          receiverWo,
+          receiverPayload,
+          r.xs,
+          r.Lo,
+        );
         let W_raw = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
         r.W = min(W_raw, ubo.restirGiWCap);
       }

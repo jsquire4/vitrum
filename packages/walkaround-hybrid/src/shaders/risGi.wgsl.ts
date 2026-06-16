@@ -14,16 +14,19 @@
  *      sampling the DDGI irradiance atlas, then applying the hit surface's
  *      mapped material response: diffuse albedo / π for ordinary suffixes,
  *      or the extension-aware GGX/clearcoat/sheen proxy for rich suffixes.
- *   3. p̂ = luminance(Lo) × cos(N_visible, wi) × INV_PI
+ *   3. p̂ = luminance(receiver contribution). Diffuse defaults are
+ *      luminance(Lo) × cos(N_visible, wi) × INV_PI; rich receivers add the
+ *      glossy/clearcoat/sheen lobes that shade will consume.
  *      pdf_source = the candidate's source pdf. Without path guiding this is
- *        the pure cosine-hemisphere pdf cos/π, so w_i = p̂/pdf = luminance(Lo)
+ *        the pure cosine-hemisphere pdf cos/π, so diffuse-default
+ *        w_i = p̂/pdf = luminance(Lo)
  *        (the cosθ cancels). With PPG guided sampling (ubo.ppgEnabled == 1) a
  *        Bernoulli(α) chooses guided-dTree vs cosine sampling, and the source
  *        pdf becomes the DEFENSIVE MIXTURE
  *          p_src = α·p_guide(wi) + (1−α)·cos/π        (Müller 2017 §3.4)
  *        evaluated for whichever wi was drawn; the explicit weight is then
- *        w_i = p̂ / p_src. α = 0 (PPG off) reduces this to luminance(Lo) exactly
- *        — the PPG-off path is bit-identical to the pre-PPG cosine kernel.
+ *        w_i = p̂ / p_src. α = 0 (PPG off) still reduces to luminance(Lo) for
+ *        default diffuse receivers, while rich receivers keep their lobe target.
  *   4. Visibility test on the chosen sample (one extra BVH ray).
  *   5. W = w_sum / (M · p̂(z)) per the standard RIS estimator
  *      (Talbot 2005 + ReSTIR DI 2020).
@@ -143,9 +146,9 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let normalMapped = applyNormalMapForHit(hit, smoothNormal);
   let normal = applyBumpMapForHit(hit, normalMapped);
   // B1 (road-to-100) — metals/glossy now get a GI reservoir. The reservoir uses
-  // cosine-hemisphere candidates and the visible-point target
-  // p̂ = luminance(Lo)·cosθ·INV_PI (UNCHANGED, preserving GRIS reuse +
-  // diffuse-default invariance). The suffix Lo is material-aware: ordinary
+  // cosine-hemisphere candidates and the visible-point receiver-lobe target.
+  // Diffuse-default p̂ remains luminance(Lo)·cosθ·INV_PI; rich receivers add
+  // their specular/clearcoat/sheen lobes. The suffix Lo is material-aware: ordinary
   // suffixes are DDGI irradiance * mapped albedo / π, while rich suffixes route
   // through the extension-aware GGX/clearcoat/sheen proxy. shade then reflects
   // this stored radiance off the receiver via the visible material's indirect
@@ -161,6 +164,20 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     scalarMatColor.rgb,
     sampleTransmissionMapForHit(hit, scalarMatColor.a),
   );
+  let receiverMaterialWordCoord = vec2u(
+    hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+    hit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+  );
+  let receiverMaterialWord = textureLoad(bvh_material, vec2i(receiverMaterialWordCoord), 0).r;
+  let receiverPayload = sampleRestirDIMaterialPayloadForHit(
+    hit,
+    smoothNormal,
+    normal,
+    scalarMatColor.rgb,
+    receiverMaterialWord,
+  );
+  let receiverClearcoatNormal = receiverPayload.clearcoatNormal;
+  let receiverWo = -primaryRay.direction;
   let isGlass = matColor.a > 0.3;
 
   // ── Glass refracted GI: 1-interface refraction walk ─────────────────────
@@ -253,6 +270,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     var walkHit: IntersectionResult;
     var walkHitPos: vec3f;
     var walkHitNormal: vec3f;
+    var walkSmoothNormal: vec3f;
     var foundSurface: bool = false;
 
     for (var gi: u32 = 0u; gi <= GLASS_WALK_MAX_EXTRA; gi = gi + 1u) {
@@ -282,7 +300,7 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         let wn_base = walkHit.instanceIndex * 4u;
         let wn_ok = wn_isTlas && wn_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
         let wn_i = select(0u, wn_base, wn_ok);
-        let walkSmoothNormal = smoothShadingNormal(
+        walkSmoothNormal = smoothShadingNormal(
           walkHit, walkHit.normal,
           bvh_normal[walkHit.indices.x].xyz,
           bvh_normal[walkHit.indices.y].xyz,
@@ -318,6 +336,20 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     var rGlass: ReservoirGI = emptyReservoirGI();
     rGlass.xv = walkHitPos;
     rGlass.nv = walkHitNormal;
+    let walkMaterialWordCoord = vec2u(
+      walkHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+      walkHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+    );
+    let walkMaterialWord = textureLoad(bvh_material, vec2i(walkMaterialWordCoord), 0).r;
+    let walkPayload = sampleRestirDIMaterialPayloadForHit(
+      walkHit,
+      walkSmoothNormal,
+      walkHitNormal,
+      decodeMaterialColor(walkHit.matColorPacked).rgb,
+      walkMaterialWord,
+    );
+    let walkClearcoatNormal = walkPayload.clearcoatNormal;
+    let walkWo = -refractDir;
 
     let tier_raw_g = textureLoad(gi_tier, vec2i(fullPx), 0).r;
     let tier_g = clamp(tier_raw_g, 1u, 4u);
@@ -367,11 +399,19 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         Lo_g = envRadiance(wi);
       }
 
-      let pHat_g = luminance(Lo_g) * cosTheta * INV_PI;
+      let pHat_g = restir_gi_receiver_phat_from_payload(
+        walkHitPos,
+        walkHitNormal,
+        walkClearcoatNormal,
+        walkWo,
+        walkPayload,
+        xs_g,
+        Lo_g,
+      );
       if (pHat_g < 1e-9) { continue; }
       // PPG is off for glass pixels (ppgMixAlpha=0 when glass → pure cosine).
-      // The alpha branch below is the same ppg-off shortcut as the opaque path.
-      let w_g = luminance(Lo_g);
+      let pCos_g = cosTheta * INV_PI;
+      let w_g = select(0.0, pHat_g / pCos_g, pCos_g > 1e-12);
       updateReservoirGI(&rGlass, xs_g, ns_g, Lo_g, w_g, &rng);
     }
 
@@ -394,10 +434,16 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
           rGlass.w_sum = 0.0;
           rGlass.W = 0.0;
         } else {
-          let cosThetaZ_g = max(0.0, dot(rGlass.nv, wiZ_g));
-          let pHatZ_g = luminance(rGlass.Lo) * cosThetaZ_g * INV_PI;
-          let W_raw_g = select(0.0, rGlass.w_sum / (f32(rGlass.M) * pHatZ_g), pHatZ_g > 1e-9);
-          rGlass.W = min(W_raw_g, ubo.restirGiWCap);
+          let pHatZ_g = restir_gi_receiver_phat_from_payload(
+            rGlass.xv,
+            rGlass.nv,
+            walkClearcoatNormal,
+            walkWo,
+            walkPayload,
+            rGlass.xs,
+            rGlass.Lo,
+          );
+          finaliseGIReservoirWFromPHat(&rGlass, ubo.restirGiWCap, false, pHatZ_g);
         }
       } else {
         rGlass.W = 0.0;
@@ -427,11 +473,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // EXACTLY 0 otherwise. The host writes ppgEnabled=0 / ppgMixAlpha=0 whenever
   // PPG is off (see uboUpdater.ts), so on the PPG-off path:
   //   - the Bernoulli branch below is gated on alpha > 0.0, so NO extra RNG
-  //     draw is consumed → the rng stream is byte-identical to the pre-PPG
-  //     pure-cosine path, and
-  //   - p_src = (1−0)·p_cos = cosθ/π, so the explicit RIS weight
-  //     w = pHat / p_src reduces to EXACTLY luminance(Lo) (the cosine
-  //     shortcut). ppg-OFF is bit-identical.
+  //     draw is consumed → the rng stream stays stable, and
+  //   - p_src = (1−0)·p_cos = cosθ/π, so the explicit RIS weight uses the
+  //     receiver-lobe target divided by the cosine source pdf. For default
+  //     diffuse receivers this algebraically reduces to luminance(Lo); rich
+  //     material receivers now guide the reservoir by their actual lobes.
   let ppgGuidedOn = (ubo.ppgEnabled == 1u);
   let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);
 
@@ -517,19 +563,25 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       Lo = envRadiance(wi);
     }
 
-    // p̂ at the visible point for this candidate (the RIS target function —
-    // cosine-weighted reconnection radiance luminance). Unchanged by PPG.
-    let pHat = luminance(Lo) * cosTheta * INV_PI;
+    // p̂ at the visible point for this candidate. Diffuse defaults retain the
+    // old luminance(Lo)·cosθ/π target; rich receivers add glossy/clearcoat/sheen
+    // lobes so reservoir selection follows the material that will consume it.
+    let pHat = restir_gi_receiver_phat_from_payload(
+      pos,
+      normal,
+      receiverClearcoatNormal,
+      receiverWo,
+      receiverPayload,
+      xs,
+      Lo,
+    );
     if (pHat < 1e-9) { continue; }
 
     // RIS candidate weight w = p̂ / p_src.
     //
     // ppg-OFF (alpha == 0): the RIS source pdf is the pure cosine pdf
-    //   p_src = cosθ/π, and the weight algebraically cancels the cosθ in p̂:
-    //     w = (luminance(Lo)·cosθ·INV_PI) / (cosθ·INV_PI) = luminance(Lo)
-    //   We take the literal shortcut here (NOT the division) so the PPG-off
-    //   path is BIT-IDENTICAL to the pre-PPG kernel — no ULP drift from a
-    //   round-trip multiply/divide.
+    //   p_src = cosθ/π. Diffuse defaults still reduce to luminance(Lo);
+    //   rich-material receivers keep the full p̂ / p_src ratio.
     //
     // ppg-ON (alpha > 0): the RIS source pdf is the DEFENSIVE MIXTURE
     //   (Müller §3.4)   p_src = α·p_guide(wi) + (1−α)·p_cos(wi)
@@ -547,7 +599,8 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
       w = select(0.0, pHat / pSrc, pSrc > 1e-12);
     } else {
-      w = luminance(Lo);
+      let pCos = cosTheta * INV_PI;
+      w = select(0.0, pHat / pCos, pCos > 1e-12);
     }
     updateReservoirGI(&r, xs, ns, Lo, w, &rng);
   }
@@ -573,8 +626,15 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         r.w_sum = 0.0;
         r.W = 0.0;
       } else {
-        let cosThetaZ = max(0.0, dot(r.nv, wiZ));
-        let pHatZ = luminance(r.Lo) * cosThetaZ * INV_PI;
+        let pHatZ = restir_gi_receiver_phat_from_payload(
+          pos,
+          normal,
+          receiverClearcoatNormal,
+          receiverWo,
+          receiverPayload,
+          r.xs,
+          r.Lo,
+        );
         let W_raw = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 1e-9);
         // Cap W to bound firefly contribution from tiny pHat denominators
         // (grazing cos or near-zero Lo luminance). Cornell default 16.0

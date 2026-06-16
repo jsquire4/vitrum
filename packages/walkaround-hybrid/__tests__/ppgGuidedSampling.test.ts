@@ -5,9 +5,9 @@
  * source pdf) and `ppgPdf.wgsl.ts` (the dTree pdf-eval that the gi-ris loop
  * evaluates for the chosen direction). They pin:
  *
- *   (a) ppg-OFF (α = 0) → the explicit RIS weight reduces EXACTLY (bit-for-bit
- *       in f64; the WGSL takes the literal shortcut to avoid even an f32 ULP)
- *       to the pre-PPG cosine shortcut `luminance(Lo)`.
+ *   (a) ppg-OFF (α = 0) → diffuse-default receivers reduce algebraically to the
+ *       pre-PPG cosine shortcut `luminance(Lo)`. Rich receivers keep the full
+ *       receiver-lobe target divided by the cosine source pdf.
  *   (b) ppg-ON (α > 0) → the WEIGHT uses the mixture
  *       p_src = α·p_guide + (1−α)·p_cos (not just sampling).
  *   (c) The GPU-port p_guide (sTree descent → dTree flux-proportional pdf)
@@ -94,7 +94,7 @@ function gpuPortEvalPdf(
 }
 
 // ── The exact gi-ris explicit RIS weight (CPU port of risGi.wgsl) ───────────
-//   ppg-OFF (alpha == 0): w = luminance(Lo)  (literal cosine shortcut)
+//   ppg-OFF (alpha == 0): diffuse-default pHat / pCos == luminance(Lo)
 //   ppg-ON  (alpha > 0):  w = pHat / (alpha·pGuide + (1-alpha)·pCos)
 //                         pHat = luminance(Lo)·cosθ·INV_PI ; pCos = cosθ·INV_PI
 function risGiWeight(
@@ -137,7 +137,7 @@ describe('W9 gi-ris — ppg-OFF explicit RIS weight bit-identity (α = 0)', () =
       { Lo: [0.001, 0.002, 0.0005], cos: 0.3 },
     ];
     for (const { Lo, cos } of cases) {
-      // α = 0 path takes the literal shortcut → EXACTLY luminance(Lo).
+      // α = 0 diffuse-default path algebraically reduces to luminance(Lo).
       const w = risGiWeight(Lo, cos, 0, /*pGuide unused*/ 1.23);
       expect(w).toBe(luminance(Lo));
     }
@@ -416,8 +416,9 @@ describe('W9 gi-ris — WGSL structure pins', () => {
     expect(RIS_GI_WGSL).toContain('w = select(0.0, pHat / pSrc, pSrc > 1e-12)');
   });
 
-  it('risGi keeps the literal luminance(Lo) shortcut on the α==0 path', () => {
-    expect(RIS_GI_WGSL).toMatch(/\} else \{\s*\n\s*w = luminance\(Lo\);/);
+  it('risGi keeps the receiver-lobe target on the α==0 path', () => {
+    expect(RIS_GI_WGSL).toMatch(/\} else \{\s*\n\s*let pCos = cosTheta \* INV_PI;\s*\n\s*w = select\(0\.0, pHat \/ pCos, pCos > 1e-12\);/);
+    expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
   });
 
   it('risGi requires the ppgPdf module', () => {

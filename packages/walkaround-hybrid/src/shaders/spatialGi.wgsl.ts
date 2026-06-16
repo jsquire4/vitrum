@@ -20,33 +20,32 @@
  * GRIS reconnection-shift reuse (Phases 1+2; Lin et al. 2022) is an OPT-IN
  * feature gated by `HybridEngineOptions.restirPtReuse`. The gate is resolved at
  * PIPELINE-COMPILE time (the flag is fixed at engine creation), NOT at runtime,
- * because turning it on STRUCTURALLY changes this pass's pipeline:
- *   - the ON shader declares a `@group(1)` scene BVH/TLAS bind group (for the
- *     reconnection-visibility ray) and a GRIS combine branch;
- *   - the OFF shader has NEITHER — it is the verbatim Sprint-17 single-group
- *     pass (`@group(0)` only).
+ * because turning it on STRUCTURALLY changes this pass's reservoir cache stride
+ * and shader body:
+ *   - the ON shader adds a GRIS combine branch and reconnection-visibility ray;
+ *   - the OFF shader keeps standard spatial reuse.
  * A runtime `ubo.restirPtReuse` flag is NOT sufficient: binding a second group
- * and changing the pipeline layout alters the DEFAULT pipeline structure, which
- * regressed the default walkaround render to an all-black frame (the original
- * f8df9a4 bug). An opt-in feature must not change the default pipeline at all,
- * so the structure is gated at compile time:
- *   - {@link SPATIAL_GI_MODULE}      — OFF (default). Single `@group(0)` layout,
- *                                       byte-for-byte the pre-GRIS Sprint-17 pass.
- *   - {@link SPATIAL_GI_GRIS_MODULE} — ON. Adds the `@group(1)` scene group + the
- *                                       GRIS branch + the `sceneTraversal`/`grisReuse`
- *                                       module deps.
+ * or changing the cache layout only on some frames would alter the DEFAULT
+ * pipeline structure, which regressed the default walkaround render to an
+ * all-black frame (the original f8df9a4 bug). Both variants now bind the shared
+ * `@group(1)` scene/material group because receiver-lobe p-hat recasts need it
+ * even in the default path:
+ *   - {@link SPATIAL_GI_MODULE}      — OFF (default). Standard spatial reuse
+ *                                       with receiver-material p-hat recast.
+ *   - {@link SPATIAL_GI_GRIS_MODULE} — ON. Adds the GRIS branch + the
+ *                                       `sceneTraversal`/`grisReuse` deps.
  * {@link compilePipelines} composes whichever module matches the host flag and
- * builds the matching pipeline layout (1 group when OFF, 2 when ON);
- * {@link SpatialGIReservoirPass} only calls `setBindGroup(1, …)` when ON.
+ * builds the matching shader body; {@link SpatialGIReservoirPass} always binds
+ * `@group(1)`.
  *
  * Bindings (ping-pong via two distinct bind groups that swap
  * reservoirGiCurrent / reservoirGiSpatial between in and out):
  *   @group(0) @binding(0) input  reservoir (storage, read)
  *   @group(0) @binding(1) output reservoir (storage, read_write)
  *   @group(0) @binding(2) WalkaroundUBO    (uniform)
- *   @group(1)             scene BVH/TLAS   (read-only storage) — ONLY in the ON
- *                         (GRIS) variant; the reconnection-visibility ray
- *                         traverses it.
+ *   @group(1)             scene BVH/TLAS/material atlas (read-only) — both
+ *                         variants use it for receiver-material p-hat recasts;
+ *                         GRIS also traces reconnection visibility through it.
  *
  * GRIS combine (ON variant only): when reused, combining neighbour q's reservoir
  * into pixel r takes the UNBIASED GRIS path instead of the legacy clamped-Jacobian
@@ -67,15 +66,24 @@
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 // ════════════════════════════════════════════════════════════════════════════
-// OFF (default) — verbatim Sprint-17 spatial reuse. Single @group(0) bindings,
-// no scene BVH group, no GRIS branch. This is the known-good default pipeline:
-// byte-for-byte the pre-f8df9a4 (commit 2e82c52) shader.
+// OFF (default) — Sprint-17 spatial reuse plus receiver-material p-hat recast.
+// The GRIS branch stays absent, but @group(1) is bound so rich receivers use the
+// same material-aware target as the RIS producer.
 // ════════════════════════════════════════════════════════════════════════════
 export const SPATIAL_GI_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var<storage, read>       sgi_resIn:  array<u32>;
 @group(0) @binding(1) var<storage, read_write> sgi_resOut: array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
+
+@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
+@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
+@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
+@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
+@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 @compute @workgroup_size(8, 8, 1)
 fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -91,6 +99,11 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     storeReservoirGI_rw(&sgi_resOut, pixelIdx, rCenter);
     return;
   }
+
+  let centerFullPx = gid.xy * 2u + 1u;
+  let vp = ubo.projMatrix * ubo.viewMatrix;
+  let invVP = invertMat4_common(vp);
+  let centerSurf = castPrimary(centerFullPx, fullDims, ubo.cameraPos, invVP);
 
   var rng = pcgInit(
     gid.x ^ (ubo.frameSeed * 0xA127u),
@@ -128,8 +141,13 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     let distS = length(toS);
     if (distS < 1e-4) { continue; }
     let wiZ = toS / distS;
-    let cosThetaZ = max(0.0, dot(rCenter.nv, wiZ));
-    let pHatZ = luminance(rQ.Lo) * cosThetaZ * INV_PI;
+    let pHatZ = restir_gi_receiver_phat_from_surface_or_geometry(
+      centerSurf,
+      rCenter.xv,
+      rCenter.nv,
+      rQ.xs,
+      rQ.Lo,
+    );
     if (pHatZ < 1e-9) { continue; }
 
     let Mq = min(rQ.M, M_CLAMP_SPATIAL);
@@ -141,7 +159,14 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Finalise W from the chosen sample's p̂ at this pixel.
   // D5.3 (gris=false): standard RIS — divide by M (MIS weight 1 per candidate).
-  finaliseGIReservoirW(&rOut, ubo.restirGiWCap, false);
+  let pHatOut = restir_gi_receiver_phat_from_surface_or_geometry(
+    centerSurf,
+    rOut.xv,
+    rOut.nv,
+    rOut.xs,
+    rOut.Lo,
+  );
+  finaliseGIReservoirWFromPHat(&rOut, ubo.restirGiWCap, false, pHatOut);
 
   storeReservoirGI_rw(&sgi_resOut, pixelIdx, rOut);
 }
@@ -161,7 +186,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const SPATIAL_GI_MODULE: WgslModule = {
   name: 'spatialGi',
   source: SPATIAL_GI_WGSL,
-  requires: ['walkaroundUbo', 'spatialGiCommon', 'reservoirGi', 'sharedPrimitives', 'jacobianShift'],
+  requires: ['walkaroundUbo', 'spatialGiCommon', 'reservoirGi', 'sharedPrimitives', 'jacobianShift', 'cameraRays', 'sceneTraversal', 'restirCastPrimary', 'restirGiMaterial'],
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -176,19 +201,17 @@ export const SPATIAL_GI_GRIS_WGSL = /* wgsl */ `
 @group(0) @binding(1) var<storage, read_write> sgi_resOut: array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
-// Scene group (group 1) — BVH + TLAS buffers for the GRIS reconnection-
-// visibility ray. Same binding layout as the shared scene bind group
-// (bindGroupDescriptors 'scene'); present ONLY in the GRIS (restirPtReuse ON)
-// variant of this pass, so the default pipeline never declares it.
-@group(1) @binding(0) var<storage, read> sgi_bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> sgi_bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> sgi_bvh_position: array<vec4f>;
-@group(1) @binding(6) var<storage, read> sgi_tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> sgi_tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> sgi_tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> sgi_tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> sgi_tlasInstanceLocalToWorld: array<vec4f>;
-@group(1) @binding(14) var sgi_bvh_material: texture_2d<u32>;
+// Scene group (group 1) — BVH + TLAS + material atlas. The default variant
+// binds the same group for receiver-material p-hat recasts; the GRIS variant
+// additionally uses it for reconnection visibility.
+@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
+@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
+@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
+@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
+@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 // Normal bias for the GRIS reconnection-visibility ray origin (lift off the
 // surface so the ray does not self-intersect the visible point's triangle).
@@ -208,11 +231,11 @@ fn grisReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
   let orig = xv + nv * GRIS_NORMAL_BIAS;
   let occ = traceSceneAnyCastMask(
     ubo.bvhMode, ubo.tlasNodeCount,
-    &sgi_bvh_index, &sgi_bvh_position, &sgi_bvh,
-    &sgi_tlasNodes, &sgi_tlasInstanceIndices, &sgi_tlasBlasRoots,
-    &sgi_tlasInstanceWorldToLocal, &sgi_tlasInstanceLocalToWorld,
+    &bvh_index, &bvh_position, &bvh,
+    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
     orig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
-    sgi_bvh_material, BVH_MATERIAL_TEX_WIDTH);
+    bvh_material, BVH_MATERIAL_TEX_WIDTH);
   return !occ;
 }
 
@@ -231,6 +254,11 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
+  let centerFullPx = gid.xy * 2u + 1u;
+  let vp = ubo.projMatrix * ubo.viewMatrix;
+  let invVP = invertMat4_common(vp);
+  let centerSurf = castPrimary(centerFullPx, fullDims, ubo.cameraPos, invVP);
+
   var rng = pcgInit(
     gid.x ^ (ubo.frameSeed * 0xA127u),
     gid.y ^ (ubo.frameSeed * 0x271Au),
@@ -244,7 +272,13 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   rOut.xv = rCenter.xv; rOut.nv = rCenter.nv;
   rOut.prefixVertexCount = rCenter.prefixVertexCount;
 
-  let pHatCanonNative = grisTargetAt(rCenter.xv, rCenter.nv, rCenter.xs, rCenter.Lo);
+  let pHatCanonNative = restir_gi_receiver_phat_from_surface_or_geometry(
+    centerSurf,
+    rCenter.xv,
+    rCenter.nv,
+    rCenter.xs,
+    rCenter.Lo,
+  );
   let cR = f32(rCenter.M);
 
   // ── GRIS combine via the EXACT generalized balance heuristic (Lin 2022;
@@ -258,10 +292,11 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   //   m_i(z) = c_i·p̂_i(z) / Σ_j c_j·p̂_j(T_{·→j} z)
   // where the sum runs over the canonical AND every accepted neighbour, and the
   // shift T_{·→j} re-roots z's reconnection vertex onto domain j's primary
-  // vertex (xs/Lo fixed; the per-domain target is grisTargetAt(xv_j, nv_j, z.xs,
-  // z.Lo)). This requires the full domain set up front, so we GATHER accepted
-  // neighbours into a small fixed array (≤ K_SPATIAL_GI) in pass 1, then fold
-  // each sample with its full-GBH weight in pass 2. The reused-reservoir
+  // vertex (xs/Lo fixed; the per-domain target is the receiver-lobe p̂ evaluated
+  // by restir_gi_receiver_phat_from_surface_or_geometry). This requires the full
+  // domain set up front, so we GATHER accepted neighbours into a small fixed
+  // array (≤ K_SPATIAL_GI) in pass 1, then fold each sample with its full-GBH
+  // weight in pass 2. The reused-reservoir
   // resampling weight is  w_i = m_i · p̂_r(T_{i→r} z_i) · W_i · |∂T_{i→r}/∂·|
   // (no /p_src — W_i already bakes in the source pdf; the Jacobian alone carries
   // the reconnection-edge measure conversion).
@@ -274,6 +309,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   var qXs:  array<vec3f, 5>;
   var qNs:  array<vec3f, 5>;
   var qLo:  array<vec3f, 5>;
+  var qSurf: array<PrimarySurface, 5>;
   var qC:   array<f32, 5>;
   var qW:   array<f32, 5>;
   var qJ:   array<f32, 5>;
@@ -312,9 +348,24 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     if (J <= 0.0) { continue; }
 
     // Non-degenerate shifted + native targets, else q contributes nothing.
-    let pHatQ_atR = grisTargetAt(rCenter.xv, rCenter.nv, rQ.xs, rQ.Lo);
+    let qFullPx = vec2u(u32(qx), u32(qy)) * 2u + 1u;
+    let surfQ = castPrimary(qFullPx, fullDims, ubo.cameraPos, invVP);
+
+    let pHatQ_atR = restir_gi_receiver_phat_from_surface_or_geometry(
+      centerSurf,
+      rCenter.xv,
+      rCenter.nv,
+      rQ.xs,
+      rQ.Lo,
+    );
     if (pHatQ_atR < 1e-9) { continue; }
-    let pHatQ_native = grisTargetAt(rQ.xv, rQ.nv, rQ.xs, rQ.Lo);
+    let pHatQ_native = restir_gi_receiver_phat_from_surface_or_geometry(
+      surfQ,
+      rQ.xv,
+      rQ.nv,
+      rQ.xs,
+      rQ.Lo,
+    );
     if (pHatQ_native < 1e-9) { continue; }
 
     // Reconnection VISIBILITY — required for unbiasedness. If the shifted edge
@@ -324,6 +375,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     let Mq = min(rQ.M, M_CLAMP_SPATIAL);
     qXv[nQ] = rQ.xv; qNv[nQ] = rQ.nv;
     qXs[nQ] = rQ.xs; qNs[nQ] = rQ.ns; qLo[nQ] = rQ.Lo;
+    qSurf[nQ] = surfQ;
     qC[nQ] = f32(Mq); qW[nQ] = rQ.W; qJ[nQ] = J;
     nQ = nQ + 1u;
   }
@@ -336,7 +388,13 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   if (rCenter.M > 0u && pHatCanonNative > 1e-9) {
     var denomR = cR * pHatCanonNative;            // canonical's own term (J·target native)
     for (var j: u32 = 0u; j < nQ; j = j + 1u) {
-      denomR += qC[j] * grisTargetAt(qXv[j], qNv[j], rCenter.xs, rCenter.Lo);
+      denomR += qC[j] * restir_gi_receiver_phat_from_surface_or_geometry(
+        qSurf[j],
+        qXv[j],
+        qNv[j],
+        rCenter.xs,
+        rCenter.Lo,
+      );
     }
     let m_canon = select(0.0, (cR * pHatCanonNative) / denomR, denomR > 1e-12);
     // No shift for the canonical's own sample (already at this pixel; J = 1).
@@ -347,15 +405,39 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Each neighbour's sample z_q — same full-GBH denominator over all domains.
   for (var i: u32 = 0u; i < nQ; i = i + 1u) {
-    let pHatQ_native = grisTargetAt(qXv[i], qNv[i], qXs[i], qLo[i]);
+    let pHatQ_native = restir_gi_receiver_phat_from_surface_or_geometry(
+      qSurf[i],
+      qXv[i],
+      qNv[i],
+      qXs[i],
+      qLo[i],
+    );
     // GBH denominator: canonical's target for z_q + every neighbour's target.
-    var denomQ = cR * grisTargetAt(rCenter.xv, rCenter.nv, qXs[i], qLo[i]);
+    var denomQ = cR * restir_gi_receiver_phat_from_surface_or_geometry(
+      centerSurf,
+      rCenter.xv,
+      rCenter.nv,
+      qXs[i],
+      qLo[i],
+    );
     for (var j: u32 = 0u; j < nQ; j = j + 1u) {
-      denomQ += qC[j] * grisTargetAt(qXv[j], qNv[j], qXs[i], qLo[i]);
+      denomQ += qC[j] * restir_gi_receiver_phat_from_surface_or_geometry(
+        qSurf[j],
+        qXv[j],
+        qNv[j],
+        qXs[i],
+        qLo[i],
+      );
     }
     let m_q = select(0.0, (qC[i] * pHatQ_native) / denomQ, denomQ > 1e-12);
     // p̂_r(T z_q): q's sample re-rooted onto the canonical primary vertex.
-    let pHatQ_atR = grisTargetAt(rCenter.xv, rCenter.nv, qXs[i], qLo[i]);
+    let pHatQ_atR = restir_gi_receiver_phat_from_surface_or_geometry(
+      centerSurf,
+      rCenter.xv,
+      rCenter.nv,
+      qXs[i],
+      qLo[i],
+    );
     let w_q = m_q * pHatQ_atR * qW[i] * qJ[i];
     updateReservoirGI(&rOut, qXs[i], qNs[i], qLo[i], w_q, &rng);
     rOut.M = rOut.M + u32(qC[i]);
@@ -365,7 +447,14 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // D5.3 (gris=true): GRIS reuse — W = w_sum / p̂ (the per-sample MIS weights
   // m_i already sum to 1; dividing by M again would under-energise the estimate).
   // Lin 2022 §generalised RIS: W = w_sum / p̂(z) with Σ m_i = 1.
-  finaliseGIReservoirW(&rOut, ubo.restirGiWCap, true);
+  let pHatOut = restir_gi_receiver_phat_from_surface_or_geometry(
+    centerSurf,
+    rOut.xv,
+    rOut.nv,
+    rOut.xs,
+    rOut.Lo,
+  );
+  finaliseGIReservoirWFromPHat(&rOut, ubo.restirGiWCap, true, pHatOut);
 
   // GRIS — refresh the Phase-0 reconnection-shift cache on the chosen sample so
   // the NEXT reuse pass (the ping-pong second spatial dispatch, or the next
@@ -396,12 +485,14 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
  *  ADDS:
  *    - `BVHNode` / `traceSceneAny`           → sceneTraversal (GRIS
  *                                              reconnection-visibility ray)
- *    - `grisReconnectionGeometryTerm` / `grisShiftJacobian` / `grisTargetAt` /
+ *    - `grisReconnectionGeometryTerm` / `grisShiftJacobian` /
  *      `grisPairwiseDenom*`                  → grisReuse (GRIS Phase 1+2)
- *  Composed ONLY when the host opts into restirPtReuse; the OFF default never
- *  emits the @group(1) bindings or the GRIS branch. */
+ *    - `castPrimary` + receiver-lobe p̂      → restirCastPrimary/restirGiMaterial
+ *  Composed ONLY when the host opts into restirPtReuse; both variants emit the
+ *  same @group(1) scene/material bindings, while only this variant emits the
+ *  GRIS branch. */
 export const SPATIAL_GI_GRIS_MODULE: WgslModule = {
   name: 'spatialGiGris',
   source: SPATIAL_GI_GRIS_WGSL,
-  requires: ['walkaroundUbo', 'spatialGiCommon', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'grisReuse', 'materialDecode'],
+  requires: ['walkaroundUbo', 'spatialGiCommon', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'grisReuse', 'materialDecode', 'cameraRays', 'restirCastPrimary', 'restirGiMaterial'],
 };

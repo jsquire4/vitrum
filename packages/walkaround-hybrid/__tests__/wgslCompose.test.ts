@@ -60,6 +60,7 @@ import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
 import { SCENE_TRAVERSAL_WGSL } from '../src/shaders/sceneTraversal.wgsl.js';
 import { RESERVOIR_GI_WGSL } from '../src/shaders/reservoirGi.wgsl.js';
 import { SHARED_PRIMITIVES_WGSL } from '../src/shaders/sharedPrimitives.wgsl.js';
+import { GGX_BRDF_WGSL } from '../src/shaders/ggxBrdf.wgsl.js';
 import { MATERIAL_DECODE_WGSL } from '../src/shaders/materialDecode.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../src/shaders/materialAtlas.wgsl.js';
 import { CAMERA_RAYS_WGSL } from '../src/shaders/cameraRays.wgsl.js';
@@ -77,6 +78,7 @@ import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
 import { SCREEN_COORD_HELPERS_WGSL } from '../src/shaders/screenCoordHelpers.wgsl.js';
 import { RESTIR_PHAT_WGSL } from '../src/shaders/restirPHat.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../src/shaders/restirCastPrimary.wgsl.js';
+import { RESTIR_GI_MATERIAL_WGSL } from '../src/shaders/restirGiMaterial.wgsl.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { LIGHT_TREE_WGSL } from '../src/shaders/lightTree.wgsl.js';
 import { REGIR_WGSL } from '../src/shaders/regir.wgsl.js';
@@ -333,6 +335,8 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SHARED_PRIMITIVES_WGSL +
       MATERIAL_DECODE_WGSL +
       MATERIAL_ATLAS_WGSL +
+      GGX_BRDF_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
       CAMERA_RAYS_WGSL +
       DDGI_SAMPLE_WGSL +
       DDGI_GRID_UBO_WGSL +
@@ -357,6 +361,11 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SHARED_PRIMITIVES_WGSL +
       JACOBIAN_SHIFT_WGSL +
       CAMERA_RAYS_WGSL +
+      MATERIAL_DECODE_WGSL +
+      MATERIAL_ATLAS_WGSL +
+      RESTIR_CAST_PRIMARY_WGSL +
+      GGX_BRDF_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
       TEMPORAL_GI_WGSL,
     );
   });
@@ -375,6 +384,10 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       CAMERA_RAYS_WGSL +
       GRIS_REUSE_WGSL +
       MATERIAL_DECODE_WGSL +
+      MATERIAL_ATLAS_WGSL +
+      RESTIR_CAST_PRIMARY_WGSL +
+      GGX_BRDF_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
       TEMPORAL_GI_GRIS_WGSL,
     );
   });
@@ -390,6 +403,13 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       RESERVOIR_GI_WGSL +
       SHARED_PRIMITIVES_WGSL +
       JACOBIAN_SHIFT_WGSL +
+      CAMERA_RAYS_WGSL +
+      SCENE_TRAVERSAL_WGSL +
+      MATERIAL_DECODE_WGSL +
+      MATERIAL_ATLAS_WGSL +
+      RESTIR_CAST_PRIMARY_WGSL +
+      GGX_BRDF_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
       SPATIAL_GI_WGSL,
     );
   });
@@ -408,6 +428,11 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SHARED_PRIMITIVES_WGSL +
       GRIS_REUSE_WGSL +
       MATERIAL_DECODE_WGSL +
+      CAMERA_RAYS_WGSL +
+      MATERIAL_ATLAS_WGSL +
+      RESTIR_CAST_PRIMARY_WGSL +
+      GGX_BRDF_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
       SPATIAL_GI_GRIS_WGSL,
     );
   });
@@ -560,36 +585,33 @@ describe('T9-stepC — static cross-module identifier resolution', () => {
         'evalGGX', 'sampleEmitterPoint', 'loadReservoirDI_rw',
         'jacobianReconnectionShift', 'WelfordVariance',
       ],
-      // spatialGi (OFF, default): no primary cast, no BRDF, no emitters, NO
-      // scene traversal, NO GRIS. This is the verbatim Sprint-17 pass — the
-      // f8df9a4 black-frame fix moved the @group(1) scene BVH + grisReuse into
-      // the SEPARATE `spatialGiGris` root, so the default closure must NOT pull
-      // them (this is exactly the structural guarantee that was missing).
+      // spatialGi (OFF, default): now casts the primary receiver and evaluates
+      // receiver-lobe GI p-hat, so BRDF/camera traversal are expected. It still
+      // carries no emitters and no GRIS branch.
       spatialGi: [
-        'evalGGX', 'sampleEmitterPoint', 'BVHNode', 'traceSceneFirstHit',
-        'generatePrimaryRay_common', 'grisShiftJacobian', 'grisTargetAt',
+        'sampleEmitterPoint', 'grisShiftJacobian', 'grisTargetAt',
       ],
-      // spatialGiGris (ON): adds sceneTraversal (reconnection-visibility ray) +
-      // grisReuse, but still no primary cast / BRDF / emitter, and DROPS the
-      // legacy jacobianReconnectionShift (grisShiftJacobian replaces it).
+      // spatialGiGris (ON): adds sceneTraversal (reconnection-visibility ray),
+      // primary receiver recast, receiver-lobe BRDF target and grisReuse, but
+      // still no emitter sampling and DROPS the legacy jacobianReconnectionShift.
       spatialGiGris: [
-        'evalGGX', 'sampleEmitterPoint', 'generatePrimaryRay_common',
-        'jacobianReconnectionShift',
+        'sampleEmitterPoint', 'jacobianReconnectionShift',
       ],
-      // temporalGi (OFF, default): reprojects (needs cameraRays) but no BRDF /
-      // emitters, NO GRIS. The default closure must NOT pull grisReuse.
+      // temporalGi (OFF, default): reprojects and recasts receiver material, but
+      // no emitters and NO GRIS. The default closure must NOT pull grisReuse.
       temporalGi: [
-        'evalGGX', 'sampleEmitterPoint', 'WelfordVariance',
+        'sampleEmitterPoint', 'WelfordVariance',
         'grisShiftJacobian', 'grisTargetAt',
       ],
-      // temporalGiGris (ON): adds grisReuse + uses sceneTraversal, drops the
-      // legacy jacobianReconnectionShift.
+      // temporalGiGris (ON): adds grisReuse + receiver material recast, drops
+      // the legacy jacobianReconnectionShift.
       temporalGiGris: [
-        'evalGGX', 'sampleEmitterPoint', 'WelfordVariance',
+        'sampleEmitterPoint', 'WelfordVariance',
         'jacobianReconnectionShift',
       ],
-      // risGi: casts primary + DDGI, but no emitter sampling / GGX / welford.
-      risGi: ['evalGGX', 'sampleEmitterPoint', 'WelfordVariance', 'jacobianReconnectionShift'],
+      // risGi: casts primary + DDGI + receiver-lobe GI material target, but no
+      // emitter sampling / welford / legacy jacobian.
+      risGi: ['sampleEmitterPoint', 'WelfordVariance', 'jacobianReconnectionShift'],
     };
     for (const [name, dropped] of Object.entries(droppedExpectations)) {
       const composed = composeWgsl(WGSL_MODULES.get(name)!, WGSL_MODULES);

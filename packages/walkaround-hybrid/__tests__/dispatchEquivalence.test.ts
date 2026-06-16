@@ -333,14 +333,15 @@ describe('Theme-E dispatch equivalence — single-bind-group passes', () => {
   });
 });
 
-describe('Theme-E dispatch equivalence — GRIS scene-bind routing (#3)', () => {
-  it('TemporalGIReservoirPass: default = slot-0 only, half-res 2x2', () => {
+describe('Theme-E dispatch equivalence — GI scene-bind routing (#3)', () => {
+  it('TemporalGIReservoirPass: default = slot-0 + receiver-material scene@slot-1, half-res 2x2', () => {
     const { encoder, records } = makeRecordingEncoder();
     const ctx = makeCtx(encoder);
     new TemporalGIReservoirPass(stubPipeline('giT'), /* grisEnabled */ false).dispatch(ctx);
     expect(records).toHaveLength(1);
     expect(records[0]!.label).toBe('gi-temporal');
-    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0]);
+    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1]);
+    expect((records[0]!.binds[1]!.group as { __tag: string }).__tag).toBe('sceneBG');
     expect(records[0]!.dims).toEqual([2, 2, 1]);
   });
 
@@ -353,12 +354,13 @@ describe('Theme-E dispatch equivalence — GRIS scene-bind routing (#3)', () => 
     expect((records[0]!.binds[1]!.group as { __tag: string }).__tag).toBe('sceneBG');
   });
 
-  it('SpatialGIReservoirPass (2-pass): two half-res dispatches, terminal label gi-spatial-2', () => {
+  it('SpatialGIReservoirPass (2-pass): two half-res dispatches with scene@slot-1, terminal label gi-spatial-2', () => {
     const { encoder, records } = makeRecordingEncoder();
     const ctx = makeCtx(encoder);
     new SpatialGIReservoirPass(stubPipeline('giS'), 2, false).dispatch(ctx);
     expect(records.map((r) => r.label)).toEqual(['gi-spatial-1', 'gi-spatial-2']);
-    expect(records.every((r) => r.binds.map((b) => b.slot).join() === '0')).toBe(true);
+    expect(records.every((r) => r.binds.map((b) => b.slot).join() === '0,1')).toBe(true);
+    expect(records.every((r) => (r.binds[1]!.group as { __tag: string }).__tag === 'sceneBG')).toBe(true);
     expect(records.every((r) => r.dims.join() === '2,2,1')).toBe(true);
   });
 
@@ -368,6 +370,8 @@ describe('Theme-E dispatch equivalence — GRIS scene-bind routing (#3)', () => 
     new SpatialGIReservoirPass(stubPipeline('giS'), 1, false).dispatch(ctx);
     expect(records).toHaveLength(1);
     expect(records[0]!.label).toBe('gi-spatial-2');
+    expect(records[0]!.binds.map((b) => b.slot)).toEqual([0, 1]);
+    expect((records[0]!.binds[1]!.group as { __tag: string }).__tag).toBe('sceneBG');
     expect(records[0]!.dims).toEqual([2, 2, 1]);
     // The 1-pass branch copies spatial → current (current.size = 512).
     expect(copies).toEqual([{ kind: 'buffer', size: 512 }]);

@@ -183,7 +183,8 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
 
   it('canonical temporal/spatial primary cast uses the same smooth shading normal for p-hat inputs', () => {
     expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/let\s+geoNormal\s*=\s*hit\.normal/);
-    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/s\.normal\s*=\s*smoothShadingNormal\s*\(/);
+    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/let\s+smoothNormal\s*=\s*smoothShadingNormal\s*\(/);
+    expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/s\.normal\s*=\s*applyBumpMapForHit\(hit,\s*normalMapped\)/);
     expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/bvh_normal\[hit\.indices\.x\]\.xyz/);
     expect(RESTIR_CAST_PRIMARY_WGSL).toMatch(/tlasInstanceWorldToLocal\[n_i\]/);
   });

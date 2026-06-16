@@ -26,14 +26,14 @@
  * See the matching header in `spatialGi.wgsl.ts`. GRIS reconnection-shift reuse
  * (Phases 1+2; Lin et al. 2022) is opt-in via `HybridEngineOptions.restirPtReuse`
  * and is gated at PIPELINE-COMPILE time because turning it on STRUCTURALLY
- * changes this pass (it declares a `@group(1)` scene BVH/TLAS group for the
- * reconnection-visibility ray). A runtime UBO flag is NOT enough — binding a new
- * group / changing the pipeline layout alters the DEFAULT pipeline and regressed
- * the default render to all-black (the f8df9a4 bug). So:
- *   - {@link TEMPORAL_GI_MODULE}      — OFF (default). Single `@group(0)` layout,
- *                                        byte-for-byte the pre-GRIS Sprint-17 pass.
- *   - {@link TEMPORAL_GI_GRIS_MODULE} — ON. Adds the `@group(1)` scene group + the
- *                                        GRIS branch + the `grisReuse` dep.
+ * changes this pass (it swaps in the GRIS branch and Phase-0 cache stride). A
+ * runtime UBO flag is NOT enough for those structural choices. Both variants now
+ * bind the shared `@group(1)` scene/material group because receiver-lobe p-hat
+ * recasts need material payloads in the default path too. So:
+ *   - {@link TEMPORAL_GI_MODULE}      — OFF (default). Standard temporal reuse
+ *                                        with receiver-material p-hat recast.
+ *   - {@link TEMPORAL_GI_GRIS_MODULE} — ON. Adds the GRIS branch + `grisReuse`
+ *                                        dep on the same group layout.
  * {@link compilePipelines} composes whichever module matches the host flag and
  * builds the matching pipeline layout; {@link TemporalGIReservoirPass} only
  * calls `setBindGroup(1, …)` when ON.
@@ -42,9 +42,10 @@
  *   @group(0) @binding(0) reservoirGiCurrent  (storage, read_write)
  *   @group(0) @binding(1) reservoirGiPrevious (storage, read)
  *   @group(0) @binding(2) WalkaroundUBO       (uniform)
- *   @group(1)             scene BVH/TLAS      (read-only storage) — ONLY in the
- *                         ON (GRIS) variant; the reconnection-visibility ray
- *                         traverses it.
+ *   @group(1)             scene BVH/TLAS/material atlas (read-only) — both
+ *                         variants use it to recast the receiver material for
+ *                         true GI receiver-lobe p-hat; GRIS also traces
+ *                         reconnection visibility through it.
  *
  * GRIS combine (ON variant only): the previous-frame reservoir is combined via
  * the unbiased reconnection shift (re-root rPrev's xs onto rCur.xv), its
@@ -56,15 +57,24 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 import { TEMPORAL_GI_COMMON_WGSL } from './temporalGiCommon.wgsl.js';
 
 // ════════════════════════════════════════════════════════════════════════════
-// OFF (default) — verbatim Sprint-17 temporal reuse. Single @group(0) bindings,
-// no scene BVH group, no GRIS branch. Byte-for-byte the pre-f8df9a4 (commit
-// 2e82c52) shader — the known-good default pipeline.
+// OFF (default) — Sprint-17 temporal reuse plus receiver-material p-hat recast.
+// The GRIS branch stays absent, but @group(1) is bound so rich receivers use the
+// same material-aware target as the RIS producer.
 // ════════════════════════════════════════════════════════════════════════════
 export const TEMPORAL_GI_WGSL = /* wgsl */ `
 
 @group(0) @binding(0) var<storage, read_write> tgi_resCurrent: array<u32>;
 @group(0) @binding(1) var<storage, read>       tgi_resPrev:    array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
+
+@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
+@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
+@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
+@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
+@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 // The temporal-GI M clamp (ubo.restirGiMClamp, Cornell default 50)
 // controls how strongly the previous-frame reservoir dominates temporal
@@ -94,6 +104,11 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
     storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rCur);
     return;
   }
+
+  let curFullPx = gid.xy * 2u + 1u;
+  let curVp = ubo.projMatrix * ubo.viewMatrix;
+  let curInvVP = invertMat4_common(curVp);
+  let curSurf = castPrimary(curFullPx, fullDims, ubo.cameraPos, curInvVP);
 
   // Reproject through prev camera. Use the current visible-point xv as the
   // world anchor — same world point in both frames (camera moves, not scene).
@@ -143,8 +158,13 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
   let wiZ = toS / sqrt(distS2);
-  let cosThetaZ = max(0.0, dot(rCur.nv, wiZ));
-  let pHatZ_prev = luminance(rPrev.Lo) * cosThetaZ * INV_PI;
+  let pHatZ_prev = restir_gi_receiver_phat_from_surface_or_geometry(
+    curSurf,
+    rCur.xv,
+    rCur.nv,
+    rPrev.xs,
+    rPrev.Lo,
+  );
   if (pHatZ_prev < 1e-9) {
     storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rCur);
     return;
@@ -164,7 +184,14 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // Finalise W with the chosen sample's p̂ at this pixel.
   // D5.3 (gris=false): standard RIS — divide by M (MIS weight 1 per candidate).
-  finaliseGIReservoirW(&rCur, ubo.restirGiWCap, false);
+  let pHatCurFinal = restir_gi_receiver_phat_from_surface_or_geometry(
+    curSurf,
+    rCur.xv,
+    rCur.nv,
+    rCur.xs,
+    rCur.Lo,
+  );
+  finaliseGIReservoirWFromPHat(&rCur, ubo.restirGiWCap, false, pHatCurFinal);
 
   storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rCur);
 }
@@ -183,7 +210,7 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
 export const TEMPORAL_GI_MODULE: WgslModule = {
   name: 'temporalGi',
   source: TEMPORAL_GI_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'jacobianShift', 'cameraRays'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'jacobianShift', 'cameraRays', 'restirCastPrimary', 'restirGiMaterial'],
 };
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -198,19 +225,17 @@ export const TEMPORAL_GI_GRIS_WGSL = /* wgsl */ `
 @group(0) @binding(1) var<storage, read>       tgi_resPrev:    array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
-// Scene group (group 1) — BVH + TLAS for the GRIS reconnection-visibility ray.
-// Same layout as the shared scene bind group; present ONLY in the GRIS
-// (restirPtReuse ON) variant of this pass, so the default pipeline never
-// declares it.
-@group(1) @binding(0) var<storage, read> tgi_bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> tgi_bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> tgi_bvh_position: array<vec4f>;
-@group(1) @binding(6) var<storage, read> tgi_tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tgi_tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tgi_tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tgi_tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tgi_tlasInstanceLocalToWorld: array<vec4f>;
-@group(1) @binding(14) var tgi_bvh_material: texture_2d<u32>;
+// Scene group (group 1) — BVH + TLAS + material atlas. The default variant
+// binds the same group for receiver-material p-hat recasts; the GRIS variant
+// additionally uses it for reconnection visibility.
+@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
+@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
+@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
+@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
+@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
+@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
+@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 
 const TGI_GRIS_NORMAL_BIAS: f32 = 1e-3;
 
@@ -223,11 +248,11 @@ fn tgiReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
   let orig = xv + nv * TGI_GRIS_NORMAL_BIAS;
   let occ = traceSceneAnyCastMask(
     ubo.bvhMode, ubo.tlasNodeCount,
-    &tgi_bvh_index, &tgi_bvh_position, &tgi_bvh,
-    &tgi_tlasNodes, &tgi_tlasInstanceIndices, &tgi_tlasBlasRoots,
-    &tgi_tlasInstanceWorldToLocal, &tgi_tlasInstanceLocalToWorld,
+    &bvh_index, &bvh_position, &bvh,
+    &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+    &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
     orig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
-    tgi_bvh_material, BVH_MATERIAL_TEX_WIDTH);
+    bvh_material, BVH_MATERIAL_TEX_WIDTH);
   return !occ;
 }
 
@@ -260,6 +285,11 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
+  let curFullPx = gid.xy * 2u + 1u;
+  let curVp = ubo.projMatrix * ubo.viewMatrix;
+  let curInvVP = invertMat4_common(curVp);
+  let curSurf = castPrimary(curFullPx, fullDims, ubo.cameraPos, curInvVP);
+
   // Reproject through prev camera. Use the current visible-point xv as the
   // world anchor — same world point in both frames (camera moves, not scene).
   let prevHalfPx = projectToPrevHalfPx(rCur.xv, halfDims, fullDims);
@@ -270,6 +300,12 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
   let prevIdx = u32(prevHalfPx.y) * halfDims.x + u32(prevHalfPx.x);
   let rPrev = loadReservoirGI_ro(&tgi_resPrev, prevIdx);
+  // We only pack prevViewProjMatrix today, not a previous inverse-VP/camera
+  // origin. This best-effort recast uses the current camera and the
+  // surface-or-geometry helper falls back to rPrev.xv/rPrev.nv when it does not
+  // hit the stored previous receiver point.
+  let prevFullPx = vec2u(u32(prevHalfPx.x), u32(prevHalfPx.y)) * 2u + 1u;
+  let prevSurf = castPrimary(prevFullPx, fullDims, ubo.cameraPos, curInvVP);
 
   if (rPrev.M == 0u || rPrev.W <= 0.0) {
     storeReservoirGI_rw(&tgi_resCurrent, pixelIdx, rCur);
@@ -305,7 +341,13 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // technique, not an un-weighted base).
   let cCur = f32(rCur.M);
   let cPrev = f32(prevM);
-  let pHatCur_native = grisTargetAt(rCur.xv, rCur.nv, rCur.xs, rCur.Lo);
+  let pHatCur_native = restir_gi_receiver_phat_from_surface_or_geometry(
+    curSurf,
+    rCur.xv,
+    rCur.nv,
+    rCur.xs,
+    rCur.Lo,
+  );
 
   // Decide whether the prev sample is a VALID reconnection-shift candidate.
   // (prefix match, non-degenerate base half-G, positive Jacobian, non-zero
@@ -320,8 +362,20 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
     let gBase = select(0.0, rPrev.cosReconOut / (rPrev.distRecon * rPrev.distRecon),
                        rPrev.distRecon > 1e-6);
     J = grisShiftJacobian(gBase, rCur.xv, rPrev.xs, rPrev.ns);
-    pHatPrev_atCur  = grisTargetAt(rCur.xv, rCur.nv, rPrev.xs, rPrev.Lo);
-    pHatPrev_native = grisTargetAt(rPrev.xv, rPrev.nv, rPrev.xs, rPrev.Lo);
+    pHatPrev_atCur = restir_gi_receiver_phat_from_surface_or_geometry(
+      curSurf,
+      rCur.xv,
+      rCur.nv,
+      rPrev.xs,
+      rPrev.Lo,
+    );
+    pHatPrev_native = restir_gi_receiver_phat_from_surface_or_geometry(
+      prevSurf,
+      rPrev.xv,
+      rPrev.nv,
+      rPrev.xs,
+      rPrev.Lo,
+    );
     prevValid = (gBase > 0.0) && (J > 0.0)
              && (pHatPrev_atCur >= 1e-9) && (pHatPrev_native >= 1e-9)
              && tgiReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs);
@@ -341,7 +395,13 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
     if (prevValid) {
       // prev's sample re-rooted onto the CURRENT domain is just p̂_cur(T z_prev);
       // the canonical's own sample re-rooted onto prev is p̂_prev(T⁻¹ z_cur).
-      let pHatPrev_atCurSample = grisTargetAt(rPrev.xv, rPrev.nv, rCur.xs, rCur.Lo);
+      let pHatPrev_atCurSample = restir_gi_receiver_phat_from_surface_or_geometry(
+        prevSurf,
+        rPrev.xv,
+        rPrev.nv,
+        rCur.xs,
+        rCur.Lo,
+      );
       let denomCur = grisPairwiseDenomCanonical(cCur, pHatCur_native, cPrev, pHatPrev_atCurSample);
       m_cur = select(1.0, (cCur * pHatCur_native) / denomCur, denomCur > 1e-12);
     }
@@ -376,7 +436,14 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
   // D5.3 (gris=true): GRIS — divide by 1 (pairwise MIS weights Σ=1, no /M).
-  finaliseGIReservoirW(&rGris, ubo.restirGiWCap, true);
+  let pHatGrisFinal = restir_gi_receiver_phat_from_surface_or_geometry(
+    curSurf,
+    rGris.xv,
+    rGris.nv,
+    rGris.xs,
+    rGris.Lo,
+  );
+  finaliseGIReservoirWFromPHat(&rGris, ubo.restirGiWCap, true, pHatGrisFinal);
   if (rGris.M > 0u) {
     // Refresh the Phase-0 cache so downstream spatial reuse sees a base edge
     // rooted at THIS pixel's visible vertex.
@@ -403,12 +470,14 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
  *                                              reconnection-visibility ray;
  *                                              already in the closure via
  *                                              cameraRays, but referenced here)
- *    - `grisReconnectionGeometryTerm` / `grisShiftJacobian` / `grisTargetAt` /
+ *    - `grisReconnectionGeometryTerm` / `grisShiftJacobian` /
  *      `grisPairwiseDenom*`                  → grisReuse (GRIS Phase 1+2)
- *  Composed ONLY when the host opts into restirPtReuse; the OFF default never
- *  emits the @group(1) bindings or the GRIS branch. */
+ *    - `castPrimary` + receiver-lobe p̂      → restirCastPrimary/restirGiMaterial
+ *  Composed ONLY when the host opts into restirPtReuse; both variants emit the
+ *  same @group(1) scene/material bindings, while only this variant emits the
+ *  GRIS branch. */
 export const TEMPORAL_GI_GRIS_MODULE: WgslModule = {
   name: 'temporalGiGris',
   source: TEMPORAL_GI_GRIS_WGSL,
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'cameraRays', 'grisReuse', 'materialDecode'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'cameraRays', 'grisReuse', 'materialDecode', 'restirCastPrimary', 'restirGiMaterial'],
 };

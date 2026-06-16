@@ -346,6 +346,16 @@ fn refreshPhase0Cache(r: ptr<function, ReservoirPT>) {
 // exact function that caused that regression when wCap leaked as a UBO ref).
 //
 // Call AFTER the final updateReservoirGI / M update.
+fn finaliseGIReservoirWFromPHat(r: ptr<function, ReservoirPT>, wCap: f32, gris: bool, pHatF: f32) {
+  if ((*r).M > 0u) {
+    // gris=false: divide by M (standard MIS-weight-1 RIS normalisation).
+    // gris=true:  divide by 1 (GRIS pairwise MIS weights already sum to 1).
+    let denom = select(f32((*r).M), 1.0, gris);
+    let W_raw = select(0.0, (*r).w_sum / (denom * pHatF), pHatF > 1e-9);
+    (*r).W = min(W_raw, wCap);
+  }
+}
+
 fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>, wCap: f32, gris: bool) {
   if ((*r).M > 0u) {
     let toSf = (*r).xs - (*r).xv;
@@ -354,11 +364,7 @@ fn finaliseGIReservoirW(r: ptr<function, ReservoirPT>, wCap: f32, gris: bool) {
       let wiF = toSf / distSf;
       let cosThetaF = max(0.0, dot((*r).nv, wiF));
       let pHatF = luminance((*r).Lo) * cosThetaF * INV_PI;
-      // gris=false: divide by M (standard MIS-weight-1 RIS normalisation).
-      // gris=true:  divide by 1 (GRIS pairwise MIS weights already sum to 1).
-      let denom = select(f32((*r).M), 1.0, gris);
-      let W_raw = select(0.0, (*r).w_sum / (denom * pHatF), pHatF > 1e-9);
-      (*r).W = min(W_raw, wCap);
+      finaliseGIReservoirWFromPHat(r, wCap, gris, pHatF);
     } else {
       (*r).W = 0.0;
     }
