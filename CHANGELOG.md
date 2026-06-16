@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Tests (pt-webgpu ReSTIR-PT specialty proof, 2026-06-16)
+
+- **Static ReSTIR-PT specialty-lobe reference fixture:** `tools/radiometric-ab/ab-restir-pt-specialty.mjs` now pins a deterministic CPU identity check for clearcoat, sheen, iridescence, and anisotropy in the one-sample ReSTIR-PT producer/finalize/resolve path. The focused pt-webgpu test verifies the fixture, producer payload coverage, reservoir serialization fields, and resolve BRDF consumption. This is not a V28 GPU recapture; material-furnace/reference-render promotion remains a validation tail.
+
 ### Fixed (ledger truthfulness, 2026-06-16)
 
 - **Walkaround material-support comments no longer carry stale proxy wording:** `consumedMaterialFields.ts` now reflects the implemented GI receiver-lobe material target path, the transparent-OIT direct-sun material-lobe closure, and the existing unsupported-field warning surface. The Road D1 helper-policy row is reconciled as closed: the named helpers are kept with explicit public/test/harness wording instead of being treated as dead runtime code.

@@ -1,8 +1,10 @@
 # tools/radiometric-ab
 
-Radiometric A/B harness for `pt-webgpu` on lavapipe.  Each script compares two
-render variants in the linear HDR domain (`captureFrame({ colorSpace:'linear' })`) —
-the raw `accumTexture` float32 values, NOT the tonemapped display output.
+Radiometric A/B harnesses for `pt-webgpu`. Most scripts run lavapipe render
+variants in the linear HDR domain (`captureFrame({ colorSpace:'linear' })`) —
+the raw `accumTexture` float32 values, NOT the tonemapped display output. The
+ReSTIR-PT specialty-lobe script is a CPU/static identity proof, not a GPU
+recapture.
 
 ## What this tests
 
@@ -14,6 +16,7 @@ the raw `accumTexture` float32 values, NOT the tonemapped display output.
 | `ab-sppm.mjs` | SPPM convergence | `causticStrategy:'manifold-nee'` (GPU-validated MNEE) | `causticStrategy:'photon-map'` at 20/50/80 frames |
 | `ab-bdpt.mjs` | BDPT unbiasedness + variance | `bdpt:false` (unidirectional) | `bdpt:true` |
 | `ab-restir-pt.mjs` | ReSTIR-PT bias + variance | `restirPtReuse:false` (default megakernel) | `restirPtReuse:true` (composite megakernel) |
+| `ab-restir-pt-specialty.mjs` | ReSTIR-PT specialty-lobe identity | base-path CPU estimator | one-sample ReSTIR-PT producer/finalize/resolve identity |
 
 ## How to run
 
@@ -32,6 +35,9 @@ deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-wri
 
 deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write \
   tools/radiometric-ab/ab-restir-pt.mjs
+
+# Static CPU fixture check:
+node tools/radiometric-ab/ab-restir-pt-specialty.mjs --check
 ```
 
 Each script writes a `results-*.json` in this directory.

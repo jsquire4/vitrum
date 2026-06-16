@@ -569,11 +569,11 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   reconstruction through the same full-lobe visible-domain helper, and resolve
   now uses `evaluateBrdfFull` instead of the base helper. The producer samples
   anisotropic visible-vertex specular directions and computes the matching
-  anisotropic base source PDF while deliberately excluding clearcoat/sheen from
-  `pdfSrc` until those lobes are actually sampled. Focused reservoir-layout and
-  ReSTIR-PT contract tests pin the 192-byte layout, field serialization,
-  domain-copy helper, full-lobe target/resolve, and anisotropic producer path;
-  the WGSL shader gate compiles all four ReSTIR-PT passes.
+  anisotropic base source PDF. Later source-sampling follow-ups added the
+  normalized base/clearcoat/sheen lobe mixture and matching `pdfSrc`. Focused
+  reservoir-layout and ReSTIR-PT contract tests pin the layout, field
+  serialization, domain-copy helper, full-lobe target/resolve, and anisotropic
+  producer path; the WGSL shader gate compiles all four ReSTIR-PT passes.
 - The nineteenth/twentieth pt-webgpu material-texture slices landed: full-tier
   material descriptors now extend to 67 vec4s and pack clearcoat factor/
   roughness/normal, sheen color/roughness, iridescence factor/thickness, and
@@ -1236,6 +1236,11 @@ Evidence:
   mixture through `sampleNextBounceDirection`; MNEE cone-vs-BSDF MIS compares
   against the same sampled density; and BDPT's mapped light-subpath scatter
   records matching `brdfDirectionalPdfFullSampled` forward/reverse densities.
+  2026-06-16 follow-up: `tools/radiometric-ab/ab-restir-pt-specialty.mjs` and
+  `restirPtSpecialtyReference.test.ts` now pin the deterministic one-sample
+  producer/finalize/resolve identity for clearcoat, sheen, iridescence, and
+  anisotropy payloads. This closes the static specialty-path proof tail, not
+  the V28 GPU/reference-render promotion tail.
   Remaining approximate/schema sites are not simple omissions:
   inverse adjoints use a separate derivative model, while BDPT light-side
   clearcoat-normal/layer/thin-film/spectral parity is now structurally closed by
@@ -1770,8 +1775,9 @@ Remaining:
   domains, and full extension-lobe contribution/PDF gradients until converging
   inverse fits validate them.
 - Material-furnace/reference A/B promotion for the sampled eye, ReSTIR-PT, and
-  BDPT paths now structurally implemented. The local extension-lobe CPU oracle
-  is closed; the remaining promotion evidence is GPU/reference-render based.
+  BDPT paths is now structurally implemented. The local extension-lobe CPU oracle
+  and ReSTIR-PT specialty one-sample identity fixture are closed; the remaining
+  promotion evidence is GPU/reference-render based.
 
 ### GATE-05 - Reference-render A/B suite
 

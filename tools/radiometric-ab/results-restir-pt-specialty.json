@@ -1,0 +1,346 @@
+{
+  "schema": "vitrum.restir-pt.specialty-reference.v1",
+  "mode": "cpu-static",
+  "invariant": "single-sample ReSTIR-PT resolves to f_bsdf*cos*Lo/pdfSrc for specialty visible lobes",
+  "coverage": {
+    "specialtyLobes": [
+      "anisotropy",
+      "clearcoat",
+      "iridescence",
+      "sheen"
+    ],
+    "requiresGpuRecapture": false
+  },
+  "summary": {
+    "caseCount": 3,
+    "maxAbsoluteError": 0,
+    "maxRelativeError": 0,
+    "luminanceChecksum": 3.182546428591,
+    "pdfChecksum": 3.447061984901
+  },
+  "cases": [
+    {
+      "id": "clearcoat-sheen",
+      "activeLobes": [
+        "clearcoat",
+        "sheen"
+      ],
+      "geometry": {
+        "xv": [
+          0,
+          0,
+          0
+        ],
+        "xs": [
+          -0.419979001575,
+          0.71746412769,
+          1.539923005775
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ],
+        "clearcoatNormal": [
+          0.079999360008,
+          -0.039999680004,
+          0.995992032096
+        ],
+        "wo": [
+          0.320048010803,
+          -0.180027006077,
+          0.930139531395
+        ],
+        "wi": [
+          -0.2399880009,
+          0.409979501537,
+          0.8799560033
+        ],
+        "cosTheta": 0.8799560033
+      },
+      "material": {
+        "baseColor": [
+          0.63,
+          0.49,
+          0.31
+        ],
+        "roughness": 0.42,
+        "metallic": 0,
+        "clearcoat": 0.72,
+        "clearcoatRoughness": 0.24,
+        "sheen": 0.48,
+        "sheenRoughness": 0.62,
+        "sheenColor": [
+          0.95,
+          0.42,
+          0.18
+        ],
+        "iridescence": 0,
+        "iridescenceIor": 1.3,
+        "iridescenceThicknessMin": 100,
+        "iridescenceThicknessMax": 400,
+        "specularColor": [
+          1,
+          1,
+          1
+        ],
+        "specularIntensity": 1,
+        "anisotropy": 0,
+        "anisotropyRotation": 0
+      },
+      "reference": {
+        "fBsdf": [
+          0.25901145097,
+          0.214199604343,
+          0.156791313482
+        ],
+        "Lo": [
+          1.35,
+          0.82,
+          0.46
+        ],
+        "pdfSrc": 0.303566732475,
+        "pHat": 0.180537569386,
+        "wCandidate": 0.594721193308,
+        "W": 3.29416860618
+      },
+      "basePath": {
+        "indirect": [
+          1.013583461921,
+          0.509142439594,
+          0.20906754163
+        ],
+        "luminance": 0.594721193308
+      },
+      "restirPt": {
+        "indirect": [
+          1.013583461921,
+          0.509142439594,
+          0.20906754163
+        ],
+        "luminance": 0.594721193308
+      },
+      "ab": {
+        "absDiff": 0,
+        "relativeError": 0,
+        "lobeDeltaFromNeutral": 0.085030687363
+      }
+    },
+    {
+      "id": "iridescent-anisotropic",
+      "activeLobes": [
+        "iridescence",
+        "anisotropy"
+      ],
+      "geometry": {
+        "xv": [
+          0,
+          0,
+          0
+        ],
+        "xs": [
+          0.889790265752,
+          0.139574943647,
+          1.500430644208
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ],
+        "clearcoatNormal": [
+          0.079999360008,
+          -0.039999680004,
+          0.995992032096
+        ],
+        "wo": [
+          -0.295196932383,
+          0.234121704993,
+          0.926307615408
+        ],
+        "wi": [
+          0.508451580429,
+          0.079757110656,
+          0.857388939548
+        ],
+        "cosTheta": 0.857388939548
+      },
+      "material": {
+        "baseColor": [
+          0.34,
+          0.51,
+          0.86
+        ],
+        "roughness": 0.36,
+        "metallic": 0,
+        "clearcoat": 0,
+        "clearcoatRoughness": 0.35,
+        "sheen": 0,
+        "sheenRoughness": 0.7,
+        "sheenColor": [
+          0,
+          0,
+          0
+        ],
+        "iridescence": 0.66,
+        "iridescenceIor": 1.42,
+        "iridescenceThicknessMin": 260,
+        "iridescenceThicknessMax": 520,
+        "specularColor": [
+          0.92,
+          0.96,
+          1
+        ],
+        "specularIntensity": 0.88,
+        "anisotropy": 0.68,
+        "anisotropyRotation": 0.73
+      },
+      "reference": {
+        "fBsdf": [
+          0.129088108428,
+          0.285715405235,
+          0.306849412372
+        ],
+        "Lo": [
+          0.42,
+          1.18,
+          1.65
+        ],
+        "pdfSrc": 0.311775435385,
+        "pHat": 0.247962901994,
+        "wCandidate": 0.79532533308,
+        "W": 3.207436784639
+      },
+      "basePath": {
+        "indirect": [
+          0.149097894219,
+          0.927153510493,
+          1.392339751582
+        ],
+        "luminance": 0.79532533308
+      },
+      "restirPt": {
+        "indirect": [
+          0.149097894219,
+          0.927153510493,
+          1.392339751582
+        ],
+        "luminance": 0.79532533308
+      },
+      "ab": {
+        "absDiff": 0,
+        "relativeError": 0,
+        "lobeDeltaFromNeutral": 0.247162880762
+      }
+    },
+    {
+      "id": "all-specialty-lobes",
+      "activeLobes": [
+        "clearcoat",
+        "sheen",
+        "iridescence",
+        "anisotropy"
+      ],
+      "geometry": {
+        "xv": [
+          0,
+          0,
+          0
+        ],
+        "xs": [
+          -0.698833952273,
+          -0.555483397961,
+          1.505180820281
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ],
+        "clearcoatNormal": [
+          0.079999360008,
+          -0.039999680004,
+          0.995992032096
+        ],
+        "wo": [
+          0.437534872394,
+          0.159103589961,
+          0.88501371916
+        ],
+        "wi": [
+          -0.399333687013,
+          -0.317419084549,
+          0.860103325875
+        ],
+        "cosTheta": 0.860103325875
+      },
+      "material": {
+        "baseColor": [
+          0.72,
+          0.28,
+          0.18
+        ],
+        "roughness": 0.31,
+        "metallic": 0,
+        "clearcoat": 0.55,
+        "clearcoatRoughness": 0.19,
+        "sheen": 0.38,
+        "sheenRoughness": 0.58,
+        "sheenColor": [
+          0.28,
+          0.72,
+          0.96
+        ],
+        "iridescence": 0.47,
+        "iridescenceIor": 1.36,
+        "iridescenceThicknessMin": 190,
+        "iridescenceThicknessMax": 470,
+        "specularColor": [
+          1,
+          0.91,
+          0.82
+        ],
+        "specularIntensity": 0.94,
+        "anisotropy": 0.52,
+        "anisotropyRotation": 1.11
+      },
+      "reference": {
+        "fBsdf": [
+          0.320457167213,
+          0.241796833441,
+          0.220041311432
+        ],
+        "Lo": [
+          1.8,
+          1.1,
+          0.74
+        ],
+        "pdfSrc": 0.839981460552,
+        "pHat": 0.279202716999,
+        "wCandidate": 0.332391523041,
+        "W": 1.190502465784
+      },
+      "basePath": {
+        "indirect": [
+          0.590640768726,
+          0.272348018897,
+          0.166731197989
+        ],
+        "luminance": 0.332391523041
+      },
+      "restirPt": {
+        "indirect": [
+          0.590640768726,
+          0.272348018897,
+          0.166731197989
+        ],
+        "luminance": 0.332391523041
+      },
+      "ab": {
+        "absDiff": 0,
+        "relativeError": 0,
+        "lobeDeltaFromNeutral": -0.34917853959
+      }
+    }
+  ]
+}
