@@ -19,7 +19,7 @@
  * chain rule + fixed-point accumulation match an on-device finite-difference.
  * The session requests 'path-replay' only when the engine provides the hook,
  * every parameter is in the adjoint-differentiable set, and every target
- * material stays within the direct-light base/specular domain this pass mirrors
+ * material stays within the point-direct-light base/specular domain this pass mirrors
  * (`ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / emissive /
  * specularColor / specularIntensity); any
  * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
@@ -87,7 +87,7 @@ export interface InverseEngineHooks {
    * and returns the flat gradient. Replaces the N-render FD probe loop with one
    * baseline render + one adjoint pass. The session only requests this when the
    * hook exists, every parameter is adjoint-eligible, and every target material
-   * stays inside the adjoint-compatible direct-light domain (`ADJOINT_ELIGIBLE_FIELDS`:
+   * stays inside the adjoint-compatible point-direct-light domain (`ADJOINT_ELIGIBLE_FIELDS`:
    * material baseColor / roughness / emissive / specularColor /
    * specularIntensity); otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
@@ -480,7 +480,12 @@ function hasPathReplayUnsupportedMap(m: MaterialSpec): boolean {
 
 function isPathReplayCompatibleLighting(scene: Scene): boolean {
   if ((scene.environment?.kind ?? 'none') !== 'none') return false;
-  return scene.emitters.every((e) => e.kind === 'point' || e.kind === 'rect-area');
+  // The path-replay pass has production-grade direct-light parity for point
+  // emitters only. It still contains an experimental center-sampled rect-area
+  // derivative for oracle work, but the session must not request path-replay for
+  // non-point lighting until those source terms are promoted with end-to-end
+  // inverse-fit validation.
+  return scene.emitters.every((e) => e.kind === 'point');
 }
 
 // ── path resolution / field validation ────────────────────────────────────────

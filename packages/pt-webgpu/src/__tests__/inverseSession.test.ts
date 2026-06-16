@@ -380,11 +380,78 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it.each([
+    ['transmission', { transmission: 0.25 }],
+    ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
+    ['specular map', { specularColorMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
+    ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }],
+    ['thin-film stack', { thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 180 }] } }],
+    ['spectral attenuation', {
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 700,
+        values: new Float32Array([0.1, 0.2, 0.3]),
+      },
+    }],
+    ['volume scattering', { scatteringCoefficientRGB: [0.1, 0.2, 0.3] as [number, number, number] }],
+  ])('degrades to finite-difference for path-replay material with %s', (_label, patch) => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, ...patch } }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
   it('degrades to finite-difference when scene lighting is outside the adjoint pass scope', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
       environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    session.dispose();
+  });
+
+  it.each([
+    ['rect-area', [{
+      kind: 'rect-area' as const,
+      id: 'panel-light',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      position: [0, 1, 0] as [number, number, number],
+      uAxis: [1, 0, 0] as [number, number, number],
+      vAxis: [0, 0, 1] as [number, number, number],
+    }]],
+    ['directional', [{
+      kind: 'directional' as const,
+      id: 'sun',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      direction: [0, -1, 0] as [number, number, number],
+    }]],
+  ])('degrades to finite-difference for non-point lighting: %s', (_label, emitters) => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters,
     };
     const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
     const session = new PtWebgpuInverseSession(hooks, {

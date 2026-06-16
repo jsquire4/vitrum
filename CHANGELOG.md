@@ -33,7 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (pt-webgpu inverse adjoint, 2026-06-15)
 
-- **KHR_materials_specular path-replay adjoint coverage:** `@vitrum/pt-webgpu` now differentiates `specularColor` and `specularIntensity` in the path-replay adjoint fast path, reads packed material vec4 #27 in the adjoint pass, and keeps `baseColor` / `roughness` derivatives aligned with non-default dielectric F0. Path-replay selection is now field/material/light aware: rich mapped, transmissive, layered, anisotropic, unlit, environment-lit, spot/directional/mesh-lit, and non-emissive extension-lobe cases degrade to finite difference instead of taking a scoped analytic path outside its domain.
+- **KHR_materials_specular path-replay adjoint coverage:** `@vitrum/pt-webgpu` now differentiates `specularColor` and `specularIntensity` in the path-replay adjoint fast path, reads packed material vec4 #27 in the adjoint pass, and keeps `baseColor` / `roughness` derivatives aligned with non-default dielectric F0. Path-replay selection is now field/material/light aware and point-direct-light only: rich mapped, transmissive, layered, anisotropic, unlit, environment-lit, rect/disc-area, spot/directional/mesh-lit, and non-emissive extension-lobe cases degrade to finite difference instead of taking a scoped analytic path outside its domain.
 
 ### Fixed (pt-webgpu material PDFs, 2026-06-15)
 

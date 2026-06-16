@@ -1648,9 +1648,12 @@ Remaining:
   `clearcoat`, `clearcoatRoughness`, `sheenColor`, `sheenRoughness`,
   `iridescence`, `iridescenceIor`, `anisotropy`, `anisotropyRotation`) through
   the finite-difference baseline and explicitly degrade requested path-replay
-  sessions back to finite-difference for those fields. Analytic path-replay
-  adjoints remain open until their contribution/PDF gradients are implemented
-  and converging inverse fits validate them.
+  sessions back to finite-difference for those fields. A later same-day
+  tightening makes path-replay point-direct-light only; environment, rect/disc
+  area, spot, directional, and mesh-area lighting now also resolve to the
+  finite-difference baseline instead of the scoped adjoint pass. Analytic
+  path-replay adjoints remain open until their contribution/PDF/light-source
+  gradients are implemented and converging inverse fits validate them.
 - Material-furnace/reference A/B promotion for the sampled eye, ReSTIR-PT, and
   BDPT paths now structurally implemented.
 

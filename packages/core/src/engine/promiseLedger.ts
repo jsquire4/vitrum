@@ -1105,8 +1105,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       setSize: false,
       updateLighting: false,
       debug: true,
-      // pt-webgpu implements the full inverse-rendering surface (differentiable RT
-      // with finite-difference / path-replay gradient; see createInverseSession).
+      // pt-webgpu implements the inverse-rendering API surface. The safe
+      // fallback is finite-difference; the analytic path-replay fast path is
+      // intentionally scoped to point-direct-light eligible material fields
+      // and is selected by createInverseSession only when that domain matches.
       createInverseSession: true,
       // getRestirPtResultBuffer is gated on the 'pt-webgpu-restir-pt-reuse'
       // experimental feature. The method IS wired on the engine class (returns
