@@ -1149,7 +1149,7 @@ specialty fixture checks as one non-recapture evidence gate.
 | ~~PTWG-MAT lobe CPU proof~~ ✅ code/proof closed | `extensionLobeReference.test.ts` | Clearcoat zero-default/linearity, sheen color/scalar behavior, normalized base/clearcoat/sheen sampled PDF, iridescence F0 zero-default, and explicit sheen-PDF approximation posture |
 | ~~HYB-GI-01/02~~ ✅ code/proof closed | `oracle.restirDiEstimator.test.ts` | RIS candidate accounting, selected-xi p-hat/finalize, selected-point shading, env + area DI characterization |
 | ~~HYB-DDGI-01~~ ✅ code/proof closed | `oracle.ddgiVisibilityMoments.test.ts` | Probe miss visibility, all-sky open semantics, f32/f16 moment poisoning regression |
-| PTWG-LITE-01 | `oracle.liteRectMis.test.ts` | Lite policy |
+| ~~PTWG-LITE-01~~ ✅ code/proof closed | `oracle.liteRectMis.test.ts` | Lite rect/disc analytic records now have an independent CPU oracle: the historical one-sided MIS under-estimate is preserved as a failing-shape diagnostic, and the regression case adds light-sampled + BSDF-sampled shares and requires agreement with ground truth within 3%. |
 
 #### 5C — Mutation matrix GPU observability
 

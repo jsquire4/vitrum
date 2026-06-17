@@ -93,6 +93,29 @@ jobs:
         # No GPU or WebGPU adapter required — glslangValidator is a CPU-only binary.
         run: npm run shader-gate:glsl
 
+  proof-check:
+    runs-on: ubuntu-latest
+    # Read-only evidence consistency checks. These do not recapture GPU images;
+    # they verify committed proof manifests, PNG headers, result snapshots, and
+    # host-status markers so stale "proof" files cannot silently drift.
+
+    steps:
+      - name: Check out vitrum
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: "~2.8"
+
+      - name: Run read-only proof checks
+        run: npm run proof-check
+
   behavioral-gate:
     runs-on: ubuntu-latest
     # This job is load-bearing: continue-on-error is intentionally NOT set.
