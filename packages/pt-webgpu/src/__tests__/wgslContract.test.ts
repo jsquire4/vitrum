@@ -129,8 +129,8 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // (MESH_AREA_LIGHT_TRI_CAP=65536, largest-area-first) added to emitterPacking.ts
     // — no WGSL change, cap is applied on the host side during packing.
     // Re-pinned 2026-06-10 (R7a + capacity): SPPM_CELL_CAPACITY 128→32 (fits default maxStorageBufferBindingSize — behavioral-gate verified photon-map renders) + R7a — SPPM streaming-window fix (Item-2: no per-frame
-    // clearBuffer, radius frozen at r₀; RENDER-CHANGING for photon-map: lower
-    // variance over long runs, streaming window evicts stale photons); BDPT
+    // clearBuffer, insertion hash radius frozen at r₀; RENDER-CHANGING for photon-map:
+    // lower variance over long runs, streaming window evicts stale photons); BDPT
     // emitter-vertex throughput correction (Item-3: fPrev = INV_PI instead of 1.0
     // so fPrev·cos/pdf = (1/π)·cos/(cos/π) = 1 ✓; spurious ×π removed; A/B
     // pending V28-B); pdfRev(prevCol) patched to true reverse density for VNDF
@@ -259,8 +259,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-16: full-tier material descriptors gained face-selected
     // front/back layer normal map lanes, and applyNormalMap chooses those lanes
     // ahead of the top-level normal map when authored.
-    expect(digest).toBe('df0116bc1660b3208d421ad5c234f75980f9ae6918fe6a9ece833fe27da597b6');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(371990);
+    // Re-pinned 2026-06-16: SPPM progressive gather now queries the stable r0
+    // insertion hash grid while retaining the per-pixel shrunk physical disk.
+    expect(digest).toBe('4bb279c58804cb1edd61eeabccb8991a0071043c9cf7dff2f1bc01649e3ee3ee');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(372273);
   });
 });
 
@@ -665,8 +667,8 @@ describe('pt-webgpu WGSL material contract', () => {
       .filter((l) => !l.trim().startsWith('//'))
       .join('\n');
     // A4: traceSpecularTransmissiveChain = 1 real call.  photonMapContribution now
-    // delegates to sppmGather() (SPPM hash-grid lookup) and no longer has its own
-    // decodeMaterial call — the gather is done inside the SPPM bindings module.
+    // delegates to sppmGatherProgressive() (SPPM hash-grid lookup) and no longer has its
+    // own decodeMaterial call — the gather is done inside the SPPM bindings module.
     const decodeCalls = causticCode.match(/let mat = decodeMaterial\(matId\);/g) ?? [];
     expect(decodeCalls.length).toBe(1);
 

@@ -61,6 +61,29 @@ function sppmCellIndexTS(posX: number, posY: number, posZ: number, radius: numbe
   return h % SPPM_MAX_CELLS;
 }
 
+function sppmNeighbourhoodCellsTS(
+  posX: number,
+  posY: number,
+  posZ: number,
+  offsetRadius: number,
+  hashRadius: number,
+): Set<number> {
+  const cells = new Set<number>();
+  for (let dz = -1; dz <= 1; dz++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        cells.add(sppmCellIndexTS(
+          posX + dx * offsetRadius,
+          posY + dy * offsetRadius,
+          posZ + dz * offsetRadius,
+          hashRadius,
+        ));
+      }
+    }
+  }
+  return cells;
+}
+
 describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
   it('constants are consistent with each other', () => {
     // SPPM_MAX_CELLS must be a prime-ish value in a sensible range (≥ 1000).
@@ -109,20 +132,7 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
   it('3×3×3 neighbourhood covers adjacent cells (straddling photon captured)', () => {
     const r = 0.1;
     const pos = { x: 0.5, y: 0.5, z: 0.5 };
-    const hitCells = new Set<number>();
-
-    for (let dz = -1; dz <= 1; dz++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          const probe = {
-            x: pos.x + dx * r,
-            y: pos.y + dy * r,
-            z: pos.z + dz * r,
-          };
-          hitCells.add(sppmCellIndexTS(probe.x, probe.y, probe.z, r));
-        }
-      }
-    }
+    const hitCells = sppmNeighbourhoodCellsTS(pos.x, pos.y, pos.z, r, r);
 
     // Must hit at least the central cell and some neighbours (≥ 4 distinct cells
     // for a point not at a cell boundary, always ≥ 1).
@@ -131,6 +141,41 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
     // A photon exactly at pos is in the same cell as the hit-point lookup.
     const photonCell = sppmCellIndexTS(pos.x, pos.y, pos.z, r);
     expect(hitCells.has(photonCell)).toBe(true);
+  });
+
+  it('gather queries the stable insertion grid after progressive radius shrink', () => {
+    const insertionRadius = 1.0;
+    const shrunkGatherRadius = 0.1;
+    const photon = { x: 0.9, y: 0.0, z: 0.0 };
+    const receiver = { x: 0.95, y: 0.0, z: 0.0 };
+    const insertedCell = sppmCellIndexTS(photon.x, photon.y, photon.z, insertionRadius);
+
+    // Old bug: after R shrank, gather also hashed probes by R, so it looked in
+    // cells 8/9/10... even though photons were inserted into the r0 grid cell 0.
+    const oldShrunkGridCells = sppmNeighbourhoodCellsTS(
+      receiver.x,
+      receiver.y,
+      receiver.z,
+      shrunkGatherRadius,
+      shrunkGatherRadius,
+    );
+    // Fixed path: query the same r0 grid used by insertion, while the later
+    // dist2 <= R^2 filter still enforces the physical progressive gather disk.
+    const fixedInsertionGridCells = sppmNeighbourhoodCellsTS(
+      receiver.x,
+      receiver.y,
+      receiver.z,
+      insertionRadius,
+      insertionRadius,
+    );
+    const dist2 =
+      (photon.x - receiver.x) ** 2 +
+      (photon.y - receiver.y) ** 2 +
+      (photon.z - receiver.z) ** 2;
+
+    expect(oldShrunkGridCells.has(insertedCell)).toBe(false);
+    expect(fixedInsertionGridCells.has(insertedCell)).toBe(true);
+    expect(dist2).toBeLessThanOrEqual(shrunkGatherRadius * shrunkGatherRadius);
   });
 });
 
@@ -242,6 +287,13 @@ describe('SPPM WGSL structural assertions (A4)', () => {
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('gatherRadius = 0.35');
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('strategyScale');
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('1.25');
+  });
+
+  it('sppmGatherProgressive queries the stable insertion grid, not the shrunk gather radius', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let gridRadius = max(sppmStats.currentRadius, 1e-6);');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('* gridRadius');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmCellIndex(probe, gridRadius)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('sppmCellIndex(probe, r)');
   });
 
   it('SPPM_PHOTON_PASS_WGSL contains the sppmEmitPhotons entry point', () => {

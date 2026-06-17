@@ -251,20 +251,24 @@ fn sppmGatherProgressive(
   let isFirstFrame = (pxStats.radius2 <= 0.0);
   let r2 = select(pxStats.radius2, r0 * r0, isFirstFrame);
   let r  = sqrt(r2);
+  let gridRadius = max(sppmStats.currentRadius, 1e-6);
   var tau = pxStats.tau;
   var N   = pxStats.N;
 
   // ── Collect this frame's photons within the current gather disk ───────────
-  // 3×3×3 neighbourhood to handle cell-boundary straddling (same as the
-  // streaming-window gather).  Accumulate Φ_M = Σ f(ωᵢ)·Φᵢ (brdf-weighted).
+  // 3×3×3 neighbourhood to handle cell-boundary straddling. Photon insertion
+  // hashes by sppmStats.currentRadius (the stable r0 cell size), while the
+  // physical gather disk shrinks per pixel through r. Query the insertion
+  // grid with the same stable radius, then filter physically with dist2 <= r^2.
+  // Accumulate Φ_M = Σ f(ωᵢ)·Φᵢ (brdf-weighted).
   var phiM = vec3f(0.0);
   var M    = 0.0; // float to avoid a cast in the update below
 
   for (var dz = -1i; dz <= 1i; dz = dz + 1i) {
     for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
       for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
-        let probe   = pos + vec3f(f32(dx), f32(dy), f32(dz)) * r;
-        let cellIdx = sppmCellIndex(probe, r);
+        let probe   = pos + vec3f(f32(dx), f32(dy), f32(dz)) * gridRadius;
+        let cellIdx = sppmCellIndex(probe, gridRadius);
         let stored  = min(atomicLoad(&sppmCellCounters[cellIdx]), SPPM_CELL_CAPACITY_WGSL);
         let base    = cellIdx * SPPM_CELL_CAPACITY_WGSL;
         for (var si = 0u; si < stored; si = si + 1u) {
