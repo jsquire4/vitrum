@@ -30,8 +30,10 @@ import {
 import {
   GltfFetchFailed,
   GltfParseFailed,
+  GltfResourceDecodeFailed,
   GltfResourceNotFound,
   type GltfAssetResourceKind,
+  type GltfResourceDecodeFailureReason,
 } from './errors.js';
 
 export type GltfAssetInput = string | URL | ArrayBuffer | GltfJson;
@@ -415,7 +417,7 @@ async function resolveExternalBuffers(
     if (buffers.has(index)) continue;
     if (buffer.uri == null) continue;
     if (buffer.uri.startsWith('data:')) {
-      buffers.set(index, uint8ToArrayBuffer(decodeDataUri(buffer.uri, `buffer ${index}`)));
+      buffers.set(index, uint8ToArrayBuffer(decodeDataUri(buffer.uri, 'buffer', `buffer ${index}`)));
       continue;
     }
     const url = resolveUri(buffer.uri, baseUri, 'buffer');
@@ -547,24 +549,57 @@ function directoryUrl(url: string): string {
   return new URL('.', url).toString();
 }
 
-function decodeDataUri(uri: string, label: string): Uint8Array {
+function decodeDataUri(uri: string, kind: GltfAssetResourceKind, label: string): Uint8Array {
   const comma = uri.indexOf(',');
   if (comma < 0) {
-    throw new Error(`[vitrum/gltf-adapter] ${label} has a malformed data: URI.`);
+    throw dataUriError(uri, kind, 'malformed-data-uri', `[vitrum/gltf-adapter] ${label} has a malformed data: URI.`);
   }
   const meta = uri.slice(5, comma);
   const payload = uri.slice(comma + 1);
   const isBase64 = meta.split(';').some((p) => p.toLowerCase() === 'base64');
-  if (isBase64) {
-    if (typeof globalThis.atob !== 'function') {
-      throw new Error(`[vitrum/gltf-adapter] ${label} uses base64 data URI but atob() is unavailable.`);
+  try {
+    if (isBase64) {
+      if (typeof globalThis.atob !== 'function') {
+        throw dataUriError(
+          uri,
+          kind,
+          'data-uri-atob-unavailable',
+          `[vitrum/gltf-adapter] ${label} uses base64 data URI but atob() is unavailable.`,
+        );
+      }
+      const bin = globalThis.atob(payload.replace(/\s+/g, ''));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+      return bytes;
     }
-    const bin = globalThis.atob(payload.replace(/\s+/g, ''));
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
-    return bytes;
+    return new TextEncoder().encode(decodeURIComponent(payload));
+  } catch (cause) {
+    if (cause instanceof GltfResourceDecodeFailed) throw cause;
+    throw dataUriError(
+      uri,
+      kind,
+      'data-uri-decode-failed',
+      `[vitrum/gltf-adapter] ${label} data: URI could not be decoded: ` +
+        `${cause instanceof Error ? cause.message : String(cause)}.`,
+      cause,
+    );
   }
-  return new TextEncoder().encode(decodeURIComponent(payload));
+}
+
+function dataUriError(
+  uri: string,
+  kind: GltfAssetResourceKind,
+  reason: GltfResourceDecodeFailureReason,
+  message: string,
+  cause?: unknown,
+): GltfResourceDecodeFailed {
+  return new GltfResourceDecodeFailed({
+    url: uri,
+    kind,
+    reason,
+    message,
+    ...(cause === undefined ? {} : { cause }),
+  });
 }
 
 function uint8ToArrayBuffer(bytes: Uint8Array): ArrayBuffer {

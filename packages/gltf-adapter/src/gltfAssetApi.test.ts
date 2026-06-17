@@ -12,6 +12,7 @@ import {
   evaluateGltfBackendProfileCompatibility,
   GltfFetchFailed,
   GltfParseFailed,
+  GltfResourceDecodeFailed,
   GltfResourceNotFound,
   loadGltfAndDecodeTextures,
   loadGltfForEngine,
@@ -723,6 +724,32 @@ describe('loadGltfAsset', () => {
     await expect(loadGltfAsset(gltf)).rejects.toMatchObject({
       kind: 'buffer',
       url: 'mesh.bin',
+    });
+  });
+
+  it('throws typed decode failures for malformed buffer data URIs', async () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.buffers![0]!.uri = 'data:application/octet-stream;base64';
+
+    await expect(loadGltfAsset(gltf)).rejects.toBeInstanceOf(GltfResourceDecodeFailed);
+    await expect(loadGltfAsset(gltf)).rejects.toMatchObject({
+      code: 'GLTF_RESOURCE_DECODE_FAILED',
+      kind: 'buffer',
+      reason: 'malformed-data-uri',
+      url: 'data:application/octet-stream;base64',
+    });
+  });
+
+  it('throws typed decode failures for undecodable buffer data URI payloads', async () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.buffers![0]!.uri = 'data:application/octet-stream,%E0%A4%A';
+
+    await expect(loadGltfAsset(gltf)).rejects.toBeInstanceOf(GltfResourceDecodeFailed);
+    await expect(loadGltfAsset(gltf)).rejects.toMatchObject({
+      code: 'GLTF_RESOURCE_DECODE_FAILED',
+      kind: 'buffer',
+      reason: 'data-uri-decode-failed',
+      url: 'data:application/octet-stream,%E0%A4%A',
     });
   });
 

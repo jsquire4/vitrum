@@ -31,6 +31,7 @@ export {
   GltfAdapterError,
   GltfFetchFailed,
   GltfParseFailed,
+  GltfResourceDecodeFailed,
   GltfResourceNotFound,
 } from './errors.js';
 export type {
@@ -38,6 +39,8 @@ export type {
   GltfParseFailedInit,
   GltfParseFailureReason,
   GltfParseFormat,
+  GltfResourceDecodeFailedInit,
+  GltfResourceDecodeFailureReason,
 } from './errors.js';
 export {
   buildTextureDecodeReport,

@@ -1,6 +1,10 @@
 // errors.ts — structured glTF adapter failures.
 
 export type GltfAssetResourceKind = 'asset' | 'buffer' | 'image';
+export type GltfResourceDecodeFailureReason =
+  | 'malformed-data-uri'
+  | 'data-uri-atob-unavailable'
+  | 'data-uri-decode-failed';
 export type GltfParseFormat = 'gltf-json' | 'glb';
 export type GltfParseFailureReason =
   | 'json-parse-failed'
@@ -67,6 +71,29 @@ export class GltfFetchFailed extends GltfAdapterError {
     this.kind = init.kind;
     if (init.status !== undefined) this.status = init.status;
     if (init.statusText !== undefined) this.statusText = init.statusText;
+  }
+}
+
+export interface GltfResourceDecodeFailedInit extends GltfResourceErrorInit {
+  readonly reason: GltfResourceDecodeFailureReason;
+  readonly cause?: unknown;
+}
+
+export class GltfResourceDecodeFailed extends GltfAdapterError {
+  readonly url: string;
+  readonly kind: GltfAssetResourceKind;
+  readonly reason: GltfResourceDecodeFailureReason;
+
+  constructor(init: GltfResourceDecodeFailedInit) {
+    super(
+      'GLTF_RESOURCE_DECODE_FAILED',
+      init.message ??
+        `[vitrum/gltf-adapter] Failed to decode ${init.kind} resource "${init.url}" (${init.reason}).`,
+      init.cause === undefined ? undefined : { cause: init.cause },
+    );
+    this.url = init.url;
+    this.kind = init.kind;
+    this.reason = init.reason;
   }
 }
 
