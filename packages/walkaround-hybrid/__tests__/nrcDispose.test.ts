@@ -71,6 +71,17 @@ const NUM_SAMPLES = 32;
 // = 24 total. No downcast buffers (_downcastUboW/B) in the useF16=false path.
 const EXPECTED_BUILD_BUFFER_COUNT = 24;
 
+describe('NrcSubsystem config defaults', () => {
+  it('merges partial host config over defaults', () => {
+    const { device } = mockDevice();
+    const sub = new NrcSubsystem(device, {} as never, { warmupSteps: 3 });
+
+    expect(sub.cfg.warmupSteps).toBe(3);
+    expect(sub.cfg.levels).toBe(8);
+    expect(sub.cfg.recordCap).toBe(4096);
+  });
+});
+
 describe('FusedMlpTrainer.dispose()', () => {
   it('allocates 24 buffers in build() and destroys each exactly once', async () => {
     const { device, buffers } = mockDevice();

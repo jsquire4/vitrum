@@ -165,10 +165,10 @@ export class NrcSubsystem implements PipelineSubsystem {
   private _readPending = false;
   private _trainedSteps = 0;
 
-  constructor(device: GPUDevice, bglCache: BGLCache, cfg: NrcConfig = DEFAULT_NRC_CONFIG) {
+  constructor(device: GPUDevice, bglCache: BGLCache, cfg: Partial<NrcConfig> = {}) {
     this._device = device;
     this._bglCache = bglCache;
-    this.cfg = cfg;
+    this.cfg = { ...DEFAULT_NRC_CONFIG, ...cfg };
   }
 
   /** The encoding/MLP config the gi-ris NRC WGSL bakes its sizes from. MUST be

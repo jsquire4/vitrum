@@ -1000,6 +1000,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  GRIS-class regression (f8df9a4). Full-tier-only (the ctor forbids
        *  `tier:'lite' + nrcEnabled`). */
       nrcEnabled?: boolean;
+      /** NRC trainer windows required before cache substitution may replace DDGI. */
+      nrcWarmupSteps?: number;
       /** Phase-0 — PPG train-pass dispatch cadence. The update pass dispatches
        *  only on frames where `frameCount % N === 0`. `1`
        *  (default) trains every frame; `N > 1` skips off-interval frames. The
@@ -1119,7 +1121,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       // the device lacks the @group(4) 5th bind group / the fused-MLP workgroup
       // storage, rather than cryptically in createComputePipeline.
       assertNrcDeviceCapable(d.limits);
-      this._nrc = new NrcSubsystem(d, this._bglCache);
+      this._nrc = new NrcSubsystem(
+        d,
+        this._bglCache,
+        options?.nrcWarmupSteps !== undefined ? { warmupSteps: options.nrcWarmupSteps } : undefined,
+      );
       const aabb = deriveSceneAABBFromBvhPositions(bvhBuffers);
       await this._nrc.initialize(aabb.min, aabb.max);
     }

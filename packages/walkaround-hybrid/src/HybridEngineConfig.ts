@@ -64,6 +64,8 @@ export interface ParsedHybridEngineConfig {
    *  When ON, the suffix cache-query + per-frame training passes are live.
    *  FORBIDDEN on tier:'lite'. */
   readonly nrcEnabled: number;
+  /** NRC trainer windows required before cache substitution may replace DDGI. */
+  readonly nrcWarmupSteps: number;
   /** PPG (Müller 2017) guided-sampling flag (0 = off, 1 = on). COMPILE-TIME
    *  at the pipeline level: `ppgEnabled` builds the ppg-update pipeline and
    *  drives the UBO gate; OFF is bit-identical to the cosine kernel.
@@ -128,6 +130,11 @@ type WalkaroundHybridExt = {
 function resolvePpgMixAlpha(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return PPG_MIS_ALPHA;
   return Math.min(1, Math.max(0, value));
+}
+
+function resolveNrcWarmupSteps(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 8;
+  return Math.max(0, Math.floor(value));
 }
 
 function readWalkaroundHybridExt(opts: HybridEngineOptions): WalkaroundHybridExt | undefined {
@@ -314,6 +321,9 @@ export function deriveHybridEngineConfig(
     // (which tier:'lite' forbids — validated above). The real gate is compile-time
     // (selects the risGiNrc variant); this value is mirrored into the UBO.
     nrcEnabled: opts.nrcEnabled === true ? 1 : 0,
+    // NRC substitution warmup. The default matches NrcSubsystem's historical
+    // DEFAULT_NRC_CONFIG; hosts can make the bias/latency decision explicit.
+    nrcWarmupSteps: resolveNrcWarmupSteps(opts.nrcWarmupSteps),
     // PPG guided sampling. Default 0 (OFF) — bit-identical cosine kernel.
     // Forwarded to pipeline.initialize so the ppg-update pipeline is actually
     // built when a host opts in (tier:'lite' forbids it — validated above).

@@ -961,4 +961,19 @@ export interface HybridEngineOptions extends EngineOptions {
    * @default false
    */
   readonly nrcEnabled?: boolean;
+
+  /**
+   * Completed NRC trainer windows required before cache predictions may replace
+   * the DDGI suffix.
+   *
+   * NRC gathers training records immediately, but the GI shader keeps using the
+   * DDGI suffix until `trainedSteps >= nrcWarmupSteps`. Lower values promote the
+   * biased cache earlier; higher values keep the unbiased DDGI suffix longer
+   * while the cache settles. Values are clamped to integer `>= 0`.
+   *
+   * Default: 8.
+   *
+   * Only meaningful when `nrcEnabled: true`.
+   */
+  readonly nrcWarmupSteps?: number;
 }

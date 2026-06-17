@@ -602,6 +602,43 @@ describe('H47/H29 — PPG cap threading', () => {
     expect(cfg.ppgMixAlpha).toBe(1);
   });
 
+  it('nrcWarmupSteps is preserved and clamped in derived config', async () => {
+    const mod = await import('../src/HybridEngine.js');
+    const device = {
+      createBuffer: () => ({ destroy: () => undefined }),
+      createTexture: () => ({ createView: () => ({}), destroy: () => undefined }),
+      createSampler: () => ({}),
+      createBindGroupLayout: () => ({}),
+      createPipelineLayout: () => ({}),
+      queue: { writeBuffer: () => undefined, submit: () => undefined },
+      createCommandEncoder: () => ({
+        beginComputePass: () => ({ end: () => undefined, setPipeline: () => undefined, setBindGroup: () => undefined, dispatchWorkgroups: () => undefined }),
+        finish: () => ({}),
+      }),
+      limits: { maxStorageBuffersPerShaderStage: 10 },
+      features: { has: () => false },
+      label: 'stub',
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      lost: new Promise<never>(() => {}),
+    } as unknown as GPUDevice;
+
+    const engine = new mod.HybridEngine({
+      device,
+      width: 640,
+      height: 480,
+      primaryLightDir: [0, 1, 0],
+      primaryLightIntensity: 1.0,
+      skyTint: [0.4, 0.6, 1.0],
+      skyIrradiance: 2.0,
+      denoiser: 'atrous-variance',
+      nrcWarmupSteps: 3.8,
+    } as never);
+
+    const cfg = (engine as unknown as { _cfg: { nrcWarmupSteps: number } })._cfg;
+    expect(cfg.nrcWarmupSteps).toBe(3);
+  });
+
   it('ppgMaxSpatialCells is undefined when not supplied', async () => {
     const mod = await import('../src/HybridEngine.js');
     const device = {

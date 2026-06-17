@@ -2507,6 +2507,8 @@ export class HybridEngine implements Engine {
       nrcEnabled: this._cfg.nrcEnabled === 1,
       // PPG guided sampling — builds the ppg-update pipeline + UBO gate.
       ppgEnabled: this._cfg.ppgEnabled === 1,
+      // NRC substitution warmup gate.
+      nrcWarmupSteps: this._cfg.nrcWarmupSteps,
       ppgDispatchInterval: this._cfg.ppgDispatchInterval,
       // H47 — PPG max spatial cells. undefined ⇒ allocatePPGResources default (1 024).
       ppgMaxSpatialCells: this._cfg.ppgMaxSpatialCells,

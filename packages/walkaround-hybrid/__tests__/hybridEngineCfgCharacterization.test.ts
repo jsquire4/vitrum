@@ -69,6 +69,7 @@ function richOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
     atrousIndirectSigmas: [30, 18, 0.4],
     restirPtReuse: true,
     nrcEnabled: false,
+    nrcWarmupSteps: 3,
     gtaoMode: 'quarter',
     diSpatialPasses: 2,
     giSpatialPasses: 1,
@@ -145,6 +146,7 @@ describe('HybridEngine._initStaticConfig — migrated config values unchanged', 
     // restirPtReuse / nrcEnabled forwarded as booleans (=== 1).
     expect(cfg['restirPtReuse']).toBe(golden.restirPtReuse === 1);
     expect(cfg['nrcEnabled']).toBe(golden.nrcEnabled === 1);
+    expect(cfg['nrcWarmupSteps']).toBe(golden.nrcWarmupSteps);
     expect(cfg['ppgDispatchInterval']).toBe(golden.ppgDispatchInterval);
     expect(cfg['ppgMaxSpatialCells']).toBe(golden.ppgMaxSpatialCells);
     expect(cfg['ppgMaxDTreeNodesPerCell']).toBe(golden.ppgMaxDTreeNodesPerCell);

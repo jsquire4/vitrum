@@ -102,6 +102,8 @@ export interface PipelineInitHost {
    *  Same compile-time discipline as `restirPtReuse` (a runtime flag binding an
    *  extra group on the default path is the GRIS-class regression). */
   readonly nrcEnabled: boolean;
+  /** NRC trainer windows required before cache substitution may replace DDGI. */
+  readonly nrcWarmupSteps: number;
   /** PPG (Müller 2017) guided sampling — when true the pipeline builds the
    *  ppg-update pipeline and enables the UBO gate; false = bit-identical
    *  cosine kernel. */
@@ -189,6 +191,7 @@ export type HybridInitStaticConfig = Pick<
   | 'giSpatialPasses'
   | 'restirPtReuse'
   | 'nrcEnabled'
+  | 'nrcWarmupSteps'
   | 'ppgEnabled'
   | 'ppgMaxSpatialCells'
   | 'ppgMaxDTreeNodesPerCell'
@@ -447,6 +450,7 @@ export class PipelineInitCoordinator {
           // which checkerboard is forced full-rate (finer than the temporal
           // reset). Only consulted when checkerboard is on.
           checkerboardMotionThresholdSq: host.checkerboardMotionThresholdSq,
+          nrcWarmupSteps: host.nrcWarmupSteps,
           // Phase-0 — PPG train-pass cadence (ppg-update gates on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.
