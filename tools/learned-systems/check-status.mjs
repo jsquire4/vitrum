@@ -119,6 +119,7 @@ async function assertRuntimeTruthfulnessGuards() {
   const config = await readText("packages/walkaround-hybrid/src/HybridEngineConfig.ts");
   const engine = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
   const options = await readText("packages/walkaround-hybrid/src/HybridEngineOptions.ts");
+  const pipeline = await readText("packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts");
   const packageReadme = await readText("packages/walkaround-hybrid/README.md");
   const trainingReadme = await readText("tools/neural-denoiser-training/README.md");
   const weights = await readText("packages/walkaround-hybrid/src/neural/weights.ts");
@@ -137,6 +138,10 @@ async function assertRuntimeTruthfulnessGuards() {
     [engine, "walkaround-hybrid-nrc-biased-cache", "NRC opt-in experimental feature"],
     [engine, "walkaround-hybrid-neural-denoiser-host-weights", "neural opt-in experimental feature"],
     [options, "NRC is a BIASED estimator", "NRC option bias disclosure"],
+    [pipeline, "export function assertNrcDeviceCapable", "NRC device capability gate"],
+    [pipeline, "maxBindGroups < NRC_REQUIRED_MAX_BIND_GROUPS", "NRC maxBindGroups guard"],
+    [pipeline, "maxWgStorage < NRC_REQUIRED_WORKGROUP_STORAGE_BYTES", "NRC workgroup-storage guard"],
+    [pipeline, "assertNrcDeviceCapable(d.limits)", "NRC gate called before pipeline init"],
     [packageReadme, "does **not** ship production neural weights", "package README production-weight disclosure"],
     [trainingReadme, "It does NOT produce useful denoiser weights", "training README smoke caveat"],
     [weights, "Repo-only research checkpoints", "weights.ts research checkpoint disclosure"],
