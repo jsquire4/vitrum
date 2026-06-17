@@ -420,7 +420,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | NRC quality/default tier | walkaround NRC | Quality/convergence A/B after warm-up gate; decide default/off/experimental. |
 | Neural denoiser quality | shared/walkaround | Production checkpoint plus quality A/B; otherwise keep opt-in. |
 | BDPT material/radiometric proof | pt-webgpu/pt-webgl2 | Equal-spp or equal-time reference A/B; specialty material furnace. |
-| pt-webgpu full-tier material furnace | pt-webgpu | Clearcoat/sheen/iridescence/aniso/specular map reference renders. |
+| pt-webgpu full-tier material furnace | pt-webgpu | Clearcoat/sheen/iridescence/aniso/specular map reference renders. Synthetic glTF material-sweep WSL/lavapipe golden is metadata-checked; full-tier material-lobe capture remains. |
 | pt-webgl2 material furnace | pt-webgl2 | Thickness/SSS/procedural-sky/emissive panels against references. |
 | Rich-material GI | walkaround | A/B showing receiver-lobe material target improves or preserves correctness. |
 | Transparent OIT visual proof | walkaround | Alpha blend scenes with sun/point/area/shadow transmittance references. |

@@ -67,6 +67,7 @@ import {
   makeSweepGltf,
   makeSweepTextureDecodeHooks,
 } from "../gltf-material-sweep/fixture.mjs";
+import { GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF } from "../gltf-material-sweep/proofs.mjs";
 import { REAL_GLTF_BEHAVIORAL_PROOFS } from "../gltf-real-asset-sweep/proofs.mjs";
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
@@ -1458,11 +1459,11 @@ function hasNaN(pixels) {
 }
 
 const GLTF_GOLDENS = {
-  "pt/gltf-material-sweep": {
-    path: "tools/reference-renders/gltf-material-sweep-behavioral/pt-gltf-material-sweep.png",
-    maxRmse: 8.0,
-    maxMeanAbs: 4.0,
-    maxAbs: 48,
+  [GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label]: {
+    path: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath,
+    maxRmse: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds.maxRmse,
+    maxMeanAbs: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds.maxMeanAbs,
+    maxAbs: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds.maxAbs,
   },
   ...REAL_GLTF_GOLDENS,
   "pt/gltf-point-line-fallback": {

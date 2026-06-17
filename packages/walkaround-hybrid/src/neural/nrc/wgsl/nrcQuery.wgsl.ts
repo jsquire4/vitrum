@@ -170,8 +170,8 @@ struct NrcCfgUBO {
 // Record-gather buffer. We use a deterministic per-pixel slot = pixelIdxGi %
 // recordCap, which is race-free because each invocation owns one pixel. Records
 // are [NRC_IN_W encoded input | OUT_W radiance target | 3 query WORLD pos]
-// (recordStride = NRC_IN_W + OUT_W + 3). A record with target == 0 across all
-// channels is treated as empty by the host gather.
+// (recordStride = NRC_IN_W + OUT_W + 3). Host gather treats all-zero encoded
+// input as empty; zero radiance targets are valid training samples.
 @group(${G}) @binding(4) var<storage, read_write> nrcRecords    : array<f32>;
 @group(${G}) @binding(5) var<uniform>             nrcCfg        : NrcCfgUBO;
 // H27 — per-slot claim flags (atomic u32, one per recordCap slot). 0=unclaimed,

@@ -7,7 +7,8 @@
  * material texture fields, textureDecodeReport rows, backend compatibility
  * diagnostics, and CPU-linear decode readiness before any renderer captures run.
  *
- * The Road's render/golden-PNG half remains a separate GPU capture queue item.
+ * The matching WSL/lavapipe pt-webgpu behavioral golden is tracked in
+ * proofs.mjs; full-tier rich-material fidelity captures remain a separate queue.
  */
 
 import {
@@ -25,6 +26,7 @@ import {
   makeSweepTextureDecodeHooks,
   samplerPolicyIsNativeForBackend,
 } from "./fixture.mjs";
+import { GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF } from "./proofs.mjs";
 
 const jsonMode = Deno.args.includes("--json");
 
@@ -151,6 +153,7 @@ async function main() {
   const compatibility = summarizeCompatibility(assetReport);
   assertExpectedSamplerCompatibility(compatibility);
 
+  const proof = GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF;
   const summary = {
     fixture: "synthetic-material-sweep",
     materialFields: decoded.featureReport.materials.materialFields,
@@ -181,9 +184,14 @@ async function main() {
       isCompatible: decoded.recommendedBackend.isCompatible,
     },
     compatibility,
-    renderStatus: "queued",
+    renderStatus: "covered-by-behavioral-gate",
+    renderProof: {
+      label: proof.label,
+      goldenPath: proof.goldenPath,
+      thresholds: proof.thresholds,
+    },
     renderQueueReason:
-      "Phase 5A GPU render/golden-PNG capture is intentionally outside this CPU preflight; use behavioral-gate/reference-render harness for captures.",
+      "Committed WSL/lavapipe pt-webgpu behavioral golden covers boot/readback/tolerance; full-tier rich-material fidelity captures remain queued separately.",
   };
 
   if (jsonMode) {
@@ -191,7 +199,8 @@ async function main() {
   } else {
     console.log("[gltf-material-sweep] PASS");
     console.log(`[gltf-material-sweep] maps=${summary.textureDecodeReport.mapCount}; recommended=${summary.recommendedBackend.backend}/${summary.recommendedBackend.profileId}`);
-    console.log("[gltf-material-sweep] renderStatus=queued (GPU golden capture remains a separate proof queue item)");
+    console.log(`[gltf-material-sweep] renderStatus=${summary.renderStatus}`);
+    console.log(`[gltf-material-sweep] proof=${proof.label}; golden=${proof.goldenPath}`);
   }
 }
 

@@ -1088,7 +1088,12 @@ label, golden path, and tolerances for each committed real asset.
 committed 64x64 lavapipe PNG baseline for `pt/gltf-material-sweep`. The normal
 `npm run behavioral-gate -- --filter gltf-material-sweep` path reads that PNG
 and fails the config as `GOLDEN-DELTA` if byte RMSE, mean absolute error, or
-max-channel delta exceeds the tolerance.
+max-channel delta exceeds the tolerance. The proof metadata follow-up adds
+`tools/gltf-material-sweep/proofs.mjs` plus
+`tools/reference-renders/gltf-material-sweep-behavioral/manifest.json`, so
+`npm run gltf-material-sweep` now reports
+`renderStatus:"covered-by-behavioral-gate"` with the exact proof label, golden
+path, and tolerances instead of a stale queued status.
 
 **Still queued after this follow-up:** full-tier rich-material fidelity captures.
 On WSL lavapipe these gates prove one-call glTF decode/controller/backend

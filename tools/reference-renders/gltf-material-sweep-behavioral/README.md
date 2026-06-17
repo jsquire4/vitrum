@@ -5,6 +5,13 @@ material-heavy glTF fixture:
 
 - `pt/gltf-material-sweep`
 
+`manifest.json` and `tools/gltf-material-sweep/proofs.mjs` are the shared
+metadata used by the CPU sweep and behavioral gate. Keep them in sync with:
+
+```sh
+npm run gltf-material-proof-check
+```
+
 The normal gate compares current readback against this PNG using byte RMSE,
 mean absolute error, and max-channel-delta tolerances:
 
@@ -21,4 +28,3 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
     --allow-net --allow-write=tools/reference-renders/gltf-material-sweep-behavioral \
     tools/behavioral-gate/gate.mjs --filter gltf-material-sweep --update-goldens
 ```
-
