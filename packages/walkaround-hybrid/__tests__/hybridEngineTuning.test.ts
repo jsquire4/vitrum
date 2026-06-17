@@ -201,8 +201,12 @@ describe('validateHybridEngineOptions — throws (parse split, pure)', () => {
     expect(() => validateHybridEngineOptions(baseOpts({ tier: 'lite', nrcEnabled: false }))).not.toThrow();
   });
 
+  it('accepts denoiser:none as an explicit pass-through mode', () => {
+    expect(() => validateHybridEngineOptions(baseOpts({ denoiser: 'none' }))).not.toThrow();
+  });
+
   it('throws on an unsupported denoiser enum', () => {
-    const bad = { ...baseOpts(), denoiser: 'none' } as unknown as HybridEngineOptions;
+    const bad = { ...baseOpts(), denoiser: 'bogus-denoiser' } as unknown as HybridEngineOptions;
     expect(() => validateHybridEngineOptions(bad)).toThrow(/unsupported denoiser/);
   });
 

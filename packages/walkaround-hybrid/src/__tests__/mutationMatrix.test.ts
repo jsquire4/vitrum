@@ -393,7 +393,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     const { engine, pipeline, ddgi, rc } = seedEngine(baseScene(), { bvhMode: 'tlas', rc: true });
     try {
       engine.updatePrimitive('mesh-a', {
-        material: { baseColor: [0.1, 0.9, 0.3], roughness: 0.25, metallic: 0 },
+        material: { baseColor: [0.8, 0.2, 0.2], roughness: 0.25, metallic: 0 },
       });
 
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
@@ -404,6 +404,72 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.updateEmitters).not.toHaveBeenCalled();
       expect((storedScene(engine).primitives[0] as { material: { roughness: number } }).material.roughness)
         .toBe(0.25);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material) invalidates DDGI for emissive intensity changes on the material slice path', () => {
+    const base = baseScene();
+    const prim = base.primitives[0];
+    if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
+    const seededScene: Scene = {
+      ...base,
+      primitives: [
+        {
+          ...prim,
+          material: {
+            baseColor: [0.8, 0.2, 0.2],
+            roughness: 0.5,
+            metallic: 0,
+            emissive: [0.2, 0.1, 0.05],
+            emissiveIntensity: 1,
+          },
+        },
+        ...base.primitives.slice(1),
+      ],
+    };
+    const { engine, pipeline, ddgi } = seedEngine(seededScene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [0.8, 0.2, 0.2],
+          roughness: 0.5,
+          metallic: 0,
+          emissive: [0.2, 0.1, 0.05],
+          emissiveIntensity: 3,
+        },
+      });
+
+      expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
+      expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material) invalidates DDGI for scalar Beer/tint changes without a geometry rebuild', () => {
+    const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [0.8, 0.2, 0.2],
+          roughness: 0.5,
+          metallic: 0,
+          attenuationColor: [0.7, 0.8, 1],
+          attenuationDistance: 2,
+          thickness: 0.35,
+        },
+      });
+
+      expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
+      expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
+      expect(ddgi.syncRestirBvhBuffers).not.toHaveBeenCalled();
+      expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
     } finally {
       engine.dispose();
     }

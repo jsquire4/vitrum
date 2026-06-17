@@ -213,7 +213,7 @@ export function tryFastPathMaterialMutation(
 
   const meshLightsData = hasMeshAreaLightForPrimitive(nextScene, primitiveId)
     || (current.meshLightCount ?? 0) > 0
-    ? packMeshAreaLights(nextScene, geoPack)
+    ? packMeshAreaLights(nextScene, nextGeoPack)
     : null;
   const meshLights = meshLightsData?.data != null
     ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights')

@@ -123,6 +123,16 @@ function getDdgi(engine: HybridEngine): DDGI {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('walkaround-hybrid EngineError surface — onError subscription', () => {
+  it('constructs with the public no-op denoiser mode', () => {
+    const ctrl = makeControlledDevice();
+    const engine = new HybridEngine({
+      ...makeBaseOpts(ctrl.device),
+      denoiser: 'none',
+    });
+    expect(engine.state).toBe('uninitialized');
+    engine.dispose();
+  });
+
   it('onError is a function and returns an unsubscribe function', () => {
     const ctrl = makeControlledDevice();
     const engine = new HybridEngine(makeBaseOpts(ctrl.device));

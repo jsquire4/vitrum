@@ -124,7 +124,7 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(engine.capabilities.incrementalPatchSupport).toEqual({
       transform: false,
       positions: true,
-      material: false,
+      material: true,
       emitter: true,
       topology: false,
     });
@@ -135,7 +135,7 @@ describe('H12: lite-tier capabilities truth', () => {
     const sd = engine.capabilities.supportDetails!;
     expect(sd.primitives['instanced-mesh']).toBe('native');
     expect(sd.mutations.transform).toBe('unsupported');
-    expect(sd.mutations.material).toBe('fallback-rebuild');
+    expect(sd.mutations.material).toBe('native');
     expect(sd.mutations.topology).toBe('unsupported');
     expect(sd.materials.baseColor).toBe('native');
     expect(sd.materials.clearcoat).toBe('native');

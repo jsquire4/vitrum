@@ -70,7 +70,7 @@ export interface PipelineInitHost {
   readonly primaryLightIntensity: number;
   /** Optional override from `extensions['walkaround-hybrid'].bvhMode`. */
   readonly restirBvhModeOverride: ReSTIRBvhMode | undefined;
-  readonly denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
+  readonly denoiser: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
   readonly neuralWeights: ModelWeights | undefined;
   readonly oidnModelUrl: string | undefined;
   readonly oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;

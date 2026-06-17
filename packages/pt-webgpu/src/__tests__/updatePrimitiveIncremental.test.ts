@@ -274,11 +274,11 @@ describe('pt-webgpu incremental primitive updates', () => {
     }
   });
 
-  it('lite tier material patches fall back to a merged-scene repack', async () => {
+  it('lite tier material patches update the material buffer in-place', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeLiteStubDevice();
     const engine = await createPTEngine_WebGPU({ device, traceTier: 'lite' });
-    expect(engine.capabilities.incrementalPatchSupport?.material).toBe(false);
+    expect(engine.capabilities.incrementalPatchSupport?.material).toBe(true);
     engine.setScene(makeScene());
 
     const writesBefore = writeBuffer.mock.calls.length;
@@ -288,8 +288,12 @@ describe('pt-webgpu incremental primitive updates', () => {
       material: { baseColor: [0.2, 0.7, 0.9], roughness: 0.05, metallic: 0.4 },
     });
 
-    expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
-    expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore + 1);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 1);
+
+    const lastWrite = writeBuffer.mock.calls[writeBuffer.mock.calls.length - 1];
+    const writeByteOffset = lastWrite?.[1];
+    expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
   it('splices a vertex-count change, reallocating only the 13 geometry buffers', async () => {

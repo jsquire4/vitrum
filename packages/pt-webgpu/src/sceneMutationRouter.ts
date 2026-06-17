@@ -312,11 +312,6 @@ export class SceneMutationRouter {
       );
     }
 
-    if (host.isLiteTier?.() === true && canFastPathMaterialPatch(fastPathPatch)) {
-      host.setScene(nextScene);
-      return;
-    }
-
     // The incremental fast paths, in FIRST-ELIGIBLE-WINS order (geometry →
     // topology-resize → analytic-transform → instanced-topology → transform →
     // material). Each handler does its own re-upload work and returns a

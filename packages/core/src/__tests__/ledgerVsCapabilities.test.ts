@@ -124,7 +124,7 @@ describe('BACKEND_PROMISE_LEDGER["walkaround-hybrid"] structural self-consistenc
     expect(ledger.supportDetails.emitters['mesh-area']).toBe('native');
   });
 
-  it('supportedEmitterKinds includes point and spot (accepted, just approximate)', () => {
+  it('supportedEmitterKinds includes point and spot (native direct-light path)', () => {
     expect(ledger.supportedEmitterKinds).toContain('point');
     expect(ledger.supportedEmitterKinds).toContain('spot');
   });

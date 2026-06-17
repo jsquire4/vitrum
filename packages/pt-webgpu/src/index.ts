@@ -669,7 +669,7 @@ class PTEngineWebGPU implements Engine {
         ? {
             transform: false,
             positions: true,
-            material: false,
+            material: true,
             emitter: true,
             topology: false,
           }
@@ -785,7 +785,7 @@ class PTEngineWebGPU implements Engine {
               mutations: {
                 ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.mutations,
                 transform: 'unsupported',
-                material: 'fallback-rebuild',
+                material: 'native',
                 topology: 'unsupported',
               },
             }

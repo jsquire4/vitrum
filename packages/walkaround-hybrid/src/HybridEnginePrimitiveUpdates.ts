@@ -1059,7 +1059,8 @@ function vitrumMaterialTransmission(material: MaterialSpec | undefined): number 
 function productionEmissiveRadiance(material: MaterialSpec | undefined): readonly [number, number, number] {
   const emissive = material?.emissive;
   if (emissive == null) return [0, 0, 0];
-  return [emissive[0], emissive[1], emissive[2]];
+  const intensity = material?.emissiveIntensity ?? 1;
+  return [emissive[0] * intensity, emissive[1] * intensity, emissive[2] * intensity];
 }
 
 function productionEmissiveRadianceChanged(
@@ -1069,6 +1070,31 @@ function productionEmissiveRadianceChanged(
   const a = productionEmissiveRadiance(prev);
   const b = productionEmissiveRadiance(next);
   return a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2];
+}
+
+function color3Changed(
+  prev: readonly [number, number, number] | undefined,
+  next: readonly [number, number, number] | undefined,
+  fallback: readonly [number, number, number],
+): boolean {
+  const a = prev ?? fallback;
+  const b = next ?? fallback;
+  return a[0] !== b[0] || a[1] !== b[1] || a[2] !== b[2];
+}
+
+function materialRadianceOrVisibilityChanged(
+  prev: MaterialSpec | undefined,
+  next: MaterialSpec | undefined,
+): boolean {
+  const prevTransmission = vitrumMaterialTransmission(prev);
+  const nextTransmission = vitrumMaterialTransmission(next);
+  return prevTransmission > TRANSMISSION_GLASS_THRESHOLD
+    || nextTransmission > TRANSMISSION_GLASS_THRESHOLD
+    || productionEmissiveRadianceChanged(prev, next)
+    || color3Changed(prev?.attenuationColor, next?.attenuationColor, [1, 1, 1])
+    || (prev?.attenuationDistance ?? Infinity) !== (next?.attenuationDistance ?? Infinity)
+    || (prev?.thickness ?? 0) !== (next?.thickness ?? 0)
+    || color3Changed(prev?.baseColor, next?.baseColor, [1, 1, 1]);
 }
 
 function textureRefLike(value: unknown): {
@@ -1325,8 +1351,6 @@ export function materialPatch(
 
   const prevMaterial =
     prevPrim && 'material' in prevPrim ? prevPrim.material : undefined;
-  const prevTransmission = vitrumMaterialTransmission(prevMaterial);
-  const nextTransmission = vitrumMaterialTransmission(nextMaterial);
   if (materialAtlasPatchRequiresFullRebuild(prevMaterial, nextMaterial)) {
     return topologyRebuild(id, patch, ctx);
   }
@@ -1440,10 +1464,7 @@ export function materialPatch(
   );
 
   let outBvh: SceneBVHBuffers = { ...bvh, bvhEmissiveLe: updatedEmissiveLe, coreMaterials: updatedCoreMaterials };
-  const emitterAffectingMaterialChanged =
-    prevTransmission > TRANSMISSION_GLASS_THRESHOLD
-    || nextTransmission > TRANSMISSION_GLASS_THRESHOLD
-    || productionEmissiveRadianceChanged(prevMaterial, nextMaterial);
+  const emitterAffectingMaterialChanged = materialRadianceOrVisibilityChanged(prevMaterial, nextMaterial);
   if (emitterAffectingMaterialChanged) {
     ctx.ddgi.invalidateProbeCache();
     const emitterOptions = {

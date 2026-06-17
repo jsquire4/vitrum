@@ -39,7 +39,7 @@ const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
  * returned record.
  */
 export interface ParsedHybridEngineConfig {
-  readonly denoiser: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
+  readonly denoiser: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
   readonly neuralWeights: ModelWeights | undefined;
   readonly oidnModelUrl: string | undefined;
   readonly oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
@@ -182,19 +182,17 @@ export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
   }
 
   // Audit B7: validate the denoiser option at construction so an unsupported
-  // value (e.g. `'none'` from the @vitrum/core EngineOptions contract) does
-  // not silently coerce to atrous-variance and produce wrong output. Supported
-  // values are enumerated in VALID_DENOISERS (single source of truth in
-  // HybridEngineOptions.ts). `'bmfr'` is now a real denoiser (Koskela 2019 —
-  // see denoisers/bmfr.ts).
+  // value does not silently coerce to atrous-variance and produce wrong output.
+  // Supported values are enumerated in VALID_DENOISERS (single source of truth
+  // in HybridEngineOptions.ts). `'none'` is the pass-through denoiser, and
+  // `'bmfr'` is a real denoiser (Koskela 2019 — see denoisers/bmfr.ts).
   if (
     opts.denoiser !== undefined &&
     !(VALID_DENOISERS as ReadonlyArray<string>).includes(opts.denoiser)
   ) {
     throw new TypeError(
       `[HybridEngine] unsupported denoiser '${String(opts.denoiser)}'. ` +
-      `walkaround-hybrid supports: 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final'. ` +
-      `If you need 'none' from @vitrum/core, pick a backend that implements that mode.`,
+      `walkaround-hybrid supports: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final'.`,
     );
   }
   // T2.H2 — 'neural' requires neuralWeights to be provided.

@@ -20,6 +20,7 @@ import type { CascadeDim } from '@vitrum/walkaround-rc';
  * adding a new denoiser is a one-edit change.
  */
 export const VALID_DENOISERS = [
+  'none',
   'atrous',
   'atrous-variance',
   'svgf-real',
@@ -190,9 +191,12 @@ export interface HybridEngineOptions extends EngineOptions {
    *   `'atrous-variance'` (default) — temporal Welford + à-trous + variance
    *   scalar lookup; honest about what it does (not Schied 2017 SVGF).
    *
-   *   `'atrous'` — legacy three-pass edge-stopping à-trous only.
-   *
-   *   `'svgf-real'` — T2.H1 — full Schied 2017 SVGF: bilinear motion-vector
+ *   `'atrous'` — legacy three-pass edge-stopping à-trous only.
+ *
+ *   `'none'` — pass-through mode; skips denoiser dispatch and composites the
+ *   raw HDR target directly.
+ *
+ *   `'svgf-real'` — T2.H1 — full Schied 2017 SVGF: bilinear motion-vector
    *   reprojection, depth+normal+objId disocclusion test (Eq. 2), per-pixel
    *   history-length texture (Eq. 3), EMA α=max(α_min, 1/(h+1)) (Eq. 4),
    *   variance-from-moments (Eq. 5), 7×7 spatial fallback for disoccluded pixels
