@@ -6,39 +6,7 @@ import draco3d from "npm:draco3d@1.5.7";
 import jpeg from "npm:jpeg-js@0.4.4";
 import { MeshoptDecoder } from "npm:meshoptimizer@1.1.1";
 import { PNG } from "npm:pngjs@7.0.0";
-
-export const REAL_GLTF_ASSETS = [
-  {
-    id: "box-textured-glb",
-    kind: "textured-glb",
-    url: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/BoxTextured/glTF-Binary/BoxTextured.glb",
-    expect: { minPrimitives: 1, minTextures: 1 },
-  },
-  {
-    id: "cesium-milk-truck-draco",
-    kind: "draco",
-    url: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/CesiumMilkTruck/glTF-Draco/CesiumMilkTruck.gltf",
-    expect: { minPrimitives: 1, requiredExtensions: ["KHR_draco_mesh_compression"] },
-  },
-  {
-    id: "meshopt-cube-real",
-    kind: "meshopt",
-    url: "https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/MeshoptCubeTest/glTF-Meshopt/MeshoptCubeTest.gltf",
-    expect: {
-      minPrimitives: 1,
-      requiredExtensions: ["KHR_meshopt_compression"],
-      allowedWarningSubstrings: ["sets doubleSided=true"],
-    },
-  },
-];
-
-export function getRealGltfAsset(id) {
-  const asset = REAL_GLTF_ASSETS.find((candidate) => candidate.id === id);
-  if (!asset) {
-    throw new Error(`unknown real glTF asset "${id}"`);
-  }
-  return asset;
-}
+export { REAL_GLTF_ASSETS, getRealGltfAsset } from "./assetManifest.mjs";
 
 export async function decodeImagePixels(handle, context) {
   const isPng = handle.mimeType === "image/png" ||
@@ -161,4 +129,3 @@ export async function makeRealGltfDecodeHooks() {
   ]);
   return { dracoDecode, meshoptDecode, decodePixels: decodeImagePixels };
 }
-

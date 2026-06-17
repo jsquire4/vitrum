@@ -22,6 +22,7 @@ export const REAL_GLTF_BEHAVIORAL_PROOFS = [
   },
 ];
 
+/** @param {string} assetId */
 export function proofForRealGltfAsset(assetId) {
   return REAL_GLTF_BEHAVIORAL_PROOFS.find((proof) => proof.assetId === assetId) ?? null;
 }

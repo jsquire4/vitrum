@@ -2,20 +2,29 @@
 // @ts-check
 // Verifies that the real glTF behavioral-proof metadata, manifest, and PNGs agree.
 
-import { REAL_GLTF_ASSETS } from "./assets.mjs";
+import { REAL_GLTF_ASSETS } from "./assetManifest.mjs";
 import { REAL_GLTF_BEHAVIORAL_PROOFS } from "./proofs.mjs";
 
 const manifestUrl = new URL("../reference-renders/gltf-real-behavioral/manifest.json", import.meta.url);
 const manifest = JSON.parse(await Deno.readTextFile(manifestUrl));
 
+/** @param {string} message */
 function fail(message) {
   throw new Error(`[gltf-real-proof-check] ${message}`);
 }
 
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ */
 function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * @param {readonly Record<string, unknown>[]} items
+ * @param {string} key
+ */
 function byKey(items, key) {
   const map = new Map();
   for (const item of items) {
