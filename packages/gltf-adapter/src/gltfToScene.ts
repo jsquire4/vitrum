@@ -92,7 +92,12 @@ import { generateFlatNormals } from './normals.js';
 import { generateTangents } from './tangents.js';
 import { animationNodeId, convertAnimations, type GltfAnimationImportDiagnosticCode } from './animations.js';
 import { resolveCompression } from './compression.js';
-import type { DracoDecodeFn, MeshoptDecodeFn } from './compression.js';
+import type {
+  DracoDecodeFn,
+  GltfCompressionDiagnostic,
+  GltfCompressionDiagnosticCode,
+  MeshoptDecodeFn,
+} from './compression.js';
 import {
   GLTF_MODE_TRIANGLE_FAN,
   GLTF_MODE_TRIANGLE_STRIP,
@@ -350,6 +355,7 @@ export type GltfImportDiagnosticCode =
   | GltfAnimationImportDiagnosticCode
   | GltfAccessorDiagnosticCode
   | GltfMaterialDiagnosticCode
+  | GltfCompressionDiagnosticCode
   | 'unsupported-version'
   | 'unsupported-required-extension'
   | 'ignored-camera'
@@ -458,6 +464,9 @@ export async function gltfToScene(
   const onMaterialDiagnostic = (diagnostic: GltfMaterialDiagnostic): void => {
     emitImportDiagnostic(warnings, diagnostics, diagnostic);
   };
+  const onCompressionDiagnostic = (diagnostic: GltfCompressionDiagnostic): void => {
+    diagnostics.push(diagnostic);
+  };
 
   // ── 2. Validate version ────────────────────────────────────────────────────
   const version = gltf.asset?.version;
@@ -528,6 +537,7 @@ export async function gltfToScene(
     buffers,
     { dracoDecode: opts.dracoDecode, meshoptDecode: opts.meshoptDecode },
     warnings,
+    onCompressionDiagnostic,
   );
 
   // ── 4. Resolve textures ────────────────────────────────────────────────────

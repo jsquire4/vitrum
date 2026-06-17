@@ -107,6 +107,42 @@ export interface GltfDecodeHooks {
   readonly meshoptDecode?: MeshoptDecodeFn | undefined;
 }
 
+export type GltfCompressionDiagnosticCode =
+  | 'draco-accessor-missing'
+  | 'draco-attribute-component-type-mismatch'
+  | 'draco-attribute-count-mismatch'
+  | 'draco-attribute-fallback-used'
+  | 'draco-attribute-missing'
+  | 'draco-attribute-unmapped'
+  | 'draco-buffer-view-unavailable'
+  | 'draco-decode-hook-failed'
+  | 'draco-decode-hook-missing'
+  | 'draco-fallback-accessors-used'
+  | 'draco-geometry-unusable'
+  | 'draco-index-count-mismatch'
+  | 'draco-indices-fallback-used'
+  | 'draco-indices-missing'
+  | 'meshopt-buffer-unavailable'
+  | 'meshopt-decode-hook-failed'
+  | 'meshopt-decode-hook-missing'
+  | 'meshopt-decoded-byte-length-mismatch'
+  | 'meshopt-fallback-buffer-used';
+
+export interface GltfCompressionDiagnostic {
+  readonly severity: 'warning';
+  readonly code: GltfCompressionDiagnosticCode;
+  readonly path: string;
+  readonly message: string;
+  readonly extension: 'KHR_draco_mesh_compression' | 'EXT_meshopt_compression' | 'KHR_meshopt_compression';
+  readonly meshIndex?: number;
+  readonly primitiveIndex?: number;
+  readonly bufferViewIndex?: number;
+  readonly accessorIndex?: number;
+  readonly semantic?: string;
+}
+
+type GltfCompressionDiagnosticSink = (diagnostic: GltfCompressionDiagnostic) => void;
+
 // ── Extension JSON shapes ────────────────────────────────────────────────────
 
 interface MeshoptBufferViewExt {
@@ -143,6 +179,7 @@ export async function resolveCompression(
   buffers: Map<number, ArrayBuffer>,
   hooks: GltfDecodeHooks,
   warnings: string[],
+  onDiagnostic?: GltfCompressionDiagnosticSink,
 ): Promise<GltfJson> {
   const hasMeshopt = (gltf.bufferViews ?? []).some(
     (bv) => getMeshoptBufferViewExtension(bv) !== undefined,
@@ -159,10 +196,10 @@ export async function resolveCompression(
   // meshopt first: it operates at bufferView level, so a (theoretical) Draco
   // blob inside a meshopt-wrapped view would already be decompressed.
   if (hasMeshopt) {
-    await _resolveMeshopt(out, buffers, hooks.meshoptDecode, required, warnings);
+    await _resolveMeshopt(out, buffers, hooks.meshoptDecode, required, warnings, onDiagnostic);
   }
   if (hasDraco) {
-    await _resolveDraco(out, buffers, hooks.dracoDecode, required.has(DRACO_EXT), warnings);
+    await _resolveDraco(out, buffers, hooks.dracoDecode, required.has(DRACO_EXT), warnings, onDiagnostic);
   }
   return out;
 }
@@ -223,6 +260,15 @@ function _stripExtension(holder: { extensions?: Record<string, unknown> }, name:
   if (Object.keys(holder.extensions).length === 0) delete holder.extensions;
 }
 
+function emitCompressionDiagnostic(
+  warnings: string[],
+  onDiagnostic: GltfCompressionDiagnosticSink | undefined,
+  diagnostic: GltfCompressionDiagnostic,
+): void {
+  warnings.push(diagnostic.message);
+  onDiagnostic?.(diagnostic);
+}
+
 function getMeshoptBufferViewExtension(
   bufferView: { readonly extensions?: Record<string, unknown> },
 ): { readonly name: typeof MESHOPT_EXTENSIONS[number]; readonly value: MeshoptBufferViewExt } | undefined {
@@ -258,6 +304,7 @@ async function _resolveMeshopt(
   decode: MeshoptDecodeFn | undefined,
   required: ReadonlySet<string>,
   warnings: string[],
+  onDiagnostic: GltfCompressionDiagnosticSink | undefined,
 ): Promise<void> {
   const views = gltf.bufferViews ?? [];
   for (let i = 0; i < views.length; i++) {
@@ -273,11 +320,17 @@ async function _resolveMeshopt(
       const fallbackStub = getMeshoptFallbackExtension(gltf.buffers?.[bv.buffer], name)?.fallback === true;
       const fallbackAvailable = !fallbackStub && buffers.has(bv.buffer);
       if (fallbackAvailable) {
-        warnings.push(
-          `[vitrum/gltf-adapter] BufferView ${i} uses ${name} but no ` +
+        emitCompressionDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'meshopt-fallback-buffer-used',
+          path: `bufferViews[${i}].extensions.${name}`,
+          extension: name,
+          bufferViewIndex: i,
+          message:
+            `[vitrum/gltf-adapter] BufferView ${i} uses ${name} but no ` +
             'opts.meshoptDecode hook was supplied. Falling back to the uncompressed ' +
             'fallback buffer (larger download, identical data).',
-        );
+        });
         _stripExtension(bv, name);
         continue;
       }
@@ -289,11 +342,17 @@ async function _resolveMeshopt(
             'MeshoptDecoder.decodeGltfBuffer — see the README "Compressed geometry" section).',
         );
       }
-      warnings.push(
-        `[vitrum/gltf-adapter] BufferView ${i} uses ${name} with no ` +
+      emitCompressionDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'meshopt-decode-hook-missing',
+        path: `bufferViews[${i}].extensions.${name}`,
+        extension: name,
+        bufferViewIndex: i,
+        message:
+          `[vitrum/gltf-adapter] BufferView ${i} uses ${name} with no ` +
           'opts.meshoptDecode hook and no uncompressed fallback buffer. Dependent ' +
           'accessors cannot be read; affected primitives will be skipped.',
-      );
+      });
       continue;
     }
 
@@ -303,7 +362,14 @@ async function _resolveMeshopt(
         `[vitrum/gltf-adapter] ${name} bufferView ${i} references ` +
         `buffer ${ext.buffer} which is not available (supply it via opts.buffers).`;
       if (isRequired) throw new Error(msg);
-      warnings.push(msg + ' BufferView left unresolved.');
+      emitCompressionDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'meshopt-buffer-unavailable',
+        path: `bufferViews[${i}].extensions.${name}.buffer`,
+        extension: name,
+        bufferViewIndex: i,
+        message: msg + ' BufferView left unresolved.',
+      });
       continue;
     }
 
@@ -316,7 +382,14 @@ async function _resolveMeshopt(
         `[vitrum/gltf-adapter] meshoptDecode hook failed for bufferView ${i} ` +
         `(mode=${ext.mode}, filter=${ext.filter ?? 'NONE'}): ${String(e)}`;
       if (isRequired) throw new Error(msg);
-      warnings.push(msg + ' BufferView left unresolved.');
+      emitCompressionDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'meshopt-decode-hook-failed',
+        path: `bufferViews[${i}].extensions.${name}`,
+        extension: name,
+        bufferViewIndex: i,
+        message: msg + ' BufferView left unresolved.',
+      });
       continue;
     }
 
@@ -326,7 +399,14 @@ async function _resolveMeshopt(
         `[vitrum/gltf-adapter] meshoptDecode hook returned ${decoded.byteLength} bytes for ` +
         `bufferView ${i}; expected count × byteStride = ${ext.count} × ${ext.byteStride} = ${expected}.`;
       if (isRequired) throw new Error(msg);
-      warnings.push(msg + ' BufferView left unresolved.');
+      emitCompressionDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'meshopt-decoded-byte-length-mismatch',
+        path: `bufferViews[${i}].extensions.${name}`,
+        extension: name,
+        bufferViewIndex: i,
+        message: msg + ' BufferView left unresolved.',
+      });
       continue;
     }
 
@@ -350,17 +430,19 @@ async function _resolveDraco(
   decode: DracoDecodeFn | undefined,
   isRequired: boolean,
   warnings: string[],
+  onDiagnostic: GltfCompressionDiagnosticSink | undefined,
 ): Promise<void> {
   const meshes = gltf.meshes ?? [];
   for (let mi = 0; mi < meshes.length; mi++) {
     const mesh = meshes[mi]!;
     const label = mesh.name ?? mi;
-    for (const prim of mesh.primitives) {
+    for (const [primitiveIndex, prim] of mesh.primitives.entries()) {
+      const primitivePath = `meshes[${mi}].primitives[${primitiveIndex}]`;
       const ext = prim.extensions?.[DRACO_EXT] as DracoPrimitiveExt | undefined;
       if (!ext) continue;
 
       if (!decode) {
-        _handleDracoNoHook(gltf, prim, label, isRequired, warnings);
+        _handleDracoNoHook(gltf, prim, label, isRequired, warnings, onDiagnostic, mi, primitiveIndex);
         continue;
       }
 
@@ -372,7 +454,16 @@ async function _resolveDraco(
           `[vitrum/gltf-adapter] KHR_draco_mesh_compression on mesh "${label}" references ` +
           `bufferView ${ext.bufferView} whose data is not available.`;
         if (isRequired) throw new Error(msg);
-        warnings.push(msg + ' Primitive left unresolved (will be skipped).');
+        emitCompressionDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'draco-buffer-view-unavailable',
+          path: `${primitivePath}.extensions.${DRACO_EXT}.bufferView`,
+          extension: DRACO_EXT,
+          meshIndex: mi,
+          primitiveIndex,
+          bufferViewIndex: ext.bufferView,
+          message: msg + ' Primitive left unresolved (will be skipped).',
+        });
         continue;
       }
       const compressed = new Uint8Array(buf, bv.byteOffset ?? 0, bv.byteLength);
@@ -384,7 +475,15 @@ async function _resolveDraco(
         const msg =
           `[vitrum/gltf-adapter] dracoDecode hook failed for mesh "${label}": ${String(e)}`;
         if (isRequired) throw new Error(msg);
-        warnings.push(msg + ' Primitive left unresolved (will be skipped).');
+        emitCompressionDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'draco-decode-hook-failed',
+          path: `${primitivePath}.extensions.${DRACO_EXT}`,
+          extension: DRACO_EXT,
+          meshIndex: mi,
+          primitiveIndex,
+          message: msg + ' Primitive left unresolved (will be skipped).',
+        });
         continue;
       }
 
@@ -396,34 +495,74 @@ async function _resolveDraco(
       for (const semantic of Object.keys(ext.attributes)) {
         const accIdx = prim.attributes[semantic];
         if (accIdx === undefined) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Draco extension on mesh "${label}" declares attribute ` +
+          emitCompressionDiagnostic(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: 'draco-attribute-unmapped',
+            path: `${primitivePath}.extensions.${DRACO_EXT}.attributes.${semantic}`,
+            extension: DRACO_EXT,
+            meshIndex: mi,
+            primitiveIndex,
+            semantic,
+            message:
+              `[vitrum/gltf-adapter] Draco extension on mesh "${label}" declares attribute ` +
               `"${semantic}" with no matching primitive attribute. Ignored.`,
-          );
+          });
           continue;
         }
         const acc = gltf.accessors?.[accIdx];
         if (!acc) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Draco attribute "${semantic}" on mesh "${label}" ` +
+          emitCompressionDiagnostic(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: 'draco-accessor-missing',
+            path: `accessors[${accIdx}]`,
+            extension: DRACO_EXT,
+            meshIndex: mi,
+            primitiveIndex,
+            accessorIndex: accIdx,
+            semantic,
+            message:
+              `[vitrum/gltf-adapter] Draco attribute "${semantic}" on mesh "${label}" ` +
               `references missing accessor ${accIdx}. Ignored.`,
-          );
+          });
           if (semantic === 'POSITION') failed = true;
           continue;
         }
         const arr = result.attributes[semantic];
         if (!arr) {
-          warnings.push(
-            `[vitrum/gltf-adapter] dracoDecode hook did not return attribute "${semantic}" ` +
+          const hasFallback = acc.bufferView !== undefined;
+          emitCompressionDiagnostic(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: hasFallback ? 'draco-attribute-fallback-used' : 'draco-attribute-missing',
+            path: `${primitivePath}.extensions.${DRACO_EXT}.attributes.${semantic}`,
+            extension: DRACO_EXT,
+            meshIndex: mi,
+            primitiveIndex,
+            accessorIndex: accIdx,
+            semantic,
+            message:
+              `[vitrum/gltf-adapter] dracoDecode hook did not return attribute "${semantic}" ` +
               `for mesh "${label}".` +
-              (acc.bufferView !== undefined
+              (hasFallback
                 ? ' Using the accessor’s uncompressed fallback data.'
                 : ''),
-          );
+          });
           if (semantic === 'POSITION' && acc.bufferView === undefined) failed = true;
           continue;
         }
-        if (!_rewriteDracoAccessor(gltf, buffers, acc, arr, semantic, label, warnings)) {
+        if (!_rewriteDracoAccessor(
+          gltf,
+          buffers,
+          acc,
+          arr,
+          semantic,
+          label,
+          warnings,
+          onDiagnostic,
+          primitivePath,
+          mi,
+          primitiveIndex,
+          accIdx,
+        )) {
           if (semantic === 'POSITION') failed = true;
         }
       }
@@ -433,20 +572,37 @@ async function _resolveDraco(
         const idxAcc = gltf.accessors?.[prim.indices];
         if (idxAcc) {
           if (!result.indices) {
-            warnings.push(
-              `[vitrum/gltf-adapter] dracoDecode hook did not return indices for mesh ` +
+            const hasFallback = idxAcc.bufferView !== undefined;
+            emitCompressionDiagnostic(warnings, onDiagnostic, {
+              severity: 'warning',
+              code: hasFallback ? 'draco-indices-fallback-used' : 'draco-indices-missing',
+              path: `${primitivePath}.indices`,
+              extension: DRACO_EXT,
+              meshIndex: mi,
+              primitiveIndex,
+              accessorIndex: prim.indices,
+              message:
+                `[vitrum/gltf-adapter] dracoDecode hook did not return indices for mesh ` +
                 `"${label}".` +
-                (idxAcc.bufferView !== undefined
+                (hasFallback
                   ? ' Using the accessor’s uncompressed fallback data.'
                   : ' The index accessor has no fallback; primitive will be skipped.'),
-            );
+            });
             if (idxAcc.bufferView === undefined) failed = true;
           } else if (result.indices.length !== idxAcc.count) {
-            warnings.push(
-              `[vitrum/gltf-adapter] dracoDecode hook returned ${result.indices.length} indices ` +
+            emitCompressionDiagnostic(warnings, onDiagnostic, {
+              severity: 'warning',
+              code: 'draco-index-count-mismatch',
+              path: `${primitivePath}.indices`,
+              extension: DRACO_EXT,
+              meshIndex: mi,
+              primitiveIndex,
+              accessorIndex: prim.indices,
+              message:
+                `[vitrum/gltf-adapter] dracoDecode hook returned ${result.indices.length} indices ` +
                 `for mesh "${label}"; the index accessor declares count=${idxAcc.count}. ` +
                 'Indices rejected.',
-            );
+            });
             if (idxAcc.bufferView === undefined) failed = true;
           } else {
             // Re-encode into the accessor's declared componentType so the
@@ -468,10 +624,17 @@ async function _resolveDraco(
       }
 
       if (failed) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Draco decode for mesh "${label}" did not yield usable ` +
+        emitCompressionDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'draco-geometry-unusable',
+          path: `${primitivePath}.extensions.${DRACO_EXT}`,
+          extension: DRACO_EXT,
+          meshIndex: mi,
+          primitiveIndex,
+          message:
+            `[vitrum/gltf-adapter] Draco decode for mesh "${label}" did not yield usable ` +
             'POSITION/index data. Primitive left unresolved (will be skipped).',
-        );
+        });
         if (isRequired) {
           throw new Error(
             `[vitrum/gltf-adapter] KHR_draco_mesh_compression is listed in extensionsRequired ` +
@@ -497,7 +660,11 @@ function _handleDracoNoHook(
   label: string | number,
   isRequired: boolean,
   warnings: string[],
+  onDiagnostic: GltfCompressionDiagnosticSink | undefined,
+  meshIndex: number,
+  primitiveIndex: number,
 ): void {
+  const primitivePath = `meshes[${meshIndex}].primitives[${primitiveIndex}]`;
   const accessorIndices = [
     ...Object.values(prim.attributes).filter((v): v is number => v !== undefined),
     ...(prim.indices !== undefined ? [prim.indices] : []),
@@ -518,18 +685,32 @@ function _handleDracoNoHook(
     );
   }
   if (hasFallback) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Mesh "${label}" uses KHR_draco_mesh_compression but no ` +
+    emitCompressionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'draco-fallback-accessors-used',
+      path: `${primitivePath}.extensions.${DRACO_EXT}`,
+      extension: DRACO_EXT,
+      meshIndex,
+      primitiveIndex,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${label}" uses KHR_draco_mesh_compression but no ` +
         'opts.dracoDecode hook was supplied. Using the primitive’s uncompressed ' +
         'fallback accessors.',
-    );
+    });
     _stripExtension(prim, DRACO_EXT);
     return;
   }
-  warnings.push(
-    `[vitrum/gltf-adapter] Mesh "${label}" uses KHR_draco_mesh_compression with no ` +
+  emitCompressionDiagnostic(warnings, onDiagnostic, {
+    severity: 'warning',
+    code: 'draco-decode-hook-missing',
+    path: `${primitivePath}.extensions.${DRACO_EXT}`,
+    extension: DRACO_EXT,
+    meshIndex,
+    primitiveIndex,
+    message:
+      `[vitrum/gltf-adapter] Mesh "${label}" uses KHR_draco_mesh_compression with no ` +
       'opts.dracoDecode hook and no uncompressed fallback accessors. Primitive will be skipped.',
-  );
+  });
 }
 
 /**
@@ -546,15 +727,29 @@ function _rewriteDracoAccessor(
   semantic: string,
   label: string | number,
   warnings: string[],
+  onDiagnostic: GltfCompressionDiagnosticSink | undefined,
+  primitivePath: string,
+  meshIndex: number,
+  primitiveIndex: number,
+  accessorIndex: number,
 ): boolean {
   const comps = typeComponentCount(acc.type);
   const expectedElems = acc.count * comps;
   if (arr.length !== expectedElems) {
-    warnings.push(
-      `[vitrum/gltf-adapter] dracoDecode returned ${arr.length} elements for "${semantic}" ` +
+    emitCompressionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'draco-attribute-count-mismatch',
+      path: `${primitivePath}.attributes.${semantic}`,
+      extension: DRACO_EXT,
+      meshIndex,
+      primitiveIndex,
+      accessorIndex,
+      semantic,
+      message:
+        `[vitrum/gltf-adapter] dracoDecode returned ${arr.length} elements for "${semantic}" ` +
         `on mesh "${label}"; the accessor declares count × components = ` +
         `${acc.count} × ${comps} = ${expectedElems}. Attribute rejected.`,
-    );
+    });
     return false;
   }
 
@@ -568,12 +763,21 @@ function _rewriteDracoAccessor(
     acc.componentType = GltfComponentType.FLOAT;
     acc.normalized = false;
   } else {
-    warnings.push(
-      `[vitrum/gltf-adapter] dracoDecode returned a ${arr.constructor.name} for "${semantic}" ` +
+    emitCompressionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'draco-attribute-component-type-mismatch',
+      path: `${primitivePath}.attributes.${semantic}`,
+      extension: DRACO_EXT,
+      meshIndex,
+      primitiveIndex,
+      accessorIndex,
+      semantic,
+      message:
+        `[vitrum/gltf-adapter] dracoDecode returned a ${arr.constructor.name} for "${semantic}" ` +
         `on mesh "${label}" but the accessor declares componentType ${acc.componentType}. ` +
         'Return an array matching the accessor componentType, or a dequantized ' +
         'Float32Array. Attribute rejected.',
-    );
+    });
     return false;
   }
 

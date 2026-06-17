@@ -487,10 +487,26 @@ describe('KHR_draco_mesh_compression hooks (GLTF-02)', () => {
       attributes: { POSITION: new Int16Array(9), NORMAL: new Float32Array(TRI_NORMALS) },
       indices: new Uint32Array(TRI_INDICES),
     });
-    const { scene, warnings } = await gltfToScene(gltf, { buffers, dracoDecode: hook });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers, dracoDecode: hook });
     expect(scene.primitives).toHaveLength(0);
     expect(warnings.some(w => w.includes('Attribute rejected'))).toBe(true);
     expect(warnings.some(w => w.includes('SKIPPED'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'draco-attribute-component-type-mismatch',
+        path: 'meshes[0].primitives[0].attributes.POSITION',
+        extension: 'KHR_draco_mesh_compression',
+        semantic: 'POSITION',
+      }),
+      expect.objectContaining({
+        code: 'draco-geometry-unusable',
+        path: 'meshes[0].primitives[0].extensions.KHR_draco_mesh_compression',
+      }),
+      expect.objectContaining({
+        code: 'unresolved-compression',
+        path: 'meshes[0].primitives[0].extensions.KHR_draco_mesh_compression',
+      }),
+    ]));
   });
 
   it('element-count mismatch against the declared accessor rejects the attribute', async () => {
@@ -502,9 +518,16 @@ describe('KHR_draco_mesh_compression hooks (GLTF-02)', () => {
       },
       indices: new Uint32Array(TRI_INDICES),
     });
-    const { scene, warnings } = await gltfToScene(gltf, { buffers, dracoDecode: hook });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers, dracoDecode: hook });
     expect(scene.primitives).toHaveLength(0);
     expect(warnings.some(w => w.includes('count × components'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'draco-attribute-count-mismatch',
+        path: 'meshes[0].primitives[0].attributes.POSITION',
+        semantic: 'POSITION',
+      }),
+    ]));
   });
 
   it('index-count mismatch rejects the decoded indices', async () => {
@@ -513,9 +536,19 @@ describe('KHR_draco_mesh_compression hooks (GLTF-02)', () => {
       ...dracoTriHook(c, ids),
       indices: new Uint32Array([0, 1, 2, 0, 2, 1]), // accessor declares count 3
     });
-    const { scene, warnings } = await gltfToScene(gltf, { buffers, dracoDecode: hook });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers, dracoDecode: hook });
     expect(warnings.some(w => w.includes('declares count=3'))).toBe(true);
     expect(scene.primitives).toHaveLength(0); // index accessor has no fallback
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'draco-index-count-mismatch',
+        path: 'meshes[0].primitives[0].indices',
+        accessorIndex: 2,
+      }),
+      expect.objectContaining({
+        code: 'draco-geometry-unusable',
+      }),
+    ]));
   });
 
   it('decoded POSITION composes with uncompressed morph-target deltas (skin promotion)', async () => {
@@ -550,28 +583,51 @@ describe('KHR_draco_mesh_compression hooks (GLTF-02)', () => {
 
   it('no hook + optional + no fallback → warn + primitive skipped', async () => {
     const { gltf, buffers } = makeDracoGltf();
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     expect(scene.primitives).toHaveLength(0);
     expect(warnings.some(w => w.includes('no opts.dracoDecode hook'))).toBe(true);
     expect(warnings.some(w => w.includes('SKIPPED'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'draco-decode-hook-missing',
+        path: 'meshes[0].primitives[0].extensions.KHR_draco_mesh_compression',
+        extension: 'KHR_draco_mesh_compression',
+      }),
+      expect.objectContaining({
+        code: 'unresolved-compression',
+      }),
+    ]));
   });
 
   it('no hook + optional + uncompressed fallback accessors → imports the fallback', async () => {
     const { gltf, buffers } = makeDracoGltf({ withFallback: true });
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     expect(scene.primitives).toHaveLength(1);
     const prim = scene.primitives[0] as MeshPrimitive;
     expect(Array.from(prim.positions)).toEqual(TRI_POSITIONS);
     expect(Array.from(prim.indices!)).toEqual(TRI_INDICES);
     expect(warnings.some(w => w.includes('fallback accessors'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'draco-fallback-accessors-used',
+        path: 'meshes[0].primitives[0].extensions.KHR_draco_mesh_compression',
+      }),
+    ]));
+    expect(diagnostics.some((diagnostic) => diagnostic.code === 'unresolved-compression')).toBe(false);
   });
 
   it('hook throw on an optional extension degrades to warn + skip', async () => {
     const { gltf, buffers } = makeDracoGltf();
     const hook: DracoDecodeFn = () => { throw new Error('boom'); };
-    const { scene, warnings } = await gltfToScene(gltf, { buffers, dracoDecode: hook });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers, dracoDecode: hook });
     expect(scene.primitives).toHaveLength(0);
     expect(warnings.some(w => w.includes('dracoDecode hook failed') && w.includes('boom'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'draco-decode-hook-failed',
+        path: 'meshes[0].primitives[0].extensions.KHR_draco_mesh_compression',
+      }),
+    ]));
   });
 
   it('does not mutate the caller-supplied GltfJson', async () => {
@@ -869,20 +925,44 @@ describe('EXT/KHR_meshopt_compression hooks (GLTF-02)', () => {
 
   it('no hook + real fallback buffer → imports the fallback with a warning', async () => {
     const { gltf, buffers } = makeMeshoptGltf({ realFallback: true });
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     expect(scene.primitives).toHaveLength(1);
     const prim = scene.primitives[0] as MeshPrimitive;
     expect(Array.from(prim.positions)).toEqual(TRI_POSITIONS);
     expect(Array.from(prim.indices!)).toEqual(TRI_INDICES);
     expect(warnings.some(w =>
       w.includes('EXT_meshopt_compression') && w.includes('fallback'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'meshopt-fallback-buffer-used',
+        path: 'bufferViews[0].extensions.EXT_meshopt_compression',
+        bufferViewIndex: 0,
+      }),
+      expect.objectContaining({
+        code: 'meshopt-fallback-buffer-used',
+        path: 'bufferViews[1].extensions.EXT_meshopt_compression',
+        bufferViewIndex: 1,
+      }),
+    ]));
   });
 
   it('no hook + fallback:true stub buffer → warn + primitive skipped', async () => {
     const { gltf, buffers } = makeMeshoptGltf(); // buffer 0 is a fallback stub
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     expect(scene.primitives).toHaveLength(0);
     expect(warnings.some(w => w.includes('no uncompressed fallback buffer'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'meshopt-decode-hook-missing',
+        path: 'bufferViews[0].extensions.EXT_meshopt_compression',
+        bufferViewIndex: 0,
+      }),
+      expect.objectContaining({
+        code: 'meshopt-decode-hook-missing',
+        path: 'bufferViews[1].extensions.EXT_meshopt_compression',
+        bufferViewIndex: 1,
+      }),
+    ]));
   });
 
   it('no hook + extensionsRequired → throws a clear error', async () => {
@@ -895,9 +975,16 @@ describe('EXT/KHR_meshopt_compression hooks (GLTF-02)', () => {
   it('hook returning the wrong byte count warns and leaves the view unresolved (optional)', async () => {
     const { gltf, buffers } = makeMeshoptGltf();
     const hook: MeshoptDecodeFn = () => new Uint8Array(5); // never count × stride
-    const { scene, warnings } = await gltfToScene(gltf, { buffers, meshoptDecode: hook });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers, meshoptDecode: hook });
     expect(scene.primitives).toHaveLength(0);
     expect(warnings.some(w => w.includes('count × byteStride'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'meshopt-decoded-byte-length-mismatch',
+        path: 'bufferViews[0].extensions.EXT_meshopt_compression',
+        bufferViewIndex: 0,
+      }),
+    ]));
   });
 
   it('hook returning the wrong byte count throws when the extension is required', async () => {

@@ -135,6 +135,8 @@ export type {
 // itself bundles none. See README "Compressed geometry".
 export type {
   GltfDecodeHooks,
+  GltfCompressionDiagnostic,
+  GltfCompressionDiagnosticCode,
   DracoDecodeFn,
   DracoDecodeResult,
   DracoTypedArray,
