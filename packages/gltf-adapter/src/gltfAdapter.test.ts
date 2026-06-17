@@ -1553,6 +1553,82 @@ describe('index buffer types', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('texture info mapping', () => {
+  it('surfaces missing texture image indices as structured diagnostics', async () => {
+    const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
+    gltf.textures![0]!.source = 99;
+
+    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
+
+    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
+    expect(warnings.some((warning) => warning.includes('missing image index 99'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'image-not-found',
+        path: 'textures[0].source',
+        textureIndex: 0,
+        imageIndex: 99,
+      }),
+    ]));
+  });
+
+  it('surfaces missing embedded image bufferViews as structured diagnostics', async () => {
+    const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
+    gltf.images![0]!.bufferView = 99;
+
+    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
+
+    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
+    expect(warnings.some((warning) => warning.includes('missing bufferView 99'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'image-buffer-view-not-found',
+        path: 'images[0].bufferView',
+        textureIndex: 0,
+        imageIndex: 0,
+        bufferViewIndex: 99,
+      }),
+    ]));
+  });
+
+  it('surfaces unavailable embedded image buffers as structured diagnostics', async () => {
+    const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
+    const imageBufferView = gltf.images![0]!.bufferView!;
+    gltf.bufferViews![imageBufferView] = { buffer: 99, byteOffset: 0, byteLength: 4 };
+
+    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
+
+    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
+    expect(warnings.some((warning) => warning.includes('unavailable buffer 99'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'image-buffer-unavailable',
+        path: `bufferViews[${imageBufferView}].buffer`,
+        textureIndex: 0,
+        imageIndex: 0,
+        bufferViewIndex: imageBufferView,
+        bufferIndex: 99,
+      }),
+    ]));
+  });
+
+  it('surfaces images without bufferView or URI as structured diagnostics', async () => {
+    const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
+    gltf.images![0] = { name: 'empty-image' };
+
+    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
+
+    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
+    expect(warnings.some((warning) => warning.includes('neither bufferView nor uri'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'image-source-missing',
+        path: 'images[0]',
+        textureIndex: 0,
+        imageIndex: 0,
+      }),
+    ]));
+  });
+
   it('maps normalTexture scale', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const gltf: GltfJson = {

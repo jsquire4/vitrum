@@ -80,6 +80,10 @@ export interface GltfTextureRefSource {
 }
 
 export type GltfTextureAcquisitionDiagnosticCode =
+  | 'image-not-found'
+  | 'image-buffer-view-not-found'
+  | 'image-buffer-unavailable'
+  | 'image-source-missing'
   | 'external-image-uri'
   | 'malformed-data-uri'
   | 'data-uri-atob-unavailable'
@@ -94,6 +98,8 @@ export interface GltfTextureAcquisitionDiagnostic {
   readonly message: string;
   readonly textureIndex?: number;
   readonly imageIndex?: number;
+  readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
   readonly imageUri?: string;
   readonly textureSourceExtensions?: readonly GltfTextureSourceExtension[];
 }
@@ -127,18 +133,58 @@ function getImageBytes(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   imageIndex: number,
+  textureIndex: number,
   warnings: string[],
   onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
   externalImages?: ReadonlyMap<number, GltfImageBytes>,
 ): { bytes: Uint8Array; mimeType: string } | undefined {
   const image = gltf.images?.[imageIndex];
-  if (!image) return undefined;
+  if (!image) {
+    emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'image-not-found',
+      path: `textures[${textureIndex}].source`,
+      textureIndex,
+      imageIndex,
+      message:
+        `[vitrum/gltf-adapter] Texture at textures[${textureIndex}] references missing image index ` +
+        `${imageIndex}. Texture skipped.`,
+    });
+    return undefined;
+  }
 
   if (image.bufferView !== undefined) {
     const bv = gltf.bufferViews?.[image.bufferView];
-    if (!bv) return undefined;
+    if (!bv) {
+      emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'image-buffer-view-not-found',
+        path: `images[${imageIndex}].bufferView`,
+        textureIndex,
+        imageIndex,
+        bufferViewIndex: image.bufferView,
+        message:
+          `[vitrum/gltf-adapter] Image "${image.name ?? imageIndex}" references missing bufferView ` +
+          `${image.bufferView}. Image skipped.`,
+      });
+      return undefined;
+    }
     const buf = buffers.get(bv.buffer);
-    if (!buf) return undefined;
+    if (!buf) {
+      emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'image-buffer-unavailable',
+        path: `bufferViews[${image.bufferView}].buffer`,
+        textureIndex,
+        imageIndex,
+        bufferViewIndex: image.bufferView,
+        bufferIndex: bv.buffer,
+        message:
+          `[vitrum/gltf-adapter] Image "${image.name ?? imageIndex}" bufferView ${image.bufferView} ` +
+          `references unavailable buffer ${bv.buffer}. Image skipped.`,
+      });
+      return undefined;
+    }
     const bytes = new Uint8Array(buf, bv.byteOffset ?? 0, bv.byteLength);
     const mimeType = image.mimeType ?? 'image/png';
     return { bytes, mimeType };
@@ -168,6 +214,16 @@ function getImageBytes(
     return undefined;
   }
 
+  emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+    severity: 'warning',
+    code: 'image-source-missing',
+    path: `images[${imageIndex}]`,
+    textureIndex,
+    imageIndex,
+    message:
+      `[vitrum/gltf-adapter] Image "${image.name ?? imageIndex}" has neither bufferView nor uri. ` +
+      'Image skipped.',
+  });
   return undefined;
 }
 
@@ -292,7 +348,7 @@ export async function buildTextureHandleMap(
     const imageIdx = resolveTextureImageSource(tex, textureIndex, sourceExtensions, warnings, onDiagnostic);
     textureImageSources.set(textureIndex, imageIdx);
     if (imageIdx !== undefined && !imageHandles.has(imageIdx)) {
-      const imgData = getImageBytes(gltf, buffers, imageIdx, warnings, onDiagnostic, externalImageMap);
+      const imgData = getImageBytes(gltf, buffers, imageIdx, textureIndex, warnings, onDiagnostic, externalImageMap);
       if (imgData) {
         imageHandles.set(
           imageIdx,
