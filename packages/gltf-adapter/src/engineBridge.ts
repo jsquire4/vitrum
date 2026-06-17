@@ -330,16 +330,20 @@ const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = ne
   'empty-triangulated-primitive',
   'ignored-skin-attributes',
   'incomplete-skin-attributes',
+  'ignored-vertex-color-set',
+  'ignored-morph-target-texcoord',
 ]);
 
 const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new Set([
   'unsupported-version',
   'ignored-camera',
+  'double-sided-material',
   'ignored-gpu-instancing',
   'fallback-generated-primitive-mode',
   'generated-tangents',
   'missing-tangent-texcoord',
   'tangent-generation-failed',
+  'skin-rest-pose',
   'ignored-material-texcoord',
 ]);
 

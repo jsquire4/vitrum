@@ -234,6 +234,87 @@ function addUnboundSkinAttributes(
   if (opts.omitWeights !== true) buffers.set(weightsBuffer, weights);
 }
 
+function addSecondaryVertexColorSet(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+): void {
+  const color1 = f32Buffer([
+    0.25, 0.25, 0.25,
+    0.5, 0.5, 0.5,
+    0.75, 0.75, 0.75,
+  ]);
+  const accessor = gltf.accessors?.length ?? 0;
+  const bufferView = gltf.bufferViews?.length ?? 0;
+  const buffer = gltf.buffers?.length ?? 0;
+  gltf.meshes![0]!.primitives[0] = {
+    ...gltf.meshes![0]!.primitives[0]!,
+    attributes: {
+      ...gltf.meshes![0]!.primitives[0]!.attributes,
+      COLOR_1: accessor,
+    },
+  };
+  gltf.accessors = [
+    ...(gltf.accessors ?? []),
+    { bufferView, componentType: 5126, count: 3, type: 'VEC3' },
+  ];
+  gltf.bufferViews = [
+    ...(gltf.bufferViews ?? []),
+    { buffer, byteOffset: 0, byteLength: color1.byteLength },
+  ];
+  gltf.buffers = [
+    ...(gltf.buffers ?? []),
+    { byteLength: color1.byteLength },
+  ];
+  buffers.set(buffer, color1);
+}
+
+function addMorphTargetTexcoord(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+): void {
+  const positionDelta = f32Buffer([
+    0, 0, 0.1,
+    0, 0, 0.1,
+    0, 0, 0.1,
+  ]);
+  const uvDelta = f32Buffer([
+    0.1, 0,
+    0.1, 0,
+    0.1, 0,
+  ]);
+  const positionAccessor = gltf.accessors?.length ?? 0;
+  const uvAccessor = positionAccessor + 1;
+  const positionBufferView = gltf.bufferViews?.length ?? 0;
+  const uvBufferView = positionBufferView + 1;
+  const positionBuffer = gltf.buffers?.length ?? 0;
+  const uvBuffer = positionBuffer + 1;
+  gltf.meshes![0]!.primitives[0] = {
+    ...gltf.meshes![0]!.primitives[0]!,
+    targets: [{ POSITION: positionAccessor, TEXCOORD_0: uvAccessor }],
+  };
+  gltf.meshes![0] = {
+    ...gltf.meshes![0]!,
+    weights: [1],
+  };
+  gltf.accessors = [
+    ...(gltf.accessors ?? []),
+    { bufferView: positionBufferView, componentType: 5126, count: 3, type: 'VEC3' },
+    { bufferView: uvBufferView, componentType: 5126, count: 3, type: 'VEC2' },
+  ];
+  gltf.bufferViews = [
+    ...(gltf.bufferViews ?? []),
+    { buffer: positionBuffer, byteOffset: 0, byteLength: positionDelta.byteLength },
+    { buffer: uvBuffer, byteOffset: 0, byteLength: uvDelta.byteLength },
+  ];
+  gltf.buffers = [
+    ...(gltf.buffers ?? []),
+    { byteLength: positionDelta.byteLength },
+    { byteLength: uvDelta.byteLength },
+  ];
+  buffers.set(positionBuffer, positionDelta);
+  buffers.set(uvBuffer, uvDelta);
+}
+
 function makeInlineVertexColorGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const colors = f32Buffer([1, 0, 0, 0, 1, 0, 0, 0, 1]);
@@ -2154,6 +2235,106 @@ describe('loadGltfForEngine', () => {
     );
 
     expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects ignored secondary vertex-color diagnostics in reject-unsupported mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addSecondaryVertexColorSet(gltf, buffers);
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'import:ignored-vertex-color-set=unsupported at meshes[0].primitives[0].attributes.COLOR_1',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects ignored morph-target TEXCOORD diagnostics in reject-unsupported mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addMorphTargetTexcoord(gltf, buffers);
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'import:ignored-morph-target-texcoord=unsupported at meshes[0].primitives[0].targets[0].TEXCOORD_0',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('allows double-sided diagnostics in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      material: 0,
+    };
+    gltf.materials = [{ doubleSided: true }];
+
+    const createAcceptedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const accepted = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine: createAcceptedEngine,
+    });
+    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'double-sided-material',
+        path: 'materials[0].doubleSided',
+      }),
+    ]));
+    expect(createAcceptedEngine).toHaveBeenCalledTimes(1);
+
+    const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine: createRejectedEngine,
+    })).rejects.toThrow(
+      'import:double-sided-material=approximate at materials[0].doubleSided',
+    );
+
+    expect(createRejectedEngine).not.toHaveBeenCalled();
+  });
+
+  it('allows skin rest-pose diagnostics in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.skins = [{ joints: [0] }];
+
+    const createAcceptedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const accepted = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine: createAcceptedEngine,
+    });
+    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'skin-rest-pose',
+        path: 'skins',
+      }),
+    ]));
+    expect(createAcceptedEngine).toHaveBeenCalledTimes(1);
+
+    const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine: createRejectedEngine,
+    })).rejects.toThrow('import:skin-rest-pose=approximate at skins');
+
+    expect(createRejectedEngine).not.toHaveBeenCalled();
   });
 
   it('allows glTF cameras in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
