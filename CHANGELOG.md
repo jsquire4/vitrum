@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Current package naming note
+
+- The active WebGL2 hero backend is `@vitrum/pt-webgl2`. Historical bullets below that
+  mention `@vitrum/pt-webgl`, `@vitrum/three-bindings`, or `@vitrum/three-gpu-pathtracer`
+  describe pre-`e14000c` work on packages that were later removed in this same
+  `[Unreleased]` section. They are not current import paths or API promises.
+
 ### Fixed (glTF decode reports + inverse render-regime gates, 2026-06-16)
 
 - **glTF texture decode reports now carry self-contained dimensions and provenance:** `GltfTextureDecodeReportEntry` includes decoded width/height, power-of-two status, original dimensions, resize/max-size metadata, glTF texture/image/sampler indices, image URI/mime data, and selected texture-source extension provenance. `loadGltfAndDecodeTextures()` also reconciles backend compatibility after a successful spec-gloss alpha roughness bake, so direct asset callers no longer see the stale `specularGlossinessTexture.glossinessAlpha` approximation after the baked CPU-readable `roughnessMap` exists.

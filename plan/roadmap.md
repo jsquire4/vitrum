@@ -15,14 +15,16 @@ These supersede conflicting guidance elsewhere in this doc. Recorded so nothing 
 **North star: fidelity.** Maximum hero-stack fidelity is the paramount goal. **No deferring or removing fidelity features** — if the contract promises it, implement it.
 
 1. **BMFR denoiser → IMPLEMENT (do NOT remove).** The `denoiser` union advertises `'bmfr'`; the contract must be honored. Keep the union entry as the standing reminder until a real BMFR module ships in `shared-denoisers`. (Overrides §6.5 / §8.5 "implement *or* remove".)
-2. **pt-webgl spectral → IMPLEMENT real Jakob-Hanika** (replace the `jakob-hanika-placeholder`). No deferring. Coefficient math is unit-testable now; render-validate on the GPU env.
+2. **pt-webgl2 spectral → IMPLEMENT real Jakob-Hanika** (replace the historical
+   `jakob-hanika-placeholder`). No deferring. Coefficient math is unit-testable now;
+   render-validate on the GPU env.
 3. **Phase 0 prioritized, ahead of the fidelity grind:** finalize the **adapter profile to 100% as a library export** (`probeAdapterProfile` from `@vitrum/engine`/`@vitrum/core`) + **quality presets** (ultra/high/medium/low, §4.3) + **hybrid lite tier** (§5.2). Enables graceful degradation (Class A–E).
 4. **WSL-GPU validation environment = a passed-off side-project, sequenced FIRST** (before the fidelity grind). Goal: a headless WebGPU adapter in WSL clearing hybrid limits (≥16 storage buffers / ≥8 storage textures) so fidelity captures + V1–V8 run locally without manual Windows-Chrome. Lives in `tools/gpu-env/`. **Sequencing rule: implement fidelity features → validate on this env (never ship fidelity blind).**
 5. **Fidelity grind = the major focus** once the GPU env exists. Promote `plan/renderer-fidelity-matrix.md` rows to `supported` with GPU captures.
 6. **Frontier stays in the plan (so it's not lost), but de-prioritized.** The walkaround↔PT handoff (§8.1 Path 1) is a "fun trick," **not** rated above NRC / ReSTIR-PT; do it now only if the freeze/resume temporal-MIS state machine proves trivial, else defer in favor of fidelity. NRC, ReSTIR-PT/GRIS, cached light field all remain tracked (§8).
 7. **Work on `main` directly** for remediation (no feature branches); no remote push without explicit instruction.
 
-**SHIPPED — 2026-05-28 fidelity-combination wave (merged + pushed to `origin/main`):** Locked items 1 (BMFR) + 2 (pt-webgl spectral) are DONE — real Koskela-2019 BMFR in `shared-denoisers`; Jakob-Hanika coeffs now CONSUMED in pt-webgl shading (were uploaded-but-dead). Item 3 (Phase 0) shipped — adapter-profile export + quality presets + hybrid lite tier + resolutionFactor — with two post-audit fixes (resolutionFactor composite upscale; `ddgiUpdateDivisor` made load-bearing → 2→32 preset spread, **default cadence now stride 2**). Plus, from an algorithm-combination fitness review (find techniques combined where they shouldn't be): **SVGF-real dropped from pt-webgpu** (converged tracer → `oidn-final`; SVGF is real-time-only — `unsupported` on both converged backends), **RC⊕ReSTIR-GI fixed-scalar blend → per-pixel confidence balance heuristic**, **PPG finished** (gi-ris now guides via defensive MIS — was train-only), GPU normal-skinning confirmed + bindMatrix CPU-fallback gate, duplicate-DDGI-sun dedup. **Radiometric changes are unit-pinned; many are now GPU-VALIDATED on dzn/lavapipe, the rest pending real-GPU A/B (`HARDWARE-VALIDATION-NEEDS.md` V1–V26).** Item 4 (WSL-GPU env) remains the validation blocker — the lavapipe PNG render-capture adapter is the `wsl-gpu` sibling project's Task 1.
+**SHIPPED — 2026-05-28 fidelity-combination wave (merged + pushed to `origin/main`):** Locked items 1 (BMFR) + 2 (WebGL2 spectral) are DONE — real Koskela-2019 BMFR in `shared-denoisers`; Jakob-Hanika coeffs now CONSUMED in the WebGL2 hero backend shading path (were uploaded-but-dead). Item 3 (Phase 0) shipped — adapter-profile export + quality presets + hybrid lite tier + resolutionFactor — with two post-audit fixes (resolutionFactor composite upscale; `ddgiUpdateDivisor` made load-bearing → 2→32 preset spread, **default cadence now stride 2**). Plus, from an algorithm-combination fitness review (find techniques combined where they shouldn't be): **SVGF-real dropped from pt-webgpu** (converged tracer → `oidn-final`; SVGF is real-time-only — `unsupported` on both converged backends), **RC⊕ReSTIR-GI fixed-scalar blend → per-pixel confidence balance heuristic**, **PPG finished** (gi-ris now guides via defensive MIS — was train-only), GPU normal-skinning confirmed + bindMatrix CPU-fallback gate, duplicate-DDGI-sun dedup. **Radiometric changes are unit-pinned; many are now GPU-VALIDATED on dzn/lavapipe, the rest pending real-GPU A/B (`HARDWARE-VALIDATION-NEEDS.md` V1–V26).** Item 4 (WSL-GPU env) remains the validation blocker — the lavapipe PNG render-capture adapter is the `wsl-gpu` sibling project's Task 1.
 
 **Stale-claim corrections (verified against current code 2026-05-28):**
 - **pt-webgpu GPU BDPT light-subpath is DONE** (`bdptExtendLightSubpath` @compute pass shipped + dispatched) — remove from §6.2 / §8.3 "remaining."
@@ -56,7 +58,7 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 | Name (this doc) | Package(s) | What it does | Frame semantics |
 |-----------------|--------------|--------------|-----------------|
 | **Real-time stack** | `@vitrum/walkaround-hybrid` (+ `@vitrum/walkaround-rc` opt-in) | WebGPU **real-time GI**: DDGI probes + ReSTIR DI/GI + GTAO + temporal denoise (à-trous-variance default; SVGF-real / neural / OIDN opt-in). Optional RC, PPG. | **One fresh stochastic frame per tick** — not multi-SPP convergence. Targets ~60 fps on capable GPUs for moderate scenes. |
-| **Hero stack** | `@vitrum/pt-webgl` (WebGL2 + forked `three-gpu-pathtracer`) and `@vitrum/pt-webgpu` (native WebGPU PT peer) | **Converged path tracing** — multi-bounce, hero materials, spectral/thin-film/BDPT/caustics (tier-dependent). | **Accumulates samples** until `samplesTarget` or pause; quality improves over seconds. |
+| **Hero stack** | `@vitrum/pt-webgl2` (native WebGL2 PT) and `@vitrum/pt-webgpu` (native WebGPU PT peer) | **Converged path tracing** — multi-bounce, hero materials, spectral/thin-film/BDPT/caustics (tier-dependent). | **Accumulates samples** until `samplesTarget` or pause; quality improves over seconds. |
 | **Facade** | `@vitrum/engine` | `createEngine()` / `attachVitrum()` / `VitrumCanvas` — picks backend from `prefer`, WebGPU probe, triangle budget, TLAS need. | Host-owned loop; engine does not own device lifetime. |
 
 **Critical distinction for “in-browser 3D that feels alive”:**
@@ -66,8 +68,8 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 
 **Maturity labels (accurate as of 2026-05-26 signoffs):**
 
-- **Release-candidate track:** `@vitrum/engine`, `@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl` — pipeline shipped, mechanical tests green, backend maturity matrix “strong” on deep integration.
-- **Peer hero backend, fidelity-PROMOTED:** `@vitrum/pt-webgpu` — contract-strong, deep audit closed; **all 9 rendering rows promoted to `supported` 2026-06-04** (commit `3c58f39`, dzn RTX 4090 A/Bs). The `experimental` tier now applies to the pt-webgl **fork** rows (spectral V9 out-of-gamut negatives / WebGL2 capture path), not pt-webgpu.
+- **Release-candidate track:** `@vitrum/engine`, `@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl2` — pipeline shipped, mechanical tests green, backend maturity matrix “strong” on deep integration.
+- **Peer hero backend, fidelity-PROMOTED:** `@vitrum/pt-webgpu` — contract-strong, deep audit closed; **all 9 rendering rows promoted to `supported` 2026-06-04** (commit `3c58f39`, dzn RTX 4090 A/Bs). Remaining WebGL2 fidelity tails now belong to `@vitrum/pt-webgl2`; the old fork-backed `@vitrum/pt-webgl` row was removed with `e14000c`.
 - **Not “alpha” / “pre-alpha prototype”** for the primary surface — those terms are stale in scattered docs; prefer **RC track**, **experimental feature tier**, or **pre-1.0 API**.
 
 ---
@@ -93,21 +95,21 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 | ~~**`resolutionFactor` not wired in hybrid**~~ **SHIPPED** | `FrameInput.quality.resolutionFactor` wired per-frame in `HybridEngine`. |
 | ~~**No shipped quality presets**~~ **SHIPPED** | `QualityTier` `ultra/high/medium/low` presets; `createEngine` applies `recommendedRealtimeTier`. |
 | **Mobile / iGPU validation deferred** | Dev WSL2 SwiftShader: `hybridCanRun: false`; radiometric evidence blocked without hardware WebGPU. |
-| **WebGPU required for realtime** | `prefer: 'realtime'` with no WebGPU → **`pt-webgl` fallback** (progressive PT, not realtime GI). |
-| **THREE coupling** | BVH/DDGI still rooted in THREE scene graph; `hostScene/types.ts` is a seam, not a second binding. |
+| **WebGPU required for realtime** | `prefer: 'realtime'` with no WebGPU → **`pt-webgl2` fallback** (progressive PT, not realtime GI). |
+| ~~**THREE coupling**~~ **CLOSED** | `@vitrum/walkaround-hybrid` has no direct `three` / `three/webgpu` package dependency; package-root tests guard that boundary. |
 
 ### 2.3 Hero stack — shipped core
 
-- **pt-webgl:** Production path via fork; BDPT GPU light-subpath; incremental transform/positions/material/emitter; caustic strategies; OIDN-final; MRT G-buffer (fork); material LOD / lobeMask (fork).
+- **pt-webgl2:** Native WebGL2 path tracer; mesh/analytic/instanced/skinned ingestion; all core emitter kinds; `none`/HDRI/procedural-sky environments; incremental scalar material/emitter/environment fast paths with geometry/topology fallback rebuilds; OIDN-final; opt-in experimental BDPT/spectral feature flags.
 - **pt-webgpu:** Progressive compute PT; **full vs lite** trace tier from adapter limits; TLAS; spectral hero-λ, layered MIS, bounded emitters; BDPT v1 (GPU `bdptExtendLightSubpath` compute pass + kernel evaluate; CPU fill is now test-oracle only); OIDN-final; aux G-buffers; 120+ package tests; deep audit closed.
 
 ### 2.4 Hero stack — gaps
 
 | Gap | Impact |
 |-----|--------|
-| ~~**Fidelity matrix mostly `experimental`**~~ **PROMOTED (2026-06-04, `3c58f39`)** | All 9 pt-webgpu rows (spectral, thin-film, SSS, caustic, multi-emitter, layered, material-fields, BDPT, …) now `supported` via dzn RTX 4090 A/Bs. The pt-webgl **fork** rows remain `experimental` (V9 negatives / WebGL2 capture path). |
+| ~~**Fidelity matrix mostly `experimental`**~~ **PROMOTED (2026-06-04, `3c58f39`)** | All 9 pt-webgpu rows (spectral, thin-film, SSS, caustic, multi-emitter, layered, material-fields, BDPT, …) now `supported` via dzn RTX 4090 A/Bs. Remaining WebGL2 promotion evidence belongs to `@vitrum/pt-webgl2`, not the removed fork-backed package. |
 | ~~**pt-webgpu GPU BDPT light-subpath**~~ **SHIPPED (see §0.5)** | `bdptExtendLightSubpath` @compute pass dispatched; CPU fill is test-oracle only. |
-| **SVGF-real on pt-webgl** | Row: `unsupported` on WebGL2 path. |
+| **SVGF-real on pt-webgl2** | Row: `unsupported` on WebGL2 path. |
 | **Topology-changing animation** | Incremental patches strong; vertex-count / index changes still force full `setScene()` on PT backends. |
 | **Not in `auto` for small scenes** | `auto` picks walkaround &lt;500k tris; large scenes → pt-webgpu. Hero PT is explicit `quality` / `quality-webgpu`. |
 
@@ -138,7 +140,7 @@ Success looks like:
 Success looks like:
 
 - Rows in `plan/renderer-fidelity-matrix.md` promoted to `supported` with GPU captures.
-- pt-webgpu at parity with pt-webgl for hero workflows where WebGPU is available.
+- pt-webgpu at parity with pt-webgl2 for hero workflows where WebGPU is available.
 - Clear **quality** vs **quality-webgpu** semantics in the facade.
 
 ### 3.3 Cross-stack north star (optional, Tier 4)
@@ -169,7 +171,7 @@ AdapterProfile {
   maxStorageTexturesPerStage: number
   isSoftwareAdapter: boolean  // SwiftShader-class heuristic
   recommendedRealtimeTier: 'ultra' | 'high' | 'medium' | 'low' | 'unavailable'
-  recommendedHeroBackend: 'pt-webgpu-full' | 'pt-webgpu-lite' | 'pt-webgl' | 'none'
+  recommendedHeroBackend: 'pt-webgpu-full' | 'pt-webgpu-lite' | 'pt-webgl2' | 'none'
 }
 ```
 
@@ -184,11 +186,11 @@ Host flow:
 
 | Class | Typical devices | WebGPU | Real-time stack | Hero stack |
 |-------|-----------------|--------|-----------------|------------|
-| **A — Strong discrete GPU** | Desktop dGPU, Apple M-series Pro/Max, recent mobile flagships | Yes, hybrid capable | **Primary target:** full pass graph, 1080p+, 60 fps goal for &lt;500k tris | pt-webgpu **full** or pt-webgl; all experimental features testable |
-| **B — Integrated / low-power dGPU** | Intel iGPU, Ryzen APU, older mobile | Often yes; may be borderline on storage textures | **Degrade:** internal res 0.5–0.75, single spatial pass, lower DDGI update rate, disable RC/PPG/neural by default | pt-webgpu **lite** or pt-webgl; fewer bounces live; lower `samplesTarget` |
-| **C — Mobile WebGPU (capable)** | iOS 18+ Safari, Android Chrome WebGPU | Yes if limits pass probe | **Mobile preset:** 720p internal, half spatial neighbors, DDGI stride ↑, `targetFrameIntervalMs` cap | Usually **pt-webgl** or pt-webgpu lite; hero convergence “on tap” not walk-around |
-| **D — WebGPU present, below hybrid limits** | SwiftShader, some software stacks, future tight adapters | Yes but `hybridCanRun: false` | **Unavailable** — do not init HybridEngine; show UX + offer hero or raster fallback | pt-webgpu **lite** if limits allow; else pt-webgl |
-| **E — No WebGPU** | Older browsers, locked-down environments | No | **Unavailable** — `prefer: 'realtime'` → pt-webgl (accumulating PT), label clearly in UI | **pt-webgl only** (quality path) |
+| **A — Strong discrete GPU** | Desktop dGPU, Apple M-series Pro/Max, recent mobile flagships | Yes, hybrid capable | **Primary target:** full pass graph, 1080p+, 60 fps goal for &lt;500k tris | pt-webgpu **full** or pt-webgl2; all experimental features testable |
+| **B — Integrated / low-power dGPU** | Intel iGPU, Ryzen APU, older mobile | Often yes; may be borderline on storage textures | **Degrade:** internal res 0.5–0.75, single spatial pass, lower DDGI update rate, disable RC/PPG/neural by default | pt-webgpu **lite** or pt-webgl2; fewer bounces live; lower `samplesTarget` |
+| **C — Mobile WebGPU (capable)** | iOS 18+ Safari, Android Chrome WebGPU | Yes if limits pass probe | **Mobile preset:** 720p internal, half spatial neighbors, DDGI stride ↑, `targetFrameIntervalMs` cap | Usually **pt-webgl2** or pt-webgpu lite; hero convergence “on tap” not walk-around |
+| **D — WebGPU present, below hybrid limits** | SwiftShader, some software stacks, future tight adapters | Yes but `hybridCanRun: false` | **Unavailable** — do not init HybridEngine; show UX + offer hero or raster fallback | pt-webgpu **lite** if limits allow; else pt-webgl2 |
+| **E — No WebGPU** | Older browsers, locked-down environments | No | **Unavailable** — `prefer: 'realtime'` → pt-webgl2 (accumulating PT), label clearly in UI | **pt-webgl2 only** (quality path) |
 
 ### 4.3 Degradation dimensions (orthogonal knobs)
 
@@ -303,7 +305,7 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 
 ### 6.1 P0 — Fidelity promotion program
 
-**Problem (RESOLVED 2026-06-04, commit `3c58f39`):** all 9 pt-webgpu rows promoted `experimental`→`supported` via dzn (RTX 4090) A/Bs — the process below was followed (harnesses live in wsl-gpu, not `tools/benchmark-runner`, since wsl-gpu reaches the full-tier adapter). The pt-webgl **fork** rows remain `experimental` (V9 out-of-gamut negatives / WebGL2 capture path); SVGF-real stays `unsupported` (regime mismatch). The per-row process (kept as the record):
+**Problem (RESOLVED 2026-06-04, commit `3c58f39`):** all 9 pt-webgpu rows promoted `experimental`→`supported` via dzn (RTX 4090) A/Bs — the process below was followed (harnesses live in wsl-gpu, not `tools/benchmark-runner`, since wsl-gpu reaches the full-tier adapter). Remaining WebGL2 promotion evidence now belongs to `@vitrum/pt-webgl2` after the fork-backed package removal; SVGF-real stays `unsupported` (regime mismatch). The per-row process (kept as the record):
 
 **Process per row:**
 
@@ -320,7 +322,7 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 
 **Deliverables:**
 
-- ~~GPU BDPT light-subpath pass (match pt-webgl fork path).~~ **DONE** — `bdptExtendLightSubpath` @compute pass shipped + dispatched (see §0.5).
+- ~~GPU BDPT light-subpath pass (match the old fork-backed WebGL path).~~ **DONE** — `bdptExtendLightSubpath` @compute pass shipped + dispatched (see §0.5).
 - Wavefront / split-kernel integrator evaluation (§8) — only if profiling shows megakernel bound.
 - Cheaper `traceAny` after D2 unification (shadow rays).
 
@@ -337,7 +339,7 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 **Deliverables:**
 
 - BVH leaf rebuild without full pipeline teardown (walkaround partial; PT follow-up).
-- Broader topology incremental on pt-webgl/pt-webgpu where safe.
+- Broader topology incremental on pt-webgl2/pt-webgpu where safe.
 
 ### 6.5 P2 — Contract denoisers
 
@@ -476,7 +478,7 @@ Code can land without hardware; **claims** cannot.promote without it.
 | **Class A desktop (dGPU)** | Gold captures; 60 fps hybrid budgets; pt-webgpu full tier |
 | **Class B iGPU** | Lite tier + degradation tables |
 | **Class C mobile WebGPU** | Mobile preset validation |
-| **Class E WebGL2-only** | pt-webgl hero paths |
+| **Class E WebGL2-only** | pt-webgl2 hero paths |
 
 ### 10.2 Commands (existing)
 
