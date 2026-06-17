@@ -55,6 +55,7 @@ console.log(`Resolution: ${W}×${H}`);
 console.log("");
 
 const scene = buildCornellScene();
+const FULL_TIER = { traceTier: "full", requireFullTier: true, requireRadiometricSignal: true };
 
 // Indirect ROI: back wall + indirect-lit region (rows 25–55, cols 20–60)
 const ROI = { x0: 20, y0: 25, x1: 60, y1: 55 };
@@ -66,7 +67,7 @@ const MEAN_FRAMES = 60;
 console.log(`Part 1: Mean luminance comparison (${MEAN_FRAMES} frames each)...`);
 
 console.log("  Rendering UNI (bdpt:false)...");
-const uniResult = await renderScene({ bdpt: false }, scene, MEAN_FRAMES);
+const uniResult = await renderScene({ ...FULL_TIER, bdpt: false }, scene, MEAN_FRAMES);
 const uniGlobalLum = meanLuminanceROI(uniResult.rgba, W, 0, 0, W-1, H-1);
 const uniROILum    = meanLuminanceROI(uniResult.rgba, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 uniResult.engine.dispose();
@@ -74,7 +75,7 @@ uniResult.device.destroy();
 console.log(`  UNI: global lum = ${uniGlobalLum.toFixed(5)}, ROI lum = ${uniROILum.toFixed(5)}`);
 
 console.log("  Rendering BDPT (bdpt:true)...");
-const bdptResult = await renderScene({ bdpt: true }, scene, MEAN_FRAMES);
+const bdptResult = await renderScene({ ...FULL_TIER, bdpt: true }, scene, MEAN_FRAMES);
 const bdptGlobalLum = meanLuminanceROI(bdptResult.rgba, W, 0, 0, W-1, H-1);
 const bdptROILum    = meanLuminanceROI(bdptResult.rgba, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 bdptResult.engine.dispose();
@@ -96,12 +97,12 @@ const VAR_FRAMES = 8;
 console.log(`Part 2: Variance estimate (${VAR_RUNS} runs × ${VAR_FRAMES} frames)...`);
 
 console.log("  Rendering UNI variance runs...");
-const uniRuns = await renderMultipleRuns({ bdpt: false }, scene, VAR_FRAMES, VAR_RUNS);
+const uniRuns = await renderMultipleRuns({ ...FULL_TIER, bdpt: false }, scene, VAR_FRAMES, VAR_RUNS);
 const uniVar  = varianceROI(uniRuns, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 console.log(`  UNI variance (ROI): ${uniVar.toFixed(6)}`);
 
 console.log("  Rendering BDPT variance runs...");
-const bdptRuns = await renderMultipleRuns({ bdpt: true }, scene, VAR_FRAMES, VAR_RUNS);
+const bdptRuns = await renderMultipleRuns({ ...FULL_TIER, bdpt: true }, scene, VAR_FRAMES, VAR_RUNS);
 const bdptVar  = varianceROI(bdptRuns, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 console.log(`  BDPT variance (ROI): ${bdptVar.toFixed(6)}`);
 console.log("");

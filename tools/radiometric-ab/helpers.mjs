@@ -402,6 +402,38 @@ export function makePtCamera(W, H) {
   return { proj, view };
 }
 
+function splitHarnessOptions(engineOpts) {
+  const {
+    requireFullTier = false,
+    requireRadiometricSignal = false,
+    ...ptOptions
+  } = engineOpts;
+  return { requireFullTier, requireRadiometricSignal, ptOptions };
+}
+
+function assertRequiredTier(engine, requireFullTier, label) {
+  const resolvedLite = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") === true;
+  if (requireFullTier && resolvedLite) {
+    throw new Error(
+      `${label} requires pt-webgpu full tier, but the adapter resolved to lite. ` +
+      `Do not use this radiometric A/B as evidence on lite-tier adapters; run it through ` +
+      `the wsl-gpu/dzn full-tier lane or another adapter with full pt-webgpu limits.`,
+    );
+  }
+}
+
+function assertRadiometricSignal(rgba, requireRadiometricSignal, label) {
+  if (!requireRadiometricSignal) return;
+  const lum = meanLuminance(rgba, W, H);
+  if (!(lum > 1e-5)) {
+    throw new Error(
+      `${label} produced no radiometric signal (mean luminance ${lum}). ` +
+      `This A/B would otherwise be a false PASS if both arms are black; fix the ` +
+      `capture scene/backend path before using the result as evidence.`,
+    );
+  }
+}
+
 /**
  * Boot a pt-webgpu engine, render `totalFrames` frames, and return:
  *   { rgba: Float32Array, W, H, samplesAccumulated }
@@ -414,8 +446,9 @@ export function makePtCamera(W, H) {
  * @returns {Promise<{rgba: Float32Array, W: number, H: number, samples: number, device: GPUDevice, engine: object}>}
  */
 export async function renderScene(engineOpts, scene, totalFrames, device = null) {
-  const bdptOn = engineOpts.bdpt === true;
-  const isLite = engineOpts.traceTier === "lite";
+  const { requireFullTier, requireRadiometricSignal, ptOptions } = splitHarnessOptions(engineOpts);
+  const bdptOn = ptOptions.bdpt === true;
+  const isLite = ptOptions.traceTier === "lite";
   let ownDevice = false;
   if (!device) {
     device = await acquirePtDevice(!isLite);
@@ -435,8 +468,9 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
       device,
       maxBounces: 6,
       maxSamplesPerPixel: totalFrames,
-      ...engineOpts,
+      ...ptOptions,
     });
+    assertRequiredTier(engine, requireFullTier, "renderScene");
 
     engine.setScene(scene);
 
@@ -458,6 +492,7 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
     const captured = await engine.captureFrame({ colorSpace: "linear" });
     if (captured != null) {
       rgba = captured.rgba;
+      assertRadiometricSignal(rgba, requireRadiometricSignal, "renderScene");
     } else {
       errorMsg = "captureFrame returned null";
     }
@@ -479,9 +514,10 @@ export async function renderScene(engineOpts, scene, totalFrames, device = null)
  * seeded differently via frameIndex offsets).
  */
 export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRuns) {
-  const device = await acquirePtDevice(engineOpts.traceTier !== "lite");
+  const { requireFullTier, requireRadiometricSignal, ptOptions } = splitHarnessOptions(engineOpts);
+  const device = await acquirePtDevice(ptOptions.traceTier !== "lite");
   const results = [];
-  const bdptOn = engineOpts.bdpt === true;
+  const bdptOn = ptOptions.bdpt === true;
   const unpatch = patchDeviceForPt(device, bdptOn);
 
   try {
@@ -494,8 +530,9 @@ export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRun
           device,
           maxBounces: 6,
           maxSamplesPerPixel: framesPerRun,
-          ...engineOpts,
+          ...ptOptions,
         });
+        assertRequiredTier(engine, requireFullTier, `renderMultipleRuns run ${run}`);
 
         engine.setScene(scene);
 
@@ -517,6 +554,7 @@ export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRun
 
         const captured = await engine.captureFrame({ colorSpace: "linear" });
         if (captured?.rgba) {
+          assertRadiometricSignal(captured.rgba, requireRadiometricSignal, `renderMultipleRuns run ${run}`);
           results.push(captured.rgba);
         }
       } finally {

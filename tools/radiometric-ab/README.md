@@ -1,6 +1,6 @@
 # tools/radiometric-ab
 
-Radiometric A/B harnesses for `pt-webgpu`. Most scripts run lavapipe render
+Radiometric A/B harnesses for `pt-webgpu`. Most scripts run full-tier render
 variants in the linear HDR domain (`captureFrame({ colorSpace:'linear' })`) —
 the raw `accumTexture` float32 values, NOT the tonemapped display output. The
 ReSTIR-PT specialty-lobe script is a CPU/static identity proof, not a GPU
@@ -20,24 +20,25 @@ recapture.
 
 ## How to run
 
-Prerequisites: Deno ≥ 2.8, Mesa lavapipe (`mesa-vulkan-drivers`).
+Prerequisites: Deno ≥ 2.8 and a pt-webgpu full-tier WebGPU adapter. The SPPM,
+BDPT, and ReSTIR-PT A/B scripts now force `traceTier:"full"` and fail fast when
+the adapter resolves to lite, because lite disables caustics/BDPT/ReSTIR-PT and
+can otherwise produce false all-zero "passes". They also require non-black
+linear-HDR captures, so two black arms cannot be reported as a passing A/B.
 
 ```bash
 # From the repo root:
-export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+export VK_ICD_FILENAMES=/path/to/full-tier/icd.json
 
 # Run each test:
-deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write \
-  tools/radiometric-ab/ab-sppm.mjs
+npm run radiometric-ab:sppm
 
-deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write \
-  tools/radiometric-ab/ab-bdpt.mjs
+npm run radiometric-ab:bdpt
 
-deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write \
-  tools/radiometric-ab/ab-restir-pt.mjs
+npm run radiometric-ab:restir-pt
 
 # Static CPU fixture check:
-node tools/radiometric-ab/ab-restir-pt-specialty.mjs --check
+npm run radiometric-ab:restir-pt-specialty
 ```
 
 Each script writes a `results-*.json` in this directory.

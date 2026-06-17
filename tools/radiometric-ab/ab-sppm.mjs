@@ -56,6 +56,7 @@ console.log(`Resolution: ${W}×${H}`);
 console.log("");
 
 const scene = buildCausticScene();
+const FULL_TIER = { traceTier: "full", requireFullTier: true, requireRadiometricSignal: true };
 
 // Caustic ROI — rows 50–70, cols 28–52 (0-indexed, floor region below sphere)
 const ROI = { x0: 28, y0: 50, x1: 52, y1: 70 };
@@ -66,7 +67,7 @@ console.log("");
 console.log("Rendering A: manifold-nee (reference, 80 frames)...");
 const REF_FRAMES = 80;
 const refResult = await renderScene(
-  { causticStrategy: "manifold-nee" },
+  { ...FULL_TIER, causticStrategy: "manifold-nee" },
   scene,
   REF_FRAMES,
 );
@@ -85,7 +86,7 @@ console.log("Rendering B: photon-map (SPPM) at 3 accumulation checkpoints...");
 for (const frames of CHECKPOINTS) {
   console.log(`  Rendering SPPM checkpoint: ${frames} frames...`);
   const r = await renderScene(
-    { causticStrategy: "photon-map" },
+    { ...FULL_TIER, causticStrategy: "photon-map" },
     scene,
     frames,
   );

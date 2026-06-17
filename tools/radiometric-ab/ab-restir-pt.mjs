@@ -44,6 +44,7 @@ console.log(`Resolution: ${W}×${H}`);
 console.log("");
 
 const scene = buildCornellScene();
+const FULL_TIER = { traceTier: "full", requireFullTier: true, requireRadiometricSignal: true };
 
 // Indirect ROI: same as BDPT test — back wall + indirect contributions
 const ROI = { x0: 20, y0: 25, x1: 60, y1: 55 };
@@ -55,7 +56,7 @@ const MEAN_FRAMES = 60;
 console.log(`Part 1: Mean luminance comparison (${MEAN_FRAMES} frames each)...`);
 
 console.log("  Rendering BASE (restirPtReuse:false, default path)...");
-const baseResult = await renderScene({ restirPtReuse: false }, scene, MEAN_FRAMES);
+const baseResult = await renderScene({ ...FULL_TIER, restirPtReuse: false }, scene, MEAN_FRAMES);
 const baseGlobalLum = meanLuminanceROI(baseResult.rgba, W, 0, 0, W-1, H-1);
 const baseROILum    = meanLuminanceROI(baseResult.rgba, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 baseResult.engine.dispose();
@@ -63,7 +64,7 @@ baseResult.device.destroy();
 console.log(`  BASE: global lum = ${baseGlobalLum.toFixed(5)}, ROI lum = ${baseROILum.toFixed(5)}`);
 
 console.log("  Rendering RPT (restirPtReuse:true, composite path)...");
-const rptResult = await renderScene({ restirPtReuse: true }, scene, MEAN_FRAMES);
+const rptResult = await renderScene({ ...FULL_TIER, restirPtReuse: true }, scene, MEAN_FRAMES);
 const rptGlobalLum = meanLuminanceROI(rptResult.rgba, W, 0, 0, W-1, H-1);
 const rptROILum    = meanLuminanceROI(rptResult.rgba, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 rptResult.engine.dispose();
@@ -88,12 +89,12 @@ const VAR_FRAMES = 8;
 console.log(`Part 2: Variance estimate (${VAR_RUNS} runs × ${VAR_FRAMES} frames)...`);
 
 console.log("  Rendering BASE variance runs...");
-const baseRuns = await renderMultipleRuns({ restirPtReuse: false }, scene, VAR_FRAMES, VAR_RUNS);
+const baseRuns = await renderMultipleRuns({ ...FULL_TIER, restirPtReuse: false }, scene, VAR_FRAMES, VAR_RUNS);
 const baseVar  = varianceROI(baseRuns, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 console.log(`  BASE variance (ROI): ${baseVar.toFixed(6)}`);
 
 console.log("  Rendering RPT variance runs...");
-const rptRuns = await renderMultipleRuns({ restirPtReuse: true }, scene, VAR_FRAMES, VAR_RUNS);
+const rptRuns = await renderMultipleRuns({ ...FULL_TIER, restirPtReuse: true }, scene, VAR_FRAMES, VAR_RUNS);
 const rptVar  = varianceROI(rptRuns, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
 console.log(`  RPT variance (ROI): ${rptVar.toFixed(6)}`);
 console.log("");

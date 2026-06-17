@@ -1084,6 +1084,16 @@ selected non-lite pt-webgpu config that resolves to lite before updating or
 comparing a golden. Use that flag for the remaining full-tier material-fidelity
 capture lane so a green lite run cannot be mistaken for full-tier evidence.
 
+✅ **RADIOMETRIC A/B FALSE-POSITIVE GUARDS ADDED (2026-06-17):**
+`tools/radiometric-ab/{ab-sppm,ab-bdpt,ab-restir-pt}.mjs` now force
+`traceTier:"full"` and pass harness-only `requireFullTier` +
+`requireRadiometricSignal` flags through `helpers.mjs`. The helper strips those
+flags before engine construction, fails when a required full-tier A/B resolves
+to lite, and fails when a linear-HDR capture is black (`mean luminance <=
+1e-5`). This does **not** close the full-adapter V28-B recapture queue; it
+prevents the old failure mode where two lite/black arms could write a misleading
+PASS JSON.
+
 **Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
 
 #### 5B — Oracle suite (keep green)
