@@ -28,3 +28,9 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
     --allow-net --allow-write=tools/reference-renders/gltf-material-sweep-behavioral \
     tools/behavioral-gate/gate.mjs --filter gltf-material-sweep --update-goldens
 ```
+
+To prove the same fixture on the pt-webgpu full tier in the WSL dzn runtime:
+
+```sh
+npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier
+```

@@ -16,6 +16,7 @@
   "materialMapCount": 18,
   "commands": {
     "compare": "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json npm run behavioral-gate -- --filter gltf-material-sweep",
+    "compareFullTierDzn": "npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier",
     "recapture": "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-net --allow-write=tools/reference-renders/gltf-material-sweep-behavioral tools/behavioral-gate/gate.mjs --filter gltf-material-sweep --update-goldens"
   }
 }
