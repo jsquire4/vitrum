@@ -236,8 +236,9 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let normalMapped = applyNormalMapForHit(hit, smoothNormal);
   let normal = applyBumpMapForHit(hit, normalMapped);
   // B1 — metals/glossy now get a GI reservoir; shade reflects it via the GGX
-  // specular lobe. Glass still punts in the NRC variant (the default risGi pass
-  // handles refracted GI). Mirrors risGi.wgsl material payload consumption.
+  // specular lobe. Glass primaries mirror risGi.wgsl's bounded 1-interface
+  // refracted GI walk, then return before NRC cache substitution/training. That
+  // keeps the learned cache scope honest without dropping glass indirect light.
   let scalarMatColor = decodeMaterialColor(hit.matColorPacked);
   let matColor = vec4f(
     scalarMatColor.rgb,
@@ -258,8 +259,231 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let receiverClearcoatNormal = receiverPayload.clearcoatNormal;
   let receiverWo = -primaryRay.direction;
   let isGlass = matColor.a > 0.3;
+
+  // ── Glass refracted GI: 1-interface refraction walk ─────────────────────
+  // Parity with risGi.wgsl for primary glass pixels. The NRC cache is bypassed
+  // for this branch; it builds the same post-glass ReSTIR-GI reservoir as the
+  // default pass and stores it directly.
+  const GLASS_WALK_MAX_EXTRA: u32 = 2u;
+
   if (isGlass) {
-    storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
+    let glassPrimaryRmCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+                                    hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
+    let glassPrimaryPacked = textureLoad(bvh_material, vec2i(glassPrimaryRmCoord), 0).r;
+    let glassPrimaryRm = decodeRoughMetal(glassPrimaryPacked);
+    let glassPrimaryRough = glassPrimaryRm.x;
+    let IOR_GLASS: f32 = decodeIor(glassPrimaryPacked);
+
+    let d = primaryRay.direction;
+    let cosI = -dot(d, normal);
+    let etaRatio = select(IOR_GLASS, 1.0 / IOR_GLASS, cosI > 0.0);
+    let nFlipped = select(-normal, normal, cosI > 0.0);
+    let cosI_pos = abs(cosI);
+    let sin2T = etaRatio * etaRatio * (1.0 - cosI_pos * cosI_pos);
+    if (sin2T > 1.0) {
+      storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
+      return;
+    }
+    let cosT = sqrt(max(0.0, 1.0 - sin2T));
+    var refractDir = safe_normalize(etaRatio * d + (etaRatio * cosI_pos - cosT) * nFlipped);
+
+    const ROUGH_GLASS_THRESHOLD: f32 = 0.1;
+    if (glassPrimaryRough > ROUGH_GLASS_THRESHOLD) {
+      let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0),
+                      abs(refractDir.y) > 0.9);
+      let t1 = safe_normalize(cross(refractDir, up));
+      let t2 = cross(refractDir, t1);
+
+      let alphaGlass = glassPrimaryRough * glassPrimaryRough;
+      let xi1 = rand_f32(&rng);
+      let xi2 = rand_f32(&rng);
+      let r2 = alphaGlass * alphaGlass * xi1 / max(1e-6, 1.0 - xi1);
+      let r = sqrt(r2);
+      let phi = 2.0 * 3.14159265 * xi2;
+      let dx = r * cos(phi);
+      let dy = r * sin(phi);
+      let perturbedDir = safe_normalize(refractDir + dx * t1 + dy * t2);
+      if (dot(perturbedDir, -nFlipped) > 1e-4) {
+        refractDir = perturbedDir;
+      }
+    }
+
+    var walkOrigin = pos - geoNormal * NORMAL_BIAS_GI;
+    var walkHit: IntersectionResult;
+    var walkHitPos: vec3f;
+    var walkHitNormal: vec3f;
+    var walkSmoothNormal: vec3f;
+    var foundSurface: bool = false;
+
+    for (var gi: u32 = 0u; gi <= GLASS_WALK_MAX_EXTRA; gi = gi + 1u) {
+      let walkRay = Ray(walkOrigin, refractDir);
+      walkHit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
+        ubo.bvhMode, ubo.tlasNodeCount,
+        &bvh_index, &bvh_position, &bvh,
+        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+        walkRay, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH,
+      );
+      if (!walkHit.didHit) { break; }
+
+      walkHitPos = walkOrigin + refractDir * walkHit.dist;
+      walkHitNormal = walkHit.normal;
+      let scalarWalkMat = decodeMaterialColor(walkHit.matColorPacked);
+      let walkMat = vec4f(
+        scalarWalkMat.rgb,
+        sampleTransmissionMapForHit(walkHit, scalarWalkMat.a),
+      );
+      let walkIsGlass = walkMat.a > 0.3;
+
+      if (!walkIsGlass) {
+        let wn_isTlas = ubo.bvhMode == 1u;
+        let wn_base = walkHit.instanceIndex * 4u;
+        let wn_ok = wn_isTlas && wn_base + 2u < arrayLength(&tlasInstanceWorldToLocal);
+        let wn_i = select(0u, wn_base, wn_ok);
+        walkSmoothNormal = smoothShadingNormal(
+          walkHit, walkHit.normal,
+          bvh_normal[walkHit.indices.x].xyz,
+          bvh_normal[walkHit.indices.y].xyz,
+          bvh_normal[walkHit.indices.z].xyz,
+          wn_ok,
+          tlasInstanceWorldToLocal[wn_i],
+          tlasInstanceWorldToLocal[wn_i + 1u],
+          tlasInstanceWorldToLocal[wn_i + 2u],
+        );
+        let walkNormalMapped = applyNormalMapForHit(walkHit, walkSmoothNormal);
+        walkHitNormal = applyBumpMapForHit(walkHit, walkNormalMapped);
+        foundSurface = true;
+        break;
+      }
+
+      walkOrigin = walkHitPos + refractDir * NORMAL_BIAS_GI;
+    }
+
+    if (!foundSurface) {
+      storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
+      return;
+    }
+
+    var rGlass: ReservoirGI = emptyReservoirGI();
+    rGlass.xv = walkHitPos;
+    rGlass.nv = walkHitNormal;
+    let walkMaterialWordCoord = vec2u(
+      walkHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+      walkHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+    );
+    let walkMaterialWord = textureLoad(bvh_material, vec2i(walkMaterialWordCoord), 0).r;
+    let walkPayload = sampleRestirDIMaterialPayloadForHit(
+      walkHit,
+      walkSmoothNormal,
+      walkHitNormal,
+      decodeMaterialColor(walkHit.matColorPacked).rgb,
+      walkMaterialWord,
+    );
+    let walkClearcoatNormal = walkPayload.clearcoatNormal;
+    let walkWo = -refractDir;
+
+    let tier_raw_g = textureLoad(gi_tier, vec2i(fullPx), 0).r;
+    let tier_g = clamp(tier_raw_g, 1u, 4u);
+    let M_GI_g = M_GI_BASE * tier_g / 2u;
+
+    for (var i: u32 = 0u; i < M_GI_g; i = i + 1u) {
+      let wi = sampleCosineHemisphere(walkHitNormal, &rng);
+      let cosTheta = max(0.0, dot(walkHitNormal, wi));
+      if (cosTheta < 1e-4) { continue; }
+
+      let bounceRay = Ray(walkHitPos + walkHit.normal * NORMAL_BIAS_GI, wi);
+      let bounceHit = traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
+        ubo.bvhMode, ubo.tlasNodeCount,
+        &bvh_index, &bvh_position, &bvh,
+        &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+        &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+        bounceRay, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH,
+      );
+
+      var xs_g: vec3f;
+      var ns_g: vec3f;
+      var Lo_g: vec3f;
+
+      if (bounceHit.didHit) {
+        xs_g = bounceRay.origin + wi * bounceHit.dist;
+        let smoothNs_g = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);
+        ns_g = applyBumpMapForHit(bounceHit, applyNormalMapForHit(bounceHit, smoothNs_g));
+        let irrAtXs = min(sampleDDGIAtPoint(xs_g, ns_g), vec3f(ubo.restirGiIrrClamp));
+        let xsRmCoord_g = vec2u(
+          bounceHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+          bounceHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+        );
+        let xsMaterialWord_g = textureLoad(bvh_material, vec2i(xsRmCoord_g), 0).r;
+        let xsPayload_g = sampleRestirGIHitMaterialForHit(
+          bounceHit,
+          smoothNs_g,
+          ns_g,
+          irrAtXs,
+          wi,
+          xsMaterialWord_g,
+        );
+        Lo_g = xsPayload_g.Lo;
+      } else {
+        xs_g = walkHitPos + wi * RECONNECT_MAX_DIST;
+        ns_g = -wi;
+        Lo_g = envRadiance(wi);
+      }
+
+      let pHat_g = restir_gi_receiver_phat_from_payload(
+        walkHitPos,
+        walkHitNormal,
+        walkClearcoatNormal,
+        walkWo,
+        walkPayload,
+        xs_g,
+        Lo_g,
+      );
+      if (pHat_g < 1e-9) { continue; }
+      let pCos_g = cosTheta * INV_PI;
+      let w_g = select(0.0, pHat_g / pCos_g, pCos_g > 1e-12);
+      updateReservoirGI(&rGlass, xs_g, ns_g, Lo_g, w_g, &rng);
+    }
+
+    if (rGlass.M > 0u && rGlass.w_sum > 0.0) {
+      let toS_g = rGlass.xs - rGlass.xv;
+      let distS_g = length(toS_g);
+      if (distS_g > 1e-4) {
+        let wiZ_g = toS_g / distS_g;
+        let shadowOrig_g = rGlass.xv + rGlass.nv * NORMAL_BIAS_GI;
+        let shadowT_g = traceSceneAlphaTransmittanceTextured(
+          ubo.bvhMode, ubo.tlasNodeCount,
+          &bvh_index, &bvh_position, &bvh,
+          &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+          &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+          shadowOrig_g, wiZ_g, distS_g - 2e-3, ubo.triIntersectEpsilon, true,
+          bvh_material, BVH_MATERIAL_TEX_WIDTH,
+        );
+        if (shadowT_g <= 0.001) {
+          rGlass.w_sum = 0.0;
+          rGlass.W = 0.0;
+        } else {
+          let pHatZ_g = restir_gi_receiver_phat_from_payload(
+            rGlass.xv,
+            rGlass.nv,
+            walkClearcoatNormal,
+            walkWo,
+            walkPayload,
+            rGlass.xs,
+            rGlass.Lo,
+          );
+          rGlass.w_sum = rGlass.w_sum * shadowT_g;
+          finaliseGIReservoirWFromPHat(&rGlass, ubo.restirGiWCap, false, pHatZ_g);
+        }
+      } else {
+        rGlass.W = 0.0;
+        rGlass.w_sum = 0.0;
+      }
+    }
+
+    refreshPhase0Cache(&rGlass);
+    storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, rGlass);
     return;
   }
 

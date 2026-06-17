@@ -10,8 +10,9 @@
  *      bvh_material texture (no `select(0.85, 0.05, isGlass)` / `metal = 0.0`).
  *   2. shade lo_direct / lo_analyticNEE no longer early-out on isMetal
  *      (metals get DIRECT light); glass still skips.
- *   3. risGi / risGiNrc no longer punt metals to an empty GI reservoir
- *      (glass still punts — refracted GI is out of scope).
+ *   3. risGi / risGiNrc no longer punt metals to an empty GI reservoir.
+ *      Primary glass pixels use the bounded refracted-GI walk instead of the old
+ *      immediate empty-reservoir branch.
  *   4. shade adds the glossy/metal SPECULAR-indirect term (evalGGXSpecularOnly
  *      against the ReSTIR-GI reservoir sample), routed to the un-demodulated
  *      direct channel.
@@ -82,13 +83,18 @@ describe('B1 — metals receive direct light (no isMetal early-out)', () => {
 });
 
 describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)', () => {
-  it('risGi punts ONLY glass to an empty reservoir', () => {
-    expect(RIS_GI_WGSL).not.toContain('if (isGlass || isMetal)');
-    expect(RIS_GI_WGSL).toMatch(/if \(isGlass\) \{[\s\S]*?storeReservoirGI_rw\(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI\(\)\);/);
-  });
-
-  it('risGiNrc punts ONLY glass to an empty reservoir', () => {
-    expect(RIS_GI_NRC_BODY).not.toContain('if (isGlass || isMetal)');
+  it('risGi / risGiNrc handle primary glass with a bounded refracted-GI walk', () => {
+    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
+      expect(src).not.toContain('if (isGlass || isMetal)');
+      expect(src).not.toContain(`if (isGlass) {
+    storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, emptyReservoirGI());
+    return;
+  }`);
+      expect(src).toContain('const GLASS_WALK_MAX_EXTRA: u32 = 2u;');
+      expect(src).toContain('var rGlass: ReservoirGI = emptyReservoirGI();');
+      expect(src).toContain('rGlass.xv = walkHitPos;');
+      expect(src).toContain('storeReservoirGI_rw(&reservoirGiCurrent, pixelIdxGi, rGlass);');
+    }
   });
 
   it('the GI producer targets the receiver lobe over material-shaded Lo', () => {
@@ -139,15 +145,19 @@ describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
     expect(MATERIAL_DECODE_WGSL).toContain('1.0 + f32(byte) / 255.0 * 2.0');
   });
 
-  it('risGi glass walk no longer uses a hardcoded IOR_GLASS=1.5 constant', () => {
+  it('risGi / risGiNrc glass walks no longer use a hardcoded IOR_GLASS=1.5 constant', () => {
     // The fixed `const IOR_GLASS: f32 = 1.5;` must be gone (replaced by decodeIor()).
-    expect(RIS_GI_WGSL).not.toContain('const IOR_GLASS: f32 = 1.5;');
-    // Per-tri decode must be present.
-    expect(RIS_GI_WGSL).toContain('decodeIor(glassPrimaryPacked)');
+    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
+      expect(src).not.toContain('const IOR_GLASS: f32 = 1.5;');
+      // Per-tri decode must be present.
+      expect(src).toContain('decodeIor(glassPrimaryPacked)');
+    }
   });
 
-  it('risGi glass walk binds bvh_material (group 1, binding 14)', () => {
-    expect(RIS_GI_WGSL).toContain('@group(1) @binding(14) var bvh_material: texture_2d<u32>;');
+  it('risGi / risGiNrc glass walks bind bvh_material (group 1, binding 14)', () => {
+    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
+      expect(src).toContain('@group(1) @binding(14) var bvh_material: texture_2d<u32>;');
+    }
   });
 
   it('shade lo_transmittedGI no longer uses hardcoded GLASS_F0 = 0.04', () => {
@@ -162,9 +172,11 @@ describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
     expect(SHADE_WGSL).toContain('iorMinus1 / iorPlus1');
   });
 
-  it('risGi rough-glass GI perturbation is gated on ROUGH_GLASS_THRESHOLD', () => {
+  it('risGi / risGiNrc rough-glass GI perturbation is gated on ROUGH_GLASS_THRESHOLD', () => {
     // Smooth glass (rough < threshold) keeps exact Snell direction — byte-identical.
-    expect(RIS_GI_WGSL).toContain('const ROUGH_GLASS_THRESHOLD: f32 = 0.1;');
-    expect(RIS_GI_WGSL).toContain('if (glassPrimaryRough > ROUGH_GLASS_THRESHOLD)');
+    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
+      expect(src).toContain('const ROUGH_GLASS_THRESHOLD: f32 = 0.1;');
+      expect(src).toContain('if (glassPrimaryRough > ROUGH_GLASS_THRESHOLD)');
+    }
   });
 });

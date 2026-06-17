@@ -364,8 +364,10 @@ describe('A6: NRC structural fixes — xsRough + reservoir training target (2026
 
   it('A6 candidate tracking: NRC tracking vars are declared before the RIS loop', () => {
     // nrcFired / nrcTrackXs / nrcTrackNs / nrcTrackWi must appear before the
-    // `for (var i: u32 = 0u; i < M_GI` loop opening — structural placement check.
-    const loopIdx = RIS_GI_NRC_BODY.indexOf('for (var i: u32 = 0u; i < M_GI');
+    // opaque NRC `for (var i: u32 = 0u; i < M_GI;` loop opening. Anchor on the
+    // semicolon so the bounded glass branch's `M_GI_g` loop is not mistaken for
+    // the NRC substitution loop.
+    const loopIdx = RIS_GI_NRC_BODY.indexOf('for (var i: u32 = 0u; i < M_GI;');
     expect(loopIdx).toBeGreaterThan(0);
     const nrcFiredIdx = RIS_GI_NRC_BODY.indexOf('var nrcFired:');
     expect(nrcFiredIdx).toBeGreaterThan(0);
