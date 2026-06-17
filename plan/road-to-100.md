@@ -1254,6 +1254,17 @@ material/environment/emitter mutation observability). Broader
 material-lobe fidelity promotion remains owned by the renderer fidelity matrix
 and package material oracles.
 
+2026-06-17 full-suite dzn finding: `npm run behavioral-gate:dzn -- --filter gltf
+--require-full-tier` now writes
+`tools/behavioral-gate/behavioral-gate-dzn-gltf-status.json`. That artifact
+confirms full-tier execution, zero GPU errors, and `nan:false` for all 11 glTF
+lanes. The five synthetic/import lanes plus point/line, strip/fan, and material
+sweep pass; the three real-asset lanes fail only the committed lavapipe PNG
+comparison as `GOLDEN-DELTA` on dzn full tier (`BoxTextured` RMSE 17.005,
+`real-draco` RMSE 26.820, `real-meshopt` RMSE 9.612; each has `maxAbs=255`).
+Treat that as a real full-tier golden recapture/tolerance task, not an
+arbitrary-glTF import/API blocker.
+
 Validation note: the walkaround-hybrid native-Deno behavioral lane is
 fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the
 pre-existing `wh/default` config returns a renderer verdict; the npm wrapper now

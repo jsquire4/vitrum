@@ -55,6 +55,12 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
 ```
 
+The committed dzn status set includes two passing narrow lanes
+(`gltf-material-sweep`, `mutation`) plus the broader `--filter gltf` finding.
+The broad glTF status confirms full-tier execution with zero GPU errors for all
+selected glTF lanes, but records `GOLDEN-DELTA` for the three real-asset PNG
+comparisons against lavapipe goldens; treat those as full-tier recapture work.
+
 ## What it covers
 
 ### pt-webgpu configs (33)

@@ -85,11 +85,12 @@ if (result.status === 124) {
   process.exit(2);
 }
 
-if (result.status === 0) {
+if (result.status != null) {
+  const passed = result.status === 0;
   const status = {
     generatedAt: new Date().toISOString(),
     harness: 'behavioral-gate:dzn',
-    verdict: 'PASS',
+    verdict: passed ? 'PASS' : 'FAIL',
     command: `npm run behavioral-gate:dzn -- ${gateArgs.join(' ')}`.trim(),
     filter: filter || null,
     timeoutMs,
