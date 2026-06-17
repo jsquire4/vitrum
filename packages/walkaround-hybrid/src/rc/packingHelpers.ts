@@ -83,10 +83,12 @@ export function packRCParams(
 // Each RCLight (matches WGSL RCLight struct, 64 bytes = 16 floats):
 //   [0]       kind (u32): low bits 0=skip, 1=point, 2=spot;
 //             high bit set => castShadow:false on the source emitter
-//   [1..3]    _pad
+//   [1]       distance (f32) — 0 = no cutoff
+//   [2]       decay (f32) — 0 = no falloff, 2 = physical inverse-square
+//   [3]       _pad
 //   [4..6]    position (vec3f)
 //   [7]       intensity (f32)
-//   [8..10]   direction (vec3f) — spot cone axis toward-light; zero for point
+//   [8..10]   direction (vec3f) — spot cone forward beam axis; zero for point
 //   [11]      innerCone (f32)   — cosine of inner angle
 //   [12..14]  color (vec3f)
 //   [15]      outerCone (f32)   — cosine of outer angle
@@ -127,7 +129,9 @@ export const RC_LIGHT_ENTRY_BYTES = 64;
  * Field byte offsets within one `RCLight` entry (relative to entry start).
  * Mirrors the WGSL `struct RCLight`:
  *   kind:      u32   @ 0
- *   _pad0-2:   3×u32 @ 4..12
+ *   distance:  f32   @ 4  (f32 word 1)
+ *   decay:     f32   @ 8  (f32 word 2)
+ *   _pad2:     f32   @ 12 (f32 word 3)
  *   position:  vec3f @ 16 (f32 words 4-6)
  *   intensity: f32   @ 28 (f32 word 7)
  *   direction: vec3f @ 32 (f32 words 8-10)
@@ -137,6 +141,8 @@ export const RC_LIGHT_ENTRY_BYTES = 64;
  */
 export const RCLightEntryOffset = {
   kind:      0,
+  distance:  4,
+  decay:     8,
   position:  16,
   intensity: 28,
   direction: 32,
@@ -173,11 +179,13 @@ export function packRCLights(lights: readonly DDGILight[]): ArrayBuffer {
     const isSpot = l.spotAxis != null && (l.spotCosInner != null || l.spotCosOuter != null);
     const shadowFlag = l.castShadow === false ? RC_LIGHT_CAST_SHADOW_DISABLED : 0;
     ui[ub]        = ((isSpot ? 2 : 1) | shadowFlag) >>> 0; // kind + shadow flag
+    data[base + 1] = typeof l.distance === 'number' && l.distance > 0 ? l.distance : 0;
+    data[base + 2] = typeof l.decay === 'number' ? l.decay : 2;
     data[base + 4] = l.position?.x ?? 0;
     data[base + 5] = l.position?.y ?? 0;
     data[base + 6] = l.position?.z ?? 0;
     data[base + 7] = l.intensity;
-    // Spot axis (toward-light direction; zero vector → point light → cone skipped).
+    // Spot axis (forward beam/travel direction; zero vector → point light → cone skipped).
     data[base + 8]  = l.spotAxis?.x ?? 0;
     data[base + 9]  = l.spotAxis?.y ?? 0;
     data[base + 10] = l.spotAxis?.z ?? 0;

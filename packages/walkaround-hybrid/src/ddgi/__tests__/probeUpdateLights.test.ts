@@ -11,8 +11,8 @@
  *   float offset (4 + i*16):
  *     +0  kind        u32   (low bits: 0=sun, 1=fixture/teaLight;
  *                            high bit: castShadowDisabled)
- *     +1  _pad0       f32
- *     +2  _pad1       f32
+ *     +1  distance    f32   (fixture only; 0 = no cutoff)
+ *     +2  decay       f32   (fixture only; 0 = no falloff, 2 = inverse-square)
  *     +3  _pad2       f32
  *     +4  position.x  f32   (fixture only; 0 for sun)
  *     +5  position.y  f32
@@ -38,6 +38,7 @@ import {
   DDGI_LIGHT_KIND_MASK,
   packDDGIProbeLights,
 } from '../probeUpdateLights.js';
+import { makeProbeUpdateRaysWGSL } from '../wgsl/probeUpdateRays.wgsl.js';
 
 const HEADER_FLOATS = 4;
 const LIGHT_STRIDE_FLOATS = 16;
@@ -56,6 +57,25 @@ function decode(buf: ArrayBuffer) {
 /** Float offset of the first float in light i's slot. */
 function lightBase(i: number): number {
   return HEADER_FLOATS + i * LIGHT_STRIDE_FLOATS;
+}
+
+function functionBody(source: string, name: string): string {
+  const marker = `fn ${name}(`;
+  const start = source.indexOf(marker);
+  expect(start, `${name} should be present`).toBeGreaterThanOrEqual(0);
+  const brace = source.indexOf('{', start);
+  expect(brace, `${name} should have a body`).toBeGreaterThanOrEqual(0);
+
+  let depth = 0;
+  for (let i = brace; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(brace + 1, i);
+    }
+  }
+  throw new Error(`Could not find end of ${name}`);
 }
 
 // ── sun light ─────────────────────────────────────────────────────────────────
@@ -243,6 +263,30 @@ describe('packDDGIProbeLights — point fixture', () => {
     expect(f32[base + 11]).toBe(0); // spotCosInner → innerCone
     expect(f32[base + 15]).toBe(0); // spotCosOuter → outerCone
   });
+
+  it('packs point fixture distance/decay into lanes [+1,+2] with physical default decay', () => {
+    const buf = packDDGIProbeLights([
+      {
+        kind: 'fixture',
+        on: true,
+        intensity: 1,
+        position: { x: 0, y: 0, z: 0 },
+        distance: 12,
+        decay: 0,
+      },
+    ], 1);
+    const { f32 } = decode(buf);
+    const base = lightBase(0);
+    expect(f32[base + 1]).toBeCloseTo(12);
+    expect(f32[base + 2]).toBeCloseTo(0);
+
+    const defaultBuf = packDDGIProbeLights([
+      { kind: 'fixture', on: true, intensity: 1, position: { x: 0, y: 0, z: 0 } },
+    ], 1);
+    const { f32: defaultF32 } = decode(defaultBuf);
+    expect(defaultF32[base + 1]).toBe(0);
+    expect(defaultF32[base + 2]).toBe(2);
+  });
 });
 
 // ── spot fixture ──────────────────────────────────────────────────────────────
@@ -250,8 +294,8 @@ describe('packDDGIProbeLights — point fixture', () => {
 describe('packDDGIProbeLights — spot fixture', () => {
   it('packs spotAxis into direction lanes [+8,+9,+10] which the WGSL reads as light.direction', () => {
     // WGSL evalPointLight: `let axisLen2 = dot(light.direction, light.direction);`
-    // then `let cosToP = dot(lightDir, light.direction * inverseSqrt(axisLen2));`
-    // so light.direction must be the spot axis (toward-light unit vector).
+    // then `let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);`
+    // so light.direction must be the spot's forward beam/travel axis.
     const buf = packDDGIProbeLights([
       {
         kind: 'fixture', on: true, intensity: 10,
@@ -259,6 +303,8 @@ describe('packDDGIProbeLights — spot fixture', () => {
         spotAxis: { x: 0.0, y: -1.0, z: 0.0 }, // pointing straight down
         spotCosInner: 0.866,  // ~30° half-angle
         spotCosOuter: 0.707,  // ~45° half-angle
+        distance: 9,
+        decay: 1.5,
       },
     ], 1);
     const { f32, u32 } = decode(buf);
@@ -266,6 +312,10 @@ describe('packDDGIProbeLights — spot fixture', () => {
 
     // kind = 1 (LIGHT_POINT — spot uses the same kind, distinguished by direction length).
     expect(u32[base]).toBe(1);
+
+    // Distance/decay are real fixture fields, not padding.
+    expect(f32[base + 1]).toBeCloseTo(9, 5);
+    expect(f32[base + 2]).toBeCloseTo(1.5, 5);
 
     // Cone axis → WGSL light.direction.
     expect(f32[base + 8]).toBeCloseTo(0.0, 5);
@@ -277,6 +327,18 @@ describe('packDDGIProbeLights — spot fixture', () => {
 
     // outerCone (cosOuter) → WGSL light.outerCone, lower bound of smoothstep.
     expect(f32[base + 15]).toBeCloseTo(0.707, 4);
+  });
+
+  it('WGSL evaluates packed spotAxis as a forward beam axis and guards hard-edge cones', () => {
+    const body = functionBody(makeProbeUpdateRaysWGSL(4), 'evalPointLight');
+
+    expect(body).toContain('let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);');
+    expect(body).toContain('abs(light.innerCone - light.outerCone) < 1e-5');
+    expect(body).toContain('if (light.decay > 0.01)');
+    expect(body).toContain('if (light.distance > 0.0)');
+    expect(body).toContain('let atten = light.intensity * distanceAttenuation;');
+    expect(body).not.toContain('dot(lightDir, light.direction * inverseSqrt(axisLen2))');
+    expect(body).not.toContain('coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);\n    if');
   });
 
   it('teaLight packs identically to fixture (same branch in packer)', () => {

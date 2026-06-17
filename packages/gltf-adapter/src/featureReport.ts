@@ -67,6 +67,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasTangents: boolean;
   readonly hasMorphTargets: boolean;
   readonly hasMorphTargetTangents: boolean;
+  readonly hasMorphTargetTexcoords: boolean;
   readonly hasSkins: boolean;
   readonly hasInstancedSkinnedOrMorphed: boolean;
   readonly hasIgnoredSkinAttributes: boolean;
@@ -473,6 +474,18 @@ export function evaluateGltfBackendProfileCompatibility(
         'glTF morph-target TANGENT deltas are preserved on SkinnedMeshPrimitive.morphTargetTangents, ' +
         'and CPU-solved skinned paths apply them to posed tangent-space shading when rest tangents exist; ' +
         'GPU-native tangent skinning is still a fallback-to-CPU path.',
+    });
+  }
+
+  if (report.primitives.hasMorphTargetTexcoords) {
+    addIssue({
+      category: 'primitive',
+      name: 'morphTargetTexcoords',
+      support: 'unsupported',
+      path: firstSourcePath(report.primitives.issuePaths, 'morphTargetTexcoords', 'meshes'),
+      message:
+        'glTF morph-target TEXCOORD deltas are not represented in the core Scene contract; ' +
+        'the adapter keeps rest-pose UVs and reports the unsupported animated-UV path explicitly.',
     });
   }
 
@@ -924,6 +937,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   let hasTangents = false;
   let hasMorphTargets = false;
   let hasMorphTargetTangents = false;
+  let hasMorphTargetTexcoords = false;
   let hasVertexColors = false;
   const ignoredVertexColorSets = new Set<string>();
   let hasUv1 = false;
@@ -1001,6 +1015,12 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
             hasMorphTargetTangents = true;
             addSourcePath(issuePaths, 'morphTargetTangents', `${primitivePath}.targets[${targetIndex}].TANGENT`);
           }
+          for (const attr of Object.keys(target)) {
+            if (/^TEXCOORD_\d+$/.test(attr)) {
+              hasMorphTargetTexcoords = true;
+              addSourcePath(issuePaths, 'morphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
+            }
+          }
         }
       }
     }
@@ -1039,6 +1059,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     hasTangents,
     hasMorphTargets,
     hasMorphTargetTangents,
+    hasMorphTargetTexcoords,
     hasSkins,
     hasInstancedSkinnedOrMorphed,
     hasIgnoredSkinAttributes,

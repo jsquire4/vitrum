@@ -72,11 +72,11 @@ export interface DDGILight {
    *  warm-white default otherwise). */
   readonly color?: { readonly r: number; readonly g: number; readonly b: number };
 
-  /** SPOT fixtures only — the cone axis as a TOWARD-LIGHT unit vector (= the core
-   *  `SpotEmitter.direction`, `normalize(position - target)`, UNnegated, unlike
-   *  the sun's travel `direction`). When present (length ≈ 1), the probe shader
-   *  applies the cone falloff `smoothstep(spotCosOuter, spotCosInner,
-   *  dot(toLightDir, spotAxis))`; absent (point fixture) ⇒ omnidirectional. */
+  /** SPOT fixtures only — the cone axis as the light's forward beam/travel
+   *  direction (= the core `SpotEmitter.direction`, UNnegated, unlike the sun's
+   *  travel `direction` special case). When present (length ≈ 1), the probe
+   *  shader applies the cone falloff against `dot(-spotAxis, toLightDir)`;
+   *  absent (point fixture) ⇒ omnidirectional. */
   readonly spotAxis?: { readonly x: number; readonly y: number; readonly z: number };
   /** SPOT fixtures only — cos of the INNER (full-intensity) half-angle =
    *  cos(angle·(1−penumbra)). Falloff = 1 at/above this. */
@@ -84,6 +84,11 @@ export interface DDGILight {
   /** SPOT fixtures only — cos of the OUTER half-angle = cos(angle). Falloff = 0
    *  at/below this (outside the cone). */
   readonly spotCosOuter?: number;
+  /** POINT/SPOT fixtures only — finite cutoff distance. `0`/absent = no cutoff. */
+  readonly distance?: number;
+  /** POINT/SPOT fixtures only — distance falloff exponent. `0` = no falloff,
+   *  `2` = physical inverse-square. Defaults to 2 for core punctual emitters. */
+  readonly decay?: number;
 }
 
 // `DDGIDeviceHandle` interface removed 2026-05-18 — was defined here but

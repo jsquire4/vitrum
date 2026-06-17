@@ -220,6 +220,7 @@ interface MorphTargetSpec {
   position?: number[]; // 9 floats (3 verts × 3)
   normal?: number[];   // 9 floats
   tangent?: number[];  // 9 floats (glTF morph target TANGENT is a VEC3 delta)
+  texcoord0?: number[]; // 6 floats (3 verts × 2)
 }
 
 /**
@@ -254,6 +255,11 @@ function makeMorphGltf(opts: {
       target['TANGENT'] = accessors.length;
       accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC3' });
       chunks.push(f32Buffer(spec.tangent));
+    }
+    if (spec.texcoord0) {
+      target['TEXCOORD_0'] = accessors.length;
+      accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC2' });
+      chunks.push(f32Buffer(spec.texcoord0));
     }
     targets.push(target);
   }
@@ -368,6 +374,25 @@ describe('morph targets (GLTF-04)', () => {
     expect(prim.morphTargets).toHaveLength(1);
     expect(prim.morphTargetTangents).toHaveLength(1);
     expect(Array.from(prim.morphTargetTangents![0]!)).toEqual(Array.from(new Float32Array(tangentDelta)));
+  });
+
+  it('reports TEXCOORD morph deltas as ignored because core has no UV-delta morph lane', async () => {
+    const uvDelta = [0.1, 0, 0.1, 0, 0.1, 0];
+    const { gltf, buffers } = makeMorphGltf({
+      targets: [{ position: POS_DELTA_1, texcoord0: uvDelta }],
+      meshWeights: [1],
+    });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+
+    expect(prim.morphTargets).toHaveLength(1);
+    expect('morphTargetUvs' in prim).toBe(false);
+    expect(warnings.some((warning) => warning.includes('morph UV-delta lane'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'ignored-morph-target-texcoord',
+      path: 'meshes[0].primitives[0].targets[0].TEXCOORD_0',
+    }));
   });
 
   it('morphWeights defaults to zeros when no weights are authored', async () => {

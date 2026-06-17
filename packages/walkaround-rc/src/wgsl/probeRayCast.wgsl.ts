@@ -240,10 +240,12 @@ ${RC_SUN_VISIBILITY_WGSL}
 // Struct layout (4 × u32/f32 = 16 floats = 64 bytes):
 //   [0]       kind:       low bits 0 = skipped, 1 = point, 2 = spot;
 //                         high bit set => source emitter castShadow:false
-//   [1..3]    _pad0..2
+//   [1]       distance:   finite cutoff distance; 0 = no cutoff
+//   [2]       decay:      falloff exponent; 0 = no falloff, 2 = inverse-square
+//   [3]       _pad
 //   [4..6]    position:   vec3f world-space position
 //   [7]       intensity:  scalar (lux / cd equivalent — 1/r² applied below)
-//   [8..10]   direction:  vec3f spot-cone axis (toward-light; zero = point → no cone)
+//   [8..10]   direction:  vec3f spot-cone forward beam axis (zero = point → no cone)
 //   [11]      innerCone:  cosine of inner-cone angle (smooth = 1 for point)
 //   [12..14]  color:      vec3f RGB
 //   [15]      outerCone:  cosine of outer-cone angle (hard edge = 0 for point)
@@ -256,7 +258,9 @@ const RC_MAX_LIGHTS:  u32 = 16u;
 
 struct RCLight {
   kind:      u32,
-  _pad0: f32, _pad1: f32, _pad2: f32,
+  distance:  f32,
+  decay:     f32,
+  _pad2:     f32,
   position:  vec3f,
   intensity: f32,
   direction: vec3f,

@@ -48,6 +48,18 @@ describe('RC light-eval WGSL contract', () => {
     expect(PROBE_RAY_CAST_WGSL.match(/traceSunVisibility/g)?.length).toBeGreaterThanOrEqual(3);
   });
 
+  it('evaluates spot lights with the forward beam axis and guards hard-edge cones', () => {
+    const pointSpot = functionBody(PROBE_RAY_CAST_WGSL, 'evalRCPointSpotLights');
+
+    expect(pointSpot).toContain('let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);');
+    expect(pointSpot).toContain('abs(light.innerCone - light.outerCone) < 1e-5');
+    expect(pointSpot).toContain('if (light.decay > 0.01)');
+    expect(pointSpot).toContain('if (light.distance > 0.0)');
+    expect(pointSpot).toContain('let atten = light.intensity * distanceAttenuation;');
+    expect(pointSpot).not.toContain('dot(lightDir, light.direction * inverseSqrt(axisLen2))');
+    expect(pointSpot).not.toContain('coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);\n      if');
+  });
+
   it('skips primitive castShadow:false geometry in RC GI shadow traversal', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('fn bvhCastShadowDisabledForTri(triIdx: u32) -> bool');
     expect(PROBE_RAY_CAST_WGSL).toContain('MATERIAL_FLAG_CAST_SHADOW_DISABLED');

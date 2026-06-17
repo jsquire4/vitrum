@@ -500,11 +500,12 @@ function buildMeshAreaTlasSourceTriResolver(
  * Stride: 4 × vec4f = 64 bytes = 16 floats per entry.
  *   [0..2]  position.xyz + pad(0)
  *   [4..6]  color.rgb (linear, pre-multiplied by intensity) + pad(0)
- *   [8..10] direction.xyz (toward-light; (0,0,0) for omnidirectional point)
+ *   [8..10] direction.xyz (forward beam/travel axis; (0,0,0) for omnidirectional point)
  *          + cosInner (cosine of inner cone half-angle; 1.0 for point = no cone)
  *   [12]   cosOuter (cosine of outer cone half-angle; 0.0 for point = no cone)
  *   [13]   castShadowDisabled (1.0 when emitter.castShadow === false)
- *           pad×2
+ *   [14]   distance (0.0 = no cutoff)
+ *   [15]   decay (0.0 = no falloff, 2.0 = physical inverse-square)
  *
  * Point emitters: direction=(0,0,0), cosInner=1, cosOuter=0.
  * Spot emitters: direction=normalize(axis), cosInner=cos(innerHalfAngle),
@@ -541,10 +542,12 @@ export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLight
       const [r, g, b] = e.color;
       const i = e.intensity;
       const [px, py, pz] = e.position;
+      const dist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
+      const decay = typeof e.decay === 'number' ? e.decay : 2;
       data[out * S + 0]  = px;  data[out * S + 1]  = py;  data[out * S + 2]  = pz;  data[out * S + 3]  = 0;
       data[out * S + 4]  = r * i; data[out * S + 5] = g * i; data[out * S + 6] = b * i; data[out * S + 7] = 0;
       data[out * S + 8]  = 0;  data[out * S + 9]  = 0;  data[out * S + 10] = 0;  data[out * S + 11] = 1;
-      data[out * S + 12] = 0;  data[out * S + 13] = e.castShadow === false ? 1 : 0;  data[out * S + 14] = 0;  data[out * S + 15] = 0;
+      data[out * S + 12] = 0;  data[out * S + 13] = e.castShadow === false ? 1 : 0;  data[out * S + 14] = dist;  data[out * S + 15] = decay;
       out++;
     } else if (e.kind === 'spot') {
       const [r, g, b] = e.color;
@@ -561,10 +564,12 @@ export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLight
       const innerHalf = outerHalf * (1 - penumbra);
       const cosInner = Math.cos(innerHalf);
       const cosOuter = Math.cos(outerHalf);
+      const dist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
+      const decay = typeof e.decay === 'number' ? e.decay : 2;
       data[out * S + 0]  = px;  data[out * S + 1]  = py;  data[out * S + 2]  = pz;  data[out * S + 3]  = 0;
       data[out * S + 4]  = r * i; data[out * S + 5] = g * i; data[out * S + 6] = b * i; data[out * S + 7] = 0;
       data[out * S + 8]  = nx;  data[out * S + 9]  = ny;  data[out * S + 10] = nz;  data[out * S + 11] = cosInner;
-      data[out * S + 12] = cosOuter; data[out * S + 13] = e.castShadow === false ? 1 : 0; data[out * S + 14] = 0; data[out * S + 15] = 0;
+      data[out * S + 12] = cosOuter; data[out * S + 13] = e.castShadow === false ? 1 : 0; data[out * S + 14] = dist; data[out * S + 15] = decay;
       out++;
     }
   }

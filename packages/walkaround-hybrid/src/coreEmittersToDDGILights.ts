@@ -54,10 +54,10 @@
  *   - disc-area  → EXCLUDED for the same reason. Its triangulated fan reaches
  *     probes via `ddgiEmitterNEE`; a point-proxy fixture here would double it.
  *   - point      → fixture at `position`, scalar intensity (no area).
- *   - spot       → fixture at `position` WITH cone. `spotAxis` (toward-light
+ *   - spot       → fixture at `position` WITH cone. `spotAxis` (forward beam
  *     unit vector), `spotCosInner`, and `spotCosOuter` are packed alongside the
  *     position. `evalPointLight` in the probe shader applies the cone falloff
- *     `smoothstep(outerCone, innerCone, dot(toLightDir, spotAxis))` when the
+ *     `smoothstep(outerCone, innerCone, dot(-spotAxis, toLightDir))` when the
  *     axis length is non-trivial (axisLen² > 0.25), which correctly confines the
  *     spot GI contribution to the cone (KHR_lights_punctual convention).
  *     Point fixtures have a zero axis, so they stay omnidirectional.
@@ -153,14 +153,16 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         intensity: e.intensity,
         position: { x: e.position[0], y: e.position[1], z: e.position[2] },
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
+        distance: typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0,
+        decay: typeof e.decay === 'number' ? e.decay : 2,
         ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
       };
     }
     case 'spot': {
       // Spot → fixture WITH its cone. The probe shader now confines the spot's
       // GI contribution to the cone (was a point-like omnidirectional flood — the
-      // cone used to be dropped). `e.direction` is `normalize(position - target)`
-      // (toward-light axis); the shader uses it un-negated. Inner = full-intensity
+      // cone used to be dropped). `e.direction` is the forward beam/travel axis;
+      // receiver-to-light directions are tested against `-axis`. Inner = full-intensity
       // cone (angle·(1−penumbra)); outer = the full half-angle. glTF
       // KHR_lights_punctual spot falloff.
       const len = Math.hypot(e.direction[0], e.direction[1], e.direction[2]);
@@ -176,6 +178,8 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         spotAxis: { x: e.direction[0] * inv, y: e.direction[1] * inv, z: e.direction[2] * inv },
         spotCosOuter: Math.cos(e.angle),
         spotCosInner: Math.cos(e.angle * (1 - penumbra)),
+        distance: typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0,
+        decay: typeof e.decay === 'number' ? e.decay : 2,
         ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
       };
     }

@@ -1659,6 +1659,30 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     )).toBe(true);
   });
 
+  it('reports morph texcoord deltas as an unsupported primitive compatibility issue', () => {
+    const report = analyzeGltfAsset({
+      asset: { version: '2.0' },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          targets: [{ TEXCOORD_0: 1 }],
+        }],
+      }],
+    });
+
+    expect(report.primitives.hasMorphTargetTexcoords).toBe(true);
+    expect(report.primitives.issuePaths.morphTargetTexcoords).toEqual([
+      'meshes[0].primitives[0].targets[0].TEXCOORD_0',
+    ]);
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'morphTargetTexcoords',
+      support: 'unsupported',
+      path: 'meshes[0].primitives[0].targets[0].TEXCOORD_0',
+    }));
+  });
+
   it('reports COLOR_0 vertex-color compatibility by backend instead of silently recommending unsupported paths', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },

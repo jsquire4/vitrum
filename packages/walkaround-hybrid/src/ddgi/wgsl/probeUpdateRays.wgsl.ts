@@ -137,7 +137,9 @@ const MAX_LIGHTS:  u32 = 16u;
 
 struct DDGILight {
   kind:       u32,
-  _pad0: f32, _pad1: f32, _pad2: f32,
+  distance:   f32,
+  decay:      f32,
+  _pad2:      f32,
   position:   vec3f,
   intensity:  f32,
   direction:  vec3f,
@@ -823,16 +825,21 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   let nDotL = max(0.0, dot(hitNormal, lightDir));
   if (nDotL < 1e-3) { return vec3f(0.0); }
 
-  // Spot cone falloff: light.direction is the toward-light cone axis (unit for a
-  // spot, 0 for a point fixture -> no cone). cosToP = dot(toLightDir, axis) is 1
-  // on the axis, cos(angle) at the cone edge. smoothstep(outer, inner, cosToP) is
-  // 1 inside the inner cone, ramps to 0 at the outer edge (KHR_lights_punctual).
+  // Spot cone falloff: light.direction is the spot beam/travel axis (unit for a
+  // spot, 0 for a point fixture -> no cone). cosToP = dot(-axis, toLightDir) is
+  // 1 on the axis, cos(angle) at the cone edge. The hard-edge branch avoids
+  // smoothstep(edge, edge, x) for penumbra=0.
   // Cheap early-out: fully outside the cone contributes nothing, so skip the ray.
   let axisLen2 = dot(light.direction, light.direction);
   var coneFalloff = 1.0;
   if (axisLen2 > 0.25) {
-    let cosToP = dot(lightDir, light.direction * inverseSqrt(axisLen2));
-    coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);
+    let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);
+    if (cosToP < light.outerCone) { return vec3f(0.0); }
+    if (abs(light.innerCone - light.outerCone) < 1e-5) {
+      coneFalloff = 1.0;
+    } else {
+      coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);
+    }
     if (coneFalloff <= 0.0) { return vec3f(0.0); }
   }
 
@@ -846,7 +853,19 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
     }
     coneFalloff = coneFalloff * shadowT;
   }
-  let atten = light.intensity / (dist * dist + 1.0);
+  var distanceAttenuation = 1.0;
+  if (light.decay > 0.01) {
+    if (abs(light.decay - 2.0) < 1e-5) {
+      distanceAttenuation = 1.0 / (dist * dist + 1.0);
+    } else {
+      distanceAttenuation = 1.0 / max(pow(max(dist, 1.0), light.decay), 1.0);
+    }
+  }
+  if (light.distance > 0.0) {
+    let x = clamp(1.0 - pow(dist / light.distance, 4.0), 0.0, 1.0);
+    distanceAttenuation = distanceAttenuation * x * x;
+  }
+  let atten = light.intensity * distanceAttenuation;
   return light.color * atten * nDotL * coneFalloff;
 }
 

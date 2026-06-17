@@ -76,10 +76,14 @@ export function packDDGIProbeLights(
       udata[ubase] = (DDGI_LIGHT_KIND_POINT | shadowFlag) >>> 0;
       const pos = l.position;
       const col = l.color;
-      // [8,9,10] = spot cone axis (toward-light; 0 for a point → no cone in the
-      // shader), [11] = innerCone (cosInner), [15] = outerCone (cosOuter). These
-      // map to the DDGILight WGSL struct's direction / innerCone / outerCone.
+      // [1,2] = distance/decay, [8,9,10] = spot cone axis
+      // (forward beam/travel; 0 for a point → no cone in the shader),
+      // [11] = innerCone (cosInner), [15] = outerCone (cosOuter). These map
+      // to the DDGILight WGSL struct's distance / decay / direction /
+      // innerCone / outerCone.
       const spot = l.spotAxis;
+      data[base + 1] = typeof l.distance === 'number' && l.distance > 0 ? l.distance : 0;
+      data[base + 2] = typeof l.decay === 'number' ? l.decay : 2;
       data[base + 4] = pos?.x ?? 0;
       data[base + 5] = pos?.y ?? 0;
       data[base + 6] = pos?.z ?? 0;

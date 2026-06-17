@@ -68,6 +68,11 @@ This file lists every change from the 2026-05-28 complexity-remediation sweep (a
 > artifact paths); flip the "PENDING GPU VALIDATION" line in items_to_fix.md §H. Anything that FAILS:
 > file it in §H with evidence — fix the physics, never the gate (2026-06-04 lesson).
 >
+> **2026-06-17 render-changing addendum:** walkaround point/spot paths now consume authored
+> `distance`/`decay` in shade, transparent OIT, DDGI probe lights, and RC, and DDGI/RC spot cones
+> were aligned to the shade/OIT forward-axis convention with a hard-edge penumbra guard. Re-run
+> the H41/H51-D point+spot scenes plus a DDGI/RC spot fixture scene before promoting this row.
+>
 > ### V28-B RE-BASELINE (2026-06-10, lavapipe, HEAD 2d201af — R7/R8 campaign tree)
 > Full lavapipe re-baseline of the wsl-gpu harness against the R7/R8 campaign tree (commits `6e49fb2..2d201af`).
 >

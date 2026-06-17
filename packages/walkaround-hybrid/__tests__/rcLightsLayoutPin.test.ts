@@ -87,6 +87,8 @@ describe('RCLightBuffer layout constants vs. WGSL struct', () => {
   it('RCLight field byte offsets match WGSL struct layout', () => {
     // Each field offset is relative to the start of one RCLight (64 bytes = 16 words).
     expect(RCLightEntryOffset.kind).toBe(0);       // word 0
+    expect(RCLightEntryOffset.distance).toBe(4);   // word 1
+    expect(RCLightEntryOffset.decay).toBe(8);      // word 2
     expect(RCLightEntryOffset.position).toBe(16);  // word 4
     expect(RCLightEntryOffset.intensity).toBe(28); // word 7
     expect(RCLightEntryOffset.direction).toBe(32); // word 8
@@ -99,6 +101,8 @@ describe('RCLightBuffer layout constants vs. WGSL struct', () => {
     // Parsed from PROBE_RAY_CAST_WGSL — a field reorder in the shader trips this
     // even when the TS constants above are internally consistent.
     expect(wgslOffsets['kind']).toBe(RCLightEntryOffset.kind);
+    expect(wgslOffsets['distance']).toBe(RCLightEntryOffset.distance);
+    expect(wgslOffsets['decay']).toBe(RCLightEntryOffset.decay);
     expect(wgslOffsets['position']).toBe(RCLightEntryOffset.position);
     expect(wgslOffsets['intensity']).toBe(RCLightEntryOffset.intensity);
     expect(wgslOffsets['direction']).toBe(RCLightEntryOffset.direction);
@@ -125,6 +129,8 @@ const POINT_LIGHT: DDGILight = {
   position: { x: 1, y: 2, z: 3 },
   color: { r: 0.5, g: 0.75, b: 1.0 },
   intensity: 4.0,
+  distance: 6,
+  decay: 0,
 };
 
 const SPOT_LIGHT: DDGILight = {
@@ -136,6 +142,8 @@ const SPOT_LIGHT: DDGILight = {
   spotAxis: { x: 0, y: -1, z: 0 },
   spotCosInner: 0.9,
   spotCosOuter: 0.7,
+  distance: 10,
+  decay: 1.5,
 };
 
 function readU32(buf: ArrayBuffer, byteOffset: number): number {
@@ -204,6 +212,13 @@ describe('packRCLights output byte alignment', () => {
     expect(readF32(buf, item0 + RCLightEntryOffset.intensity)).toBeCloseTo(4.0);
   });
 
+  it('point light distance and decay at correct bytes', () => {
+    const buf = packRCLights([POINT_LIGHT]);
+    const item0 = RC_LIGHTS_HEADER_BYTES + 0 * RC_LIGHT_ENTRY_BYTES;
+    expect(readF32(buf, item0 + RCLightEntryOffset.distance)).toBeCloseTo(6.0);
+    expect(readF32(buf, item0 + RCLightEntryOffset.decay)).toBeCloseTo(0.0);
+  });
+
   it('point light color at correct bytes', () => {
     const buf = packRCLights([POINT_LIGHT]);
     const item0 = RC_LIGHTS_HEADER_BYTES + 0 * RC_LIGHT_ENTRY_BYTES;
@@ -217,6 +232,13 @@ describe('packRCLights output byte alignment', () => {
     const item0 = RC_LIGHTS_HEADER_BYTES + 0 * RC_LIGHT_ENTRY_BYTES;
     expect(readF32(buf, item0 + RCLightEntryOffset.innerCone)).toBeCloseTo(0.9);
     expect(readF32(buf, item0 + RCLightEntryOffset.outerCone)).toBeCloseTo(0.7);
+  });
+
+  it('spot light distance and decay at correct bytes', () => {
+    const buf = packRCLights([SPOT_LIGHT]);
+    const item0 = RC_LIGHTS_HEADER_BYTES + 0 * RC_LIGHT_ENTRY_BYTES;
+    expect(readF32(buf, item0 + RCLightEntryOffset.distance)).toBeCloseTo(10.0);
+    expect(readF32(buf, item0 + RCLightEntryOffset.decay)).toBeCloseTo(1.5);
   });
 
   it('spot light direction at correct bytes', () => {

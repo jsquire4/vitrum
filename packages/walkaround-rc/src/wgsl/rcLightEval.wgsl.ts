@@ -181,11 +181,18 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
     if (nDotL < 1e-3) { continue; }
 
     // Spot cone falloff (KHR_lights_punctual convention; point → no cone).
+    // light.direction is the spot beam/travel axis, so a receiver-to-light
+    // vector is inside the cone when it aligns with -axis.
     let axisLen2 = dot(light.direction, light.direction);
     var coneFalloff = 1.0;
     if (axisLen2 > 0.25) {
-      let cosToP = dot(lightDir, light.direction * inverseSqrt(axisLen2));
-      coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);
+      let cosToP = dot(-light.direction * inverseSqrt(axisLen2), lightDir);
+      if (cosToP < light.outerCone) { continue; }
+      if (abs(light.innerCone - light.outerCone) < 1e-5) {
+        coneFalloff = 1.0;
+      } else {
+        coneFalloff = smoothstep(light.outerCone, light.innerCone, cosToP);
+      }
       if (coneFalloff <= 0.0) { continue; }
     }
 
@@ -199,8 +206,21 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
       if (shadowT <= 0.001) { continue; }
     }
 
-    // 1/(r²+1) falloff (matches DDGI's evalPointLight — softens singularity at r→0).
-    let atten = light.intensity / (dist * dist + 1.0);
+    // Authored range/decay falloff. The default decay=2 path preserves the
+    // historical 1/(r²+1) fixture model; decay=0 means no falloff.
+    var distanceAttenuation = 1.0;
+    if (light.decay > 0.01) {
+      if (abs(light.decay - 2.0) < 1e-5) {
+        distanceAttenuation = 1.0 / (dist * dist + 1.0);
+      } else {
+        distanceAttenuation = 1.0 / max(pow(max(dist, 1.0), light.decay), 1.0);
+      }
+    }
+    if (light.distance > 0.0) {
+      let x = clamp(1.0 - pow(dist / light.distance, 4.0), 0.0, 1.0);
+      distanceAttenuation = distanceAttenuation * x * x;
+    }
+    let atten = light.intensity * distanceAttenuation;
     // Lambertian receiver: Lo += (albedo/π) · light_irradiance
     Lo = Lo + albedo * 0.31831 * light.color * atten * nDotL * coneFalloff * shadowT;
   }

@@ -355,7 +355,8 @@ export type GltfImportDiagnosticCode =
   | 'unreadable-indices'
   | 'ignored-vertex-color-set'
   | 'empty-triangulated-primitive'
-  | 'ignored-material-texcoord';
+  | 'ignored-material-texcoord'
+  | 'ignored-morph-target-texcoord';
 
 export interface GltfImportDiagnostic {
   readonly severity: 'warning' | 'error';
@@ -828,7 +829,7 @@ export async function gltfToScene(
       // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT deltas + node/mesh weights.
       let morph = _extractMorphTargets(
         gltf, buffers, prim.targets, node.weights ?? mesh.weights,
-        positions.length / 3, `${mesh.name ?? node.mesh}`, warnings,
+        positions.length / 3, `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics,
       );
 
       // Material.
@@ -1742,7 +1743,9 @@ function _extractMorphTargets(
   authoredWeights: number[] | undefined,
   vertexCount: number,
   meshLabel: string,
+  primitivePath: string,
   warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
 ): MorphData | undefined {
   if (!targets || targets.length === 0) return undefined;
   const tCount = targets.length;
@@ -1803,10 +1806,22 @@ function _extractMorphTargets(
 
     for (const attr of Object.keys(target)) {
       if (attr !== 'POSITION' && attr !== 'NORMAL' && attr !== 'TANGENT') {
-        warnings.push(
-          `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
-            `"${meshLabel}" is ignored.`,
-        );
+        if (/^TEXCOORD_\d+$/.test(attr)) {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'ignored-morph-target-texcoord',
+            path: `${primitivePath}.targets[${t}].${attr}`,
+            message:
+              `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
+              `"${meshLabel}" is ignored because @vitrum/core has no morph UV-delta lane; ` +
+              'textured morph animation keeps the rest-pose UVs.',
+          });
+        } else {
+          warnings.push(
+            `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
+              `"${meshLabel}" is ignored.`,
+          );
+        }
       }
     }
   }

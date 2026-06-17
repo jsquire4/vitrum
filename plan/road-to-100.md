@@ -129,6 +129,12 @@
 > forward render regime: multi-bounce or spectral baselines now downgrade with a
 > structured `path-replay-unsupported-render-regime` diagnostic because the
 > current adjoint is a single-bounce RGB direct-light replay.
+> Latest walkaround point/spot follow-up: analytic shade + transparent OIT +
+> DDGI probe-light + RC point/spot paths now all consume authored
+> `distance`/`decay`, DDGI/RC spot cones use the same forward-axis convention
+> as shade/OIT (`dot(-axis, receiverToLight)`), and hard-edge
+> `penumbra:0` avoids `smoothstep(edge, edge, x)` undefined behavior. GPU
+> recapture remains a V28-B proof item because this is render-changing.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped single-bounce RGB direct-light/unlit-primary slice; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive
@@ -912,7 +918,9 @@ deliberately unsupported until a true geometry/BVH displacement path exists.
 - ~~ReSTIR primary hit uses different UV than shade~~ ✅ SOURCE-VERIFIED STALE:
   RIS/primary/OIT paths call the shared material-atlas helpers with hit UV0 plus
   `materialAtlasUv1ForHit`.
-- Atlas rebuild on every animation frame if UVs deform — morph targets need UV-aware or full atlas refresh.
+- Atlas rebuild on every animation frame if UVs deform — glTF morph-target `TEXCOORD_*`
+  deltas are now import/compatibility diagnosed as unsupported; true UV-delta morph
+  support would still need a core Scene lane plus UV-aware atlas refresh.
 
 #### 3E — Extension lobes on walkaround (clearcoat, sheen, iridescence, specular, anisotropy)
 

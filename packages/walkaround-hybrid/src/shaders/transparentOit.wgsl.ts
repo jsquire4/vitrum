@@ -78,6 +78,34 @@ fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> 
   );
 }
 
+fn oitSpotConeFalloff(lightDir: vec3f, wi: vec3f, cosInner: f32, cosOuter: f32) -> f32 {
+  let axisLen2 = dot(lightDir, lightDir);
+  if (axisLen2 <= 0.01) { return 1.0; }
+  let axis = lightDir * inverseSqrt(axisLen2);
+  let cosTheta = dot(-axis, wi);
+  if (cosTheta < cosOuter) { return 0.0; }
+  if (abs(cosInner - cosOuter) < 1e-5) {
+    return select(0.0, 1.0, cosTheta >= cosOuter);
+  }
+  return smoothstep(cosOuter, cosInner, cosTheta);
+}
+
+fn oitPointSpotAttenuation(dist: f32, cutoffDistance: f32, decay: f32, dist2Floor: f32) -> f32 {
+  var attenuation = 1.0;
+  if (decay > 0.01) {
+    if (abs(decay - 2.0) < 1e-5) {
+      attenuation = 1.0 / (dist * dist + dist2Floor);
+    } else {
+      attenuation = 1.0 / max(pow(max(dist, 1.0), decay), max(dist2Floor, 1e-6));
+    }
+  }
+  if (cutoffDistance > 0.0) {
+    let x = clamp(1.0 - pow(dist / cutoffDistance, 4.0), 0.0, 1.0);
+    attenuation = attenuation * x * x;
+  }
+  return attenuation;
+}
+
 struct OitLayerNormals {
   smoothNormal: vec3f,
   shadingNormal: vec3f,
@@ -194,6 +222,8 @@ fn oitLayerAnalyticNEE(
     let cosInner = light2.w;
     let cosOuter = light3.x;
     let castShadowDisabled = light3.y > 0.5;
+    let cutoffDistance = light3.z;
+    let decay = light3.w;
 
     let toL = lightPos - hitPos;
     let dist = length(toL);
@@ -202,13 +232,8 @@ fn oitLayerAnalyticNEE(
     let nDotL = dot(normal, wi);
     if (nDotL <= 0.0) { continue; }
 
-    var cone = 1.0;
-    let hasSpot = dot(lightDir, lightDir) > 0.01;
-    if (hasSpot) {
-      let cosTheta = dot(-lightDir, wi);
-      if (cosTheta <= cosOuter) { continue; }
-      cone = smoothstep(cosOuter, cosInner, cosTheta);
-    }
+    let cone = oitSpotConeFalloff(lightDir, wi, cosInner, cosOuter);
+    if (cone <= 0.0) { continue; }
 
     var shadowT = 1.0;
     if (!castShadowDisabled) {
@@ -221,7 +246,7 @@ fn oitLayerAnalyticNEE(
       if (shadowT <= 0.001) { continue; }
     }
 
-    let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
+    let attenuation = oitPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);
     let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
       payload.albedo,
       payload.rough,
@@ -243,7 +268,7 @@ fn oitLayerAnalyticNEE(
       wo,
       wi,
     );
-    Lo += lightLe * brdf * nDotL * cone * invDist2 * shadowT;
+    Lo += lightLe * brdf * nDotL * cone * attenuation * shadowT;
   }
   return Lo;
 }

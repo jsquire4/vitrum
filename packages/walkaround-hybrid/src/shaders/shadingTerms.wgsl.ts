@@ -140,6 +140,34 @@ fn lo_emitterGlow(triIndex: u32) -> vec3f {
 // no need for reservoir denoising). skipGlass=true (same as lo_direct).
 //
 // Glass/metal: skip (same policy as lo_direct — their Lo_emit drives).
+fn analyticSpotConeFalloff(lightDir: vec3f, wi: vec3f, cosInner: f32, cosOuter: f32) -> f32 {
+  let axisLen2 = dot(lightDir, lightDir);
+  if (axisLen2 <= 0.01) { return 1.0; }
+  let axis = lightDir * inverseSqrt(axisLen2);
+  let cosTheta = dot(-axis, wi);
+  if (cosTheta < cosOuter) { return 0.0; }
+  if (abs(cosInner - cosOuter) < 1e-5) {
+    return select(0.0, 1.0, cosTheta >= cosOuter);
+  }
+  return smoothstep(cosOuter, cosInner, cosTheta);
+}
+
+fn analyticPointSpotAttenuation(dist: f32, cutoffDistance: f32, decay: f32, dist2Floor: f32) -> f32 {
+  var attenuation = 1.0;
+  if (decay > 0.01) {
+    if (abs(decay - 2.0) < 1e-5) {
+      attenuation = 1.0 / (dist * dist + dist2Floor);
+    } else {
+      attenuation = 1.0 / max(pow(max(dist, 1.0), decay), max(dist2Floor, 1e-6));
+    }
+  }
+  if (cutoffDistance > 0.0) {
+    let x = clamp(1.0 - pow(dist / cutoffDistance, 4.0), 0.0, 1.0);
+    attenuation = attenuation * x * x;
+  }
+  return attenuation;
+}
+
 fn lo_analyticNEE(
   pos:      vec3f,
   normal:   vec3f,
@@ -187,6 +215,8 @@ fn lo_analyticNEE(
     let cosInner  = light2.w;
     let cosOuter  = light3.x;
     let castShadowDisabled = light3.y > 0.5;
+    let cutoffDistance = light3.z;
+    let decay = light3.w;
 
     let toL  = lightPos - pos;
     let dist = length(toL);
@@ -198,13 +228,8 @@ fn lo_analyticNEE(
     // Spot cone attenuation. For a point (cosInner=1, cosOuter=0):
     //   cosTheta = dot(-lightDir, wi) but lightDir=(0,0,0) so we skip cone.
     //   cone = 1.0 for points (omnidirectional).
-    var cone = 1.0;
-    let hasSpot = dot(lightDir, lightDir) > 0.01;
-    if (hasSpot) {
-      let cosTheta = dot(-lightDir, wi);
-      if (cosTheta <= cosOuter) { continue; }
-      cone = smoothstep(cosOuter, cosInner, cosTheta);
-    }
+    let cone = analyticSpotConeFalloff(lightDir, wi, cosInner, cosOuter);
+    if (cone <= 0.0) { continue; }
 
     var shadowT = 1.0;
     if (!castShadowDisabled) {
@@ -221,10 +246,10 @@ fn lo_analyticNEE(
       if (shadowT <= 0.001) { continue; }
     }
 
-    // Inverse-square falloff: Le / (d² + ε) · cosθ · cone · brdf
-    let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
+    // Authored range/decay falloff; default decay=2 preserves inverse-square.
+    let attenuation = analyticPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);
     let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
-    Lo += lightLe * brdf * nDotL * cone * invDist2 * shadowT;
+    Lo += lightLe * brdf * nDotL * cone * attenuation * shadowT;
   }
   return Lo;
 }
