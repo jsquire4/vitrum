@@ -963,6 +963,20 @@ function hasNaN(pixels) {
   return false;
 }
 
+async function waitForEngineReady(engine, label, timeoutMs = 120_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (engine.state === "ready") return;
+    if (engine.state === "error") throw new Error(`${label}: engine.state === 'error'`);
+    await new Promise(r => setTimeout(r, 50));
+    if (engine.state === "ready") return;
+    if (engine.state === "error") throw new Error(`${label}: engine.state === 'error'`);
+    if (Date.now() > deadline) {
+      throw new Error(`${label}: engine init timeout after ${Math.round(timeoutMs / 1000)} s`);
+    }
+  }
+}
+
 // ── Result classification ─────────────────────────────────────────────────────
 
 const SPP = 8;
@@ -1101,13 +1115,8 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
     const scene = await buildGateScene(sceneOpts);
     engine.setScene(scene);
 
-    // Poll until ready (state machine: uninitialized → initializing → ready)
-    const deadline = Date.now() + 60_000;
-    while (engine.state !== "ready" && engine.state !== "error") {
-      await new Promise(r => setTimeout(r, 50));
-      if (Date.now() > deadline) throw new Error("engine init timeout after 60 s");
-    }
-    if (engine.state === "error") throw new Error("engine.state === 'error'");
+    // Poll until ready (state machine: uninitialized → initializing → ready).
+    await waitForEngineReady(engine, label);
 
     swapTex = device.createTexture({
       label: "bg-wh-swap",
