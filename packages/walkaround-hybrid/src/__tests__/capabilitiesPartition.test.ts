@@ -33,6 +33,8 @@ import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
+import { WALKAROUND_DENOISER_UNET_SPEC } from '../neural/unetArchitecture.js';
+import type { LayerWeights, ModelWeights } from '../neural/weights.js';
 
 /** Minimal GPUDevice stub — HybridEngine's constructor only stores the device
  *  (DDGI is CPU-side) and the factory's duck-type check needs
@@ -61,6 +63,21 @@ function makeOpts(): HybridEngineOptions {
     skyTint: [1, 1, 1],
     skyIrradiance: 1,
   };
+}
+
+function makeZeroNeuralWeights(): ModelWeights {
+  const layers: LayerWeights[] = [];
+  for (const layer of WALKAROUND_DENOISER_UNET_SPEC.layers) {
+    if (layer.kind !== 'conv2d' && layer.kind !== 'transposedConv2d') continue;
+    const kH = layer.params.kH ?? 3;
+    const kW = layer.params.kW ?? 3;
+    layers.push({
+      name: layer.name,
+      weights: new Float32Array(layer.params.outC * layer.params.inC * kH * kW),
+      biases: new Float32Array(layer.params.outC),
+    });
+  }
+  return { layers };
 }
 
 function meshPrimitive(id: string): ScenePrimitive {
@@ -193,6 +210,55 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
         }),
       ]);
       expect(warnSpy.mock.calls.flat().join('\n')).toContain('nrcEnabled:true');
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('keeps learned/research paths out of experimentalFeatures until explicitly enabled', () => {
+    const engine = new HybridEngine(makeOpts());
+    try {
+      expect(engine.capabilities.experimentalFeatures).toEqual(new Set(['svgf-real-conservative-objid']));
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('declares opt-in learned/research paths as experimental features', () => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: unknown[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      restirPtReuse: true,
+      ppgEnabled: true,
+      nrcEnabled: true,
+      denoiser: 'neural',
+      neuralWeights: makeZeroNeuralWeights(),
+      onWarning: (warning) => warnings.push(warning),
+    });
+    try {
+      expect(engine.capabilities.experimentalFeatures).toEqual(new Set([
+        'svgf-real-conservative-objid',
+        'walkaround-hybrid-gris-unbiased-reuse',
+        'walkaround-hybrid-ppg-guided-gi',
+        'walkaround-hybrid-nrc-biased-cache',
+        'walkaround-hybrid-neural-denoiser-host-weights',
+      ]));
+      expect(warnings).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.nrc-experimental-biased',
+          details: expect.objectContaining({ estimator: 'biased', defaultEnabled: false }),
+        }),
+        expect.objectContaining({
+          code: 'walkaround-hybrid.neural-host-weights-required',
+          details: expect.objectContaining({
+            denoiser: 'neural',
+            weightsRequired: true,
+            packageProvidesProductionWeights: false,
+            defaultEnabled: false,
+          }),
+        }),
+      ]));
     } finally {
       engine.dispose();
     }

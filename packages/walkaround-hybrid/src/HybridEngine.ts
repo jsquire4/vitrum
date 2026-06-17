@@ -172,6 +172,15 @@ export { validateHybridEngineOptions, deriveHybridEngineConfig };
 // `readRgba16fWalkaround` moved to `src/util/gpuReadback.ts` (R3 B-chain step 2).
 // Re-imported above.
 
+function buildWalkaroundExperimentalFeatures(cfg: ParsedHybridEngineConfig): ReadonlySet<string> {
+  const features = new Set<string>(['svgf-real-conservative-objid']);
+  if (cfg.restirPtReuse === 1) features.add('walkaround-hybrid-gris-unbiased-reuse');
+  if (cfg.ppgEnabled === 1) features.add('walkaround-hybrid-ppg-guided-gi');
+  if (cfg.nrcEnabled === 1) features.add('walkaround-hybrid-nrc-biased-cache');
+  if (cfg.denoiser === 'neural') features.add('walkaround-hybrid-neural-denoiser-host-weights');
+  return features;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // HybridEngine
 // ────────────────────────────────────────────────────────────────────────────
@@ -617,6 +626,24 @@ export class HybridEngine implements Engine {
         },
       });
     }
+    if (cfg.denoiser === 'neural') {
+      this._warn({
+        code: 'walkaround-hybrid.neural-host-weights-required',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'createWalkaroundEngine_Hybrid',
+        message:
+          `[HybridEngine] denoiser:'neural' is an opt-in GPU U-Net path that ` +
+          `requires host-provided, scene-validated weights. The package does ` +
+          `not ship production neural weights or enable neural by default.`,
+        details: {
+          denoiser: 'neural',
+          weightsRequired: true,
+          packageProvidesProductionWeights: false,
+          defaultEnabled: false,
+        },
+      });
+    }
 
     this._device                = opts.device;
     this._width                 = opts.width;
@@ -766,7 +793,7 @@ export class HybridEngine implements Engine {
       supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri', 'procedural-sky']),
       presentationMode:          'swapchain-required',
       supportDetails:            BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails,
-      experimentalFeatures:      new Set(['svgf-real-conservative-objid']),
+      experimentalFeatures:      buildWalkaroundExperimentalFeatures(this._cfg),
       // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
       // compatible with the walkaround engine's frame cadence; the walkaround
       // engine always reports 'none'. Track via

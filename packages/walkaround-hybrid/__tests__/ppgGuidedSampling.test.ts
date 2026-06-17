@@ -42,26 +42,14 @@ const LUM_W: [number, number, number] = [0.2126, 0.7152, 0.0722];
 
 const SCENE_AABB: AABB = { min: [-10, -10, -10], max: [10, 10, 10] };
 
-// ── Octahedral encode matching ppgPdf.wgsl's ppgDirToOctUv ──────────────────
-// = octEncode(dir) [-1,1]² then *0.5+0.5 → [0,1]². Identical to the producer's
-// `dirToOct` (ppgUpdate.wgsl). We re-derive it here so the test pins the exact
-// convention the gi-ris guide pdf-eval uses.
-function dirToOctUv(d: [number, number, number]): [number, number] {
-  const l1 = Math.abs(d[0]) + Math.abs(d[1]) + Math.abs(d[2]);
-  const n: [number, number, number] = l1 > 1e-20
-    ? [d[0] / l1, d[1] / l1, d[2] / l1]
-    : [0, 0, 0];
-  let ox: number, oy: number;
-  if (n[2] >= 0) {
-    ox = n[0];
-    oy = n[1];
-  } else {
-    const sx = n[0] >= 0 ? 1 : -1;
-    const sy = n[1] >= 0 ? 1 : -1;
-    ox = (1 - Math.abs(n[1])) * sx;
-    oy = (1 - Math.abs(n[0])) * sy;
-  }
-  return [ox * 0.5 + 0.5, oy * 0.5 + 0.5];
+// ── Equal-area cylindrical map matching ppgPdf.wgsl's ppgDirToUv ─────────────
+// u=(1-z)/2 is uniform in z; v=atan2(y,x)/(2π)+0.5 is azimuth. This is the
+// production PPG guide-map convention in both ppgPdf.wgsl and ppgUpdate.wgsl.
+function dirToPpgUv(d: [number, number, number]): [number, number] {
+  const z = Math.max(-1, Math.min(1, d[2]));
+  const u = (1 - z) * 0.5;
+  const v = Math.max(0, Math.min(1, Math.atan2(d[1], d[0]) / (2 * Math.PI) + 0.5));
+  return [u, v];
 }
 
 function luminance(c: [number, number, number]): number {
@@ -84,10 +72,10 @@ function gpuPortEvalPdf(
   const dOff = dTreeOffsets[dTreeIndex]!;
   const totalFlux = dTreeBuf[dOff + 2]!;
   if (totalFlux <= 0) return 1 / FOUR_PI;
-  const octUV = dirToOctUv(wi);
+  const guideUV = dirToPpgUv(wi);
   // gpuTraverseDTreeLeaf takes the per-cell sub-buffer; slice the cell block.
   const cellBuf = dTreeBuf.subarray(dOff);
-  const leafBase = gpuTraverseDTreeLeaf(cellBuf, octUV);
+  const leafBase = gpuTraverseDTreeLeaf(cellBuf, guideUV);
   const leafFlux = cellBuf[leafBase + 4]!;
   const solidAng = cellBuf[leafBase + 5]!;
   return (leafFlux / totalFlux) / Math.max(solidAng, 1e-12);
@@ -117,9 +105,10 @@ function risGiWeight(
 // is non-uniform and exercises the descent.
 function buildTrainedSTree(): STree {
   const sTree = buildSTree(SCENE_AABB);
-  // Spike directional flux toward +Z at one position, then refine.
+  // Spike directional flux toward +X at one position, then refine.
+  const hotUv = dirToPpgUv([1, 0, 0]);
   for (let i = 0; i < 200; i++) {
-    sTreeAccumulate(sTree, [0, 0, 0], [0.5, 0.5], 5.0);     // +Z-ish leaf
+    sTreeAccumulate(sTree, [0, 0, 0], hotUv, 5.0);
     sTreeAccumulate(sTree, [0, 0, 0], [0.1, 0.1], 0.05);    // tail
     sTreeAccumulate(sTree, [0, 0, 0], [0.9, 0.9], 0.05);
   }
@@ -154,6 +143,13 @@ describe('W9 gi-ris — ppg-OFF explicit RIS weight bit-identity (α = 0)', () =
 });
 
 describe('W9 gi-ris — ppg-ON explicit RIS weight uses the mixture pdf (α > 0)', () => {
+  it('CPU guide-map oracle matches the production equal-area cylindrical convention', () => {
+    expect(dirToPpgUv([0, 0, 1])).toEqual([0, 0.5]);
+    expect(dirToPpgUv([1, 0, 0])).toEqual([0.5, 0.5]);
+    expect(dirToPpgUv([0, 1, 0])).toEqual([0.5, 0.75]);
+    expect(dirToPpgUv([0, -1, 0])).toEqual([0.5, 0.25]);
+  });
+
   it('weight uses p_src = α·p_guide + (1−α)·p_cos, NOT the cosine shortcut', () => {
     const Lo: [number, number, number] = [0.6, 0.6, 0.6];
     const cos = 0.5;
@@ -207,9 +203,9 @@ describe('W9 gi-ris — GPU-port p_guide matches CPU dTreePdf oracle', () => {
     ];
     for (const wi of probes) {
       const gpu = gpuPortEvalPdf(sTreeBuf, dTreeBuf, dTreeOffsets, pos, wi);
-      // CPU oracle: same octUV → dTreePdf on the CPU dTree.
-      const octUV = dirToOctUv(wi);
-      const cpu = dTreePdf(cpuDTree, octUV);
+      // CPU oracle: same production guide UV → dTreePdf on the CPU dTree.
+      const guideUV = dirToPpgUv(wi);
+      const cpu = dTreePdf(cpuDTree, guideUV);
       expect(gpu).toBeCloseTo(cpu, 5);
     }
   });
@@ -228,9 +224,9 @@ describe('W9 gi-ris — GPU-port p_guide matches CPU dTreePdf oracle', () => {
       [0, 0, 1], [0.2, 0.1, 0.97], [-0.4, 0.3, 0.866], [0.6, 0.6, 0.52],
     ];
     for (const wi of probes) {
-      const octUV = dirToOctUv(wi);
-      const gpuLeafBase = gpuTraverseDTreeLeaf(cellBuf, octUV);
-      const cpuLeafIdx = findDTreeLeaf(cpuDTree, octUV);
+      const guideUV = dirToPpgUv(wi);
+      const gpuLeafBase = gpuTraverseDTreeLeaf(cellBuf, guideUV);
+      const cpuLeafIdx = findDTreeLeaf(cpuDTree, guideUV);
       // The leaf's flux + solidAngle must match between the two descents.
       const gpuFlux = cellBuf[gpuLeafBase + 4]!;
       const gpuSA = cellBuf[gpuLeafBase + 5]!;

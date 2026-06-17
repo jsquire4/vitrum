@@ -449,6 +449,48 @@ function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
   };
 }
 
+function makeInlineNormalMappedGltf(
+  opts: { readonly texCoord?: number; readonly includeUv0?: boolean } = {},
+): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const fixture = makeInlineTriangleGltf();
+  const uv = f32Buffer([0, 0, 1, 0, 0, 1]);
+  const image = bytes([0x89, 0x50, 0x4e, 0x47]);
+  const uvAccessor = fixture.gltf.accessors!.length;
+  const uvBufferView = fixture.gltf.bufferViews!.length;
+  const imageBufferView = uvBufferView + 1;
+  const uvBuffer = fixture.gltf.buffers!.length;
+  const imageBuffer = uvBuffer + 1;
+
+  fixture.gltf.meshes![0]!.primitives[0] = {
+    ...fixture.gltf.meshes![0]!.primitives[0]!,
+    material: 0,
+    attributes: {
+      ...fixture.gltf.meshes![0]!.primitives[0]!.attributes,
+      ...(opts.includeUv0 === false ? {} : { TEXCOORD_0: uvAccessor }),
+    },
+  };
+  fixture.gltf.materials = [{ normalTexture: { index: 0, texCoord: opts.texCoord ?? 0 } }];
+  fixture.gltf.textures = [{ source: 0 }];
+  fixture.gltf.images = [{ bufferView: imageBufferView, mimeType: 'image/png' }];
+  fixture.gltf.accessors = [
+    ...fixture.gltf.accessors!,
+    { bufferView: uvBufferView, componentType: 5126, count: 3, type: 'VEC2' },
+  ];
+  fixture.gltf.bufferViews = [
+    ...fixture.gltf.bufferViews!,
+    { buffer: uvBuffer, byteOffset: 0, byteLength: uv.byteLength },
+    { buffer: imageBuffer, byteOffset: 0, byteLength: image.byteLength },
+  ];
+  fixture.gltf.buffers = [
+    ...fixture.gltf.buffers!,
+    { byteLength: uv.byteLength },
+    { byteLength: image.byteLength },
+  ];
+  fixture.buffers.set(uvBuffer, uv);
+  fixture.buffers.set(imageBuffer, image);
+  return fixture;
+}
+
 function makeInlineSpecGlossTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
@@ -2085,6 +2127,73 @@ describe('loadGltfForEngine', () => {
     })).rejects.toThrow('scene:cameras=approximate at cameras[0]');
 
     expect(createRejectedEngine).not.toHaveBeenCalled();
+  });
+
+  it('allows generated tangents in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineNormalMappedGltf();
+
+    const createAcceptedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const accepted = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine: createAcceptedEngine,
+    });
+    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'generated-tangents',
+        path: 'meshes[0].primitives[0].attributes.TANGENT',
+      }),
+    ]));
+    expect(createAcceptedEngine).toHaveBeenCalledTimes(1);
+
+    const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine: createRejectedEngine,
+    })).rejects.toThrow(
+      'import:generated-tangents=approximate at meshes[0].primitives[0].attributes.TANGENT',
+    );
+
+    expect(createRejectedEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing tangent texcoord diagnostics in reject-degraded mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineNormalMappedGltf({ includeUv0: false });
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine,
+    })).rejects.toThrow(
+      'import:missing-tangent-texcoord=approximate at meshes[0].primitives[0].attributes.TEXCOORD_0',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects ignored high-UV material texture diagnostics in reject-degraded mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineNormalMappedGltf({ texCoord: 2 });
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine,
+    })).rejects.toThrow(
+      'import:ignored-material-texcoord=approximate at meshes[0].primitives[0].material',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
   });
 
   it('rejects opaque texture handles in reject-degraded mode unless the host opts in', async () => {

@@ -337,6 +337,10 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'ignored-camera',
   'ignored-gpu-instancing',
   'fallback-generated-primitive-mode',
+  'generated-tangents',
+  'missing-tangent-texcoord',
+  'tangent-generation-failed',
+  'ignored-material-texcoord',
 ]);
 
 function importDiagnosticFailures(
