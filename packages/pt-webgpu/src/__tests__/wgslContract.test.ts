@@ -267,8 +267,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // mneePdfJacobianDetAxes and MIS against the receiver BSDF PDF.
     // Re-pinned 2026-06-17: BDPT secondary connections skip the emitter endpoint
     // already covered by per-bounce NEE, avoiding direct-light double-counting.
-    expect(digest).toBe('12610a5f30df3ee5a12f13530615fa352fbf821ae17ea9115ca2cafd90978ca7');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(383504);
+    // Re-pinned 2026-06-17: bump maps finite-difference in raw UV space by the
+    // uploaded source texel size instead of a baked 512-step barycentric nudge.
+    expect(digest).toBe('c6d20b5fe120603b2980d69cd8707063b42b8eac4cb8c74fc762d96f1cf1c16c');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(384801);
   });
 });
 

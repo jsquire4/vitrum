@@ -475,6 +475,23 @@ fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
 // WGSL can't pass a texture as an argument, hence the parallel function.
 ${_SAMPLE_MAT_LAYER_LINEAR_WGSL}
 
+fn sampleMaterialLayerLinearRawUv(layerIdx: i32, base: u32, rawUv: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f) -> vec4f {
+  if (layerIdx < 0 || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  let uvMeta = materialTexDescriptors[base + uvMetaOffset];
+  let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
+  let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
+  let rot = uvMeta.w;
+  let c = cos(rot);
+  let s = sin(rot);
+  let uv = vec2f(
+    xform.z * c * rawUv.x + xform.z * s * rawUv.y + xform.x,
+    -xform.w * s * rawUv.x + xform.w * c * rawUv.y + xform.y,
+  );
+  let wrappedUv = vec2f(wrapTextureCoord(uv.x, wrapMode.x), wrapTextureCoord(uv.y, wrapMode.y));
+  let fittedUv = wrappedUv * uvFitScale;
+  return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, 0.0);
+}
+
 // Roughness/metallic maps (linear array). glTF's canonical metallicRoughness
 // texture packs roughness in G and metallic in B, and the host packer preserves
 // that by pointing both descriptors at the same layer when a combined map is
@@ -760,20 +777,29 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
   if (!frame.valid) { return shadingNormal; }
   let tangent = frame.tangent;
   let bitangent = frame.bitangent;
-  // Central finite difference of the height (R channel) in UV space. A small UV
-  // step; the height-gradient slopes the normal by -scale·(dh/du, dh/dv).
+  // Finite-difference the height (R channel) in raw UV space by one uploaded
+  // source texel; the height-gradient slopes the normal by -scale·(dh/du, dh/dv).
   let bumpUvFitScale = materialTexDescriptors[base + 10u].zw;
   let bumpWrapMode = materialTexDescriptors[base + 16u].zw;
-  let hC = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
-  // Approximate dh/du, dh/dv by sampling a small step along the interpolated UV
-  // via barycentric perturbation toward each triangle edge.
-  let du = 1.0 / 512.0;
-  let baryU = vec2f(baryVW.x + du, baryVW.y);
-  let baryV = vec2f(baryVW.x, baryVW.y + du);
-  let hU = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryU, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
-  let hV = sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryV, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
-  let dhdu = (hU - hC) / du;
-  let dhdv = (hV - hC) / du;
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uvMeta = materialTexDescriptors[base + MATERIAL_TEX_UV_BUMP];
+  let texCoord = u32(uvMeta.x);
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
+  let rawUv0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
+  let rawUv1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
+  let rawUv = select(rawUv0, rawUv1, texCoord == 1u);
+  let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));
+  let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
+  let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
+  let hC = sampleMaterialLayerLinearRawUv(bumpIdx, base, rawUv, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hU = sampleMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(texelStep.x, 0.0), MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hV = sampleMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(0.0, texelStep.y), MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let dhdu = (hU - hC) / texelStep.x;
+  let dhdv = (hV - hC) / texelStep.y;
   let perturbed = shadingNormal - bumpScale * (dhdu * tangent + dhdv * bitangent);
   let plen = length(perturbed);
   return select(shadingNormal, perturbed / plen, plen > 1e-6);

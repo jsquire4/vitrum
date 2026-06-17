@@ -778,7 +778,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_AO');
     expect(wgsl).toContain('sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_LIGHT');
     expect(wgsl).toContain('sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY');
-    expect(wgsl).toContain('sampleMaterialLayerLinear(bumpIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_BUMP');
+    expect(wgsl).toContain('sampleMaterialLayerLinearRawUv(bumpIdx, base, rawUv, MATERIAL_TEX_UV_BUMP');
     expect(wgsl).toContain('sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ALPHA');
     expect(wgsl).toContain('sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_TRANSMISSION');
     expect(wgsl).toContain('sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_THICKNESS');
@@ -788,5 +788,19 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_INTENSITY');
     expect(wgsl).toContain('clearcoatNormalIdx,');
     expect(wgsl).not.toContain('All maps of a material share its baseColor UV transform');
+  });
+
+  it('bump maps finite-difference by raw UV and the uploaded source dimensions', () => {
+    const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
+    expect(wgsl).toContain('fn sampleMaterialLayerLinearRawUv(');
+    expect(wgsl).toContain('textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, 0.0)');
+    expect(wgsl).toContain('let rawUv0 = uva.xy * u + uvb.xy * v + uvc.xy * w;');
+    expect(wgsl).toContain('let rawUv1 = uva.zw * u + uvb.zw * v + uvc.zw * w;');
+    expect(wgsl).toContain('let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));');
+    expect(wgsl).toContain('let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));');
+    expect(wgsl).toContain('let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);');
+    expect(wgsl).toContain('rawUv + vec2f(texelStep.x, 0.0)');
+    expect(wgsl).toContain('rawUv + vec2f(0.0, texelStep.y)');
+    expect(wgsl).not.toContain('1.0 / 512.0');
   });
 });
