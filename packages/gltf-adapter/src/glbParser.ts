@@ -8,6 +8,7 @@
 // Reference: glTF 2.0 spec §3.6.3 (Binary glTF Layout)
 
 import type { GltfJson } from './gltfTypes.js';
+import { GltfParseFailed, type GltfParseFailedInit, type GltfParseFailureReason } from './errors.js';
 
 const GLB_MAGIC = 0x46546c67;
 const GLB_VERSION = 2;
@@ -21,33 +22,41 @@ export interface GlbParseResult {
 }
 
 /**
- * Parse a GLB binary container. Throws on magic/version mismatch or truncated data.
+ * Parse a GLB binary container. Throws typed `GltfParseFailed` on malformed data.
  */
 export function parseGlb(buffer: ArrayBuffer): GlbParseResult {
   const view = new DataView(buffer);
 
   if (buffer.byteLength < 12) {
-    throw new Error('[vitrum/gltf-adapter] GLB: buffer too small for header');
+    throw glbError('glb-header-too-small', '[vitrum/gltf-adapter] GLB: buffer too small for header', {
+      actualLength: buffer.byteLength,
+    });
   }
 
   const magic = view.getUint32(0, true);
   if (magic !== GLB_MAGIC) {
-    throw new Error(
+    throw glbError(
+      'glb-invalid-magic',
       `[vitrum/gltf-adapter] GLB: invalid magic 0x${magic.toString(16)} (expected 0x46546c67)`,
+      { byteOffset: 0 },
     );
   }
 
   const version = view.getUint32(4, true);
   if (version !== GLB_VERSION) {
-    throw new Error(
+    throw glbError(
+      'glb-unsupported-version',
       `[vitrum/gltf-adapter] GLB: unsupported version ${version} (only version 2 is supported)`,
+      { byteOffset: 4, version },
     );
   }
 
   const totalLength = view.getUint32(8, true);
   if (totalLength > buffer.byteLength) {
-    throw new Error(
+    throw glbError(
+      'glb-declared-length-exceeds-buffer',
       `[vitrum/gltf-adapter] GLB: declared length ${totalLength} exceeds buffer length ${buffer.byteLength}`,
+      { byteOffset: 8, declaredLength: totalLength, actualLength: buffer.byteLength },
     );
   }
 
@@ -61,15 +70,25 @@ export function parseGlb(buffer: ArrayBuffer): GlbParseResult {
     offset += 8;
 
     if (offset + chunkLength > totalLength) {
-      throw new Error(
+      throw glbError(
+        'glb-chunk-out-of-bounds',
         `[vitrum/gltf-adapter] GLB: chunk at offset ${offset - 8} declares length ${chunkLength} but buffer ends at ${totalLength}`,
+        { byteOffset: offset - 8, chunkLength, declaredLength: totalLength, actualLength: buffer.byteLength },
       );
     }
 
     if (chunkType === CHUNK_TYPE_JSON) {
       const jsonBytes = new Uint8Array(buffer, offset, chunkLength);
       const jsonString = new TextDecoder().decode(jsonBytes);
-      json = JSON.parse(jsonString) as GltfJson;
+      try {
+        json = JSON.parse(jsonString) as GltfJson;
+      } catch (cause) {
+        throw glbError(
+          'glb-json-parse-failed',
+          `[vitrum/gltf-adapter] GLB: JSON chunk at offset ${offset} is not valid JSON.`,
+          { byteOffset: offset, chunkLength, cause },
+        );
+      }
     } else if (chunkType === CHUNK_TYPE_BIN) {
       binChunk = buffer.slice(offset, offset + chunkLength);
     }
@@ -79,8 +98,21 @@ export function parseGlb(buffer: ArrayBuffer): GlbParseResult {
   }
 
   if (!json) {
-    throw new Error('[vitrum/gltf-adapter] GLB: no JSON chunk found');
+    throw glbError('glb-json-missing', '[vitrum/gltf-adapter] GLB: no JSON chunk found');
   }
 
   return { json, binChunk };
+}
+
+function glbError(
+  reason: Exclude<GltfParseFailureReason, 'json-parse-failed'>,
+  message: string,
+  details: Omit<GltfParseFailedInit, 'format' | 'reason' | 'message'> = {},
+): GltfParseFailed {
+  return new GltfParseFailed({
+    format: 'glb',
+    reason,
+    message,
+    ...details,
+  });
 }

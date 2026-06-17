@@ -30,9 +30,15 @@ export type {
 export {
   GltfAdapterError,
   GltfFetchFailed,
+  GltfParseFailed,
   GltfResourceNotFound,
 } from './errors.js';
-export type { GltfAssetResourceKind } from './errors.js';
+export type {
+  GltfAssetResourceKind,
+  GltfParseFailedInit,
+  GltfParseFailureReason,
+  GltfParseFormat,
+} from './errors.js';
 export {
   buildTextureDecodeReport,
   classifyTextureHandle,

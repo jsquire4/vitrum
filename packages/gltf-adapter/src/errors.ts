@@ -1,6 +1,16 @@
 // errors.ts — structured glTF adapter failures.
 
 export type GltfAssetResourceKind = 'asset' | 'buffer' | 'image';
+export type GltfParseFormat = 'gltf-json' | 'glb';
+export type GltfParseFailureReason =
+  | 'json-parse-failed'
+  | 'glb-header-too-small'
+  | 'glb-invalid-magic'
+  | 'glb-unsupported-version'
+  | 'glb-declared-length-exceeds-buffer'
+  | 'glb-chunk-out-of-bounds'
+  | 'glb-json-parse-failed'
+  | 'glb-json-missing';
 
 export class GltfAdapterError extends Error {
   readonly code: string;
@@ -57,5 +67,42 @@ export class GltfFetchFailed extends GltfAdapterError {
     this.kind = init.kind;
     if (init.status !== undefined) this.status = init.status;
     if (init.statusText !== undefined) this.statusText = init.statusText;
+  }
+}
+
+export interface GltfParseFailedInit {
+  readonly format: GltfParseFormat;
+  readonly reason: GltfParseFailureReason;
+  readonly message: string;
+  readonly cause?: unknown;
+  readonly byteOffset?: number;
+  readonly declaredLength?: number;
+  readonly actualLength?: number;
+  readonly chunkLength?: number;
+  readonly version?: number;
+}
+
+export class GltfParseFailed extends GltfAdapterError {
+  readonly format: GltfParseFormat;
+  readonly reason: GltfParseFailureReason;
+  readonly byteOffset?: number;
+  readonly declaredLength?: number;
+  readonly actualLength?: number;
+  readonly chunkLength?: number;
+  readonly version?: number;
+
+  constructor(init: GltfParseFailedInit) {
+    super(
+      'GLTF_PARSE_FAILED',
+      init.message,
+      init.cause === undefined ? undefined : { cause: init.cause },
+    );
+    this.format = init.format;
+    this.reason = init.reason;
+    if (init.byteOffset !== undefined) this.byteOffset = init.byteOffset;
+    if (init.declaredLength !== undefined) this.declaredLength = init.declaredLength;
+    if (init.actualLength !== undefined) this.actualLength = init.actualLength;
+    if (init.chunkLength !== undefined) this.chunkLength = init.chunkLength;
+    if (init.version !== undefined) this.version = init.version;
   }
 }

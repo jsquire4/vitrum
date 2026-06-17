@@ -11,6 +11,7 @@ import {
   evaluateGltfBackendCompatibility,
   evaluateGltfBackendProfileCompatibility,
   GltfFetchFailed,
+  GltfParseFailed,
   GltfResourceNotFound,
   loadGltfAndDecodeTextures,
   loadGltfForEngine,
@@ -34,6 +35,23 @@ function bytes(values: number[]): ArrayBuffer {
 function textBuffer(text: string): ArrayBuffer {
   const encoded = new TextEncoder().encode(text);
   return encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
+}
+
+function glbBuffer(jsonText: string, version = 2): ArrayBuffer {
+  const jsonBytes = new TextEncoder().encode(jsonText);
+  const jsonLength = Math.ceil(jsonBytes.byteLength / 4) * 4;
+  const totalLength = 12 + 8 + jsonLength;
+  const buffer = new ArrayBuffer(totalLength);
+  const view = new DataView(buffer);
+  const bytesOut = new Uint8Array(buffer);
+  view.setUint32(0, 0x46546c67, true);
+  view.setUint32(4, version, true);
+  view.setUint32(8, totalLength, true);
+  view.setUint32(12, jsonLength, true);
+  view.setUint32(16, 0x4e4f534a, true);
+  bytesOut.fill(0x20, 20, 20 + jsonLength);
+  bytesOut.set(jsonBytes, 20);
+  return buffer;
 }
 
 function srgbToLinearForTest(value: number): number {
@@ -722,6 +740,33 @@ describe('loadGltfAsset', () => {
       url: 'https://cdn.test/missing.gltf',
       status: 404,
       statusText: 'Not Found',
+    });
+  });
+
+  it('throws typed parse failures for malformed JSON assets', async () => {
+    await expect(loadGltfAsset(textBuffer('{ "asset": '))).rejects.toBeInstanceOf(GltfParseFailed);
+    await expect(loadGltfAsset(textBuffer('{ "asset": '))).rejects.toMatchObject({
+      code: 'GLTF_PARSE_FAILED',
+      format: 'gltf-json',
+      reason: 'json-parse-failed',
+    });
+  });
+
+  it('throws typed parse failures for malformed GLB containers', async () => {
+    await expect(loadGltfAsset(glbBuffer('{"asset":{"version":"2.0"}}', 1))).rejects.toBeInstanceOf(GltfParseFailed);
+    await expect(loadGltfAsset(glbBuffer('{"asset":{"version":"2.0"}}', 1))).rejects.toMatchObject({
+      code: 'GLTF_PARSE_FAILED',
+      format: 'glb',
+      reason: 'glb-unsupported-version',
+      byteOffset: 4,
+      version: 1,
+    });
+
+    await expect(loadGltfAsset(glbBuffer('{ "asset": '))).rejects.toMatchObject({
+      code: 'GLTF_PARSE_FAILED',
+      format: 'glb',
+      reason: 'glb-json-parse-failed',
+      byteOffset: 20,
     });
   });
 

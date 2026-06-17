@@ -29,6 +29,7 @@ import {
 } from './texturePipeline.js';
 import {
   GltfFetchFailed,
+  GltfParseFailed,
   GltfResourceNotFound,
   type GltfAssetResourceKind,
 } from './errors.js';
@@ -392,7 +393,16 @@ function parseArrayBufferInput(buffer: ArrayBuffer, baseUri?: string): ParsedInp
     return { gltf: glb.json, ...(baseUri ? { baseUri } : {}), buffers };
   }
   const text = new TextDecoder().decode(buffer);
-  return { gltf: JSON.parse(text) as GltfJson, ...(baseUri ? { baseUri } : {}), buffers: new Map() };
+  try {
+    return { gltf: JSON.parse(text) as GltfJson, ...(baseUri ? { baseUri } : {}), buffers: new Map() };
+  } catch (cause) {
+    throw new GltfParseFailed({
+      format: 'gltf-json',
+      reason: 'json-parse-failed',
+      message: '[vitrum/gltf-adapter] glTF JSON asset is not valid JSON.',
+      cause,
+    });
+  }
 }
 
 async function resolveExternalBuffers(
