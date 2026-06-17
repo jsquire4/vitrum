@@ -21,6 +21,7 @@ import { resolveQualityPreset } from './HybridEngineQualityPreset.js';
 import { fingerprintHybridPipelineRebuildKey } from './HybridEngineFrameOrchestrator.js';
 import type { ReSTIRBvhMode } from './restir/bvhCore.js';
 import type { ModelWeights } from './neural/weights.js';
+import { PPG_MIS_ALPHA } from './ppg/ppgConstants.js';
 
 /** Default per-frame target interval (~60 FPS soft-cap). */
 const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
@@ -76,6 +77,8 @@ export interface ParsedHybridEngineConfig {
   /** H29 — maximum per-cell PPG dTree nodes, threaded to shader compile and
    *  `allocatePPGResources`. `undefined` ⇒ use the default 341-node stride. */
   readonly ppgMaxDTreeNodesPerCell: number | undefined;
+  /** PPG guide/cosine MIS mixture alpha, clamped to [0,1]. */
+  readonly ppgMixAlpha: number;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
    *  `false` by default (no preset ⇒ ultra ⇒ off); the `medium`/`low` presets
    *  enable it, `ultra`/`high` keep it off. Threaded into
@@ -121,6 +124,11 @@ type WalkaroundHybridExt = {
   oidnExecutionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
   bvhMode?: 'merged' | 'tlas';
 };
+
+function resolvePpgMixAlpha(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return PPG_MIS_ALPHA;
+  return Math.min(1, Math.max(0, value));
+}
 
 function readWalkaroundHybridExt(opts: HybridEngineOptions): WalkaroundHybridExt | undefined {
   return (opts.extensions as undefined | {
@@ -310,6 +318,9 @@ export function deriveHybridEngineConfig(
     // Forwarded to pipeline.initialize so the ppg-update pipeline is actually
     // built when a host opts in (tier:'lite' forbids it — validated above).
     ppgEnabled: opts.ppgEnabled === true ? 1 : 0,
+    // PPG guide/cosine mixture weight. The default remains the paper value, but
+    // hosts can tune/A-B favorable scenes without patching the coordinator.
+    ppgMixAlpha: resolvePpgMixAlpha(opts.ppgMixAlpha),
     // Checkerboard half-res shading. Explicit opt wins, else the preset value
     // (ON for medium/low degradation tiers, OFF for ultra/high). No preset ⇒
     // ultra ⇒ OFF ⇒ shade + both spatial passes + ris shade every pixel +

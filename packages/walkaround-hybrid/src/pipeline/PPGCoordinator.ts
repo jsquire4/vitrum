@@ -71,6 +71,7 @@ export class PPGCoordinator implements PipelineSubsystem {
   /** Retained from initialize() so onResize(), export, and import enforce the
    *  same per-cell dTree stride as the compiled update shader. */
   private _maxDTreeNodesPerCell: number | undefined = undefined;
+  private _mixAlpha = PPG_MIS_ALPHA;
   /** CPU-side PPG model (sTree + per-cell dTrees). Allocated at
    *  initialize() when ppgEnabled is true; serialised to GPU buffers per
    *  frame (Phase 1: static empty tree uploaded once). */
@@ -105,12 +106,10 @@ export class PPGCoordinator implements PipelineSubsystem {
     return this._enabled;
   }
 
-  /** MIS mixing weight α (Müller §3.4) the gi-ris RIS source pdf uses for the
-   *  guided/cosine mixture `p_src = α·p_guide + (1−α)·p_cos`. Currently the
-   *  paper default {@link PPG_MIS_ALPHA}; update training and gi-ris guided
-   *  sampling agree on this value through the shared host constant. */
+  /** MIS mixing weight alpha (Muller section 3.4) the gi-ris RIS source pdf uses
+   *  for the guided/cosine mixture `p_src = alpha*p_guide + (1-alpha)*p_cos`. */
   get mixAlpha(): number {
-    return PPG_MIS_ALPHA;
+    return this._mixAlpha;
   }
 
   /**
@@ -135,6 +134,8 @@ export class PPGCoordinator implements PipelineSubsystem {
     maxSpatialCells?: number,
     /** H29 — forwarded to allocatePPGResources `maxDTreeNodesPerCell`; undefined = default 341. */
     maxDTreeNodesPerCell?: number,
+    /** PPG guide/cosine MIS mixture alpha; undefined = paper default. */
+    mixAlpha?: number,
   ): void {
     if (!ppgEnabled) {
       this._enabled = false;
@@ -144,6 +145,7 @@ export class PPGCoordinator implements PipelineSubsystem {
     // Retain for onResize() so it forwards the same cap on resize.
     this._maxSpatialCells = maxSpatialCells;
     this._maxDTreeNodesPerCell = maxDTreeNodesPerCell;
+    this._mixAlpha = resolvePpgMixAlpha(mixAlpha);
     // Derive scene bounds from the uploaded BVH if available; the initial
     // single-cell sTree root must cover the rendered scene before adaptive
     // splits begin.
@@ -685,4 +687,9 @@ export class PPGCoordinator implements PipelineSubsystem {
       clearCellU32 * 4,
     );
   }
+}
+
+function resolvePpgMixAlpha(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return PPG_MIS_ALPHA;
+  return Math.min(1, Math.max(0, value));
 }

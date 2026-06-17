@@ -949,6 +949,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  buildPpgUpdateWgsl and allocatePPGResources so the shader stride and
        *  buffers agree. undefined ⇒ default 341-node stride. */
       ppgMaxDTreeNodesPerCell?: number;
+      /** PPG guide/cosine MIS mixture alpha. Defaults to PPG_MIS_ALPHA. */
+      ppgMixAlpha?: number;
       /** W11 — OIDN final-pass denoiser config (required when denoiser='oidn-final').
        *  Threaded into `registerBuiltinDenoisers` so the OIDN entry registers as a
        *  real (non-disabled) denoiser; missing on a 'oidn-final' selection causes
@@ -1301,6 +1303,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       bvhBuffers, this._res, W, H, ppgEnabled, this._frameCount,
       options?.ppgMaxSpatialCells,
       options?.ppgMaxDTreeNodesPerCell,
+      options?.ppgMixAlpha,
     );
   }
 

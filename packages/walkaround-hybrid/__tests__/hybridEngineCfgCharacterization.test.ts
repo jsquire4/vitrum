@@ -76,6 +76,7 @@ function richOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
     ppgDispatchInterval: 5,
     ppgMaxSpatialCells: 2048,
     ppgMaxDTreeNodesPerCell: 97,
+    ppgMixAlpha: 0.25,
     targetFrameIntervalMs: 12,
     tuning: { directFireflyClamp: 8, triIntersectEpsilon: 1e-7 },
     pipelineRebuildKey: 'rk-42',
@@ -147,6 +148,7 @@ describe('HybridEngine._initStaticConfig — migrated config values unchanged', 
     expect(cfg['ppgDispatchInterval']).toBe(golden.ppgDispatchInterval);
     expect(cfg['ppgMaxSpatialCells']).toBe(golden.ppgMaxSpatialCells);
     expect(cfg['ppgMaxDTreeNodesPerCell']).toBe(golden.ppgMaxDTreeNodesPerCell);
+    expect(cfg['ppgMixAlpha']).toBe(golden.ppgMixAlpha);
     expect(cfg['regirConfig']).toBe(golden.regirConfig);
   });
 });

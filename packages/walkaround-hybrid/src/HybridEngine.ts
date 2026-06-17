@@ -2512,6 +2512,8 @@ export class HybridEngine implements Engine {
       ppgMaxSpatialCells: this._cfg.ppgMaxSpatialCells,
       // H29 — PPG max per-cell dTree nodes. undefined ⇒ default 341-node stride.
       ppgMaxDTreeNodesPerCell: this._cfg.ppgMaxDTreeNodesPerCell,
+      // PPG guide/cosine MIS mixture alpha.
+      ppgMixAlpha: this._cfg.ppgMixAlpha,
       // Checkerboard half-res shading — flips the ResolvePass gate + the
       // per-frame shade UBO fields. OFF (default) is bit-identical.
       checkerboard: this._cfg.checkerboard,

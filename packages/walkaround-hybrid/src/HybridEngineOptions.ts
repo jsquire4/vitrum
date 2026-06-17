@@ -789,6 +789,20 @@ export interface HybridEngineOptions extends EngineOptions {
   readonly ppgMaxDTreeNodesPerCell?: number;
 
   /**
+   * Practical Path Guiding MIS mixture weight alpha.
+   *
+   * The GI RIS source pdf is
+   * `p_src = alpha * p_guide + (1 - alpha) * p_cosine`. `0` keeps PPG training
+   * and buffers live but samples from the cosine source only; `1` samples from
+   * the learned guide only. Values are clamped to `[0, 1]`.
+   *
+   * Default: 0.5 (Muller 2017 section 3.4).
+   *
+   * Only meaningful when `ppgEnabled: true`.
+   */
+  readonly ppgMixAlpha?: number;
+
+  /**
    * PPG train-pass dispatch cadence (Müller 2017 §3.3). The path-guiding
    * `update` compute pass runs only on frames where
    * `frameCount % ppgDispatchInterval === 0`. The learned sTree/dTree GPU

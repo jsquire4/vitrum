@@ -313,6 +313,7 @@ describe('Item 3 — NeuralDenoiser uses _graphW/_graphH for size guard', () => 
 // ──────────────────────────────────────────────────────────────────────────────
 
 import { PPGCoordinator } from '../src/pipeline/PPGCoordinator.js';
+import { PPG_MIS_ALPHA } from '../src/ppg/ppgConstants.js';
 import type { FrameResources } from '../src/pipeline/resourceManager.js';
 
 function makeMinimalPPGDevice(): GPUDevice {
@@ -393,6 +394,32 @@ describe('Item 4 — PPGCoordinator onResize retains maxSpatialCells + bumps gen
     expect(lastCreatedBufferSize(device, 'ppg-dTreeBuf')).toBe(8 * (4 + 17 * 8) * 4);
   });
 
+  it('stores a clamped ppgMixAlpha from initialize() args', () => {
+    const device = makeMinimalPPGDevice();
+    const coord = new PPGCoordinator(device);
+    const fr = makeMinimalFrameResources();
+
+    coord.initialize(
+      { bvhPositions: { cpuData: new Float32Array(4).buffer, count: 1 } } as never,
+      fr, 64, 64, true, 0,
+      8,
+      17,
+      1.25,
+    );
+
+    expect(coord.mixAlpha).toBe(1);
+
+    coord.initialize(
+      { bvhPositions: { cpuData: new Float32Array(4).buffer, count: 1 } } as never,
+      fr, 64, 64, true, 0,
+      8,
+      17,
+      0.25,
+    );
+
+    expect(coord.mixAlpha).toBeCloseTo(0.25, 6);
+  });
+
   it('_maxSpatialCells is undefined by default (no custom cap)', () => {
     const device = makeMinimalPPGDevice();
     const coord = new PPGCoordinator(device);
@@ -406,6 +433,7 @@ describe('Item 4 — PPGCoordinator onResize retains maxSpatialCells + bumps gen
 
     expect((coord as unknown as { _maxSpatialCells: number | undefined })._maxSpatialCells).toBeUndefined();
     expect((coord as unknown as { _maxDTreeNodesPerCell: number | undefined })._maxDTreeNodesPerCell).toBeUndefined();
+    expect(coord.mixAlpha).toBe(PPG_MIS_ALPHA);
   });
 
   it('onResize() bumps _frameResourcesGeneration', () => {
