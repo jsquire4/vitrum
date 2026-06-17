@@ -27,7 +27,7 @@
  * AO intensity / emissive / specularColor / specularIntensity / clearcoat / sheen /
  * iridescence / iridescenceThicknessRange / anisotropy controls with their
  * readable local map factors); any
- * shortfall (no hook, an emitter param, an `ior` param, etc.) resolves the
+ * shortfall (no hook, an unsupported emitter/material target, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
  * silent wrong-gradient path. An engine providing the hook vouches that its
  * re-trace dispatch is hardware-validated.
@@ -833,7 +833,7 @@ function pathReplayPrimitiveIssue(
 function pathReplayEmitterTargetIssue(
   scene: Scene,
   emitter: SceneEmitter,
-): { message: string; details: Record<string, string | number> } | null {
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
   switch (emitter.kind) {
     case 'directional': {
       return null;
@@ -861,6 +861,8 @@ function pathReplayEmitterTargetIssue(
           },
         };
       }
+      const mappedEmissionIssue = meshAreaEmitterMappedEmissionIssue(scene, emitter);
+      if (mappedEmissionIssue != null) return mappedEmissionIssue;
       return null;
     }
     default: {
@@ -871,6 +873,24 @@ function pathReplayEmitterTargetIssue(
       };
     }
   }
+}
+
+function meshAreaEmitterMappedEmissionIssue(
+  scene: Scene,
+  emitter: Extract<SceneEmitter, { readonly kind: 'mesh-area' }>,
+): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+  const primitive = scene.primitives.find((p) => p.id === emitter.meshId);
+  if (primitive == null || primitive.kind === 'analytic') return null;
+  if (primitive.material.emissiveMap == null) return null;
+  return {
+    message:
+      'mesh-area emitter target uses material emissiveMap radiance; per-texel emitter color/intensity derivatives are not replayed',
+    details: {
+      emitterKind: emitter.kind,
+      meshId: emitter.meshId,
+      unsupportedMaterialFields: ['emissiveMap'],
+    },
+  };
 }
 
 function pathReplayEmitterReceiverSceneIssue(

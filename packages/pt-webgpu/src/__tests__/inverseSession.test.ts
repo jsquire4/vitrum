@@ -790,6 +790,61 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps mapped mesh-area emitter color/intensity on finite-difference until texel multipliers are replayed', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 1, 0.25, 1]) } },
+              },
+            }
+          : pr,
+      ),
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mapped-mesh-light',
+        color: [0.25, 0.5, 1],
+        intensity: 4,
+        meshId: 'panel',
+      }],
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(4) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'emitters.mapped-mesh-light.color', kind: 'rgb' },
+        { path: 'emitters.mapped-mesh-light.intensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-emitter',
+      path: 'emitters.mapped-mesh-light.color',
+      details: expect.objectContaining({
+        emitterKind: 'mesh-area',
+        meshId: 'panel',
+        unsupportedMaterialFields: ['emissiveMap'],
+      }),
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-emitter',
+      path: 'emitters.mapped-mesh-light.intensity',
+      details: expect.objectContaining({
+        emitterKind: 'mesh-area',
+        meshId: 'panel',
+        unsupportedMaterialFields: ['emissiveMap'],
+      }),
+    }));
+    session.dispose();
+  });
+
   it('keeps capped mesh-area emitter targets on finite-difference because cap sorting breaks contiguous source ranges', () => {
     const fake = makeFakeEngine();
     const identity = asMat4([
