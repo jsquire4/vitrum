@@ -361,13 +361,21 @@ export type GltfImportDiagnosticCode =
   | 'ignored-camera'
   | 'double-sided-material'
   | 'generated-tangents'
+  | 'generated-flat-normals'
+  | 'unreadable-normal'
+  | 'unreadable-optional-attribute'
   | 'missing-tangent-texcoord'
   | 'tangent-generation-failed'
   | 'skin-rest-pose'
+  | 'singular-skin-transform'
+  | 'unreadable-inverse-bind-matrices'
+  | 'unreadable-skin-joints'
+  | 'unreadable-skin-weights'
   | 'ignored-skin-attributes'
   | 'incomplete-skin-attributes'
   | 'scene-not-found'
   | 'ignored-gpu-instancing'
+  | 'ignored-gpu-instancing-attribute'
   | 'unsupported-primitive-mode'
   | 'fallback-generated-primitive-mode'
   | 'unresolved-compression'
@@ -375,9 +383,18 @@ export type GltfImportDiagnosticCode =
   | 'unreadable-position'
   | 'unreadable-indices'
   | 'ignored-vertex-color-set'
+  | 'ignored-primitive-attribute'
   | 'empty-triangulated-primitive'
+  | 'material-variant-not-found'
+  | 'material-variant-material-missing'
   | 'ignored-material-texcoord'
-  | 'ignored-morph-target-texcoord';
+  | 'ignored-morph-target-texcoord'
+  | 'ignored-morph-target-attribute'
+  | 'invalid-morph-target-delta-length'
+  | 'morph-weight-count-mismatch'
+  | 'morph-identity-skin-promotion'
+  | 'missing-punctual-light'
+  | 'unsupported-punctual-light-type';
 
 export interface GltfImportDiagnostic {
   readonly severity: 'warning' | 'error';
@@ -582,6 +599,7 @@ export async function gltfToScene(
     gltf,
     opts.materialVariant,
     warnings,
+    diagnostics,
   );
 
   // ── 6. Pick the target scene ───────────────────────────────────────────────
@@ -636,7 +654,7 @@ export async function gltfToScene(
     // glTF 2.0 §3.8: a node may reference a skin by index. All primitives in
     // the node's mesh share the same skin.
     const skinData = _extractSkinData(
-      gltf, buffers, gltfSkins, node.skin, worldMat, worldTransforms, warnings, onAccessorDiagnostic,
+      gltf, buffers, gltfSkins, node.skin, worldMat, worldTransforms, warnings, diagnostics, onAccessorDiagnostic,
     );
     const { bones, boneInverses } = skinData ?? {};
 
@@ -753,17 +771,28 @@ export async function gltfToScene(
       const normAttempt = _tryUnpackFloat(
         gltf, buffers, normIdx,
         `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-normal',
+        `${primitivePath}.attributes.NORMAL`,
       );
       if (normAttempt === undefined && normIdx === undefined) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has no NORMAL attribute. ` +
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'generated-flat-normals',
+          path: `${primitivePath}.attributes.NORMAL`,
+          message:
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has no NORMAL attribute. ` +
             'Generating flat normals.',
-        );
+        });
       } else if (normAttempt === undefined) {
-        warnings.push(
-          `[vitrum/gltf-adapter] NORMAL unreadable for mesh "${mesh.name ?? node.mesh}". ` +
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'unreadable-normal',
+          path: `${primitivePath}.attributes.NORMAL`,
+          message:
+            `[vitrum/gltf-adapter] NORMAL unreadable for mesh "${mesh.name ?? node.mesh}". ` +
             'Generating flat normals.',
-        );
+        });
       }
       let normals: Float32Array = normAttempt ?? generateFlatNormals(positions, indices);
 
@@ -771,22 +800,34 @@ export async function gltfToScene(
       let uvs = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TEXCOORD_0'],
         `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.attributes.TEXCOORD_0`,
       );
       let uv1 = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TEXCOORD_1'],
         `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.attributes.TEXCOORD_1`,
       );
 
       // Tangents — optional (xyzw per vertex).
       let tangents = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TANGENT'],
         `TANGENT for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.attributes.TANGENT`,
       );
 
       // Vertex colors — optional (COLOR_0).
       let colors = _tryUnpackFloat(
         gltf, buffers, prim.attributes['COLOR_0'],
         `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.attributes.COLOR_0`,
       );
       for (const attrName of Object.keys(prim.attributes).sort()) {
         if (/^COLOR_[1-9][0-9]*$/.test(attrName)) {
@@ -827,18 +868,26 @@ export async function gltfToScene(
           try {
             skinIndices = _unpackJoints(gltf, buffers, jointsIdx);
           } catch (e) {
-            warnings.push(
-              `[vitrum/gltf-adapter] Failed to read JOINTS_0 for "${mesh.name ?? node.mesh}": ` +
+            emitImportDiagnostic(warnings, diagnostics, {
+              severity: 'warning',
+              code: 'unreadable-skin-joints',
+              path: `${primitivePath}.attributes.JOINTS_0`,
+              message:
+                `[vitrum/gltf-adapter] Failed to read JOINTS_0 for "${mesh.name ?? node.mesh}": ` +
                 String(e) + '. Falling back to static mesh.',
-            );
+            });
           }
           try {
             skinWeights = unpackAccessorFloat(gltf, buffers, weightsIdx, warnings, onAccessorDiagnostic);
           } catch (e) {
-            warnings.push(
-              `[vitrum/gltf-adapter] Failed to read WEIGHTS_0 for "${mesh.name ?? node.mesh}": ` +
+            emitImportDiagnostic(warnings, diagnostics, {
+              severity: 'warning',
+              code: 'unreadable-skin-weights',
+              path: `${primitivePath}.attributes.WEIGHTS_0`,
+              message:
+                `[vitrum/gltf-adapter] Failed to read WEIGHTS_0 for "${mesh.name ?? node.mesh}": ` +
                 String(e) + '. Falling back to static mesh.',
-            );
+            });
             skinIndices = undefined; // don't emit skinned if weights failed
           }
         } else {
@@ -862,10 +911,14 @@ export async function gltfToScene(
           !attrName.startsWith('TEXCOORD_') &&
           !attrName.startsWith('COLOR_')
         ) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Unknown primitive attribute "${attrName}" in mesh ` +
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'ignored-primitive-attribute',
+            path: `${primitivePath}.attributes.${attrName}`,
+            message:
+              `[vitrum/gltf-adapter] Unknown primitive attribute "${attrName}" in mesh ` +
               `"${mesh.name ?? node.mesh}" is ignored.`,
-          );
+          });
         }
       }
 
@@ -882,7 +935,9 @@ export async function gltfToScene(
         prim.material,
         selectedMaterialVariant,
         warnings,
+        diagnostics,
         `${mesh.name ?? node.mesh}`,
+        primitivePath,
       );
       const material =
         materialIndex !== undefined && materialIndex < coreMaterials.length
@@ -995,11 +1050,15 @@ export async function gltfToScene(
           bones: identityBone,
           boneInverses: new Float32Array(identityBone),
         };
-        warnings.push(
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has morph targets but no skin; ` +
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'morph-identity-skin-promotion',
+          path: `${primitivePath}.targets`,
+          message:
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has morph targets but no skin; ` +
             'promoted to SkinnedMeshPrimitive with a synthesized identity skeleton (1 bone). ' +
             'Drive morphWeights and re-solve via @vitrum/core solveSkin to animate the blend shapes.',
-        );
+        });
       }
 
       let primitiveInstances = instanceTransforms?.worldInstanceTransforms;
@@ -1068,15 +1127,26 @@ export async function gltfToScene(
 
       const light = lights[nodeLightRef.light];
       if (!light) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Node ${nodeIdx} references KHR_lights_punctual light ` +
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'missing-punctual-light',
+          path: `nodes[${nodeIdx}].extensions.KHR_lights_punctual.light`,
+          message:
+            `[vitrum/gltf-adapter] Node ${nodeIdx} references KHR_lights_punctual light ` +
             `index ${nodeLightRef.light} which does not exist. Emitter skipped.`,
-        );
+        });
         continue;
       }
 
       const id = `gltf-light-${emitterIdCounter++}`;
-      const emitter = _convertPunctualLight(light, worldMat, id, warnings);
+      const emitter = _convertPunctualLight(
+        light,
+        worldMat,
+        id,
+        warnings,
+        diagnostics,
+        `extensions.KHR_lights_punctual.lights[${nodeLightRef.light}]`,
+      );
       if (emitter) emitters.push(emitter);
     }
   }
@@ -1119,23 +1189,32 @@ function _resolveMaterialVariantSelection(
   gltf: GltfJson,
   selector: string | number | undefined,
   warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
 ): number | undefined {
   if (selector === undefined) return undefined;
   const variants = gltf.extensions?.KHR_materials_variants?.variants ?? [];
   if (typeof selector === 'number') {
     if (Number.isInteger(selector) && selector >= 0 && selector < variants.length) return selector;
-    warnings.push(
-      `[vitrum/gltf-adapter] materialVariant index ${selector} was requested, ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'material-variant-not-found',
+      path: 'extensions.KHR_materials_variants.variants',
+      message:
+        `[vitrum/gltf-adapter] materialVariant index ${selector} was requested, ` +
         `but this asset declares ${variants.length} variant(s). Base materials are used.`,
-    );
+    });
     return undefined;
   }
   const index = variants.findIndex((variant) => variant.name === selector);
   if (index >= 0) return index;
-  warnings.push(
-    `[vitrum/gltf-adapter] materialVariant "${selector}" was requested, but no ` +
+  emitImportDiagnostic(warnings, diagnostics, {
+    severity: 'warning',
+    code: 'material-variant-not-found',
+    path: 'extensions.KHR_materials_variants.variants',
+    message:
+      `[vitrum/gltf-adapter] materialVariant "${selector}" was requested, but no ` +
       'KHR_materials_variants entry with that name exists. Base materials are used.',
-  );
+  });
   return undefined;
 }
 
@@ -1145,18 +1224,24 @@ function _resolvePrimitiveMaterialIndex(
   baseMaterialIndex: number | undefined,
   selectedVariantIndex: number | undefined,
   warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
   meshLabel: string,
+  primitivePath: string,
 ): number | undefined {
   if (selectedVariantIndex === undefined) return baseMaterialIndex;
   const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
   const mapping = mappings.find((candidate) => candidate.variants.includes(selectedVariantIndex));
   if (!mapping) return baseMaterialIndex;
   if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Mesh "${meshLabel}" KHR_materials_variants mapping for ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'material-variant-material-missing',
+      path: `${primitivePath}.extensions.KHR_materials_variants.mappings`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${meshLabel}" KHR_materials_variants mapping for ` +
         `variant ${selectedVariantIndex} references missing material ${mapping.material}. ` +
         'Base material is used.',
-    );
+    });
     return baseMaterialIndex;
   }
   return mapping.material;
@@ -1367,10 +1452,14 @@ function _extractMeshGpuInstancing(
 
   for (const key of Object.keys(attrs)) {
     if (key in GPU_INSTANCE_ATTRIBUTE_SPECS) continue;
-    warnings.push(
-      `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'ignored-gpu-instancing-attribute',
+      path: `${pathBase}.attributes.${key}`,
+      message:
+        `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" EXT_mesh_gpu_instancing ` +
         `attribute "${key}" is custom/non-transform data and is ignored.`,
-    );
+    });
   }
 
   if (failed) return undefined;
@@ -1434,12 +1523,25 @@ function _tryUnpackFloat(
   label: string,
   warnings: string[],
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+  diagnostics?: GltfImportDiagnostic[],
+  diagnosticCode: GltfImportDiagnosticCode = 'unreadable-optional-attribute',
+  diagnosticPath?: string,
 ): Float32Array | undefined {
   if (accessorIndex === undefined) return undefined;
   try {
     return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings, onAccessorDiagnostic);
   } catch (e) {
-    warnings.push(`[vitrum/gltf-adapter] Failed to read ${label}: ${String(e)}`);
+    const message = `[vitrum/gltf-adapter] Failed to read ${label}: ${String(e)}`;
+    if (diagnostics && diagnosticPath) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: diagnosticCode,
+        path: diagnosticPath,
+        message,
+      });
+    } else {
+      warnings.push(message);
+    }
     return undefined;
   }
 }
@@ -1461,6 +1563,7 @@ function _extractSkinData(
   meshWorld: Float32Array,
   worldTransforms: Map<number, Float32Array>,
   warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): SkinData | undefined {
   if (skinIdx === undefined) return undefined;
@@ -1468,10 +1571,14 @@ function _extractSkinData(
   if (!gltfSkin) return undefined;
   const meshWorldInverse = mat4Invert(meshWorld);
   if (!meshWorldInverse) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Skinned mesh node for skin "${gltfSkin.name ?? skinIdx}" has a ` +
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'singular-skin-transform',
+      path: `skins[${skinIdx}]`,
+      message:
+        `[vitrum/gltf-adapter] Skinned mesh node for skin "${gltfSkin.name ?? skinIdx}" has a ` +
         'singular world transform. Skinning was omitted for this mesh.',
-    );
+    });
     return undefined;
   }
 
@@ -1501,10 +1608,14 @@ function _extractSkinData(
         onAccessorDiagnostic,
       );
     } catch (e) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Failed to read inverseBindMatrices for skin "${gltfSkin.name ?? skinIdx}": ` +
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'unreadable-inverse-bind-matrices',
+        path: `skins[${skinIdx}].inverseBindMatrices`,
+        message:
+          `[vitrum/gltf-adapter] Failed to read inverseBindMatrices for skin "${gltfSkin.name ?? skinIdx}": ` +
           String(e) + '. Using identity inverses.',
-      );
+      });
     }
   }
   if (!boneInverses || boneInverses.length < jointCount * 16) {
@@ -1587,6 +1698,9 @@ function _resolvePrimitiveUvMaterial(
       `${attrName} for "${meshName}"`,
       warnings,
       onAccessorDiagnostic,
+      diagnostics,
+      'unreadable-optional-attribute',
+      `${primitivePath}.attributes.${attrName}`,
     );
     if (remapUv !== undefined) {
       let remapped = material;
@@ -1821,12 +1935,19 @@ function _extractMorphTargets(
     let posDelta = _tryUnpackFloat(
       gltf, buffers, target['POSITION'],
       `morph target ${t} POSITION for "${meshLabel}"`, warnings, onAccessorDiagnostic,
+      diagnostics,
+      'unreadable-optional-attribute',
+      `${primitivePath}.targets[${t}].POSITION`,
     );
     if (posDelta && posDelta.length !== vertexCount * 3) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Morph target ${t} POSITION delta length ${posDelta.length} ` +
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'invalid-morph-target-delta-length',
+        path: `${primitivePath}.targets[${t}].POSITION`,
+        message:
+          `[vitrum/gltf-adapter] Morph target ${t} POSITION delta length ${posDelta.length} ` +
           `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
-      );
+      });
       posDelta = undefined;
     }
     morphTargets.push(posDelta ?? new Float32Array(vertexCount * 3));
@@ -1835,12 +1956,19 @@ function _extractMorphTargets(
     let nrmDelta = _tryUnpackFloat(
       gltf, buffers, target['NORMAL'],
       `morph target ${t} NORMAL for "${meshLabel}"`, warnings, onAccessorDiagnostic,
+      diagnostics,
+      'unreadable-optional-attribute',
+      `${primitivePath}.targets[${t}].NORMAL`,
     );
     if (nrmDelta && nrmDelta.length !== vertexCount * 3) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Morph target ${t} NORMAL delta length ${nrmDelta.length} ` +
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'invalid-morph-target-delta-length',
+        path: `${primitivePath}.targets[${t}].NORMAL`,
+        message:
+          `[vitrum/gltf-adapter] Morph target ${t} NORMAL delta length ${nrmDelta.length} ` +
           `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
-      );
+      });
       nrmDelta = undefined;
     }
     if (nrmDelta) anyNormals = true;
@@ -1851,12 +1979,19 @@ function _extractMorphTargets(
     let tanDelta = _tryUnpackFloat(
       gltf, buffers, target['TANGENT'],
       `morph target ${t} TANGENT for "${meshLabel}"`, warnings, onAccessorDiagnostic,
+      diagnostics,
+      'unreadable-optional-attribute',
+      `${primitivePath}.targets[${t}].TANGENT`,
     );
     if (tanDelta && tanDelta.length !== vertexCount * 3) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Morph target ${t} TANGENT delta length ${tanDelta.length} ` +
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'invalid-morph-target-delta-length',
+        path: `${primitivePath}.targets[${t}].TANGENT`,
+        message:
+          `[vitrum/gltf-adapter] Morph target ${t} TANGENT delta length ${tanDelta.length} ` +
           `!= ${vertexCount * 3} for "${meshLabel}". Using zero deltas for this target.`,
-      );
+      });
       tanDelta = undefined;
     }
     if (tanDelta) anyTangents = true;
@@ -1875,10 +2010,14 @@ function _extractMorphTargets(
               'textured morph animation keeps the rest-pose UVs.',
           });
         } else {
-          warnings.push(
-            `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'ignored-morph-target-attribute',
+            path: `${primitivePath}.targets[${t}].${attr}`,
+            message:
+              `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
               `"${meshLabel}" is ignored.`,
-          );
+          });
         }
       }
     }
@@ -1889,11 +2028,15 @@ function _extractMorphTargets(
   const morphWeights = new Float32Array(tCount);
   if (authoredWeights) {
     if (authoredWeights.length !== tCount) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Mesh "${meshLabel}" morph weights length ` +
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'morph-weight-count-mismatch',
+        path: `${primitivePath}.weights`,
+        message:
+          `[vitrum/gltf-adapter] Mesh "${meshLabel}" morph weights length ` +
           `${authoredWeights.length} != target count ${tCount}; extra entries are ` +
           'dropped / missing entries default to 0.',
-      );
+      });
     }
     for (let t = 0; t < tCount; t++) morphWeights[t] = authoredWeights[t] ?? 0;
   }
@@ -1919,6 +2062,8 @@ function _convertPunctualLight(
   worldMat: Mat4,
   id: string,
   warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
+  lightPath: string,
 ): SceneEmitter | null {
   const color: [number, number, number] = light.color
     ? [light.color[0], light.color[1], light.color[2]]
@@ -1980,10 +2125,14 @@ function _convertPunctualLight(
       };
 
     default:
-      warnings.push(
-        `[vitrum/gltf-adapter] KHR_lights_punctual light "${light.name ?? id}" ` +
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'unsupported-punctual-light-type',
+        path: `${lightPath}.type`,
+        message:
+          `[vitrum/gltf-adapter] KHR_lights_punctual light "${light.name ?? id}" ` +
           `has unsupported type "${(light as { type: string }).type}". Emitter skipped.`,
-      );
+      });
       return null;
   }
 }

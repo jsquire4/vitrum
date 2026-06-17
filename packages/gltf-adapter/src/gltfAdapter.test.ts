@@ -283,7 +283,7 @@ describe('minimal triangle', () => {
 
   it('generates flat normals when NORMAL is absent', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
 
     const prim = scene.primitives[0] as MeshPrimitive;
     expect(prim.normals).toBeInstanceOf(Float32Array);
@@ -292,6 +292,10 @@ describe('minimal triangle', () => {
     expect(prim.normals[5]).toBeCloseTo(1, 5); // vertex 1, z
     expect(prim.normals[8]).toBeCloseTo(1, 5); // vertex 2, z
     expect(warnings.some(w => w.includes('flat normals'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'generated-flat-normals',
+      path: 'meshes[0].primitives[0].attributes.NORMAL',
+    }));
   });
 
   it('uses the default glTF material when no material is specified', async () => {
@@ -490,6 +494,23 @@ describe('minimal triangle', () => {
       }),
     ]));
     expect(warnings.some(w => w.includes('COLOR_1') && w.includes('ignored'))).toBe(true);
+  });
+
+  it('surfaces unknown primitive attributes as structured diagnostics', async () => {
+    const { gltf, buffers } = makeMinimalTriangleGltf();
+    gltf.meshes![0]!.primitives[0]!.attributes._CUSTOM_WEIGHT = 0;
+
+    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
+
+    expect(scene.primitives).toHaveLength(1);
+    expect(warnings.some((warning) => warning.includes('_CUSTOM_WEIGHT') && warning.includes('ignored'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'ignored-primitive-attribute',
+        path: 'meshes[0].primitives[0].attributes._CUSTOM_WEIGHT',
+      }),
+    ]));
   });
 
   it('scene has empty emitters and none environment', async () => {
@@ -1426,13 +1447,13 @@ describe('out-of-scope feature warnings', () => {
     const { animations, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
     expect(animations).toHaveLength(0);
     expect(warnings.some(w => w.includes('no importable channels'))).toBe(true);
-    expect(diagnostics).toEqual([
+    expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         severity: 'warning',
         code: 'dropped-animation',
         path: 'animations[0]',
       }),
-    ]);
+    ]));
   });
 
   it('warns about skins (rest pose; host drives the pose)', async () => {
@@ -1440,13 +1461,13 @@ describe('out-of-scope feature warnings', () => {
     gltf.skins = [{ joints: [0] }];
     const { warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     expect(warnings.some(w => w.toLowerCase().includes('skin'))).toBe(true);
-    expect(diagnostics).toEqual([
+    expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         severity: 'warning',
         code: 'skin-rest-pose',
         path: 'skins',
       }),
-    ]);
+    ]));
   });
 
   it('surfaces ignored cameras as structured import diagnostics', async () => {
@@ -1454,13 +1475,13 @@ describe('out-of-scope feature warnings', () => {
     gltf.cameras = [{ type: 'perspective' }];
     const { warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     expect(warnings.some(w => w.includes('Camera nodes are present but ignored'))).toBe(true);
-    expect(diagnostics).toEqual([
+    expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         severity: 'warning',
         code: 'ignored-camera',
         path: 'cameras[0]',
       }),
-    ]);
+    ]));
   });
 });
 
@@ -1922,5 +1943,31 @@ describe('KHR_lights_punctual → SceneEmitter[]', () => {
       w => w.includes('KHR_lights_punctual') && w.includes('NOT imported'),
     );
     expect(unsupportedWarn).toBeUndefined();
+  });
+
+  it('surfaces malformed punctual light references as structured diagnostics', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    gltf.nodes![1]!.extensions = { KHR_lights_punctual: { light: 99 } };
+    const punctual = gltf.extensions!.KHR_lights_punctual as { lights: Array<{ type: string; name?: string }> };
+    punctual.lights[2] = {
+      type: 'tube',
+      name: 'bad tube',
+    };
+
+    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
+
+    expect(scene.emitters).toHaveLength(1);
+    expect(warnings.some((warning) => warning.includes('light index 99'))).toBe(true);
+    expect(warnings.some((warning) => warning.includes('unsupported type "tube"'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'missing-punctual-light',
+        path: 'nodes[1].extensions.KHR_lights_punctual.light',
+      }),
+      expect.objectContaining({
+        code: 'unsupported-punctual-light-type',
+        path: 'extensions.KHR_lights_punctual.lights[2].type',
+      }),
+    ]));
   });
 });
