@@ -373,8 +373,11 @@ replacement for V28-B recaptures.
   adapter validation lane.
 - Real glTF golden PNG sweep on recommended backends (pt-webgpu WSL public-asset
   golden lane is covered; pt-webgl2/browser recommended-backend proof remains).
-- Mutation matrix on real GPU/browser harness: buffers, bind groups, denoiser
-  history, and GI propagation together.
+- Mutation matrix on real GPU/browser harness: pt-webgpu material/environment/
+  emitter mutation lanes now pass on lavapipe-lite and dzn full tier
+  (`behavioral-gate:dzn -- --filter mutation --require-full-tier`) after fixing
+  the primitive-less full-tier BVH/TLAS placeholder buffers. Broader geometry/
+  topology, denoiser-history, and walkaround GI propagation lanes remain.
 
 ## How To Use This Plan
 

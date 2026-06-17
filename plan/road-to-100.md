@@ -1190,6 +1190,12 @@ buffers, light-tree/lite-texture refresh, reset, and GPU-visible miss radiance,
 and `pt/mutation-emitter` proves `updateEmitter()` point-light patches propagate
 through emitter buffers/light-tree refresh/reset to GPU-visible direct lighting.
 This moves these seams beyond mock write-count tests on the available WSL adapter.
+2026-06-17 follow-up: the same three mutation lanes now also pass through
+`npm run behavioral-gate:dzn -- --filter mutation --require-full-tier` on the
+companion full-tier WSL dzn runtime. That run exposed and fixed a real
+primitive-less full-tier validation bug: empty `bvhNodes`/`tlasNodes` uploads
+used 16-byte generic placeholders while the WGSL `array<BVHNode>` bindings
+require a 32-byte minimum stride.
 
 Remaining proof is broader adapter-backed end-to-end promotion: full-tier
 geometry/topology/resource mutation lanes beyond environment buffers, cached

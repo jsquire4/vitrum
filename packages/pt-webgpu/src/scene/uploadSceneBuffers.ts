@@ -281,8 +281,15 @@ function writeBufferIfNonEmpty(buffer: GPUBuffer, data: ArrayBufferView, device:
   }
 }
 
+const BVH_NODE_BUFFER_BYTES = BVH_NODE_FLOATS * Float32Array.BYTES_PER_ELEMENT;
+
+const MIN_STORAGE_BUFFER_BYTES_BY_LABEL: Readonly<Record<string, number>> = {
+  'vitrum.pt-webgpu.scene.bvhNodes': BVH_NODE_BUFFER_BYTES,
+  'vitrum.pt-webgpu.scene.tlasNodes': BVH_NODE_BUFFER_BYTES,
+};
+
 function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBufferView): GPUBuffer {
-  const minSize = data.byteLength === 0 ? 16 : data.byteLength;
+  const minSize = Math.max(data.byteLength, MIN_STORAGE_BUFFER_BYTES_BY_LABEL[label] ?? 16);
   const buffer = device.createBuffer({
     label,
     size: Math.ceil(minSize / 4) * 4,
@@ -291,7 +298,7 @@ function createStorageBuffer(device: GPUDevice, label: string, data: ArrayBuffer
   if (data.byteLength > 0) {
     device.queue.writeBuffer(buffer, 0, data.buffer, data.byteOffset, data.byteLength);
   } else {
-    device.queue.writeBuffer(buffer, 0, new Uint32Array([0, 0, 0, 0]));
+    device.queue.writeBuffer(buffer, 0, new Uint32Array(Math.ceil(minSize / Uint32Array.BYTES_PER_ELEMENT)));
   }
   return buffer;
 }

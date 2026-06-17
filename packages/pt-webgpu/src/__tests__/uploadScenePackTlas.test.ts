@@ -40,6 +40,48 @@ function twoMeshScene(): Scene {
 }
 
 describe('uploadScenePackTlasOnly', () => {
+  it('allocates full BVH-node placeholders for primitive-less full-tier scenes', () => {
+    installWebGpuConstStubs();
+    const bufferDescs: GPUBufferDescriptor[] = [];
+    const device = {
+      queue: { writeBuffer: vi.fn(), writeTexture: vi.fn() },
+      createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
+        bufferDescs.push(desc);
+        return {
+          label: desc.label,
+          size: desc.size,
+          destroy: vi.fn(),
+        };
+      }),
+      ...textureStubMethods(),
+      limits: { maxTextureDimension2D: 8192 },
+    } as unknown as GPUDevice;
+
+    const scene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: {
+        kind: 'hdri',
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([1, 1, 1]),
+        },
+      },
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.bvhNodes.byteLength).toBe(0);
+    expect(packed.tlasNodes.byteLength).toBe(0);
+
+    const uploaded = uploadPackedScene(device, packed);
+    const sizesByLabel = new Map(bufferDescs.map((desc) => [desc.label, desc.size]));
+
+    expect(uploaded.bvhNodesBuffer).toMatchObject({ size: 32 });
+    expect(uploaded.tlasNodesBuffer).toMatchObject({ size: 32 });
+    expect(sizesByLabel.get('vitrum.pt-webgpu.scene.bvhNodes')).toBe(32);
+    expect(sizesByLabel.get('vitrum.pt-webgpu.scene.tlasNodes')).toBe(32);
+  });
+
   it('writes only TLAS GPU buffers and CPU mirrors', () => {
     installWebGpuConstStubs();
     const writeBuffer = vi.fn();
