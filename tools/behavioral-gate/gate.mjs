@@ -83,6 +83,7 @@ function readFlagValue(name) {
   return "";
 }
 const labelFilter = readFlagValue("--filter");
+const goldenVariant = readFlagValue("--golden-variant") || Deno.env.get("VITRUM_BEHAVIORAL_GOLDEN_VARIANT") || "";
 
 // ── Expectation table ─────────────────────────────────────────────────────────
 // keyed by config label; missing entry defaults to { expected: 'ok' }.
@@ -216,12 +217,7 @@ const WH_CONFIGS = [
 
 const REAL_GLTF_GOLDENS = Object.fromEntries(REAL_GLTF_BEHAVIORAL_PROOFS.map((proof) => [
   proof.label,
-  {
-    path: proof.goldenPath,
-    maxRmse: proof.thresholds.maxRmse,
-    maxMeanAbs: proof.thresholds.maxMeanAbs,
-    maxAbs: proof.thresholds.maxAbs,
-  },
+  goldenForProof(proof),
 ]));
 
 const GLTF_TOPOLOGY_GOLDENS = Object.fromEntries(GLTF_TOPOLOGY_BEHAVIORAL_PROOFS.map((proof) => [
@@ -233,6 +229,18 @@ const GLTF_TOPOLOGY_GOLDENS = Object.fromEntries(GLTF_TOPOLOGY_BEHAVIORAL_PROOFS
     maxAbs: proof.thresholds.maxAbs,
   },
 ]));
+
+function goldenForProof(proof) {
+  const variant = goldenVariant ? proof.variants?.[goldenVariant] : null;
+  const selected = variant ?? proof;
+  return {
+    path: selected.goldenPath,
+    maxRmse: selected.thresholds.maxRmse,
+    maxMeanAbs: selected.thresholds.maxMeanAbs,
+    maxAbs: selected.thresholds.maxAbs,
+    variant: variant ? goldenVariant : null,
+  };
+}
 
 // ── Scene builder ─────────────────────────────────────────────────────────────
 
@@ -1524,6 +1532,7 @@ async function compareOrUpdateGolden(label, pixels) {
       pass: true,
       updated: true,
       path: golden.path,
+      variant: golden.variant ?? null,
       rmse: 0,
       meanAbs: 0,
       maxAbs: 0,
@@ -1555,6 +1564,7 @@ async function compareOrUpdateGolden(label, pixels) {
   return {
     pass,
     path: golden.path,
+    variant: golden.variant ?? null,
     ...metrics,
     thresholds: {
       maxRmse: golden.maxRmse,
@@ -1852,10 +1862,11 @@ function formatGolden(golden) {
   if (!golden) return "";
   if (golden.updated) return `golden=updated:${golden.path}`;
   if (golden.error) return `golden=FAIL ${golden.error}`;
+  const variant = golden.variant ? ` variant=${golden.variant}` : "";
   const threshold = golden.thresholds
     ? ` <=(${golden.thresholds.maxRmse.toFixed(1)},${golden.thresholds.maxMeanAbs.toFixed(1)},${golden.thresholds.maxAbs})`
     : "";
-  return `golden=${golden.pass ? "ok" : "FAIL"} rmse=${golden.rmse.toFixed(3)} meanAbs=${golden.meanAbs.toFixed(3)} maxAbs=${golden.maxAbs}${threshold}`;
+  return `golden=${golden.pass ? "ok" : "FAIL"}${variant} rmse=${golden.rmse.toFixed(3)} meanAbs=${golden.meanAbs.toFixed(3)} maxAbs=${golden.maxAbs}${threshold}`;
 }
 
 function formatMutation(mutation) {
@@ -1871,6 +1882,7 @@ console.log(`Resolution: ${W}×${H}, SPP: ${SPP}`);
 if (selfTest) console.log("Mode: --self-test");
 if (updateGoldens) console.log("Mode: --update-goldens");
 if (requireFullTier) console.log("Mode: --require-full-tier");
+if (goldenVariant) console.log(`Golden variant: ${goldenVariant}`);
 if (labelFilter) console.log(`Filter: ${labelFilter}`);
 console.log("");
 

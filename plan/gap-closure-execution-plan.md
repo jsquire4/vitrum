@@ -375,10 +375,9 @@ replacement for V28-B recaptures.
   requires 34); use `behavioral-gate:dzn`, browser, or another real/full-tier
   adapter validation lane.
 - Real glTF golden PNG sweep on recommended backends (pt-webgpu WSL public-asset
-  lavapipe golden lane is covered; dzn full-tier execution is now status-recorded
-  with zero GPU errors for all 11 glTF lanes, but the three real-asset PNG
-  comparisons fail against lavapipe goldens and need full-tier recapture/tolerance;
-  pt-webgl2/browser recommended-backend proof remains).
+  lavapipe golden lane is covered; dzn full-tier execution now passes all 11
+  glTF lanes against explicit `dzn-full` real-asset goldens; pt-webgl2/browser
+  recommended-backend proof remains).
 - Mutation matrix on real GPU/browser harness: pt-webgpu material/environment/
   emitter mutation lanes now pass on lavapipe-lite and dzn full tier
   (`behavioral-gate:dzn -- --filter mutation --require-full-tier`) after fixing

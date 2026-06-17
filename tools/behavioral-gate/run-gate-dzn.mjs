@@ -20,6 +20,7 @@ const timeoutMs = parseTimeoutMs(process.env.VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_
 const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
 const gateArgs = process.argv.slice(2);
 const filter = readFlagValue(gateArgs, '--filter');
+const goldenVariant = process.env.VITRUM_BEHAVIORAL_GOLDEN_VARIANT ?? (gateArgs.includes('--require-full-tier') ? 'dzn-full' : '');
 const statusPath = resolveStatusPath(filter);
 
 if (!existsSync(dznEnv)) {
@@ -48,7 +49,9 @@ const result = spawnSync(
   ],
   {
     cwd: repoRoot,
-    env: process.env,
+    env: goldenVariant
+      ? { ...process.env, VITRUM_BEHAVIORAL_GOLDEN_VARIANT: goldenVariant }
+      : process.env,
     encoding: 'utf8',
     maxBuffer: 128 * 1024 * 1024,
   },
@@ -65,6 +68,7 @@ if (result.status === 124) {
     verdict: 'HOST-BLOCKED',
     command: `npm run behavioral-gate:dzn -- ${gateArgs.join(' ')}`.trim(),
     filter: filter || null,
+    goldenVariant: goldenVariant || null,
     timeoutMs,
     dznEnv,
     exitStatus: result.status,
@@ -93,6 +97,7 @@ if (result.status != null) {
     verdict: passed ? 'PASS' : 'FAIL',
     command: `npm run behavioral-gate:dzn -- ${gateArgs.join(' ')}`.trim(),
     filter: filter || null,
+    goldenVariant: goldenVariant || null,
     timeoutMs,
     dznEnv,
     exitStatus: result.status,
@@ -155,6 +160,7 @@ function parseConfigRows(stdout) {
       mutationMaxAbs: readNumberToken(mutation, 'maxAbs'),
       golden: golden || null,
       goldenStatus: readToken(golden, 'golden'),
+      goldenVariant: readToken(golden, 'variant'),
       rmse: readNumberToken(golden, 'rmse'),
       meanAbs: readNumberToken(golden, 'meanAbs'),
       maxAbs: readNumberToken(golden, 'maxAbs'),

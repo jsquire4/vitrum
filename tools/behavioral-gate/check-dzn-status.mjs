@@ -42,10 +42,11 @@ const EXPECTED = [
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-status.json",
     command: "npm run behavioral-gate:dzn -- --filter gltf --require-full-tier",
     filter: "gltf",
-    verdict: "FAIL",
-    exitStatus: 1,
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
     totalConfigs: 11,
-    failures: 3,
+    failures: 0,
     configs: [
       { label: "pt/gltf-unlit", verdict: "PASS", rawStatus: "OK", tier: "full" },
       { label: "pt/gltf-textured-pbr", verdict: "PASS", rawStatus: "OK", tier: "full" },
@@ -55,9 +56,9 @@ const EXPECTED = [
       { label: "pt/gltf-point-line-fallback", verdict: "PASS", rawStatus: "OK", tier: "full", goldenStatus: "ok", maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
       { label: "pt/gltf-triangle-strip-fan", verdict: "PASS", rawStatus: "OK", tier: "full", goldenStatus: "ok", maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
       { label: "pt/gltf-material-sweep", verdict: "PASS", rawStatus: "OK", tier: "full", goldenStatus: "ok", maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
-      { label: "pt/gltf-real-box-textured", verdict: "FAIL", rawStatus: "GOLDEN-DELTA", tier: "full", goldenStatus: "FAIL", minGoldenRmse: 8, minGoldenMaxAbs: 48 },
-      { label: "pt/gltf-real-draco", verdict: "FAIL", rawStatus: "GOLDEN-DELTA", tier: "full", goldenStatus: "FAIL", minGoldenRmse: 8, minGoldenMaxAbs: 48 },
-      { label: "pt/gltf-real-meshopt", verdict: "FAIL", rawStatus: "GOLDEN-DELTA", tier: "full", goldenStatus: "FAIL", minGoldenRmse: 8, minGoldenMaxAbs: 48 },
+      { label: "pt/gltf-real-box-textured", verdict: "PASS", rawStatus: "OK", tier: "full", goldenStatus: "ok", goldenVariant: "dzn-full", maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
+      { label: "pt/gltf-real-draco", verdict: "PASS", rawStatus: "OK", tier: "full", goldenStatus: "ok", goldenVariant: "dzn-full", maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
+      { label: "pt/gltf-real-meshopt", verdict: "PASS", rawStatus: "OK", tier: "full", goldenStatus: "ok", goldenVariant: "dzn-full", maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
     ],
   },
 ];
@@ -78,6 +79,9 @@ for (const expected of EXPECTED) {
   if (status.verdict !== expected.verdict) fail(`${expected.path}: verdict must be ${expected.verdict}, got ${status.verdict}`);
   if (status.command !== expected.command) fail(`${expected.path}: command mismatch`);
   if (status.filter !== expected.filter) fail(`${expected.path}: filter mismatch`);
+  if (expected.goldenVariant !== undefined && (status.goldenVariant ?? null) !== expected.goldenVariant) {
+    fail(`${expected.path}: goldenVariant mismatch`);
+  }
   if (status.exitStatus !== expected.exitStatus) fail(`${expected.path}: exitStatus must be ${expected.exitStatus}`);
   if (status.signal != null) fail(`${expected.path}: signal must be null`);
   if (status.summary?.totalConfigs !== expected.totalConfigs) fail(`${expected.path}: totalConfigs mismatch`);
@@ -97,6 +101,9 @@ for (const expected of EXPECTED) {
     if (expectedConfig.goldenStatus != null) {
       if (config.goldenStatus !== expectedConfig.goldenStatus) {
         fail(`${expected.path}: ${expectedConfig.label} goldenStatus mismatch`);
+      }
+      if (expectedConfig.goldenVariant !== undefined && (config.goldenVariant ?? null) !== expectedConfig.goldenVariant) {
+        fail(`${expected.path}: ${expectedConfig.label} goldenVariant mismatch`);
       }
       if (expectedConfig.maxRmse != null && expectedConfig.maxMeanAbs != null && expectedConfig.maxAbs != null) {
         if (config.rmse > expectedConfig.maxRmse) fail(`${expected.path}: ${expectedConfig.label} RMSE exceeds bound`);
@@ -133,4 +140,4 @@ for (const expected of EXPECTED) {
   }
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (3 committed dzn status artifacts: 2 pass, 1 known finding)");
+console.log("[behavioral-gate-dzn-status-check] PASS (3 committed dzn status artifacts)");
