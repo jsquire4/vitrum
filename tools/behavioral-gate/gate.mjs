@@ -113,6 +113,7 @@ const EXPECTATION_TABLE = {
   "pt/gltf-skinned-animation": { expected: "ok" },
   "pt/gltf-draco-mock":   { expected: "ok" },
   "pt/gltf-point-line-fallback": { expected: "ok" },
+  "pt/gltf-triangle-strip-fan": { expected: "ok" },
   "pt/gltf-material-sweep": { expected: "ok" },
   "pt/gltf-real-box-textured": { expected: "ok" },
   "pt/gltf-real-draco": { expected: "ok" },
@@ -175,6 +176,7 @@ const PT_CONFIGS = [
   { label: "pt/gltf-skinned-animation", eng: {},                               scene: { gltf: "skinned-animation" } },
   { label: "pt/gltf-draco-mock",   eng: {},                                    scene: { gltf: "draco-mock" } },
   { label: "pt/gltf-point-line-fallback", eng: {},                              scene: { gltf: "point-line-fallback" } },
+  { label: "pt/gltf-triangle-strip-fan", eng: {},                               scene: { gltf: "triangle-strip-fan" } },
   { label: "pt/gltf-material-sweep", eng: {},                                  scene: { gltf: "material-sweep" } },
   { label: "pt/gltf-real-box-textured", eng: {},                                scene: { gltfReal: "box-textured-glb" } },
   { label: "pt/gltf-real-draco", eng: {},                                       scene: { gltfReal: "cesium-milk-truck-draco" } },
@@ -728,12 +730,69 @@ function makePointLineFallbackGltfFixture() {
   return { ...finalizeSingleMeshGltf(builder, 0), pointLineFallback: true };
 }
 
+function makeTriangleStripFanGltfFixture() {
+  const builder = createGltfBufferBuilder();
+  const normals = new Float32Array([
+    0, 0, 1,
+    0, 0, 1,
+    0, 0, 1,
+    0, 0, 1,
+  ]);
+  const stripPositions = new Float32Array([
+    -0.78, -0.45, 0,
+    -0.12, -0.45, 0,
+    -0.78,  0.45, 0,
+    -0.12,  0.45, 0,
+  ]);
+  const fanPositions = new Float32Array([
+     0.12, -0.45, 0,
+     0.78, -0.45, 0,
+     0.78,  0.45, 0,
+     0.12,  0.45, 0,
+  ]);
+  const normal = builder.addAccessor(normals, "VEC3", 5126, 3);
+  const stripPosition = builder.addAccessor(stripPositions, "VEC3", 5126, 3, {
+    min: [-0.78, -0.45, 0],
+    max: [-0.12, 0.45, 0],
+  });
+  const fanPosition = builder.addAccessor(fanPositions, "VEC3", 5126, 3, {
+    min: [0.12, -0.45, 0],
+    max: [0.78, 0.45, 0],
+  });
+  builder.gltf.extensionsUsed = ["KHR_materials_unlit"];
+  builder.gltf.materials.push({
+    extensions: { KHR_materials_unlit: {} },
+    pbrMetallicRoughness: {
+      baseColorFactor: [0.12, 0.78, 0.95, 1],
+      roughnessFactor: 1,
+      metallicFactor: 0,
+    },
+  });
+  builder.gltf.meshes.push({
+    name: "triangle-topology-behavioral",
+    primitives: [
+      {
+        attributes: { POSITION: stripPosition, NORMAL: normal },
+        mode: 5,
+        material: 0,
+      },
+      {
+        attributes: { POSITION: fanPosition, NORMAL: normal },
+        mode: 6,
+        material: 0,
+      },
+    ],
+  });
+  return { ...finalizeSingleMeshGltf(builder, 0), triangleStripFan: true };
+}
+
 async function buildGltfFixtureScene(kind) {
   const fixture =
     kind === "material-sweep" ? { ...makeSweepGltf(), ...makeSweepTextureDecodeHooks(), materialSweep: true }
       : kind === "skinned-animation" ? makeSkinnedAnimationGltfFixture()
       : kind === "draco-mock" ? makeDracoMockGltfFixture()
       : kind === "point-line-fallback" ? makePointLineFallbackGltfFixture()
+      : kind === "triangle-strip-fan" ? makeTriangleStripFanGltfFixture()
       : makeQuadGltfFixture(kind);
   const preparedScenes = [];
   const primitivePatches = [];
@@ -875,6 +934,36 @@ async function buildGltfFixtureScene(kind) {
       if (!diagnostic) {
         throw new Error(`glTF point/line fallback missed source-pathed diagnostic for mode ${mode} (${name})`);
       }
+    }
+  }
+  if (kind === "triangle-strip-fan") {
+    if (importedScene.primitives.length !== 2) {
+      throw new Error(`glTF triangle topology fixture imported ${importedScene.primitives.length} primitives, expected 2`);
+    }
+    const expected = [
+      ["TRIANGLE_STRIP", [0, 1, 2, 2, 1, 3]],
+      ["TRIANGLE_FAN", [1, 2, 0, 2, 3, 0]],
+    ];
+    for (const [index, [name, expectedIndices]] of expected.entries()) {
+      const primitive = importedScene.primitives[index];
+      if (primitive?.kind !== "mesh" || primitive.positions.length === 0 || (primitive.indices?.length ?? 0) === 0) {
+        throw new Error(`glTF ${name} fixture did not produce renderable mesh geometry`);
+      }
+      const indices = Array.from(primitive.indices ?? []);
+      if (indices.join(",") !== expectedIndices.join(",")) {
+        throw new Error(`glTF ${name} fixture triangulated to [${indices.join(",")}], expected [${expectedIndices.join(",")}]`);
+      }
+    }
+    const topologyDiagnostics = result.diagnostics.filter((d) =>
+      d.code === "unsupported-primitive-mode" ||
+      d.code === "fallback-generated-primitive-mode" ||
+      d.code === "empty-triangulated-primitive"
+    );
+    if (topologyDiagnostics.length > 0) {
+      throw new Error(
+        `glTF triangle topology fixture emitted unexpected topology diagnostics: ` +
+        topologyDiagnostics.map((d) => `${d.code}@${d.path}`).join(" | "),
+      );
     }
   }
 
@@ -1381,6 +1470,12 @@ const GLTF_GOLDENS = {
   },
   "pt/gltf-point-line-fallback": {
     path: "tools/reference-renders/gltf-point-line-behavioral/pt-gltf-point-line-fallback.png",
+    maxRmse: 8.0,
+    maxMeanAbs: 4.0,
+    maxAbs: 48,
+  },
+  "pt/gltf-triangle-strip-fan": {
+    path: "tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png",
     maxRmse: 8.0,
     maxMeanAbs: 4.0,
     maxAbs: 48,

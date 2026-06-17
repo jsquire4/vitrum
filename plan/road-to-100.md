@@ -566,7 +566,7 @@ render-changing wave lands, or A/B attribution becomes impossible.
 
 #### 1C — Import (`gltfToScene.ts`, `materials.ts`, `accessors.ts`)
 
-**Closed:** strip/fan triangulation, morph POSITION/NORMAL, animations, bound skins, punctual lights, KHR material extensions, `resolveTextureRef` UV/transform. Skin attributes now match importer semantics in compatibility preflight: `JOINTS_0` / `WEIGHTS_0` only predict `skinned-mesh` when a node binds `skin` and both streams are present; unbound or incomplete skin streams are structured unsupported issues and best-effort static-mesh fallbacks.
+**Closed:** strip/fan triangulation, morph POSITION/NORMAL, animations, bound skins, punctual lights, KHR material extensions, `resolveTextureRef` UV/transform. Skin attributes now match importer semantics in compatibility preflight: `JOINTS_0` / `WEIGHTS_0` only predict `skinned-mesh` when a node binds `skin` and both streams are present; unbound or incomplete skin streams are structured unsupported issues and best-effort static-mesh fallbacks. 2026-06-17 proof follow-up: `pt/gltf-triangle-strip-fan` now imports `TRIANGLE_STRIP` and `TRIANGLE_FAN` through `loadGltfForEngine()`, asserts the exact generated triangle-list indices, rejects unexpected topology diagnostics, renders on the adapter, and compares against `tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png`.
 
 **Still required:**
 
