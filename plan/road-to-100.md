@@ -1078,6 +1078,11 @@ On WSL lavapipe these gates prove one-call glTF decode/controller/backend
 boot/readback for the synthetic material-heavy asset and three real public
 assets, but `pt-webgpu` runs in the lite profile and still emits structured
 warnings for maps/lobes that the lite profile does not render.
+`tools/behavioral-gate/gate.mjs` now prints the resolved `tier=full|lite` for
+every pt-webgpu config and supports `--require-full-tier`, which fails any
+selected non-lite pt-webgpu config that resolves to lite before updating or
+comparing a golden. Use that flag for the remaining full-tier material-fidelity
+capture lane so a green lite run cannot be mistaken for full-tier evidence.
 
 **Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
 

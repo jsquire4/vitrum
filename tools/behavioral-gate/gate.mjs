@@ -23,6 +23,9 @@
  * Focused subset:
  *   ... behavioral-gate -- --filter gltf
  *
+ * Require selected non-lite pt-webgpu configs to resolve to the full tier:
+ *   ... behavioral-gate -- --filter gltf-material-sweep --require-full-tier
+ *
  * Exit codes:
  *   0 — all configs passed their expectations
  *   1 — one or more configs failed
@@ -68,6 +71,7 @@ import {
 // ── CLI flags ─────────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
 const updateGoldens = Deno.args.includes("--update-goldens");
+const requireFullTier = Deno.args.includes("--require-full-tier");
 function readFlagValue(name) {
   const eq = Deno.args.find((a) => a.startsWith(`${name}=`));
   if (eq) return eq.slice(name.length + 1);
@@ -1313,6 +1317,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   let engine  = null;
   let pixels  = null;
   let errorMsg = null;
+  let traceTier = "unknown";
 
   try {
     engine = await createPTEngine_WebGPU({
@@ -1321,6 +1326,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       maxSamplesPerPixel: SPP,
       ...engineOpts,
     });
+    traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
 
     const scene = await buildGateScene(sceneOpts);
     engine.setScene(scene);
@@ -1366,15 +1372,20 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
 
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
+  const wrongTier = requireFullTier && !isLite && traceTier !== "full";
   let golden = null;
-  if (!nans && errCount === 0 && lum >= LUM_THRESHOLD) {
+  if (!wrongTier && !nans && errCount === 0 && lum >= LUM_THRESHOLD) {
     golden = await compareOrUpdateGolden(label, pixels);
   }
-  const rawStatus = nans ? "NaN"
-    : (errCount > 0 ? "GPU-ERROR"
-      : (lum < LUM_THRESHOLD ? "BLACK"
-        : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK")));
-  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden };
+  const rawStatus = wrongTier ? "WRONG-TIER"
+    : (nans ? "NaN"
+      : (errCount > 0 ? "GPU-ERROR"
+        : (lum < LUM_THRESHOLD ? "BLACK"
+          : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK"))));
+  const tierMsg = wrongTier
+    ? `--require-full-tier requested but pt-webgpu resolved ${traceTier}`
+    : "";
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden, traceTier, tierMsg };
 }
 
 // ── walkaround-hybrid runner ──────────────────────────────────────────────────
@@ -1497,6 +1508,7 @@ console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
 console.log(`Resolution: ${W}×${H}, SPP: ${SPP}`);
 if (selfTest) console.log("Mode: --self-test");
 if (updateGoldens) console.log("Mode: --update-goldens");
+if (requireFullTier) console.log("Mode: --require-full-tier");
 if (labelFilter) console.log(`Filter: ${labelFilter}`);
 console.log("");
 
@@ -1517,9 +1529,11 @@ for (const cfg of ptConfigs) {
   const goldenDetail = formatGolden(r.golden);
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
+    : r.tierMsg
+      ? `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.tierMsg}`
     : r.gpuErrorMsg
-      ? `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
-    : `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
+      ? `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
+    : `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
   const detailWithGolden = goldenDetail ? `${detail} | ${goldenDetail}` : detail;
   console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detailWithGolden}${note ? " | " + note : ""}`);
 }
