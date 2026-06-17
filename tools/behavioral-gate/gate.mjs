@@ -1146,7 +1146,13 @@ function hasNaN(pixels) {
   return false;
 }
 
-const REAL_GLTF_GOLDENS = {
+const GLTF_GOLDENS = {
+  "pt/gltf-material-sweep": {
+    path: "tools/reference-renders/gltf-material-sweep-behavioral/pt-gltf-material-sweep.png",
+    maxRmse: 8.0,
+    maxMeanAbs: 4.0,
+    maxAbs: 48,
+  },
   "pt/gltf-real-box-textured": {
     path: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-box-textured.png",
     maxRmse: 8.0,
@@ -1173,6 +1179,11 @@ function pngFromPixels(pixels, width, height) {
   return PNG.sync.write(png);
 }
 
+function dirname(path) {
+  const lastSlash = path.lastIndexOf("/");
+  return lastSlash <= 0 ? "." : path.slice(0, lastSlash);
+}
+
 function comparePixels(candidate, baseline) {
   if (candidate.length !== baseline.length) {
     throw new Error(`pixel buffer length mismatch (${candidate.length} vs ${baseline.length})`);
@@ -1196,11 +1207,11 @@ function comparePixels(candidate, baseline) {
 }
 
 async function compareOrUpdateGolden(label, pixels) {
-  const golden = REAL_GLTF_GOLDENS[label];
+  const golden = GLTF_GOLDENS[label];
   if (!golden) return null;
 
   if (updateGoldens) {
-    await Deno.mkdir("tools/reference-renders/gltf-real-behavioral", { recursive: true });
+    await Deno.mkdir(dirname(golden.path), { recursive: true });
     await Deno.writeFile(golden.path, pngFromPixels(pixels, W, H));
     return {
       pass: true,
