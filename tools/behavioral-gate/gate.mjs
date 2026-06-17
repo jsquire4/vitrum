@@ -56,6 +56,8 @@ import { createPTEngine_WebGPU } from "@vitrum/pt-webgpu";
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
 import { loadGltfForEngine } from "@vitrum/gltf-adapter";
+import { Buffer } from "node:buffer";
+import { PNG } from "npm:pngjs@7.0.0";
 import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
 import {
   SWEEP_MAPS,
@@ -65,6 +67,7 @@ import {
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
+const updateGoldens = Deno.args.includes("--update-goldens");
 function readFlagValue(name) {
   const eq = Deno.args.find((a) => a.startsWith(`${name}=`));
   if (eq) return eq.slice(name.length + 1);
@@ -1143,6 +1146,106 @@ function hasNaN(pixels) {
   return false;
 }
 
+const REAL_GLTF_GOLDENS = {
+  "pt/gltf-real-box-textured": {
+    path: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-box-textured.png",
+    maxRmse: 8.0,
+    maxMeanAbs: 4.0,
+    maxAbs: 48,
+  },
+  "pt/gltf-real-draco": {
+    path: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-draco.png",
+    maxRmse: 8.0,
+    maxMeanAbs: 4.0,
+    maxAbs: 48,
+  },
+  "pt/gltf-real-meshopt": {
+    path: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-meshopt.png",
+    maxRmse: 8.0,
+    maxMeanAbs: 4.0,
+    maxAbs: 48,
+  },
+};
+
+function pngFromPixels(pixels, width, height) {
+  const png = new PNG({ width, height });
+  png.data = Buffer.from(pixels);
+  return PNG.sync.write(png);
+}
+
+function comparePixels(candidate, baseline) {
+  if (candidate.length !== baseline.length) {
+    throw new Error(`pixel buffer length mismatch (${candidate.length} vs ${baseline.length})`);
+  }
+  let sumSq = 0;
+  let sumAbs = 0;
+  let maxAbs = 0;
+  for (let i = 0; i < candidate.length; i++) {
+    const delta = candidate[i] - baseline[i];
+    const abs = Math.abs(delta);
+    sumSq += delta * delta;
+    sumAbs += abs;
+    maxAbs = Math.max(maxAbs, abs);
+  }
+  const n = candidate.length;
+  return {
+    rmse: Math.sqrt(sumSq / n),
+    meanAbs: sumAbs / n,
+    maxAbs,
+  };
+}
+
+async function compareOrUpdateGolden(label, pixels) {
+  const golden = REAL_GLTF_GOLDENS[label];
+  if (!golden) return null;
+
+  if (updateGoldens) {
+    await Deno.mkdir("tools/reference-renders/gltf-real-behavioral", { recursive: true });
+    await Deno.writeFile(golden.path, pngFromPixels(pixels, W, H));
+    return {
+      pass: true,
+      updated: true,
+      path: golden.path,
+      rmse: 0,
+      meanAbs: 0,
+      maxAbs: 0,
+    };
+  }
+
+  let decoded;
+  try {
+    decoded = PNG.sync.read(Buffer.from(await Deno.readFile(golden.path)));
+  } catch (error) {
+    return {
+      pass: false,
+      path: golden.path,
+      error: `missing/unreadable golden PNG: ${error.message}`,
+    };
+  }
+  if (decoded.width !== W || decoded.height !== H) {
+    return {
+      pass: false,
+      path: golden.path,
+      error: `golden PNG size ${decoded.width}x${decoded.height} does not match gate size ${W}x${H}`,
+    };
+  }
+  const metrics = comparePixels(pixels, decoded.data);
+  const pass =
+    metrics.rmse <= golden.maxRmse &&
+    metrics.meanAbs <= golden.maxMeanAbs &&
+    metrics.maxAbs <= golden.maxAbs;
+  return {
+    pass,
+    path: golden.path,
+    ...metrics,
+    thresholds: {
+      maxRmse: golden.maxRmse,
+      maxMeanAbs: golden.maxMeanAbs,
+      maxAbs: golden.maxAbs,
+    },
+  };
+}
+
 async function waitForEngineReady(engine, label, timeoutMs = 120_000) {
   const deadline = Date.now() + timeoutMs;
   while (true) {
@@ -1252,8 +1355,15 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
 
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
-  const rawStatus = nans ? "NaN" : (errCount > 0 ? "GPU-ERROR" : (lum < LUM_THRESHOLD ? "BLACK" : "OK"));
-  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg };
+  let golden = null;
+  if (!nans && errCount === 0 && lum >= LUM_THRESHOLD) {
+    golden = await compareOrUpdateGolden(label, pixels);
+  }
+  const rawStatus = nans ? "NaN"
+    : (errCount > 0 ? "GPU-ERROR"
+      : (lum < LUM_THRESHOLD ? "BLACK"
+        : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK")));
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden };
 }
 
 // ── walkaround-hybrid runner ──────────────────────────────────────────────────
@@ -1359,12 +1469,23 @@ async function runSelfTestConfig() {
   };
 }
 
+function formatGolden(golden) {
+  if (!golden) return "";
+  if (golden.updated) return `golden=updated:${golden.path}`;
+  if (golden.error) return `golden=FAIL ${golden.error}`;
+  const threshold = golden.thresholds
+    ? ` <=(${golden.thresholds.maxRmse.toFixed(1)},${golden.thresholds.maxMeanAbs.toFixed(1)},${golden.thresholds.maxAbs})`
+    : "";
+  return `golden=${golden.pass ? "ok" : "FAIL"} rmse=${golden.rmse.toFixed(3)} meanAbs=${golden.meanAbs.toFixed(3)} maxAbs=${golden.maxAbs}${threshold}`;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 console.log("=== behavioral-gate ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
 console.log(`Resolution: ${W}×${H}, SPP: ${SPP}`);
 if (selfTest) console.log("Mode: --self-test");
+if (updateGoldens) console.log("Mode: --update-goldens");
 if (labelFilter) console.log(`Filter: ${labelFilter}`);
 console.log("");
 
@@ -1382,12 +1503,14 @@ for (const cfg of ptConfigs) {
   results.push(r);
   const { pass, note } = checkExpectation(r.label, r.rawStatus, r.lum, r.errCount, r.nans);
   const marker = pass ? "PASS" : "FAIL";
+  const goldenDetail = formatGolden(r.golden);
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
     : r.gpuErrorMsg
       ? `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
     : `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
-  console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detail}${note ? " | " + note : ""}`);
+  const detailWithGolden = goldenDetail ? `${detail} | ${goldenDetail}` : detail;
+  console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detailWithGolden}${note ? " | " + note : ""}`);
 }
 
 console.log("");

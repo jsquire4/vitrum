@@ -1057,12 +1057,21 @@ for BoxTextured GLB, CesiumMilkTruck Draco, and MeshoptCubeTest meshopt assets.
 normalizes the imported scene to the gate camera, boots `pt-webgpu`, and
 requires finite non-black readback with zero captured GPU errors.
 
-**Still queued after this follow-up:** golden-PNG comparison/tolerance hashes and
-full-tier rich-material fidelity captures. On WSL lavapipe these gates prove
-one-call glTF decode/controller/backend boot/readback for the synthetic
-material-heavy asset and three real public assets, but `pt-webgpu` runs in the
-lite profile and still emits structured warnings for maps/lobes that the lite
-profile does not render.
+✅ **REAL-ASSET GOLDEN/TOLERANCE GATE ADDED (2026-06-17):**
+`tools/reference-renders/gltf-real-behavioral/` now contains committed 64x64
+lavapipe PNG baselines for the same three real public assets. The normal
+`npm run behavioral-gate -- --filter gltf-real` path reads those PNGs and fails
+the config as `GOLDEN-DELTA` if byte RMSE, mean absolute error, or max-channel
+delta exceeds the per-asset tolerance. Recapture is explicit via
+`tools/behavioral-gate/gate.mjs --filter gltf-real --update-goldens` with
+write permission to the reference-render directory.
+
+**Still queued after this follow-up:** golden-PNG/tolerance comparisons for the
+synthetic material-heavy fixture and full-tier rich-material fidelity captures.
+On WSL lavapipe these gates prove one-call glTF decode/controller/backend
+boot/readback for the synthetic material-heavy asset and three real public
+assets, but `pt-webgpu` runs in the lite profile and still emits structured
+warnings for maps/lobes that the lite profile does not render.
 
 **Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
 
