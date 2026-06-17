@@ -14,10 +14,11 @@
  *  distribution; 65521 is the largest prime below 2^16. */
 export const SPPM_MAX_CELLS = 65521;
 
-/** Photons stored per cell (ring buffer).  Over-capacity photons are dropped
- *  (their slot is counted but not written); the density estimator clamps to
- *  this capacity so only the most-recent SPPM_CELL_CAPACITY photons contribute
- *  per cell.  R7a behavioral-gate fix (2026-06-10): capacity 128 made the cells
+/** Photons stored per cell (bounded reservoir).  Over-capacity cells retain a
+ *  random subset of SPPM_CELL_CAPACITY photons and the gather estimator weights
+ *  stored samples by totalInserted / storedCount, so the cap controls memory
+ *  without silently treating the retained subset as the whole cell.  R7a
+ *  behavioral-gate fix (2026-06-10): capacity 128 made the cells
  *  buffer 65521 × 128 × 48 B ≈ 402 MiB — EXCEEDING WebGPU's default
  *  maxBufferSize (256 MiB), so every photon-map render failed buffer validation
  *  on default-limit devices.  32 → ≈ 100 MiB, inside BOTH the default maxBufferSize (256 MiB) AND the default maxStorageBufferBindingSize (128 MiB — the binding limit binds first); the

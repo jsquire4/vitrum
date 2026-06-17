@@ -261,8 +261,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // ahead of the top-level normal map when authored.
     // Re-pinned 2026-06-16: SPPM progressive gather now queries the stable r0
     // insertion hash grid while retaining the per-pixel shrunk physical disk.
-    expect(digest).toBe('4bb279c58804cb1edd61eeabccb8991a0071043c9cf7dff2f1bc01649e3ee3ee');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(372273);
+    // Re-pinned 2026-06-16: SPPM over-capacity cells now use bounded reservoir
+    // replacement plus totalInserted/storedCount density compensation.
+    expect(digest).toBe('9fc69b507e158d78bcb04c7781275b4ebc85e1f178d949d23558c43ebe076fca');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(372632);
   });
 });
 

@@ -84,6 +84,17 @@ function sppmNeighbourhoodCellsTS(
   return cells;
 }
 
+function sppmReservoirSlotTS(rawSlot: number, capacity: number, xi: number): number | null {
+  if (rawSlot < capacity) return rawSlot;
+  const clamped = Math.max(0, Math.min(xi, 0.99999994));
+  const candidate = Math.floor(clamped * (rawSlot + 1));
+  return candidate < capacity ? candidate : null;
+}
+
+function sppmCellSampleScaleTS(totalInCell: number, stored: number): number {
+  return totalInCell / Math.max(stored, 1);
+}
+
 describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
   it('constants are consistent with each other', () => {
     // SPPM_MAX_CELLS must be a prime-ish value in a sensible range (≥ 1000).
@@ -176,6 +187,28 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
     expect(oldShrunkGridCells.has(insertedCell)).toBe(false);
     expect(fixedInsertionGridCells.has(insertedCell)).toBe(true);
     expect(dist2).toBeLessThanOrEqual(shrunkGatherRadius * shrunkGatherRadius);
+  });
+
+  it('over-capacity cells use reservoir replacement instead of newest-photon modulo overwrite', () => {
+    expect(sppmReservoirSlotTS(31, SPPM_CELL_CAPACITY, 0.9)).toBe(31);
+    expect(sppmReservoirSlotTS(32, SPPM_CELL_CAPACITY, 0.0)).toBe(0);
+    expect(sppmReservoirSlotTS(32, SPPM_CELL_CAPACITY, 31.25 / 33)).toBe(31);
+    expect(sppmReservoirSlotTS(32, SPPM_CELL_CAPACITY, 32.25 / 33)).toBeNull();
+    expect(sppmReservoirSlotTS(63, SPPM_CELL_CAPACITY, 31.75 / 64)).toBe(31);
+    expect(sppmReservoirSlotTS(63, SPPM_CELL_CAPACITY, 32.25 / 64)).toBeNull();
+  });
+
+  it('overflow compensation scales stored photons back to the cell insertion count', () => {
+    const totalInCell = 40;
+    const stored = SPPM_CELL_CAPACITY;
+    const storedHitsInDisk = 16;
+    const scale = sppmCellSampleScaleTS(totalInCell, stored);
+
+    expect(scale).toBeCloseTo(1.25, 10);
+    expect(storedHitsInDisk).toBeLessThan(totalInCell);
+    expect(storedHitsInDisk * scale).toBeCloseTo(20, 10);
+    expect(sppmCellSampleScaleTS(12, 12)).toBe(1);
+    expect(Number.isFinite(sppmCellSampleScaleTS(0, 0))).toBe(true);
   });
 });
 
@@ -278,7 +311,7 @@ describe('SPPM WGSL structural assertions (A4)', () => {
   it('SPPM_GROUP3_BINDINGS_WGSL contains sppmGatherProgressive and sppmInsertPhoton', () => {
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('fn sppmGather('); // dead — deleted D9.9
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmGatherProgressive(');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmInsertPhoton(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmInsertPhoton(pos: vec3f, flux: vec3f, dir: vec3f, radius: f32, reservoirXi: f32)');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmCellIndex(');
   });
 
@@ -294,6 +327,16 @@ describe('SPPM WGSL structural assertions (A4)', () => {
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('* gridRadius');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmCellIndex(probe, gridRadius)');
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('sppmCellIndex(probe, r)');
+  });
+
+  it('SPPM_GROUP3_BINDINGS_WGSL uses reservoir replacement and density compensation under cell overflow', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('if (rawSlot >= SPPM_CELL_CAPACITY_WGSL)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let candidate = u32(floor(xi * f32(rawSlot + 1u)))');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('rawSlot % SPPM_CELL_CAPACITY_WGSL');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let totalInCell = atomicLoad(&sppmCellCounters[cellIdx]);');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let cellSampleScale = f32(totalInCell) / f32(max(stored, 1u));');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('* cellSampleScale');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('M    = M + cellSampleScale');
   });
 
   it('SPPM_PHOTON_PASS_WGSL contains the sppmEmitPhotons entry point', () => {

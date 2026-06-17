@@ -8,12 +8,13 @@
  * Binding layout (@group(3), bindings 6–9):
  *   binding(6)  sppmPhotonCells   — PhotonRecord[SPPM_MAX_CELLS × SPPM_CELL_CAPACITY]
  *               Each cell has SPPM_CELL_CAPACITY slots.  The photon pass writes
- *               photons here atomically (modulo capacity) and the megakernel
- *               reads from them.  access = read_write on both pipelines.
+ *               photons here atomically; over-capacity cells use bounded
+ *               reservoir replacement and the megakernel compensates by
+ *               totalInserted / storedCount.  access = read_write on both pipelines.
  *   binding(7)  sppmCellCounters  — atomic<u32>[SPPM_MAX_CELLS]
- *               Cumulative photon-insertion counter per cell.  Modulo
- *               SPPM_CELL_CAPACITY gives the ring slot; min-cap gives the true
- *               count for the density estimate.
+ *               Cumulative photon-insertion counter per cell.  The counter is
+ *               not clamped; min-cap gives the bounded stored count and the
+ *               counter/stored ratio gives the overflow compensation weight.
  *   binding(8)  sppmStats         — SppmStats (uniform UBO, 32 bytes)
  *               currentRadius, frameIndex, photonCount, sceneExtent.
  *   binding(9)  sppmPixelStats    — SppmPixelStats[W×H] (per-pixel progressive
@@ -158,15 +159,22 @@ fn sppmCellIndex(pos: vec3f, radius: f32) -> u32 {
 }
 
 // Insert a photon into the hash grid (write path, photon pass only).
-// Uses atomicAdd on the counter to claim a ring-buffer slot; overwrites
-// the slot at (cellIdx * SPPM_CELL_CAPACITY + slot % SPPM_CELL_CAPACITY).
-// Photons that overflow capacity are COUNTED but not STORED (the counter
-// is not clamped, so the density estimate uses min(count, capacity) for
-// the correct N without memory overflow).
-fn sppmInsertPhoton(pos: vec3f, flux: vec3f, dir: vec3f, radius: f32) {
+// Uses atomicAdd on the counter to claim the item index in this hash cell.
+// Below capacity the index is stored directly. Above capacity, bounded reservoir
+// replacement keeps an unbiased subset of the cell photons; gather multiplies
+// stored samples by totalInserted / storedCount to preserve density under the cap.
+fn sppmInsertPhoton(pos: vec3f, flux: vec3f, dir: vec3f, radius: f32, reservoirXi: f32) {
   let cellIdx = sppmCellIndex(pos, radius);
   let rawSlot = atomicAdd(&sppmCellCounters[cellIdx], 1u);
-  let slot = rawSlot % SPPM_CELL_CAPACITY_WGSL;
+  var slot = rawSlot;
+  if (rawSlot >= SPPM_CELL_CAPACITY_WGSL) {
+    let xi = clamp(reservoirXi, 0.0, 0.99999994);
+    let candidate = u32(floor(xi * f32(rawSlot + 1u)));
+    if (candidate >= SPPM_CELL_CAPACITY_WGSL) {
+      return;
+    }
+    slot = candidate;
+  }
   let base = cellIdx * SPPM_CELL_CAPACITY_WGSL + slot;
   sppmPhotonCells[base].position    = vec4f(pos, 0.0);
   sppmPhotonCells[base].flux        = vec4f(flux, 0.0);
@@ -269,7 +277,9 @@ fn sppmGatherProgressive(
       for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
         let probe   = pos + vec3f(f32(dx), f32(dy), f32(dz)) * gridRadius;
         let cellIdx = sppmCellIndex(probe, gridRadius);
-        let stored  = min(atomicLoad(&sppmCellCounters[cellIdx]), SPPM_CELL_CAPACITY_WGSL);
+        let totalInCell = atomicLoad(&sppmCellCounters[cellIdx]);
+        let stored  = min(totalInCell, SPPM_CELL_CAPACITY_WGSL);
+        let cellSampleScale = f32(totalInCell) / f32(max(stored, 1u));
         let base    = cellIdx * SPPM_CELL_CAPACITY_WGSL;
         for (var si = 0u; si < stored; si = si + 1u) {
           let ph    = sppmPhotonCells[base + si];
@@ -291,8 +301,8 @@ fn sppmGatherProgressive(
           // Accumulate BRDF-weighted photon flux (no π r² denominator here —
           // it is applied once in the final estimate, not per-photon, which
           // keeps τ in physically-consistent units: [W·sr/m²·sr] = [W/m²]).
-          phiM = phiM + throughput * brdf * fluxOut * nDotL;
-          M    = M + 1.0;
+          phiM = phiM + throughput * brdf * fluxOut * nDotL * cellSampleScale;
+          M    = M + cellSampleScale;
         }
       }
     }
@@ -619,7 +629,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
 
     if (!isSpecular) {
       // Deposit photon at this diffuse hit.
-      sppmInsertPhoton(hp, flux, ray.direction, sppmStats.currentRadius);
+      sppmInsertPhoton(hp, flux, ray.direction, sppmStats.currentRadius, rand_f32(&rng));
       // Diffuse surfaces absorb the photon (Russian roulette in future; v1 = terminate).
       break;
     }
