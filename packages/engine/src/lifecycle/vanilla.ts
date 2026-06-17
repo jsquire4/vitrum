@@ -242,6 +242,8 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    *  2. The RAF loop is stopped.
    *  3. If the engine exposes `exportGIState` (walkaround-hybrid backend),
    *     the DDGI probe state is exported before the engine is torn down.
+   *     Export/import failures are reported through `onError` as recoverable
+   *     lifecycle errors; recreate still proceeds best-effort.
    *  4. The engine is disposed.
    *  5. `createEngine` is called again with the original options, minting a
    *     fresh GPU device automatically.
@@ -580,7 +582,12 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       if (typeof giEngine.exportGIState === 'function') {
         savedGI = await giEngine.exportGIState();
       }
-    } catch {
+    } catch (err) {
+      reportError(err, {
+        phase: 'attach:gi-export',
+        backend: engine.backendId,
+        recoverable: true,
+      });
       // Best-effort; proceed without GI state.
     }
 
@@ -600,6 +607,10 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       attachSceneController(engine);
       lastSceneControllerFrameMs = null;
     } catch (createErr) {
+      reportError(createErr, {
+        phase: 'attach:auto-recreate',
+        recoverable: false,
+      });
       console.error('[attachVitrum] auto-recreate: createEngine failed:', createErr);
       autoRecreateMachine.recreating = false;
       return;
@@ -615,7 +626,12 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         if (typeof newGiEngine.importGIState === 'function') {
           newGiEngine.importGIState(savedGI);
         }
-      } catch {
+      } catch (err) {
+        reportError(err, {
+          phase: 'attach:gi-import',
+          backend: engine.backendId,
+          recoverable: true,
+        });
         // Best-effort.
       }
     }

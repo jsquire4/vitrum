@@ -30,6 +30,7 @@ function makeMockEngine(options?: {
   const onErrorCbs: ((e: EngineError) => void)[] = [];
 
   const obj: Record<string, unknown> = {
+    backendId: 'pt-webgl2',
     state: 'ready' as const,
     capabilities: {
       presentationMode: 'offscreen-texture',
@@ -401,6 +402,103 @@ describe('attachVitrum — autoRecreateOnDeviceLoss', () => {
     handle.dispose();
   });
 
+  it('reports GI export failure while still recreating the engine', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    const exportError = new Error('export failed');
+    const engine1 = makeMockEngine({ withGIState: true, giSnapshot: null });
+    const engine2 = makeMockEngine({ withGIState: true, giSnapshot: null });
+    engine1.exportGIState = vi.fn(async () => {
+      throw exportError;
+    });
+    let callCount = 0;
+    vi.spyOn(createEngineModule, 'createEngine').mockImplementation(async () => {
+      callCount++;
+      return callCount === 1
+        ? (engine1 as never)
+        : (engine2 as never);
+    });
+
+    const errorsSeen: Array<{ error: unknown; event: { phase: string; recoverable: boolean; backend?: string } }> = [];
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      scene,
+      camera: await makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      onError(error, event) {
+        errorsSeen.push({ error, event });
+      },
+    });
+
+    fireError(engine1, makeLossError('device-lost'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    expect(handle.engine).toBe(engine2);
+    expect(errorsSeen).toEqual([
+      {
+        error: exportError,
+        event: { phase: 'attach:gi-export', backend: 'pt-webgl2', recoverable: true },
+      },
+    ]);
+    expect(asDispose(engine1)).toHaveBeenCalledTimes(1);
+
+    handle.dispose();
+  });
+
+  it('reports GI import failure while keeping the recreated engine active', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    const fakeSnapshot = {
+      dims: { x: 2, y: 2, z: 2 },
+      origin: [0, 0, 0] as [number, number, number],
+      spacing: 1,
+      irrW: 4, irrH: 4,
+      visW: 4, visH: 4,
+      irrData: new Uint16Array(4 * 4 * 4),
+      visData: new Uint16Array(4 * 4 * 4),
+    } as GIStateSnapshot;
+    const importError = new Error('import failed');
+    const engine1 = makeMockEngine({ withGIState: true, giSnapshot: fakeSnapshot });
+    const engine2 = makeMockEngine({ withGIState: true, giSnapshot: null });
+    engine2.importGIState = vi.fn((_s: GIStateSnapshot): boolean => {
+      throw importError;
+    });
+    let callCount = 0;
+    vi.spyOn(createEngineModule, 'createEngine').mockImplementation(async () => {
+      callCount++;
+      return callCount === 1
+        ? (engine1 as never)
+        : (engine2 as never);
+    });
+
+    const errorsSeen: Array<{ error: unknown; event: { phase: string; recoverable: boolean; backend?: string } }> = [];
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      scene,
+      camera: await makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      onError(error, event) {
+        errorsSeen.push({ error, event });
+      },
+    });
+
+    fireError(engine1, makeLossError('device-lost'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    expect(handle.engine).toBe(engine2);
+    expect(asImportGIState(engine2)).toHaveBeenCalledWith(fakeSnapshot);
+    expect(errorsSeen).toEqual([
+      {
+        error: importError,
+        event: { phase: 'attach:gi-import', backend: 'pt-webgl2', recoverable: true },
+      },
+    ]);
+
+    handle.dispose();
+  });
+
   // ── Test: GI export absent — recreate proceeds without import ───────────
 
   it('GI export NOT called when engine does not expose exportGIState', async () => {
@@ -480,6 +578,43 @@ describe('attachVitrum — autoRecreateOnDeviceLoss', () => {
     // After the recreate resolves, the loop should stay stopped (disposed=true).
     // createEngine was called twice (initial + one recreate).
     expect(createEngineCallCount).toBe(2);
+  });
+
+  it('reports auto-recreate construction failure as non-recoverable', async () => {
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+
+    const engine1 = makeMockEngine();
+    const recreateError = new Error('replacement create failed');
+    vi.spyOn(createEngineModule, 'createEngine')
+      .mockResolvedValueOnce(engine1 as never)
+      .mockRejectedValueOnce(recreateError);
+
+    const errorsSeen: Array<{ error: unknown; event: { phase: string; recoverable: boolean; backend?: string } }> = [];
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      scene,
+      camera: await makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      onError(error, event) {
+        errorsSeen.push({ error, event });
+      },
+    });
+
+    fireError(engine1, makeLossError('device-lost'));
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    expect(createEngineModule.createEngine).toHaveBeenCalledTimes(2);
+    expect(asDispose(engine1)).toHaveBeenCalledTimes(1);
+    expect(handle.engine).toBe(engine1);
+    expect(errorsSeen).toEqual([
+      {
+        error: recreateError,
+        event: { phase: 'attach:auto-recreate', recoverable: false },
+      },
+    ]);
+
+    handle.dispose();
   });
 });
 

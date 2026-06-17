@@ -63,6 +63,9 @@ export type CreateEngineErrorPhase =
   | 'canvas-configure'
   | 'attach:scene-controller'
   | 'attach:resize'
+  | 'attach:gi-export'
+  | 'attach:gi-import'
+  | 'attach:auto-recreate'
   | 'attach:swapchain'
   | 'attach:renderFrame';
 
