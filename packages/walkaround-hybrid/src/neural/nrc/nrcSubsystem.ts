@@ -401,9 +401,9 @@ export class NrcSubsystem implements PipelineSubsystem {
    * frame's train (the next frame picks up fresh records). An unfilled slot
    * (NRC spread never fired for that pixel) has all-zero ENCODED INPUT — the
    * GPU initialises the record buffer to zero and nrcWriteRecord only runs when
-   * nrcFired is true. Empty slots are detected by checking whether the first
-   * encoded-input float is non-zero; this is safe because any genuine NRC record
-   * will have at least one non-zero hash-grid feature.
+   * nrcFired is true. Empty slots are detected by scanning the entire encoded-
+   * input prefix via unpackRecords; this keeps valid records whose first encoded
+   * feature is zero but later features are non-zero.
    *
    * A6 note: a FILLED slot whose target r.Lo is zero (occluded surface, r.W=0)
    * is a VALID zero-radiance training sample — the NRC should predict black for

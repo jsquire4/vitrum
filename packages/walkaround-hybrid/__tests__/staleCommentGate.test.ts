@@ -41,4 +41,14 @@ describe('Road D5 stale-comment gates', () => {
     }
     expect(probeGrid).toContain('raw WebGPU bind groups');
   });
+
+  it('keeps NRC bias and empty-record comments aligned with current code', () => {
+    const risGiNrc = readSource('shaders/risGiNrc.wgsl.ts');
+    const nrcSubsystem = readSource('neural/nrc/nrcSubsystem.ts');
+
+    expect(risGiNrc).not.toContain('centroid-p');
+    expect(risGiNrc).toContain('receiver-lobe/material');
+    expect(nrcSubsystem).not.toContain('checking whether the first');
+    expect(nrcSubsystem).toContain('scanning the entire encoded-');
+  });
 });

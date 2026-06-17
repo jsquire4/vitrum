@@ -69,10 +69,10 @@
  * for occluded paths), and (3) it naturally accounts for sky-miss paths (Lo_env).
  *
  * BIAS BOUND: r.Lo is itself the biased-default ReSTIR-GI estimate (clamped
- * Jacobian [0.1,10], no reuse-visibility, centroid-p̂). The NRC converges to
- * THAT estimate, which is stricter than the previous DDGI-distillation bound
- * but still biased relative to the true path integral. See HARDWARE-VALIDATION-
- * NEEDS V20.
+ * Jacobian [0.1,10], no reuse-visibility ray, no full GBH MIS in the default
+ * reuse path). Producer pHat and normalization are now receiver-lobe/material
+ * aware, but the default reuse estimator is still intentionally biased relative
+ * to the true path integral. See HARDWARE-VALIDATION-NEEDS V20.
  *
  * IMPLEMENTATION: The NRC spread heuristic fires on the FIRST RIS candidate that
  * exceeds the threshold. The surface data at that candidate (xs, ns, wi, rough,
@@ -702,9 +702,11 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // estimate for this pixel. Training on r.Lo means the NRC converges to the
   // same quantity the RIS estimator produces (vs the old DDGI distillation).
   //
-  // BIAS BOUND (documented): r.Lo is itself the biased ReSTIR-GI estimate
-  // (clamped Jacobian, no reuse-visibility, centroid-p̂). The NRC converges to
-  // THAT, which is strictly more informative than DDGI-only distillation.
+  // BIAS BOUND (documented): r.Lo is itself the biased-default ReSTIR-GI
+  // estimate (clamped Jacobian, no reuse-visibility ray, no full GBH MIS in the
+  // default reuse path). Producer pHat and normalization are receiver-lobe /
+  // material aware; the NRC converges to that estimator, which is still more
+  // informative than DDGI-only distillation but not an unbiased path integral.
   //
   // TAIL-PADDING GUARD: records where r.Lo == 0 (occluded sample, W=0) are
   // valid zero-radiance training data — the NRC should predict 0 for dark
