@@ -67,7 +67,8 @@ export const RIS_WGSL = /* wgsl */ `
 // it once at the visibility-test stage with a PrimarySurface built from
 // the inline primary-cast result (the M_LIGHT loop computes its own
 // per-candidate p̂ inline because it uses the sampled emitter point
-// ls.pos, not the centroid the canonical helper assumes).
+// ls.pos before the reservoir winner is known; finalization replays the
+// selected sample through the canonical xi-aware helper).
 
 // ============================================================
 // RIS main kernel -- primary ray cast + reservoir sampling
@@ -395,17 +396,17 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // importance-sampled env direction per pixel via the pre-baked sinθ-weighted CDF
   // (bindings 16-17). The env candidate is gated by envHasMap() so emitter-only
   // scenes are BYTE-IDENTICAL to the pre-Wave-4 kernel (p̂=0 → w=0 → reservoir
-  // unchanged, M still incremented). The sentinel lightId (ENV_SAMPLE_SENTINEL) tells
-  // downstream passes to decode xi → direction rather than indexing into emitters[].
+  // unchanged). The sentinel lightId (ENV_SAMPLE_SENTINEL) tells downstream
+  // passes to decode xi → direction rather than indexing into emitters[].
   //
   // MEASURE CONSISTENCY: env samples live in SOLID-ANGLE measure (the env is at
   // infinity — there is no geometry term G = cosθ_light/dist²). The BRDF candidate
   // above CONVERTS to area measure to match the area-light candidates; the env
-  // candidate stays in SA measure. Both representations are valid in a multi-strategy
-  // RIS pool because each candidate divides p̂ by its OWN source pdf — unbiasedness
-  // holds regardless of mixed measures. The shared canonical p̂ (restir_di_compute_phat_xi)
-  // returns the SA-measure env p̂ (no G term) for sentinel lids, which is consistent
-  // with the SA source pdf used here.
+  // candidate stays in SA measure. Each candidate divides p̂ by its OWN source
+  // pdf, and finalization divides by the winner's support-family count
+  // (mEnvSupport rather than the finite-emitter candidate count). The shared
+  // canonical p̂ (restir_di_compute_phat_xi) returns the SA-measure env p̂
+  // (no G term) for sentinel lids, consistent with the SA source pdf used here.
   //
   // VISIBILITY: shadow ray toward the sampled direction with tmax=1e20 (to infinity).
   // skipGlass=true (same as emitter shadow rays — glass is translucent to env light).

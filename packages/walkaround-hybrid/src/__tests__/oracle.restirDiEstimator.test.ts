@@ -1,71 +1,31 @@
 /**
  * HYB-GI-01 / HYB-GI-02 — independent CPU oracle for the walkaround-hybrid
- * ReSTIR-DI estimator (RIS seeding → W finalize → shade consumption), per
- * plan/road-to-100-gap-ledger-2026-06-11.md §HYB-GI-01/§HYB-GI-02.
+ * ReSTIR-DI estimator (RIS seeding → W finalize → shade consumption).
  *
- * PIPELINE UNDER AUDIT (faithful TS transcription, file:line cited per step):
- *   1. RIS candidate generation (ris.wgsl.ts risMain):
- *      - M_LIGHT=64 emitter candidates [L82, L208-263]: flat power-CDF pick
- *        (pmf = luminance(Le)·area/totalPower, L232), uniform point on the
- *        triangle (sampleEmitterPoint, emitterSampling.wgsl.ts:25-40),
- *        p̂ = luminance(Le·brdf·G) AT THE SAMPLED POINT [L253],
- *        w = p̂/(pmf·pdfArea) [L260-261], WRS update
- *        (updateReservoirDI, reservoirDi.wgsl.ts:85-92).
- *        Degenerate candidates `continue` WITHOUT incrementing M
- *        [L240, L244 — the HYB-GI-02 "skipped proposal" accounting].
- *      - M_BRDF=1 VNDF candidate [L83, L291-352]: ggxSampleVndf
- *        (ggxBrdf.wgsl.ts:208-218) + exact VNDF pdf (ggxBrdf.wgsl.ts:242-251),
- *        emitter-triangle intersection, barycentric→xi inversion [L319-328],
- *        area-measure conversion p_area = p_sa·d²/cosθ_L [L348]. A lobe sample
- *        that misses every emitter `continue`s WITHOUT incrementing M [L333].
- *      - M_ENV=1 env candidate [L93, L375-389]: importance-sampled direction,
- *        SOLID-ANGLE measure p̂ = luminance(env·brdf) (no G) [L382] vs the area
- *        measure of the 64+1 other candidates — the disjoint-support/mixed-
- *        measure pool the gap ledger flags.
- *   2. W finalize [L392-461]: visibility on the winner (unoccluded here), then
- *      W = w_sum/(M·p̂_Z) where p̂_Z = restir_di_compute_phat_xi
- *      (restirPHat.wgsl.ts:46-73) — which for EMITTER winners evaluates p̂ at
- *      the triangle CENTROID [L58-66], NOT at the stored sample r.xi, while
- *      the candidate weights in w_sum used the sampled point (HYB-GI-01).
- *   3. Shade consumption (shadingTerms.wgsl.ts lo_direct:218-288): for emitter
- *      winners a FRESH random point lsXi is drawn [L265] (not the reservoir's
- *      r.xi) and the contribution is Le·brdf·G(fresh)·r.W [L285-287]; env
- *      winners shade envColor·brdf·W [L247-254].
- *   The oracle wires RIS output directly into lo_direct (temporal/spatial
- *   reuse passes are bypassed — they resample with the same p̂/M conventions,
- *   so the seed-estimator bias measured here is the bias they inherit; the
- *   oracle's verdict is about the RIS→shade estimator family, not about any
- *   additional reuse-pass distortion).
+ * CURRENT PRODUCTION PATH UNDER AUDIT:
+ *   1. RIS candidate generation evaluates the selected sample point:
+ *      - finite emitters store the triangle sample `xi` that generated p̂,
+ *      - BRDF-to-emitter candidates invert hit barycentrics back to that same
+ *        `xi`,
+ *      - HDRI candidates store ENV_SAMPLE_SENTINEL plus an encoded direction.
+ *   2. W finalization re-evaluates p̂ with `restir_di_compute_phat_xi(lid,
+ *      r.xi, surf)`, traces visibility to the selected sample/direction, and
+ *      divides by the support-family count only (`mAreaSupport` for finite
+ *      emitters, `mEnvSupport` for HDRI).
+ *   3. Shade consumption uses the stored `r.xi` for both finite emitters and
+ *      env sentinels, so candidate p̂, finalization p̂, visibility, and the
+ *      shaded contribution all refer to the same sample.
+ *
+ * The tests below keep historical pre-fix variants as characterization controls:
+ * centroid p̂ + fresh shade xi under-estimated large close emitters, and a
+ * single mixed-measure M under-weighted HDRI samples by the finite-emitter
+ * candidate count. The production/regression variants must remain ≈ unbiased.
  *
  * GROUND TRUTH (fresh, first-principles):
- *   I_lights = Σ_tri ∫_A Le·evalGGX(wo,wi)·cosθ_L/d² dA   (area-measure MC,
- *              uniform per triangle; evalGGX already contains the receiver
- *              cosine — ggxBrdf.wgsl.ts:64)
- *   I_env    = ∫_Ω L_env(ω)·evalGGX(wo,ω) dω              (uniform-sphere MC)
- *   The GGX evaluator is shared between transcription and ground truth so the
- *   comparison isolates the RIS/W/shade ESTIMATOR, not the BRDF model.
- *
- * MEASURED RESULTS (deterministic seeds; see the characterization pins):
- *   - lights-only: E[lo_direct]/I_lights ≈ 0.70 — a ~30% UNDER-estimate for a
- *     large close emitter quad. Mechanism (HYB-GI-01): w_sum is built from
- *     sampled-point p̂ but W divides by CENTROID p̂; combined with the
- *     fresh-xi shade re-sample the expectation factors to
- *       E ≈ I · mean_A(p̂) / p̂(centroid)
- *     which is < 1 whenever the centroid sits near the p̂ peak (any large
- *     emitter close to the receiver). The fix-shaped variant below (finalize
- *     AND shade at the SELECTED r.xi) restores ≈ 1.00 with the SAME candidate
- *     stream — pinning the attribution.
- *   - env-only: E[lo_direct]/I_env ≈ 1/65.6 (predicted 1/66) — the env
- *     strategy's disjoint support means its integral is averaged into the 1/M
- *     balance with 65 candidates that CANNOT produce env samples (HYB-GI-02
- *     confirmed: catastrophic ~66× under-estimate of HDRI direct light
- *     whenever emitters exist in the scene pool).
- *   - mixed: measured ≈ (65/66)·0.70·I_L + I_env/66 — both defects compose.
- *   - HYB-GI-02 "skipped proposals undercount M": the CONSISTENT skip
- *     (no weight AND no count, ris.wgsl.ts:240/244/333) is provably unbiased —
- *     each included candidate satisfies E[w·f/p̂] = I independent of M's
- *     realized value; the fix-shaped variant measures ≈ 1.000 despite skips.
- *     The REAL M-accounting defect is the env/dummy-emitter inflation above.
+ *   I_lights = Σ_tri ∫_A Le·evalGGX(wo,wi)·cosθ_L/d² dA
+ *   I_env    = ∫_Ω L_env(ω)·evalGGX(wo,ω) dω
+ * The GGX evaluator is shared between transcription and ground truth so the
+ * comparison isolates the RIS/W/shade estimator, not the BRDF model.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -642,8 +602,6 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
       `(shadingTerms.wgsl.ts:265). The expectation collapses to ≈ I·mean_A(p̂)/p̂(centroid), ` +
       `< 1 for any large emitter close to the receiver (the centroid sits near the p̂ peak). ` +
       `The current selected-xi regression sibling restores ≈1.00 with the same candidate stream.`;
-    // eslint-disable-next-line no-console
-    console.log(`[oracle.restirDi] ${msg}`);
     expect(ratio, msg).toBeGreaterThan(0.62);
     expect(ratio, msg).toBeLessThan(0.78);
     expect(Math.abs(ratio - 1), msg).toBeGreaterThan(0.2); // decisively biased
@@ -665,8 +623,6 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
     const measured = measurePipeline(cfg, 24_000, 314159);
     const truth = groundTruthLights(cfg.emitters, 400_000, 271828);
     const ratio = lum3(measured) / lum3(truth);
-    // eslint-disable-next-line no-console
-    console.log(`[oracle.restirDi] fix-shaped (selected-xi) variant: E/I = ${ratio.toFixed(4)}`);
     expect(ratio).toBeGreaterThan(0.97);
     expect(ratio).toBeLessThan(1.03);
   });
@@ -702,8 +658,6 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
       `from the 65 area-measure candidates, but the 1/M factor in W (ris.wgsl.ts:420) ` +
       `weights it as if all 66 candidates could have produced it — HDRI direct light is ` +
       `crushed ~66× whenever emitters exist in the scene pool.`;
-    // eslint-disable-next-line no-console
-    console.log(`[oracle.restirDi] ${msg}`);
     expect(ratio, msg).toBeGreaterThan(1 / 90);
     expect(ratio, msg).toBeLessThan(1 / 45);
   });
@@ -729,8 +683,6 @@ describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force'
       `${(lum3(truthE) / lum3(truthTotal)).toFixed(3)} of the true energy is reduced to ` +
       `~1/66 of itself, and the emitter share is further scaled by the centroid-p̂ ` +
       `factor ${centroidFactor.toFixed(3)}.`;
-    // eslint-disable-next-line no-console
-    console.log(`[oracle.restirDi] ${msg}`);
     expect(Math.abs(ratio - predicted), msg).toBeLessThan(0.05);
     expect(ratio, msg).toBeLessThan(0.6); // decisively short of unbiased (1.0)
   });

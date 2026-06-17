@@ -39,6 +39,11 @@ npm run radiometric-ab:restir-pt
 
 # Static CPU fixture check:
 npm run radiometric-ab:restir-pt-specialty
+
+# Walkaround-hybrid A/Bs. On the current WSL native-Deno host this may classify
+# as HOST-BLOCKED if Deno panics in wgpu-hal before the harness can return a
+# verdict; see `walkaround-ab-host-status.json`.
+npm run radiometric-ab:walkaround
 ```
 
 Each script writes a `results-*.json` in this directory.
@@ -187,8 +192,11 @@ pre-tonemap `resolvedTexture` through `engine.captureFrame({ colorSpace:"linear"
 luminance statistics are therefore linear-HDR float32 values rather than display-encoded
 8-bit swap-chain samples.
 
-**Current WSL validation caveat:** Deno 2.8.1 native WebGPU currently panics in the WSL
-lavapipe walkaround path before the harness can produce a verdict:
+**Current WSL validation caveat:** `npm run radiometric-ab:walkaround` now runs
+through a Node wrapper that preserves normal harness output, but writes
+`walkaround-ab-host-status.json` and exits non-zero when the known native-Deno
+WebGPU host panic occurs. Deno 2.8.1 currently panics in the WSL lavapipe
+walkaround path before the harness can produce a verdict:
 `wgpu-hal-28.0.0/src/gles/command.rs:771:21: index out of bounds`. This reproduces in the
 older `walkaround-sun-control.mjs` swap-chain-readback script too, so it is a validation-host
 runtime blocker rather than a regression caused by linear capture. Rerun this harness on the
