@@ -302,6 +302,9 @@ struct RCLightBuffer {
 @group(0) @binding(18) var<storage, read>       rc_geom_normal:           array<vec4f>;
 
 const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
+const RC_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
+const RC_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
+const RC_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
 const RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
 
 fn rcMaterialMetaCoord(texel: u32) -> vec2i {
@@ -328,6 +331,41 @@ fn rcWrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
 
 fn rcPackedUvFromVec4(v: vec4f) -> vec2f {
   return unpack2x16unorm(bitcast<u32>(v.w));
+}
+
+struct RCHitMaterialUvs {
+  valid: u32,
+  uv0: vec2f,
+  uv1: vec2f,
+};
+
+fn rcHitMaterialUvs(hit: IntersectionResult) -> RCHitMaterialUvs {
+  var out: RCHitMaterialUvs;
+  out.valid = 0u;
+  out.uv0 = vec2f(0.0);
+  out.uv1 = vec2f(0.0);
+
+  let i0 = hit.indices.x;
+  let i1 = hit.indices.y;
+  let i2 = hit.indices.z;
+  if (
+    hit.indices.w >= arrayLength(&rc_geom_index) ||
+    i0 >= arrayLength(&rc_geom_position) || i1 >= arrayLength(&rc_geom_position) || i2 >= arrayLength(&rc_geom_position) ||
+    i0 >= arrayLength(&rc_geom_normal) || i1 >= arrayLength(&rc_geom_normal) || i2 >= arrayLength(&rc_geom_normal)
+  ) {
+    return out;
+  }
+
+  out.valid = 1u;
+  out.uv0 =
+    hit.barycoord.x * rcPackedUvFromVec4(rc_geom_position[i0]) +
+    hit.barycoord.y * rcPackedUvFromVec4(rc_geom_position[i1]) +
+    hit.barycoord.z * rcPackedUvFromVec4(rc_geom_position[i2]);
+  out.uv1 =
+    hit.barycoord.x * rcPackedUvFromVec4(rc_geom_normal[i0]) +
+    hit.barycoord.y * rcPackedUvFromVec4(rc_geom_normal[i1]) +
+    hit.barycoord.z * rcPackedUvFromVec4(rc_geom_normal[i2]);
+  return out;
 }
 
 fn rcEmitterSubdivWeightAt(i: u32, j: u32, level: u32) -> vec3f {
@@ -395,6 +433,106 @@ fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, 
     i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
   );
   return textureLoad(rc_materialTextureAtlas, texel, layer, 0);
+}
+
+fn rcSampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  return rcSampleMaterialAtlasRawAtOffset(triIndex, slot * 2u, uv0, uv1);
+}
+
+struct RCAlphaCoverage {
+  mode: u32,
+  coverage: f32,
+  cutoff: f32,
+};
+
+fn rcMaterialAlphaCoverageForHit(hit: IntersectionResult) -> RCAlphaCoverage {
+  var out: RCAlphaCoverage;
+  out.mode = 0u;
+  out.coverage = 1.0;
+  out.cutoff = 0.0;
+
+  let metaDims = textureDimensions(rc_materialMapMeta);
+  let metaTexel = hit.indices.w * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET;
+  if (metaTexel >= metaDims.x * metaDims.y) {
+    return out;
+  }
+
+  let coverageMeta = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
+  out.mode = u32(max(coverageMeta.x, 0.0) + 0.5);
+  if (out.mode == 0u) {
+    return out;
+  }
+
+  let uvs = rcHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return out;
+  }
+
+  let baseColorTexel = rcSampleMaterialAtlasRaw(hit.indices.w, RC_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);
+  let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);
+  let alphaTexel = rcSampleMaterialAtlasRaw(hit.indices.w, RC_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);
+  let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
+  let opacity = clamp(coverageMeta.y, 0.0, 1.0);
+  out.cutoff = clamp(coverageMeta.z, 0.0, 1.0);
+  out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
+  return out;
+}
+
+fn rcAlphaShadowTransmittanceForHit(hit: IntersectionResult) -> f32 {
+  let alpha = rcMaterialAlphaCoverageForHit(hit);
+  if (alpha.mode == 0u) {
+    return 0.0;
+  }
+  if (alpha.mode == 1u) {
+    return select(0.0, 1.0, alpha.coverage < alpha.cutoff);
+  }
+  if (alpha.mode == 2u) {
+    return clamp(1.0 - alpha.coverage, 0.0, 1.0);
+  }
+  return select(0.0, 1.0, alpha.coverage <= 0.0);
+}
+
+fn rcTraceShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32, skipGlass: bool) -> f32 {
+  var walkRay = Ray();
+  walkRay.origin = origin;
+  walkRay.direction = dir;
+  var traveled = 0.0;
+  var tau = 1.0;
+  let step = max(1e-4, triEps * 4.0);
+
+  for (var layer = 0u; layer < 32u; layer = layer + 1u) {
+    let remaining = tMax - traveled;
+    if (remaining <= step || tau <= 0.001) {
+      return clamp(tau, 0.0, 1.0);
+    }
+
+    let hit = rcTraceFirstHit(walkRay, triEps);
+    if (!hit.didHit || hit.dist >= remaining) {
+      return clamp(tau, 0.0, 1.0);
+    }
+
+    let matId = rc_triMatId[hit.indices.w];
+    let mat = rc_materials[matId];
+    if ((mat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) == 0u) {
+      if (skipGlass && (mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u) {
+        // Preserve RC's coarse direct-light policy: scalar glass does not fully
+        // occlude local probe lighting. Alpha-mapped non-glass still attenuates.
+      } else {
+        tau = tau * rcAlphaShadowTransmittanceForHit(hit);
+        if (tau <= 0.001) {
+          return 0.0;
+        }
+      }
+    }
+
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = origin + dir * traveled;
+  }
+
+  if (rcTraceAnyCastShadow(walkRay.origin, dir, max(0.0, tMax - traveled), triEps, skipGlass)) {
+    return 0.0;
+  }
+  return clamp(tau, 0.0, 1.0);
 }
 
 fn rcSampleEmitterLeAtBary(e: EmitterTri, localBary: vec3f, scalarEmission: vec3f) -> vec3f {

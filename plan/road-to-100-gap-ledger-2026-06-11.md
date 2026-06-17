@@ -275,11 +275,15 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   added finite mesh-emitter OIT lighting with alpha-aware per-sample visibility.
   Later same-day DDGI follow-up: DDGI probe direct sun, point/spot, and mesh
   emitter NEE visibility now samples material-atlas `baseColorMap.a` /
-  `alphaMap.r` coverage for mask/blend shadow transmittance. Transparent
-  ReSTIR direct-light reservoir participation, true GI/RC/DDGI/ReSTIR-GI
-  transport vertices, exact UV-varying emissive/light-map PDFs, and first-hit
-  emissive/light-map promotion remain open approximation/promotion tails. The
-  exact emissive-map PDF tail is now also surfaced at runtime by
+  `alphaMap.r` coverage for mask/blend shadow transmittance. Final same-day RC
+  follow-up: `@vitrum/walkaround-rc` probe direct sun, point/spot, and
+  rect-area emitter shadows now use the same atlas-backed alpha coverage walk
+  while preserving the existing scalar-glass skip policy for the coarse RC
+  cache. Transparent ReSTIR direct-light reservoir participation, true
+  GI/DDGI/ReSTIR-GI transparent transport vertices, exact UV-varying
+  emissive/light-map PDFs, and first-hit emissive/light-map promotion remain
+  open approximation/promotion tails. The exact emissive-map PDF tail is now
+  also surfaced at runtime by
   `walkaround-hybrid.emissive-map-texel-pdf-approximation` for non-glTF hosts.
 - Follow-up 2026-06-15: neural/NRC production posture is explicit. Neural graph
   weights are validated for layer coverage, lengths, and finite values before
@@ -781,14 +785,17 @@ Follow-up Codex closure sweeps (WSL Node 24.13.0):
   `cascadeDispatchInvalidation.test.ts` pins stable-frame reuse plus TLAS/bounds
   rebuilds, and the stale RC mapping/README comments now match the current
   no-`/three` raw package surface.
-- The H37 RC glass-visibility residual landed in `@vitrum/walkaround-rc`:
-  rect-area emitter NEE and point/spot fixture direct-light shadows now use
-  `rcTraceAny(..., skipGlass=true)` instead of closest-hit occlusion, so
-  transmissive geometry no longer fully blocks coarse RC direct light. The
-  merged-mode RC upload path now packs canonical `bvhIndex.w` payloads from core
-  materials, so the `trans4` glass filter works outside TLAS mode too. The
-  focused `rcLightEvalWgsl.test.ts` gate pins the direct-light WGSL call sites,
-  and `rcMergedRefit.test.ts` pins merged-mode glass payload packing.
+- The H37 RC glass/alpha-visibility residual landed in `@vitrum/walkaround-rc`:
+  rect-area emitter NEE and point/spot fixture direct-light shadows first moved
+  to `skipGlass=true` traversal so transmissive geometry no longer fully blocks
+  coarse RC direct light; the 2026-06-16 follow-up replaced those binary
+  checks with `rcTraceShadowTransmittance`, so readable material-atlas
+  `baseColorMap.a` / `alphaMap.r` coverage now attenuates sun, fixture, and
+  emitter RC direct-light visibility too. The merged-mode RC upload path packs
+  canonical `bvhIndex.w` payloads from core materials, so the scalar-glass
+  filter works outside TLAS mode. The focused `rcLightEvalWgsl.test.ts` gate
+  pins the direct-light WGSL call sites and alpha helpers, and
+  `rcMergedRefit.test.ts` pins merged-mode glass payload packing.
 - Verification after the previous sweep: root `npm run typecheck` clean and
   root `npm test` clean (`150` files, `1551` passing, `3` skipped). Verification
   after the current follow-up is in progress; focused typecheck/test runs are

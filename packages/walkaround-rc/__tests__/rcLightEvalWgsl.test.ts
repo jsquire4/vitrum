@@ -21,12 +21,13 @@ function functionBody(source: string, name: string): string {
 }
 
 describe('RC light-eval WGSL contract', () => {
-  it('uses glass-skip visibility for rect emitter and point/spot direct-light shadows', () => {
+  it('uses alpha transmittance for rect emitter and point/spot direct-light shadows', () => {
     const emitterNee = functionBody(PROBE_RAY_CAST_WGSL, 'rcEmitterNEE');
-    expect(emitterNee).toContain(
-      'e.castShadowDisabled < 0.5 && shadowTMax > 0.0 && rcTraceAnyCastShadow(hitPos + n * normalBias, wi, shadowTMax, triEps, true)',
-    );
+    expect(emitterNee).toContain('shadowT = rcTraceShadowTransmittance(hitPos + n * normalBias, wi, shadowTMax, triEps, true);');
+    expect(emitterNee).toContain('if (shadowT <= 0.001) { continue; }');
     expect(emitterNee).toContain('Emitter castShadow:false rides the shared EmitterTri fifth-vec4 .w lane.');
+    expect(emitterNee).toContain('Lo = Lo + albedo * 0.31831 * Le * G * e.area * shadowT;');
+    expect(emitterNee).not.toContain('rcTraceAnyCastShadow(hitPos + n * normalBias, wi, shadowTMax, triEps, true)');
     expect(emitterNee).not.toContain('let sHit = rcTraceFirstHit');
     expect(emitterNee).not.toContain('sHit.didHit && sHit.dist < dist - normalBias');
 
@@ -35,10 +36,9 @@ describe('RC light-eval WGSL contract', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('RC_LIGHT_CAST_SHADOW_DISABLED');
     expect(pointSpot).toContain('let kind = light.kind & RC_LIGHT_KIND_MASK;');
     expect(pointSpot).toContain('let castShadowDisabled = (light.kind & RC_LIGHT_CAST_SHADOW_DISABLED) != 0u;');
-    expect(pointSpot).toContain('if (!castShadowDisabled && shadowTMax > 0.0 && rcTraceAnyCastShadow');
-    expect(pointSpot).toContain(
-      'rcTraceAnyCastShadow(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true)',
-    );
+    expect(pointSpot).toContain('shadowT = rcTraceShadowTransmittance(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true);');
+    expect(pointSpot).toContain('Lo = Lo + albedo * 0.31831 * light.color * atten * nDotL * coneFalloff * shadowT;');
+    expect(pointSpot).not.toContain('rcTraceAnyCastShadow(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true)');
     expect(pointSpot).not.toContain('let shadow = rcTraceFirstHit');
     expect(pointSpot).not.toContain('shadow.didHit && shadow.dist < dist - normalBias');
   });
@@ -57,6 +57,26 @@ describe('RC light-eval WGSL contract', () => {
     );
   });
 
+  it('samples material-atlas alpha coverage for RC shadow transmittance', () => {
+    const sunVisibility = functionBody(PROBE_RAY_CAST_WGSL, 'traceSunVisibility');
+    const alphaCoverage = functionBody(PROBE_RAY_CAST_WGSL, 'rcMaterialAlphaCoverageForHit');
+    const alphaT = functionBody(PROBE_RAY_CAST_WGSL, 'rcAlphaShadowTransmittanceForHit');
+    const traceT = functionBody(PROBE_RAY_CAST_WGSL, 'rcTraceShadowTransmittance');
+
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcHitMaterialUvs(hit: IntersectionResult) -> RCHitMaterialUvs');
+    expect(alphaCoverage).toContain('let baseColorTexel = rcSampleMaterialAtlasRaw(hit.indices.w, RC_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);');
+    expect(alphaCoverage).toContain('let alphaTexel = rcSampleMaterialAtlasRaw(hit.indices.w, RC_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);');
+    expect(alphaCoverage).toContain('out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
+    expect(alphaT).toContain('return clamp(1.0 - alpha.coverage, 0.0, 1.0);');
+    expect(traceT).toContain('tau = tau * rcAlphaShadowTransmittanceForHit(hit);');
+    expect(traceT).toContain('if (rcTraceAnyCastShadow(walkRay.origin, dir, max(0.0, tMax - traveled), triEps, skipGlass))');
+    expect(sunVisibility).toContain('let alphaT = rcAlphaShadowTransmittanceForHit(sHit);');
+    expect(sunVisibility).toContain('visibility = visibility * alphaT;');
+  });
+
   it('samples mapped material-backed emitter radiance for RC emitter NEE', () => {
     const emitterNee = functionBody(PROBE_RAY_CAST_WGSL, 'rcEmitterNEE');
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(16) var                      rc_materialTextureAtlas: texture_2d_array<f32>;');
@@ -71,6 +91,6 @@ describe('RC light-eval WGSL contract', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('return scalarEmission * texel.rgb;');
     expect(emitterNee).toContain('let localBary = vec3f(1.0 - su, su * (1.0 - s1), su * s1);');
     expect(emitterNee).toContain('let Le = rcSampleEmitterLeAtBary(e, localBary, e.Le);');
-    expect(emitterNee).toContain('Lo = Lo + albedo * 0.31831 * Le * G * e.area;');
+    expect(emitterNee).toContain('Lo = Lo + albedo * 0.31831 * Le * G * e.area * shadowT;');
   });
 });
