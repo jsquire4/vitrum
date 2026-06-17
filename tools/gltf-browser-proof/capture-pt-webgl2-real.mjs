@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Captures the real BoxTextured glTF through the browser pt-webgl2 one-call path.
+// Captures real glTF assets through the browser pt-webgl2 one-call path.
 
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -11,16 +11,44 @@ const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
 const exampleDir = resolve(repoRoot, 'examples/gltf-viewer');
 const updateGolden = process.argv.includes('--update-golden') || process.argv.includes('--update-goldens');
+const selectedAssetIds = readMultiFlag('--asset');
 const width = Number(process.env.VITRUM_WIDTH ?? '64');
 const height = Number(process.env.VITRUM_HEIGHT ?? '64');
 const spp = Number(process.env.VITRUM_SPP ?? '1');
 const port = Number(process.env.VITRUM_GLTF_BROWSER_PORT ?? '5187');
 const timeoutMs = Number(process.env.VITRUM_CAPTURE_TIMEOUT_MS ?? '120000');
 const statusPath = resolve(scriptDir, 'pt-webgl2-real-status.json');
-const goldenPath = resolve(repoRoot, 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png');
 const thresholds = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
+const REAL_BROWSER_ASSETS = [
+  {
+    assetId: 'box-textured-glb',
+    kind: 'textured-glb',
+    goldenPath: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png',
+    minTextures: 1,
+    requiredExtensions: [],
+    requiredHooks: [],
+  },
+  {
+    assetId: 'cesium-milk-truck-draco',
+    kind: 'draco',
+    goldenPath: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png',
+    minTextures: 0,
+    requiredExtensions: ['KHR_draco_mesh_compression'],
+    requiredHooks: ['draco'],
+  },
+  {
+    assetId: 'meshopt-cube-real',
+    kind: 'meshopt',
+    goldenPath: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png',
+    minTextures: 0,
+    requiredExtensions: ['KHR_meshopt_compression'],
+    requiredHooks: ['meshopt'],
+  },
+];
 let activeBrowser = null;
 let captureStep = 'not-started';
+let lastTelemetry = null;
+let lastConsole = [];
 
 const server = spawn(
   process.execPath,
@@ -45,19 +73,33 @@ server.stderr.on('data', (chunk) => { serverLog += chunk.toString(); });
 
 try {
   await waitForServer(port, timeoutMs);
-  const result = await withTimeout(capture(), timeoutMs, 'browser capture timed out');
-  await writeStatus(result);
-  if (result.verdict !== 'PASS') process.exit(result.verdict === 'HOST-BLOCKED' ? 2 : 1);
+  const assets = selectedAssets();
+  const results = [];
+  for (const asset of assets) {
+    lastTelemetry = null;
+    lastConsole = [];
+    captureStep = 'not-started';
+    try {
+      results.push(await withTimeout(capture(asset), timeoutMs, 'browser capture timed out'));
+    } catch (error) {
+      await closeActiveBrowser();
+      results.push(hostBlockedStatus(asset, error));
+    }
+  }
+  const summary = summarize(results);
+  await writeStatus(summary);
+  if (summary.verdict !== 'PASS') process.exit(summary.verdict === 'HOST-BLOCKED' ? 2 : 1);
 } catch (error) {
   await closeActiveBrowser();
   const status = {
     generatedAt: new Date().toISOString(),
     harness: 'gltf-browser-proof:pt-webgl2-real',
     verdict: 'HOST-BLOCKED',
-    assetId: 'box-textured-glb',
     backend: 'pt-webgl2',
     step: captureStep,
     error: String(error?.stack ?? error),
+    telemetry: lastTelemetry,
+    console: lastConsole.slice(-80),
     serverLog: serverLog.slice(-4000),
   };
   await writeStatus(status);
@@ -66,7 +108,28 @@ try {
   await stopServer();
 }
 
-async function capture() {
+function readMultiFlag(name) {
+  const values = [];
+  for (let i = 0; i < process.argv.length; i += 1) {
+    const arg = process.argv[i];
+    if (arg === name && process.argv[i + 1]) values.push(process.argv[i + 1]);
+    if (arg?.startsWith(`${name}=`)) values.push(arg.slice(name.length + 1));
+  }
+  return values.flatMap((value) => value.split(',').map((item) => item.trim()).filter(Boolean));
+}
+
+function selectedAssets() {
+  if (selectedAssetIds.length === 0) return REAL_BROWSER_ASSETS;
+  const selected = REAL_BROWSER_ASSETS.filter((asset) => selectedAssetIds.includes(asset.assetId));
+  if (selected.length !== selectedAssetIds.length) {
+    const known = new Set(REAL_BROWSER_ASSETS.map((asset) => asset.assetId));
+    const missing = selectedAssetIds.filter((assetId) => !known.has(assetId));
+    throw new Error(`unknown --asset id(s): ${missing.join(', ')}`);
+  }
+  return selected;
+}
+
+async function capture(asset) {
   captureStep = 'import-playwright';
   const { chromium } = await import('playwright');
   captureStep = 'launch-browser';
@@ -85,7 +148,7 @@ async function capture() {
     page.on('console', (msg) => consoleLines.push(`${msg.type()}: ${msg.text()}`));
     page.on('pageerror', (err) => consoleLines.push(`pageerror: ${String(err)}`));
     const url = new URL(`http://127.0.0.1:${port}/`);
-    url.searchParams.set('vitrumGltfAsset', 'box-textured-glb');
+    url.searchParams.set('vitrumGltfAsset', asset.assetId);
     url.searchParams.set('vitrumBackend', 'pt-webgl2');
     url.searchParams.set('vitrumSpp', String(spp));
 
@@ -103,20 +166,25 @@ async function capture() {
       error: globalThis.VITRUM_CAPTURE_ERROR ?? null,
       telemetry: globalThis.VITRUM_CAPTURE_TELEMETRY ?? null,
     }));
+    const summarizedTelemetry = summarizeTelemetry(telemetry.telemetry);
+    lastTelemetry = summarizedTelemetry;
+    lastConsole = consoleLines.slice(-80);
     if (!ready || telemetry.error != null || telemetry.ready !== true) {
       return {
         generatedAt: new Date().toISOString(),
         harness: 'gltf-browser-proof:pt-webgl2-real',
         verdict: 'FAIL',
-        assetId: 'box-textured-glb',
+        assetId: asset.assetId,
+        kind: asset.kind,
         backend: 'pt-webgl2',
         error: telemetry.error ?? 'capture did not become ready',
-        telemetry: telemetry.telemetry,
+        telemetry: summarizedTelemetry,
         console: consoleLines.slice(-80),
       };
     }
 
     captureStep = 'canvas-readback';
+    const goldenPath = resolve(repoRoot, asset.goldenPath);
     await mkdir(dirname(goldenPath), { recursive: true });
     const dataUrl = await page.evaluate(() => {
       const canvas = document.querySelector('canvas');
@@ -126,27 +194,30 @@ async function capture() {
     const pngBytes = Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
     const png = PNG.sync.read(pngBytes);
     const luminance = meanLuminance(png.data);
-    const compare = await compareOrUpdate(pngBytes, png);
+    const compare = await compareOrUpdate(pngBytes, png, goldenPath);
     captureStep = 'classify-result';
     const pass =
-      telemetry.telemetry?.backend === 'pt-webgl2' &&
-      telemetry.telemetry?.assetId === 'box-textured-glb' &&
-      telemetry.telemetry?.realAssetReady === true &&
+      summarizedTelemetry?.backend === 'pt-webgl2' &&
+      summarizedTelemetry?.assetId === asset.assetId &&
+      summarizedTelemetry?.realAssetReady === true &&
+      requiredExtensionsPresent(asset, summarizedTelemetry) &&
+      requiredHooksPresent(asset, summarizedTelemetry) &&
       luminance > 0.005 &&
       compare.pass === true;
     return {
       generatedAt: new Date().toISOString(),
       harness: 'gltf-browser-proof:pt-webgl2-real',
       verdict: pass ? 'PASS' : 'FAIL',
-      command: 'node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs',
+      command: `node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs --asset ${asset.assetId}`,
       updateGolden,
-      assetId: 'box-textured-glb',
+      assetId: asset.assetId,
+      kind: asset.kind,
       backend: 'pt-webgl2',
       width: png.width,
       height: png.height,
       samplesPerPixel: spp,
       luminance,
-      telemetry: telemetry.telemetry,
+      telemetry: summarizedTelemetry,
       golden: compare,
       console: consoleLines.slice(-80),
     };
@@ -156,7 +227,69 @@ async function capture() {
   }
 }
 
-async function compareOrUpdate(pngBytes, png) {
+function summarizeTelemetry(telemetry) {
+  if (telemetry == null || typeof telemetry !== 'object') return null;
+  return {
+    assetId: telemetry.assetId,
+    backend: telemetry.backend,
+    profileId: telemetry.profileId,
+    primitiveCount: telemetry.primitiveCount,
+    extensionsUsed: telemetry.extensionsUsed ?? [],
+    extensionsRequired: telemetry.extensionsRequired ?? [],
+    browserDecodeHooks: telemetry.browserDecodeHooks ?? {},
+    textureDecodeReport: {
+      mapCount: telemetry.textureDecodeReport?.mapCount ?? 0,
+      uniqueHandleCount: telemetry.textureDecodeReport?.uniqueHandleCount ?? 0,
+      rawImageCount: telemetry.textureDecodeReport?.rawImageCount ?? 0,
+      opaqueHandleCount: telemetry.textureDecodeReport?.opaqueHandleCount ?? 0,
+      cpuReadableCount: telemetry.textureDecodeReport?.cpuReadableCount ?? 0,
+    },
+    warningCount: Array.isArray(telemetry.warnings) ? telemetry.warnings.length : 0,
+    diagnosticCount: Array.isArray(telemetry.diagnostics) ? telemetry.diagnostics.length : 0,
+    realAssetReady: telemetry.realAssetReady === true,
+  };
+}
+
+function requiredExtensionsPresent(asset, telemetry) {
+  const used = telemetry?.extensionsUsed ?? [];
+  return asset.requiredExtensions.every((ext) => used.includes(ext));
+}
+
+function requiredHooksPresent(asset, telemetry) {
+  const hooks = telemetry?.browserDecodeHooks ?? {};
+  return asset.requiredHooks.every((hook) => hooks[hook] === true);
+}
+
+function hostBlockedStatus(asset, error) {
+  return {
+    generatedAt: new Date().toISOString(),
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    assetId: asset.assetId,
+    kind: asset.kind,
+    backend: 'pt-webgl2',
+    step: captureStep,
+    error: String(error?.stack ?? error),
+    telemetry: lastTelemetry,
+    console: lastConsole.slice(-80),
+    serverLog: serverLog.slice(-4000),
+  };
+}
+
+function summarize(results) {
+  const pass = results.every((result) => result.verdict === 'PASS');
+  const hostBlocked = results.every((result) => result.verdict === 'PASS' || result.verdict === 'HOST-BLOCKED');
+  return {
+    generatedAt: new Date().toISOString(),
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: pass ? 'PASS' : hostBlocked ? 'HOST-BLOCKED' : 'FAIL',
+    backend: 'pt-webgl2',
+    assets: results,
+    assetCount: results.length,
+  };
+}
+
+async function compareOrUpdate(pngBytes, png, goldenPath) {
   if (updateGolden) {
     await writeFile(goldenPath, pngBytes);
     return { pass: true, updated: true, path: relative(goldenPath), rmse: 0, meanAbs: 0, maxAbs: 0, thresholds };

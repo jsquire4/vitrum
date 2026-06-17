@@ -13,17 +13,66 @@
 import { asMat4 } from '@vitrum/core';
 import type { Mat4, Scene, ScenePrimitive } from '@vitrum/core';
 import { loadGltfWithEngine } from '@vitrum/engine/gltf';
+import DracoDecoderModule from 'draco3d/draco_decoder_nodejs.js';
+import dracoDecoderWasmUrl from 'draco3d/draco_decoder.wasm?url';
+import { MeshoptDecoder } from 'meshoptimizer';
 
 const params = new URLSearchParams(location.search);
 const targetSpp = Number(params.get('vitrumSpp')) || 128;
 const requestedAssetId = params.get('vitrumGltfAsset') ?? '';
 const requestedBackend = params.get('vitrumBackend') ?? '';
 
-const REAL_GLTF_ASSETS: Record<string, { readonly url: string; readonly minPrimitives: number; readonly minTextures: number }> = {
+type BrowserDecodeKind = 'draco' | 'meshopt';
+type MeshoptMode = 'ATTRIBUTES' | 'TRIANGLES' | 'INDICES';
+type MeshoptFilter = 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL';
+type DracoDecodeHook = (
+  compressed: Uint8Array,
+  attributeIds: Record<string, number>,
+) => { attributes: Record<string, Float32Array>; indices?: Uint32Array };
+type MeshoptDecodeHook = (
+  compressed: Uint8Array,
+  count: number,
+  byteStride: number,
+  mode: MeshoptMode,
+  filter: MeshoptFilter,
+) => Promise<Uint8Array> | Uint8Array;
+interface BrowserDecodeHooks {
+  readonly dracoDecode?: DracoDecodeHook;
+  readonly meshoptDecode?: MeshoptDecodeHook;
+  readonly report: Record<string, boolean | readonly string[]>;
+}
+
+interface RealGltfAsset {
+  readonly url: string;
+  readonly kind: string;
+  readonly minPrimitives: number;
+  readonly minTextures: number;
+  readonly requiredExtensions?: readonly string[];
+  readonly browserDecode?: readonly BrowserDecodeKind[];
+}
+
+const REAL_GLTF_ASSETS: Record<string, RealGltfAsset> = {
   'box-textured-glb': {
     url: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/BoxTextured/glTF-Binary/BoxTextured.glb',
+    kind: 'textured-glb',
     minPrimitives: 1,
     minTextures: 1,
+  },
+  'cesium-milk-truck-draco': {
+    url: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/CesiumMilkTruck/glTF-Draco/CesiumMilkTruck.gltf',
+    kind: 'draco',
+    minPrimitives: 1,
+    minTextures: 0,
+    requiredExtensions: ['KHR_draco_mesh_compression'],
+    browserDecode: ['draco'],
+  },
+  'meshopt-cube-real': {
+    url: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/MeshoptCubeTest/glTF-Meshopt/MeshoptCubeTest.gltf',
+    kind: 'meshopt',
+    minPrimitives: 1,
+    minTextures: 0,
+    requiredExtensions: ['KHR_meshopt_compression'],
+    browserDecode: ['meshopt'],
   },
 };
 
@@ -57,6 +106,7 @@ async function main(): Promise<void> {
   if (requestedAssetId && realAsset == null) {
     throw new Error(`[gltf-viewer example] unsupported vitrumGltfAsset "${requestedAssetId}"`);
   }
+  const browserDecodeHooks = realAsset == null ? emptyBrowserDecodeHooks() : await createBrowserDecodeHooks(realAsset);
   const result = await loadGltfWithEngine(realAsset?.url ?? createEmbeddedGltf(), {
     compatibilityMode: 'best-effort',
     ...(realAsset == null ? { decodeImage: decodeEmbeddedDemoImage } : {}),
@@ -66,6 +116,7 @@ async function main(): Promise<void> {
       maxTextureSize: 4096,
       warnOnNpotRepeatWrap: true,
     } : {}),
+    ...browserDecodeHooks,
     ...(requestedBackend === 'pt-webgl2' ? { backend: 'pt-webgl2' as const } : {}),
     engineOptions: {
       canvas,
@@ -89,6 +140,9 @@ async function main(): Promise<void> {
     backend: result.backend,
     profileId: result.profileId,
     primitiveCount: result.controller.scene.primitives.length,
+    extensionsUsed: result.asset.featureReport.extensions.used,
+    extensionsRequired: result.asset.featureReport.extensions.required,
+    browserDecodeHooks: browserDecodeHooks.report,
     textureDecodeReport: result.textureDecodeReport,
     warnings: result.warnings,
     diagnostics: result.diagnostics,
@@ -96,7 +150,8 @@ async function main(): Promise<void> {
       realAsset == null ||
       (
         result.controller.scene.primitives.length >= realAsset.minPrimitives &&
-        result.textureDecodeReport.mapCount >= realAsset.minTextures
+        result.textureDecodeReport.mapCount >= realAsset.minTextures &&
+        (realAsset.requiredExtensions ?? []).every((ext) => result.asset.featureReport.extensions.used.includes(ext))
       ),
   };
 
@@ -146,6 +201,124 @@ async function main(): Promise<void> {
   }
 
   requestAnimationFrame(tick);
+}
+
+function emptyBrowserDecodeHooks(): BrowserDecodeHooks {
+  return {
+    report: {
+      requested: [],
+      draco: false,
+      meshopt: false,
+    },
+  };
+}
+
+async function createBrowserDecodeHooks(asset: RealGltfAsset): Promise<BrowserDecodeHooks> {
+  const needed = new Set(asset.browserDecode ?? []);
+  const report: Record<string, boolean | readonly string[]> = {
+    requested: [...needed],
+    draco: false,
+    meshopt: false,
+  };
+  const hooks: { dracoDecode?: DracoDecodeHook; meshoptDecode?: MeshoptDecodeHook } = {};
+
+  if (needed.has('draco')) {
+    hooks.dracoDecode = await createBrowserDracoDecode();
+    report.draco = true;
+  }
+  if (needed.has('meshopt')) {
+    hooks.meshoptDecode = await createBrowserMeshoptDecode();
+    report.meshopt = true;
+  }
+  return { ...hooks, report };
+}
+
+async function createBrowserDracoDecode(): Promise<DracoDecodeHook> {
+  const wasmBinary = await fetch(dracoDecoderWasmUrl).then((response) => {
+    if (!response.ok) throw new Error(`[gltf-viewer example] failed to fetch Draco WASM: ${response.status}`);
+    return response.arrayBuffer();
+  });
+  const module = await DracoDecoderModule({ wasmBinary });
+  return (compressed, attributeIds) => {
+    const decoder = new module.Decoder();
+    const buffer = new module.DecoderBuffer();
+    let mesh: ReturnType<typeof createDracoMesh> | null = null;
+    try {
+      buffer.Init(new Int8Array(compressed.buffer, compressed.byteOffset, compressed.byteLength), compressed.byteLength);
+      const geometryType = decoder.GetEncodedGeometryType(buffer);
+      if (geometryType !== module.TRIANGULAR_MESH) {
+        throw new Error(`[gltf-viewer example] unsupported Draco geometry type ${geometryType}`);
+      }
+      mesh = new module.Mesh();
+      const status = decoder.DecodeBufferToMesh(buffer, mesh);
+      if (!status.ok()) throw new Error(status.error_msg());
+
+      const attributes: Record<string, Float32Array> = {};
+      for (const [semantic, uniqueId] of Object.entries(attributeIds)) {
+        const attr = decoder.GetAttributeByUniqueId(mesh, uniqueId);
+        if (attr == null || attr.ptr === 0) {
+          throw new Error(`[gltf-viewer example] missing Draco attribute ${semantic} (${uniqueId})`);
+        }
+        const values = new module.DracoFloat32Array();
+        try {
+          decoder.GetAttributeFloatForAllPoints(mesh, attr, values);
+          const out = new Float32Array(values.size());
+          for (let i = 0; i < out.length; i += 1) out[i] = values.GetValue(i);
+          attributes[semantic] = out;
+        } finally {
+          module.destroy(values);
+        }
+      }
+
+      const face = new module.DracoInt32Array();
+      const indices = new Uint32Array(mesh.num_faces() * 3);
+      try {
+        for (let f = 0; f < mesh.num_faces(); f += 1) {
+          decoder.GetFaceFromMesh(mesh, f, face);
+          const offset = f * 3;
+          indices[offset] = face.GetValue(0);
+          indices[offset + 1] = face.GetValue(1);
+          indices[offset + 2] = face.GetValue(2);
+        }
+      } finally {
+        module.destroy(face);
+      }
+      return { attributes, indices };
+    } finally {
+      module.destroy(buffer);
+      if (mesh != null) module.destroy(mesh);
+      module.destroy(decoder);
+    }
+  };
+}
+
+function createDracoMesh(module: Awaited<ReturnType<typeof DracoDecoderModule>>) {
+  return new module.Mesh();
+}
+
+async function createBrowserMeshoptDecode(): Promise<MeshoptDecodeHook> {
+  await MeshoptDecoder.ready;
+  return (compressed, count, byteStride, mode, filter) => {
+    if (typeof MeshoptDecoder.decodeGltfBufferAsync === 'function') {
+      return MeshoptDecoder.decodeGltfBufferAsync(
+        count,
+        byteStride,
+        compressed,
+        mode,
+        filter === 'NONE' ? undefined : filter,
+      );
+    }
+    const target = new Uint8Array(count * byteStride);
+    MeshoptDecoder.decodeGltfBuffer(
+      target,
+      count,
+      byteStride,
+      compressed,
+      mode,
+      filter === 'NONE' ? undefined : filter,
+    );
+    return target;
+  };
 }
 
 function createEmbeddedGltf(): Parameters<typeof loadGltfWithEngine>[0] {

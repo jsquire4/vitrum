@@ -377,9 +377,10 @@ replacement for V28-B recaptures.
 - Real glTF golden PNG sweep on recommended backends (pt-webgpu WSL public-asset
   lavapipe golden lane is covered; dzn full-tier execution now passes all 11
   glTF lanes against explicit `dzn-full` real-asset goldens; the pt-webgl2
-  browser lane now has a fail-closed Playwright status for real BoxTextured GLB
-  construction/texture readiness, but WSL canvas readback stalls before a PNG
-  can be captured; compressed Draco/meshopt browser decoder hooks remain).
+  browser lane now has fail-closed Playwright status for real BoxTextured,
+  CesiumMilkTruck Draco, and MeshoptCubeTest meshopt construction/texture
+  readiness, including browser Draco/meshopt decoder-hook telemetry, but WSL
+  canvas readback stalls before PNGs can be captured).
 - Mutation matrix on real GPU/browser harness: pt-webgpu material/environment/
   emitter mutation lanes now pass on lavapipe-lite and dzn full tier
   (`behavioral-gate:dzn -- --filter mutation --require-full-tier`) after fixing

@@ -11,12 +11,34 @@
       "assetId": "box-textured-glb",
       "label": "browser/pt-webgl2-gltf-real-box-textured",
       "kind": "textured-glb",
+      "minTextures": 1,
+      "requiredExtensions": [],
+      "requiredHooks": [],
       "goldenPath": "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png",
+      "thresholds": { "maxRmse": 8.0, "maxMeanAbs": 4.0, "maxAbs": 48 }
+    },
+    {
+      "assetId": "cesium-milk-truck-draco",
+      "label": "browser/pt-webgl2-gltf-real-draco",
+      "kind": "draco",
+      "minTextures": 0,
+      "requiredExtensions": ["KHR_draco_mesh_compression"],
+      "requiredHooks": ["draco"],
+      "goldenPath": "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png",
+      "thresholds": { "maxRmse": 8.0, "maxMeanAbs": 4.0, "maxAbs": 48 }
+    },
+    {
+      "assetId": "meshopt-cube-real",
+      "label": "browser/pt-webgl2-gltf-real-meshopt",
+      "kind": "meshopt",
+      "minTextures": 0,
+      "requiredExtensions": ["KHR_meshopt_compression"],
+      "requiredHooks": ["meshopt"],
+      "goldenPath": "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png",
       "thresholds": { "maxRmse": 8.0, "maxMeanAbs": 4.0, "maxAbs": 48 }
     }
   ],
   "residualQueue": [
-    "Browser Draco decoder hook for cesium-milk-truck-draco.",
-    "Browser meshopt decoder hook for meshopt-cube-real."
+    "Browser PNG readback/golden capture for all three rows on a host that can read WebGL2 canvases."
   ]
 }

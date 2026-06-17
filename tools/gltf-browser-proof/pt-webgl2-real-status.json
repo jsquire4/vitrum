@@ -1,10 +1,161 @@
 {
-  "generatedAt": "2026-06-17T19:30:14.922Z",
+  "generatedAt": "2026-06-17T19:48:53.250Z",
   "harness": "gltf-browser-proof:pt-webgl2-real",
   "verdict": "HOST-BLOCKED",
-  "assetId": "box-textured-glb",
   "backend": "pt-webgl2",
-  "step": "canvas-readback",
-  "error": "Error: browser capture timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:233:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
-  "serverLog": "\n  VITE v5.4.21  ready in 74 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+  "assets": [
+    {
+      "generatedAt": "2026-06-17T19:48:13.082Z",
+      "harness": "gltf-browser-proof:pt-webgl2-real",
+      "verdict": "HOST-BLOCKED",
+      "assetId": "box-textured-glb",
+      "kind": "textured-glb",
+      "backend": "pt-webgl2",
+      "step": "canvas-readback",
+      "error": "Error: browser capture timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:366:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
+      "telemetry": {
+        "assetId": "box-textured-glb",
+        "backend": "pt-webgl2",
+        "profileId": "pt-webgl2",
+        "primitiveCount": 1,
+        "extensionsUsed": [],
+        "extensionsRequired": [],
+        "browserDecodeHooks": {
+          "requested": [],
+          "draco": false,
+          "meshopt": false
+        },
+        "textureDecodeReport": {
+          "mapCount": 1,
+          "uniqueHandleCount": 1,
+          "rawImageCount": 0,
+          "opaqueHandleCount": 0,
+          "cpuReadableCount": 1
+        },
+        "warningCount": 0,
+        "diagnosticCount": 0,
+        "realAssetReady": true
+      },
+      "console": [
+        "debug: [vite] connecting...",
+        "debug: [vite] connected.",
+        "warning: No available adapters.",
+        "warning: [.WebGL-0xc6c00154800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+      ],
+      "serverLog": "\n  VITE v5.4.21  ready in 67 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+    },
+    {
+      "generatedAt": "2026-06-17T19:48:33.180Z",
+      "harness": "gltf-browser-proof:pt-webgl2-real",
+      "verdict": "HOST-BLOCKED",
+      "assetId": "cesium-milk-truck-draco",
+      "kind": "draco",
+      "backend": "pt-webgl2",
+      "step": "canvas-readback",
+      "error": "Error: browser capture timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:366:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
+      "telemetry": {
+        "assetId": "cesium-milk-truck-draco",
+        "backend": "pt-webgl2",
+        "profileId": "pt-webgl2",
+        "primitiveCount": 5,
+        "extensionsUsed": [
+          "KHR_draco_mesh_compression"
+        ],
+        "extensionsRequired": [
+          "KHR_draco_mesh_compression"
+        ],
+        "browserDecodeHooks": {
+          "requested": [
+            "draco"
+          ],
+          "draco": true,
+          "meshopt": false
+        },
+        "textureDecodeReport": {
+          "mapCount": 3,
+          "uniqueHandleCount": 3,
+          "rawImageCount": 0,
+          "opaqueHandleCount": 0,
+          "cpuReadableCount": 3
+        },
+        "warningCount": 0,
+        "diagnosticCount": 0,
+        "realAssetReady": true
+      },
+      "console": [
+        "debug: [vite] connecting...",
+        "debug: [vite] connected.",
+        "warning: No available adapters.",
+        "warning: [vitrum/createEngine] Scene has 5 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.",
+        "warning: [gltf-viewer example] [vitrum/createEngine] Scene has 5 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2. {recommendation: prefer-tlas-backend, resolvedBackend: pt-webgl2}",
+        "warning: [.WebGL-0x194c0015b400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-3\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
+        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-3\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-3, fields: Array(1)}",
+        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-4\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
+        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-4\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-4, fields: Array(1)}"
+      ],
+      "serverLog": "\n  VITE v5.4.21  ready in 67 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+    },
+    {
+      "generatedAt": "2026-06-17T19:48:53.249Z",
+      "harness": "gltf-browser-proof:pt-webgl2-real",
+      "verdict": "HOST-BLOCKED",
+      "assetId": "meshopt-cube-real",
+      "kind": "meshopt",
+      "backend": "pt-webgl2",
+      "step": "canvas-readback",
+      "error": "Error: browser capture timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:366:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
+      "telemetry": {
+        "assetId": "meshopt-cube-real",
+        "backend": "pt-webgl2",
+        "profileId": "pt-webgl2",
+        "primitiveCount": 35,
+        "extensionsUsed": [
+          "KHR_mesh_quantization",
+          "KHR_meshopt_compression"
+        ],
+        "extensionsRequired": [
+          "KHR_mesh_quantization",
+          "KHR_meshopt_compression"
+        ],
+        "browserDecodeHooks": {
+          "requested": [
+            "meshopt"
+          ],
+          "draco": false,
+          "meshopt": true
+        },
+        "textureDecodeReport": {
+          "mapCount": 10,
+          "uniqueHandleCount": 10,
+          "rawImageCount": 0,
+          "opaqueHandleCount": 0,
+          "cpuReadableCount": 10
+        },
+        "warningCount": 10,
+        "diagnosticCount": 10,
+        "realAssetReady": true
+      },
+      "console": [
+        "debug: [vite] connecting...",
+        "debug: [vite] connected.",
+        "warning: No available adapters.",
+        "warning: [vitrum/createEngine] Scene has 35 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.",
+        "warning: [gltf-viewer example] [vitrum/createEngine] Scene has 35 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2. {recommendation: prefer-tlas-backend, resolvedBackend: pt-webgl2}",
+        "warning: [.WebGL-0x4ac00153c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-0\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
+        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-0\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-0, fields: Array(1)}",
+        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-5\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
+        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-5\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-5, fields: Array(1)}",
+        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-10\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
+        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-10\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-10, fields: Array(1)}",
+        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-15\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
+        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-15\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-15, fields: Array(1)}",
+        "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-20\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
+        "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-20\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-20, fields: Array(1)}"
+      ],
+      "serverLog": "\n  VITE v5.4.21  ready in 67 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+    }
+  ],
+  "assetCount": 3
 }
