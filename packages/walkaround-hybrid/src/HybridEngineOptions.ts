@@ -940,8 +940,9 @@ export interface HybridEngineOptions extends EngineOptions {
    * cache query REPLACES the DDGI estimate and a self-training record is written;
    * `NrcSubsystem` runs one MLP + hash-grid-table training step per frame. Below
    * the spread threshold the suffix keeps the DDGI estimate verbatim, so
-   * sub-threshold regions match the OFF pass. NRC is a BIASED cache — it trains
-   * toward the DDGI estimate, not ground truth (HARDWARE-VALIDATION-NEEDS.md V20).
+   * sub-threshold regions match the OFF pass. NRC is a BIASED cache — it records
+   * the selected GI radiance payload for self-training, not a ground-truth path
+   * integral (HARDWARE-VALIDATION-NEEDS.md V20).
    *
    * @default false
    */

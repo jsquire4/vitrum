@@ -6,20 +6,34 @@ import {
   RADIOMETRIC_AB_PROOFS,
   RESTIR_PT_SPECIALTY_PROOF,
   WALKAROUND_AB_HOST_STATUS_PROOF,
+  WALKAROUND_AB_RESULT_PROOF,
 } from "./proofs.mjs";
 
+/** @param {string} message */
 function fail(message) {
   throw new Error(`[radiometric-ab-proof-check] ${message}`);
 }
 
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ */
 function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/**
+ * @param {unknown} value
+ * @param {string} label
+ */
 function assertFiniteNumber(value, label) {
   if (typeof value !== "number" || !Number.isFinite(value)) fail(`${label} must be a finite number`);
 }
 
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
 async function assertCommon(proof, result) {
   if (result.ab !== proof.ab) fail(`${proof.id}: result ab ${result.ab} differs from proofs.mjs`);
   if (result.verdict !== "PASS") fail(`${proof.id}: committed result verdict is ${result.verdict}`);
@@ -32,11 +46,17 @@ async function assertCommon(proof, result) {
   if (!scriptStat.isFile) fail(`${proof.id}: script path is missing`);
 }
 
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
 function checkSppm(proof, result) {
   if (result.reference?.strategy !== proof.reference.strategy) fail("sppm: reference strategy differs from proofs.mjs");
   if (result.reference?.frames !== proof.reference.frames) fail("sppm: reference frame count differs from proofs.mjs");
   if (!Array.isArray(result.sppm)) fail("sppm: result.sppm must be an array");
-  const frames = result.sppm.map((entry) => entry.frames);
+  /** @type {any[]} */
+  const sppmEntries = result.sppm;
+  const frames = sppmEntries.map((entry) => entry.frames);
   if (!sameJson(frames, proof.checkpoints)) fail(`sppm: checkpoints ${JSON.stringify(frames)} differ from proofs.mjs`);
   if (result.converging !== true) fail("sppm: committed result must have converging=true");
   if (result.inBallpark !== true) fail("sppm: committed result must have inBallpark=true");
@@ -58,6 +78,10 @@ function checkSppm(proof, result) {
   }
 }
 
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
 function checkBdpt(proof, result) {
   if (result.meanFrames !== proof.meanFrames) fail("bdpt: meanFrames differs from proofs.mjs");
   if (result.varianceRuns !== proof.varianceRuns) fail("bdpt: varianceRuns differs from proofs.mjs");
@@ -78,11 +102,16 @@ function checkBdpt(proof, result) {
   if (result.controls?.multiVertexFindingStartsAt !== proof.controls.multiVertexFindingStartsAt) {
     fail("bdpt: multiVertexFindingStartsAt differs from proofs.mjs");
   }
+  /** @type {any[]} */
   const controls = result.controls?.byMaxLightBounces ?? [];
   const controlDepths = controls.map((entry) => entry.maxLightBounces);
   if (!sameJson(controlDepths, [1, 2, 3])) fail(`bdpt: control depths ${JSON.stringify(controlDepths)} differ from expected [1,2,3]`);
 }
 
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
 function checkRestirPt(proof, result) {
   if (result.meanFrames !== proof.meanFrames) fail("restir-pt: meanFrames differs from proofs.mjs");
   if (result.varianceRuns !== proof.varianceRuns) fail("restir-pt: varianceRuns differs from proofs.mjs");
@@ -99,6 +128,7 @@ function checkRestirPt(proof, result) {
   }
 }
 
+/** @param {any} proof */
 async function checkRestirPtSpecialty(proof) {
   const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
   const result = JSON.parse(await Deno.readTextFile(resultUrl));
@@ -124,6 +154,7 @@ async function checkRestirPtSpecialty(proof) {
   }
 }
 
+/** @param {any} proof */
 async function checkWalkaroundHostStatus(proof) {
   const statusUrl = new URL(`../../${proof.statusPath}`, import.meta.url);
   const status = JSON.parse(await Deno.readTextFile(statusUrl));
@@ -136,10 +167,104 @@ async function checkWalkaroundHostStatus(proof) {
   const preservedUrl = new URL(`../../${status.preservedResultFile}`, import.meta.url);
   const preservedStat = await Deno.stat(preservedUrl);
   if (!preservedStat.isFile || preservedStat.size <= 2) fail("walkaround-ab: preserved result file is missing or empty");
+  /** @type {any[]} */
   const nextSteps = status.nextSteps ?? [];
   if (!nextSteps.some((step) => String(step).includes("Do not promote"))) {
     fail("walkaround-ab: HOST-BLOCKED status must preserve the do-not-promote warning");
   }
+}
+
+/**
+ * @param {string} label
+ * @param {any} proof
+ * @param {any} result
+ */
+function checkWalkaroundCaseCommon(label, proof, result) {
+  if (result?.id !== proof.id) fail(`walkaround-ab ${label}: id ${result?.id} differs from ${proof.id}`);
+  if (result?.resolution !== WALKAROUND_AB_RESULT_PROOF.resolution) {
+    fail(`walkaround-ab ${label}: resolution ${result?.resolution} differs from ${WALKAROUND_AB_RESULT_PROOF.resolution}`);
+  }
+  if (result?.spp !== WALKAROUND_AB_RESULT_PROOF.spp) {
+    fail(`walkaround-ab ${label}: spp ${result?.spp} differs from ${WALKAROUND_AB_RESULT_PROOF.spp}`);
+  }
+  if (!proof.allowedVerdicts.includes(result?.verdict)) {
+    fail(`walkaround-ab ${label}: verdict ${result?.verdict} is outside ${proof.allowedVerdicts.join(", ")}`);
+  }
+}
+
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
+function checkWalkaroundA8(proof, result) {
+  checkWalkaroundCaseCommon("A8", proof, result);
+  assertFiniteNumber(result.delta?.overall, "walkaround-ab A8: delta.overall");
+  if (Math.abs(result.delta.overall) > proof.maxAbsOverallDelta) {
+    fail(`walkaround-ab A8: |overall delta| ${Math.abs(result.delta.overall)} exceeds ${proof.maxAbsOverallDelta}`);
+  }
+  for (const group of ["biased", "unbiased"]) {
+    for (const key of ["overall", "floor", "ceiling", "leftWall", "rightWall"]) {
+      assertFiniteNumber(result[group]?.[key], `walkaround-ab A8: ${group}.${key}`);
+    }
+  }
+}
+
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
+function checkWalkaroundSun(proof, result) {
+  checkWalkaroundCaseCommon("SUN", proof, result);
+  if (result.analyticAgreement !== true) fail("walkaround-ab SUN: analyticAgreement must be true");
+  if (result.shadowCorrect !== true) fail("walkaround-ab SUN: shadowCorrect must be true");
+  assertFiniteNumber(result.floorRatioToAnalytic, "walkaround-ab SUN: floorRatioToAnalytic");
+  if (Math.abs(result.floorRatioToAnalytic - 1) > proof.maxAnalyticRatioError) {
+    fail(`walkaround-ab SUN: analytic ratio ${result.floorRatioToAnalytic} is outside ±${proof.maxAnalyticRatioError}`);
+  }
+  assertFiniteNumber(result.rendered?.floorLum, "walkaround-ab SUN: rendered.floorLum");
+  assertFiniteNumber(result.rendered?.leftWallLum, "walkaround-ab SUN: rendered.leftWallLum");
+}
+
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
+function checkWalkaroundGlass(proof, result) {
+  checkWalkaroundCaseCommon("GLASS", proof, result);
+  assertFiniteNumber(result.centreRatio, "walkaround-ab GLASS: centreRatio");
+  if (result.centreRatio < proof.minCentreRatio) {
+    fail(`walkaround-ab GLASS: centreRatio ${result.centreRatio} is below ${proof.minCentreRatio}`);
+  }
+  if (result.cpuVerified?.glassPaneTrans4 !== 15) fail("walkaround-ab GLASS: expected CPU-verified trans4=15");
+  if (typeof result.platformCaveat !== "string" || !result.platformCaveat.includes("Pixel-identical")) {
+    fail("walkaround-ab GLASS: preserved result must carry the pixel-identical caveat");
+  }
+}
+
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
+function checkWalkaroundGlossy(proof, result) {
+  checkWalkaroundCaseCommon("GLOSSY", proof, result);
+  assertFiniteNumber(result.floorRatio, "walkaround-ab GLOSSY: floorRatio");
+  if (result.floorRatio < proof.minFloorRatio) {
+    fail(`walkaround-ab GLOSSY: floorRatio ${result.floorRatio} is below ${proof.minFloorRatio}`);
+  }
+  if (result.cpuVerified?.metalTri0?.isMetal !== 1) fail("walkaround-ab GLOSSY: expected CPU-verified metal bit");
+  if (typeof result.platformCaveat !== "string" || !result.platformCaveat.includes("Pixel-identical")) {
+    fail("walkaround-ab GLOSSY: preserved result must carry the pixel-identical caveat");
+  }
+}
+
+/** @param {any} proof */
+async function checkWalkaroundResults(proof) {
+  const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
+  const result = JSON.parse(await Deno.readTextFile(resultUrl));
+  checkWalkaroundA8(proof.cases.a8, result.a8);
+  checkWalkaroundSun(proof.cases.sun, result.sun);
+  checkWalkaroundGlass(proof.cases.glass, result.glass);
+  checkWalkaroundGlossy(proof.cases.glossy, result.glossy);
 }
 
 for (const proof of RADIOMETRIC_AB_PROOFS) {
@@ -154,5 +279,6 @@ for (const proof of RADIOMETRIC_AB_PROOFS) {
 
 await checkRestirPtSpecialty(RESTIR_PT_SPECIALTY_PROOF);
 await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
+await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 specialty fixture, 1 host-blocked walkaround status)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 specialty fixture, 1 host-blocked walkaround status, 4 preserved walkaround A/B cases)`);

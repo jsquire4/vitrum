@@ -73,6 +73,35 @@ export const WALKAROUND_AB_HOST_STATUS_PROOF = {
   reasonCode: "deno-wgpu-hal-gles-index-oob",
 };
 
+export const WALKAROUND_AB_RESULT_PROOF = {
+  resultPath: "tools/radiometric-ab/walkaround-ab-results.json",
+  resolution: "128x128",
+  spp: 16,
+  cases: {
+    a8: {
+      id: "A8",
+      allowedVerdicts: ["NEGLIGIBLE", "SMALL"],
+      maxAbsOverallDelta: 0.03,
+    },
+    sun: {
+      id: "SUN",
+      allowedVerdicts: ["PASS", "PASS-PARTIAL"],
+      maxAnalyticRatioError: 0.5,
+    },
+    glass: {
+      id: "GLASS",
+      allowedVerdicts: ["PASS", "PASS-WEAK"],
+      minCentreRatio: 0.5,
+    },
+    glossy: {
+      id: "GLOSSY",
+      allowedVerdicts: ["PASS"],
+      minFloorRatio: 0.8,
+    },
+  },
+};
+
+/** @param {string} id */
 export function proofForRadiometricAb(id) {
   return RADIOMETRIC_AB_PROOFS.find((proof) => proof.id === id) ?? null;
 }
