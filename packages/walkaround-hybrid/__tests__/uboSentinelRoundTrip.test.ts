@@ -18,9 +18,9 @@
  *      field. Any swap, off-by-one in index, or wrong view type (f32 vs u32)
  *      is caught here without a GPU.
  *
- *   3. Total size — the buffer is exactly WALKAROUND_UBO_SIZE_BYTES (416) and
- *      the last WGSL field (restirPtReuse at offset 412, u32, 4 bytes) ends at
- *      byte 416, exactly matching the constant.
+ *   3. Total size — the buffer is exactly WALKAROUND_UBO_SIZE_BYTES, and
+ *      the last WGSL field ends exactly at the byte length declared by the
+ *      shared constant.
  *
  * IMPORTANT: if this test fails due to a real offset mismatch (a field's
  * comment offset does not match its layout offset, or the sentinel at the
@@ -85,6 +85,7 @@ function parseWgslStructFields(wgsl: string): Array<{
  * Sizes:
  *   mat4x4f  = 64 bytes (4×4 f32)
  *   vec3f    = 12 bytes (3 f32, 4-byte aligned — the pad is the NEXT scalar)
+ *   vec4f    = 16 bytes
  *   vec2u    = 8 bytes
  *   vec3u    = 12 bytes
  *   f32/u32  = 4 bytes
@@ -93,6 +94,7 @@ function wgslTypeByteSize(type: string): number {
   switch (type) {
     case 'mat4x4f': return 64;
     case 'vec3f':   return 12;
+    case 'vec4f':   return 16;
     case 'vec2u':   return 8;
     case 'vec3u':   return 12;
     case 'f32':     return 4;
@@ -122,18 +124,18 @@ describe('WalkaroundUBO — WGSL struct offset consistency', () => {
     expect(runningOffset).toBe(WALKAROUND_UBO_SIZE_BYTES);
   });
 
-  it('struct size constant matches WALKAROUND_UBO_SIZE_BYTES (416)', () => {
-    expect(WALKAROUND_UBO_SIZE_BYTES).toBe(416);
+  it('struct size constant matches WALKAROUND_UBO_SIZE_BYTES (432)', () => {
+    expect(WALKAROUND_UBO_SIZE_BYTES).toBe(432);
     // The WGSL source also documents the size inline.
-    expect(WALKAROUND_UBO_WGSL).toContain('struct size 416 bytes');
+    expect(WALKAROUND_UBO_WGSL).toContain('struct size 432 bytes');
   });
 
-  it('last field (restirPtReuse) at offset 412 + 4 bytes ends exactly at 416', () => {
+  it('last field (sunAngular) at offset 416 + 16 bytes ends exactly at 432', () => {
     const fields = parseWgslStructFields(WALKAROUND_UBO_WGSL);
     const last = fields[fields.length - 1]!;
-    expect(last.name).toBe('restirPtReuse');
-    expect(last.commentedOffset).toBe(412);
-    expect(last.commentedOffset + wgslTypeByteSize(last.wgslType)).toBe(416);
+    expect(last.name).toBe('sunAngular');
+    expect(last.commentedOffset).toBe(416);
+    expect(last.commentedOffset + wgslTypeByteSize(last.wgslType)).toBe(432);
   });
 });
 
@@ -246,6 +248,8 @@ function buildSentinelInputs(): {
   const gridFloatOffset = s();
   // restirPtReuse: u32 → u32[103]
   const restirPtReuse = s();
+  // sunAngular.x: f32 → f32[104]
+  const sunAngularRadius = s();
 
   const _m4 = new Float32Array(16).fill(0); // zero mat4 available for matrix-field assertions
 
@@ -268,6 +272,7 @@ function buildSentinelInputs(): {
       emitterCount,
       primaryLightDir: [pldx, pldy, pldz],
       primaryLightIntensity,
+      sunAngularRadius,
       skyTint: [stR, stG, stB],
       skyIrradiance,
       emitterDist2Floor,
@@ -389,6 +394,7 @@ function buildSentinelInputs(): {
     'regirSurvivorsPerCell@404': survivorsPerCell,
     'regirGridFloatOffset@408': gridFloatOffset,
     'restirPtReuse@412':        restirPtReuse,
+    'sunAngular.x@416':         sunAngularRadius,
   };
 
   return { inputs, expected, regir } as unknown as {
@@ -398,14 +404,14 @@ function buildSentinelInputs(): {
 }
 
 describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offset)', () => {
-  it('total buffer size is exactly WALKAROUND_UBO_SIZE_BYTES (416)', () => {
+  it('total buffer size is exactly WALKAROUND_UBO_SIZE_BYTES (432)', () => {
     const { inputs } = buildSentinelInputs() as unknown as {
       inputs: PipelineFrameInputs;
       expected: Record<string, number>;
     };
     const buf = packWalkaroundUBO(inputs);
     expect(buf.byteLength).toBe(WALKAROUND_UBO_SIZE_BYTES);
-    expect(WALKAROUND_UBO_SIZE_BYTES).toBe(416);
+    expect(WALKAROUND_UBO_SIZE_BYTES).toBe(432);
   });
 
   it('every documented field has its sentinel at the correct byte offset', () => {
@@ -690,7 +696,7 @@ describe('packWalkaroundUBO — sentinel round-trip (packer index ↔ WGSL offse
 
     const expected = new Uint8Array(packWalkaroundUBO(base));
 
-    const captured = new Uint8Array(416);
+    const captured = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     const fakeDevice = {
       queue: { writeBuffer: (_b: unknown, _o: number, data: ArrayBuffer) => captured.set(new Uint8Array(data)) },
     } as unknown as GPUDevice;

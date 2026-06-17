@@ -3,8 +3,7 @@
  *
  * Verifies:
  *   1. UBO contract — WalkaroundUBO declares `restirPtReuse` at the documented
- *      offset 412 (the repurposed `_regirPad` slot) and the struct still ends at
- *      416 bytes.
+ *      offset 412 (the repurposed `_regirPad` slot).
  *   2. `updateUBO` packs the gate at u32 index 103, defaulting to 0 (OFF).
  *   3. OFF-is-BIT-IDENTICAL — with `restirPtReuse` absent / 0, EVERY UBO byte is
  *      identical to the pre-GRIS packing (the gate byte stays 0), so the GI
@@ -20,6 +19,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { WALKAROUND_UBO_SIZE_BYTES } from '../src/pipeline/constants.js';
 import { updateUBO } from '../src/pipeline/uboUpdater.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
 import { SPATIAL_GI_WGSL, SPATIAL_GI_GRIS_WGSL } from '../src/shaders/spatialGi.wgsl.js';
@@ -77,20 +77,19 @@ describe('WalkaroundUBO — GRIS reuse gate contract', () => {
     expect(WALKAROUND_UBO_WGSL).toContain('offset 412 — GRIS reuse gate');
     // No _regirPad name survives.
     expect(WALKAROUND_UBO_WGSL).not.toContain('_regirPad:');
-    // The struct still ends at 416 bytes (the gate reused the pad — no growth).
-    expect(WALKAROUND_UBO_WGSL).toContain('struct size 416 bytes');
+    expect(WALKAROUND_UBO_WGSL).toContain('struct size 432 bytes');
   });
 });
 
 describe('updateUBO — restirPtReuse packing at u32[103]', () => {
   it('defaults to 0 (OFF) when the input omits restirPtReuse', () => {
-    const backing = new Uint8Array(416);
+    const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(backing), {} as GPUBuffer, fakeInputs());
     expect(new Uint32Array(backing.buffer)[103]).toBe(0);
   });
 
   it('packs 1 when restirPtReuse is set', () => {
-    const backing = new Uint8Array(416);
+    const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(backing), {} as GPUBuffer, fakeInputs(1));
     expect(new Uint32Array(backing.buffer)[103]).toBe(1);
   });
@@ -98,8 +97,8 @@ describe('updateUBO — restirPtReuse packing at u32[103]', () => {
 
 describe('GRIS-OFF bit-identity', () => {
   it('every UBO byte is identical whether restirPtReuse is omitted or explicitly 0', () => {
-    const a = new Uint8Array(416);
-    const b = new Uint8Array(416);
+    const a = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
+    const b = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(a), {} as GPUBuffer, fakeInputs()); // omitted ⇒ 0
     updateUBO(capturingDevice(b), {} as GPUBuffer, fakeInputs(0));
     expect(a).toEqual(b);
@@ -108,8 +107,8 @@ describe('GRIS-OFF bit-identity', () => {
   });
 
   it('turning the gate ON changes ONLY u32[103] (offset 412); all other bytes identical', () => {
-    const off = new Uint8Array(416);
-    const on = new Uint8Array(416);
+    const off = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
+    const on = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(off), {} as GPUBuffer, fakeInputs());
     updateUBO(capturingDevice(on), {} as GPUBuffer, fakeInputs(1));
     const offU = new Uint32Array(off.buffer);

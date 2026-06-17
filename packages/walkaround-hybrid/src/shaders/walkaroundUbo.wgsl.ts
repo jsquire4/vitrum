@@ -188,7 +188,8 @@ struct WalkaroundUBO {
   // reconnection shift + reconnection visibility + pairwise generalized-
   // balance MIS (grisReuse.wgsl). Host opt-in via HybridEngineOptions
   // .restirPtReuse — the same OFF-is-bit-identical pattern as RC/PPG/ReGIR.
-  restirPtReuse:              u32,     //  offset 412 — GRIS reuse gate (was _regirPad); struct size 416 bytes (416 % 16 == 0)
+  restirPtReuse:              u32,     //  offset 412 — GRIS reuse gate (was _regirPad)
+  sunAngular:                 vec4f,   //  offset 416 — x = direct sun cone radius in radians; yzw reserved; struct size 432 bytes
 };
 
 // T5 — stained-glass opt-in flag bit masks. Bit 0 gates the sun-caustic term,

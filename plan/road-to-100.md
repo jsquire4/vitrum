@@ -135,6 +135,16 @@
 > as shade/OIT (`dot(-axis, receiverToLight)`), and hard-edge
 > `penumbra:0` avoids `smoothstep(edge, edge, x)` undefined behavior. GPU
 > recapture remains a V28-B proof item because this is render-changing.
+> Latest walkaround soft-sun truthfulness follow-up: authored
+> `DirectionalEmitter.angularDiameter` now threads into the shared
+> WalkaroundUBO as a direct sun cone radius and is consumed by opaque direct
+> sun NEE, transparent OIT sun lighting, and stained-glass caustics; the old
+> hard-coded 0.00436 rad radius remains only as the no-authored-diameter
+> default. Because DDGI/RC probe-cache sun transport is still directional,
+> `HybridEngine.setScene()` / `updateEmitter()` emit
+> `walkaround-hybrid.directional-angular-diameter-partial-support` with
+> `support:"direct-sun-cone-only"` for authored angular diameters. V28-B
+> recapture remains required for the visible direct-light change.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped single-bounce RGB direct-light/unlit-primary slice; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive

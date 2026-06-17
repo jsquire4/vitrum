@@ -65,6 +65,10 @@ interface PipelineFrameLighting {
    *  `updateLighting({primaryLightIntensity})` correctly mutates it without
    *  rebuilding the emitter list. */
   primaryLightIntensity: number;
+  /** Cone radius in radians for the direct sun sample. Derived from
+   *  `DirectionalEmitter.angularDiameter / 2` when authored; otherwise the
+   *  legacy real-sun radius is used. */
+  sunAngularRadius?: number;
   /** Diffuse-sky-dome RGB tint, derived from computeLightingState. Replaces
    *  four formerly-hardcoded sky tints in WGSL. Consumed by sky-aperture
    *  probe + second-bounce sky-miss paths. */

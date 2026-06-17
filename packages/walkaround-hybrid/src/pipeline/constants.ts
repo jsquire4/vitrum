@@ -6,7 +6,7 @@
  */
 
 /**
- * Size of the WalkaroundUBO in bytes (416 = 26 × 16-byte aligned vec4 slots).
+ * Size of the WalkaroundUBO in bytes (432 = 27 × 16-byte aligned vec4 slots).
  *
  * Layout details: see `uboUpdater.ts` header comment (the full field-by-field
  * breakdown lives there alongside `updateUBO`).
@@ -16,7 +16,11 @@
  *   - `WALKAROUND_UBO_SIZE_BYTES` in `uboUpdater.ts`
  *   - The WGSL `WalkaroundUBO` struct in `shaders/walkaroundUbo.wgsl.ts`
  */
-export const WALKAROUND_UBO_SIZE_BYTES = 416;
+export const WALKAROUND_UBO_SIZE_BYTES = 432;
+
+/** Legacy real-sun angular radius used when a scene directional emitter does
+ *  not author `angularDiameter`. 0.5° angular diameter => 0.25° radius. */
+export const WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS = 0.00436;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // À-trous denoiser sigma bundles (moved from bindGroupBuilders.ts, I3.1)

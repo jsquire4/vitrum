@@ -147,6 +147,25 @@ function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
   return changed ? { ...scene, primitives } : scene;
 }
 
+function collectAuthoredDirectionalAngularDiameters(scene: Scene): Array<{
+  id: string;
+  angularDiameter: number;
+  sunAngularRadius: number;
+}> {
+  const out: Array<{ id: string; angularDiameter: number; sunAngularRadius: number }> = [];
+  for (const emitter of scene.emitters) {
+    if (emitter.kind !== 'directional') continue;
+    const angularDiameter = emitter.angularDiameter;
+    if (typeof angularDiameter !== 'number' || !Number.isFinite(angularDiameter)) continue;
+    out.push({
+      id: String(emitter.id),
+      angularDiameter,
+      sunAngularRadius: Math.max(0, angularDiameter) * 0.5,
+    });
+  }
+  return out;
+}
+
 // Re-export the option / lighting interfaces from their dedicated module so
 // the package's public surface (`./HybridEngine.js` import path) stays
 // unchanged after the type split (refactor sweep 2026-05-18).
@@ -227,6 +246,8 @@ export class HybridEngine implements Engine {
   private _warnedEmissiveMapTexelPdfApproximationIds = new Set<string>();
   /** Tracks atlas-backed material texture drops already reported to hosts. */
   private _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
+  /** Tracks authored directional angular-diameter partial-support warnings. */
+  private _warnedDirectionalAngularDiameterApproximationIds = new Set<string>();
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
   private _internalWidth:        number;
@@ -971,6 +992,36 @@ export class HybridEngine implements Engine {
     }
   }
 
+  private _warnDirectionalAngularDiameterPartialSupport(
+    scene: Scene,
+    method: 'setScene' | 'updateEmitter',
+  ): void {
+    const authored = collectAuthoredDirectionalAngularDiameters(scene);
+    if (authored.length === 0) return;
+    const key = `${method}:${authored.map((e) => `${e.id}:${e.angularDiameter}`).join('|')}`;
+    if (this._warnedDirectionalAngularDiameterApproximationIds.has(key)) return;
+    this._warnedDirectionalAngularDiameterApproximationIds.add(key);
+    this._warn({
+      code: 'walkaround-hybrid.directional-angular-diameter-partial-support',
+      backend: 'walkaround-hybrid',
+      phase: method === 'setScene' ? 'setScene' : 'mutation',
+      method,
+      message:
+        `[vitrum/walkaround-hybrid] ${method}: directional emitter angularDiameter ` +
+        `is consumed by visible direct-sun cone sampling, transparent OIT, and ` +
+        `stained-glass caustics, but DDGI/RC probe-cache sun transport remains ` +
+        `directional; emitters: ${authored.map((e) => e.id).join(', ')}.`,
+      details: {
+        emitters: authored,
+        support: 'direct-sun-cone-only',
+        unsupported: [
+          'ddgi-sun-probe-soft-shadow',
+          'rc-sun-probe-soft-shadow',
+        ],
+      },
+    });
+  }
+
   /**
    * Replace the scene. Triggers a full pipeline reinitialisation
    * (BVH rebuild + ReSTIR pipeline re-init).
@@ -1036,6 +1087,7 @@ export class HybridEngine implements Engine {
       }>,
     );
     this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(emissiveMapTexelPdfApproxIds, 'setScene');
+    this._warnDirectionalAngularDiameterPartialSupport(scene, 'setScene');
 
     // SHADOW-01 — primitive castShadow remains approximate because GI-side
     // occlusion rays still see castShadow:false geometry. Emitter castShadow is
@@ -1514,6 +1566,7 @@ export class HybridEngine implements Engine {
 
     this._lastScene = applyEmitterPatchToScene(this._lastScene, id, patch);
     this._renderScene = sceneWithAnalyticMeshFallback(this._lastScene);
+    this._warnDirectionalAngularDiameterPartialSupport(this._lastScene, 'updateEmitter');
 
     const emitterOptions = {
       primaryLightDir: {

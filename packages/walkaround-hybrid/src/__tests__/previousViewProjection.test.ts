@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { FrameInput } from '@vitrum/core';
 import {
   runHybridEngineFrame,
+  sunAngularRadiusForScene,
   type HybridEngineFrameDeps,
 } from '../HybridEngineFrameOrchestrator.js';
 import type { PipelineFrameInputs } from '../pipeline/WalkaroundGPUPipeline.js';
+import {
+  WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS,
+  WALKAROUND_UBO_SIZE_BYTES,
+} from '../pipeline/constants.js';
 import { updateUBO } from '../pipeline/uboUpdater.js';
 import { MOTION_VECTORS_WGSL } from '../shaders/motionVectors.wgsl.js';
 import { TEMPORAL_WGSL } from '../shaders/temporal.wgsl.js';
@@ -131,7 +136,10 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
   };
 }
 
-function makePipelineInputs(prevViewProjMatrix: Float32Array): PipelineFrameInputs {
+function makePipelineInputs(
+  prevViewProjMatrix: Float32Array,
+  sunAngularRadius?: number,
+): PipelineFrameInputs {
   const m = identityMat4();
   return {
     camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix, cameraPos: [0, 0, 0] },
@@ -141,6 +149,7 @@ function makePipelineInputs(prevViewProjMatrix: Float32Array): PipelineFrameInpu
       emitterCount: 4,
       primaryLightDir: [0, 1, 0],
       primaryLightIntensity: 1,
+      ...(sunAngularRadius !== undefined ? { sunAngularRadius } : {}),
       skyTint: [0, 0, 0],
       skyIrradiance: 0,
       emitterDist2Floor: 0.01,
@@ -220,7 +229,7 @@ describe('walkaround previous view-projection reprojection', () => {
   it('packs prevViewProjMatrix at the existing offset-128 matrix slot', () => {
     const prevViewProj = new Float32Array(16);
     for (let i = 0; i < 16; i++) prevViewProj[i] = 100 + i;
-    const backing = new Uint8Array(416);
+    const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
 
     updateUBO(capturingDevice(backing), {} as GPUBuffer, makePipelineInputs(prevViewProj));
 
@@ -228,6 +237,38 @@ describe('walkaround previous view-projection reprojection', () => {
     for (let i = 0; i < 16; i++) {
       expect(f32[32 + i]).toBe(100 + i);
     }
+  });
+
+  it('derives and packs authored directional angularDiameter as a direct sun cone radius', () => {
+    expect(sunAngularRadiusForScene({
+      primitives: [],
+      emitters: [{
+        id: 'soft-sun',
+        kind: 'directional',
+        direction: [0, 1, 0],
+        color: [1, 1, 1],
+        intensity: 1,
+        angularDiameter: 0.2,
+      }],
+      environment: { kind: 'none' },
+    })).toBeCloseTo(0.1);
+    expect(sunAngularRadiusForScene({
+      primitives: [],
+      emitters: [{
+        id: 'hard-sun',
+        kind: 'directional',
+        direction: [0, 1, 0],
+        color: [1, 1, 1],
+        intensity: 1,
+        angularDiameter: 0,
+      }],
+      environment: { kind: 'none' },
+    })).toBe(0);
+    expect(sunAngularRadiusForScene(null)).toBe(WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS);
+
+    const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
+    updateUBO(capturingDevice(backing), {} as GPUBuffer, makePipelineInputs(identityMat4(), 0.123));
+    expect(new Float32Array(backing.buffer)[104]).toBeCloseTo(0.123);
   });
 
   it('uses the previous view-projection matrix in all reprojection shaders', () => {

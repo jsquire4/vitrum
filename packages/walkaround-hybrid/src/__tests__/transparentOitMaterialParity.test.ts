@@ -20,7 +20,8 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.iridescence,');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.clearcoatNormal,');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.sheen.rgb,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let toSun = safe_normalize(ubo.sunDirection);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let sunAngularRadius = max(ubo.sunAngular.x, 0.0);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let toSun = safe_normalize(sunBase + sunTan * (sunR * cos(sunPhi)) + sunBit * (sunR * sin(sunPhi)));');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32');
     expect(TRANSPARENT_OIT_WGSL).toContain('return traceSceneAlphaTransmittanceTextured(');
     expect(TRANSPARENT_OIT_WGSL).toContain('true,');

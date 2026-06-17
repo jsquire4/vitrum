@@ -33,6 +33,7 @@ import type { AABB, STree } from '../src/ppg/types.js';
 import { RIS_GI_WGSL, RIS_GI_MODULE } from '../src/shaders/risGi.wgsl.js';
 import { PPG_PDF_WGSL } from '../src/ppg/ppgPdf.wgsl.js';
 import { PPG_MIS_ALPHA } from '../src/ppg/ppgConstants.js';
+import { WALKAROUND_UBO_SIZE_BYTES } from '../src/pipeline/constants.js';
 import { updateUBO } from '../src/pipeline/uboUpdater.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
@@ -358,9 +359,9 @@ describe('W9 gi-ris — UBO byte layout (ppg-OFF bit-identity + ppg-ON gate)', (
     return captured;
   }
 
-  it('the UBO is 416 bytes (16-byte aligned — ReGIR grid block appended)', () => {
-    expect(captureUBO().byteLength).toBe(416);
-    expect(416 % 16).toBe(0);
+  it('the UBO is 432 bytes and remains 16-byte aligned', () => {
+    expect(captureUBO().byteLength).toBe(WALKAROUND_UBO_SIZE_BYTES);
+    expect(WALKAROUND_UBO_SIZE_BYTES % 16).toBe(0);
   });
 
   it('ppg-OFF writes ppgEnabled=0 @348 and ppgMixAlpha=0 @352', () => {

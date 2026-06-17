@@ -69,21 +69,21 @@ fn lo_sg_caustic(
   if (isGlass || isMetal) { return vec3f(0.0); }
   // Direction TOWARD the sun.  ubo.sunDirection is the unit vector from
   // the world origin toward the sun.
-  // Sun-cone sampling for physically-correct caustic penumbra.
-  // Real sun has 0.5° angular diameter → 0.25° radius → tan ≈ 0.00436.
+  // Sun-cone sampling for authored caustic penumbra. When no scene directional
+  // emitter authors angularDiameter, the host writes the legacy real-sun radius.
   //
   // Sampling strategy: PER-PIXEL DETERMINISTIC, no per-frame variance.
   // Each pixel always samples the SAME point on the sun cone (a
   // function of its (x, y) position only).
   let sunBase = ubo.sunDirection;
-  let SUN_ANGULAR_RADIUS = 0.00436;
+  let sunAngularRadius = max(ubo.sunAngular.x, 0.0);
   let hx = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453);
   let hy = fract(sin(f32(gid.x) * 93.989  + f32(gid.y) * 67.345) * 24634.6345);
   let xi = vec2f(hx, hy);
   let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
   let tan = safe_normalize(cross(upRef, sunBase));
   let bit = cross(sunBase, tan);
-  let r2 = SUN_ANGULAR_RADIUS * sqrt(xi.x);
+  let r2 = sunAngularRadius * sqrt(xi.x);
   let phi = 6.2831853 * xi.y;
   let toSun = safe_normalize(sunBase + tan * (r2 * cos(phi)) + bit * (r2 * sin(phi)));
   let nDotSun = max(0.0, dot(normal, toSun));

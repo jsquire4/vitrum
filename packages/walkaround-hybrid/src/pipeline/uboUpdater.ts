@@ -1,6 +1,6 @@
 /**
  * UBO updater — writes per-frame camera + lighting + tunables into the
- * 416-byte WalkaroundUBO uniform buffer (see WALKAROUND_UBO_SIZE_BYTES).
+ * 432-byte WalkaroundUBO uniform buffer (see WALKAROUND_UBO_SIZE_BYTES).
  *
  * UBO layout (mixed f32 / u32 — see WalkaroundUBO struct in common.wgsl):
  *   offset   0: viewMatrix                  (mat4×4f = 64 bytes)
@@ -49,11 +49,16 @@
  *   offset 404: regirSurvivorsPerCell       (u32 = 4 bytes) — K survivors per cell
  *   offset 408: regirGridFloatOffset        (u32 = 4 bytes) — grid-region float offset in combined buffer
  *   offset 412: restirPtReuse               (u32 = 4 bytes) — GRIS reconnection-shift reuse gate (was _regirPad)
- * Total: 416 bytes (416 % 16 == 0).
+ *   offset 416: sunAngular.x                (f32 = 4 bytes) — direct sun cone radius in radians
+ *   offset 420: sunAngular.yzw              (3×f32 = 12 bytes) — padding / future sun controls
+ * Total: 432 bytes (432 % 16 == 0).
  */
 
 import type { PipelineFrameInputs } from './WalkaroundGPUPipeline.js';
-import { WALKAROUND_UBO_SIZE_BYTES } from './constants.js';
+import {
+  WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS,
+  WALKAROUND_UBO_SIZE_BYTES,
+} from './constants.js';
 
 /**
  * T5 — shade flag bit masks packed into `stainedGlassFlags`. Bits 0/1 are the
@@ -270,6 +275,13 @@ export function packWalkaroundUBO(
   // reconnection visibility + pairwise MIS. Absent ⇒ 0 (OFF), so callers and
   // existing tests that never set it are byte-identical to before.
   u32[103] = (inputs.restirGI.restirPtReuse ?? 0) >>> 0; // offset 412 — restirPtReuse
+  const sunAngularRadius = inputs.lighting.sunAngularRadius;
+  f32[104] = typeof sunAngularRadius === 'number' && Number.isFinite(sunAngularRadius)
+    ? Math.max(0, sunAngularRadius)
+    : WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS; // offset 416 — sunAngular.x
+  f32[105] = 0; // offset 420 — sunAngular.y reserved
+  f32[106] = 0; // offset 424 — sunAngular.z reserved
+  f32[107] = 0; // offset 428 — sunAngular.w reserved
 
   return data;
 }

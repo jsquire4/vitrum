@@ -19,6 +19,7 @@ import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import type { RCSubsystem } from './HybridEngineRC.js';
 import type { Tunables } from './HybridEngineTuning.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
+import { WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS } from './pipeline/constants.js';
 import type { SceneBVHBuffers } from './restir/bvhCore.js';
 import type { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
 
@@ -27,6 +28,15 @@ export const HYBRID_FRAME_SKIP_OUTPUT: FrameOutput = {
   samplesAccumulated: 0,
   isConverged: false,
 };
+
+export function sunAngularRadiusForScene(scene: Scene | null | undefined): number {
+  const dirEmitter = scene?.emitters.find((e) => e.kind === 'directional');
+  const authoredDiameter = dirEmitter?.angularDiameter;
+  if (typeof authoredDiameter === 'number' && Number.isFinite(authoredDiameter)) {
+    return Math.max(0, authoredDiameter) * 0.5;
+  }
+  return WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS;
+}
 
 /**
  * H20-A — sky-only present for the empty-scene-ready state.
@@ -755,6 +765,7 @@ export function runHybridEngineFrame(deps: HybridEngineFrameDeps, input: FrameIn
       emitterCount:        bvh.emitters?.count ?? 0,
       primaryLightDir:     deps.lighting.primaryLightDir,
       primaryLightIntensity: deps.lighting.primaryLightIntensity,
+      sunAngularRadius:    sunAngularRadiusForScene(deps.subsystems.lastScene),
       skyTint:             deps.lighting.skyTint,
       skyIrradiance:       deps.lighting.skyIrradiance,
       emitterDist2Floor:   deps.flags.tunables.emitterDist2Floor,

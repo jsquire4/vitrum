@@ -8,7 +8,7 @@
  *
  *   1. UBO contract — WalkaroundUBO repurposes the two trailing pad slots
  *      (`_padPreVec3` → `frameParity` @ offset 316, `_padEnd` → `checkerboardOn`
- *      @ offset 332) WITHOUT growing the struct (still 416 bytes).
+ *      @ offset 332) in-place.
  *   2. `updateUBO` packs `frameParity` at u32[79] and `checkerboardOn` at
  *      u32[83], both defaulting to 0 (OFF) when the checkerboard arg is omitted.
  *   3. OFF-is-BIT-IDENTICAL — with checkerboard absent / disabled, EVERY UBO
@@ -32,6 +32,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { updateUBO } from '../src/pipeline/uboUpdater.js';
+import { WALKAROUND_UBO_SIZE_BYTES } from '../src/pipeline/constants.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
@@ -86,7 +87,7 @@ const PPG_OFF = { enabled: false, mixAlpha: 0 } as const;
 const REGIR_ARG = undefined; // falls through to the REGIR_OFF default.
 
 describe('WalkaroundUBO — checkerboard gate contract', () => {
-  it('repurposes the trailing pad slots into frameParity/checkerboardOn (struct stays 416 bytes)', () => {
+  it('repurposes the trailing pad slots into frameParity/checkerboardOn', () => {
     expect(WALKAROUND_UBO_WGSL).toContain('frameParity:                u32,');
     expect(WALKAROUND_UBO_WGSL).toContain('offset 316 - checkerboard frame phase');
     expect(WALKAROUND_UBO_WGSL).toContain('checkerboardOn:             u32,');
@@ -94,14 +95,13 @@ describe('WalkaroundUBO — checkerboard gate contract', () => {
     // No pad name survives.
     expect(WALKAROUND_UBO_WGSL).not.toContain('_padPreVec3:');
     expect(WALKAROUND_UBO_WGSL).not.toContain('_padEnd:');
-    // The struct still ends at 416 bytes (the gate reused the pads — no growth).
-    expect(WALKAROUND_UBO_WGSL).toContain('struct size 416 bytes');
+    expect(WALKAROUND_UBO_WGSL).toContain('struct size 432 bytes');
   });
 });
 
 describe('updateUBO — checkerboard packing at u32[79]/u32[83]', () => {
   it('defaults to 0/0 (OFF) when the checkerboard arg is omitted', () => {
-    const backing = new Uint8Array(416);
+    const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(backing), {} as GPUBuffer, fakeInputs());
     const u = new Uint32Array(backing.buffer);
     expect(u[79]).toBe(0); // frameParity
@@ -109,8 +109,8 @@ describe('updateUBO — checkerboard packing at u32[79]/u32[83]', () => {
   });
 
   it('packs checkerboardOn=1 + frameParity=frameCount&1 when enabled', () => {
-    const even = new Uint8Array(416);
-    const odd = new Uint8Array(416);
+    const even = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
+    const odd = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(even), {} as GPUBuffer, fakeInputs(), PPG_OFF, REGIR_ARG, { enabled: true, frameParity: 0 });
     updateUBO(capturingDevice(odd), {} as GPUBuffer, fakeInputs(), PPG_OFF, REGIR_ARG, { enabled: true, frameParity: 1 });
     expect(new Uint32Array(even.buffer)[83]).toBe(1);
@@ -120,7 +120,7 @@ describe('updateUBO — checkerboard packing at u32[79]/u32[83]', () => {
   });
 
   it('masks frameParity to a single bit (frameCount&1) even for large frame counts', () => {
-    const backing = new Uint8Array(416);
+    const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(backing), {} as GPUBuffer, fakeInputs(), PPG_OFF, REGIR_ARG, { enabled: true, frameParity: 1234567 });
     expect(new Uint32Array(backing.buffer)[79]).toBe(1234567 & 1); // == 1
   });
@@ -128,8 +128,8 @@ describe('updateUBO — checkerboard packing at u32[79]/u32[83]', () => {
 
 describe('checkerboard-OFF bit-identity', () => {
   it('every UBO byte is identical whether checkerboard is omitted or explicitly disabled', () => {
-    const a = new Uint8Array(416);
-    const b = new Uint8Array(416);
+    const a = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
+    const b = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(a), {} as GPUBuffer, fakeInputs()); // omitted ⇒ OFF
     // Explicitly OFF — even with frameParity:1, disabled forces both slots to 0.
     updateUBO(capturingDevice(b), {} as GPUBuffer, fakeInputs(), PPG_OFF, REGIR_ARG, { enabled: false, frameParity: 1 });
@@ -140,8 +140,8 @@ describe('checkerboard-OFF bit-identity', () => {
   });
 
   it('turning the gate ON changes ONLY u32[79] + u32[83]; all other bytes identical', () => {
-    const off = new Uint8Array(416);
-    const on = new Uint8Array(416);
+    const off = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
+    const on = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(off), {} as GPUBuffer, fakeInputs());
     updateUBO(capturingDevice(on), {} as GPUBuffer, fakeInputs(), PPG_OFF, REGIR_ARG, { enabled: true, frameParity: 1 });
     const offU = new Uint32Array(off.buffer);

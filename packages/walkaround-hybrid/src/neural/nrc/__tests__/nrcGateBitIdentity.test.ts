@@ -10,6 +10,10 @@
 // GI path is provably unchanged.
 
 import { describe, it, expect } from 'vitest';
+import {
+  WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS,
+  WALKAROUND_UBO_SIZE_BYTES,
+} from '../../../pipeline/constants.ts';
 import { updateUBO } from '../../../pipeline/uboUpdater.ts';
 import type { PipelineFrameInputs } from '../../../pipeline/WalkaroundGPUPipeline.ts';
 
@@ -75,7 +79,7 @@ describe('NRC gate — OFF bit-identity (the honest acceptance criterion)', () =
     updateUBO(b.device, {} as GPUBuffer, { ...baseInputs(), nrc: { nrcEnabled: 0 } });
     const zero = b.captured();
 
-    expect(off.length).toBe(416);
+    expect(off.length).toBe(WALKAROUND_UBO_SIZE_BYTES);
     expect(Array.from(off)).toEqual(Array.from(zero));
   });
 
@@ -88,7 +92,7 @@ describe('NRC gate — OFF bit-identity (the honest acceptance criterion)', () =
     updateUBO(on.device, {} as GPUBuffer, { ...baseInputs(), nrc: { nrcEnabled: 1 } });
     const onU32 = new Uint32Array(on.captured().buffer.slice(0));
 
-    expect(offU32.length).toBe(104); // 416 / 4
+    expect(offU32.length).toBe(WALKAROUND_UBO_SIZE_BYTES / 4);
     for (let i = 0; i < offU32.length; i++) {
       if (i === NRC_GATE_U32_INDEX) {
         expect(offU32[i]).toBe(0);
@@ -99,15 +103,16 @@ describe('NRC gate — OFF bit-identity (the honest acceptance criterion)', () =
     }
   });
 
-  it('the gate uses the former _ppgPad2 slot (offset 364) — no UBO size change', () => {
+  it('the gate uses the former _ppgPad2 slot (offset 364) without disturbing later fields', () => {
     const on = makeCapturingDevice();
     updateUBO(on.device, {} as GPUBuffer, { ...baseInputs(), nrc: { nrcEnabled: 1 } });
     const bytes = on.captured();
-    // Size unchanged at 416 (416 % 16 == 0) — the gate repurposed a pad slot.
-    expect(bytes.length).toBe(416);
+    expect(bytes.length).toBe(WALKAROUND_UBO_SIZE_BYTES);
     const u32 = new Uint32Array(bytes.buffer.slice(0));
-    // restirPtReuse (offset 412 / u32[103]) is still the LAST field and unaffected.
+    const f32 = new Float32Array(bytes.buffer.slice(0));
+    // restirPtReuse (offset 412 / u32[103]) and the later sun-angular tail are unaffected.
     expect(u32[103]).toBe(0);
+    expect(f32[104]).toBeCloseTo(WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS);
     expect(u32[NRC_GATE_U32_INDEX]).toBe(1);
   });
 });

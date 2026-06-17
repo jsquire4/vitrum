@@ -25,6 +25,7 @@ import { installWebGPUPolyfills } from './helpers/webgpuPolyfills.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { REGIR_WGSL, REGIR_BUILD_WGSL } from '../src/shaders/regir.wgsl.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
+import { WALKAROUND_UBO_SIZE_BYTES } from '../src/pipeline/constants.js';
 import { updateUBO, type RegirUboState } from '../src/pipeline/uboUpdater.js';
 import {
   ReGIRCoordinator,
@@ -86,14 +87,13 @@ describe('WalkaroundUBO — ReGIR field contract', () => {
     ]) {
       expect(WALKAROUND_UBO_WGSL).toContain(sub);
     }
-    // The struct grew to 416 bytes (documented end pad).
-    expect(WALKAROUND_UBO_WGSL).toContain('struct size 416 bytes');
+    expect(WALKAROUND_UBO_WGSL).toContain('struct size 432 bytes');
   });
 });
 
 describe('updateUBO — ReGIR packing + offsets', () => {
   it('packs an enabled ReGIR state at the documented float/u32 indices', () => {
-    const backing = new Uint8Array(416);
+    const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     const dev = capturingDevice(backing);
     const regir: RegirUboState = {
       enabled: true,
@@ -122,7 +122,7 @@ describe('updateUBO — ReGIR packing + offsets', () => {
   });
 
   it('ReGIR-OFF default writes a zeroed gate (regirEnabled = 0)', () => {
-    const backing = new Uint8Array(416);
+    const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(backing), {} as GPUBuffer, fakeInputs(),
       { enabled: false, mixAlpha: 0 }); // regir defaults to OFF
     const u32 = new Uint32Array(backing.buffer);
@@ -133,8 +133,8 @@ describe('updateUBO — ReGIR packing + offsets', () => {
   });
 
   it('ReGIR-OFF bit-identity: bytes 0..364 (the light-tree path inputs) are identical with vs without a ReGIR-OFF state', () => {
-    const a = new Uint8Array(416);
-    const b = new Uint8Array(416);
+    const a = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
+    const b = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(a), {} as GPUBuffer, fakeInputs(), { enabled: false, mixAlpha: 0 });
     updateUBO(capturingDevice(b), {} as GPUBuffer, fakeInputs(), { enabled: false, mixAlpha: 0 }, {
       enabled: false, origin: [9, 9, 9], invCellSize: 99, dims: [9, 9, 9],

@@ -45,7 +45,10 @@ export interface DirectionalEmitter extends EmitterBase {
    *      consumed by the kernel for cone-sampled soft directional shadows
    *      (emitterPacking.ts `packDirectionalLights`, kernel.wgsl.ts).
    *    - `@vitrum/pt-webgl2` — not consumed (hardwired to 0).
-   *    - `@vitrum/walkaround-hybrid` — not consumed. */
+   *    - `@vitrum/walkaround-hybrid` — approximate: consumed by the visible
+   *      direct-sun, transparent-OIT, and stained-glass caustic cone samples;
+   *      DDGI/RC probe-cache sun transport remains directional and emits a
+   *      structured approximation warning when this field is authored. */
   readonly angularDiameter?: number;
 }
 
