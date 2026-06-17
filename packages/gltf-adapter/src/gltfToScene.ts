@@ -104,6 +104,7 @@ import {
   sequentialIndices,
   triangulateTopology,
 } from './triangulation.js';
+import { GltfParseFailed } from './errors.js';
 import {
   buildPointLineFallbackGeometry,
   isPointLineMode,
@@ -454,21 +455,25 @@ export async function gltfToScene(
 
   if (input instanceof ArrayBuffer) {
     // Detect GLB by magic bytes.
-    if (input.byteLength >= 4) {
-      const magic = new DataView(input).getUint32(0, true);
-      if (magic === 0x46546c67) {
-        const glb = parseGlb(input);
-        gltf = glb.json;
-        if (glb.binChunk !== undefined && !buffers.has(0)) {
-          buffers.set(0, glb.binChunk);
-        }
-      } else {
-        // Treat as UTF-8 JSON.
-        const text = new TextDecoder().decode(input);
-        gltf = JSON.parse(text) as GltfJson;
+    if (input.byteLength >= 4 && new DataView(input).getUint32(0, true) === 0x46546c67) {
+      const glb = parseGlb(input);
+      gltf = glb.json;
+      if (glb.binChunk !== undefined && !buffers.has(0)) {
+        buffers.set(0, glb.binChunk);
       }
     } else {
-      throw new Error('[vitrum/gltf-adapter] Input ArrayBuffer is too small to be a valid glTF');
+      // Treat as UTF-8 JSON.
+      const text = new TextDecoder().decode(input);
+      try {
+        gltf = JSON.parse(text) as GltfJson;
+      } catch (cause) {
+        throw new GltfParseFailed({
+          format: 'gltf-json',
+          reason: 'json-parse-failed',
+          message: '[vitrum/gltf-adapter] glTF JSON input is not valid JSON.',
+          cause,
+        });
+      }
     }
   } else {
     gltf = input;

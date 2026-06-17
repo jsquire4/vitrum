@@ -20,6 +20,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { GltfImportError, gltfToScene } from './gltfToScene.js';
 import { analyzeGltfAsset } from './featureReport.js';
+import { GltfParseFailed } from './errors.js';
 import { solveSkin } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import type {
@@ -78,6 +79,11 @@ function concatBuffers(...bufs: ArrayBuffer[]): ArrayBuffer {
     off += b.byteLength;
   }
   return out.buffer;
+}
+
+function textBuffer(text: string): ArrayBuffer {
+  const encoded = new TextEncoder().encode(text);
+  return encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength);
 }
 
 function transformPoint(m: Float32Array | undefined, x: number, y: number, z: number): [number, number, number] {
@@ -265,6 +271,30 @@ function makeUv1NormalMappedTriangleGltf(opts: {
     buffers: new Map([[0, packed]]),
   };
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// ArrayBuffer input parsing
+// ────────────────────────────────────────────────────────────────────────────
+
+describe('ArrayBuffer input parsing', () => {
+  it('throws typed parse failures for malformed JSON buffers', async () => {
+    await expect(gltfToScene(textBuffer('{ "asset": '))).rejects.toBeInstanceOf(GltfParseFailed);
+    await expect(gltfToScene(textBuffer('{ "asset": '))).rejects.toMatchObject({
+      code: 'GLTF_PARSE_FAILED',
+      format: 'gltf-json',
+      reason: 'json-parse-failed',
+    });
+  });
+
+  it('throws typed parse failures for empty ArrayBuffer input', async () => {
+    await expect(gltfToScene(new ArrayBuffer(0))).rejects.toBeInstanceOf(GltfParseFailed);
+    await expect(gltfToScene(new ArrayBuffer(0))).rejects.toMatchObject({
+      code: 'GLTF_PARSE_FAILED',
+      format: 'gltf-json',
+      reason: 'json-parse-failed',
+    });
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────────
 // Test 1 — Minimal triangle
