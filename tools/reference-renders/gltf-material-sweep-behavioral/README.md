@@ -34,3 +34,8 @@ To prove the same fixture on the pt-webgpu full tier in the WSL dzn runtime:
 ```sh
 npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier
 ```
+
+That wrapper writes `tools/behavioral-gate/behavioral-gate-dzn-host-status.json`.
+`npm run gltf-material-proof-check` verifies the committed status artifact still
+records a full-tier dzn PASS with zero GPU errors and golden deltas inside this
+manifest's thresholds.

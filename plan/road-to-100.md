@@ -1113,17 +1113,19 @@ hard-coded topology golden entries, and `npm run gltf-topology-proof-check`
 verifies both manifests, proof metadata, 64x64/8spp expectations, and PNG
 headers.
 
-✅ **FULL-TIER MATERIAL-SWEEP COMMAND/STATUS PATH ADDED (2026-06-17):** WSL lavapipe still
+✅ **FULL-TIER MATERIAL-SWEEP DZN STATUS ADDED (2026-06-17):** WSL lavapipe still
 proves the default/auto glTF material-sweep PNG path in the lite profile. The
-companion dzn runtime now has a checked command for the same fixture on the
-pt-webgpu full tier, and the dzn wrapper writes a machine-readable
-`behavioral-gate-dzn-host-status.json` with `PASS` or `HOST-BLOCKED` when run:
+companion dzn runtime now has a committed machine-readable status artifact for
+the same fixture on the pt-webgpu full tier:
 `npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier`.
-No committed dzn `PASS` artifact is currently treated as promotion evidence in
-this Road; the checked artifact in-repo remains the lavapipe golden. `tools/behavioral-gate/gate.mjs`
-prints the resolved `tier=full|lite`, and `--require-full-tier` now actively
-requests full tier before failing any selected non-lite pt-webgpu config that
-cannot resolve there.
+`tools/behavioral-gate/behavioral-gate-dzn-host-status.json` records
+`verdict:"PASS"`, `tier:"full"`, zero GPU errors, `nan:false`, and golden
+metrics within manifest thresholds (RMSE 0.544 ≤ 8, meanAbs 0.070 ≤ 4,
+maxAbs 16 ≤ 48). `npm run gltf-material-proof-check` now verifies both the
+lavapipe golden metadata and the committed dzn full-tier status artifact.
+`tools/behavioral-gate/gate.mjs` prints the resolved `tier=full|lite`, and
+`--require-full-tier` actively requests full tier before failing any selected
+non-lite pt-webgpu config that cannot resolve there.
 Broader material-furnace/reference sweeps for individual clearcoat/sheen/
 iridescence/aniso/specular rows remain queued, but a green lite run can no
 longer be mistaken for this full-tier synthetic material-sweep evidence.

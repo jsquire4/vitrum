@@ -1,0 +1,38 @@
+{
+  "generatedAt": "2026-06-17T18:01:44.546Z",
+  "harness": "behavioral-gate:dzn",
+  "verdict": "PASS",
+  "command": "npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier",
+  "filter": "gltf-material-sweep",
+  "timeoutMs": 180000,
+  "dznEnv": "/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh",
+  "exitStatus": 0,
+  "signal": null,
+  "summary": {
+    "totalConfigs": 1,
+    "failures": 0,
+    "knownResiduals": 0
+  },
+  "configs": [
+    {
+      "verdict": "PASS",
+      "label": "pt/gltf-material-sweep",
+      "rawStatus": "OK",
+      "tier": "full",
+      "luminance": 0.4992,
+      "gpuErrors": 0,
+      "nan": false,
+      "golden": "golden=ok rmse=0.544 meanAbs=0.070 maxAbs=16 <=(8.0,4.0,48)",
+      "goldenStatus": "ok",
+      "rmse": 0.544,
+      "meanAbs": 0.07,
+      "maxAbs": 16,
+      "thresholds": {
+        "maxRmse": 8,
+        "maxMeanAbs": 4,
+        "maxAbs": 48
+      },
+      "rawLine": "PASS | pt/gltf-material-sweep       | OK | tier=full lum=0.4992 gpuErrs=0 nan=false | golden=ok rmse=0.544 meanAbs=0.070 maxAbs=16 <=(8.0,4.0,48)"
+    }
+  ]
+}

@@ -30,6 +30,9 @@ if (manifest.label !== GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label) {
 if (manifest.goldenPath !== GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath) {
   fail("manifest goldenPath differs from proofs.mjs");
 }
+if (manifest.dznStatusPath !== "tools/behavioral-gate/behavioral-gate-dzn-host-status.json") {
+  fail("manifest dznStatusPath must point at the committed dzn status artifact");
+}
 if (!sameJson(manifest.thresholds, GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds)) {
   fail("manifest thresholds differ from proofs.mjs");
 }
@@ -45,4 +48,28 @@ if (header[0] !== 0x89 || header[1] !== 0x50 || header[2] !== 0x4e || header[3] 
   fail("golden file is not a PNG");
 }
 
-console.log("[gltf-material-proof-check] PASS (synthetic material-sweep behavioral proof)");
+const dznStatusUrl = new URL(`../../${manifest.dznStatusPath}`, import.meta.url);
+const dznStatus = JSON.parse(await Deno.readTextFile(dznStatusUrl));
+if (dznStatus.harness !== "behavioral-gate:dzn") fail("dzn status harness mismatch");
+if (dznStatus.verdict !== "PASS") fail(`dzn status verdict must be PASS, got ${dznStatus.verdict}`);
+if (dznStatus.command !== manifest.commands.compareFullTierDzn) fail("dzn status command differs from manifest");
+if (dznStatus.filter !== "gltf-material-sweep") fail("dzn status filter mismatch");
+if (dznStatus.summary?.totalConfigs !== 1) fail("dzn status must contain exactly one selected config");
+if (dznStatus.summary?.failures !== 0) fail("dzn status must have zero failures");
+if (dznStatus.summary?.knownResiduals !== 0) fail("dzn status must have zero known residuals");
+
+const dznConfig = dznStatus.configs?.[0];
+if (dznConfig == null) fail("dzn status missing config row details");
+if (dznConfig.label !== GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label) fail("dzn config label mismatch");
+if (dznConfig.verdict !== "PASS") fail("dzn config verdict mismatch");
+if (dznConfig.rawStatus !== "OK") fail("dzn config rawStatus mismatch");
+if (dznConfig.tier !== "full") fail("dzn config must resolve pt-webgpu full tier");
+if (dznConfig.gpuErrors !== 0) fail("dzn config must report zero GPU errors");
+if (dznConfig.nan !== false) fail("dzn config must report nan=false");
+if (dznConfig.goldenStatus !== "ok") fail("dzn config golden status must be ok");
+if (dznConfig.rmse > manifest.thresholds.maxRmse) fail("dzn config RMSE exceeds manifest threshold");
+if (dznConfig.meanAbs > manifest.thresholds.maxMeanAbs) fail("dzn config meanAbs exceeds manifest threshold");
+if (dznConfig.maxAbs > manifest.thresholds.maxAbs) fail("dzn config maxAbs exceeds manifest threshold");
+if (!sameJson(dznConfig.thresholds, manifest.thresholds)) fail("dzn config thresholds differ from manifest");
+
+console.log("[gltf-material-proof-check] PASS (synthetic material-sweep behavioral proof + dzn full-tier status)");

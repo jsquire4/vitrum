@@ -98,6 +98,7 @@ if (result.status === 0) {
     exitStatus: result.status,
     signal: result.signal,
     summary: parseSummary(result.stdout ?? ''),
+    configs: parseConfigRows(result.stdout ?? ''),
   };
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
 }
@@ -128,5 +129,63 @@ function parseSummary(stdout) {
     totalConfigs: Number(match[1]),
     failures: Number(match[2]),
     knownResiduals: Number(match[3]),
+  };
+}
+
+function parseConfigRows(stdout) {
+  const rows = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.match(/^\s*(PASS|FAIL|KNOWN-RESIDUAL)\s+\|\s+([^|]+?)\s+\|\s+([^|]+?)\s+\|\s+([^|]+?)(?:\s+\|\s+(.*))?$/);
+    if (!match) continue;
+    const details = match[4].trim();
+    const golden = (match[5] ?? '').trim();
+    rows.push({
+      verdict: match[1],
+      label: match[2].trim(),
+      rawStatus: match[3].trim(),
+      tier: readToken(details, 'tier'),
+      luminance: readNumberToken(details, 'lum'),
+      gpuErrors: readNumberToken(details, 'gpuErrs'),
+      nan: readBoolToken(details, 'nan'),
+      golden: golden || null,
+      goldenStatus: readToken(golden, 'golden'),
+      rmse: readNumberToken(golden, 'rmse'),
+      meanAbs: readNumberToken(golden, 'meanAbs'),
+      maxAbs: readNumberToken(golden, 'maxAbs'),
+      thresholds: readGoldenThresholds(golden),
+      rawLine: line.trim(),
+    });
+  }
+  return rows;
+}
+
+function readToken(text, key) {
+  const match = text.match(new RegExp(`${key}=([^\\s]+)`));
+  return match ? match[1] : null;
+}
+
+function readNumberToken(text, key) {
+  const value = readToken(text, key);
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readBoolToken(text, key) {
+  const value = readToken(text, key);
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return null;
+}
+
+function readGoldenThresholds(text) {
+  const match = text.match(/<=\(([^,]+),([^,]+),([^)]+)\)/);
+  if (!match) return null;
+  const values = match.slice(1).map((v) => Number(v.trim()));
+  if (values.some((v) => !Number.isFinite(v))) return null;
+  return {
+    maxRmse: values[0],
+    maxMeanAbs: values[1],
+    maxAbs: values[2],
   };
 }
