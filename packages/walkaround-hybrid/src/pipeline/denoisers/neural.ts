@@ -21,6 +21,7 @@ import {
   type DenoiserState,
 } from './index.js';
 import type { InferenceGraph } from '../../neural/InferenceGraph.js';
+import type { ModelWeights } from '../../neural/weights.js';
 import { NEURAL_PACK_WGSL } from '../../shaders/neuralPack.wgsl.js';
 import { NEURAL_UNPACK_WGSL } from '../../shaders/neuralUnpack.wgsl.js';
 
@@ -32,18 +33,23 @@ export class NeuralDenoiser implements Denoiser {
    *  for `disabled` entries when buildPassLayout sizes the querySet. */
   readonly passLabels = DENOISER_PASS_LABELS['neural'];
   private readonly _inferenceGraph: InferenceGraph | undefined;
+  private readonly _modelWeights: ModelWeights | undefined;
   private _width = 0;
   private _height = 0;
-  /** Dimensions the InferenceGraph was initialized with. Fixed for the
-   *  lifetime of this denoiser — the graph's tensor shapes cannot be
-   *  changed after initialization. resize() updates _width/_height and
-   *  reallocates the pack/unpack staging buffers, but the graph itself
-   *  stays at these dims. dispatch() guards against this mismatch so the
-   *  graph never receives buffers sized for a different resolution. */
+  /** Dimensions the InferenceGraph is currently initialized with. resize()
+   *  schedules an async graph reinitialize when model weights are available;
+   *  dispatch falls back while that reinitialize is in flight so the graph never
+   *  receives buffers sized for a different resolution. */
   private _graphW = 0;
   private _graphH = 0;
   private _loggedSizeMismatch = false;
   private _loggedDispatchFailure = false;
+  private _loggedGraphReinitFailure = false;
+  private _graphReinitGeneration = 0;
+  private _graphReinitPromise: Promise<void> | null = null;
+  private _graphReinitChain: Promise<void> = Promise.resolve();
+  private _graphReinitReason: string | null = null;
+  private _disposed = false;
 
   private _device: GPUDevice | null = null;
   private _packPipeline: GPUComputePipeline | null = null;
@@ -66,12 +72,14 @@ export class NeuralDenoiser implements Denoiser {
 
   private _lastFallbackReason: string | null = null;
 
-  constructor(options?: { inferenceGraph?: InferenceGraph }) {
+  constructor(options?: { inferenceGraph?: InferenceGraph; modelWeights?: ModelWeights }) {
     this._inferenceGraph = options?.inferenceGraph;
+    this._modelWeights = options?.modelWeights;
     this.disabled = this._inferenceGraph === undefined;
   }
 
   async initialize(ctx: DenoiserInitContext): Promise<void> {
+    this._disposed = false;
     if (this._inferenceGraph == null) {
       this._lastFallbackReason = 'inference graph not supplied';
       return;
@@ -121,6 +129,12 @@ export class NeuralDenoiser implements Denoiser {
     if (this.disabled) {
       return { status: 'fallback', reason: 'inference graph not supplied' };
     }
+    if (this._graphReinitPromise != null) {
+      return {
+        status: 'warming-up',
+        reason: this._graphReinitReason ?? 'neural graph reinitializing for resized output',
+      };
+    }
     if (this._lastFallbackReason != null) {
       return { status: 'fallback', reason: this._lastFallbackReason };
     }
@@ -153,12 +167,20 @@ export class NeuralDenoiser implements Denoiser {
       this._lastFallbackReason = 'neural denoiser is not initialized';
       return ctx.resources.common.hdrColorTexture;
     }
-    // InferenceGraph tensor buffers are fixed at initialization dimensions.
-    // Check against the graph's own dims (_graphW/_graphH), NOT the
-    // current _width/_height — resize() updates those and reallocates the
-    // pack/unpack staging buffers, but the InferenceGraph stays at boot
-    // dims and cannot be resized without recreating the engine.
+    if (this._graphReinitPromise != null) {
+      this._lastFallbackReason = this._graphReinitReason ?? 'neural graph reinitializing for resized output';
+      return ctx.resources.common.hdrColorTexture;
+    }
+    // Check against the graph's own dims (_graphW/_graphH), NOT just the
+    // current pack/unpack buffer dims. If resize() was not called, but dispatch
+    // arrives at a new size and weights are available, start the same in-place
+    // graph reinitialize path instead of requiring engine recreation.
     if (ctx.width !== this._graphW || ctx.height !== this._graphH) {
+      if (this._device != null && this._modelWeights != null) {
+        this._scheduleGraphReinitialize(ctx.width, ctx.height);
+        this._lastFallbackReason = this._graphReinitReason;
+        return ctx.resources.common.hdrColorTexture;
+      }
       this._lastFallbackReason =
         `size changed from ${this._graphW}x${this._graphH} to ` +
         `${ctx.width}x${ctx.height}; recreate engine to resize neural denoiser`;
@@ -167,7 +189,7 @@ export class NeuralDenoiser implements Denoiser {
         console.warn(
           `[NeuralDenoiser] size changed from ${this._graphW}x${this._graphH} ` +
           `to ${ctx.width}x${ctx.height}; falling back to hdrColorTexture. ` +
-          `Recreate engine to reinitialize neural tensor buffers.`,
+          `No model weights were retained for in-place graph reinitialization.`,
         );
       }
       return ctx.resources.common.hdrColorTexture;
@@ -275,6 +297,9 @@ export class NeuralDenoiser implements Denoiser {
     this._lastFallbackReason = null;
     if (this._device != null) {
       this._allocTensorBuffers(this._device, w, h);
+      if (this._modelWeights != null) {
+        this._scheduleGraphReinitialize(w, h);
+      }
     }
     // When _device is null (pre-initialize), buffers are already null and
     // _allocTensorBuffers will be called from dispatch/initialize — no torn-down
@@ -282,6 +307,10 @@ export class NeuralDenoiser implements Denoiser {
   }
 
   dispose(): void {
+    this._disposed = true;
+    this._graphReinitGeneration++;
+    this._graphReinitPromise = null;
+    this._graphReinitReason = null;
     this._destroyTensorBuffers();
     this._packParamsBuf?.destroy();
     this._unpackParamsBuf?.destroy();
@@ -291,6 +320,61 @@ export class NeuralDenoiser implements Denoiser {
     this._unpackPipeline = null;
     this._device = null;
     this._lastFallbackReason = 'neural denoiser has been disposed';
+  }
+
+  private _scheduleGraphReinitialize(w: number, h: number): void {
+    if (
+      this._inferenceGraph == null ||
+      this._modelWeights == null ||
+      this._device == null ||
+      (this._graphReinitPromise == null && this._graphW === w && this._graphH === h)
+    ) {
+      return;
+    }
+
+    const generation = ++this._graphReinitGeneration;
+    const graph = this._inferenceGraph;
+    const weights = this._modelWeights;
+    const device = this._device;
+    const reason = `neural graph reinitializing for ${w}x${h}`;
+    this._graphReinitReason = reason;
+    this._lastFallbackReason = reason;
+
+    const run = this._graphReinitChain
+      .catch(() => undefined)
+      .then(async () => {
+        if (this._disposed || generation !== this._graphReinitGeneration) return;
+        await graph.initialize(device, weights, w, h);
+        if (this._disposed) {
+          graph.dispose();
+          return;
+        }
+        if (generation !== this._graphReinitGeneration) return;
+        this._graphW = w;
+        this._graphH = h;
+        this._lastFallbackReason = null;
+        this._graphReinitReason = null;
+        this._loggedSizeMismatch = false;
+        this._loggedGraphReinitFailure = false;
+      })
+      .catch((err: unknown) => {
+        if (this._disposed || generation !== this._graphReinitGeneration) return;
+        const failureReason = `neural graph resize reinitialization failed: ${errorMessage(err)}`;
+        this._lastFallbackReason = failureReason;
+        this._graphReinitReason = null;
+        if (!this._loggedGraphReinitFailure) {
+          this._loggedGraphReinitFailure = true;
+          console.warn(`[NeuralDenoiser] ${failureReason}; falling back to hdrColorTexture.`);
+        }
+      })
+      .finally(() => {
+        if (generation === this._graphReinitGeneration) {
+          this._graphReinitPromise = null;
+        }
+      });
+
+    this._graphReinitPromise = run;
+    this._graphReinitChain = run.catch(() => undefined);
   }
 
   /** Destroy the current `_tensorBuffers` record (if any) and null it out. */

@@ -464,6 +464,7 @@ export class PipelineInitCoordinator {
           ...(host.regirConfig !== undefined ? { regirConfig: host.regirConfig } : {}),
           // exactOptionalPropertyTypes: omit the key entirely when undefined.
           ...(inferenceGraph !== undefined ? { inferenceGraph } : {}),
+          ...(host.neuralWeights !== undefined ? { neuralWeights: host.neuralWeights } : {}),
           // W11 — forward OIDN config when denoiser === 'oidn-final'.
           // Validated upstream in the constructor; here we just thread.
           ...(host.oidnModelUrl !== undefined

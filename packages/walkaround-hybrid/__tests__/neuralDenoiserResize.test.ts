@@ -23,6 +23,7 @@ import { NeuralDenoiser } from '../src/pipeline/denoisers/neural.js';
 import { NEURAL_PACK_WGSL } from '../src/shaders/neuralPack.wgsl.js';
 import { NEURAL_UNPACK_WGSL } from '../src/shaders/neuralUnpack.wgsl.js';
 import type { InferenceGraph } from '../src/neural/InferenceGraph.js';
+import type { ModelWeights } from '../src/neural/weights.js';
 
 // ─── Mock device factory ────────────────────────────────────────────────────
 
@@ -92,6 +93,32 @@ function makeEncoder(): GPUCommandEncoder {
       end: vi.fn(),
     })),
   } as unknown as GPUCommandEncoder;
+}
+
+function makeDispatchContext(device: GPUDevice, width: number, height: number, hdr = makeTexture('hdr')) {
+  return {
+    device,
+    encoder: makeEncoder(),
+    width,
+    height,
+    frameIndex: 0,
+    resources: {
+      common: {
+        hdrColorTexture: hdr,
+        albedoTexture: makeTexture('albedo'),
+        gNormalDepthTexture: makeTexture('normal-depth'),
+      },
+    } as never,
+    sharedAtrousPipeline: {} as never,
+    bglCache: {} as never,
+    gNormalDepthView: {} as never,
+    atrousDirectSigmas: [128, 5, 0.05],
+    readAccum: {} as never,
+    isMoving: false,
+    wgX16: Math.ceil(width / 16),
+    wgY16: Math.ceil(height / 16),
+    computeDesc: () => ({}),
+  };
 }
 
 /** Minimal InferenceGraph stub — enough for NeuralDenoiser to treat itself as enabled. */
@@ -219,6 +246,36 @@ describe('NeuralDenoiser.resize — state consistency (Issue 1 fix)', () => {
     expect(buffers.length).toBe(beforeCount);
   });
 
+  it('resize with retained model weights reinitializes the inference graph in place', async () => {
+    const { device } = makeMockDevice();
+    const modelWeights = { layers: {} } as unknown as ModelWeights;
+    const graph = {
+      initialize: vi.fn(async () => {}),
+      run: vi.fn(),
+    } as unknown as InferenceGraph;
+    const d = new NeuralDenoiser({ inferenceGraph: graph, modelWeights });
+    await d.initialize({ device, width: 64, height: 64, bglCache: {} as never, frameResources: {} as never });
+
+    d.resize(128, 128);
+    expect(d.state()).toEqual({
+      status: 'warming-up',
+      reason: 'neural graph reinitializing for 128x128',
+    });
+
+    await (d as unknown as { _graphReinitPromise: Promise<void> | null })._graphReinitPromise;
+
+    expect(graph.initialize).toHaveBeenCalledWith(device, modelWeights, 128, 128);
+    expect((d as unknown as { _graphW: number })._graphW).toBe(128);
+    expect((d as unknown as { _graphH: number })._graphH).toBe(128);
+
+    const hdr = makeTexture('hdr');
+    const result = d.dispatch(makeDispatchContext(device, 128, 128, hdr) as never);
+
+    expect(result).not.toBe(hdr);
+    expect(graph.run).toHaveBeenCalledTimes(1);
+    expect(d.state()).toEqual({ status: 'ready' });
+  });
+
   it('dispatch falls back to raw HDR when the inference graph throws', async () => {
     const { device } = makeMockDevice();
     const throwingGraph = {
@@ -230,29 +287,7 @@ describe('NeuralDenoiser.resize — state consistency (Issue 1 fix)', () => {
     const hdr = makeTexture('hdr');
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = d.dispatch({
-        device,
-        encoder: makeEncoder(),
-        width: 64,
-        height: 64,
-        frameIndex: 0,
-        resources: {
-          common: {
-            hdrColorTexture: hdr,
-            albedoTexture: makeTexture('albedo'),
-            gNormalDepthTexture: makeTexture('normal-depth'),
-          },
-        } as never,
-        sharedAtrousPipeline: {} as never,
-        bglCache: {} as never,
-        gNormalDepthView: {} as never,
-        atrousDirectSigmas: [128, 5, 0.05],
-        readAccum: {} as never,
-        isMoving: false,
-        wgX16: 4,
-        wgY16: 4,
-        computeDesc: () => ({}),
-      });
+      const result = d.dispatch(makeDispatchContext(device, 64, 64, hdr) as never);
 
       expect(result).toBe(hdr);
       expect(d.state()).toEqual({

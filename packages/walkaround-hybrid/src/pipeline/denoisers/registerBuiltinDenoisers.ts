@@ -23,6 +23,7 @@ import { OIDNFinalDenoiser } from './oidnFinal.js';
 import type { OIDNFinalDenoiserOptions } from './oidnFinal.js';
 import { SVGFRealDenoiser } from './svgfReal.js';
 import type { InferenceGraph } from '../../neural/InferenceGraph.js';
+import type { ModelWeights } from '../../neural/weights.js';
 
 /**
  * Per-denoiser construction-time configuration. Backends that need
@@ -45,6 +46,8 @@ interface RegisterBuiltinDenoisersOptions {
   readonly oidn?: OIDNFinalDenoiserOptions;
   /** W10 — pre-initialized neural graph (enables registry lookup). */
   readonly neuralInferenceGraph?: InferenceGraph;
+  /** W10 — host-provided weights retained for in-place graph reinitialize on resize. */
+  readonly neuralWeights?: ModelWeights;
 }
 
 export function registerBuiltinDenoisers(
@@ -59,7 +62,10 @@ export function registerBuiltinDenoisers(
   // Enabled when a graph is supplied; registered-but-disabled otherwise.
   registry.register(
     options?.neuralInferenceGraph !== undefined
-      ? new NeuralDenoiser({ inferenceGraph: options.neuralInferenceGraph })
+      ? new NeuralDenoiser({
+        inferenceGraph: options.neuralInferenceGraph,
+        ...(options.neuralWeights !== undefined ? { modelWeights: options.neuralWeights } : {}),
+      })
       : new NeuralDenoiser(),
   );
   // OIDN: enabled when modelUrl is provided, registered-but-disabled

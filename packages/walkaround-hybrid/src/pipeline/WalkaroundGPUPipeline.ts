@@ -40,6 +40,7 @@ import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import type { BvhUpdateSink } from './BvhUpdateSink.js';
 import type { PipelineDebugTextures } from './PipelineDebugTextures.js';
 import type { InferenceGraph } from '../neural/InferenceGraph.js';
+import type { ModelWeights } from '../neural/weights.js';
 import { updateUBO } from './uboUpdater.js';
 import { compilePipelines } from './pipelineCompiler.js';
 import { BvhBufferHost } from './BvhBufferHost.js';
@@ -937,6 +938,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       /** T2.H2 — neural denoiser InferenceGraph (required when denoiser='neural').
        *  Kept on the options surface for forward compatibility with W10. */
       inferenceGraph?: InferenceGraph;
+      /** T2.H2 — host-provided neural weights retained for graph reinitialize on resize. */
+      neuralWeights?: ModelWeights;
       /** T2.H3 — enable PPG (Müller 2017 adaptive sTree + dTree + MIS). */
       ppgEnabled?: boolean;
       /** H47 — maximum PPG sTree spatial cells forwarded to allocatePPGResources.
@@ -1194,6 +1197,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     registerBuiltinDenoisers(this._denoiserRegistry, {
       ...(options?.inferenceGraph !== undefined
         ? { neuralInferenceGraph: options.inferenceGraph }
+        : {}),
+      ...(options?.neuralWeights !== undefined
+        ? { neuralWeights: options.neuralWeights }
         : {}),
       // exactOptionalPropertyTypes-safe: only forward `oidn` when supplied.
       ...(options?.oidn !== undefined ? { oidn: options.oidn } : {}),
