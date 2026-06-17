@@ -1,0 +1,10 @@
+{
+  "generatedAt": "2026-06-17T19:30:14.922Z",
+  "harness": "gltf-browser-proof:pt-webgl2-real",
+  "verdict": "HOST-BLOCKED",
+  "assetId": "box-textured-glb",
+  "backend": "pt-webgl2",
+  "step": "canvas-readback",
+  "error": "Error: browser capture timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:233:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
+  "serverLog": "\n  VITE v5.4.21  ready in 74 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+}

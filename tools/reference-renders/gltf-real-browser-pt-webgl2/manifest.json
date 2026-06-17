@@ -1,0 +1,22 @@
+{
+  "kind": "vitrum-browser-gltf-pt-webgl2-goldens",
+  "backend": "pt-webgl2",
+  "browserHarness": "tools/gltf-browser-proof/capture-pt-webgl2-real.mjs",
+  "resolution": [64, 64],
+  "samplesPerPixel": 1,
+  "updateCommand": "node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs --update-golden",
+  "checkCommand": "node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs",
+  "assets": [
+    {
+      "assetId": "box-textured-glb",
+      "label": "browser/pt-webgl2-gltf-real-box-textured",
+      "kind": "textured-glb",
+      "goldenPath": "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png",
+      "thresholds": { "maxRmse": 8.0, "maxMeanAbs": 4.0, "maxAbs": 48 }
+    }
+  ],
+  "residualQueue": [
+    "Browser Draco decoder hook for cesium-milk-truck-draco.",
+    "Browser meshopt decoder hook for meshopt-cube-real."
+  ]
+}

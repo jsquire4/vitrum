@@ -1266,6 +1266,17 @@ dzn path is not judged against lavapipe-lite PNGs. Treat this as closed for
 pt-webgpu dzn full-tier glTF proof; pt-webgl2/browser recommended-backend proof
 remains queued separately.
 
+2026-06-17 pt-webgl2 browser status: `tools/gltf-browser-proof/` now drives the
+real `BoxTextured.glb` through `examples/gltf-viewer` and the public
+`loadGltfWithEngine()` path with `backend:'pt-webgl2'`. The example now runs
+the browser texture decode bridge (`decodeTextures` + `decodePixels`) so the
+baseColor texture reaches pt-webgl2 as CPU-readable pixels instead of an opaque
+`ImageBitmap`. On this WSL Playwright host the page reaches capture readiness,
+but WebGL canvas readback (`toDataURL`) stalls; the committed
+`pt-webgl2-real-status.json` records this as `HOST-BLOCKED` at
+`canvas-readback`. Browser PNG proof remains queued for a host that can read
+back WebGL2 canvases; browser Draco/meshopt decoder hooks also remain queued.
+
 Validation note: the walkaround-hybrid native-Deno behavioral lane is
 fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the
 pre-existing `wh/default` config returns a renderer verdict; the npm wrapper now

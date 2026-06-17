@@ -11,10 +11,21 @@
  */
 
 import { asMat4 } from '@vitrum/core';
+import type { Mat4, Scene, ScenePrimitive } from '@vitrum/core';
 import { loadGltfWithEngine } from '@vitrum/engine/gltf';
 
 const params = new URLSearchParams(location.search);
 const targetSpp = Number(params.get('vitrumSpp')) || 128;
+const requestedAssetId = params.get('vitrumGltfAsset') ?? '';
+const requestedBackend = params.get('vitrumBackend') ?? '';
+
+const REAL_GLTF_ASSETS: Record<string, { readonly url: string; readonly minPrimitives: number; readonly minTextures: number }> = {
+  'box-textured-glb': {
+    url: 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Assets/main/Models/BoxTextured/glTF-Binary/BoxTextured.glb',
+    minPrimitives: 1,
+    minTextures: 1,
+  },
+};
 
 const canvas = document.getElementById('vitrum-canvas') as HTMLCanvasElement;
 
@@ -42,31 +53,52 @@ function projectionForCanvas(): Float32Array {
 }
 
 async function main(): Promise<void> {
-  const result = await loadGltfWithEngine(createEmbeddedGltf(), {
+  const realAsset = requestedAssetId ? REAL_GLTF_ASSETS[requestedAssetId] : undefined;
+  if (requestedAssetId && realAsset == null) {
+    throw new Error(`[gltf-viewer example] unsupported vitrumGltfAsset "${requestedAssetId}"`);
+  }
+  const result = await loadGltfWithEngine(realAsset?.url ?? createEmbeddedGltf(), {
     compatibilityMode: 'best-effort',
-    decodeImage: async () => ({
-      width: 2,
-      height: 2,
-      data: new Uint8Array([
-        255, 80, 40, 255,
-        40, 180, 255, 255,
-        255, 235, 80, 255,
-        180, 80, 255, 255,
-      ]),
-    }),
+    ...(realAsset == null ? { decodeImage: decodeEmbeddedDemoImage } : {}),
+    ...(realAsset != null ? {
+      decodeTextures: true,
+      decodePixels: decodeBrowserImagePixels,
+      maxTextureSize: 4096,
+      warnOnNpotRepeatWrap: true,
+    } : {}),
+    ...(requestedBackend === 'pt-webgl2' ? { backend: 'pt-webgl2' as const } : {}),
     engineOptions: {
       canvas,
-      prefer: 'auto',
+      prefer: requestedBackend === 'pt-webgl2' ? 'quality' : 'auto',
       onWarning: (warning) => {
         console.warn('[gltf-viewer example]', warning.message, warning.details ?? '');
       },
     },
   });
   const engine = requireEngine(result.engine);
+  const renderScene = realAsset == null ? result.controller.scene : addRealAssetLighting(normalizeSceneForViewer(result.controller.scene));
+  if (renderScene !== result.controller.scene) {
+    engine.setScene(renderScene);
+  }
 
   (globalThis as Record<string, unknown>).VITRUM_GLTF_BACKEND = result.backend;
   (globalThis as Record<string, unknown>).VITRUM_GLTF_TEXTURE_REPORT = result.textureDecodeReport;
   (globalThis as Record<string, unknown>).VITRUM_GLTF_WARNINGS = result.warnings;
+  (globalThis as Record<string, unknown>).VITRUM_CAPTURE_TELEMETRY = {
+    assetId: requestedAssetId || 'embedded-demo',
+    backend: result.backend,
+    profileId: result.profileId,
+    primitiveCount: result.controller.scene.primitives.length,
+    textureDecodeReport: result.textureDecodeReport,
+    warnings: result.warnings,
+    diagnostics: result.diagnostics,
+    realAssetReady:
+      realAsset == null ||
+      (
+        result.controller.scene.primitives.length >= realAsset.minPrimitives &&
+        result.textureDecodeReport.mapCount >= realAsset.minTextures
+      ),
+  };
 
   let frameIndex = 0;
   let captureSignalled = false;
@@ -174,6 +206,175 @@ function createEmbeddedGltf(): Parameters<typeof loadGltfWithEngine>[0] {
   };
 }
 
+async function decodeEmbeddedDemoImage(): Promise<{ width: number; height: number; data: Uint8Array }> {
+  return {
+    width: 2,
+    height: 2,
+    data: new Uint8Array([
+      255, 80, 40, 255,
+      40, 180, 255, 255,
+      255, 235, 80, 255,
+      180, 80, 255, 255,
+    ]),
+  };
+}
+
+async function decodeBrowserImagePixels(
+  handle: { readonly mimeType?: string; readonly data?: Uint8Array },
+  context: { readonly colorSpace: 'srgb' | 'linear' },
+): Promise<{
+  width: number;
+  height: number;
+  channels: 4;
+  dataType: 'uint8';
+  colorSpace: 'srgb' | 'linear';
+  data: Uint8ClampedArray;
+}> {
+  if (!(handle.data instanceof Uint8Array)) {
+    throw new Error('[gltf-viewer example] decodePixels expected a raw-image Uint8Array handle.');
+  }
+  const bytes = new Uint8Array(handle.data);
+  const blob = new Blob([bytes.buffer], { type: handle.mimeType ?? 'application/octet-stream' });
+  const bitmap = await createImageBitmap(blob);
+  const width = bitmap.width;
+  const height = bitmap.height;
+  const canvas2d = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(width, height)
+    : document.createElement('canvas');
+  canvas2d.width = width;
+  canvas2d.height = height;
+  const ctx = canvas2d.getContext('2d');
+  if (ctx == null) throw new Error('[gltf-viewer example] 2D canvas unavailable for texture decode.');
+  ctx.drawImage(bitmap, 0, 0);
+  const pixels = ctx.getImageData(0, 0, width, height).data;
+  bitmap.close();
+  return {
+    width,
+    height,
+    channels: 4,
+    dataType: 'uint8',
+    colorSpace: context.colorSpace,
+    data: pixels,
+  };
+}
+
+function normalizeSceneForViewer(scene: Scene): Scene {
+  const aabb = sceneBounds(scene.primitives);
+  if (aabb == null) return scene;
+  const center: [number, number, number] = [
+    (aabb.min[0] + aabb.max[0]) * 0.5,
+    (aabb.min[1] + aabb.max[1]) * 0.5,
+    (aabb.min[2] + aabb.max[2]) * 0.5,
+  ];
+  const extent = Math.max(
+    aabb.max[0] - aabb.min[0],
+    aabb.max[1] - aabb.min[1],
+    aabb.max[2] - aabb.min[2],
+  );
+  if (!(extent > 0)) return scene;
+  const s = 1.35 / extent;
+  const normalization = asMat4(new Float32Array([
+    s, 0, 0, 0,
+    0, s, 0, 0,
+    0, 0, s, 0,
+    -center[0] * s, -center[1] * s, -center[2] * s, 1,
+  ]));
+  return {
+    ...scene,
+    primitives: scene.primitives.map((primitive) => {
+      if (primitive.kind === 'instanced-mesh') {
+        return {
+          ...primitive,
+          instances: primitive.instances.map((instance) => asMat4(multiplyMat4(normalization, instance))),
+        };
+      }
+      return {
+        ...primitive,
+        transform: asMat4(multiplyMat4(normalization, primitive.transform ?? IDENTITY_MAT4)),
+      };
+    }),
+  };
+}
+
+function addRealAssetLighting(scene: Scene): Scene {
+  return {
+    ...scene,
+    emitters: [
+      ...(scene.emitters ?? []),
+      {
+        kind: 'rect-area',
+        id: 'gltf-viewer-real-asset-key-light',
+        position: [0, 0.95, 0.65],
+        uAxis: [0.45, 0, 0],
+        vAxis: [0, 0.45, 0],
+        color: [1, 1, 1],
+        intensity: 18.0,
+      },
+    ],
+    environment: {
+      kind: 'procedural-sky',
+      sunDirection: [0.4, 1.0, 0.25],
+      turbidity: 2.0,
+      rayleigh: 1.0,
+      mieCoefficient: 0.005,
+      mieDirectionalG: 0.8,
+      intensity: 1.0,
+    },
+  };
+}
+
+const IDENTITY_MAT4 = asMat4(new Float32Array([
+  1, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 0, 1, 0,
+  0, 0, 0, 1,
+]));
+
+function multiplyMat4(a: Float32Array, b: Float32Array): Mat4 {
+  const out = new Float32Array(16);
+  for (let col = 0; col < 4; col += 1) {
+    for (let row = 0; row < 4; row += 1) {
+      out[col * 4 + row] =
+        a[0 * 4 + row]! * b[col * 4 + 0]! +
+        a[1 * 4 + row]! * b[col * 4 + 1]! +
+        a[2 * 4 + row]! * b[col * 4 + 2]! +
+        a[3 * 4 + row]! * b[col * 4 + 3]!;
+    }
+  }
+  return asMat4(out);
+}
+
+function sceneBounds(primitives: readonly ScenePrimitive[]): { min: [number, number, number]; max: [number, number, number] } | null {
+  let found = false;
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const primitive of primitives) {
+    if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') continue;
+    const transform = primitive.transform ?? IDENTITY_MAT4;
+    const positions = primitive.positions;
+    for (let i = 0; i + 2 < positions.length; i += 3) {
+      const p = transformPoint(transform, positions[i]!, positions[i + 1]!, positions[i + 2]!);
+      for (let axis = 0; axis < 3; axis += 1) {
+        const currentMin = min[axis]!;
+        const currentMax = max[axis]!;
+        const value = p[axis]!;
+        min[axis] = Math.min(currentMin, value);
+        max[axis] = Math.max(currentMax, value);
+      }
+      found = true;
+    }
+  }
+  return found ? { min, max } : null;
+}
+
+function transformPoint(m: Float32Array, x: number, y: number, z: number): [number, number, number] {
+  return [
+    m[0]! * x + m[4]! * y + m[8]! * z + m[12]!,
+    m[1]! * x + m[5]! * y + m[9]! * z + m[13]!,
+    m[2]! * x + m[6]! * y + m[10]! * z + m[14]!,
+  ];
+}
+
 function createTriangleBuffer(): Uint8Array {
   const bytes = new Uint8Array(104);
   writeF32(bytes, 0, [
@@ -222,4 +423,5 @@ function requireEngine<T>(engine: T | undefined): T {
 
 main().catch((err: unknown) => {
   console.error('[gltf-viewer example] fatal:', err);
+  (globalThis as Record<string, unknown>).VITRUM_CAPTURE_ERROR = String(err);
 });
