@@ -143,9 +143,12 @@ describe('composeTraceGlsl', () => {
     );
     expect(bdptSrc).toContain('if ( skipOcclusion ) return true;');
     expect(bdptSrc).toContain('vec4 lv3 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 3 ), 0 );');
-    expect(bdptSrc).toContain('bool  lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lv3.x > 0.5;');
+    expect(bdptSrc).toContain('vec4 lv4 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 4 ), 0 );');
+    expect(bdptSrc).toContain('bool  lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lightMatId < 0.0 && lv4.x > 0.5;');
     expect(bdptSrc).toContain('bdptIsVisible( eyePos, lightPos, eyeState, lightEmitterCastShadowDisabled )');
-    expect(bdptSrc).toContain('gBdptVertex3 = vec4( lightRec.castShadowDisabled, 0.0, 0.0, 0.0 );');
+    expect(bdptSrc).toContain('ScatterRecord scatterRec = bsdfSample( woAtPrev, prevSurf, 550.0 );');
+    expect(bdptSrc).toContain('lightBsdfPdfToEye = bsdfResult( lightWoPrev, -connDir, lightSurf, eyeState.wavelength, lightBsdfCosTheta );');
+    expect(bdptSrc).toContain('gBdptVertex4 = bdptSurfacePayload( scatterHit );');
   });
 
   it('item 11: CMF upload-gap guard — wavelengthToRGB returns 0 when uYCmfIntegral < 1e-3', () => {
@@ -288,9 +291,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-	it('D10.4: RENDER_MAIN_SECTIONS join length pin 31632', () => {
+	it('D10.4: RENDER_MAIN_SECTIONS join length pin 31777', () => {
 		const assembled = RENDER_MAIN_SECTIONS.join('');
-		expect(assembled).toHaveLength(31632);
+		expect(assembled).toHaveLength(31777);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');

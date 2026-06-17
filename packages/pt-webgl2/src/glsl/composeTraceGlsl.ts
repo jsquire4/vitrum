@@ -407,7 +407,7 @@ function spectralCausticBdptUniformDecls(): string {
 					uniform float uMneeMaxChainLength;
 
 					// Sprint 10c — BDPT uniforms.
-					// uBdptLightPathTex: RGBA32F ping-pong texture (width=BDPT_MAX_LIGHT_BOUNCES, height=4).
+					// uBdptLightPathTex: RGBA32F ping-pong texture (width=BDPT_MAX_LIGHT_BOUNCES, height=5).
 					//   Rows: 0=position+kind, 1=normal+pdfFwd, 2=throughput+pdfRev, 3=metadata.
 					//   Columns: 0..uBdptMaxLightBounces-1 (one per light subpath bounce).
 					// uBdptMaxLightBounces: how many stored light vertices to attempt connections with.
@@ -489,17 +489,18 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							// column), 2026-06-10 — RENDER-CHANGING for bdpt:true only; off-path
 							// byte-identical.
 							//
-							// The texture is 4 rows × N columns. Four fragments (one per row)
+							// The texture is 5 rows × N columns. Five fragments (one per row)
 							// cooperate to write one vertex: row 0 = position|kind, row 1 =
-							// normal|pdfFwd, row 2 = throughput|pdfRev, row 3 = metadata
+							// normal|pdfFwd, row 2 = throughput|pdfRev, row 3 = BSDF state,
+							// row 4 = hit/material payload
 							// (see bdpt_light_subpath.glsl.js).
 							// The original rng_initialize(gl_FragCoord.xy, seed) seeded with the
-							// Y coordinate, so each of the four fragments at column C traced a
+							// Y coordinate, so each of the five fragments at column C traced a
 							// *different* random subpath and stored ONE row from that path — the
 							// assembled "vertex" mixed position, normal/pdf, and throughput from
-							// four independent random subpaths, making BDPT connections garbage.
+							// five independent random subpaths, making BDPT connections garbage.
 							//
-							// Fix: re-initialize with a y-flattened coordinate so all four
+							// Fix: re-initialize with a y-flattened coordinate so all five
 							// fragments at the same column trace the identical subpath. The row
 							// routing (bdptRow == 0/1/2/3 below) then writes consistent rows from
 							// the same path. The main-entry rng_initialize(gl_FragCoord.xy, seed)
@@ -541,6 +542,7 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							vec4 bdptV1;
 							vec4 bdptV2;
 							vec4 bdptV3;
+							vec4 bdptV4;
 							writeLightSubpathVertex(
 								uBdptVertexCol,
 								uBdptMaxLightBounces,
@@ -549,7 +551,8 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 								bdptV0,
 								bdptV1,
 								bdptV2,
-								bdptV3
+								bdptV3,
+								bdptV4
 							);
 
 							if ( int( gl_FragCoord.x ) != uBdptVertexCol ) {
@@ -563,8 +566,10 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 								pc_fragColor = bdptV1;
 							} else if ( bdptRow == 2 ) {
 								pc_fragColor = bdptV2;
-							} else {
+							} else if ( bdptRow == 3 ) {
 								pc_fragColor = bdptV3;
+							} else {
+								pc_fragColor = bdptV4;
 							}
 							gNormalDepth = vec4( 0.0 );
 							gAlbedo = vec4( 0.0 );

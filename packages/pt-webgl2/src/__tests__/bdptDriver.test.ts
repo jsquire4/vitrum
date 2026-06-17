@@ -92,7 +92,7 @@ describe('A5 BDPT host driver', () => {
     // and uBdptVertexCol = 0,1,2 in order, then uBdptLightSubpathPass=0 for the eye.
     const cols = log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v);
     expect(cols).toEqual([0, 1, 2]); // BDPT_MAX_LIGHT_BOUNCES columns, in order
-    expect(log.some((e) => e.op === 'resolution' && Array.isArray(e.v) && e.v[0] === 3 && e.v[1] === 4)).toBe(true);
+    expect(log.some((e) => e.op === 'resolution' && Array.isArray(e.v) && e.v[0] === 3 && e.v[1] === 5)).toBe(true);
 
     const passFlags = log.filter((e) => e.op === 'uBdptLightSubpathPass').map((e) => e.v);
     // The subpath flag is set to 1 (build) before the column loop, then back to 0 for

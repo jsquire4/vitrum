@@ -16,8 +16,9 @@
  * pdfRev overrides); the eye-side overrides use `bsdfResult` with wo/wi as
  * required (PBRT-correct, non-symmetric reverse density). The eye prefix
  * (E_0…E_e construction-time SA pdfs + pos/normal/specular) is supplied by the
- * caller in local per-invocation arrays threaded through the eye loop. The light
- * chain is Lambertian (cosθ/π) throughout, matching the light-subpath kernel.
+ * caller in local per-invocation arrays threaded through the eye loop. Light-chain
+ * surface vertices reconstruct their material payload and evaluate the same BSDF as
+ * the light-subpath kernel; emitter sentinel vertices keep the diffuse emission profile.
  *
  * This mirrors the WebGPU port (`@vitrum/pt-webgpu` bdptConnection.wgsl.ts),
  * which is pinned 1:1 to `@vitrum/shared-samplers`'s `bdptConnectionMIS_full` /
@@ -56,8 +57,8 @@ export const bdpt_connection = /* glsl */`
 		return ( pdfSA * cosDest ) / dist2;
 	}
 
-	// Lambertian outgoing SA density at a light-subpath vertex along dir: |cosθ|/π.
-	float bdptLambertDirPdf( vec3 n, vec3 dir ) {
+	// Emitter-profile outgoing SA density along dir: |cosθ|/π.
+	float bdptEmitterDirPdf( vec3 n, vec3 dir ) {
 		return abs( dot( n, normalize( dir ) ) ) * ( 1.0 / PI );
 	}
 
@@ -113,7 +114,7 @@ export const bdpt_connection = /* glsl */`
 				mPos[ i ] = l0.xyz;
 				mNrm[ i ] = l1.xyz;
 				mFwd[ i ] = l1.w;       // stored SA pdfFwd (no baked-in G)
-				mRev[ i ] = l2.w;       // stored SA pdfRev (Lambertian)
+				mRev[ i ] = l2.w;       // stored SA pdfRev placeholder / patched straddle value
 				mSpec[ i ] = false;     // light subpath terminates specular (D4)
 				if ( i == c ) mRev[ i ] = revLc;
 				else if ( c >= 1 && i == c - 1 ) mRev[ i ] = revLcMinus;
@@ -213,13 +214,16 @@ export const bdpt_connection = /* glsl */`
 		vec4 lv1 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 1 ), 0 );
 		vec4 lv2 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 2 ), 0 );
 		vec4 lv3 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 3 ), 0 );
+		vec4 lv4 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 4 ), 0 );
 		if ( lv0.w == 3.0 ) return vec3( 0.0 ); // BDPT_KIND_INVALID
 
 		vec3  lightPos        = lv0.xyz;
 		vec3  lightNormal     = lv1.xyz;
 		float lightPdfFwd     = lv1.w;
 		vec3  lightThroughput = lv2.xyz;
-		bool  lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lv3.x > 0.5;
+		vec3  lightWoPrev     = normalize( lv3.xyz );
+		float lightMatId      = lv3.w;
+		bool  lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lightMatId < 0.0 && lv4.x > 0.5;
 
 		// Connection-edge specular guard at the eye vertex (Veach §10.3.5).
 		bool eyeIsSpecular = ( eyeSurf.transmission > 0.5 && eyeSurf.filteredRoughness < 0.05 );
@@ -241,9 +245,22 @@ export const bdpt_connection = /* glsl */`
 		if ( eyeBsdfPdf <= 0.0 ) return vec3( 0.0 );
 		vec3 eyeBsdfCosTheta = eyeBsdfColor;
 
-		// light vertex Lambertian BSDF × cosθ toward the eye.
+		SurfaceRecord lightSurf;
+		bool lightHasSurfaceMaterial = lightMatId >= 0.0;
+		if ( lightHasSurfaceMaterial && ! bdptLoadSurfaceRecord( lightMatId, lv4, lightNormal, eyeState.wavelength, lightSurf ) ) {
+			return vec3( 0.0 );
+		}
+
+		// Light vertex BSDF × cosθ toward the eye. Emitter sentinels keep the
+		// diffuse emission profile; surface vertices reuse the full material BSDF.
 		float cosLight = max( dot( lightNormal, -connDir ), 0.0 );
+		if ( cosLight <= 0.0 ) return vec3( 0.0 );
 		vec3 lightBsdfCosTheta = vec3( cosLight / PI );
+		float lightBsdfPdfToEye = bdptEmitterDirPdf( lightNormal, -connDir );
+		if ( lightHasSurfaceMaterial ) {
+			lightBsdfPdfToEye = bsdfResult( lightWoPrev, -connDir, lightSurf, eyeState.wavelength, lightBsdfCosTheta );
+			if ( lightBsdfPdfToEye <= 0.0 ) return vec3( 0.0 );
+		}
 
 		// ── Full §10.3 MIS weight ────────────────────────────────────────────
 		int c = lightVtxIdx;
@@ -257,7 +274,7 @@ export const bdpt_connection = /* glsl */`
 
 		// Connection-induced straddle overrides (PBRT MISWeight remapping).
 		vec3 lcToE = -connDir;                       // L_c → E_e
-		float fwdEe = bdptLambertDirPdf( lightNormal, lcToE );
+		float fwdEe = lightBsdfPdfToEye;
 
 		vec3 eeMinusPos = camPos;
 		if ( e >= 1 ) eeMinusPos = bdptEyePos[ e - 1 ];
@@ -273,7 +290,11 @@ export const bdpt_connection = /* glsl */`
 		if ( c >= 1 ) {
 			vec4 lcm0 = texelFetch( uBdptLightPathTex, ivec2( c - 1, 0 ), 0 );
 			vec3 lcToLcMinus = normalize( lcm0.xyz - lightPos );
-			revLcMinus = bdptLambertDirPdf( lightNormal, lcToLcMinus );
+			if ( lightHasSurfaceMaterial ) {
+				revLcMinus = bsdfResult( lcToE, lcToLcMinus, lightSurf, eyeState.wavelength, dummyColor );
+			} else {
+				revLcMinus = bdptEmitterDirPdf( lightNormal, lcToLcMinus );
+			}
 		}
 
 		// pRef cancels in the power-heuristic ratio (scale-invariant); use the
