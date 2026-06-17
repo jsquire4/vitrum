@@ -1103,16 +1103,19 @@ hard-coded topology golden entries, and `npm run gltf-topology-proof-check`
 verifies both manifests, proof metadata, 64x64/8spp expectations, and PNG
 headers.
 
-**Still queued after this follow-up:** full-tier rich-material fidelity captures.
-On WSL lavapipe these gates prove one-call glTF decode/controller/backend
-boot/readback for the synthetic material-heavy asset and three real public
-assets, but `pt-webgpu` runs in the lite profile and still emits structured
-warnings for maps/lobes that the lite profile does not render.
-`tools/behavioral-gate/gate.mjs` now prints the resolved `tier=full|lite` for
-every pt-webgpu config and supports `--require-full-tier`, which fails any
-selected non-lite pt-webgpu config that resolves to lite before updating or
-comparing a golden. Use that flag for the remaining full-tier material-fidelity
-capture lane so a green lite run cannot be mistaken for full-tier evidence.
+✅ **FULL-TIER MATERIAL-SWEEP ASSERTION ADDED (2026-06-17):** WSL lavapipe still
+proves the default/auto glTF material-sweep PNG path in the lite profile, but
+the companion dzn runtime now has a checked command for the same fixture on the
+pt-webgpu full tier:
+`npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier`.
+That lane resolves `tier=full`, reports zero GPU errors, and compares against the
+committed material-sweep golden within tolerance (RMSE 0.544, meanAbs 0.070,
+maxAbs 16). `tools/behavioral-gate/gate.mjs` prints the resolved
+`tier=full|lite`, and `--require-full-tier` now actively requests full tier
+before failing any selected non-lite pt-webgpu config that cannot resolve there.
+Broader material-furnace/reference sweeps for individual clearcoat/sheen/
+iridescence/aniso/specular rows remain queued, but a green lite run can no
+longer be mistaken for this full-tier synthetic material-sweep evidence.
 
 ✅ **RADIOMETRIC A/B FALSE-POSITIVE GUARDS ADDED (2026-06-17):**
 `tools/radiometric-ab/{ab-sppm,ab-bdpt,ab-restir-pt}.mjs` now force
@@ -1216,12 +1219,14 @@ HDRI helper now supplies the core `HdriEnvironment` contract
 `textureData` shape. This restored `pt/lite+hdri` from a black validation
 fixture to a finite, non-black adapter-backed render.
 
-Honesty boundary: on the WSL lavapipe adapter this lane runs through
-`pt-webgpu`'s lite tier because the adapter exposes 8 storage buffers / 4 storage
-textures per shader stage, below the full-tier 34 / 5 requirement. The gate proves
-adapter-to-engine boot/render for these glTF features; full material-lobe fidelity
-promotion remains owned by the renderer fidelity matrix and package material
-oracles.
+Honesty boundary: on the WSL lavapipe adapter the default `--filter gltf` lane
+runs through `pt-webgpu`'s lite tier because the adapter exposes 8 storage
+buffers / 4 storage textures per shader stage, below the full-tier 34 / 5
+requirement. The dzn companion lane can prove selected full-tier pt-webgpu cases
+(`npm run behavioral-gate:dzn -- --filter gltf-material-sweep
+--require-full-tier` currently pins the material-heavy fixture). Broader
+material-lobe fidelity promotion remains owned by the renderer fidelity matrix
+and package material oracles.
 
 Validation note: the walkaround-hybrid native-Deno behavioral lane is
 fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the
@@ -1283,8 +1288,10 @@ walkaround path without this native-Deno host panic.
 7. Walkaround alpha + shadow GI parity
 8. `createEngine` + `pickBackend` glTF-aware + `examples/gltf-viewer`
 9. ~~Additional glTF material sweep beyond the closed behavioral gate fixtures~~
-   ✅ narrowed by `pt/gltf-material-sweep`; remaining work is golden/full-tier
-   fidelity capture, not API boot/readback plumbing.
+   ✅ narrowed by `pt/gltf-material-sweep`; default lavapipe golden and dzn
+   full-tier assertion now cover API boot/readback for the material-heavy
+   fixture. Remaining work is broader material-furnace/reference fidelity
+   promotion, not API boot/readback plumbing.
 10. Ledger/README/fidelity matrix reconciliation
 
 ### Active performance track
