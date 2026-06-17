@@ -285,6 +285,7 @@ Wave gate:
 ```bash
 npm run gltf-material-sweep
 npm run gltf-topology-proof-check
+npm run proof-check
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json npm run behavioral-gate -- --filter gltf
 npm run typecheck
 ```

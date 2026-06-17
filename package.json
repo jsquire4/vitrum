@@ -39,6 +39,7 @@
     "radiometric-ab:restir-pt": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-restir-pt.mjs",
     "radiometric-ab:restir-pt-specialty": "node tools/radiometric-ab/ab-restir-pt-specialty.mjs --check",
     "radiometric-ab:proof-check": "deno run --sloppy-imports --allow-read tools/radiometric-ab/check-results.mjs",
+    "proof-check": "npm run gltf-material-proof-check && npm run gltf-real-proof-check && npm run gltf-topology-proof-check && npm run radiometric-ab:proof-check && npm run radiometric-ab:restir-pt-specialty",
     "radiometric-ab:walkaround": "node tools/radiometric-ab/run-walkaround-ab.mjs",
     "gltf-material-sweep": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/sweep.mjs",
     "gltf-material-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/check-proofs.mjs",

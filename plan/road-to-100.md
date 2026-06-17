@@ -1135,6 +1135,10 @@ in `results-bdpt.json`, specialty-lobe `requiresGpuRecapture:false`, and the
 walkaround `HOST-BLOCKED`/do-not-promote marker. This is still snapshot/status
 evidence; full-adapter V28-B recaptures remain the promotion queue.
 
+✅ **READ-ONLY PROOF BUNDLE ADDED (2026-06-17):** `npm run proof-check` runs the
+glTF material, real-asset, topology, radiometric snapshot/status, and ReSTIR-PT
+specialty fixture checks as one non-recapture evidence gate.
+
 **Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
 
 #### 5B — Oracle suite (keep green)
