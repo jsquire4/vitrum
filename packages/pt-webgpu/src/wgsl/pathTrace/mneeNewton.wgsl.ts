@@ -176,6 +176,40 @@ fn mneePdfJacobianDet(v: vec3f, recv: vec3f, dadL: vec3f, dbdL: vec3f, tu: vec3f
   let dw_dt = (dv_dt - w * dot(w, dv_dt)) / dist;
   return length(cross(dw_ds, dw_dt));
 }
+
+// Same area-light connection-PDF factor, but for an arbitrary finite-emitter
+// differential basis. lightU/lightV are the world-space emitter tangent axes for
+// local coordinates (s,t), so dA = |lightU×lightV| ds dt. The IFT rows dadL/dbdL
+// are derivatives w.r.t. world-space light motion; chain them through lightU/V,
+// project the resulting vertex motion to receiver solid angle, then normalize by
+// the emitter area scale. This is what production rect/disc/mesh MNEE needs:
+// unlike the historical mneePdfJacobianDet x/y harness helper, it does not assume
+// the area light lives in the world XY plane.
+fn mneePdfJacobianDetAxes(
+  v: vec3f,
+  recv: vec3f,
+  dadL: vec3f,
+  dbdL: vec3f,
+  tu: vec3f,
+  tv: vec3f,
+  lightU: vec3f,
+  lightV: vec3f,
+) -> f32 {
+  let areaScale = length(cross(lightU, lightV));
+  if (areaScale <= 1e-8) { return 0.0; }
+  let da_ds = dot(dadL, lightU);
+  let db_ds = dot(dbdL, lightU);
+  let da_dt = dot(dadL, lightV);
+  let db_dt = dot(dbdL, lightV);
+  let dv_ds = tu * da_ds + tv * db_ds;
+  let dv_dt = tu * da_dt + tv * db_dt;
+  let d = v - recv;
+  let dist = max(length(d), 1e-8);
+  let w = d / dist;
+  let dw_ds = (dv_ds - w * dot(w, dv_ds)) / dist;
+  let dw_dt = (dv_dt - w * dot(w, dv_dt)) / dist;
+  return length(cross(dw_ds, dw_dt)) / areaScale;
+}
 `;
 
 /** Newton iterations for the 2-vertex chain solve (coupled 4-DOF → more than the
@@ -390,4 +424,3 @@ fn mneeReflectionIrradiance(
 // MNEE_CHAIN_PDF_HARNESS_WGSL, MNEE_REFLECTION_HARNESS_WGSL) and the TypeScript
 // helpers (packMneeHarnessInput, MNEE_HARNESS_INPUT_FLOATS) live in
 // mneeNewton.harness.wgsl.ts — kept separate from this production module.
-

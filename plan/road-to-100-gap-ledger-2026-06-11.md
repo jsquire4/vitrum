@@ -907,8 +907,14 @@ Verified closure:
   the production hash-grid gather path.
 
 Residual:
+- Source implementation follow-up narrowed on 2026-06-16: finite rect/disc and
+  mesh-area *reflection* MNEE is now wired through
+  `mneePdfJacobianDetAxes` with receiver-BSDF MIS. Finite-area refraction and
+  glass-slab chain MNEE still need a separate derivation/rendered A-B before
+  promotion.
 - Rendered caustic reference promotion remains validation evidence, not an open
-  source implementation gap.
+  source implementation gap for the shipped SPPM and point/finite-reflection
+  MNEE paths.
 
 ### PTWG-04 - CLOSED 2026-06-12 - SPPM per-pixel stats update once per frame
 
@@ -1145,8 +1151,10 @@ engineContract.test.ts):
     now also consumes the point/spot/rect/disc/mesh packed lanes and the packed
     N-directional records. Lite directional NEE decodes the signed
     `cameraPos.w` mirror for the first directional `castShadow:false` flag.
-    Remaining promotion proof: BDPT light subpath and MNEE/SPPM caustic
-    legs/source treatment still need explicit shadow-flag oracles.
+    Remaining promotion proof: BDPT light subpath plus finite-area refraction/slab
+    MNEE and SPPM caustic legs/source treatment still need explicit shadow-flag
+    oracles; finite-area reflection MNEE now consumes the rect/disc center `.w`
+    and mesh-area radiance `.w` `castShadow:false` lanes for the emitter shadow leg.
   - walkaround-hybrid `native` (2026-06-13 follow-up): analytic point/spot
     payloads pack binding-13 lane `[13]`; shared `EmitterTri` packs lane `[19]`;
     ReSTIR-DI candidate visibility + shade visibility gate on

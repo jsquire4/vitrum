@@ -33,6 +33,21 @@ describe('MNEE reflection caustic — kernel wiring (Phase I.1)', () => {
     );
   });
 
+  it('wires finite rect/disc and mesh-area reflection MNEE through the area determinant', () => {
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('fn finiteAreaReflectionCaustic(');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('fn areaLightReflectionCausticSample(');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let rectCount = params.rectAreaLightCount;');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let meshCount = params.meshAreaLightCount;');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let disc = concentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('lightArea = max(0.5 * length(cross(lightU, lightV)), 1e-6);');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let lightToVertex = safe_normalize(v - lightPos);');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let det = mneePdfJacobianDetAxes(v, hitPos, jac.dadL, jac.dbdL, mirrorTu, mirrorTv, lightU, lightV);');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let lightPdf = (1.0 / max(lightArea, 1e-8)) / max(det, 1e-12);');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('baseColor, roughness, metallic, transmission, ior, normal, wo, wi,');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('let misWeight = powerHeuristic(lightPdf, brdfPdf);');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('contribution = contribution + sample * f32(finiteCount);');
+  });
+
   it('iterates point lights with the correct stride via POINT_LIGHT_VEC4_STRIDE (H51-D / H1-class fix)', () => {
     // H51-D bumped the point stride to 3 vec4f (12 floats): [pos, radiance, dist+decay].
     // caustic.wgsl.ts previously used the stale stride-2 literal (`li * 2u`), which
@@ -80,6 +95,7 @@ describe('MNEE reflection caustic — kernel wiring (Phase I.1)', () => {
     // transmissive cone-search gate — so a diffuse floor catches a mirror caustic
     // with no glass present. The transmissive branch sums on top.
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('var total = pointLightReflectionCaustic(');
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain('total = total + finiteAreaReflectionCaustic(');
     expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
       'clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,',
     );

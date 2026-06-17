@@ -205,6 +205,235 @@ fn causticClampedPointCount() -> u32 {
   return min(params.pointLightCount, 16u);
 }
 
+fn areaLightReflectionCausticSample(
+  hitPos: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  throughput: vec3f,
+  mirrorP: vec3f,
+  mirrorN: vec3f,
+  mirrorTu: vec3f,
+  mirrorTv: vec3f,
+  lightPos: vec3f,
+  lightU: vec3f,
+  lightV: vec3f,
+  lightArea: f32,
+  lightRadiance: vec3f,
+  lightShadowDisabled: bool,
+) -> vec3f {
+  if (lightArea <= 1e-8 || max(lightRadiance.r, max(lightRadiance.g, lightRadiance.b)) <= 1e-6) {
+    return vec3f(0.0);
+  }
+  let res = mneeNewtonSolve(mirrorP, mirrorN, mirrorTu, mirrorTv, hitPos, lightPos, 1.0, 1.0, ${MNEE_NEWTON_MAX_ITERS}u);
+  if (res.residual > 1e-4) { return vec3f(0.0); }
+  let v = res.vertex;
+  let lightNormal = safe_normalize(cross(lightU, lightV));
+  let lightToVertex = safe_normalize(v - lightPos);
+  if (dot(lightNormal, lightToVertex) <= 1e-5) {
+    return vec3f(0.0);
+  }
+  let wi = safe_normalize(v - hitPos);
+  let nDotL = max(dot(normal, wi), 0.0);
+  if (nDotL <= 1e-5) { return vec3f(0.0); }
+
+  // leg A: receiver → v unobstructed (the mirror itself is the endpoint, so
+  // bound the ray just short of v), and the solved vertex must remain on the
+  // finite mirror surface discovered by the seed ray.
+  let distA = length(v - hitPos);
+  let rayA = Ray(hitPos + normal * 1e-3, wi);
+  if (traceAny(rayA, 1e-4, max(distA - 2e-3, 1e-3))) { return vec3f(0.0); }
+  let chkHit = traceClosest(rayA, 1e-4, INFINITY);
+  if (!chkHit.didHit || abs(chkHit.dist - distA) > 5e-3) { return vec3f(0.0); }
+  let chkMat = decodeMaterial(hitMaterialId(chkHit));
+  if (chkMat.roughness > REFLECT_ROUGH_MAX || chkMat.metallic < REFLECT_METAL_MIN) {
+    return vec3f(0.0);
+  }
+
+  // leg B: v → finite emitter. castShadow:false on the light disables this shadow
+  // leg, but not the receiver→mirror validity test above.
+  if (!lightShadowDisabled) {
+    let toLight = lightPos - v;
+    let distB = length(toLight);
+    let dirB = toLight / max(distB, 1e-8);
+    var legBOrigin = v + dirB * 1e-3;
+    var legBRemaining = distB - 1e-3;
+    var legBBlocked = false;
+    for (var stepB = 0u; stepB < 4u; stepB = stepB + 1u) {
+      let segRay = Ray(legBOrigin, dirB);
+      let segHit = traceClosest(segRay, 1e-4, max(legBRemaining - 1e-3, 1e-4));
+      if (!segHit.didHit) { break; }
+      let segMat = decodeMaterial(hitMaterialId(segHit));
+      let isMirror = segMat.roughness <= REFLECT_ROUGH_MAX && segMat.metallic >= REFLECT_METAL_MIN;
+      if (!isMirror) { legBBlocked = true; break; }
+      let advance = segHit.dist + 1e-3;
+      legBOrigin = legBOrigin + dirB * advance;
+      legBRemaining = legBRemaining - advance;
+      if (legBRemaining <= 1e-3) { break; }
+    }
+    if (legBBlocked) { return vec3f(0.0); }
+  }
+
+  let jac = mneeManifoldJacobian(v, mirrorN, mirrorTu, mirrorTv, hitPos, lightPos, 1.0, 1.0);
+  let det = mneePdfJacobianDetAxes(v, hitPos, jac.dadL, jac.dbdL, mirrorTu, mirrorTv, lightU, lightV);
+  if (det <= 1e-12) { return vec3f(0.0); }
+  let lightPdf = (1.0 / max(lightArea, 1e-8)) / max(det, 1e-12);
+  let brdfPdf = brdfDirectionalPdfFullSampled(
+    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
+    anisotropy, anisotropyRotation,
+  );
+  let misWeight = powerHeuristic(lightPdf, brdfPdf);
+  let fr = evaluateBrdfFull(
+    baseColor, roughness, metallic, normal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
+    anisotropy, anisotropyRotation,
+  );
+  return throughput * fr * nDotL * lightRadiance * misWeight / max(lightPdf, 1e-6);
+}
+
+fn finiteAreaReflectionCaustic(
+  rng: ptr<function, u32>,
+  hitPos: vec3f,
+  normal: vec3f,
+  wo: vec3f,
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  throughput: vec3f,
+) -> vec3f {
+  if (causticReceiverRejected(metallic, roughness)) { return vec3f(0.0); }
+  let rectCount = params.rectAreaLightCount;
+  let meshCount = params.meshAreaLightCount;
+  let finiteCount = rectCount + meshCount;
+  if (finiteCount == 0u) { return vec3f(0.0); }
+
+  var st: vec3f;
+  var sb: vec3f;
+  buildOnb(normal, &st, &sb);
+  var contribution = vec3f(0.0);
+  var found = false;
+  for (var s = 0u; s < 16u; s = s + 1u) {
+    if (s >= REFLECT_SEED_RAYS || found) { break; }
+    let u1 = rand_f32(rng);
+    let u2 = rand_f32(rng);
+    let cz = u1;
+    let r = sqrt(max(0.0, 1.0 - u1 * u1));
+    let phi = 2.0 * PI * u2;
+    let seedDir = safe_normalize((r * cos(phi)) * st + (r * sin(phi)) * sb + cz * normal);
+    let seedRay = Ray(hitPos + normal * 1e-3, seedDir);
+    let seedHit = traceClosest(seedRay, 1e-4, INFINITY);
+    if (!seedHit.didHit) { continue; }
+    let mMat = decodeMaterial(hitMaterialId(seedHit));
+    if (mMat.roughness > REFLECT_ROUGH_MAX || mMat.metallic < REFLECT_METAL_MIN) {
+      continue;
+    }
+    let mirrorP = seedRay.origin + seedRay.direction * seedHit.dist;
+    let mirrorN = safe_normalize(
+      select(-seedHit.normal, seedHit.normal, dot(seedRay.direction, seedHit.normal) < 0.0));
+    var mTu: vec3f;
+    var mTv: vec3f;
+    buildOnb(mirrorN, &mTu, &mTv);
+
+    let picked = min(u32(floor(rand_f32(rng) * f32(finiteCount))), finiteCount - 1u);
+    var lightPos = vec3f(0.0);
+    var lightU = vec3f(1.0, 0.0, 0.0);
+    var lightV = vec3f(0.0, 1.0, 0.0);
+    var lightArea = 0.0;
+    var lightRadiance = vec3f(0.0);
+    var lightShadowDisabled = false;
+    if (picked < rectCount) {
+      let rb = picked * 4u;
+      let rpos = rectAreaLights[rb].xyz;
+      let ru = rectAreaLights[rb + 1u].xyz;
+      let rv = rectAreaLights[rb + 2u].xyz;
+      let rshape = rectAreaLights[rb + 3u];
+      let isDisc = abs(rshape.w - 1.0) < 0.5;
+      let xi1 = rand_f32(rng);
+      let xi2 = rand_f32(rng);
+      if (isDisc) {
+        let disc = concentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));
+        lightPos = rpos + ru * disc.x + rv * disc.y;
+        let radius = length(ru);
+        lightArea = max(PI * radius * radius, 1e-6);
+      } else {
+        lightPos = rpos + ru * (xi1 * 2.0 - 1.0) + rv * (xi2 * 2.0 - 1.0);
+        lightArea = max(4.0 * length(cross(ru, rv)), 1e-6);
+      }
+      lightU = ru;
+      lightV = rv;
+      lightRadiance = rshape.rgb;
+      lightShadowDisabled = rectAreaLights[rb].w > 0.5;
+    } else {
+      let mi = picked - rectCount;
+      let mb = mi * 4u;
+      let a = meshAreaLights[mb].xyz;
+      let b = meshAreaLights[mb + 1u].xyz;
+      let c = meshAreaLights[mb + 2u].xyz;
+      let r1 = rand_f32(rng);
+      let r2 = rand_f32(rng);
+      let su = sqrt(r1);
+      let uu = 1.0 - su;
+      let vv = r2 * su;
+      let ww = 1.0 - uu - vv;
+      lightPos = a * uu + b * vv + c * ww;
+      lightU = b - a;
+      lightV = c - a;
+      lightArea = max(0.5 * length(cross(lightU, lightV)), 1e-6);
+      lightRadiance = meshAreaLights[mb + 3u].rgb;
+      lightShadowDisabled = meshAreaLights[mb + 3u].w > 0.5;
+    }
+    let sample = areaLightReflectionCausticSample(
+      hitPos, normal, wo, baseColor, roughness, metallic, transmission, ior,
+      clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+      iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      specularColor, specularIntensity, anisotropy, anisotropyRotation, throughput,
+      mirrorP, mirrorN, mTu, mTv,
+      lightPos, lightU, lightV, lightArea, lightRadiance, lightShadowDisabled,
+    );
+    if (max(sample.r, max(sample.g, sample.b)) <= 0.0) { continue; }
+    contribution = contribution + sample * f32(finiteCount);
+    found = true;
+  }
+  return contribution;
+}
+
 fn pointLightReflectionCaustic(
   rng: ptr<function, u32>,
   hitPos: vec3f,
@@ -898,6 +1127,21 @@ fn manifoldNeeContribution(
   // already MIS-complete on its own (no other technique reaches it).
   var total = pointLightReflectionCaustic(
     rng, hitPos, normal, wo, baseColor, roughness, metallic,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+    specularColor, specularIntensity,
+    anisotropy, anisotropyRotation,
+    throughput,
+  );
+
+  // REAL Hanika-2015 reflection caustic for finite rect/disc and mesh-area
+  // emitters. It uses the same mirror seed, but samples one finite emitter point,
+  // maps its area PDF through mneePdfJacobianDetAxes, and balances against the
+  // receiver BSDF direction PDF. Refraction and glass-slab area emitters remain
+  // separate promotion work because their focusing terms use different Jacobians.
+  total = total + finiteAreaReflectionCaustic(
+    rng, hitPos, normal, wo, baseColor, roughness, metallic,
+    transmission, ior,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
