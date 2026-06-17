@@ -1,0 +1,20 @@
+{
+  "kind": "vitrum-gltf-point-line-behavioral-goldens",
+  "id": "point-line-fallback",
+  "label": "pt/gltf-point-line-fallback",
+  "fixture": "synthetic-points-lines-loop-strip",
+  "sourceModes": ["POINTS", "LINES", "LINE_LOOP", "LINE_STRIP"],
+  "proof": "fallback-generated-mesh",
+  "resolution": [64, 64],
+  "samplesPerPixel": 8,
+  "goldenPath": "tools/reference-renders/gltf-point-line-behavioral/pt-gltf-point-line-fallback.png",
+  "thresholds": {
+    "maxRmse": 8.0,
+    "maxMeanAbs": 4.0,
+    "maxAbs": 48
+  },
+  "commands": {
+    "compare": "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json npm run behavioral-gate -- --filter gltf-point-line-fallback",
+    "recapture": "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-net --allow-write=tools/reference-renders/gltf-point-line-behavioral tools/behavioral-gate/gate.mjs --filter gltf-point-line-fallback --update-goldens"
+  }
+}

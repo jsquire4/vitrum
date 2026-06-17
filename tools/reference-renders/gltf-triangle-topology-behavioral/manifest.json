@@ -1,0 +1,20 @@
+{
+  "kind": "vitrum-gltf-triangle-topology-behavioral-goldens",
+  "id": "triangle-strip-fan",
+  "label": "pt/gltf-triangle-strip-fan",
+  "fixture": "synthetic-triangle-strip-fan",
+  "sourceModes": ["TRIANGLE_STRIP", "TRIANGLE_FAN"],
+  "proof": "adapter-generated-triangle-list",
+  "resolution": [64, 64],
+  "samplesPerPixel": 8,
+  "goldenPath": "tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png",
+  "thresholds": {
+    "maxRmse": 8.0,
+    "maxMeanAbs": 4.0,
+    "maxAbs": 48
+  },
+  "commands": {
+    "compare": "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json npm run behavioral-gate -- --filter gltf-triangle-strip-fan",
+    "recapture": "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-net --allow-write=tools/reference-renders/gltf-triangle-topology-behavioral tools/behavioral-gate/gate.mjs --filter gltf-triangle-strip-fan --update-goldens"
+  }
+}

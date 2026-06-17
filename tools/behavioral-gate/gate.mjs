@@ -69,6 +69,7 @@ import {
 } from "../gltf-material-sweep/fixture.mjs";
 import { GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF } from "../gltf-material-sweep/proofs.mjs";
 import { REAL_GLTF_BEHAVIORAL_PROOFS } from "../gltf-real-asset-sweep/proofs.mjs";
+import { GLTF_TOPOLOGY_BEHAVIORAL_PROOFS } from "../gltf-topology-proofs/proofs.mjs";
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
@@ -214,6 +215,16 @@ const WH_CONFIGS = [
 ];
 
 const REAL_GLTF_GOLDENS = Object.fromEntries(REAL_GLTF_BEHAVIORAL_PROOFS.map((proof) => [
+  proof.label,
+  {
+    path: proof.goldenPath,
+    maxRmse: proof.thresholds.maxRmse,
+    maxMeanAbs: proof.thresholds.maxMeanAbs,
+    maxAbs: proof.thresholds.maxAbs,
+  },
+]));
+
+const GLTF_TOPOLOGY_GOLDENS = Object.fromEntries(GLTF_TOPOLOGY_BEHAVIORAL_PROOFS.map((proof) => [
   proof.label,
   {
     path: proof.goldenPath,
@@ -1466,18 +1477,7 @@ const GLTF_GOLDENS = {
     maxAbs: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds.maxAbs,
   },
   ...REAL_GLTF_GOLDENS,
-  "pt/gltf-point-line-fallback": {
-    path: "tools/reference-renders/gltf-point-line-behavioral/pt-gltf-point-line-fallback.png",
-    maxRmse: 8.0,
-    maxMeanAbs: 4.0,
-    maxAbs: 48,
-  },
-  "pt/gltf-triangle-strip-fan": {
-    path: "tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png",
-    maxRmse: 8.0,
-    maxMeanAbs: 4.0,
-    maxAbs: 48,
-  },
+  ...GLTF_TOPOLOGY_GOLDENS,
 };
 
 function pngFromPixels(pixels, width, height) {

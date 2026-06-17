@@ -7,6 +7,12 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate -- --filter gltf-point-line-fallback --update-goldens
 ```
 
+The proof metadata is checked by:
+
+```bash
+npm run gltf-topology-proof-check
+```
+
 The lane imports a synthetic glTF mesh containing `POINTS`, `LINES`,
 `LINE_LOOP`, and `LINE_STRIP` primitives, verifies each produced a
 source-pathed `fallback-generated-primitive-mode` diagnostic, and then renders

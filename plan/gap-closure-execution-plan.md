@@ -263,8 +263,10 @@ six pt-webgpu glTF configs with finite non-black output and zero GPU errors.
 The real public-asset lane now also has committed pt-webgpu lavapipe golden PNGs
 for BoxTextured, CesiumMilkTruck Draco, and MeshoptCubeTest meshopt assets; the
 real-asset import/decode sweep reports those `behavioral-gate` proof labels and
-golden paths through shared metadata. Recommended-backend/browser captures
-remain in the validation queue, as intended.
+golden paths through shared metadata. The synthetic topology lanes for point/line
+fallback and triangle strip/fan conversion now also have checked manifests and
+shared proof metadata via `npm run gltf-topology-proof-check`. Recommended
+backend/browser captures remain in the validation queue, as intended.
 
 Allowed work:
 
@@ -282,6 +284,7 @@ Wave gate:
 
 ```bash
 npm run gltf-material-sweep
+npm run gltf-topology-proof-check
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json npm run behavioral-gate -- --filter gltf
 npm run typecheck
 ```
