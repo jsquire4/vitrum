@@ -265,8 +265,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // replacement plus totalInserted/storedCount density compensation.
     // Re-pinned 2026-06-16: finite rect/disc/mesh-area reflection MNEE now uses
     // mneePdfJacobianDetAxes and MIS against the receiver BSDF PDF.
-    expect(digest).toBe('2d6a0e33d7c6a7635b9763e0da5526377b06383f0012a69fe7b8bf8a40aad2fb');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(383118);
+    // Re-pinned 2026-06-17: BDPT secondary connections skip the emitter endpoint
+    // already covered by per-bounce NEE, avoiding direct-light double-counting.
+    expect(digest).toBe('12610a5f30df3ee5a12f13530615fa352fbf821ae17ea9115ca2cafd90978ca7');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(383504);
   });
 });
 

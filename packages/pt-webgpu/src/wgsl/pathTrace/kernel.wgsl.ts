@@ -900,7 +900,12 @@ ${transmissiveBlock}
       // double-count with the unidirectional NEE above (fork !state.firstRay).
       if (bounce > 0u) {
         let maxLv = min(params.bdptMaxLightBounces, 8u);
-        for (var lvi = 0u; lvi < maxLv; lvi++) {
+        // lvi=0 is the emitter endpoint: connecting E_bounce directly to it is
+        // the same direct-light strategy already estimated by the per-bounce NEE
+        // block above. Start at the first scattered light vertex so BDPT adds
+        // only the complementary multi-vertex strategies instead of brightening
+        // every indirect hit by double-counting secondary NEE.
+        for (var lvi = 1u; lvi < maxLv; lvi++) {
           radiance = radiance + evaluateBdptConnection(
             hitPos,
             normal,

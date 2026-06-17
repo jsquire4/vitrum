@@ -1,6 +1,6 @@
 {
   "ab": "bdpt-vs-unidirectional",
-  "date": "2026-06-11T02:33:06.412Z",
+  "date": "2026-06-17T05:50:02.490Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -15,19 +15,19 @@
   "varianceRuns": 8,
   "varianceFramesPerRun": 8,
   "uni": {
-    "globalLum": 0.4868965011138933,
-    "roiLum": 0.4872278986080716,
-    "variance": 0.005899578612583778
+    "globalLum": 0.08006546401561064,
+    "roiLum": 0.1093735323935114,
+    "variance": 0.07856658106002219
   },
   "bdpt": {
-    "globalLum": 0.4868965011138933,
-    "roiLum": 0.4872278986080716,
-    "variance": 0.005899578612583778
+    "globalLum": 0.09374135884168382,
+    "roiLum": 0.1286461473422478,
+    "variance": 0.07868705854133864
   },
-  "globalRelErr": 0,
-  "roiRelErr": 0,
-  "varRatio": 1,
-  "meanAgreement": true,
+  "globalRelErr": 0.17080891235960038,
+  "roiRelErr": 0.17620912964021407,
+  "varRatio": 1.0015334443689794,
+  "meanAgreement": false,
   "varianceImproved": true,
-  "verdict": "PASS"
+  "verdict": "FINDING"
 }

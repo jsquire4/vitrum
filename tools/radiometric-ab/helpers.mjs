@@ -184,7 +184,10 @@ export function buildCausticScene() {
   const primitives = [
     makeQuad("floor",      [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]], [0,1,0],  [0.8,0.8,0.8]),
     makeQuad("ceiling",    [[-1,1,-1],[-1,1,1],[1,1,1],[1,1,-1]],     [0,-1,0], [0.8,0.8,0.8]),
-    makeQuad("back-wall",  [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], [0.8,0.8,0.8]),
+    // The camera sits at +Z looking toward the origin, so the Cornell box must
+    // be open toward +Z and place its back wall at -Z. A previous version put
+    // the wall at +Z, causing local-light A/Bs to measure the unlit outside face.
+    makeQuad("back-wall",  [[-1,-1,-1],[-1,1,-1],[1,1,-1],[1,-1,-1]],   [0,0,1],  [0.8,0.8,0.8]),
     makeQuad("left-wall",  [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1]),
     makeQuad("right-wall", [[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1]),
     // Glass sphere: transmission=1.0 → material.transmission decoded as glass
@@ -220,7 +223,8 @@ export function buildCornellScene() {
   const primitives = [
     makeQuad("floor",      [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]], [0,1,0],  [0.8,0.8,0.8]),
     makeQuad("ceiling",    [[-1,1,-1],[-1,1,1],[1,1,1],[1,1,-1]],     [0,-1,0], [0.8,0.8,0.8]),
-    makeQuad("back-wall",  [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], [0.8,0.8,0.8]),
+    // Open-front Cornell box for the fixed +Z camera; see buildCausticScene.
+    makeQuad("back-wall",  [[-1,-1,-1],[-1,1,-1],[1,1,-1],[1,-1,-1]],   [0,0,1],  [0.8,0.8,0.8]),
     makeQuad("left-wall",  [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1]),
     makeQuad("right-wall", [[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1]),
     // Metal sphere in centre — glossy specular, low roughness.

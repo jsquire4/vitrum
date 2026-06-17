@@ -43,7 +43,7 @@ npm run radiometric-ab:restir-pt-specialty
 
 Each script writes a `results-*.json` in this directory.
 
-## Verdicts (2026-06-11, lavapipe)
+## Verdicts
 
 ### A/B #1 — SPPM vs manifold-NEE caustic reference
 
@@ -67,22 +67,34 @@ produces an unbiased estimate at these spp levels.
 
 ### A/B #2 — BDPT vs unidirectional
 
-**PASS**
+**FINDING (2026-06-17, lavapipe after Cornell fixture repair)**
 
 Scene: Cornell box with a glossy metal sphere (r=0.08 roughness, metallic=1.0).
 Indirect ROI: 1,271 pixels (cols 20–60, rows 25–55).
 
 | Metric | UNI (bdpt:false) | BDPT (bdpt:true) | Notes |
 |--------|-----------------|-----------------|-------|
-| Global mean lum (60 frames) | 0.48690 | 0.48690 | relErr = **0.00%** |
-| ROI mean lum (60 frames) | 0.48723 | 0.48723 | relErr = **0.00%** |
-| Variance in ROI (8×8 frames) | 0.005900 | 0.005900 | ratio = **1.0000** |
+| Global mean lum (60 frames) | 0.08007 | 0.09374 | relErr = **17.08%** |
+| ROI mean lum (60 frames) | 0.10937 | 0.12865 | relErr = **17.62%** |
+| Variance in ROI (8×8 frames) | 0.078567 | 0.078687 | ratio = **1.0015** |
 
-BDPT is **byte-identical** to unidirectional in this scene at 60 spp.  The old π-factor
-bias (pre-R7a π-bias fix) would have shown ×π ≈ 314% discrepancy; the 0.00% agreement
-confirms the fix is correct.  Variance ratio 1.0000 means BDPT adds no excess variance
-in this scene.  (Variance improvement only shows at higher spp or on scenes with more
-challenging indirect paths where BDPT's multi-vertex connections help.)
+The previous 2026-06-11 **PASS** was invalid as promotion evidence. The shared Cornell
+fixture had its back wall at `z=+1` while the PT camera sits at `+Z` looking toward the
+origin, so local-light Cornell scenes could measure the unlit outside of a closed box.
+`helpers.mjs` now keeps the box open toward `+Z` by placing the back wall at `z=-1`,
+matching the behavioral-gate Cornell fixture. After that repair, the same BDPT proof
+lane produces finite non-black signal and exposes a real multi-vertex BDPT mean mismatch.
+
+One source-verified bug was fixed with this recapture: the pt-webgpu BDPT connection loop
+no longer connects secondary eye vertices to `lvi=0`, the emitter endpoint, because that
+direct-light strategy is already estimated by the normal per-bounce NEE path. A focused
+control run shows `bdptOptions.maxLightBounces:1` is identical to `bdpt:false`; the
+remaining mismatch starts when multi-vertex light-subpath connections are enabled
+(`maxLightBounces:2`/`3` measured about +13%/+17% global luminance at 120 frames).
+
+Conclusion: BDPT plumbing and non-black behavior are verified, but full multi-vertex
+radiometric promotion remains open. The current `results-bdpt.json` intentionally records
+`"verdict":"FINDING"` so this cannot regress into another false pass.
 
 ### A/B #3 — ReSTIR-PT reuse on vs off
 

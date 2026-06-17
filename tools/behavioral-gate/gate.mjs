@@ -228,7 +228,10 @@ function buildCornellScene(opts = {}) {
   const primitives = [
     makeQuad("floor",      [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]], [0,1,0],  [0.8,0.8,0.8]),
     makeQuad("ceiling",    [[-1,1,-1],[-1,1,1],[1,1,1],[1,1,-1]],     [0,-1,0], [0.8,0.8,0.8]),
-    makeQuad("back-wall",  [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], [0.8,0.8,0.8]),
+    // The PT/behavioral camera sits at +Z looking toward the origin. Keep the
+    // Cornell box open toward +Z; otherwise the camera sees the unlit outside
+    // of a +Z back wall while local lights are hidden inside the box.
+    makeQuad("back-wall",  [[-1,-1,-1],[-1,1,-1],[1,1,-1],[1,-1,-1]],   [0,0,1],  [0.8,0.8,0.8]),
     makeQuad("left-wall",  [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1]),
     makeQuad("right-wall", [[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1]),
   ];

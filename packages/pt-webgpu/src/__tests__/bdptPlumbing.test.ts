@@ -55,5 +55,9 @@ describe('pt-webgpu BDPT (WG-7)', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('if (lvMatId >= 0.0) {');
     // A9 — light-bounce cap raised 3 → 8.
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let maxLv = min(params.bdptMaxLightBounces, 8u);');
+    // The emitter endpoint (lvi=0) is already covered by per-bounce NEE; BDPT
+    // must start at the first scattered light vertex to avoid secondary direct
+    // light double-counting in bdpt:true renders.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('for (var lvi = 1u; lvi < maxLv; lvi++)');
   });
 });
