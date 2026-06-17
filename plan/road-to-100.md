@@ -1109,9 +1109,18 @@ topology, instanced, lite fallback, and analytic paths; and
 `updateEnvironment()` texel/CDF writes, scene-state commit, and accumulation
 reset without falling through to `setScene()`.
 
-Remaining proof is adapter-backed end-to-end promotion: real GPU buffers, cached
-bind groups, denoiser history, and GI propagation observed together under the
-WSL GPU/browser harness.
+✅ **ADAPTER-BACKED PT MATERIAL MUTATION PROOF ADDED (2026-06-17):**
+`tools/behavioral-gate/gate.mjs` now includes `pt/mutation-material`, a real
+pt-webgpu lane that renders an unlit quad, calls `updatePrimitive()` with a
+material-only patch, renders again with the same camera/seeds, and requires a
+measurable readback delta (`meanAbs >= 2`, `maxAbs >= 8`) with zero GPU errors.
+This proves the mutation path changes GPU-visible output on the available WSL
+adapter instead of only satisfying mock write-count tests.
+
+Remaining proof is broader adapter-backed end-to-end promotion: full-tier
+geometry/topology/resource mutation lanes, cached bind groups, denoiser history,
+and walkaround GI propagation observed together under the WSL GPU/browser
+harness.
 
 #### 5D — Documentation sync (part of 100% — prevents false claims)
 

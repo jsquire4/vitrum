@@ -29,6 +29,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate -- --filter gltf
 
+# Require selected non-lite pt-webgpu lanes to resolve to the full tier:
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+  npm run behavioral-gate -- --filter gltf-material-sweep --require-full-tier
+
 # H32 standalone oracle: TLAS shadow rays skip glass but still hit opaque geometry.
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
@@ -36,7 +40,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 
 ## What it covers
 
-### pt-webgpu configs (24)
+### pt-webgpu configs (29)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
@@ -64,6 +68,11 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 | `pt/gltf-transmission` | — | glTF `KHR_materials_transmission` import + render boot |
 | `pt/gltf-skinned-animation` | — | glTF skin + animation channel import + render boot |
 | `pt/gltf-draco-mock` | — | glTF `KHR_draco_mesh_compression` mock decoder + render boot |
+| `pt/gltf-material-sweep` | — | synthetic glTF material-map decode/report sweep + golden PNG |
+| `pt/gltf-real-box-textured` | — | real Khronos BoxTextured GLB import/decode/render + golden PNG |
+| `pt/gltf-real-draco` | — | real Draco-compressed Khronos asset via host decoder + golden PNG |
+| `pt/gltf-real-meshopt` | — | real meshopt-compressed Khronos asset via host decoder + golden PNG |
+| `pt/mutation-material` | — | real adapter render → `updatePrimitive()` material patch → render, requires readback delta |
 
 The glTF rows are end-to-end import/engine smoke fixtures: they assert that the
 adapter preserves the named feature, boots the selected engine, uploads the scene,
@@ -71,6 +80,10 @@ and produces finite non-black output. On lavapipe's WSL adapter, `pt-webgpu`
 auto-selects the lite tier because the adapter exposes only the lite WebGPU storage
 limits; full material-lobe fidelity remains covered by the renderer fidelity matrix
 and package-level material tests.
+
+The pt-webgpu rows print `tier=full|lite`. Use `--require-full-tier` for
+full-tier capture work; it fails selected non-lite pt-webgpu rows as `WRONG-TIER`
+before any golden update/compare if the backend resolves to lite.
 
 ### walkaround-hybrid configs (10)
 
@@ -92,8 +105,10 @@ and package-level material tests.
 1. **Zero GPU errors** — no validation or out-of-memory errors from the device error scopes.
 2. **Finite pixels** — no NaN values in the readback.
 3. **Non-black output** — mean luminance ≥ 0.005 (after 8 frames at 64×64).
+4. **Per-lane invariants** — e.g. glTF golden PNG tolerance checks and
+   `pt/mutation-material` readback deltas.
 
-All three must pass for a result of `OK`.
+All required checks for a lane must pass for a result of `OK`.
 
 ## Expectation table
 

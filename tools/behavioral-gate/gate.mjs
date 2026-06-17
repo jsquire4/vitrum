@@ -116,6 +116,7 @@ const EXPECTATION_TABLE = {
   "pt/gltf-real-box-textured": { expected: "ok" },
   "pt/gltf-real-draco": { expected: "ok" },
   "pt/gltf-real-meshopt": { expected: "ok" },
+  "pt/mutation-material": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -188,6 +189,7 @@ const PT_CONFIGS = [
   { label: "pt/gltf-real-box-textured", eng: {},                                scene: { gltfReal: "box-textured-glb" } },
   { label: "pt/gltf-real-draco", eng: {},                                       scene: { gltfReal: "cesium-milk-truck-draco" } },
   { label: "pt/gltf-real-meshopt", eng: {},                                     scene: { gltfReal: "meshopt-cube-real" } },
+  { label: "pt/mutation-material", eng: {},                                     scene: { mutation: "material" } },
 ];
 
 const WH_CONFIGS = [
@@ -312,6 +314,27 @@ function buildCornellScene(opts = {}) {
   }
 
   return { primitives, emitters, environment };
+}
+
+function buildMutationMaterialScene() {
+  return {
+    primitives: [{
+      kind: "mesh",
+      id: "mutation-quad",
+      positions: GLTF_QUAD.positions,
+      normals: GLTF_QUAD.normals,
+      uvs: GLTF_QUAD.uvs,
+      indices: new Uint32Array(GLTF_QUAD.indices),
+      material: {
+        shadingModel: "unlit",
+        baseColor: [0.95, 0.1, 0.08],
+        roughness: 1.0,
+        metallic: 0.0,
+      },
+    }],
+    emitters: [],
+    environment: { kind: "none" },
+  };
 }
 
 // ── glTF fixture builder ─────────────────────────────────────────────────────
@@ -866,6 +889,7 @@ async function buildRealGltfAssetScene(assetId) {
 async function buildGateScene(opts = {}) {
   if (opts.gltfReal) return buildRealGltfAssetScene(opts.gltfReal);
   if (opts.gltf) return buildGltfFixtureScene(opts.gltf);
+  if (opts.mutation === "material") return buildMutationMaterialScene();
   return buildCornellScene(opts);
 }
 
@@ -1316,21 +1340,12 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   const unpatch = patchDeviceForPt(device, bdptOn);
   let engine  = null;
   let pixels  = null;
+  let beforeMutationPixels = null;
   let errorMsg = null;
   let traceTier = "unknown";
+  let mutation = null;
 
-  try {
-    engine = await createPTEngine_WebGPU({
-      device,
-      maxBounces: 3,
-      maxSamplesPerPixel: SPP,
-      ...engineOpts,
-    });
-    traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
-
-    const scene = await buildGateScene(sceneOpts);
-    engine.setScene(scene);
-
+  async function renderFramesAndReadback() {
     let frameOutput = null;
     for (let frame = 0; frame < SPP; frame++) {
       // eslint-disable-next-line no-loss-of-precision -- LCG constants intentionally exceed f64 mantissa; >>> 0 truncates to uint32 anyway
@@ -1346,9 +1361,37 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       await device.queue.onSubmittedWorkDone();
       if (frameOutput?.isConverged) break;
     }
+    if (frameOutput?.kind !== "rendered") return null;
+    return readbackAsRgba8(device, frameOutput.primaryRadiance, W, H);
+  }
 
-    if (frameOutput?.kind === "rendered") {
-      pixels = await readbackAsRgba8(device, frameOutput.primaryRadiance, W, H);
+  try {
+    engine = await createPTEngine_WebGPU({
+      device,
+      maxBounces: 3,
+      maxSamplesPerPixel: SPP,
+      ...engineOpts,
+    });
+    traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
+
+    const scene = await buildGateScene(sceneOpts);
+    engine.setScene(scene);
+
+    pixels = await renderFramesAndReadback();
+    if (sceneOpts.mutation === "material") {
+      beforeMutationPixels = pixels;
+      engine.updatePrimitive("mutation-quad", {
+        material: {
+          shadingModel: "unlit",
+          baseColor: [0.05, 0.08, 1.0],
+          roughness: 1.0,
+          metallic: 0.0,
+        },
+      });
+      pixels = await renderFramesAndReadback();
+      if (beforeMutationPixels != null && pixels != null) {
+        mutation = comparePixels(pixels, beforeMutationPixels);
+      }
     }
   } catch (e) {
     errorMsg = e.message;
@@ -1373,19 +1416,23 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
   const wrongTier = requireFullTier && !isLite && traceTier !== "full";
+  const mutationFailed =
+    sceneOpts.mutation === "material" &&
+    (mutation == null || mutation.meanAbs < 2.0 || mutation.maxAbs < 8);
   let golden = null;
-  if (!wrongTier && !nans && errCount === 0 && lum >= LUM_THRESHOLD) {
+  if (!wrongTier && !mutationFailed && !nans && errCount === 0 && lum >= LUM_THRESHOLD) {
     golden = await compareOrUpdateGolden(label, pixels);
   }
   const rawStatus = wrongTier ? "WRONG-TIER"
-    : (nans ? "NaN"
-      : (errCount > 0 ? "GPU-ERROR"
-        : (lum < LUM_THRESHOLD ? "BLACK"
-          : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK"))));
+    : (mutationFailed ? "NO-MUTATION"
+      : (nans ? "NaN"
+        : (errCount > 0 ? "GPU-ERROR"
+          : (lum < LUM_THRESHOLD ? "BLACK"
+            : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK")))));
   const tierMsg = wrongTier
     ? `--require-full-tier requested but pt-webgpu resolved ${traceTier}`
     : "";
-  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden, traceTier, tierMsg };
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden, traceTier, tierMsg, mutation };
 }
 
 // ── walkaround-hybrid runner ──────────────────────────────────────────────────
@@ -1501,6 +1548,11 @@ function formatGolden(golden) {
   return `golden=${golden.pass ? "ok" : "FAIL"} rmse=${golden.rmse.toFixed(3)} meanAbs=${golden.meanAbs.toFixed(3)} maxAbs=${golden.maxAbs}${threshold}`;
 }
 
+function formatMutation(mutation) {
+  if (!mutation) return "";
+  return `mutation=material meanAbs=${mutation.meanAbs.toFixed(3)} maxAbs=${mutation.maxAbs}`;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 console.log("=== behavioral-gate ===");
@@ -1527,6 +1579,7 @@ for (const cfg of ptConfigs) {
   const { pass, note } = checkExpectation(r.label, r.rawStatus, r.lum, r.errCount, r.nans);
   const marker = pass ? "PASS" : "FAIL";
   const goldenDetail = formatGolden(r.golden);
+  const mutationDetail = formatMutation(r.mutation);
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
     : r.tierMsg
@@ -1534,7 +1587,8 @@ for (const cfg of ptConfigs) {
     : r.gpuErrorMsg
       ? `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
     : `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
-  const detailWithGolden = goldenDetail ? `${detail} | ${goldenDetail}` : detail;
+  const extraDetails = [mutationDetail, goldenDetail].filter(Boolean).join(" | ");
+  const detailWithGolden = extraDetails ? `${detail} | ${extraDetails}` : detail;
   console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detailWithGolden}${note ? " | " + note : ""}`);
 }
 
