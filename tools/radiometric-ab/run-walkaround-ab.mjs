@@ -15,6 +15,15 @@ import { fileURLToPath } from 'node:url';
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
 const statusPath = resolve(scriptDir, 'walkaround-ab-host-status.json');
+const DEFAULT_TIMEOUT_MS = 180_000;
+
+function parseTimeoutMs(raw) {
+  if (raw == null || raw === '') return DEFAULT_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_TIMEOUT_MS;
+  return Math.max(1, Math.trunc(parsed));
+}
+
 const denoArgs = [
   'run',
   '--unstable-webgpu',
@@ -24,16 +33,47 @@ const denoArgs = [
   '--allow-write',
   'tools/radiometric-ab/walkaround-ab.mjs',
 ];
+const timeoutMs = parseTimeoutMs(process.env.VITRUM_WALKAROUND_AB_TIMEOUT_MS);
 
 const result = spawnSync('deno', denoArgs, {
   cwd: repoRoot,
   env: process.env,
   encoding: 'utf8',
   maxBuffer: 64 * 1024 * 1024,
+  timeout: timeoutMs,
+  killSignal: 'SIGTERM',
 });
 
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
+
+const timedOut = result.error?.code === 'ETIMEDOUT';
+if (timedOut) {
+  const status = {
+    generatedAt: new Date().toISOString(),
+    harness: 'walkaround-ab',
+    verdict: 'HOST-BLOCKED',
+    command: `deno ${denoArgs.join(' ')}`,
+    timeoutMs,
+    icd: process.env.VK_ICD_FILENAMES ?? null,
+    exitStatus: result.status,
+    signal: result.signal,
+    reason: {
+      code: 'walkaround-ab-timeout',
+      message:
+        'The walkaround radiometric A/B harness exceeded the host timeout before producing a verdict.',
+    },
+    preservedResultFile: 'tools/radiometric-ab/walkaround-ab-results.json',
+    nextSteps: [
+      'Re-run with VITRUM_WALKAROUND_AB_TIMEOUT_MS set higher if the host is merely slow.',
+      'Run the same harness in the browser/real-adapter validation lane if native Deno remains blocked.',
+      'Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this timed-out run.',
+    ],
+  };
+  writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
+  console.error(`[walkaround-ab] HOST-BLOCKED timeout status written to ${statusPath}`);
+  process.exit(2);
+}
 
 if (result.error) {
   throw result.error;
@@ -56,6 +96,7 @@ if (knownDenoWgpuPanic) {
     icd: process.env.VK_ICD_FILENAMES ?? null,
     exitStatus: result.status,
     signal: result.signal,
+    timeoutMs,
     reason: {
       code: 'deno-wgpu-hal-gles-index-oob',
       location: 'wgpu-hal-28.0.0/src/gles/command.rs:771:21',

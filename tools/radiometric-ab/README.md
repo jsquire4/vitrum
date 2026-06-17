@@ -47,6 +47,11 @@ npm run radiometric-ab:proof-check
 # as HOST-BLOCKED if Deno panics in wgpu-hal before the harness can return a
 # verdict; see `walkaround-ab-host-status.json`.
 npm run radiometric-ab:walkaround
+
+# Raise the native-Deno host timeout for slower validation machines. The default
+# is 180 seconds; timeouts are recorded as HOST-BLOCKED rather than a renderer
+# PASS/FAIL verdict.
+VITRUM_WALKAROUND_AB_TIMEOUT_MS=300000 npm run radiometric-ab:walkaround
 ```
 
 Each script writes a `results-*.json` in this directory.
@@ -197,13 +202,15 @@ luminance statistics are therefore linear-HDR float32 values rather than display
 
 **Current WSL validation caveat:** `npm run radiometric-ab:walkaround` now runs
 through a Node wrapper that preserves normal harness output, but writes
-`walkaround-ab-host-status.json` and exits non-zero when the known native-Deno
-WebGPU host panic occurs. Deno 2.8.1 currently panics in the WSL lavapipe
+`walkaround-ab-host-status.json` and exits non-zero when the native-Deno host
+times out or the known native-Deno WebGPU host panic occurs. Deno 2.8.1 currently panics in the WSL lavapipe
 walkaround path before the harness can produce a verdict:
 `wgpu-hal-28.0.0/src/gles/command.rs:771:21: index out of bounds`. This reproduces in the
 older `walkaround-sun-control.mjs` swap-chain-readback script too, so it is a validation-host
 runtime blocker rather than a regression caused by linear capture. Rerun this harness on the
-browser/real-adapter lane before promoting the walkaround rows.
+browser/real-adapter lane before promoting the walkaround rows. Slow native-Deno
+hosts can raise the default 180-second wrapper budget with
+`VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
 
 ### Legacy 8-bit baseline (2026-06-10)
 

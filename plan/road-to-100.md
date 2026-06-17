@@ -981,7 +981,7 @@ loadGltfForEngine(url, { fetch, dracoDecode, meshoptDecode, decodeImage, decodeT
 | Backend | Expects `TextureRef.handle` | Decoder output |
 |---------|------------------------------|----------------|
 | pt-webgl2 | `{width,height,data:Float32Array}` RGBA linear or DataTexture-shaped | `texturesArray.ts:79` |
-| pt-webgpu | Opaque; uploaded via `webGpuTextureUpload` path in scene pack | GPU texture handle after upload |
+| pt-webgpu | Opaque host handles or decoded pixel-data handles; uploaded by the backend scene pack | CPU pixel-data for adapter-decoded raw images, preserving the field's upload color space (`handleColorSpace`) and reporting `ptWebgpu:'ready'`; opaque handles are only ready when supplied through a host/backend texture path |
 | walkaround (Phase 3D) | Same as pt-webgl2 for atlas build | CPU pixels → atlas |
 
 ✅ **DONE (2026-06-13; reconciled 2026-06-16):** `@vitrum/gltf-adapter` exports `decodeSceneTextures(scene, { target: 'cpu-linear' | 'webgpu', decodePixels })`.
