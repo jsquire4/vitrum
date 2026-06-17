@@ -3,12 +3,13 @@
 /**
  * tools/radiometric-ab/ab-bdpt.mjs
  *
- * A/B #2: BDPT vs unidirectional — unbiasedness + variance check
+ * A/B #2: BDPT safe default vs unidirectional — unbiasedness + variance check
  *
- * The unbiasedness check: equal-spp renders with bdpt:false vs bdpt:true
- * must agree on MEAN LUMINANCE to within Monte Carlo noise (relative error
- * < 10%).  The old fPrev π-factor bug (pre-R7a) would have produced a ×π
- * scale discrepancy; this check would have caught it.
+ * The unbiasedness check: equal-spp renders with bdpt:false vs bdpt:true must
+ * agree on MEAN LUMINANCE to within Monte Carlo noise (relative error < 10%).
+ * `bdpt:true` now defaults to endpoint-only light-subpath depth, which is the
+ * radiometrically neutral production posture. Explicit maxLightBounces:2/3
+ * controls below keep tracking the multi-vertex research path separately.
  *
  * The variance check: BDPT should have equal-or-lower per-pixel variance
  * than unidirectional in the indirect-light region (the back-wall region
@@ -49,7 +50,7 @@ import {
   W, H,
 } from "./helpers.mjs";
 
-console.log("=== A/B #2: BDPT vs unidirectional (unbiasedness + variance) ===");
+console.log("=== A/B #2: BDPT safe default vs unidirectional (unbiasedness + variance) ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
 console.log(`Resolution: ${W}×${H}`);
 console.log("");
@@ -74,7 +75,7 @@ uniResult.engine.dispose();
 uniResult.device.destroy();
 console.log(`  UNI: global lum = ${uniGlobalLum.toFixed(5)}, ROI lum = ${uniROILum.toFixed(5)}`);
 
-console.log("  Rendering BDPT (bdpt:true)...");
+console.log("  Rendering BDPT safe default (bdpt:true, endpoint-only)...");
 const bdptResult = await renderScene({ ...FULL_TIER, bdpt: true }, scene, MEAN_FRAMES);
 const bdptGlobalLum = meanLuminanceROI(bdptResult.rgba, W, 0, 0, W-1, H-1);
 const bdptROILum    = meanLuminanceROI(bdptResult.rgba, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
@@ -93,9 +94,9 @@ console.log("");
 
 // ── Part 1b: BDPT depth isolation controls ─────────────────────────────────
 //
-// These controls keep the main pass/fail threshold unchanged, but they make the
-// current failure mode machine-readable:
-//   maxLightBounces:1 => no multi-vertex light connections, should match UNI.
+// These controls keep the main pass/fail threshold on the safe default, while
+// keeping the current research-mode failure mode machine-readable:
+//   maxLightBounces:1 => no multi-vertex light connections, should match UNI/default.
 //   maxLightBounces:2/3 => progressively re-enable the suspect light vertices.
 const CONTROL_MAX_LIGHT_BOUNCES = [1, 2, 3];
 const controlRuns = [];
@@ -182,7 +183,7 @@ if (verdict === "PASS") {
   console.log("FINDING:");
   if (!meanAgreement) {
     console.log(`  Global relative error ${(globalRelErr*100).toFixed(2)}% exceeds 10% threshold.`);
-    console.log(`  This indicates a BIAS in BDPT (the old π-factor bug would show ×π = 314%).`);
+    console.log("  This indicates a bias in the BDPT safe-default path and must be fixed before promotion.");
   }
   if (!varianceImproved) {
     console.log(`  BDPT variance ratio ${varRatio.toFixed(4)} > 2.0 — BDPT is adding significant noise.`);

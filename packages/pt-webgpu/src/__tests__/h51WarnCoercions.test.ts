@@ -73,6 +73,26 @@ describe('H51-A: maxBounces clamp warns', () => {
 
 // ── H51-D ─────────────────────────────────────────────────────────────────────
 describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', () => {
+  it('keeps bdpt:true default endpoint-only without a multi-vertex warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onWarning = vi.fn();
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      bdpt: true,
+      onWarning,
+    });
+
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path')),
+    ).toBe(false);
+    expect(onWarning).not.toHaveBeenCalledWith(expect.objectContaining({
+      code: 'pt-webgpu.bdpt-multivertex-research-mode',
+    }));
+
+    engine.dispose();
+    warn.mockRestore();
+  });
+
   it('throws when maxLightBounces is below the structural minimum', async () => {
     await expect(
       createPTEngine_WebGPU({
@@ -99,6 +119,28 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
     expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
       code: 'pt-webgpu.bdpt-max-light-bounces-clamped',
       details: { requested: 20, clampedTo: 8 },
+    }));
+
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('warns when maxLightBounces explicitly opts into multi-vertex BDPT', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onWarning = vi.fn();
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 2 },
+      onWarning,
+    });
+
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path')),
+    ).toBe(true);
+    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'pt-webgpu.bdpt-multivertex-research-mode',
+      details: { requested: 2, resolved: 2, safeDefault: 1 },
     }));
 
     engine.dispose();

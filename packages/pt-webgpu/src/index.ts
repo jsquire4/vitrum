@@ -286,7 +286,12 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   };
   /** BDPT tuning — read only when {@link bdpt} is `true`. */
   readonly bdptOptions?: {
-    /** Max light-subpath bounces, clamped 1–8 with a construction warning. Default 3. */
+    /**
+     * Max light-subpath bounces, clamped 1–8 with a construction warning. Default 1
+     * keeps `bdpt:true` endpoint-only and radiometrically neutral against the
+     * unidirectional estimator; values >1 opt into the current multi-vertex research
+     * path and emit a warning until full all-strategy weighting lands.
+     */
     readonly maxLightBounces?: number;
   };
   /**
@@ -348,6 +353,7 @@ export type {
 
 const EXPERIMENTAL_MAX_BOUNCES = 8;
 const BDPT_MAX_LIGHT_BOUNCES = 8;
+const BDPT_SAFE_DEFAULT_LIGHT_BOUNCES = 1;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
 /** A4 — SPPM photons emitted per frame: 65536 (= 1024 workgroups × 64 lanes). */
@@ -401,7 +407,7 @@ function errorMessage(err: unknown): string {
 }
 
 function resolveBdptMaxLightBounces(requested: number | undefined): number {
-  if (requested === undefined) return 3;
+  if (requested === undefined) return BDPT_SAFE_DEFAULT_LIGHT_BOUNCES;
   return Math.min(BDPT_MAX_LIGHT_BOUNCES, Math.floor(requested));
 }
 
@@ -529,8 +535,9 @@ class PTEngineWebGPU implements Engine {
     }
     this.#bdpt = opts.bdpt === true;
     // A9 — light-subpath bounce cap raised 3 → 8 (matches the eye cap; the merged
-    // pdf array BDPT_MAX_MERGED=19 = c≤8 + e≤8 + 3 headroom). Default stays 3 (the
-    // validated baseline); hosts may opt up to 8 for deeper caustic/SDS transport.
+    // pdf array BDPT_MAX_MERGED=19 = c≤8 + e≤8 + 3 headroom). Default is endpoint-only
+    // until the multi-vertex connection estimator is weighted against the regular
+    // eye-path strategy; hosts may opt up to 8 for research captures.
     this.#bdptMaxLightBounces = resolveBdptMaxLightBounces(opts.bdptOptions?.maxLightBounces);
     // EXPERIMENTAL ReSTIR-PT reuse: compile-time opt-in, full-tier only. GpuResources
     // gates the full-tier requirement internally; mirror the resolved value here so
@@ -2243,6 +2250,25 @@ export const createPTEngine_WebGPU: EngineFactory<
       details: {
         requested: bdptMaxLightBounces,
         roundedTo: resolveBdptMaxLightBounces(bdptMaxLightBounces),
+      },
+    });
+  }
+  const resolvedBdptMaxLightBounces = resolveBdptMaxLightBounces(bdptMaxLightBounces);
+  if (opts.bdpt === true && resolvedBdptMaxLightBounces > BDPT_SAFE_DEFAULT_LIGHT_BOUNCES) {
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.bdpt-multivertex-research-mode',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        `[vitrum/pt-webgpu] bdptOptions.maxLightBounces=${resolvedBdptMaxLightBounces} enables the ` +
+        'multi-vertex BDPT research path. Current radiometric evidence shows this path is not yet ' +
+        'weighted against the regular eye-path strategy, so it is explicitly opt-in; omit ' +
+        'bdptOptions.maxLightBounces for the endpoint-only radiometrically neutral default.',
+      details: {
+        requested: bdptMaxLightBounces,
+        resolved: resolvedBdptMaxLightBounces,
+        safeDefault: BDPT_SAFE_DEFAULT_LIGHT_BOUNCES,
       },
     });
   }

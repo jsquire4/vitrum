@@ -1,6 +1,6 @@
 {
   "ab": "bdpt-vs-unidirectional",
-  "date": "2026-06-17T05:58:02.206Z",
+  "date": "2026-06-17T06:11:18.416Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -20,9 +20,9 @@
     "variance": 0.07856658106002219
   },
   "bdpt": {
-    "globalLum": 0.09374135884168382,
-    "roiLum": 0.1286461473422478,
-    "variance": 0.07868705854133864
+    "globalLum": 0.08006546401561064,
+    "roiLum": 0.1093735323935114,
+    "variance": 0.07856658106002219
   },
   "controls": {
     "meanFrames": 60,
@@ -52,10 +52,10 @@
     "endpointOnlyMatchesUni": true,
     "multiVertexFindingStartsAt": 2
   },
-  "globalRelErr": 0.17080891235960038,
-  "roiRelErr": 0.17620912964021407,
-  "varRatio": 1.0015334443689794,
-  "meanAgreement": false,
+  "globalRelErr": 0,
+  "roiRelErr": 0,
+  "varRatio": 1,
+  "meanAgreement": true,
   "varianceImproved": true,
-  "verdict": "FINDING"
+  "verdict": "PASS"
 }

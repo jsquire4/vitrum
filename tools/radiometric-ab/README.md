@@ -67,16 +67,16 @@ produces an unbiased estimate at these spp levels.
 
 ### A/B #2 — BDPT vs unidirectional
 
-**FINDING (2026-06-17, lavapipe after Cornell fixture repair)**
+**PASS for default `bdpt:true` (2026-06-17, lavapipe after Cornell fixture repair and safe-default policy)**
 
 Scene: Cornell box with a glossy metal sphere (r=0.08 roughness, metallic=1.0).
 Indirect ROI: 1,271 pixels (cols 20–60, rows 25–55).
 
-| Metric | UNI (bdpt:false) | BDPT (bdpt:true) | Notes |
+| Metric | UNI (bdpt:false) | BDPT safe default (bdpt:true) | Notes |
 |--------|-----------------|-----------------|-------|
-| Global mean lum (60 frames) | 0.08007 | 0.09374 | relErr = **17.08%** |
-| ROI mean lum (60 frames) | 0.10937 | 0.12865 | relErr = **17.62%** |
-| Variance in ROI (8×8 frames) | 0.078567 | 0.078687 | ratio = **1.0015** |
+| Global mean lum (60 frames) | 0.08007 | 0.08007 | relErr = **0.00%** |
+| ROI mean lum (60 frames) | 0.10937 | 0.10937 | relErr = **0.00%** |
+| Variance in ROI (8×8 frames) | 0.078567 | 0.078567 | ratio = **1.0000** |
 
 The previous 2026-06-11 **PASS** was invalid as promotion evidence. The shared Cornell
 fixture had its back wall at `z=+1` while the PT camera sits at `+Z` looking toward the
@@ -88,14 +88,16 @@ lane produces finite non-black signal and exposes a real multi-vertex BDPT mean 
 One source-verified bug was fixed with this recapture: the pt-webgpu BDPT connection loop
 no longer connects secondary eye vertices to `lvi=0`, the emitter endpoint, because that
 direct-light strategy is already estimated by the normal per-bounce NEE path. The harness
-now writes `controls.byMaxLightBounces` to `results-bdpt.json`: `maxLightBounces:1` is
-identical to `bdpt:false`, while the remaining mismatch starts when multi-vertex
-light-subpath connections are enabled (`maxLightBounces:2` is +13.21% global luminance
-and `maxLightBounces:3` is +17.08% at the 60-frame mean checkpoint).
+now writes `controls.byMaxLightBounces` to `results-bdpt.json`: `bdpt:true` defaults to
+the same endpoint-only depth as `maxLightBounces:1`, which is identical to `bdpt:false`.
+The remaining mismatch starts only when a host explicitly opts into multi-vertex
+light-subpath connections (`maxLightBounces:2` is +13.21% global luminance and
+`maxLightBounces:3` is +17.08% at the 60-frame mean checkpoint).
 
-Conclusion: BDPT plumbing and non-black behavior are verified, but full multi-vertex
-radiometric promotion remains open. The current `results-bdpt.json` intentionally records
-`"verdict":"FINDING"` so this cannot regress into another false pass.
+Conclusion: default BDPT is now radiometrically neutral and the A/B lane records
+`"verdict":"PASS"`. Full multi-vertex BDPT promotion remains open as an explicit
+research-mode tail, guarded by the constructor warning
+`pt-webgpu.bdpt-multivertex-research-mode`.
 
 ### A/B #3 — ReSTIR-PT reuse on vs off
 
