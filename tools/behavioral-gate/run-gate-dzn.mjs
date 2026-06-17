@@ -15,10 +15,12 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
-const statusPath = resolve(scriptDir, 'behavioral-gate-dzn-host-status.json');
 const dznEnv = process.env.WSL_GPU_DZN_ENV_SH ?? '/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh';
 const timeoutMs = parseTimeoutMs(process.env.VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS, 180_000);
 const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+const gateArgs = process.argv.slice(2);
+const filter = readFlagValue(gateArgs, '--filter');
+const statusPath = resolveStatusPath(filter);
 
 if (!existsSync(dznEnv)) {
   console.error(`[behavioral-gate:dzn] missing dzn runtime env: ${dznEnv}`);
@@ -26,7 +28,6 @@ if (!existsSync(dznEnv)) {
   process.exit(2);
 }
 
-const gateArgs = process.argv.slice(2);
 const result = spawnSync(
   'bash',
   [
@@ -58,7 +59,6 @@ if (result.stderr) process.stderr.write(result.stderr);
 if (result.error) throw result.error;
 
 if (result.status === 124) {
-  const filter = readFlagValue(gateArgs, '--filter');
   const status = {
     generatedAt: new Date().toISOString(),
     harness: 'behavioral-gate:dzn',
@@ -86,7 +86,6 @@ if (result.status === 124) {
 }
 
 if (result.status === 0) {
-  const filter = readFlagValue(gateArgs, '--filter');
   const status = {
     generatedAt: new Date().toISOString(),
     harness: 'behavioral-gate:dzn',
@@ -138,7 +137,9 @@ function parseConfigRows(stdout) {
     const match = line.match(/^\s*(PASS|FAIL|KNOWN-RESIDUAL)\s+\|\s+([^|]+?)\s+\|\s+([^|]+?)\s+\|\s+([^|]+?)(?:\s+\|\s+(.*))?$/);
     if (!match) continue;
     const details = match[4].trim();
-    const golden = (match[5] ?? '').trim();
+    const extras = (match[5] ?? '').split('|').map((part) => part.trim()).filter(Boolean);
+    const mutation = extras.find((part) => part.startsWith('mutation=')) ?? '';
+    const golden = extras.find((part) => part.startsWith('golden=')) ?? '';
     rows.push({
       verdict: match[1],
       label: match[2].trim(),
@@ -147,6 +148,10 @@ function parseConfigRows(stdout) {
       luminance: readNumberToken(details, 'lum'),
       gpuErrors: readNumberToken(details, 'gpuErrs'),
       nan: readBoolToken(details, 'nan'),
+      mutation: mutation || null,
+      mutationKind: readToken(mutation, 'mutation'),
+      mutationMeanAbs: readNumberToken(mutation, 'meanAbs'),
+      mutationMaxAbs: readNumberToken(mutation, 'maxAbs'),
       golden: golden || null,
       goldenStatus: readToken(golden, 'golden'),
       rmse: readNumberToken(golden, 'rmse'),
@@ -157,6 +162,22 @@ function parseConfigRows(stdout) {
     });
   }
   return rows;
+}
+
+function resolveStatusPath(filter) {
+  const override = process.env.VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH;
+  if (override != null && override !== '') {
+    return resolve(repoRoot, override);
+  }
+  if (filter) {
+    return resolve(scriptDir, `behavioral-gate-dzn-${slug(filter)}-status.json`);
+  }
+  return resolve(scriptDir, 'behavioral-gate-dzn-host-status.json');
+}
+
+function slug(value) {
+  const cleaned = value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  return cleaned || 'filtered';
 }
 
 function readToken(text, key) {

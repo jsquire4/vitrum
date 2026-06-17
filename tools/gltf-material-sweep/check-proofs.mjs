@@ -30,7 +30,7 @@ if (manifest.label !== GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label) {
 if (manifest.goldenPath !== GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath) {
   fail("manifest goldenPath differs from proofs.mjs");
 }
-if (manifest.dznStatusPath !== "tools/behavioral-gate/behavioral-gate-dzn-host-status.json") {
+if (manifest.dznStatusPath !== "tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json") {
   fail("manifest dznStatusPath must point at the committed dzn status artifact");
 }
 if (!sameJson(manifest.thresholds, GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds)) {

@@ -1118,7 +1118,7 @@ proves the default/auto glTF material-sweep PNG path in the lite profile. The
 companion dzn runtime now has a committed machine-readable status artifact for
 the same fixture on the pt-webgpu full tier:
 `npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier`.
-`tools/behavioral-gate/behavioral-gate-dzn-host-status.json` records
+`tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json` records
 `verdict:"PASS"`, `tier:"full"`, zero GPU errors, `nan:false`, and golden
 metrics within manifest thresholds (RMSE 0.544 ≤ 8, meanAbs 0.070 ≤ 4,
 maxAbs 16 ≤ 48). `npm run gltf-material-proof-check` now verifies both the
@@ -1196,10 +1196,15 @@ through emitter buffers/light-tree refresh/reset to GPU-visible direct lighting.
 This moves these seams beyond mock write-count tests on the available WSL adapter.
 2026-06-17 follow-up: the same three mutation lanes now also pass through
 `npm run behavioral-gate:dzn -- --filter mutation --require-full-tier` on the
-companion full-tier WSL dzn runtime. That run exposed and fixed a real
-primitive-less full-tier validation bug: empty `bvhNodes`/`tlasNodes` uploads
-used 16-byte generic placeholders while the WGSL `array<BVHNode>` bindings
-require a 32-byte minimum stride.
+companion full-tier WSL dzn runtime, with committed machine-readable evidence in
+`tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json`. The dzn status
+records `tier:"full"`, zero GPU errors, `nan:false`, and mutation deltas above
+the gate thresholds for material (`meanAbs=41.582`, `maxAbs=174`), environment
+(`meanAbs=136.250`, `maxAbs=190`), and emitter (`meanAbs=36.566`, `maxAbs=187`);
+`npm run behavioral-gate:dzn-status-check` verifies the artifact. That run also
+exposed and fixed a real primitive-less full-tier validation bug: empty
+`bvhNodes`/`tlasNodes` uploads used 16-byte generic placeholders while the WGSL
+`array<BVHNode>` bindings require a 32-byte minimum stride.
 
 Remaining proof is broader adapter-backed end-to-end promotion: full-tier
 geometry/topology/resource mutation lanes beyond environment buffers, cached
@@ -1243,7 +1248,9 @@ runs through `pt-webgpu`'s lite tier because the adapter exposes 8 storage
 buffers / 4 storage textures per shader stage, below the full-tier 34 / 5
 requirement. The dzn companion lane can prove selected full-tier pt-webgpu cases
 (`npm run behavioral-gate:dzn -- --filter gltf-material-sweep
---require-full-tier` currently pins the material-heavy fixture). Broader
+--require-full-tier` pins the material-heavy fixture, and
+`npm run behavioral-gate:dzn -- --filter mutation --require-full-tier` pins
+material/environment/emitter mutation observability). Broader
 material-lobe fidelity promotion remains owned by the renderer fidelity matrix
 and package material oracles.
 

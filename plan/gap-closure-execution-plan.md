@@ -274,10 +274,13 @@ passes on lavapipe as an auto-tier/lite PNG proof. The documented
 checking after the engine has already auto-selected lite; on this WSL lavapipe
 adapter it fails honestly because the adapter reports
 `maxStorageBuffersPerShaderStage=8` while pt-webgpu full tier requires at least
-34. The same full-tier assertion passes under the companion WSL dzn runtime via
+34. The same full-tier assertion is now committed as a companion WSL dzn status
+artifact via
 `npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier`
-(`tier=full`, zero GPU errors, golden RMSE 0.544). Treat full-tier material-lobe
-recapture as a dzn/browser/real-adapter validation lane, not a WSL-lavapipe proof.
+(`tier=full`, zero GPU errors, golden RMSE 0.544); `npm run proof-check`
+validates `tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json`.
+Treat full-tier material-lobe recapture as a dzn/browser/real-adapter validation
+lane, not a WSL-lavapipe proof.
 
 Allowed work:
 
@@ -376,8 +379,11 @@ replacement for V28-B recaptures.
 - Mutation matrix on real GPU/browser harness: pt-webgpu material/environment/
   emitter mutation lanes now pass on lavapipe-lite and dzn full tier
   (`behavioral-gate:dzn -- --filter mutation --require-full-tier`) after fixing
-  the primitive-less full-tier BVH/TLAS placeholder buffers. Broader geometry/
-  topology, denoiser-history, and walkaround GI propagation lanes remain.
+  the primitive-less full-tier BVH/TLAS placeholder buffers. The dzn mutation
+  status artifact is committed at
+  `tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json` and checked by
+  `npm run behavioral-gate:dzn-status-check`. Broader geometry/topology,
+  denoiser-history, and walkaround GI propagation lanes remain.
 
 ## How To Use This Plan
 

@@ -8,7 +8,7 @@
   "fixture": "synthetic-material-sweep",
   "label": "pt/gltf-material-sweep",
   "goldenPath": "tools/reference-renders/gltf-material-sweep-behavioral/pt-gltf-material-sweep.png",
-  "dznStatusPath": "tools/behavioral-gate/behavioral-gate-dzn-host-status.json",
+  "dznStatusPath": "tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json",
   "thresholds": {
     "maxRmse": 8.0,
     "maxMeanAbs": 4.0,
