@@ -40,7 +40,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 
 ## What it covers
 
-### pt-webgpu configs (30)
+### pt-webgpu configs (31)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
@@ -74,6 +74,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 | `pt/gltf-real-meshopt` | — | real meshopt-compressed Khronos asset via host decoder + golden PNG |
 | `pt/mutation-material` | — | real adapter render → `updatePrimitive()` material patch → render, requires readback delta |
 | `pt/mutation-environment` | — | real adapter render → same-sized `updateEnvironment()` HDRI patch → render, requires readback delta |
+| `pt/mutation-emitter` | — | real adapter render → `updateEmitter()` point-light patch → render, requires readback delta |
 
 The glTF rows are end-to-end import/engine smoke fixtures: they assert that the
 adapter preserves the named feature, boots the selected engine, uploads the scene,

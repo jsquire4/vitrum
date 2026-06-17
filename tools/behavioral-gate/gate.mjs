@@ -118,6 +118,7 @@ const EXPECTATION_TABLE = {
   "pt/gltf-real-meshopt": { expected: "ok" },
   "pt/mutation-material": { expected: "ok" },
   "pt/mutation-environment": { expected: "ok" },
+  "pt/mutation-emitter": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -178,6 +179,7 @@ const PT_CONFIGS = [
   { label: "pt/gltf-real-meshopt", eng: {},                                     scene: { gltfReal: "meshopt-cube-real" } },
   { label: "pt/mutation-material", eng: {},                                     scene: { mutation: "material" } },
   { label: "pt/mutation-environment", eng: {},                                  scene: { mutation: "environment" } },
+  { label: "pt/mutation-emitter", eng: {},                                      scene: { mutation: "emitter" } },
 ];
 
 const WH_CONFIGS = [
@@ -341,6 +343,33 @@ function buildMutationEnvironmentScene() {
     primitives: [],
     emitters: [],
     environment: { kind: "hdri", hdri: makeMutationHdri(0.05), intensity: 1.0, rotationY: 0 },
+  };
+}
+
+function buildMutationEmitterScene() {
+  return {
+    primitives: [{
+      kind: "mesh",
+      id: "mutation-lit-quad",
+      positions: GLTF_QUAD.positions,
+      normals: GLTF_QUAD.normals,
+      uvs: GLTF_QUAD.uvs,
+      indices: new Uint32Array(GLTF_QUAD.indices),
+      material: {
+        baseColor: [0.75, 0.75, 0.75],
+        roughness: 0.65,
+        metallic: 0.0,
+      },
+    }],
+    emitters: [{
+      kind: "point",
+      id: "mutation-lamp",
+      position: [0, 0, 1.25],
+      color: [1.0, 0.25, 0.12],
+      intensity: 6.0,
+      castShadow: false,
+    }],
+    environment: { kind: "none" },
   };
 }
 
@@ -972,6 +1001,7 @@ async function buildGateScene(opts = {}) {
   if (opts.ptSmokeLight) return buildPtSmokeLightScene(opts.ptSmokeLight);
   if (opts.mutation === "material") return buildMutationMaterialScene();
   if (opts.mutation === "environment") return buildMutationEnvironmentScene();
+  if (opts.mutation === "emitter") return buildMutationEmitterScene();
   return buildCornellScene(opts);
 }
 
@@ -1388,6 +1418,7 @@ const LUM_THRESHOLD = 0.005;
 const MUTATION_DELTA_THRESHOLDS = {
   material: { meanAbs: 2.0, maxAbs: 8 },
   environment: { meanAbs: 2.0, maxAbs: 8 },
+  emitter: { meanAbs: 2.0, maxAbs: 8 },
 };
 
 /**
@@ -1481,6 +1512,13 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
           hdri: makeMutationHdri(1.0),
           intensity: 2.0,
           rotationY: 0.25,
+        });
+      } else if (sceneOpts.mutation === "emitter") {
+        engine.updateEmitter("mutation-lamp", {
+          color: [0.08, 0.18, 1.0],
+          intensity: 14.0,
+          position: [0.18, -0.08, 1.15],
+          castShadow: false,
         });
       } else {
         throw new Error(`unknown mutation gate kind: ${sceneOpts.mutation}`);

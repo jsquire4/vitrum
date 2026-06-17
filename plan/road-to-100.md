@@ -1109,15 +1109,17 @@ topology, instanced, lite fallback, and analytic paths; and
 `updateEnvironment()` texel/CDF writes, scene-state commit, and accumulation
 reset without falling through to `setScene()`.
 
-✅ **ADAPTER-BACKED PT MATERIAL/ENVIRONMENT MUTATION PROOFS ADDED (2026-06-17):**
+✅ **ADAPTER-BACKED PT MATERIAL/ENVIRONMENT/EMITTER MUTATION PROOFS ADDED (2026-06-17):**
 `tools/behavioral-gate/gate.mjs` now includes real pt-webgpu mutation lanes that
 render, patch, render again with the same camera/seeds, and require measurable
 readback deltas (`meanAbs >= 2`, `maxAbs >= 8`) with zero GPU errors:
 `pt/mutation-material` proves `updatePrimitive()` material patches change
-GPU-visible output, and `pt/mutation-environment` proves same-sized
+GPU-visible output, `pt/mutation-environment` proves same-sized
 `updateEnvironment()` HDRI patches propagate through environment texel/CDF
-buffers, light-tree/lite-texture refresh, reset, and GPU-visible miss radiance.
-This moves both seams beyond mock write-count tests on the available WSL adapter.
+buffers, light-tree/lite-texture refresh, reset, and GPU-visible miss radiance,
+and `pt/mutation-emitter` proves `updateEmitter()` point-light patches propagate
+through emitter buffers/light-tree refresh/reset to GPU-visible direct lighting.
+This moves these seams beyond mock write-count tests on the available WSL adapter.
 
 Remaining proof is broader adapter-backed end-to-end promotion: full-tier
 geometry/topology/resource mutation lanes beyond environment buffers, cached
