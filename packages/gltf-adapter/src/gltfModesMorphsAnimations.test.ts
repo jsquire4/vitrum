@@ -713,9 +713,26 @@ describe('animations (GLTF-03)', () => {
         outType: 'VEC3',
       },
     ]);
-    const { animations, warnings } = await gltfToScene(gltf, { buffers });
+    const { animations, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
     expect(warnings.some(w => w.includes('BEZIER'))).toBe(true);
     expect(warnings.some(w => w.includes('node 99'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'unknown-animation-interpolation',
+        path: 'animations[0].samplers[0].interpolation',
+        animationIndex: 0,
+        samplerIndex: 0,
+      }),
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'animation-target-node-not-found',
+        path: 'animations[0].channels[1].target.node',
+        animationIndex: 0,
+        channelIndex: 1,
+        nodeIndex: 99,
+      }),
+    ]));
     expect(animations).toHaveLength(1);
     expect(animations[0]!.channels).toHaveLength(1);
     expect(animations[0]!.channels[0]!.sampler.interpolation).toBe('LINEAR');

@@ -44,6 +44,32 @@ export function animationNodeId(nodeIndex: number): string {
 const VALID_PATHS: ReadonlySet<string> = new Set(['translation', 'rotation', 'scale', 'weights']);
 const VALID_INTERPOLATIONS: ReadonlySet<string> = new Set(['LINEAR', 'STEP', 'CUBICSPLINE']);
 
+export type GltfAnimationImportDiagnosticCode =
+  | 'missing-animation-sampler'
+  | 'unknown-animation-interpolation'
+  | 'unreadable-animation-sampler'
+  | 'unsupported-animation-target-path'
+  | 'missing-animation-target-node'
+  | 'animation-target-node-not-found'
+  | 'invalid-animation-output-count'
+  | 'dropped-animation';
+
+export interface GltfAnimationImportDiagnostic {
+  readonly severity: 'warning';
+  readonly code: GltfAnimationImportDiagnosticCode;
+  readonly path: string;
+  readonly message: string;
+  readonly animationIndex?: number;
+  readonly channelIndex?: number;
+  readonly samplerIndex?: number;
+  readonly nodeIndex?: number;
+  readonly targetPath?: string;
+}
+
+export type GltfAnimationImportDiagnosticSink = (
+  diagnostic: GltfAnimationImportDiagnostic,
+) => void;
+
 /** Fixed per-keyframe component count for TRS paths (weights is inferred from
  *  the buffer by the core sampler, so it is validated loosely here). */
 function trsComponents(path: AnimationTargetPath): number | undefined {
@@ -62,6 +88,7 @@ export function convertAnimations(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   warnings: string[],
+  onDiagnostic?: GltfAnimationImportDiagnosticSink,
 ): AnimationClip[] {
   const clips: AnimationClip[] = [];
   const animations = gltf.animations ?? [];
@@ -80,20 +107,32 @@ export function convertAnimations(
       let result: { times: Float32Array; values: Float32Array; interpolation: AnimationInterpolation } | null = null;
       const sampler = samplers[samplerIdx];
       if (!sampler) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Animation "${label}" references sampler ${samplerIdx} which does ` +
+        emitAnimationDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'missing-animation-sampler',
+          path: `animations[${animIdx}].samplers[${samplerIdx}]`,
+          animationIndex: animIdx,
+          samplerIndex: samplerIdx,
+          message:
+            `[vitrum/gltf-adapter] Animation "${label}" references sampler ${samplerIdx} which does ` +
             'not exist. Channel skipped.',
-        );
+        });
       } else {
         let interpolation: AnimationInterpolation = 'LINEAR';
         if (sampler.interpolation !== undefined) {
           if (VALID_INTERPOLATIONS.has(sampler.interpolation)) {
             interpolation = sampler.interpolation as AnimationInterpolation;
           } else {
-            warnings.push(
-              `[vitrum/gltf-adapter] Animation "${label}" sampler ${samplerIdx} has unknown ` +
+            emitAnimationDiagnostic(warnings, onDiagnostic, {
+              severity: 'warning',
+              code: 'unknown-animation-interpolation',
+              path: `animations[${animIdx}].samplers[${samplerIdx}].interpolation`,
+              animationIndex: animIdx,
+              samplerIndex: samplerIdx,
+              message:
+                `[vitrum/gltf-adapter] Animation "${label}" sampler ${samplerIdx} has unknown ` +
                 `interpolation "${sampler.interpolation}". Falling back to LINEAR.`,
-            );
+            });
           }
         }
         try {
@@ -101,10 +140,16 @@ export function convertAnimations(
           const values = unpackAccessorFloat(gltf, buffers, sampler.output, warnings);
           result = { times, values, interpolation };
         } catch (e) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Failed to read animation "${label}" sampler ${samplerIdx}: ` +
+          emitAnimationDiagnostic(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: 'unreadable-animation-sampler',
+            path: `animations[${animIdx}].samplers[${samplerIdx}]`,
+            animationIndex: animIdx,
+            samplerIndex: samplerIdx,
+            message:
+              `[vitrum/gltf-adapter] Failed to read animation "${label}" sampler ${samplerIdx}: ` +
               `${String(e)} Channel skipped.`,
-          );
+          });
         }
       }
       decoded.set(samplerIdx, result);
@@ -114,25 +159,47 @@ export function convertAnimations(
     for (const [chIdx, ch] of gltfChannels.entries()) {
       const path = ch.target?.path;
       if (path === undefined || !VALID_PATHS.has(path)) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets unsupported ` +
+        emitAnimationDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'unsupported-animation-target-path',
+          path: `animations[${animIdx}].channels[${chIdx}].target.path`,
+          animationIndex: animIdx,
+          channelIndex: chIdx,
+          targetPath: path,
+          message:
+            `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets unsupported ` +
             `path "${String(path)}" (supported: translation, rotation, scale, weights). Channel skipped.`,
-        );
+        });
         continue;
       }
       const nodeIdx = ch.target?.node;
       if (nodeIdx === undefined) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} has no target node ` +
+        emitAnimationDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'missing-animation-target-node',
+          path: `animations[${animIdx}].channels[${chIdx}].target.node`,
+          animationIndex: animIdx,
+          channelIndex: chIdx,
+          targetPath: path,
+          message:
+            `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} has no target node ` +
             '(extension-targeted channels are not supported). Channel skipped.',
-        );
+        });
         continue;
       }
       if (!gltf.nodes?.[nodeIdx]) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets node ${nodeIdx} ` +
+        emitAnimationDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'animation-target-node-not-found',
+          path: `animations[${animIdx}].channels[${chIdx}].target.node`,
+          animationIndex: animIdx,
+          channelIndex: chIdx,
+          nodeIndex: nodeIdx,
+          targetPath: path,
+          message:
+            `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets node ${nodeIdx} ` +
             'which does not exist. Channel skipped.',
-        );
+        });
         continue;
       }
 
@@ -147,19 +214,37 @@ export function convertAnimations(
       const comps = trsComponents(typedPath);
       if (comps !== undefined) {
         if (values.length !== times.length * comps * cubicFactor) {
-          warnings.push(
-            `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} (${typedPath}) has ` +
+          emitAnimationDiagnostic(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: 'invalid-animation-output-count',
+            path: `animations[${animIdx}].channels[${chIdx}].sampler`,
+            animationIndex: animIdx,
+            channelIndex: chIdx,
+            samplerIndex: ch.sampler,
+            nodeIndex: nodeIdx,
+            targetPath: typedPath,
+            message:
+              `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} (${typedPath}) has ` +
               `${values.length} output floats but ${times.length} keyframes expect ` +
               `${times.length * comps * cubicFactor}. Channel skipped.`,
-          );
+          });
           continue;
         }
       } else if (times.length > 0 && values.length % (times.length * cubicFactor) !== 0) {
-        warnings.push(
-          `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} (weights) output length ` +
+        emitAnimationDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'invalid-animation-output-count',
+          path: `animations[${animIdx}].channels[${chIdx}].sampler`,
+          animationIndex: animIdx,
+          channelIndex: chIdx,
+          samplerIndex: ch.sampler,
+          nodeIndex: nodeIdx,
+          targetPath: typedPath,
+          message:
+            `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} (weights) output length ` +
             `${values.length} is not a multiple of keyframe count ${times.length}` +
             `${cubicFactor === 3 ? ' × 3 (CUBICSPLINE)' : ''}. Channel skipped.`,
-        );
+        });
         continue;
       }
 
@@ -173,9 +258,13 @@ export function convertAnimations(
     }
 
     if (channels.length === 0) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Animation "${label}" has no importable channels and was dropped.`,
-      );
+      emitAnimationDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'dropped-animation',
+        path: `animations[${animIdx}]`,
+        animationIndex: animIdx,
+        message: `[vitrum/gltf-adapter] Animation "${label}" has no importable channels and was dropped.`,
+      });
       continue;
     }
     clips.push({
@@ -186,4 +275,13 @@ export function convertAnimations(
   }
 
   return clips;
+}
+
+function emitAnimationDiagnostic(
+  warnings: string[],
+  onDiagnostic: GltfAnimationImportDiagnosticSink | undefined,
+  diagnostic: GltfAnimationImportDiagnostic,
+): void {
+  warnings.push(diagnostic.message);
+  onDiagnostic?.(diagnostic);
 }

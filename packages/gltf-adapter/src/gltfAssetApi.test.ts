@@ -2323,6 +2323,27 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('rejects malformed animation diagnostics in reject-unsupported mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.animations = [{
+      name: 'bad-walk',
+      channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+      samplers: [],
+    }];
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'import:missing-animation-sampler=unsupported at animations[0].samplers[0]',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('allows double-sided diagnostics in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {

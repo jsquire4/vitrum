@@ -80,7 +80,7 @@ import { buildWorldTransforms, composeTrsMat4, mat4Invert, mat4Mul } from './tra
 import { convertMaterial, GLTF_DEFAULT_MATERIAL } from './materials.js';
 import { generateFlatNormals } from './normals.js';
 import { generateTangents } from './tangents.js';
-import { animationNodeId, convertAnimations } from './animations.js';
+import { animationNodeId, convertAnimations, type GltfAnimationImportDiagnosticCode } from './animations.js';
 import { resolveCompression } from './compression.js';
 import type { DracoDecodeFn, MeshoptDecodeFn } from './compression.js';
 import {
@@ -337,6 +337,7 @@ export interface GltfInstancingBinding {
 
 export type GltfImportDiagnosticCode =
   | GltfTextureAcquisitionDiagnosticCode
+  | GltfAnimationImportDiagnosticCode
   | 'unsupported-version'
   | 'unsupported-required-extension'
   | 'ignored-camera'
@@ -1043,7 +1044,9 @@ export async function gltfToScene(
   }
 
   // ── 10. Convert animations (GLTF-03) ───────────────────────────────────────
-  const animations = convertAnimations(gltf, buffers, warnings);
+  const animations = convertAnimations(gltf, buffers, warnings, (diagnostic) => {
+    diagnostics.push(diagnostic);
+  });
 
   const scene: Scene = {
     primitives,

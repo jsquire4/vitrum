@@ -107,6 +107,10 @@ export type {
   GltfTextureSourceExtensionUse,
 } from './featureReport.js';
 export { animationNodeId } from './animations.js';
+export type {
+  GltfAnimationImportDiagnostic,
+  GltfAnimationImportDiagnosticCode,
+} from './animations.js';
 export type { GltfJson } from './gltfTypes.js';
 export { GLTF_TEXTURE_SOURCE_EXTENSIONS } from './textures.js';
 export type {

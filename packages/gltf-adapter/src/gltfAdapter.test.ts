@@ -1412,9 +1412,16 @@ describe('out-of-scope feature warnings', () => {
   it('drops a malformed animation (no channels) with a warning', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
     gltf.animations = [{ name: 'walk' }]; // no channels/samplers → not importable
-    const { animations, warnings } = await gltfToScene(gltf, { buffers });
+    const { animations, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
     expect(animations).toHaveLength(0);
     expect(warnings.some(w => w.includes('no importable channels'))).toBe(true);
+    expect(diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'dropped-animation',
+        path: 'animations[0]',
+      }),
+    ]);
   });
 
   it('warns about skins (rest pose; host drives the pose)', async () => {
