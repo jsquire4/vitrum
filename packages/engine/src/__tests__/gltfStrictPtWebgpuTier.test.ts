@@ -6,9 +6,11 @@ const mocks = vi.hoisted(() => {
     mapCount: 0,
     uniqueHandleCount: 0,
     rawImageCount: 0,
+    imageBitmapCount: 0,
     opaqueHandleCount: 0,
     cpuReadableCount: 0,
     rawImageRefs: Object.freeze([]),
+    imageBitmapRefs: Object.freeze([]),
     entries: Object.freeze([]),
   });
   const unsupportedLiteIssue = Object.freeze({

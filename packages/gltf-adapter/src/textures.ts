@@ -3,13 +3,16 @@
 // The adapter exposes images through a pluggable decode callback. Default
 // behaviour differs by environment:
 //   - Browser: createImageBitmap (returns an ImageBitmap usable by pt-webgpu
-//     and pt-webgl2 as a texImage2D source).
+//     external-image upload; CPU-atlas backends need the decodeSceneTextures()
+//     pixel bridge or a host-supplied CPU-readable handle).
 //   - Non-browser: raw bytes are wrapped in { mimeType, data: Uint8Array }.
 //     pt-webgpu's materialTextureArray.ts accepts duck-typed objects; see
 //     README for the exact shapes accepted per backend.
 //
 // sRGB vs linear ownership note:
-//   The ADAPTER does NOT apply colorspace conversion.
+//   The default TextureRef bridge does NOT apply colorspace conversion.
+//   decodeSceneTextures() is the opt-in CPU pixel bridge that normalizes
+//   sRGB/data map roles into the requested backend color-space payload.
 //   - baseColor / emissive map images carry sRGB data; the BACKEND is
 //     responsible for sRGB-decode on upload (gl.SRGB8_ALPHA8, GPUTextureFormat
 //     'rgba8unorm-srgb', or a manual gamma decode in the shader).

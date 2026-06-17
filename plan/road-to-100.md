@@ -1014,7 +1014,15 @@ pt-webgpu frame.
 
 ✅ **FOLLOW-UP (2026-06-15):** walkaround-hybrid textured alpha traversal now multiplies baseColorMap `.a` with optional `alphaMap.r`, so glTF assets that store MASK/BLEND coverage in `pbrMetallicRoughness.baseColorTexture.a` are honored without adapter-side fake `alphaMap` aliases. Tests: `gltfAdapter.test.ts` verifies the glTF boundary and `materialTextureAtlas.test.ts` verifies atlas/shader coverage.
 
-**Footgun:** `createImageBitmap` in browser returns sRGB — convert to linear before atlas.
+✅ **FOLLOW-UP (2026-06-17):** browser-default `ImageBitmap` texture handles are now
+called out explicitly in `textureDecodeReport.imageBitmapCount` /
+`imageBitmapRefs`. They are treated as pt-webgpu external-image-ready but opaque
+to CPU-atlas backends, so strict degraded loads either require the host to opt in
+with `opaqueTextureHandlesReady` or use `decodeSceneTextures()` /
+`loadGltfAndDecodeTextures()` with `decodePixels` to produce role-aware
+CPU-linear atlas payloads. The old `createImageBitmap` sRGB footgun is therefore
+closed for the adapter decode bridge and preserved only as an explicit host
+contract boundary for opaque browser handles.
 
 #### 4D — Animation + temporal GI
 

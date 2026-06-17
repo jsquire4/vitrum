@@ -727,6 +727,41 @@ describe('loadGltfAsset', () => {
     ]);
   });
 
+  it('reports browser ImageBitmap handles separately from CPU-readable texture payloads', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+
+    await withCreateImageBitmapStub(async (createImageBitmap) => {
+      const result = await loadGltfAsset(gltf, { buffers });
+
+      expect(createImageBitmap).toHaveBeenCalledTimes(1);
+      expect(result.textureDecodeReport).toMatchObject({
+        mapCount: 1,
+        uniqueHandleCount: 1,
+        rawImageCount: 0,
+        imageBitmapCount: 1,
+        opaqueHandleCount: 0,
+        cpuReadableCount: 0,
+      });
+      expect(result.textureDecodeReport.imageBitmapRefs).toEqual([
+        expect.objectContaining({
+          primitiveId: 'gltf-prim-0',
+          primitiveKind: 'mesh',
+          materialField: 'baseColorMap',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+          colorSpace: 'srgb',
+          handleKind: 'image-bitmap',
+          width: 4,
+          height: 4,
+          backendReadiness: {
+            ptWebgl2: 'opaque',
+            ptWebgpu: 'ready',
+            walkaroundHybrid: 'opaque',
+          },
+        }),
+      ]);
+    });
+  });
+
   it('loadGltfAndDecodeTextures normalizes raw images when a pixel decoder is supplied', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({

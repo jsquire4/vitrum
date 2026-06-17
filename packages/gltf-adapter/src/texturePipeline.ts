@@ -94,9 +94,11 @@ export interface GltfTextureDecodeReport {
   readonly mapCount: number;
   readonly uniqueHandleCount: number;
   readonly rawImageCount: number;
+  readonly imageBitmapCount: number;
   readonly opaqueHandleCount: number;
   readonly cpuReadableCount: number;
   readonly rawImageRefs: readonly GltfTextureDecodeReportEntry[];
+  readonly imageBitmapRefs: readonly GltfTextureDecodeReportEntry[];
   readonly entries: readonly GltfTextureDecodeReportEntry[];
 }
 
@@ -303,15 +305,18 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
   }
 
   const rawImageRefs = entries.filter((entry) => entry.handleKind === 'raw-image');
+  const imageBitmapRefs = entries.filter((entry) => entry.handleKind === 'image-bitmap');
   return {
     mapCount: entries.length,
     uniqueHandleCount: uniqueHandles.size,
     rawImageCount: rawImageRefs.length,
+    imageBitmapCount: imageBitmapRefs.length,
     opaqueHandleCount: entries.filter((entry) => entry.handleKind === 'opaque').length,
     cpuReadableCount: entries.filter((entry) =>
       entry.handleKind === 'pixel-data' || entry.handleKind === 'data-texture',
     ).length,
     rawImageRefs,
+    imageBitmapRefs,
     entries,
   };
 }

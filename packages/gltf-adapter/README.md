@@ -359,7 +359,7 @@ depends on the environment:
 
 | Environment | `opts.decodeImage` | Handle shape | Works with |
 |-------------|-------------------|-------------|-----------|
-| Browser | absent | `ImageBitmap` | pt-webgpu, pt-webgl2 |
+| Browser | absent | `ImageBitmap` | pt-webgpu external-image upload; CPU-atlas backends require `decodeSceneTextures()`/`decodePixels` or a host CPU-readable handle |
 | Node / Worker | absent | `{ kind: 'raw-image', mimeType, data: Uint8Array }` | Needs custom backend upload |
 | Any | provided | Return value of callback | Whatever the callback returns |
 
@@ -368,7 +368,7 @@ calls it once per unique image index, in parallel.
 
 ### sRGB vs linear
 
-The adapter passes bytes as-is. **The backend is responsible for colorspace-correct upload:**
+The default TextureRef bridge passes bytes/opaque handles as-is. **The backend is responsible for colorspace-correct upload:**
 
 - `baseColorMap`, `emissiveMap` → **sRGB** (backends must use `sRGB` texture format or gamma-decode in shader).
 - `normalMap`, `roughnessMap` (ORM), `aoMap`, `lightMap`, `bumpMap`, `anisotropyMap` → **linear** (must NOT sRGB-decode).
@@ -397,7 +397,10 @@ handles opaque to pt-webgpu.
 `usesMipmaps` when the asset authored a mipmapped minification mode. It also
 separates the material role's color space (`colorSpace`) from the decoded handle
 hint (`handleColorSpace`) when known, so hosts can tell a CPU-linear bake from a
-WebGPU-ready sRGB-preserved payload. Current backends already consume per-map
+WebGPU-ready sRGB-preserved payload. Browser default `ImageBitmap` handles are
+reported through `imageBitmapCount` / `imageBitmapRefs`; they are ready for
+pt-webgpu external-image upload but remain opaque to CPU atlas builders until the
+host supplies decoded pixels. Current backends already consume per-map
 UV, transform, and wrap metadata where their material map rows are supported;
 per-texture filter/mipmap enforcement remains backend policy and is reported
 through `analyzeGltfAsset()` / `evaluateGltfBackendCompatibility()` as
