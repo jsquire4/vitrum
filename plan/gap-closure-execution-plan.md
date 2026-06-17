@@ -354,6 +354,13 @@ explicitly widens the target.
 These are not code blockers, but they are required before a high-confidence
 "100%" signoff.
 
+WSL smoke status (2026-06-17): `npm run validate:gpu:smoke` completed on both
+lavapipe and dzn. The prior dzn hybrid-capture timeout did not reproduce in this
+run; both backend captures passed non-regression, the dzn/lavapipe cross-check
+passed, and the RC/ReSTIR/DDGI BVH brute-force oracles passed on lavapipe. Keep
+full browser/real-adapter validation in the queue; do not treat this smoke as a
+replacement for V28-B recaptures.
+
 - V28-B render-changing recaptures for PT and walkaround changes.
 - GRIS-on unbiasedness and biased-default error quantification.
 - PPG favorable-scene A/B.
