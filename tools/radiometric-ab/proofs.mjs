@@ -29,8 +29,11 @@ export const RADIOMETRIC_AB_PROOFS = [
       varRatioMax: 2.0,
     },
     controls: {
+      depths: [1, 2, 3],
       endpointOnlyMatchesUni: true,
+      endpointOnlyMaxRelErr: 1e-9,
       multiVertexFindingStartsAt: 2,
+      multiVertexMinGlobalRelErr: 0.10,
     },
   },
   {

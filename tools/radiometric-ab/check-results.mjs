@@ -105,7 +105,32 @@ function checkBdpt(proof, result) {
   /** @type {any[]} */
   const controls = result.controls?.byMaxLightBounces ?? [];
   const controlDepths = controls.map((entry) => entry.maxLightBounces);
-  if (!sameJson(controlDepths, [1, 2, 3])) fail(`bdpt: control depths ${JSON.stringify(controlDepths)} differ from expected [1,2,3]`);
+  if (!sameJson(controlDepths, proof.controls.depths)) {
+    fail(`bdpt: control depths ${JSON.stringify(controlDepths)} differ from proofs.mjs`);
+  }
+  const endpoint = controls.find((entry) => entry.maxLightBounces === 1);
+  if (endpoint == null) fail("bdpt: missing maxLightBounces=1 endpoint-only control");
+  assertFiniteNumber(endpoint.globalRelErr, "bdpt: endpoint globalRelErr");
+  assertFiniteNumber(endpoint.roiRelErr, "bdpt: endpoint roiRelErr");
+  if (
+    endpoint.globalRelErr > proof.controls.endpointOnlyMaxRelErr ||
+    endpoint.roiRelErr > proof.controls.endpointOnlyMaxRelErr
+  ) {
+    fail(
+      `bdpt: endpoint-only control drifted from UNI ` +
+      `(global=${endpoint.globalRelErr}, roi=${endpoint.roiRelErr})`,
+    );
+  }
+  for (const entry of controls) {
+    if (entry.maxLightBounces < proof.controls.multiVertexFindingStartsAt) continue;
+    assertFiniteNumber(entry.globalRelErr, `bdpt: maxLightBounces=${entry.maxLightBounces} globalRelErr`);
+    if (entry.globalRelErr < proof.controls.multiVertexMinGlobalRelErr) {
+      fail(
+        `bdpt: maxLightBounces=${entry.maxLightBounces} no longer records the expected ` +
+        `multi-vertex finding (${entry.globalRelErr} < ${proof.controls.multiVertexMinGlobalRelErr})`,
+      );
+    }
+  }
 }
 
 /**
