@@ -1,11 +1,11 @@
 /**
  * H12 — lite-tier capabilities truth: the lite kernel uses a reduced binding
- * layout; analytic shapes, BDPT, disc-area, and mesh-area emitters are absent
- * from the lite shader path. Mesh/skinned/instanced primitives are statically
+ * layout; analytic shapes, BDPT, and mesh-area emitters are absent from the
+ * lite shader path. Mesh/skinned/instanced primitives are statically
  * supported by baking them into one world-space BLAS at setScene time; transform
  * and topology mutations stay unsupported because the fast paths are TLAS-based.
  *
- * B12 (2026-06-10) — point/spot/rect-area emitters and HDRI environments are now
+ * B12 (2026-06-10) — point/spot/rect/disc-area emitters and HDRI environments are now
  * supported on the lite tier via texture packing (liteLightTex, liteEnvTex,
  * liteEnvCdfTex). Tests updated to reflect genuine support.
  *
@@ -90,8 +90,8 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  // B12 — point/spot/rect-area now supported via texture packing.
-  it('lite tier: supportedEmitterKinds contains directional + point + spot + rect-area', async () => {
+  // B12 — point/spot/rect/disc-area now supported via texture packing.
+  it('lite tier: supportedEmitterKinds contains directional + point + spot + rect-area + disc-area', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     const kinds = engine.capabilities.supportedEmitterKinds;
@@ -99,8 +99,8 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(kinds.has('point')).toBe(true);
     expect(kinds.has('spot')).toBe(true);
     expect(kinds.has('rect-area')).toBe(true);
-    // disc-area and mesh-area remain unsupported (no NEE path in lite kernel).
-    expect(kinds.has('disc-area')).toBe(false);
+    expect(kinds.has('disc-area')).toBe(true);
+    // Explicit mesh-area emitters remain unsupported (no triangle-emitter NEE path in lite kernel).
     expect(kinds.has('mesh-area')).toBe(false);
     engine.dispose();
     warn.mockRestore();
@@ -184,8 +184,8 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(sd.emitters.point).toBe('native');
     expect(sd.emitters.spot).toBe('native');
     expect(sd.emitters['rect-area']).toBe('native');
-    // disc-area and mesh-area remain unsupported.
-    expect(sd.emitters['disc-area']).toBe('unsupported');
+    expect(sd.emitters['disc-area']).toBe('native');
+    // Explicit mesh-area emitters remain unsupported.
     expect(sd.emitters['mesh-area']).toBe('unsupported');
     engine.dispose();
     warn.mockRestore();
@@ -669,8 +669,9 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  // B12 — disc-area and mesh-area still warn (no NEE path in lite kernel).
-  it('lite tier: setScene warns when scene contains disc-area or mesh-area emitters', async () => {
+  // B12 follow-up — disc-area is native in lite via the rect/disc texture record;
+  // explicit mesh-area remains unsupported.
+  it('lite tier: setScene does not warn for disc-area but still warns for mesh-area emitters', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
     warn.mockClear();
@@ -684,7 +685,10 @@ describe('H12: lite-tier capabilities truth', () => {
           material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
         },
       ],
-      emitters: [{ kind: 'disc-area', id: 'd', position: [0, 1, 0], normal: [0, -1, 0], radius: 0.5, color: [1, 1, 1], intensity: 1 }],
+      emitters: [
+        { kind: 'disc-area', id: 'd', position: [0, 1, 0], normal: [0, -1, 0], radius: 0.5, color: [1, 1, 1], intensity: 1 },
+        { kind: 'mesh-area', id: 'ma', meshId: 'm', color: [1, 1, 1], intensity: 1 },
+      ],
       environment: { kind: 'none' },
     };
     try {
@@ -693,7 +697,8 @@ describe('H12: lite-tier capabilities truth', () => {
       /* GPU stubs may throw after the warn — that's expected */
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('disc-area') && c.includes('Lite tier'))).toBe(true);
+    expect(calls.some((c) => c.includes('disc-area') && c.includes('Lite tier'))).toBe(false);
+    expect(calls.some((c) => c.includes('mesh-area') && c.includes('Lite tier'))).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });

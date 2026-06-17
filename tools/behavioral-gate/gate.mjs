@@ -144,7 +144,7 @@ const EXPECTATION_TABLE = {
 // ── Matrix ────────────────────────────────────────────────────────────────────
 
 const PT_CONFIGS = [
-  { label: "pt/default",          eng: {},                                    scene: {} },
+  { label: "pt/default",          eng: {},                                    scene: { ptSmokeLight: "rect" } },
   { label: "pt/spectral",         eng: { spectral: true },                    scene: {} },
   { label: "pt/bdpt",             eng: { bdpt: true },                        scene: {} },
   { label: "pt/caustic-manifold", eng: { causticStrategy: "manifold-nee" },   scene: {} },
@@ -154,33 +154,19 @@ const PT_CONFIGS = [
   { label: "pt/restirPtReuse",    eng: { restirPtReuse: true },               scene: {} },
   { label: "pt/skinned-mesh",     eng: {},                                    scene: { skinned: true } },
   { label: "pt/analytic-sphere",  eng: {},                                    scene: { analytic: true } },
-  { label: "pt/point-light",      eng: {},                                    scene: {
-    emitters: [{ kind: "point", id: "pt-light", position: [0, 0.8, 0], color: [1,1,1], intensity: 4.0 }],
-  }},
+  { label: "pt/point-light",      eng: {},                                    scene: { ptSmokeLight: "point" } },
   // 2026-06-10: native analytic disc emitter — packed into rect stream with shape
   // tag 1.0 (Shirley-Chiu concentric-disc map, π·r² area, circle containment MIS).
-  // The disc is on the ceiling facing down; the Cornell box surfaces should be lit.
-  { label: "pt/disc-light",       eng: {},                                    scene: {
-    emitters: [{ kind: "disc-area", id: "disc-light", position: [0, 0.95, 0],
-      normal: [0, -1, 0], radius: 0.3, color: [1,1,1], intensity: 12.0 }],
-  }},
-  { label: "pt/spot-light",       eng: {},                                    scene: {
-    emitters: [{ kind: "spot", id: "sp-light", position: [0, 0.8, 0], direction: [0,-1,0],
-      color: [1,1,1], intensity: 6.0, angle: 0.8, penumbra: 0.2 }],
-  }},
-  { label: "pt/directional-2",    eng: {},                                    scene: {
-    emitters: [
-      { kind: "directional", id: "dir1", direction: [0.3,-0.8,0.5], color: [1,1,1], intensity: 2.0 },
-      { kind: "directional", id: "dir2", direction: [-0.3,-0.8,-0.5], color: [0.8,0.9,1.0], intensity: 1.0 },
-    ],
-  }},
+  // The pt smoke scene uses a front-facing quad so the lane proves emitter output
+  // instead of accidentally testing an inward-facing closed-box wall.
+  { label: "pt/disc-light",       eng: {},                                    scene: { ptSmokeLight: "disc" } },
+  { label: "pt/spot-light",       eng: {},                                    scene: { ptSmokeLight: "spot" } },
+  { label: "pt/directional-2",    eng: {},                                    scene: { ptSmokeLight: "directional-2" } },
   { label: "pt/hdri-env",         eng: {},                                    scene: { hdri: true } },
   { label: "pt/procedural-sky",   eng: {},                                    scene: { sky: true } },
   { label: "pt/spectral+bdpt",    eng: { spectral: true, bdpt: true },        scene: {} },
   { label: "pt/lite+hdri",        eng: { traceTier: "lite" },                 scene: { hdri: true } },
-  { label: "pt/lite+point-light", eng: { traceTier: "lite" },                 scene: {
-    emitters: [{ kind: "point", id: "pt-light", position: [0, 0.8, 0], color: [1,1,1], intensity: 4.0 }],
-  }},
+  { label: "pt/lite+point-light", eng: { traceTier: "lite" },                 scene: { ptSmokeLight: "point" } },
   { label: "pt/gltf-unlit",        eng: {},                                    scene: { gltf: "unlit" } },
   { label: "pt/gltf-textured-pbr", eng: {},                                    scene: { gltf: "textured-pbr" } },
   { label: "pt/gltf-transmission", eng: {},                                    scene: { gltf: "transmission" } },
@@ -355,6 +341,79 @@ function buildMutationEnvironmentScene() {
     primitives: [],
     emitters: [],
     environment: { kind: "hdri", hdri: makeMutationHdri(0.05), intensity: 1.0, rotationY: 0 },
+  };
+}
+
+function buildPtSmokeLightScene(kind = "rect") {
+  const quad = {
+    kind: "mesh",
+    id: "pt-smoke-quad",
+    positions: GLTF_QUAD.positions,
+    normals: GLTF_QUAD.normals,
+    uvs: GLTF_QUAD.uvs,
+    indices: new Uint32Array(GLTF_QUAD.indices),
+    material: {
+      baseColor: [0.72, 0.74, 0.78],
+      roughness: 0.55,
+      metallic: 0.0,
+    },
+  };
+
+  let emitters;
+  if (kind === "point") {
+    emitters = [{
+      kind: "point",
+      id: "pt-smoke-point",
+      position: [0, 0, 1.2],
+      color: [1, 0.9, 0.75],
+      intensity: 12.0,
+      castShadow: false,
+    }];
+  } else if (kind === "spot") {
+    emitters = [{
+      kind: "spot",
+      id: "pt-smoke-spot",
+      position: [0, 0, 1.3],
+      direction: [0, 0, -1],
+      color: [0.8, 0.9, 1.0],
+      intensity: 16.0,
+      angle: 0.7,
+      penumbra: 0.15,
+      castShadow: false,
+    }];
+  } else if (kind === "disc") {
+    emitters = [{
+      kind: "disc-area",
+      id: "pt-smoke-disc",
+      position: [0, 0, 1.2],
+      normal: [0, 0, -1],
+      radius: 0.35,
+      color: [1, 1, 1],
+      intensity: 12.0,
+      castShadow: false,
+    }];
+  } else if (kind === "directional-2") {
+    emitters = [
+      { kind: "directional", id: "pt-smoke-dir-a", direction: [0, 0, -1], color: [1, 1, 1], intensity: 2.0, castShadow: false },
+      { kind: "directional", id: "pt-smoke-dir-b", direction: [-0.4, -0.2, -1], color: [0.4, 0.55, 1.0], intensity: 0.6, castShadow: false },
+    ];
+  } else {
+    emitters = [{
+      kind: "rect-area",
+      id: "pt-smoke-rect",
+      position: [0, 0, 1.2],
+      uAxis: [0, 0.28, 0],
+      vAxis: [0.28, 0, 0],
+      color: [1, 1, 1],
+      intensity: 12.0,
+      castShadow: false,
+    }];
+  }
+
+  return {
+    primitives: [quad],
+    emitters,
+    environment: { kind: "none" },
   };
 }
 
@@ -910,6 +969,7 @@ async function buildRealGltfAssetScene(assetId) {
 async function buildGateScene(opts = {}) {
   if (opts.gltfReal) return buildRealGltfAssetScene(opts.gltfReal);
   if (opts.gltf) return buildGltfFixtureScene(opts.gltf);
+  if (opts.ptSmokeLight) return buildPtSmokeLightScene(opts.ptSmokeLight);
   if (opts.mutation === "material") return buildMutationMaterialScene();
   if (opts.mutation === "environment") return buildMutationEnvironmentScene();
   return buildCornellScene(opts);

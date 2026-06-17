@@ -129,9 +129,12 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
 
 - **BEHAVIOR CHANGE (2026-06-10):** this backend previously returned raw linear HDR in `primaryRadiance`. The contract default (`aces` tonemap @ exposure 1.0 @ sRGB output) now applies. Adjoint/OIDN readbacks remain linear. To get raw HDR: `quality: { tonemap: 'none', outputColorSpace: 'linear' }`.
 - **Lite tier** disables TLAS, analytic shapes, full-tier material texture bindings,
-  HDRI texel buffers, point/spot/area lights, motion vectors, and caustic strategies
-  regardless of scene content. The lite support matrix reports those material-map rows
-  as unsupported so strict glTF compatibility can reject before render.
+  explicit mesh-area emitters, motion vectors, and caustic strategies regardless
+  of scene content. It does support static mesh/skinned/instanced primitives,
+  directional/point/spot/rect-area/disc-area emitters, and HDRI/procedural-sky
+  environments through the lite sampled-texture packing path. The lite support
+  matrix reports material-map rows as unsupported so strict glTF compatibility can
+  reject before render.
 - **Hero-wavelength spectral** is opt-in: `extensions['vitrum.ptWebgpu.spectralHeroWavelength']`.
 - **Gap-closure RFE scenarios** (`rfe03`, `rfe07`, `rfe08`, …) need hardware capture; `ptwgpu-parity-material-fields` has a committed baseline PNG.
 - Incremental `positions`/`normals` (same vertex count) patch in place; vertex/index-count and instance-count changes are absorbed via a targeted BLAS/TLAS repack (`incrementalPatchSupport.topology: true`).
