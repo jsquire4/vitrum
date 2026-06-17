@@ -932,7 +932,7 @@ describe('material field mapping', () => {
       buffers: [{ byteLength: posBuf.byteLength }],
     };
 
-    const { scene, warnings } = await gltfToScene(gltf, {
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, {
       buffers: new Map([[0, posBuf]]),
       decodeImage,
     });
@@ -941,6 +941,12 @@ describe('material field mapping', () => {
     const mat = (scene.primitives[0] as MeshPrimitive).material;
     expect(mat.baseColorMap).toBeUndefined();
     expect(warnings.some((w) => w.includes('external image URIs'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'external-image-uri',
+      path: 'images[0].uri',
+      message: expect.stringContaining('external image URIs'),
+    }));
   });
 
   it('maps emissiveFactor', async () => {

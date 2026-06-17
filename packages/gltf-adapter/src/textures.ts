@@ -79,6 +79,29 @@ export interface GltfTextureRefSource {
   readonly textureSourceExtension?: GltfTextureSourceExtension;
 }
 
+export type GltfTextureAcquisitionDiagnosticCode =
+  | 'external-image-uri'
+  | 'malformed-data-uri'
+  | 'data-uri-atob-unavailable'
+  | 'data-uri-decode-failed'
+  | 'image-decoder-missing'
+  | 'disabled-texture-source-extension';
+
+export interface GltfTextureAcquisitionDiagnostic {
+  readonly severity: 'warning';
+  readonly code: GltfTextureAcquisitionDiagnosticCode;
+  readonly path: string;
+  readonly message: string;
+  readonly textureIndex?: number;
+  readonly imageIndex?: number;
+  readonly imageUri?: string;
+  readonly textureSourceExtensions?: readonly GltfTextureSourceExtension[];
+}
+
+export type GltfTextureAcquisitionDiagnosticSink = (
+  diagnostic: GltfTextureAcquisitionDiagnostic,
+) => void;
+
 type GltfTextureRefWithSource = TextureRef & {
   readonly [GLTF_TEXTURE_REF_SOURCE]?: GltfTextureRefSource;
 };
@@ -105,6 +128,7 @@ function getImageBytes(
   buffers: Map<number, ArrayBuffer>,
   imageIndex: number,
   warnings: string[],
+  onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
   externalImages?: ReadonlyMap<number, GltfImageBytes>,
 ): { bytes: Uint8Array; mimeType: string } | undefined {
   const image = gltf.images?.[imageIndex];
@@ -122,15 +146,25 @@ function getImageBytes(
 
   if (image.uri) {
     if (image.uri.startsWith('data:')) {
-      const decoded = decodeDataUri(image.uri, warnings, image.name ?? String(imageIndex));
+      const decoded = decodeDataUri(image.uri, warnings, imageIndex, image.name ?? String(imageIndex), onDiagnostic);
       if (decoded != null) return decoded;
+      const external = externalImages?.get(imageIndex);
+      if (external != null) return external;
+      return undefined;
     }
     const external = externalImages?.get(imageIndex);
     if (external != null) return external;
-    warnings.push(
-      `[vitrum/gltf-adapter] Image "${image.name ?? imageIndex}" has a URI ("${image.uri.substring(0, 60)}…"). ` +
-        'The adapter does not fetch external image URIs. Embed the image in a bufferView or data: URI. Image skipped.',
-    );
+    emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'external-image-uri',
+      path: `images[${imageIndex}].uri`,
+      imageIndex,
+      imageUri: image.uri,
+      message:
+        `[vitrum/gltf-adapter] Image "${image.name ?? imageIndex}" has a URI ` +
+        `("${image.uri.substring(0, 60)}…"). The adapter does not fetch external image URIs. ` +
+        'Embed the image in a bufferView or data: URI. Image skipped.',
+    });
     return undefined;
   }
 
@@ -140,11 +174,20 @@ function getImageBytes(
 function decodeDataUri(
   uri: string,
   warnings: string[],
+  imageIndex: number,
   label: string,
+  onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
 ): { bytes: Uint8Array; mimeType: string } | undefined {
   const comma = uri.indexOf(',');
   if (comma < 0) {
-    warnings.push(`[vitrum/gltf-adapter] Image "${label}" has a malformed data: URI. Image skipped.`);
+    emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'malformed-data-uri',
+      path: `images[${imageIndex}].uri`,
+      imageIndex,
+      imageUri: uri,
+      message: `[vitrum/gltf-adapter] Image "${label}" has a malformed data: URI. Image skipped.`,
+    });
     return undefined;
   }
   const meta = uri.slice(5, comma);
@@ -155,9 +198,16 @@ function decodeDataUri(
   try {
     if (isBase64) {
       if (typeof globalThis.atob !== 'function') {
-        warnings.push(
-          `[vitrum/gltf-adapter] Image "${label}" uses base64 data: URI, but atob() is unavailable. Image skipped.`,
-        );
+        emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+          severity: 'warning',
+          code: 'data-uri-atob-unavailable',
+          path: `images[${imageIndex}].uri`,
+          imageIndex,
+          imageUri: uri,
+          message:
+            `[vitrum/gltf-adapter] Image "${label}" uses base64 data: URI, but atob() is unavailable. ` +
+            'Image skipped.',
+        });
         return undefined;
       }
       const bin = globalThis.atob(payload.replace(/\s+/g, ''));
@@ -167,10 +217,16 @@ function decodeDataUri(
     }
     return { bytes: new TextEncoder().encode(decodeURIComponent(payload)), mimeType };
   } catch (err) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Image "${label}" data: URI could not be decoded: ` +
+    emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'data-uri-decode-failed',
+      path: `images[${imageIndex}].uri`,
+      imageIndex,
+      imageUri: uri,
+      message:
+        `[vitrum/gltf-adapter] Image "${label}" data: URI could not be decoded: ` +
         `${err instanceof Error ? err.message : String(err)}. Image skipped.`,
-    );
+    });
     return undefined;
   }
 }
@@ -181,6 +237,8 @@ async function decodeImage(
   mimeType: string,
   decodeFn: DecodeImageFn | undefined,
   warnings: string[],
+  imageIndex: number,
+  onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
 ): Promise<unknown> {
   if (decodeFn) {
     return decodeFn(bytes, mimeType);
@@ -194,12 +252,17 @@ async function decodeImage(
   }
 
   // Node / non-browser: return raw bytes.
-  warnings.push(
-    '[vitrum/gltf-adapter] No decodeImage callback provided and createImageBitmap is not ' +
+  emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+    severity: 'warning',
+    code: 'image-decoder-missing',
+    path: `images[${imageIndex}]`,
+    imageIndex,
+    message:
+      '[vitrum/gltf-adapter] No decodeImage callback provided and createImageBitmap is not ' +
       'available (non-browser environment). Images are returned as { kind: "raw-image", data, mimeType }. ' +
       'pt-webgpu and pt-webgl2 expect ImageBitmap or a canvas-compatible handle; supply ' +
       'opts.decodeImage to convert raw bytes to an appropriate backend handle.',
-  );
+  });
   return { kind: 'raw-image', mimeType, data: bytes } satisfies RawImageHandle;
 }
 
@@ -216,21 +279,24 @@ export async function buildTextureHandleMap(
   warnings: string[],
   externalImages?: GltfImageBytesMap,
   textureSourceExtensions: readonly GltfTextureSourceExtension[] = [],
+  onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
 ): Promise<Map<number, unknown>> {
   const textures = gltf.textures ?? [];
   const imageHandles = new Map<number, Promise<unknown>>();
+  const textureImageSources = new Map<number, number | undefined>();
   const externalImageMap = normalizeImageBytesMap(externalImages);
   const sourceExtensions = new Set(textureSourceExtensions);
 
   // Kick off unique image decodes in parallel.
-  for (const tex of textures) {
-    const imageIdx = resolveTextureImageSource(tex, sourceExtensions, warnings);
+  for (const [textureIndex, tex] of textures.entries()) {
+    const imageIdx = resolveTextureImageSource(tex, textureIndex, sourceExtensions, warnings, onDiagnostic);
+    textureImageSources.set(textureIndex, imageIdx);
     if (imageIdx !== undefined && !imageHandles.has(imageIdx)) {
-      const imgData = getImageBytes(gltf, buffers, imageIdx, warnings, externalImageMap);
+      const imgData = getImageBytes(gltf, buffers, imageIdx, warnings, onDiagnostic, externalImageMap);
       if (imgData) {
         imageHandles.set(
           imageIdx,
-          decodeImage(imgData.bytes, imgData.mimeType, decodeFn, warnings),
+          decodeImage(imgData.bytes, imgData.mimeType, decodeFn, warnings, imageIdx, onDiagnostic),
         );
       }
     }
@@ -238,8 +304,8 @@ export async function buildTextureHandleMap(
 
   // Await all.
   const resolved = new Map<number, unknown>();
-  for (const [texIdx, tex] of textures.entries()) {
-    const imageIdx = resolveTextureImageSource(tex, sourceExtensions, warnings);
+  for (const [texIdx] of textures.entries()) {
+    const imageIdx = textureImageSources.get(texIdx);
     if (imageIdx !== undefined) {
       const p = imageHandles.get(imageIdx);
       if (p) resolved.set(texIdx, await p);
@@ -251,8 +317,10 @@ export async function buildTextureHandleMap(
 
 function resolveTextureImageSource(
   texture: GltfTexture,
+  textureIndex: number,
   enabledExtensions: ReadonlySet<string>,
   warnings: string[],
+  onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
 ): number | undefined {
   const selected = selectTextureImageSource(texture, enabledExtensions);
   if (selected.imageIndex !== undefined) return selected.imageIndex;
@@ -262,13 +330,28 @@ function resolveTextureImageSource(
     if (texture.extensions?.[extName]?.source !== undefined) available.push(extName);
   }
   if (texture.source === undefined && available.length > 0) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Texture uses ${available.join(', ')} but none of those ` +
+    emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'disabled-texture-source-extension',
+      path: `textures[${textureIndex}].extensions`,
+      textureIndex,
+      textureSourceExtensions: available,
+      message:
+        `[vitrum/gltf-adapter] Texture at textures[${textureIndex}] uses ${available.join(', ')} but none of those ` +
         'texture-source extensions were enabled. Pass opts.textureSourceExtensions to select ' +
         'an alternate image source. Texture skipped.',
-    );
+    });
   }
   return texture.source;
+}
+
+function emitTextureAcquisitionDiagnostic(
+  warnings: string[],
+  onDiagnostic: GltfTextureAcquisitionDiagnosticSink | undefined,
+  diagnostic: GltfTextureAcquisitionDiagnostic,
+): void {
+  warnings.push(diagnostic.message);
+  onDiagnostic?.(diagnostic);
 }
 
 function selectTextureImageSource(

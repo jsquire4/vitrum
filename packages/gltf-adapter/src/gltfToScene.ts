@@ -71,6 +71,7 @@ import {
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
   type DecodeImageFn,
   type GltfImageBytesMap,
+  type GltfTextureAcquisitionDiagnosticCode,
   type GltfTextureSourceExtension,
 } from './textures.js';
 import { parseGlb } from './glbParser.js';
@@ -335,6 +336,7 @@ export interface GltfInstancingBinding {
 }
 
 export type GltfImportDiagnosticCode =
+  | GltfTextureAcquisitionDiagnosticCode
   | 'unsupported-version'
   | 'unsupported-required-extension'
   | 'ignored-camera'
@@ -517,6 +519,9 @@ export async function gltfToScene(
     warnings,
     opts.imageBytes,
     opts.textureSourceExtensions,
+    (diagnostic) => {
+      diagnostics.push(diagnostic);
+    },
   );
 
   // ── 5. Pre-convert materials ───────────────────────────────────────────────

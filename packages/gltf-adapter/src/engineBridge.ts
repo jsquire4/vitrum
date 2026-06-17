@@ -345,6 +345,12 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'tangent-generation-failed',
   'skin-rest-pose',
   'ignored-material-texcoord',
+  'external-image-uri',
+  'malformed-data-uri',
+  'data-uri-atob-unavailable',
+  'data-uri-decode-failed',
+  'image-decoder-missing',
+  'disabled-texture-source-extension',
 ]);
 
 function importDiagnosticFailures(

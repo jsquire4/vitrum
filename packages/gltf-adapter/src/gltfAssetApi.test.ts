@@ -2443,6 +2443,7 @@ describe('loadGltfForEngine', () => {
     const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
     await expect(loadGltfForEngine(gltf, {
       buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
@@ -2460,6 +2461,7 @@ describe('loadGltfForEngine', () => {
 
     await expect(loadGltfForEngine(gltf, {
       buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],
@@ -2504,12 +2506,29 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('rejects malformed data URI texture acquisition diagnostics in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.images![0] = { uri: 'data:image/png;base64' };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine,
+    })).rejects.toThrow('import:malformed-data-uri=approximate at images[0].uri');
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('allows opaque texture handles in strict mode when the host asserts backend readiness', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const engine = { setScene: vi.fn() };
 
     await expect(loadGltfForEngine(gltf, {
       buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       opaqueTextureHandlesReady: ['pt-webgl2'],

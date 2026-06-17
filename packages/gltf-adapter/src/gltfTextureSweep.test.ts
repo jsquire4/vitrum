@@ -490,6 +490,33 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     });
   });
 
+  it('reports a single structured diagnostic when a texture has only disabled source-extension images', async () => {
+    const { gltf, buffers } = makeTextureSourceExtensionGltf('MSFT_texture_dds');
+    delete gltf.textures![0]!.source;
+    gltf.extensionsUsed = ['MSFT_texture_dds'];
+
+    const result = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+    });
+
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    expect(material.baseColorMap).toBeUndefined();
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'disabled-texture-source-extension',
+        path: 'textures[0].extensions',
+        textureIndex: 0,
+        textureSourceExtensions: ['MSFT_texture_dds'],
+        message: expect.stringContaining('textures[0]'),
+      }),
+    ]));
+    expect(result.warnings.filter((warning) =>
+      warning.includes('MSFT_texture_dds') && warning.includes('Texture skipped'),
+    )).toHaveLength(1);
+  });
+
   it('scalar companions still map (normalScale, aoMapIntensity, clearcoatNormalScale)', async () => {
     const { mat } = await importSweepMaterial();
     expect(mat.normalScale).toBeCloseTo(0.5);
