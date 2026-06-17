@@ -729,6 +729,30 @@ describe('walkaround materialTextureAtlas', () => {
       .toBe(0);
   });
 
+  it('packs bump-map source dimensions next to bumpScale metadata', () => {
+    const handle = {
+      width: 3,
+      height: 5,
+      data: new Uint8Array(15).fill(128),
+      __vitrum_hint__: { channels: 1, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      bumpMap: { handle },
+      bumpScale: 0.25,
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableBumpLayerCount).toBe(1);
+    expect(atlas.baseColorMetaData[204]).toBeCloseTo(0.25, 5);
+    expect(atlas.baseColorMetaData[205]).toBe(3);
+    expect(atlas.baseColorMetaData[206]).toBe(5);
+    expect(atlas.baseColorMetaData[207]).toBe(0);
+  });
+
   it('shade and traversal sample material maps from the shared atlas module', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
@@ -772,6 +796,11 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyThicknessMapToBeerTint(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyBumpMapForHit(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let bumpTexelStep = vec2f(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('1.0 / max(scaleMeta.y, 1.0)');
+    expect(MATERIAL_ATLAS_WGSL).toContain('1.0 / max(scaleMeta.z, 1.0)');
+    expect(MATERIAL_ATLAS_WGSL).toContain('scaleMeta.y > 0.0 && scaleMeta.z > 0.0');
+    expect(MATERIAL_ATLAS_WGSL).not.toContain('1.0 / 512.0');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyClearcoatNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('@group(1) @binding(23) var bvh_vertex_color: texture_2d<f32>;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleVertexColorForHit(hit: IntersectionResult) -> vec4f');

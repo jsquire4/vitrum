@@ -611,23 +611,32 @@ fn applyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
     return shadingNormal;
   }
 
-  let du = 1.0 / 512.0;
+  let atlasDims = textureDimensions(materialTextureAtlas);
+  let atlasTexelStep = vec2f(
+    1.0 / f32(max(atlasDims.x, 1u)),
+    1.0 / f32(max(atlasDims.y, 1u)),
+  );
+  let bumpTexelStep = vec2f(
+    1.0 / max(scaleMeta.y, 1.0),
+    1.0 / max(scaleMeta.z, 1.0),
+  );
+  let texelStep = select(atlasTexelStep, bumpTexelStep, scaleMeta.y > 0.0 && scaleMeta.z > 0.0);
   let hU = sampleMaterialAtlasRawAtOffsetDelta(
     triIndex,
     MATERIAL_MAP_BUMP_TEXEL_OFFSET,
     hit.uv,
     uv1,
-    vec2f(du, 0.0),
+    vec2f(texelStep.x, 0.0),
   ).r;
   let hV = sampleMaterialAtlasRawAtOffsetDelta(
     triIndex,
     MATERIAL_MAP_BUMP_TEXEL_OFFSET,
     hit.uv,
     uv1,
-    vec2f(0.0, du),
+    vec2f(0.0, texelStep.y),
   ).r;
-  let dhdu = (hU - hC.r) / du;
-  let dhdv = (hV - hC.r) / du;
+  let dhdu = (hU - hC.r) / texelStep.x;
+  let dhdv = (hV - hC.r) / texelStep.y;
   let frame = materialTangentFrameForHit(hit, shadingNormal, MATERIAL_MAP_BUMP_TEXEL_OFFSET);
   let perturbed = shadingNormal - bumpScale * (dhdu * frame.tangent + dhdv * frame.bitangent);
   let plen = length(perturbed);

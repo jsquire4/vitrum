@@ -490,11 +490,16 @@ export function packMaterialTextureAtlas(
 
   const writeBumpScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
     const b = texel * 4;
+    const ref = asTextureRef(mat?.bumpMap);
+    const texCoord = ref?.texCoord ?? 0;
+    const pixels = ref?.handle != null && (texCoord === 0 || texCoord === 1)
+      ? readable.get(ref.handle)?.linear?.pixels
+      : undefined;
     baseColorMetaData[b] = Number.isFinite(mat?.bumpScale)
       ? mat?.bumpScale ?? 1
       : 1;
-    baseColorMetaData[b + 1] = 0;
-    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 1] = pixels?.width ?? 0;
+    baseColorMetaData[b + 2] = pixels?.height ?? 0;
     baseColorMetaData[b + 3] = 0;
   };
 
