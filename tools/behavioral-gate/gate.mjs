@@ -117,6 +117,7 @@ const EXPECTATION_TABLE = {
   "pt/gltf-real-draco": { expected: "ok" },
   "pt/gltf-real-meshopt": { expected: "ok" },
   "pt/mutation-material": { expected: "ok" },
+  "pt/mutation-environment": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -190,6 +191,7 @@ const PT_CONFIGS = [
   { label: "pt/gltf-real-draco", eng: {},                                       scene: { gltfReal: "cesium-milk-truck-draco" } },
   { label: "pt/gltf-real-meshopt", eng: {},                                     scene: { gltfReal: "meshopt-cube-real" } },
   { label: "pt/mutation-material", eng: {},                                     scene: { mutation: "material" } },
+  { label: "pt/mutation-environment", eng: {},                                  scene: { mutation: "environment" } },
 ];
 
 const WH_CONFIGS = [
@@ -307,7 +309,7 @@ function buildCornellScene(opts = {}) {
     for (let i = 0; i < texels.length; i += 4) {
       texels[i] = 1.0; texels[i+1] = 1.0; texels[i+2] = 1.0; texels[i+3] = 1.0;
     }
-    environment = { kind: "hdri", textureData: texels, width: W, height: H, intensity: 1.0 };
+    environment = { kind: "hdri", hdri: { width: W, height: H, data: texels }, intensity: 1.0 };
   }
   if (opts.sky) {
     environment = { kind: "procedural-sky", sunDirection: [0.5, 1.0, 0.3] };
@@ -334,6 +336,25 @@ function buildMutationMaterialScene() {
     }],
     emitters: [],
     environment: { kind: "none" },
+  };
+}
+
+function makeMutationHdri(scale) {
+  return {
+    width: 2,
+    height: 1,
+    data: new Float32Array([
+      0.15 * scale, 0.25 * scale, 1.0 * scale,
+      1.0 * scale, 0.35 * scale, 0.1 * scale,
+    ]),
+  };
+}
+
+function buildMutationEnvironmentScene() {
+  return {
+    primitives: [],
+    emitters: [],
+    environment: { kind: "hdri", hdri: makeMutationHdri(0.05), intensity: 1.0, rotationY: 0 },
   };
 }
 
@@ -890,6 +911,7 @@ async function buildGateScene(opts = {}) {
   if (opts.gltfReal) return buildRealGltfAssetScene(opts.gltfReal);
   if (opts.gltf) return buildGltfFixtureScene(opts.gltf);
   if (opts.mutation === "material") return buildMutationMaterialScene();
+  if (opts.mutation === "environment") return buildMutationEnvironmentScene();
   return buildCornellScene(opts);
 }
 
@@ -1303,6 +1325,10 @@ async function waitForEngineReady(engine, label, timeoutMs = 120_000) {
 
 const SPP = 8;
 const LUM_THRESHOLD = 0.005;
+const MUTATION_DELTA_THRESHOLDS = {
+  material: { meanAbs: 2.0, maxAbs: 8 },
+  environment: { meanAbs: 2.0, maxAbs: 8 },
+};
 
 /**
  * Run the expectation check for a single config result.
@@ -1378,19 +1404,30 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
     engine.setScene(scene);
 
     pixels = await renderFramesAndReadback();
-    if (sceneOpts.mutation === "material") {
+    if (sceneOpts.mutation) {
       beforeMutationPixels = pixels;
-      engine.updatePrimitive("mutation-quad", {
-        material: {
-          shadingModel: "unlit",
-          baseColor: [0.05, 0.08, 1.0],
-          roughness: 1.0,
-          metallic: 0.0,
-        },
-      });
+      if (sceneOpts.mutation === "material") {
+        engine.updatePrimitive("mutation-quad", {
+          material: {
+            shadingModel: "unlit",
+            baseColor: [0.05, 0.08, 1.0],
+            roughness: 1.0,
+            metallic: 0.0,
+          },
+        });
+      } else if (sceneOpts.mutation === "environment") {
+        engine.updateEnvironment({
+          kind: "hdri",
+          hdri: makeMutationHdri(1.0),
+          intensity: 2.0,
+          rotationY: 0.25,
+        });
+      } else {
+        throw new Error(`unknown mutation gate kind: ${sceneOpts.mutation}`);
+      }
       pixels = await renderFramesAndReadback();
       if (beforeMutationPixels != null && pixels != null) {
-        mutation = comparePixels(pixels, beforeMutationPixels);
+        mutation = { kind: sceneOpts.mutation, ...comparePixels(pixels, beforeMutationPixels) };
       }
     }
   } catch (e) {
@@ -1416,9 +1453,13 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
   const wrongTier = requireFullTier && !isLite && traceTier !== "full";
+  const mutationThreshold = sceneOpts.mutation ? MUTATION_DELTA_THRESHOLDS[sceneOpts.mutation] : null;
   const mutationFailed =
-    sceneOpts.mutation === "material" &&
-    (mutation == null || mutation.meanAbs < 2.0 || mutation.maxAbs < 8);
+    sceneOpts.mutation != null &&
+    (mutation == null ||
+      mutationThreshold == null ||
+      mutation.meanAbs < mutationThreshold.meanAbs ||
+      mutation.maxAbs < mutationThreshold.maxAbs);
   let golden = null;
   if (!wrongTier && !mutationFailed && !nans && errCount === 0 && lum >= LUM_THRESHOLD) {
     golden = await compareOrUpdateGolden(label, pixels);
@@ -1550,7 +1591,7 @@ function formatGolden(golden) {
 
 function formatMutation(mutation) {
   if (!mutation) return "";
-  return `mutation=material meanAbs=${mutation.meanAbs.toFixed(3)} maxAbs=${mutation.maxAbs}`;
+  return `mutation=${mutation.kind} meanAbs=${mutation.meanAbs.toFixed(3)} maxAbs=${mutation.maxAbs}`;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────

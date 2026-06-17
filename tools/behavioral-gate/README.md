@@ -40,7 +40,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 
 ## What it covers
 
-### pt-webgpu configs (29)
+### pt-webgpu configs (30)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
@@ -73,6 +73,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 | `pt/gltf-real-draco` | — | real Draco-compressed Khronos asset via host decoder + golden PNG |
 | `pt/gltf-real-meshopt` | — | real meshopt-compressed Khronos asset via host decoder + golden PNG |
 | `pt/mutation-material` | — | real adapter render → `updatePrimitive()` material patch → render, requires readback delta |
+| `pt/mutation-environment` | — | real adapter render → same-sized `updateEnvironment()` HDRI patch → render, requires readback delta |
 
 The glTF rows are end-to-end import/engine smoke fixtures: they assert that the
 adapter preserves the named feature, boots the selected engine, uploads the scene,
@@ -106,7 +107,7 @@ before any golden update/compare if the backend resolves to lite.
 2. **Finite pixels** — no NaN values in the readback.
 3. **Non-black output** — mean luminance ≥ 0.005 (after 8 frames at 64×64).
 4. **Per-lane invariants** — e.g. glTF golden PNG tolerance checks and
-   `pt/mutation-material` readback deltas.
+   mutation-lane readback deltas.
 
 All required checks for a lane must pass for a result of `OK`.
 

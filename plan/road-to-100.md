@@ -1109,18 +1109,20 @@ topology, instanced, lite fallback, and analytic paths; and
 `updateEnvironment()` texel/CDF writes, scene-state commit, and accumulation
 reset without falling through to `setScene()`.
 
-✅ **ADAPTER-BACKED PT MATERIAL MUTATION PROOF ADDED (2026-06-17):**
-`tools/behavioral-gate/gate.mjs` now includes `pt/mutation-material`, a real
-pt-webgpu lane that renders an unlit quad, calls `updatePrimitive()` with a
-material-only patch, renders again with the same camera/seeds, and requires a
-measurable readback delta (`meanAbs >= 2`, `maxAbs >= 8`) with zero GPU errors.
-This proves the mutation path changes GPU-visible output on the available WSL
-adapter instead of only satisfying mock write-count tests.
+✅ **ADAPTER-BACKED PT MATERIAL/ENVIRONMENT MUTATION PROOFS ADDED (2026-06-17):**
+`tools/behavioral-gate/gate.mjs` now includes real pt-webgpu mutation lanes that
+render, patch, render again with the same camera/seeds, and require measurable
+readback deltas (`meanAbs >= 2`, `maxAbs >= 8`) with zero GPU errors:
+`pt/mutation-material` proves `updatePrimitive()` material patches change
+GPU-visible output, and `pt/mutation-environment` proves same-sized
+`updateEnvironment()` HDRI patches propagate through environment texel/CDF
+buffers, light-tree/lite-texture refresh, reset, and GPU-visible miss radiance.
+This moves both seams beyond mock write-count tests on the available WSL adapter.
 
 Remaining proof is broader adapter-backed end-to-end promotion: full-tier
-geometry/topology/resource mutation lanes, cached bind groups, denoiser history,
-and walkaround GI propagation observed together under the WSL GPU/browser
-harness.
+geometry/topology/resource mutation lanes beyond environment buffers, cached
+bind groups, denoiser history, and walkaround GI propagation observed together
+under the WSL GPU/browser harness.
 
 #### 5D — Documentation sync (part of 100% — prevents false claims)
 
@@ -1147,6 +1149,12 @@ controller and requires an `updatePrimitive()` patch, asserts the material
 sweep's 18 CPU-readable decoded map rows, then boots the real renderer with the
 prepared scene and requires finite non-black output.
 `--filter gltf` provides the focused lane.
+
+✅ **HDRI fixture shape corrected (2026-06-17):** the behavioral-gate Cornell
+HDRI helper now supplies the core `HdriEnvironment` contract
+(`{ kind: 'hdri', hdri: { width, height, data } }`) instead of a stale
+`textureData` shape. This restored `pt/lite+hdri` from a black validation
+fixture to a finite, non-black adapter-backed render.
 
 Honesty boundary: on the WSL lavapipe adapter this lane runs through
 `pt-webgpu`'s lite tier because the adapter exposes 8 storage buffers / 4 storage
