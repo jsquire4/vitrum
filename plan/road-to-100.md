@@ -1047,11 +1047,22 @@ asserts all 18 decoded texture-report rows and CPU-readable handles survived
 controller attachment, boots `pt-webgpu`, renders 8 spp at 64², and requires
 finite non-black readback with zero GPU validation errors.
 
-**Still queued after this follow-up:** golden-PNG comparison, real-asset sweep
-coverage, and full-tier rich-material fidelity captures. On WSL lavapipe this
-gate proves one-call glTF decode/controller/backend boot/readback for the
-material-heavy asset, but `pt-webgpu` runs in the lite profile and still emits
-structured warnings for maps/lobes that the lite profile does not render.
+✅ **REAL-ASSET IMPORT/RENDER SMOKE ADDED (2026-06-17):**
+`tools/gltf-real-asset-sweep/assets.mjs` now owns the shared Khronos public
+asset manifest plus PNG/JPEG/Draco/meshopt decode hooks. `npm run
+gltf-real-asset-sweep` proves URL load, texture decode, and compression decode
+for BoxTextured GLB, CesiumMilkTruck Draco, and MeshoptCubeTest meshopt assets.
+`tools/behavioral-gate/gate.mjs` also renders those same assets as
+`pt/gltf-real-{box-textured,draco,meshopt}` through `loadGltfForEngine()`,
+normalizes the imported scene to the gate camera, boots `pt-webgpu`, and
+requires finite non-black readback with zero captured GPU errors.
+
+**Still queued after this follow-up:** golden-PNG comparison/tolerance hashes and
+full-tier rich-material fidelity captures. On WSL lavapipe these gates prove
+one-call glTF decode/controller/backend boot/readback for the synthetic
+material-heavy asset and three real public assets, but `pt-webgpu` runs in the
+lite profile and still emits structured warnings for maps/lobes that the lite
+profile does not render.
 
 **Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
 

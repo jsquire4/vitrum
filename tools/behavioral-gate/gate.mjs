@@ -106,6 +106,9 @@ const EXPECTATION_TABLE = {
   "pt/gltf-skinned-animation": { expected: "ok" },
   "pt/gltf-draco-mock":   { expected: "ok" },
   "pt/gltf-material-sweep": { expected: "ok" },
+  "pt/gltf-real-box-textured": { expected: "ok" },
+  "pt/gltf-real-draco": { expected: "ok" },
+  "pt/gltf-real-meshopt": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -175,6 +178,9 @@ const PT_CONFIGS = [
   { label: "pt/gltf-skinned-animation", eng: {},                               scene: { gltf: "skinned-animation" } },
   { label: "pt/gltf-draco-mock",   eng: {},                                    scene: { gltf: "draco-mock" } },
   { label: "pt/gltf-material-sweep", eng: {},                                  scene: { gltf: "material-sweep" } },
+  { label: "pt/gltf-real-box-textured", eng: {},                                scene: { gltfReal: "box-textured-glb" } },
+  { label: "pt/gltf-real-draco", eng: {},                                       scene: { gltfReal: "cesium-milk-truck-draco" } },
+  { label: "pt/gltf-real-meshopt", eng: {},                                     scene: { gltfReal: "meshopt-cube-real" } },
 ];
 
 const WH_CONFIGS = [
@@ -677,7 +683,181 @@ async function buildGltfFixtureScene(kind) {
   };
 }
 
+function multiplyMat4(a, b) {
+  const out = new Float32Array(16);
+  for (let col = 0; col < 4; col++) {
+    for (let row = 0; row < 4; row++) {
+      out[col * 4 + row] =
+        a[0 * 4 + row] * b[col * 4 + 0] +
+        a[1 * 4 + row] * b[col * 4 + 1] +
+        a[2 * 4 + row] * b[col * 4 + 2] +
+        a[3 * 4 + row] * b[col * 4 + 3];
+    }
+  }
+  return out;
+}
+
+function transformPointMat4(m, x, y, z) {
+  if (!m) return [x, y, z];
+  return [
+    m[0] * x + m[4] * y + m[8] * z + m[12],
+    m[1] * x + m[5] * y + m[9] * z + m[13],
+    m[2] * x + m[6] * y + m[10] * z + m[14],
+  ];
+}
+
+function includePoint(aabb, x, y, z) {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return;
+  aabb.min[0] = Math.min(aabb.min[0], x);
+  aabb.min[1] = Math.min(aabb.min[1], y);
+  aabb.min[2] = Math.min(aabb.min[2], z);
+  aabb.max[0] = Math.max(aabb.max[0], x);
+  aabb.max[1] = Math.max(aabb.max[1], y);
+  aabb.max[2] = Math.max(aabb.max[2], z);
+}
+
+function computePrimitivePositionAabb(scene) {
+  const aabb = {
+    min: [Infinity, Infinity, Infinity],
+    max: [-Infinity, -Infinity, -Infinity],
+  };
+  for (const primitive of scene.primitives ?? []) {
+    const positions = primitive.positions;
+    if (!(positions instanceof Float32Array) || positions.length < 3) continue;
+    const transforms = primitive.kind === "instanced-mesh"
+      ? (primitive.instances ?? [])
+      : [primitive.transform];
+    for (const transform of transforms.length > 0 ? transforms : [undefined]) {
+      for (let i = 0; i + 2 < positions.length; i += 3) {
+        const [x, y, z] = transformPointMat4(transform, positions[i], positions[i + 1], positions[i + 2]);
+        includePoint(aabb, x, y, z);
+      }
+    }
+  }
+  return Number.isFinite(aabb.min[0]) ? aabb : null;
+}
+
+function normalizeSceneForBehavioralGate(scene) {
+  const aabb = computePrimitivePositionAabb(scene);
+  if (!aabb) return scene;
+  const center = [
+    (aabb.min[0] + aabb.max[0]) * 0.5,
+    (aabb.min[1] + aabb.max[1]) * 0.5,
+    (aabb.min[2] + aabb.max[2]) * 0.5,
+  ];
+  const extent = Math.max(
+    aabb.max[0] - aabb.min[0],
+    aabb.max[1] - aabb.min[1],
+    aabb.max[2] - aabb.min[2],
+  );
+  if (!(extent > 0)) return scene;
+  const s = 1.35 / extent;
+  const normalization = asMat4(new Float32Array([
+    s, 0, 0, 0,
+    0, s, 0, 0,
+    0, 0, s, 0,
+    -center[0] * s, -center[1] * s, -center[2] * s, 1,
+  ]));
+  const primitives = (scene.primitives ?? []).map((primitive) => {
+    if (primitive.kind === "instanced-mesh") {
+      return {
+        ...primitive,
+        instances: (primitive.instances ?? []).map((instance) => asMat4(multiplyMat4(normalization, instance))),
+      };
+    }
+    return {
+      ...primitive,
+      transform: asMat4(multiplyMat4(
+        normalization,
+        primitive.transform ?? new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+      )),
+    };
+  });
+  return { ...scene, primitives };
+}
+
+async function buildRealGltfAssetScene(assetId) {
+  const {
+    getRealGltfAsset,
+    makeRealGltfDecodeHooks,
+  } = await import("../gltf-real-asset-sweep/assets.mjs");
+  const asset = getRealGltfAsset(assetId);
+  const hooks = await makeRealGltfDecodeHooks();
+  const preparedScenes = [];
+  const patchTarget = {
+    setScene(scene) {
+      preparedScenes.push(scene);
+    },
+    updatePrimitive() {
+      throw new Error("real glTF behavioral gate does not expect runtime primitive patches");
+    },
+  };
+  const createEngine = async ({ scene, backend, asset: loadedAsset }) => {
+    if (backend !== "pt-webgpu") {
+      throw new Error(`real glTF behavioral gate selected unexpected backend "${backend}"`);
+    }
+    if (scene !== loadedAsset.scene) {
+      throw new Error("real glTF behavioral gate createEngine received a scene that does not match asset.scene");
+    }
+    return patchTarget;
+  };
+  const result = await loadGltfForEngine(asset.url, {
+    backend: "pt-webgpu",
+    createEngine,
+    decodeTextures: true,
+    textureTarget: "cpu-linear",
+    decodePixels: hooks.decodePixels,
+    maxTextureSize: 4096,
+    warnOnNpotRepeatWrap: true,
+    dracoDecode: hooks.dracoDecode,
+    meshoptDecode: hooks.meshoptDecode,
+  });
+  if (!result.attached || preparedScenes.length !== 1) {
+    throw new Error(`real glTF asset "${assetId}" did not exercise controller.attachEngine/setScene`);
+  }
+  if (result.controller.scene.primitives.length < (asset.expect.minPrimitives ?? 0)) {
+    throw new Error(`real glTF asset "${assetId}" imported too few primitives`);
+  }
+  if ((result.textureDecodeReport.mapCount ?? 0) < (asset.expect.minTextures ?? 0)) {
+    throw new Error(`real glTF asset "${assetId}" decoded too few material texture maps`);
+  }
+  if (result.textureDecodeDiagnostics.length > 0) {
+    throw new Error(
+      `real glTF asset "${assetId}" emitted texture decode diagnostics: ` +
+      result.textureDecodeDiagnostics.map((d) => d.message ?? d.code ?? String(d)).join(" | "),
+    );
+  }
+  const used = new Set(result.asset.featureReport.extensions.used);
+  for (const extension of asset.expect.requiredExtensions ?? []) {
+    if (!used.has(extension)) {
+      throw new Error(`real glTF asset "${assetId}" did not report expected extension ${extension}`);
+    }
+  }
+  const allowedWarnings = asset.expect.allowedWarningSubstrings ?? [];
+  const unexpectedWarnings = result.warnings.filter((warning) =>
+    !allowedWarnings.some((needle) => warning.includes(needle))
+  );
+  if (unexpectedWarnings.length > 0) {
+    throw new Error(`real glTF asset "${assetId}" emitted loader warnings: ${unexpectedWarnings.join(" | ")}`);
+  }
+  const normalized = normalizeSceneForBehavioralGate(result.controller.scene);
+  return {
+    ...normalized,
+    emitters: [
+      ...(normalized.emitters ?? []),
+      {
+        kind: "rect-area", id: `gltf-real-gate-light-${assetId}`,
+        position: [0, 0.95, 0.65],
+        uAxis: [0.45, 0, 0], vAxis: [0, 0.45, 0],
+        color: [1, 1, 1], intensity: 18.0,
+      },
+    ],
+    environment: { kind: "procedural-sky", sunDirection: [0.4, 1.0, 0.25] },
+  };
+}
+
 async function buildGateScene(opts = {}) {
+  if (opts.gltfReal) return buildRealGltfAssetScene(opts.gltfReal);
   if (opts.gltf) return buildGltfFixtureScene(opts.gltf);
   return buildCornellScene(opts);
 }
