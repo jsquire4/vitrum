@@ -13,7 +13,8 @@
  * reservoir with the EXACT generalized balance heuristic (Σ m_i = 1):
  *
  *   1. Geometric-consistency reject (normal alignment + coplanarity to centre).
- *   2. Prefix-match + non-degenerate base half-G + positive shift Jacobian.
+ *   2. Prefix-match + non-degenerate hybrid shift Jacobian
+ *      (half-G × BSDF replay-pdf ratio).
  *   3. Reconnection VISIBILITY ray (xv → q.xs through the scene) — required for
  *      unbiasedness; an occluded shifted edge maps to zero contribution.
  *   4. Pass-1 GATHER accepted neighbours into a fixed array (≤ K), then Pass-2
@@ -28,7 +29,7 @@
  * THE LOAD-BEARING LESSON (mirrored from temporalGi/spatialGi GRIS)
  * ════════════════════════════════════════════════════════════════════════════
  * The reused (neighbour) reservoir's resampling weight is
- *     w_q = m_q · p̂_r(T z_q) · W_q · J          (J = shift Jacobian)
+ *     w_q = m_q · p̂_r(T z_q) · W_q · J          (J = hybrid shift Jacobian)
  * with NO division by a source pdf. rQ is a RESERVOIR: its W_q already bakes in
  * the source pdf. An extra /p_src would over-energise the reservoir → divergence
  * in the feedback loop (the V19 grison-divergence). REPLICATED HERE EXACTLY.
@@ -127,15 +128,15 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
     let planeDist = abs(dot(rQ.xv - rCenter.xv, rCenter.nv));
     if (planeDist > RPT_SPATIAL_COPLANAR_TOL) { continue; }
 
-    // Prefix-match + non-degenerate base half-G.
+    // Prefix-match + non-degenerate hybrid shift.
     if (rQ.prefixVertexCount != rCenter.prefixVertexCount
      || rQ.prefixVertexCount == 0u) { continue; }
 
-    // Shift Jacobian |∂T/∂·| = G(rCenter.xv ↔ q.xs) / G(rQ.xv ↔ q.xs).
-    let J = restirPtShiftJacobian(rQ.xv, rCenter.xv, rQ.xs, rQ.ns);
+    let woQ = restirpt_safe_normalize(params.cameraPos.xyz - rQ.xv);
+    // Shift Jacobian |∂T/∂·| = half-G target/source × BSDF replay-pdf source/target.
+    let J = restirPtHybridShiftJacobianForPair(rQ, rCenter, woQ, woCenter);
     if (J <= 0.0) { continue; }
 
-    let woQ = restirpt_safe_normalize(params.cameraPos.xyz - rQ.xv);
     // Non-degenerate shifted + native targets, else q contributes nothing.
     let pHatQ_atR = restirPtTargetForDomain(rCenter, woCenter, rQ.xs, rQ.Lo);
     if (pHatQ_atR < 1e-9) { continue; }
@@ -164,7 +165,8 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
     // Canonical: no shift (already at this pixel; J = 1).
     let w_canon = m_canon * pHatCanonNative * rCenter.W;
     let oldM = rOut.M;
-    updateReservoirPT(&rOut, rCenter.xs, rCenter.ns, rCenter.Lo, rCenter.pdfSrc, w_canon, &rng);
+    let canonReplayPdf = restirPtVisibleReplayPdfForDomain(rCenter, woCenter, rCenter.xs);
+    updateReservoirPTWithHybrid(&rOut, rCenter.xs, rCenter.ns, rCenter.Lo, rCenter.pdfSrc, 1.0, canonReplayPdf, rCenter.rngSeed, w_canon, &rng);
     rOut.M = oldM + rCenter.M;
   }
 
@@ -185,13 +187,14 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
     // weight W. W already bakes in 1/pdfSrc (W = w_sum/p̂ after finalise); passing W here
     // would store an energy-scaled pdf that corrupts the reconstructed path when this
     // neighbour's sample wins. pdfSrc is the denominator for the resolve unbiased estimator.
-    updateReservoirPT(&rOut, qR[i].xs, qR[i].ns, qR[i].Lo, qR[i].pdfSrc, w_q, &rng);
+    let qReplayPdfAtR = restirPtVisibleReplayPdfForDomain(rCenter, woCenter, qR[i].xs);
+    updateReservoirPTWithHybrid(&rOut, qR[i].xs, qR[i].ns, qR[i].Lo, qR[i].pdfSrc, qJ[i], qReplayPdfAtR, qR[i].rngSeed, w_q, &rng);
     rOut.M = oldM + u32(qC[i]);
   }
 
   // GRIS finalise: W = w_sum / p̂ (the MIS weights already sum to 1 — no /M).
   finaliseReservoirPTWGris(&rOut, rptParams.wCap, params.cameraPos.xyz);
-  refreshReconnectionCachePT(&rOut);
+  refreshReconnectionCachePT(&rOut, params.cameraPos.xyz, params.frameSeed ^ pixelIdx);
 
   storeReservoirPTHero_rw(&rpt_resSpatialOut, pixelIdx, rOut);
 }

@@ -80,12 +80,15 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
     expect((composed.match(/@compute @workgroup_size\(8, 8, 1\)\s*\nfn restirPtResolve\(/g) ?? []).length).toBe(1);
   });
 
-  it('includes the reconnection-shift Jacobian + reservoir ADT exactly once', () => {
+  it('includes the geometry and hybrid shift Jacobians + reservoir ADT exactly once', () => {
     // restirPtShiftJacobian (FD-validated) must be DEFINED once (not double-
     // included by both the shared modules and the reservoir composite).
     const code = codeOnly(composed);
     expect((code.match(/fn restirPtShiftJacobian\(/g) ?? []).length).toBe(1);
     expect((code.match(/fn restirPtReconnectionGeometryTerm\(/g) ?? []).length).toBe(1);
+    expect((code.match(/fn rptHybridGeomJacobian\(/g) ?? []).length).toBe(1);
+    expect((code.match(/fn rptHybridShiftJacobian\(/g) ?? []).length).toBe(1);
+    expect((code.match(/fn restirPtHybridShiftJacobianForPair\(/g) ?? []).length).toBe(1);
     expect((code.match(/struct ReservoirPTHero \{/g) ?? []).length).toBe(1);
     expect((code.match(/struct RestirPtParams \{/g) ?? []).length).toBe(1);
   });
@@ -101,6 +104,7 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
       'fn brdfDirectionalPdf(',
       'fn brdfDirectionalPdfFull(',
       'fn brdfDirectionalPdfFullSampled(',
+      'fn brdfDirectionalPdfFullSampledWithClearcoatNormal(',
       'fn cosineHemisphereSample(',
       'fn glossyReflectionSample(',
       'fn glossyReflectionSampleAnisotropic(',
@@ -130,10 +134,10 @@ describe('ReSTIR-PT reuse — composes as a single WGSL unit', () => {
   });
 });
 
-describe('ReSTIR-PT temporal — calls the FD-validated shift + the GRIS finalize', () => {
-  it('calls restirPtShiftJacobian with (rPrev.xv, rCur.xv, rPrev.xs, rPrev.ns) — prefix-1, xPre==xv', () => {
+describe('ReSTIR-PT temporal — calls the hybrid shift + the GRIS finalize', () => {
+  it('calls the prefix-1 hybrid shift with source/target reservoirs and camera-domain wo vectors', () => {
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
-      'J = restirPtShiftJacobian(rPrev.xv, rCur.xv, rPrev.xs, rPrev.ns);',
+      'J = restirPtHybridShiftJacobianForPair(rPrev, rCur, woPrev, woCur);',
     );
   });
 
@@ -145,6 +149,15 @@ describe('ReSTIR-PT temporal — calls the FD-validated shift + the GRIS finaliz
     ).split('\n').slice(0, 8).join('\n');
     expect(finalizeBody).toContain('(*r).w_sum / pHatF');
     expect(finalizeBody).not.toMatch(/f32\(\(\*r\)\.M\)/); // no ·M normalisation
+  });
+
+  it('refreshes and carries the live hybrid replay-pdf cache when samples are selected', () => {
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('fn restirPtVisibleReplayPdfForDomain(');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('return jGeom * (pSource / pTarget);');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('let curReplayPdf = restirPtVisibleReplayPdfForDomain(rCur, woCur, rCur.xs);');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('let prevReplayPdfAtCur = restirPtVisibleReplayPdfForDomain(rCur, woCur, rPrev.xs);');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('refreshReconnectionCachePT(&rGris, params.cameraPos.xyz, params.frameSeed ^ pixelIdx);');
   });
 
   it('uses the INTEGRAND-MATCHING target (evaluateBrdf·cos·Lo), not the diffuse-cosine proxy (B3)', () => {

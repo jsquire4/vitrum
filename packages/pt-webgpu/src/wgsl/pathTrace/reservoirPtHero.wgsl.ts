@@ -83,21 +83,20 @@
  *     multi-vertex glossy PREFIXES — which prefix-1 lacks — remains a later item.)
  *
  * ════════════════════════════════════════════════════════════════════════════
- * Phase-0 written-but-unread fields (the hybrid-shift + rngSeed headroom)
+ * Live prefix-1 hybrid-shift cache (plus future rngSeed headroom)
  * ════════════════════════════════════════════════════════════════════════════
  * The hybrid shift (a BSDF-pdf-ratio replayed-prefix shift — `restirPtHybridShift
- * .wgsl.ts`) and a per-reservoir rng seed are NOT consumed in this increment.
- * Per the Phase-0 discipline of the GI reservoir's GRIS cache, the struct
- * RESERVES + ZERO-INITIALISES + SERIALISES them now (so a later hybrid-shift /
- * random-replay follow-up needs no stride bump and no reorder of the live
- * fields), but NO pass in this increment READS them:
- *   • hybridJacCache / hybridShiftPdf — the replayed-prefix shift's cached
- *     Jacobian + reverse pdf (filled by the future hybrid shift).
- *   • rngSeed — the per-reservoir decorrelated seed a future random-replay shift
- *     reuses to re-trace the offset prefix deterministically.
+ * .wgsl.ts`) is now consumed by temporal/spatial reuse for the prefix-1 path. A
+ * selected reservoir stores the visible-domain replay pdf for its chosen edge in
+ * `hybridShiftPdf`; reuse forms J = J_geom * p_source / p_target instead of the
+ * old geometry-only Jacobian. `hybridJacCache` records the last applied full
+ * hybrid Jacobian for the selected sample. `rngSeed` remains reserved for a
+ * future multi-vertex random-replay prefix; prefix-1 reuse does not need to
+ * re-trace an offset prefix.
  */
 
 import { RESTIR_PT_SHIFT_WGSL } from './restirPtShift.wgsl.js';
+import { RESTIR_PT_HYBRID_SHIFT_WGSL } from './restirPtHybridShift.wgsl.js';
 
 /**
  * ReSTIR-PT runtime params UBO (the reuse unit's OWN tunables) + the reservoir
@@ -165,7 +164,7 @@ export const RESERVOIR_PT_HERO_WGSL = /* wgsl */ `// ===========================
 //     reconstruction (the diffuse GI version cosine-samples and does not need it),
 //   - the visible-vertex material (base + extension lobes + clearcoat normal) so
 //     the RESOLVE pass can evaluate the FULL BRDF (not a diffuse proxy),
-//   - Phase-0 hybrid-shift + rngSeed headroom (written-but-UNREAD this increment).
+//   - live prefix-1 hybrid-shift cache + rngSeed headroom.
 // ============================================================
 struct ReservoirPTHero {
   // ── reconnection sample (prefix length 1) ──
@@ -203,9 +202,9 @@ struct ReservoirPTHero {
   specularIntensityV: f32,  // KHR_materials_specular intensity     idx 47
   clearcoatNormalV:  vec3f, // clearcoat normal-map result at xv    idx 48..50
   _padClearcoatNormalV: f32, //                                   idx 51
-  // ── Phase-0 hybrid-shift + rngSeed headroom (WRITTEN-but-UNREAD here) ──
-  hybridJacCache:    f32,   // future replayed-prefix shift Jacobian idx 52
-  hybridShiftPdf:    f32,   // future replayed-prefix reverse pdf    idx 53
+  // ── prefix-1 hybrid-shift cache + rngSeed headroom ──
+  hybridJacCache:    f32,   // last applied hybrid shift Jacobian     idx 52
+  hybridShiftPdf:    f32,   // visible-domain replay pdf for edge     idx 53
   rngSeed:           u32,   // future random-replay decorrelated seed idx 54
   _padHybrid:        u32,   //                                      idx 55
 };
@@ -231,9 +230,9 @@ struct ReservoirPTHero {
 //   [47]     specularIntensityV
 //   [48..50] clearcoatNormalV.xyz
 //   [51]     _padClearcoatNormalV
-//   [52]     hybridJacCache  (Phase-0, unread)
-//   [53]     hybridShiftPdf  (Phase-0, unread)
-//   [54]     rngSeed         (Phase-0, unread)
+//   [52]     hybridJacCache  (last applied shift J)
+//   [53]     hybridShiftPdf  (visible-domain replay pdf)
+//   [54]     rngSeed         (future multi-prefix replay seed)
 //   [55]     _padHybrid
 // Strided storage in array<u32> (4-byte elements) — stride = 56 u32.
 const RESERVOIR_PT_HERO_STRIDE: u32 = 56u;
@@ -266,7 +265,8 @@ fn emptyReservoirPTHero() -> ReservoirPTHero {
   r.specularIntensityV = 1.0;
   r.clearcoatNormalV = r.nv;
   r._padClearcoatNormalV = 0.0;
-  // Phase-0 headroom — zero-initialised, READ BY NO PASS in this increment.
+  // Hybrid-shift cache. Empty reservoirs keep this zeroed; producers/reuse
+  // refresh it after a valid chosen edge is known.
   r.hybridJacCache = 0.0;
   r.hybridShiftPdf = 0.0;
   r.rngSeed = 0u;
@@ -412,7 +412,6 @@ fn storeReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: 
   buf[b + 49u] = bitcast<u32>(r.clearcoatNormalV.y);
   buf[b + 50u] = bitcast<u32>(r.clearcoatNormalV.z);
   buf[b + 51u] = bitcast<u32>(r._padClearcoatNormalV);
-  // Phase-0 headroom (written-but-unread this increment).
   buf[b + 52u] = bitcast<u32>(r.hybridJacCache);
   buf[b + 53u] = bitcast<u32>(r.hybridShiftPdf);
   buf[b + 54u] = r.rngSeed;
@@ -423,9 +422,10 @@ fn storeReservoirPTHero_rw(buf: ptr<storage, array<u32>, read_write>, pixelIdx: 
 // walkaround-hybrid's updateReservoirGI EXACTLY but carries the hero-specific
 // pdfSrc alongside the chosen sample (so the resolve can divide by the REAL
 // source pdf). \`rand_f32\` is forward-referenced (composed earlier from PCG_WGSL).
-fn updateReservoirPT(
+fn updateReservoirPTWithHybrid(
   r: ptr<function, ReservoirPTHero>,
   xs: vec3f, ns: vec3f, Lo: vec3f, pdfSrc: f32,
+  hybridJacCache: f32, hybridShiftPdf: f32, rngSeed: u32,
   w: f32,
   rng: ptr<function, u32>,
 ) {
@@ -436,7 +436,19 @@ fn updateReservoirPT(
     (*r).ns = ns;
     (*r).Lo = Lo;
     (*r).pdfSrc = pdfSrc;
+    (*r).hybridJacCache = hybridJacCache;
+    (*r).hybridShiftPdf = hybridShiftPdf;
+    (*r).rngSeed = rngSeed;
   }
+}
+
+fn updateReservoirPT(
+  r: ptr<function, ReservoirPTHero>,
+  xs: vec3f, ns: vec3f, Lo: vec3f, pdfSrc: f32,
+  w: f32,
+  rng: ptr<function, u32>,
+) {
+  updateReservoirPTWithHybrid(r, xs, ns, Lo, pdfSrc, 1.0, pdfSrc, 0u, w, rng);
 }
 
 fn copyReservoirPTVisibleDomain(dst: ptr<function, ReservoirPTHero>, src: ReservoirPTHero) {
@@ -525,6 +537,52 @@ fn restirPtTargetForDomain(r: ReservoirPTHero, wo: vec3f, xs: vec3f, Lo: vec3f) 
   );
 }
 
+fn restirPtVisibleReplayPdfForDomain(r: ReservoirPTHero, wo: vec3f, xs: vec3f) -> f32 {
+  let toRecon = xs - r.xv;
+  let d2 = dot(toRecon, toRecon);
+  if (d2 <= 1e-10) { return 0.0; }
+  let wi = toRecon * inverseSqrt(d2);
+  // Reusable ReSTIR-PT visible vertices are filtered to non-transmissive prefixes
+  // by the producer. The reservoir therefore stores no transport IOR lanes; use a
+  // neutral non-transmissive pdf domain here and let transmissive prefixes remain
+  // empty/non-reused.
+  return brdfDirectionalPdfFullSampledWithClearcoatNormal(
+    r.albV, r.roughnessV, r.metalV, 0.0, 1.5, r.nv, r.clearcoatNormalV, wo, wi,
+    r.clearcoatV, r.clearcoatRoughnessV, r.sheenV, r.sheenRoughnessV,
+    r.iridescenceV, r.iridescenceIorV, r.iridescenceThicknessMinV, r.iridescenceThicknessMaxV,
+    r.specularColorV, r.specularIntensityV,
+    r.anisotropyV, r.anisotropyRotationV,
+  );
+}
+
+fn restirPtRefreshHybridReplayCache(r: ptr<function, ReservoirPTHero>, cameraPos: vec3f, seed: u32) {
+  if ((*r).M == 0u || (*r).prefixVertexCount == 0u) {
+    (*r).hybridJacCache = 0.0;
+    (*r).hybridShiftPdf = 0.0;
+    (*r).rngSeed = 0u;
+    return;
+  }
+  let wo = restirpt_safe_normalize(cameraPos - (*r).xv);
+  (*r).hybridShiftPdf = restirPtVisibleReplayPdfForDomain((*r), wo, (*r).xs);
+  if ((*r).hybridJacCache <= 0.0) {
+    (*r).hybridJacCache = 1.0;
+  }
+  (*r).rngSeed = seed;
+}
+
+fn restirPtHybridShiftJacobianForPair(source: ReservoirPTHero, targetDomain: ReservoirPTHero, woSource: vec3f, woTarget: vec3f) -> f32 {
+  let jGeom = rptHybridGeomJacobian(source.xv, targetDomain.xv, source.xs, source.ns);
+  if (jGeom <= 0.0) { return 0.0; }
+  var pSource = source.hybridShiftPdf;
+  if (pSource <= 1e-9) {
+    pSource = restirPtVisibleReplayPdfForDomain(source, woSource, source.xs);
+  }
+  if (pSource <= 1e-9) { return 0.0; }
+  let pTarget = restirPtVisibleReplayPdfForDomain(targetDomain, woTarget, source.xs);
+  if (pTarget <= 1e-9) { return 0.0; }
+  return jGeom * (pSource / pTarget);
+}
+
 // ── GRIS pairwise MIS (Lin 2022 §"pairwise MIS") — mirrors walkaround-hybrid's
 // grisPairwiseDenomNeighbor / grisPairwiseDenomCanonical EXACTLY. The streaming
 // temporal reuse folds the canonical (current) + the reprojected (previous)
@@ -567,7 +625,7 @@ fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>, wCap: f32, camera
 // a base half-G rooted at THIS pixel's visible vertex. Mirrors the proven GI
 // refreshPhase0Cache + the temporalGi GRIS cache-refresh block. Leaves the cache
 // zeroed + prefixVertexCount = 0 on an empty / degenerate reservoir.
-fn refreshReconnectionCachePT(r: ptr<function, ReservoirPTHero>) {
+fn refreshReconnectionCachePT(r: ptr<function, ReservoirPTHero>, cameraPos: vec3f, seed: u32) {
   let toRecon = (*r).xs - (*r).xv;
   let dRecon = length(toRecon);
   if (dRecon > 1e-6 && (*r).M > 0u) {
@@ -576,24 +634,28 @@ fn refreshReconnectionCachePT(r: ptr<function, ReservoirPTHero>) {
     (*r).distRecon   = dRecon;
     (*r).cosReconOut = abs(dot((*r).ns, -wiR));
     (*r).prefixVertexCount = 1u;
+    restirPtRefreshHybridReplayCache(r, cameraPos, seed);
   } else {
     (*r).wi_recon    = vec3f(0.0);
     (*r).distRecon   = 0.0;
     (*r).cosReconOut = 0.0;
     (*r).prefixVertexCount = 0u;
+    (*r).hybridJacCache = 0.0;
+    (*r).hybridShiftPdf = 0.0;
+    (*r).rngSeed = 0u;
   }
 }
 `;
 
 /**
- * The reservoir module composed with the reconnection-shift Jacobian it sits
- * next to. `RESTIR_PT_SHIFT_WGSL` (`restirPtReconnectionGeometryTerm` +
- * `restirPtShiftJacobian`) is the FD-validated shift this increment consumes;
- * emitting it HERE (before the reservoir helpers) keeps the two together for the
- * pass strings that reference both. `composePtWebgpuReuseWgsl` includes this once.
+ * The reservoir module composed with the geometry and hybrid shift Jacobians it
+ * sits next to. `RESTIR_PT_SHIFT_WGSL` keeps the old geometry-only helper
+ * available for tests/fallbacks; `RESTIR_PT_HYBRID_SHIFT_WGSL` supplies the
+ * FD-validated half-G geometry used by the live prefix-1 BSDF replay cache.
  */
 export const RESERVOIR_PT_HERO_WITH_SHIFT_WGSL = /* wgsl */ `
 ${RESTIR_PT_SHIFT_WGSL}
+${RESTIR_PT_HYBRID_SHIFT_WGSL}
 ${RESTIR_PT_PARAMS_WGSL}
 ${RESERVOIR_PT_HERO_WGSL}
 `;

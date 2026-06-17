@@ -35,8 +35,8 @@
  * EXACTLY — see the w_prev line; there is NO /p_src.
  *
  * For prefix length 1 the source/target pre-reconnection vertices ARE the visible
- * vertices (xPre == xv), so the shift Jacobian is
- *     restirPtShiftJacobian(rPrev.xv, rCur.xv, rPrev.xs, rPrev.ns).
+ * vertices (xPre == xv), so the live shift Jacobian is the hybrid form
+ *     J_geom(rPrev.xv→rCur.xv) · p_replay(prev domain) / p_replay(cur domain).
  *
  * ── Bind groups ─────────────────────────────────────────────────────────────
  * Composes the SHARED pt-webgpu modules (for traceAny / projectToNdc); the
@@ -152,15 +152,14 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   // Decide whether prev is a VALID reconnection-shift candidate (prefix match,
   // non-degenerate base half-G, positive Jacobian, non-zero shifted+native
   // targets, AND reconnection-visible). For prefix length 1 the pre-reconnection
-  // vertices are the visible vertices: J = restirPtShiftJacobian(rPrev.xv,
-  // rCur.xv, rPrev.xs, rPrev.ns).
+  // vertices are the visible vertices: J = hybrid half-G × BSDF replay-pdf ratio.
   var prevValid = (rPrev.prefixVertexCount == rCur.prefixVertexCount)
                && (rPrev.prefixVertexCount != 0u);
   var J: f32 = 0.0;
   var pHatPrev_atCur: f32 = 0.0;
   var pHatPrev_native: f32 = 0.0;
   if (prevValid) {
-    J = restirPtShiftJacobian(rPrev.xv, rCur.xv, rPrev.xs, rPrev.ns);
+    J = restirPtHybridShiftJacobianForPair(rPrev, rCur, woPrev, woCur);
     pHatPrev_atCur  = restirPtTargetForDomain(rCur, woCur, rPrev.xs, rPrev.Lo);
     pHatPrev_native = restirPtTargetForDomain(rPrev, woPrev, rPrev.xs, rPrev.Lo);
     prevValid = (J > 0.0)
@@ -184,7 +183,8 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     // Canonical: no shift (J = 1), already at this pixel (no visibility re-test).
     let w_cur = m_cur * pHatCur_native * rCur.W;
     let oldM = rGris.M;
-    updateReservoirPT(&rGris, rCur.xs, rCur.ns, rCur.Lo, rCur.pdfSrc, w_cur, &rng);
+    let curReplayPdf = restirPtVisibleReplayPdfForDomain(rCur, woCur, rCur.xs);
+    updateReservoirPTWithHybrid(&rGris, rCur.xs, rCur.ns, rCur.Lo, rCur.pdfSrc, 1.0, curReplayPdf, rCur.rngSeed, w_cur, &rng);
     rGris.M = oldM + rCur.M;
   }
 
@@ -203,7 +203,8 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     // sample's pdfSrc; the prev domain's reconnection edge differs but its p_src
     // is the stored producer value — the reconnection-shift reuse does not
     // re-derive it, matching the GI reservoir's pass-through of the cached pdf).
-    updateReservoirPT(&rGris, rPrev.xs, rPrev.ns, rPrev.Lo, rPrev.pdfSrc, w_prev, &rng);
+    let prevReplayPdfAtCur = restirPtVisibleReplayPdfForDomain(rCur, woCur, rPrev.xs);
+    updateReservoirPTWithHybrid(&rGris, rPrev.xs, rPrev.ns, rPrev.Lo, rPrev.pdfSrc, J, prevReplayPdfAtCur, rPrev.rngSeed, w_prev, &rng);
     rGris.M = oldM + prevM;
   }
 
@@ -212,7 +213,7 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   // Refresh the reconnection-shift cache so downstream reuse (and next frame's
   // temporal step, since rGris becomes rPrev) sees a base edge rooted at THIS
   // pixel's visible vertex.
-  refreshReconnectionCachePT(&rGris);
+  refreshReconnectionCachePT(&rGris, params.cameraPos.xyz, params.frameSeed ^ pixelIdx);
 
   storeReservoirPTHero_rw(&rpt_resCurrent, pixelIdx, rGris);
 }

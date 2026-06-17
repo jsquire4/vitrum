@@ -965,7 +965,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   // GRIS finalize: W = w_sum / p̂ (NO /M — the temporal pass folds with MIS).
   finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);
   // Refresh the reconnection-shift cache from the chosen base edge xv → xs.
-  refreshReconnectionCachePT(&r);
+  refreshReconnectionCachePT(&r, params.cameraPos.xyz, params.frameSeed ^ pixelIdx);
 
   storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, r);
 }

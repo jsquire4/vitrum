@@ -214,7 +214,7 @@ describe('ReSTIR-PT hero reservoir — empty constructor zeroes every field', ()
     expect(empty).toContain('r._padClearcoatNormalV = 0.0;');
   });
 
-  it('zero-initialises the Phase-0 (written-but-unread) hybrid + rngSeed headroom', () => {
+  it('zero-initialises the live hybrid-shift cache + rngSeed headroom', () => {
     expect(empty).toContain('r.hybridJacCache = 0.0;');
     expect(empty).toContain('r.hybridShiftPdf = 0.0;');
     expect(empty).toContain('r.rngSeed = 0u;');

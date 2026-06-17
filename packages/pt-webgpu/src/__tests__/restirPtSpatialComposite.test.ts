@@ -31,12 +31,13 @@ describe('A1 — ReSTIR-PT spatial pass (GRIS full GBH)', () => {
     expect(wgsl).not.toContain('fn restirPtResolve(');
   });
 
-  it('uses the FD-validated reconnection-shift Jacobian + the GRIS finalize (W=w_sum/p̂, NO /M)', () => {
+  it('uses the hybrid shift Jacobian + the GRIS finalize (W=w_sum/p̂, NO /M)', () => {
     // The shift Jacobian re-roots a neighbour's reconnection edge onto the centre
-    // pixel: restirPtShiftJacobian(rQ.xv, rCenter.xv, rQ.xs, rQ.ns).
+    // pixel and multiplies the half-G ratio by the source/target BSDF replay-pdf ratio.
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
-      'restirPtShiftJacobian(rQ.xv, rCenter.xv, rQ.xs, rQ.ns)',
+      'restirPtHybridShiftJacobianForPair(rQ, rCenter, woQ, woCenter)',
     );
+    expect(RESTIR_PT_SPATIAL_WGSL).toContain('let qReplayPdfAtR = restirPtVisibleReplayPdfForDomain(rCenter, woCenter, qR[i].xs);');
     // GRIS finalize (the m_i already sum to 1 — no /M).
     expect(RESTIR_PT_SPATIAL_WGSL).toContain(
       'finaliseReservoirPTWGris(&rOut, rptParams.wCap, params.cameraPos.xyz);',
