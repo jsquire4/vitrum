@@ -112,6 +112,7 @@ const EXPECTATION_TABLE = {
   "pt/gltf-transmission": { expected: "ok" },
   "pt/gltf-skinned-animation": { expected: "ok" },
   "pt/gltf-draco-mock":   { expected: "ok" },
+  "pt/gltf-point-line-fallback": { expected: "ok" },
   "pt/gltf-material-sweep": { expected: "ok" },
   "pt/gltf-real-box-textured": { expected: "ok" },
   "pt/gltf-real-draco": { expected: "ok" },
@@ -173,6 +174,7 @@ const PT_CONFIGS = [
   { label: "pt/gltf-transmission", eng: {},                                    scene: { gltf: "transmission" } },
   { label: "pt/gltf-skinned-animation", eng: {},                               scene: { gltf: "skinned-animation" } },
   { label: "pt/gltf-draco-mock",   eng: {},                                    scene: { gltf: "draco-mock" } },
+  { label: "pt/gltf-point-line-fallback", eng: {},                              scene: { gltf: "point-line-fallback" } },
   { label: "pt/gltf-material-sweep", eng: {},                                  scene: { gltf: "material-sweep" } },
   { label: "pt/gltf-real-box-textured", eng: {},                                scene: { gltfReal: "box-textured-glb" } },
   { label: "pt/gltf-real-draco", eng: {},                                       scene: { gltfReal: "cesium-milk-truck-draco" } },
@@ -687,11 +689,51 @@ function makeDracoMockGltfFixture() {
   return { ...finalizeSingleMeshGltf(builder, 0), dracoDecode };
 }
 
+function makePointLineFallbackGltfFixture() {
+  const builder = createGltfBufferBuilder();
+  const positions = new Float32Array([
+    -0.55, -0.45, 0,
+     0.55, -0.45, 0,
+     0.55,  0.45, 0,
+    -0.55,  0.45, 0,
+  ]);
+  const normals = new Float32Array([
+    0, 0, 1,
+    0, 0, 1,
+    0, 0, 1,
+    0, 0, 1,
+  ]);
+  const position = builder.addAccessor(positions, "VEC3", 5126, 3, {
+    min: [-0.55, -0.45, 0],
+    max: [0.55, 0.45, 0],
+  });
+  const normal = builder.addAccessor(normals, "VEC3", 5126, 3);
+  builder.gltf.extensionsUsed = ["KHR_materials_unlit"];
+  builder.gltf.materials.push({
+    extensions: { KHR_materials_unlit: {} },
+    pbrMetallicRoughness: {
+      baseColorFactor: [0.95, 0.42, 0.08, 1],
+      roughnessFactor: 1,
+      metallicFactor: 0,
+    },
+  });
+  builder.gltf.meshes.push({
+    name: "point-line-behavioral",
+    primitives: [0, 1, 2, 3].map((mode) => ({
+      attributes: { POSITION: position, NORMAL: normal },
+      mode,
+      material: 0,
+    })),
+  });
+  return { ...finalizeSingleMeshGltf(builder, 0), pointLineFallback: true };
+}
+
 async function buildGltfFixtureScene(kind) {
   const fixture =
     kind === "material-sweep" ? { ...makeSweepGltf(), ...makeSweepTextureDecodeHooks(), materialSweep: true }
       : kind === "skinned-animation" ? makeSkinnedAnimationGltfFixture()
       : kind === "draco-mock" ? makeDracoMockGltfFixture()
+      : kind === "point-line-fallback" ? makePointLineFallbackGltfFixture()
       : makeQuadGltfFixture(kind);
   const preparedScenes = [];
   const primitivePatches = [];
@@ -724,6 +766,7 @@ async function buildGltfFixtureScene(kind) {
       ...(fixture.materialSweep ? { maxTextureSize: 8, warnOnNpotRepeatWrap: true } : {}),
     } : {}),
     ...(fixture.dracoDecode ? { dracoDecode: fixture.dracoDecode } : {}),
+    ...(fixture.pointLineFallback ? { pointLineFallbackRadius: 0.055 } : {}),
   });
   if (!result.attached || preparedScenes.length !== 1) {
     throw new Error("glTF behavioral gate did not exercise controller.attachEngine/setScene");
@@ -808,6 +851,31 @@ async function buildGltfFixtureScene(kind) {
   }
   if (kind === "draco-mock" && result.asset.warnings.some((w) => w.includes("KHR_draco_mesh_compression"))) {
     throw new Error(`glTF Draco mock emitted compression warning: ${result.asset.warnings.join(" | ")}`);
+  }
+  if (kind === "point-line-fallback") {
+    if (importedScene.primitives.length !== 4) {
+      throw new Error(`glTF point/line fallback imported ${importedScene.primitives.length} primitives, expected 4`);
+    }
+    const expectedModes = [
+      ["0", "POINTS"],
+      ["1", "LINES"],
+      ["2", "LINE_LOOP"],
+      ["3", "LINE_STRIP"],
+    ];
+    for (const [index, [mode, name]] of expectedModes.entries()) {
+      const primitive = importedScene.primitives[index];
+      if (primitive?.kind !== "mesh" || primitive.positions.length === 0 || (primitive.indices?.length ?? 0) === 0) {
+        throw new Error(`glTF ${name} fallback did not produce renderable mesh geometry`);
+      }
+      const path = `meshes[0].primitives[${index}].mode`;
+      const diagnostic = result.diagnostics.find((d) =>
+        d.code === "fallback-generated-primitive-mode" &&
+        d.path === path
+      );
+      if (!diagnostic) {
+        throw new Error(`glTF point/line fallback missed source-pathed diagnostic for mode ${mode} (${name})`);
+      }
+    }
   }
 
   return {
@@ -1307,6 +1375,12 @@ const GLTF_GOLDENS = {
   },
   "pt/gltf-real-meshopt": {
     path: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-meshopt.png",
+    maxRmse: 8.0,
+    maxMeanAbs: 4.0,
+    maxAbs: 48,
+  },
+  "pt/gltf-point-line-fallback": {
+    path: "tools/reference-renders/gltf-point-line-behavioral/pt-gltf-point-line-fallback.png",
     maxRmse: 8.0,
     maxMeanAbs: 4.0,
     maxAbs: 48,

@@ -40,7 +40,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 
 ## What it covers
 
-### pt-webgpu configs (31)
+### pt-webgpu configs (32)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
@@ -68,6 +68,7 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 | `pt/gltf-transmission` | — | glTF `KHR_materials_transmission` import + render boot |
 | `pt/gltf-skinned-animation` | — | glTF skin + animation channel import + render boot |
 | `pt/gltf-draco-mock` | — | glTF `KHR_draco_mesh_compression` mock decoder + render boot |
+| `pt/gltf-point-line-fallback` | — | glTF POINTS/LINES/LINE_LOOP/LINE_STRIP fallback-generated mesh diagnostics + golden PNG |
 | `pt/gltf-material-sweep` | — | synthetic glTF material-map decode/report sweep + golden PNG |
 | `pt/gltf-real-box-textured` | — | real Khronos BoxTextured GLB import/decode/render + golden PNG |
 | `pt/gltf-real-draco` | — | real Draco-compressed Khronos asset via host decoder + golden PNG |
