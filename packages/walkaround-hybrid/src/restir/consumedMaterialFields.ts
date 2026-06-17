@@ -31,8 +31,9 @@
  *                           materialSpecEmissiveLe
  *  emissiveIntensity      same as emissive
  *  emissiveMap            materialAtlas.wgsl samples readable sRGB emissive
- *                           maps for camera-visible emitter glow; direct-light
- *                           emitter power and GI remain scalar, so approximate.
+ *                           maps for camera-visible emitter glow and UV-local
+ *                           finite-emitter payloads in ReSTIR-DI/DDGI/RC; exact
+ *                           texel-alias PDFs across all paths remain approximate.
  *  transmission           packingHelpers.ts – packBVHIndexWFromCore (trans4
  *                           lane) + resolveRoughMetal (glass-roughness branch)
  *  transmissionMap        materialAtlas.wgsl samples readable linear R-channel
@@ -307,19 +308,45 @@ export function collectApproximateEmissiveMapTexelPdfPrimitiveIds(
     readonly kind: string;
     readonly material?: Record<string, unknown>;
   }>,
+  emitters: ReadonlyArray<{
+    readonly id?: unknown;
+    readonly kind: string;
+    readonly meshId?: unknown;
+    readonly color?: ArrayLike<unknown>;
+    readonly intensity?: unknown;
+  }> = [],
 ): string[] {
-  const ids: string[] = [];
+  const ids = new Set<string>();
+  const litMeshAreaIds = collectLitMeshAreaEmitterMeshIds(emitters);
   for (const prim of primitives) {
     if (!materialBearingPrimitiveKind(prim.kind)) {
       continue;
     }
     const mat = prim.material;
     if (!mat || mat.emissiveMap == null) continue;
-    if (emissiveEnergyIsNonZero(mat)) {
-      ids.push(prim.id ?? '(unnamed)');
+    const id = prim.id ?? '(unnamed)';
+    if (emissiveEnergyIsNonZero(mat) || litMeshAreaIds.has(String(id))) {
+      ids.add(id);
     }
   }
-  return ids.sort();
+  return [...ids].sort();
+}
+
+function collectLitMeshAreaEmitterMeshIds(
+  emitters: ReadonlyArray<{
+    readonly kind: string;
+    readonly meshId?: unknown;
+    readonly color?: ArrayLike<unknown>;
+    readonly intensity?: unknown;
+  }>,
+): ReadonlySet<string> {
+  const meshIds = new Set<string>();
+  for (const emitter of emitters) {
+    if (emitter.kind !== 'mesh-area' || emitter.meshId === undefined) continue;
+    if (!emitterEnergyIsNonZero(emitter)) continue;
+    meshIds.add(String(emitter.meshId));
+  }
+  return meshIds;
 }
 
 function effectiveScalarBlendOpacity(material: Record<string, unknown>): number {
@@ -346,6 +373,25 @@ function emissiveEnergyIsNonZero(material: Record<string, unknown>): boolean {
   if (!emissive || typeof emissive.length !== 'number') return false;
   for (let i = 0; i < Math.min(3, emissive.length); i += 1) {
     const channel = emissive[i];
+    if (typeof channel === 'number' && Number.isFinite(channel) && channel > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function emitterEnergyIsNonZero(emitter: {
+  readonly color?: ArrayLike<unknown>;
+  readonly intensity?: unknown;
+}): boolean {
+  const intensity = typeof emitter.intensity === 'number' && Number.isFinite(emitter.intensity)
+    ? Math.max(0, emitter.intensity)
+    : 0;
+  if (intensity <= 0) return false;
+  const color = emitter.color;
+  if (!color || typeof color.length !== 'number') return false;
+  for (let i = 0; i < Math.min(3, color.length); i += 1) {
+    const channel = color[i];
     if (typeof channel === 'number' && Number.isFinite(channel) && channel > 0) {
       return true;
     }

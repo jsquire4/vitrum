@@ -383,9 +383,9 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // on merged-BVH ReSTIR-DI emitters with a source-triangle lane, per-candidate
   // pHat/final shade radiance at the stored xi; transmissionMap modulates
   // shade/RIS/GI glass gating; lightMap adds first-hit baked outgoing radiance.
-  // Approximate because emissive selection power still uses the CPU-readable
-  // average rather than texel-PDF importance sampling, TLAS/analytic emitters
-  // and GI/RC/DDGI emitter payloads still fall back to averaged Le,
+  // Approximate because emitter selection power still lacks a global texel-alias
+  // PDF; merged/TLAS ReSTIR-DI, DDGI, and RC sample UV-local mapped-emitter
+  // payloads when source lanes exist, while fallback paths still use averaged Le.
   // lightMap is camera-visible only, and transparent blend promotion is split:
   // finite emitters are camera-visible in OIT, while
   // ReSTIR direct-light reservoirs plus GI semantics remain approximate.
@@ -584,7 +584,7 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
 });
 
 /**
- * pt-webgpu — the 28-vec4 material buffer (materialPacking.ts) + the 63-vec4
+ * pt-webgpu — the 29-vec4 material buffer (materialPacking.ts) + the 82-vec4
  * texture-descriptor buffer (materialTextures.ts) feed material.wgsl /
  * bsdf.wgsl / kernel.wgsl. Full-tier material samplers now consume
  * TextureRef.texCoord, KHR_texture_transform, wrapS/T, and heterogeneous-layer
@@ -1123,7 +1123,8 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       debug: true,
       // pt-webgpu implements the inverse-rendering API surface. The safe
       // fallback is finite-difference; the analytic path-replay fast path is
-      // intentionally scoped to point-direct-light eligible material fields
+      // intentionally scoped to single-bounce direct-light eligible material fields
+      // (directional/point/spot/rect/disc/uncapped mesh-area where supported)
       // and is selected by createInverseSession only when that domain matches.
       createInverseSession: true,
       // getRestirPtResultBuffer is gated on the 'pt-webgpu-restir-pt-reuse'

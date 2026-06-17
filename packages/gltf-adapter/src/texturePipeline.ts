@@ -644,7 +644,13 @@ function getOrBakeSpecGlossRoughnessHandle(
     width: source.width,
     height: source.height,
     data,
-    __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    __vitrum_hint__: {
+      channels: 4,
+      dataType: 'float32',
+      colorSpace: 'linear',
+      ...(textureDecodeHint(cacheKey) ?? {}),
+      ...(textureDecodeHint(source) ?? {}),
+    },
   };
   perSource.set(key, baked);
   return baked;

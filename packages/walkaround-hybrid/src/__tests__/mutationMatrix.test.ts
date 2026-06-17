@@ -843,6 +843,43 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updateEmitter warns when a mesh-area emitter lights an emissiveMap primitive through approximate texel PDFs', () => {
+    const sourceScene = baseScene([{
+      kind: 'mesh-area',
+      id: 'panel-light',
+      meshId: 'mesh-a',
+      color: [1, 1, 1],
+      intensity: 0,
+    }]);
+    const scene: Scene = {
+      ...sourceScene,
+      primitives: sourceScene.primitives.map((prim) =>
+        prim.id === 'mesh-a'
+          ? {
+              ...prim,
+              material: {
+                ...prim.material,
+                emissive: [0, 0, 0],
+                emissiveMap: { handle: baseColorMapHandle(255) },
+              },
+            } as ScenePrimitive
+          : prim
+      ),
+    };
+    const { engine, warnings } = seedEngine(scene, { bvhMode: 'tlas' });
+    try {
+      engine.updateEmitter('panel-light', { intensity: 3 } as Partial<SceneEmitter>);
+
+      const warning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.emissive-map-texel-pdf-approximation'
+      );
+      expect(warning?.method).toBe('updateEmitter');
+      expect(warning?.details?.primitiveIds).toEqual(['mesh-a']);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updateEnvironment bakes procedural-sky, stores the env, updates directional IBL, invalidates DDGI, and resets accumulation', () => {
     const { engine, pipeline, ddgi, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     const envTextureView = {} as GPUTextureView;

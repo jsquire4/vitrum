@@ -292,15 +292,20 @@ describe('collectUnconsumedMaterialFields', () => {
     ]);
   });
 
-  it('reports only emissive-map materials with nonzero scalar emissive energy for the texel-PDF warning', () => {
+  it('reports emissive-map materials lit by scalar energy or mesh-area emitters for the texel-PDF warning', () => {
     const prims: ReadonlyArray<PrimLike> = [
       { id: 'non-emissive-map', kind: 'mesh', material: { emissive: [0, 0, 0], emissiveMap: { handle: 'map' } } },
       { id: 'zero-intensity', kind: 'mesh', material: { emissive: [1, 1, 1], emissiveIntensity: 0, emissiveMap: { handle: 'map' } } },
       { id: 'scalar-only', kind: 'mesh', material: { emissive: [1, 1, 1] } },
       { id: 'mapped-emitter', kind: 'mesh', material: { emissive: [0.2, 0.1, 0], emissiveIntensity: 3, emissiveMap: { handle: 'map' } } },
+      { id: 'mesh-panel', kind: 'mesh', material: { emissive: [0, 0, 0], emissiveMap: { handle: 'map' } } },
+      { id: 'dark-mesh-panel', kind: 'mesh', material: { emissive: [0, 0, 0], emissiveMap: { handle: 'map' } } },
       { id: 'point', kind: 'point', material: { emissive: [1, 1, 1], emissiveMap: { handle: 'map' } } },
     ];
-    expect(collectApproximateEmissiveMapTexelPdfPrimitiveIds(prims)).toEqual(['mapped-emitter']);
+    expect(collectApproximateEmissiveMapTexelPdfPrimitiveIds(prims, [
+      { id: 'panel-light', kind: 'mesh-area', meshId: 'mesh-panel', color: [1, 1, 1], intensity: 4 },
+      { id: 'dark-panel-light', kind: 'mesh-area', meshId: 'dark-mesh-panel', color: [1, 1, 1], intensity: 0 },
+    ])).toEqual(['mapped-emitter', 'mesh-panel']);
   });
 
   it('ignores null/undefined field values', () => {

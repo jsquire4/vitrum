@@ -939,7 +939,7 @@ export class HybridEngine implements Engine {
 
   private _warnApproximateEmissiveMapTexelPdfPrimitiveIds(
     primitiveIds: readonly string[],
-    method: 'setScene' | 'updatePrimitive',
+    method: 'setScene' | 'updatePrimitive' | 'updateEmitter',
   ): void {
     if (primitiveIds.length === 0) return;
     const key = primitiveIds.join(',');
@@ -1085,6 +1085,7 @@ export class HybridEngine implements Engine {
         readonly kind: string;
         readonly material?: Record<string, unknown>;
       }>,
+      scene.emitters,
     );
     this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(emissiveMapTexelPdfApproxIds, 'setScene');
     this._warnDirectionalAngularDiameterPartialSupport(scene, 'setScene');
@@ -1567,6 +1568,17 @@ export class HybridEngine implements Engine {
     this._lastScene = applyEmitterPatchToScene(this._lastScene, id, patch);
     this._renderScene = sceneWithAnalyticMeshFallback(this._lastScene);
     this._warnDirectionalAngularDiameterPartialSupport(this._lastScene, 'updateEmitter');
+    this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(
+      collectApproximateEmissiveMapTexelPdfPrimitiveIds(
+        this._lastScene.primitives as unknown as ReadonlyArray<{
+          readonly id?: string;
+          readonly kind: string;
+          readonly material?: Record<string, unknown>;
+        }>,
+        this._lastScene.emitters,
+      ),
+      'updateEmitter',
+    );
 
     const emitterOptions = {
       primaryLightDir: {

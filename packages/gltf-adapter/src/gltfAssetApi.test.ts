@@ -1493,6 +1493,58 @@ describe('decodeSceneTextures', () => {
       1,
     ]);
   });
+
+  it('preserves resize provenance on generated spec-gloss roughness reports', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 4,
+      height: 2,
+      data: new Uint8Array(4 * 2 * 4).fill(255),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      textureTarget: 'webgpu',
+      decodePixels,
+      maxTextureSize: 2,
+    });
+
+    const specularEntry = result.textureDecodeReport.entries.find((entry) =>
+      entry.materialField === 'specularColorMap'
+    );
+    const roughnessEntry = result.textureDecodeReport.entries.find((entry) =>
+      entry.materialField === 'roughnessMap'
+    );
+    expect(specularEntry).toMatchObject({
+      width: 2,
+      height: 1,
+      originalWidth: 4,
+      originalHeight: 2,
+      wasResized: true,
+      maxTextureSize: 2,
+    });
+    expect(roughnessEntry).toMatchObject({
+      width: 2,
+      height: 1,
+      originalWidth: 4,
+      originalHeight: 2,
+      wasResized: true,
+      maxTextureSize: 2,
+    });
+
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    const roughness = primitive.material.roughnessMap as TextureRef;
+    expect((roughness.handle as {
+      __vitrum_hint__?: { originalWidth?: number; originalHeight?: number; maxTextureSize?: number };
+    }).__vitrum_hint__).toMatchObject({
+      originalWidth: 4,
+      originalHeight: 2,
+      maxTextureSize: 2,
+    });
+  });
 });
 
 describe('analyzeGltfAsset and compatibility ranking', () => {

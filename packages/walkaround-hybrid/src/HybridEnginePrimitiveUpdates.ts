@@ -1333,7 +1333,7 @@ export function materialPatch(
       id,
       kind: prevPrim?.kind ?? 'mesh',
       material: nextMaterial as unknown as Record<string, unknown>,
-    }]),
+    }], ctx.lastScene.emitters),
   );
 
   const range = bvh.meshVertexRanges.find((r) => r.name === id);
