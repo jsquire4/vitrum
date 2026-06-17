@@ -16,6 +16,8 @@ describe('ReSTIR-DI material parity', () => {
       'clearcoatNormal: vec3f,',
       'specular: vec4f,',
       'anisotropy: vec2f,',
+      'anisotropyTangent: vec3f,',
+      'anisotropyBitangent: vec3f,',
       'iridescence: vec4f,',
       'clearcoat: vec2f,',
       'sheen: vec4f,',
@@ -42,6 +44,8 @@ describe('ReSTIR-DI material parity', () => {
     );
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.specular = sampleSpecularControls(hit.indices.w, hit.uv, uv1);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropy = sampleAnisotropyControls(hit.indices.w, hit.uv, uv1);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropyTangent = anisotropyFrame.tangent;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropyBitangent = anisotropyFrame.bitangent;');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.iridescence = sampleIridescenceControls(hit.indices.w, hit.uv, uv1);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.clearcoat = sampleClearcoatControls(hit.indices.w, hit.uv, uv1);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheen = sampleSheenControls(hit.indices.w, hit.uv, uv1);');
@@ -56,6 +60,8 @@ describe('ReSTIR-DI material parity', () => {
       expect(shader).toContain('clearcoatNormal = payload.clearcoatNormal');
       expect(shader).toContain('specular = payload.specular');
       expect(shader).toContain('anisotropy = payload.anisotropy');
+      expect(shader).toContain('anisotropyTangent = payload.anisotropyTangent');
+      expect(shader).toContain('anisotropyBitangent = payload.anisotropyBitangent');
       expect(shader).toContain('iridescence = payload.iridescence');
       expect(shader).toContain('clearcoat = payload.clearcoat');
       expect(shader).toContain('sheen = payload.sheen');
@@ -65,8 +71,10 @@ describe('ReSTIR-DI material parity', () => {
 
   it('uses the extension-aware BRDF for canonical pHat and RIS candidate scoring', () => {
     expect(RESTIR_PHAT_WGSL).toContain('fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f');
-    expect(RESTIR_PHAT_WGSL).toContain('return evalGGXWithSpecularClearcoatSheen(');
+    expect(RESTIR_PHAT_WGSL).toContain('return evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_PHAT_WGSL).toContain('surf.specular.rgb,');
+    expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyTangent,');
+    expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyBitangent,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.clearcoatNormal,');
     expect(RESTIR_PHAT_WGSL).toContain('let brdf  = restir_di_eval_surface_brdf(surf, wi);');
     expect(RESTIR_PHAT_WGSL).toContain('let brdf = restir_di_eval_surface_brdf(surf, wi);');

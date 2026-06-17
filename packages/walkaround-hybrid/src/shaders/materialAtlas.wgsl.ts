@@ -643,6 +643,8 @@ struct RestirDIMaterialPayload {
   clearcoatNormal: vec3f,
   specular: vec4f,
   anisotropy: vec2f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
   iridescence: vec4f,
   clearcoat: vec2f,
   sheen: vec4f,
@@ -666,6 +668,9 @@ fn sampleRestirDIMaterialPayloadForHit(
   payload.clearcoatNormal = applyClearcoatNormalMapForHit(hit, smoothNormal, shadingNormal);
   payload.specular = sampleSpecularControls(hit.indices.w, hit.uv, uv1);
   payload.anisotropy = sampleAnisotropyControls(hit.indices.w, hit.uv, uv1);
+  let anisotropyFrame = materialTangentFrameForHit(hit, shadingNormal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);
+  payload.anisotropyTangent = anisotropyFrame.tangent;
+  payload.anisotropyBitangent = anisotropyFrame.bitangent;
   payload.iridescence = sampleIridescenceControls(hit.indices.w, hit.uv, uv1);
   payload.clearcoat = sampleClearcoatControls(hit.indices.w, hit.uv, uv1);
   payload.sheen = sampleSheenControls(hit.indices.w, hit.uv, uv1);

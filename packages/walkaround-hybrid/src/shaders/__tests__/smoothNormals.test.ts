@@ -32,6 +32,7 @@ import { RESTIR_CAST_PRIMARY_WGSL } from '../restirCastPrimary.wgsl.js';
 import { TEMPORAL_MODULE } from '../temporal.wgsl.js';
 import { SPATIAL_MODULE } from '../spatial.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../materialAtlas.wgsl.js';
+import { GGX_BRDF_WGSL } from '../ggxBrdf.wgsl.js';
 import { GPU_SKIN_BVH_WITH_NORMALS_WGSL } from '../../skin/gpuSkinBvh.wgsl.js';
 import { BIND_GROUP_TABLE } from '../../pipeline/bindGroupDescriptors.js';
 import { SHADE_MODULE } from '../shade.wgsl.js';
@@ -276,6 +277,21 @@ describe('WS1 authored tangent texture path', () => {
     expect(MATERIAL_ATLAS_WGSL).toMatch(/preferAuthoredTangentFrameForHit\s*\(/);
     expect(MATERIAL_ATLAS_WGSL).toMatch(/cross\(frameNormal,\s*tangent\)\s*\*\s*select\(-1\.0,\s*1\.0,\s*authoredHandedness\s*>=\s*0\.0\)/);
     expect(MATERIAL_ATLAS_WGSL).toMatch(/tangentHandednessForLocalToWorld/);
+  });
+
+  it('anisotropic GGX uses the authored tangent frame in shade, ReSTIR DI, and ReSTIR GI material paths', () => {
+    expect(MATERIAL_ATLAS_WGSL).toContain('anisotropyTangent: vec3f');
+    expect(MATERIAL_ATLAS_WGSL).toContain('anisotropyBitangent: vec3f');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let anisotropyFrame = materialTangentFrameForHit(hit, shadingNormal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropyTangent = anisotropyFrame.tangent;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.anisotropyBitangent = anisotropyFrame.bitangent;');
+    expect(SHADE_WGSL).toContain('let anisotropyFrame = materialTangentFrameForHit(primaryHit, normal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);');
+    expect(SHADE_WGSL).toContain('anisotropyFrame.tangent, anisotropyFrame.bitangent');
+    expect(RESTIR_CAST_PRIMARY_WGSL).toContain('s.anisotropyTangent = payload.anisotropyTangent;');
+    expect(RIS_WGSL).toContain('surf.anisotropyTangent = payload.anisotropyTangent;');
+    expect(GGX_BRDF_WGSL).toContain('fn anisotropyTangentFrameFromBasis(');
+    expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
   });
 });
 

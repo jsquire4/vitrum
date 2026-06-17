@@ -108,6 +108,8 @@ struct PrimarySurface {
   metal:  f32,
   specular: vec4f,
   anisotropy: vec2f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
   iridescence: vec4f,
   clearcoat: vec2f,
   sheen: vec4f,

@@ -41,7 +41,7 @@ export const RESTIR_PHAT_WGSL = /* wgsl */ `
 // ============================================================
 
 fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
-  return evalGGXWithSpecularClearcoatSheen(
+  return evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
     surf.albedo,
     surf.rough,
     surf.metal,
@@ -55,6 +55,8 @@ fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
     surf.sheen.a,
     surf.sheenRoughness,
     surf.sheen.rgb,
+    surf.anisotropyTangent,
+    surf.anisotropyBitangent,
     surf.normal,
     surf.clearcoatNormal,
     surf.wo,

@@ -12,9 +12,11 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('let d1 = oitEnvSampleDir(normal,  0.70,  0.00);');
     expect(TRANSPARENT_OIT_WGSL).toContain('return avg * (2.0 * PI / 5.0);');
     expect(TRANSPARENT_OIT_WGSL).toContain('let skyAmbient = oitLayerSkyRadiance(payload, normal, wo);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('let sunBrdf = evalGGXWithSpecularClearcoatSheen(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('let sunBrdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.specular.rgb,');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.anisotropy.x,');
+    expect(TRANSPARENT_OIT_WGSL).toContain('payload.anisotropyTangent,');
+    expect(TRANSPARENT_OIT_WGSL).toContain('payload.anisotropyBitangent,');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.iridescence,');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.clearcoatNormal,');
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.sheen.rgb,');

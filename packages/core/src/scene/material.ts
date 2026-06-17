@@ -270,8 +270,8 @@ export interface MaterialSpec {
    * Environment/IBL specular intensity multiplier. Scales the contribution of
    * image-based-lighting reflections. Default 1.
    *
-   * Consumed by pt-webgl2 (D3) and pt-webgpu (D3); walkaround-hybrid is the
-   * remaining non-consumer (road-to-100 item, IBL specular tier).
+   * Consumed by pt-webgl2, pt-webgpu, and walkaround-hybrid for environment
+   * and HDRI sample weighting.
    */
   readonly envMapIntensity?: number;
 

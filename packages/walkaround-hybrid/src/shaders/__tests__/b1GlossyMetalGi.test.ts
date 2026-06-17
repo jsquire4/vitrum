@@ -108,8 +108,10 @@ describe('B1 — glossy/metal specular indirect term', () => {
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnly(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecular(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecularClearcoatSheen(');
+    expect(GGX_BRDF_WGSL).toContain('fn evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecular(');
     expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecularClearcoatSheen(');
+    expect(GGX_BRDF_WGSL).toContain('fn evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(GGX_BRDF_WGSL).toContain('fn evalClearcoatLobe(');
     expect(GGX_BRDF_WGSL).toContain('fn evalSheenLobe(');
     expect(GGX_BRDF_WGSL).toContain('fn charlieD(');
@@ -118,7 +120,7 @@ describe('B1 — glossy/metal specular indirect term', () => {
 
   it('shade computes lo_indirectSpecular and folds it into the un-demodulated direct channel', () => {
     expect(SHADE_WGSL).toContain('fn lo_indirectSpecular(');
-    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheen(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, normal, clearcoatNormal, wo, wi)');
+    expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi)');
     expect(SHADE_WGSL).toContain('let Lo_indirectSpec = lo_indirectSpecular(');
     // It joins directRadiance (NOT the demodulated indirect channel).
     expect(SHADE_WGSL).toMatch(/directRadiance\s*=[\s\S]*?Lo_indirectSpec/);

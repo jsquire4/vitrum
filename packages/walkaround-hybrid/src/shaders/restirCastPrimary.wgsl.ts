@@ -91,6 +91,8 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   s.metal  = payload.metal;
   s.specular = payload.specular;
   s.anisotropy = payload.anisotropy;
+  s.anisotropyTangent = payload.anisotropyTangent;
+  s.anisotropyBitangent = payload.anisotropyBitangent;
   s.iridescence = payload.iridescence;
   s.clearcoat = payload.clearcoat;
   s.sheen = payload.sheen;

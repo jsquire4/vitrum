@@ -203,6 +203,8 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   surf.metal  = metalness;
   surf.specular = payload.specular;
   surf.anisotropy = payload.anisotropy;
+  surf.anisotropyTangent = payload.anisotropyTangent;
+  surf.anisotropyBitangent = payload.anisotropyBitangent;
   surf.iridescence = payload.iridescence;
   surf.clearcoat = payload.clearcoat;
   surf.sheen = payload.sheen;

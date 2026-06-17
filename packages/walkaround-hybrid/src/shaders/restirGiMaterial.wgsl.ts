@@ -87,7 +87,7 @@ fn restir_gi_receiver_contribution_from_payload(
   // so reservoir selection/reuse is no longer diffuse-only.
   var contribution = Lo * cosTheta * INV_PI;
   if (restir_gi_receiver_has_specular_lobes(payload)) {
-    let specBrdf = evalGGXSpecularOnlyWithSpecularClearcoatSheen(
+    let specBrdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
       payload.albedo,
       payload.rough,
       payload.metal,
@@ -101,6 +101,8 @@ fn restir_gi_receiver_contribution_from_payload(
       payload.sheen.a,
       payload.sheenRoughness,
       payload.sheen.rgb,
+      payload.anisotropyTangent,
+      payload.anisotropyBitangent,
       receiverNormal,
       receiverClearcoatNormal,
       receiverWo,
@@ -162,6 +164,8 @@ fn restir_gi_receiver_phat_from_surface(
   payload.clearcoatNormal = surf.clearcoatNormal;
   payload.specular = surf.specular;
   payload.anisotropy = surf.anisotropy;
+  payload.anisotropyTangent = surf.anisotropyTangent;
+  payload.anisotropyBitangent = surf.anisotropyBitangent;
   payload.iridescence = surf.iridescence;
   payload.clearcoat = surf.clearcoat;
   payload.sheen = surf.sheen;
@@ -220,7 +224,7 @@ fn sampleRestirGIHitMaterialForHit(
   if (restir_gi_has_rich_suffix_payload(payload)) {
     let woToVisible = safe_normalize(-wiVisibleToHit);
     let proxyWi = restir_gi_proxy_incoming_dir(shadingNormal, woToVisible);
-    let brdf = evalGGXWithSpecularClearcoatSheen(
+    let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
       payload.albedo,
       payload.rough,
       payload.metal,
@@ -234,6 +238,8 @@ fn sampleRestirGIHitMaterialForHit(
       payload.sheen.a,
       payload.sheenRoughness,
       payload.sheen.rgb,
+      payload.anisotropyTangent,
+      payload.anisotropyBitangent,
       shadingNormal,
       payload.clearcoatNormal,
       woToVisible,

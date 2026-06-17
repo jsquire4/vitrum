@@ -125,7 +125,7 @@ fn oitLayerEnvSampleRadiance(
   wo: vec3f,
   wi: vec3f,
 ) -> vec3f {
-  let brdf = evalGGXWithSpecularClearcoatSheen(
+  let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
     payload.albedo,
     payload.rough,
     payload.metal,
@@ -139,6 +139,8 @@ fn oitLayerEnvSampleRadiance(
     payload.sheen.a,
     payload.sheenRoughness,
     payload.sheen.rgb,
+    payload.anisotropyTangent,
+    payload.anisotropyBitangent,
     normal,
     payload.clearcoatNormal,
     wo,
@@ -220,7 +222,7 @@ fn oitLayerAnalyticNEE(
     }
 
     let invDist2 = 1.0 / (dist * dist + ubo.emitterDist2Floor);
-    let brdf = evalGGXWithSpecularClearcoatSheen(
+    let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
       payload.albedo,
       payload.rough,
       payload.metal,
@@ -234,6 +236,8 @@ fn oitLayerAnalyticNEE(
       payload.sheen.a,
       payload.sheenRoughness,
       payload.sheen.rgb,
+      payload.anisotropyTangent,
+      payload.anisotropyBitangent,
       normal,
       clearcoatNormal,
       wo,
@@ -299,7 +303,7 @@ fn oitLayerAreaEmitterNEE(
       }
 
       let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-      let brdf = evalGGXWithSpecularClearcoatSheen(
+      let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
         payload.albedo,
         payload.rough,
         payload.metal,
@@ -313,6 +317,8 @@ fn oitLayerAreaEmitterNEE(
         payload.sheen.a,
         payload.sheenRoughness,
         payload.sheen.rgb,
+        payload.anisotropyTangent,
+        payload.anisotropyBitangent,
         normal,
         clearcoatNormal,
         wo,
@@ -346,7 +352,7 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);
   let areaDirect = oitLayerAreaEmitterNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);
   let toSun = safe_normalize(ubo.sunDirection);
-  let sunBrdf = evalGGXWithSpecularClearcoatSheen(
+  let sunBrdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
     payload.albedo,
     payload.rough,
     payload.metal,
@@ -360,6 +366,8 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
     payload.sheen.a,
     payload.sheenRoughness,
     payload.sheen.rgb,
+    payload.anisotropyTangent,
+    payload.anisotropyBitangent,
     normal,
     payload.clearcoatNormal,
     wo,

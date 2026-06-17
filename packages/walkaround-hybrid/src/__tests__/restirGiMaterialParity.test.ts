@@ -35,7 +35,9 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.clearcoat.x > 1e-4');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.sheen.a > 1e-4');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.iridescence.x > 1e-4');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXWithSpecularClearcoatSheen(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.anisotropyTangent,');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.anisotropyBitangent,');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = incomingIrradiance * brdf;');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = diffuseLo;');
   });
@@ -43,7 +45,7 @@ describe('ReSTIR-GI material parity', () => {
   it('defines receiver-lobe p-hat helpers for rich-material GI reuse', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('fn restir_gi_receiver_phat_from_payload(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('fn restir_gi_receiver_phat_from_surface_or_geometry(');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheen(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution = contribution + Lo * specBrdf;');
   });
 
@@ -96,6 +98,7 @@ describe('ReSTIR-GI material parity', () => {
     for (const shader of [defaultGi, nrcGi]) {
       expect(shader).toContain('fn sampleRestirGIHitMaterialForHit(');
       expect(shader).toContain('fn evalGGXWithSpecularClearcoatSheen(');
+      expect(shader).toContain('fn evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
       expect(shader).toContain('struct RestirDIMaterialPayload');
       expect(shader).toContain('fn applyNormalMapForHit(');
       expect(shader).toContain('fn applyBumpMapForHit(');

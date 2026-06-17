@@ -812,6 +812,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain('let sheen = sampleSheenControls(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain('let sheenRoughness = sampleSheenRoughness(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain('let anisotropy = sampleAnisotropyControls(primaryHit.indices.w, primaryHit.uv, uv1);');
+    expect(SHADE_WGSL).toContain('let anisotropyFrame = materialTangentFrameForHit(primaryHit, normal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);');
     expect(SHADE_WGSL).toContain('let iridescence = sampleIridescenceControls(primaryHit.indices.w, primaryHit.uv, uv1);');
     expect(SHADE_WGSL).toContain('let envMapIntensity = sampleEnvMapIntensity(primaryHit.indices.w);');
     expect(SHADE_WGSL).toContain(
