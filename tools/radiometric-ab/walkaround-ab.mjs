@@ -178,25 +178,19 @@ async function acquireWhDevice() {
   return adapter.requestDevice(Object.keys(limits).length ? { requiredLimits: limits } : {});
 }
 
-// ── Readback helper ───────────────────────────────────────────────────────────
-async function readbackBgra8(device, tex, texW, texH) {
-  const bpr  = Math.ceil(texW * 4 / 256) * 256;
-  const buf  = device.createBuffer({ size: bpr * texH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const enc  = device.createCommandEncoder();
-  enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr, rowsPerImage: texH }, { width: texW, height: texH, depthOrArrayLayers: 1 });
-  device.queue.submit([enc.finish()]);
-  await buf.mapAsync(GPUMapMode.READ);
-  const mapped = new Uint8Array(buf.getMappedRange());
-  const pixels = new Uint8Array(texW * texH * 4);
-  for (let row = 0; row < texH; row++) {
-    pixels.set(mapped.subarray(row * bpr, row * bpr + texW * 4), row * texW * 4);
+// ── Engine readiness helper ──────────────────────────────────────────────────
+async function waitForReady(engine, label, timeoutMs = 90_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (engine.state === "ready") return;
+    if (engine.state === "error") throw new Error(`${label}: engine.state === 'error'`);
+    await new Promise(r => setTimeout(r, 50));
+    if (engine.state === "ready") return;
+    if (engine.state === "error") throw new Error(`${label}: engine.state === 'error'`);
+    if (Date.now() > deadline) {
+      throw new Error(`${label}: engine init timeout after ${Math.round(timeoutMs / 1000)} s`);
+    }
   }
-  buf.unmap(); buf.destroy();
-  // bgra → rgba: swap B and R
-  for (let i = 0; i < pixels.length; i += 4) {
-    const b = pixels[i]; pixels[i] = pixels[i+2]; pixels[i+2] = b;
-  }
-  return pixels;
 }
 
 // ── Pixel statistics helpers ──────────────────────────────────────────────────
@@ -204,21 +198,21 @@ function meanLuminance(pixels) {
   let sum = 0;
   const n = pixels.length / 4;
   for (let i = 0; i < pixels.length; i += 4) {
-    sum += 0.2126 * (pixels[i]/255) + 0.7152 * (pixels[i+1]/255) + 0.0722 * (pixels[i+2]/255);
+    sum += 0.2126 * pixels[i] + 0.7152 * pixels[i+1] + 0.0722 * pixels[i+2];
   }
   return sum / n;
 }
 
 /**
  * Mean luminance of a screen region [x0,x1) × [y0,y1) (pixel coords).
- * y=0 is top of image (BGRA readback row order).
+ * y=0 is top of image (captureFrame contract row order).
  */
 function regionLuminance(pixels, texW, x0, y0, x1, y1) {
   let sum = 0, count = 0;
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const i = (y * texW + x) * 4;
-      sum += 0.2126 * (pixels[i]/255) + 0.7152 * (pixels[i+1]/255) + 0.0722 * (pixels[i+2]/255);
+      sum += 0.2126 * pixels[i] + 0.7152 * pixels[i+1] + 0.0722 * pixels[i+2];
       count++;
     }
   }
@@ -256,13 +250,7 @@ async function runVariant(label, engineOpts, sceneFactory) {
     const scene = sceneFactory();
     engine.setScene(scene);
 
-    // Poll until ready
-    const deadline = Date.now() + 90_000;
-    while (engine.state !== "ready" && engine.state !== "error") {
-      await new Promise(r => setTimeout(r, 50));
-      if (Date.now() > deadline) throw new Error("engine init timeout after 90 s");
-    }
-    if (engine.state === "error") throw new Error("engine.state === 'error'");
+    await waitForReady(engine, label);
 
     swapTex = device.createTexture({
       label: `swap-${label}`,
@@ -286,7 +274,12 @@ async function runVariant(label, engineOpts, sceneFactory) {
       await device.queue.onSubmittedWorkDone();
     }
 
-    pixels = await readbackBgra8(device, swapTex, W, H);
+    const captured = await engine.captureFrame({ colorSpace: "linear" });
+    if (captured == null) throw new Error("captureFrame returned null");
+    if (captured.width !== W || captured.height !== H) {
+      throw new Error(`captureFrame size mismatch: got ${captured.width}x${captured.height}, expected ${W}x${H}`);
+    }
+    pixels = captured.rgba;
   } catch (e) {
     error = e.message;
   } finally {
@@ -404,11 +397,11 @@ async function runA8() {
 // After Lambertian BRDF (albedo/π) and the cosine-weighted outgoing integration:
 //   Rendered luminance = I × cosθ × (albedo / π) × π = I × cosθ × albedo
 //   (the π from Lambertian BRDF cancels the ∫cosθdω hemisphere integral)
-//   = 3.0 × 0.808 × 0.8 ≈ 1.939  (in linear units before tonemap)
-// BUT we read back rgba8unorm (0..255 clamped). The denoiser + tonemap will
-// compress this. We use a much lower intensity (0.3) so the signal stays in-range:
+//   = 3.0 × 0.808 × 0.8 ≈ 1.939 in linear HDR units.
+// The harness reads `captureFrame({ colorSpace:"linear" })` after rendering, so
+// the signal is not tonemapped or quantized by the host swap-chain. We still use
+// a lower intensity (0.3) to keep the analytic value near the rest of the scene:
 //   I=0.3 → E = 0.3 × 0.808 × 0.8 ≈ 0.194
-// That sits well within rgba8unorm range (≈50/255).
 //
 // Back wall: normal [0,0,-1]. cos(wallNormal, toSun) = dot([0,0,-1], [-0.3,0.8,-0.5]*norm)
 //   = dot([0,0,-1], [-0.303, 0.808, -0.505]) ≈ 0.505 > 0, so back wall IS lit.
@@ -422,7 +415,7 @@ async function runSun() {
   console.log("\n── SUN: Sun-NEE analytic self-validation ──");
   const t0 = Date.now();
 
-  // Use intensity 0.3 so linear radiance stays ≤ 1.0 (within rgba8 range).
+  // Use intensity 0.3 so the direct-light analytic signal stays in a stable range.
   const sunResult = await runVariant("sun", {
     primaryLightDir:       [0.3, -0.8, 0.5],
     primaryLightIntensity: 0.3,

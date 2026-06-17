@@ -161,14 +161,29 @@ scene builders, `renderScene()`, `renderMultipleRuns()`, and radiometric statist
 
 ---
 
-## Walkaround-hybrid A/Bs (2026-06-10)
+## Walkaround-hybrid A/Bs
 
-Script: `walkaround-ab.mjs`. Results: `walkaround-ab-results.json`.
+Script: `walkaround-ab.mjs`. Legacy results: `walkaround-ab-results.json`.
 
-**Important platform note:** walkaround-hybrid renders to `bgra8unorm` (8-bit per channel).
-All comparisons are in the 8-bit display domain (not linear HDR). Precision floor ≈ 1/255 ≈
-0.004 per pixel. At SPP=16 and 128×128, this limits detectability of subtle material
-differences.
+**Current harness status (2026-06-17):** `walkaround-ab.mjs` now renders the frame normally
+through a host `bgra8unorm` swap-chain texture, then reads the engine-owned post-denoise,
+pre-tonemap `resolvedTexture` through `engine.captureFrame({ colorSpace:"linear" })`. The
+luminance statistics are therefore linear-HDR float32 values rather than display-encoded
+8-bit swap-chain samples.
+
+**Current WSL validation caveat:** Deno 2.8.1 native WebGPU currently panics in the WSL
+lavapipe walkaround path before the harness can produce a verdict:
+`wgpu-hal-28.0.0/src/gles/command.rs:771:21: index out of bounds`. This reproduces in the
+older `walkaround-sun-control.mjs` swap-chain-readback script too, so it is a validation-host
+runtime blocker rather than a regression caused by linear capture. Rerun this harness on the
+browser/real-adapter lane before promoting the walkaround rows.
+
+### Legacy 8-bit baseline (2026-06-10)
+
+The following numbers were captured before `walkaround-ab.mjs` switched to linear-HDR
+`captureFrame`. They are useful historical smoke evidence, but their GLASS/GLOSSY caveats
+come from the old 8-bit display-domain readback and should not be used as final promotion
+evidence.
 
 ### A8 — GRIS Bias Quantification
 
