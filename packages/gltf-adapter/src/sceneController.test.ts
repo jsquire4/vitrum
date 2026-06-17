@@ -364,6 +364,45 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(2);
     expect(frame.warnings.some((w) => w.includes('falling back to setScene'))).toBe(true);
     expect(frame.warnings.some((w) => w.includes('geometry patch rejected'))).toBe(true);
+    expect(frame.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'controller-update-primitive-failed',
+        caller: 'applyAnimation',
+        primitiveId: 'gltf-prim-0',
+        path: 'scene.primitives["gltf-prim-0"]',
+      }),
+    ]);
+    expect(controller.diagnostics).toEqual(frame.diagnostics);
+  });
+
+  it('reports when animated TRS channels override a matrix-imported node', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      matrix: [
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        3, 0, 0, 1,
+      ],
+    };
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const first = controller.applyAnimation('parent-slide', 0.5);
+    const second = controller.applyAnimation('parent-slide', 1);
+
+    expect(first.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'animation-matrix-overridden',
+        caller: 'applyAnimation',
+        nodeIndex: 0,
+        path: 'nodes[0].matrix',
+      }),
+    ]);
+    expect(second.diagnostics.some((diagnostic) => diagnostic.code === 'animation-matrix-overridden')).toBe(false);
+    expect(controller.diagnostics.filter((diagnostic) => diagnostic.code === 'animation-matrix-overridden'))
+      .toHaveLength(1);
   });
 
   it('patches EXT_mesh_gpu_instancing instances when the node animates', async () => {
@@ -453,6 +492,34 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
     expect(frame.warnings.some((w) => w.includes('falling back to setScene'))).toBe(true);
     expect(frame.warnings.some((w) => w.includes('material fast path unavailable'))).toBe(true);
+    expect(frame.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'controller-update-primitive-failed',
+        caller: 'setVariant',
+        primitiveId: 'gltf-prim-0',
+        path: 'scene.primitives["gltf-prim-0"]',
+      }),
+    ]);
+    expect(controller.diagnostics).toEqual(frame.diagnostics);
+  });
+
+  it('reports missing variant metadata as structured diagnostics', async () => {
+    const { gltf, buffers } = materialVariantGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController({ gltf, ...result, materialVariantBindings: [] });
+
+    const frame = controller.setVariant('blue');
+
+    expect(frame.primitivePatches).toHaveLength(0);
+    expect(frame.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'variant-bindings-missing',
+        caller: 'setVariant',
+        path: 'materialVariantBindings',
+      }),
+    ]);
+    expect(frame.warnings[0]).toContain('materialVariantBindings metadata');
+    expect(controller.diagnostics).toEqual(frame.diagnostics);
   });
 
   it('blends transform clips per channel before patching primitives', async () => {
