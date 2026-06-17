@@ -1,6 +1,6 @@
 {
   "ab": "bdpt-vs-unidirectional",
-  "date": "2026-06-17T05:50:02.490Z",
+  "date": "2026-06-17T05:58:02.206Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -23,6 +23,34 @@
     "globalLum": 0.09374135884168382,
     "roiLum": 0.1286461473422478,
     "variance": 0.07868705854133864
+  },
+  "controls": {
+    "meanFrames": 60,
+    "byMaxLightBounces": [
+      {
+        "maxLightBounces": 1,
+        "globalLum": 0.08006546401561064,
+        "roiLum": 0.1093735323935114,
+        "globalRelErr": 0,
+        "roiRelErr": 0
+      },
+      {
+        "maxLightBounces": 2,
+        "globalLum": 0.09064365778547873,
+        "roiLum": 0.12464137983030454,
+        "globalRelErr": 0.13211930886712425,
+        "roiRelErr": 0.13959362107700302
+      },
+      {
+        "maxLightBounces": 3,
+        "globalLum": 0.09374135884168382,
+        "roiLum": 0.1286461473422478,
+        "globalRelErr": 0.17080891235960038,
+        "roiRelErr": 0.17620912964021407
+      }
+    ],
+    "endpointOnlyMatchesUni": true,
+    "multiVertexFindingStartsAt": 2
   },
   "globalRelErr": 0.17080891235960038,
   "roiRelErr": 0.17620912964021407,

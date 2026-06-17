@@ -91,6 +91,52 @@ const meanAgreement = globalRelErr < 0.10; // < 10%
 console.log(`  Mean agreement (< 10% threshold): ${meanAgreement ? "PASS" : "FINDING"}`);
 console.log("");
 
+// ── Part 1b: BDPT depth isolation controls ─────────────────────────────────
+//
+// These controls keep the main pass/fail threshold unchanged, but they make the
+// current failure mode machine-readable:
+//   maxLightBounces:1 => no multi-vertex light connections, should match UNI.
+//   maxLightBounces:2/3 => progressively re-enable the suspect light vertices.
+const CONTROL_MAX_LIGHT_BOUNCES = [1, 2, 3];
+const controlRuns = [];
+console.log("Part 1b: BDPT light-subpath depth controls...");
+for (const maxLightBounces of CONTROL_MAX_LIGHT_BOUNCES) {
+  console.log(`  Rendering BDPT control (maxLightBounces:${maxLightBounces})...`);
+  const controlResult = await renderScene(
+    { ...FULL_TIER, bdpt: true, bdptOptions: { maxLightBounces } },
+    scene,
+    MEAN_FRAMES,
+  );
+  const controlGlobalLum = meanLuminanceROI(controlResult.rgba, W, 0, 0, W - 1, H - 1);
+  const controlROILum = meanLuminanceROI(controlResult.rgba, W, ROI.x0, ROI.y0, ROI.x1, ROI.y1);
+  controlResult.engine.dispose();
+  controlResult.device.destroy();
+  const controlGlobalRelErr = relativeError(controlGlobalLum, uniGlobalLum);
+  const controlRoiRelErr = relativeError(controlROILum, uniROILum);
+  controlRuns.push({
+    maxLightBounces,
+    globalLum: controlGlobalLum,
+    roiLum: controlROILum,
+    globalRelErr: controlGlobalRelErr,
+    roiRelErr: controlRoiRelErr,
+  });
+  console.log(
+    `  BDPT maxLightBounces:${maxLightBounces}: global lum = ${controlGlobalLum.toFixed(5)}, ` +
+    `ROI lum = ${controlROILum.toFixed(5)}, global relErr = ${(controlGlobalRelErr * 100).toFixed(2)}%`,
+  );
+}
+const endpointOnlyControl = controlRuns.find((r) => r.maxLightBounces === 1);
+const endpointOnlyMatchesUni = endpointOnlyControl != null && endpointOnlyControl.globalRelErr < 1e-6 && endpointOnlyControl.roiRelErr < 1e-6;
+const firstMultiVertexControl = controlRuns.find((r) => r.maxLightBounces === 2);
+const multiVertexFindingStartsAt = firstMultiVertexControl != null && firstMultiVertexControl.globalRelErr > 0.10
+  ? firstMultiVertexControl.maxLightBounces
+  : null;
+console.log(`  Endpoint-only control matches UNI: ${endpointOnlyMatchesUni ? "YES" : "NO"}`);
+if (multiVertexFindingStartsAt != null) {
+  console.log(`  Multi-vertex finding starts at maxLightBounces:${multiVertexFindingStartsAt}.`);
+}
+console.log("");
+
 // ── Part 2: Variance estimate (8 runs × 8 frames) ───────────────────────────
 const VAR_RUNS   = 8;
 const VAR_FRAMES = 8;
@@ -121,6 +167,9 @@ console.log(`${"Metric".padEnd(40)} ${"UNI".padEnd(12)} ${"BDPT".padEnd(12)} Not
 console.log(`${"Global mean lum ("+MEAN_FRAMES+" frames)".padEnd(40)} ${uniGlobalLum.toFixed(5).padEnd(12)} ${bdptGlobalLum.toFixed(5).padEnd(12)} relErr=${(globalRelErr*100).toFixed(2)}%`);
 console.log(`${"ROI mean lum ("+MEAN_FRAMES+" frames)".padEnd(40)} ${uniROILum.toFixed(5).padEnd(12)} ${bdptROILum.toFixed(5).padEnd(12)} relErr=${(roiRelErr*100).toFixed(2)}%`);
 console.log(`${"Variance in ROI ("+VAR_RUNS+"×"+VAR_FRAMES+" frames)".padEnd(40)} ${uniVar.toFixed(6).padEnd(12)} ${bdptVar.toFixed(6).padEnd(12)} ratio=${varRatio.toFixed(4)}`);
+for (const c of controlRuns) {
+  console.log(`${("BDPT control maxLightBounces="+c.maxLightBounces).padEnd(40)} ${uniGlobalLum.toFixed(5).padEnd(12)} ${c.globalLum.toFixed(5).padEnd(12)} relErr=${(c.globalRelErr*100).toFixed(2)}%`);
+}
 console.log("");
 
 const verdict = (meanAgreement && varianceImproved) ? "PASS" : "FINDING";
@@ -152,6 +201,12 @@ const results = {
   varianceFramesPerRun: VAR_FRAMES,
   uni: { globalLum: uniGlobalLum, roiLum: uniROILum, variance: uniVar },
   bdpt: { globalLum: bdptGlobalLum, roiLum: bdptROILum, variance: bdptVar },
+  controls: {
+    meanFrames: MEAN_FRAMES,
+    byMaxLightBounces: controlRuns,
+    endpointOnlyMatchesUni,
+    multiVertexFindingStartsAt,
+  },
   globalRelErr,
   roiRelErr,
   varRatio,

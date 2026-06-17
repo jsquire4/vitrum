@@ -87,10 +87,11 @@ lane produces finite non-black signal and exposes a real multi-vertex BDPT mean 
 
 One source-verified bug was fixed with this recapture: the pt-webgpu BDPT connection loop
 no longer connects secondary eye vertices to `lvi=0`, the emitter endpoint, because that
-direct-light strategy is already estimated by the normal per-bounce NEE path. A focused
-control run shows `bdptOptions.maxLightBounces:1` is identical to `bdpt:false`; the
-remaining mismatch starts when multi-vertex light-subpath connections are enabled
-(`maxLightBounces:2`/`3` measured about +13%/+17% global luminance at 120 frames).
+direct-light strategy is already estimated by the normal per-bounce NEE path. The harness
+now writes `controls.byMaxLightBounces` to `results-bdpt.json`: `maxLightBounces:1` is
+identical to `bdpt:false`, while the remaining mismatch starts when multi-vertex
+light-subpath connections are enabled (`maxLightBounces:2` is +13.21% global luminance
+and `maxLightBounces:3` is +17.08% at the 60-frame mean checkpoint).
 
 Conclusion: BDPT plumbing and non-black behavior are verified, but full multi-vertex
 radiometric promotion remains open. The current `results-bdpt.json` intentionally records

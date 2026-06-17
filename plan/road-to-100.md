@@ -142,8 +142,9 @@
 > full lavapipe adapter. A source bug was also fixed: secondary BDPT connections skip
 > `lvi=0`, the emitter endpoint already covered by per-bounce NEE. The remaining
 > BDPT proof tail is now precise: `bdptOptions.maxLightBounces:1` agrees with
-> `bdpt:false`, while multi-vertex light-subpath connections still measure about
-> +17% global/ROI luminance in `tools/radiometric-ab/results-bdpt.json`.
+> `bdpt:false`; `results-bdpt.json` now records `controls.byMaxLightBounces`,
+> with the multi-vertex finding starting at `maxLightBounces:2` (+13.21% global
+> luminance) and reaching +17.08% at the default three-vertex control.
 
 - **Foundations + default render paths: solid, advancing toward 100%.** The `@vitrum/core`
   contract, each backend's default integrator, shared-bvh/samplers/denoisers are real,
