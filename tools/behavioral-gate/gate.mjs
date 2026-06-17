@@ -1342,7 +1342,7 @@ async function acquirePtDevice(wantsFullTier) {
   if (wantsFullTier) {
     const sb = adapter.limits.maxStorageBuffersPerShaderStage ?? 8;
     const st = adapter.limits.maxStorageTexturesPerShaderStage ?? 4;
-    if (sb >= 28) limits.maxStorageBuffersPerShaderStage = sb;
+    if (sb >= 34) limits.maxStorageBuffersPerShaderStage = sb;
     if (st >= 5)  limits.maxStorageTexturesPerShaderStage = st;
   }
   const bg = adapter.limits.maxBindGroups ?? 4;
@@ -1608,8 +1608,12 @@ function checkExpectation(label, rawStatus, lum, errCount, nans) {
 // ── pt-webgpu runner ──────────────────────────────────────────────────────────
 
 async function runPtConfig(label, engineOpts, sceneOpts) {
-  const bdptOn    = engineOpts.bdpt === true;
-  const isLite    = engineOpts.traceTier === "lite";
+  const wantsFullTier = requireFullTier && engineOpts.traceTier !== "lite";
+  const requestedEngineOpts = wantsFullTier
+    ? { ...engineOpts, traceTier: "full" }
+    : engineOpts;
+  const bdptOn    = requestedEngineOpts.bdpt === true;
+  const isLite    = requestedEngineOpts.traceTier === "lite";
   let device;
   try {
     device = await acquirePtDevice(!isLite);
@@ -1654,7 +1658,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       device,
       maxBounces: 3,
       maxSamplesPerPixel: SPP,
-      ...engineOpts,
+      ...requestedEngineOpts,
     });
     traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
 
@@ -1717,7 +1721,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
 
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
-  const wrongTier = requireFullTier && !isLite && traceTier !== "full";
+  const wrongTier = wantsFullTier && traceTier !== "full";
   const mutationThreshold = sceneOpts.mutation ? MUTATION_DELTA_THRESHOLDS[sceneOpts.mutation] : null;
   const mutationFailed =
     sceneOpts.mutation != null &&

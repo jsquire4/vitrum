@@ -268,6 +268,15 @@ fallback and triangle strip/fan conversion now also have checked manifests and
 shared proof metadata via `npm run gltf-topology-proof-check`. Recommended
 backend/browser captures remain in the validation queue, as intended.
 
+2026-06-17 follow-up: `behavioral-gate -- --filter gltf-material-sweep` still
+passes on lavapipe as an auto-tier/lite PNG proof. The documented
+`--require-full-tier` path now actively requests `traceTier:"full"` instead of
+checking after the engine has already auto-selected lite; on this WSL lavapipe
+adapter it fails honestly because the adapter reports
+`maxStorageBuffersPerShaderStage=8` while pt-webgpu full tier requires at least
+34. Treat full-tier material-lobe recapture as a browser/real-adapter validation
+lane, not a WSL-lavapipe proof.
+
 Allowed work:
 
 - Add or tighten real-asset glTF boot/readback fixtures.
@@ -349,7 +358,9 @@ These are not code blockers, but they are required before a high-confidence
 - NRC quality/convergence A/B.
 - Neural denoiser quality A/B once production weights exist.
 - BDPT material/radiometric A/B.
-- pt-webgpu full-tier material-furnace/reference-render sweeps.
+- pt-webgpu full-tier material-furnace/reference-render sweeps. WSL lavapipe is
+  adapter-limited for this lane (`maxStorageBuffersPerShaderStage=8`; full tier
+  requires 34), so use browser/real-adapter validation.
 - Real glTF golden PNG sweep on recommended backends (pt-webgpu WSL public-asset
   golden lane is covered; pt-webgl2/browser recommended-backend proof remains).
 - Mutation matrix on real GPU/browser harness: buffers, bind groups, denoiser

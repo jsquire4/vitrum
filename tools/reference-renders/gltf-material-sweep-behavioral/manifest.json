@@ -4,6 +4,7 @@
   "adapter": "lavapipe",
   "resolution": [64, 64],
   "samplesPerPixel": 8,
+  "traceTier": "auto",
   "fixture": "synthetic-material-sweep",
   "label": "pt/gltf-material-sweep",
   "goldenPath": "tools/reference-renders/gltf-material-sweep-behavioral/pt-gltf-material-sweep.png",

@@ -1,7 +1,7 @@
 # glTF Material Sweep Behavioral Golden
 
 Committed 64x64 lavapipe reference PNG for the behavioral gate's synthetic
-material-heavy glTF fixture:
+material-heavy glTF fixture on the default auto-selected trace tier:
 
 - `pt/gltf-material-sweep`
 
