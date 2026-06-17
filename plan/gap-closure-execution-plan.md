@@ -1,10 +1,10 @@
 # Gap Closure Execution Plan
 
 Generated 2026-06-17 as the practical replacement for the oversized Cursor
-orchestrator bundle (`ORCHESTRATOR_AGENT.md`, `code-gap-implementation-plan.md`,
-`code-gap-master-plan.md`, and generated wave/task files). That bundle found
-real issues, but its 501-task / 71-wave / 25-agent plan is too broad, stale in
-places, and unsafe to run as written.
+orchestrator bundle. That bundle found real issues, but its 501-task / 71-wave /
+25-agent plan was too broad, stale in places, and unsafe to run as written. The
+old generated bundle was removed from `plan/` during the cleanup pass so agents
+do not restart that stale queue.
 
 This plan is intentionally smaller. It is meant to close the remaining code
 gaps quickly, keep long-tail proof work visible, and stop the team from spending

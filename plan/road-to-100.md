@@ -9,7 +9,7 @@
 ## Where we actually are
 
 > **Updated 2026-06-16 after the latest code-first closure wave (receiver-lobe GI target, glTF/OIT predictable-tail closures, point/line fallback geometry, and pt-webgl2 analytic fallback parity).**
-> Per `plan/v1-closure-plan-2026-06-10.md §0`, "100%" = everything fully implemented.
+> For this ledger, "100%" = everything fully implemented.
 > **R7a-R7d campaign additions:** behavioral gate (26/26 pass, permanent CI); anisotropic
 > GGX (A-item closed — `materialAnisotropy` now renders); engine error surface (`onError` —
 > silent-GPU-error class dead); `@vitrum/gltf-adapter` new package (glTF 2.0 → core Scene);
@@ -430,7 +430,8 @@ buckets that the A–D framing was missing:**
 > gltf-adapter, engine bridge, unlit all backends, H30 canvas sizing, progressive handoff
 > fallback, ledger fixes. **Land Phase 0 first** before treating any claim below as shipped.
 >
-> **Companion docs:** `plan/road-to-100-gap-ledger-2026-06-11.md`, `items_to_fix.md` §H.
+> **Companion docs:** use `plan/gap-closure-execution-plan.md` for the curated
+> closeout plan and `items_to_fix.md` §H for legacy implementation notes.
 >
 > **REVIEW RECONCILIATION (2026-06-12, lead-verified against `main@309fdebe`):**
 > 1. **Several P0 rows below were already landed and pushed before this addendum
