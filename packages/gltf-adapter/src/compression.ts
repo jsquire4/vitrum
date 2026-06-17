@@ -1,4 +1,4 @@
-// compression.ts — KHR_draco_mesh_compression + EXT_meshopt_compression
+// compression.ts — KHR_draco_mesh_compression + EXT/KHR_meshopt_compression
 // resolution via HOST-SUPPLIED decoder hooks (GLTF-02).
 //
 // The adapter stays dependency-free: it never bundles a Draco or meshoptimizer
@@ -7,7 +7,7 @@
 // the (cloned) glTF JSON + buffers map so the rest of the pipeline sees plain
 // uncompressed data:
 //
-//   - EXT_meshopt_compression sits on BUFFER VIEWS. Each compressed bufferView
+//   - EXT/KHR_meshopt_compression sits on BUFFER VIEWS. Each compressed bufferView
 //     is decoded into a synthetic buffer and the bufferView is repointed at it,
 //     so ALL downstream consumers (attribute/index/animation accessors, image
 //     bufferViews) transparently read decompressed bytes.
@@ -35,6 +35,8 @@
 //     https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_draco_mesh_compression/README.md
 //   - EXT_meshopt_compression
 //     https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Vendor/EXT_meshopt_compression/README.md
+//   - KHR_meshopt_compression (used by Khronos MeshoptCubeTest sample assets)
+//     https://github.khronos.org/glTF-Sample-Viewer-Release/
 
 import type { GltfJson, GltfAccessor } from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
@@ -42,6 +44,8 @@ import { componentByteSize, typeComponentCount } from './accessors.js';
 
 const DRACO_EXT = 'KHR_draco_mesh_compression';
 const MESHOPT_EXT = 'EXT_meshopt_compression';
+const MESHOPT_KHR_EXT = 'KHR_meshopt_compression';
+const MESHOPT_EXTENSIONS = [MESHOPT_EXT, MESHOPT_KHR_EXT] as const;
 
 // ── Public hook types ────────────────────────────────────────────────────────
 
@@ -78,13 +82,13 @@ export type DracoDecodeFn = (
   attributeIds: Readonly<Record<string, number>>,
 ) => DracoDecodeResult | Promise<DracoDecodeResult>;
 
-/** EXT_meshopt_compression `mode` values. */
+/** EXT/KHR_meshopt_compression `mode` values. */
 export type MeshoptMode = 'ATTRIBUTES' | 'TRIANGLES' | 'INDICES';
-/** EXT_meshopt_compression `filter` values. */
+/** EXT/KHR_meshopt_compression `filter` values. */
 export type MeshoptFilter = 'NONE' | 'OCTAHEDRAL' | 'QUATERNION' | 'EXPONENTIAL';
 
 /**
- * Host-supplied meshopt decode hook (EXT_meshopt_compression). The signature
+ * Host-supplied meshopt decode hook (EXT/KHR_meshopt_compression). The signature
  * mirrors `MeshoptDecoder.decodeGltfBuffer(target, count, stride, source,
  * mode, filter)` from the `meshoptimizer` package, minus the target (return
  * the decoded bytes instead): must return exactly `count × byteStride` bytes.
@@ -141,7 +145,7 @@ export async function resolveCompression(
   warnings: string[],
 ): Promise<GltfJson> {
   const hasMeshopt = (gltf.bufferViews ?? []).some(
-    (bv) => bv.extensions?.[MESHOPT_EXT] !== undefined,
+    (bv) => getMeshoptBufferViewExtension(bv) !== undefined,
   );
   const hasDraco = (gltf.meshes ?? []).some((m) =>
     m.primitives.some((p) => p.extensions?.[DRACO_EXT] !== undefined),
@@ -155,7 +159,7 @@ export async function resolveCompression(
   // meshopt first: it operates at bufferView level, so a (theoretical) Draco
   // blob inside a meshopt-wrapped view would already be decompressed.
   if (hasMeshopt) {
-    await _resolveMeshopt(out, buffers, hooks.meshoptDecode, required.has(MESHOPT_EXT), warnings);
+    await _resolveMeshopt(out, buffers, hooks.meshoptDecode, required, warnings);
   }
   if (hasDraco) {
     await _resolveDraco(out, buffers, hooks.dracoDecode, required.has(DRACO_EXT), warnings);
@@ -219,48 +223,74 @@ function _stripExtension(holder: { extensions?: Record<string, unknown> }, name:
   if (Object.keys(holder.extensions).length === 0) delete holder.extensions;
 }
 
-// ── EXT_meshopt_compression ──────────────────────────────────────────────────
+function getMeshoptBufferViewExtension(
+  bufferView: { readonly extensions?: Record<string, unknown> },
+): { readonly name: typeof MESHOPT_EXTENSIONS[number]; readonly value: MeshoptBufferViewExt } | undefined {
+  for (const name of MESHOPT_EXTENSIONS) {
+    const value = bufferView.extensions?.[name] as MeshoptBufferViewExt | undefined;
+    if (value !== undefined) return { name, value };
+  }
+  return undefined;
+}
+
+function getMeshoptFallbackExtension(
+  buffer: { readonly extensions?: Record<string, unknown> } | undefined,
+  preferredName: string,
+): { readonly fallback?: boolean } | undefined {
+  const preferred = buffer?.extensions?.[preferredName];
+  if (preferred != null && typeof preferred === 'object' && !Array.isArray(preferred)) {
+    return preferred as { readonly fallback?: boolean };
+  }
+  for (const name of MESHOPT_EXTENSIONS) {
+    const value = buffer?.extensions?.[name];
+    if (value != null && typeof value === 'object' && !Array.isArray(value)) {
+      return value as { readonly fallback?: boolean };
+    }
+  }
+  return undefined;
+}
+
+// ── EXT/KHR_meshopt_compression ──────────────────────────────────────────────
 
 async function _resolveMeshopt(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   decode: MeshoptDecodeFn | undefined,
-  isRequired: boolean,
+  required: ReadonlySet<string>,
   warnings: string[],
 ): Promise<void> {
   const views = gltf.bufferViews ?? [];
   for (let i = 0; i < views.length; i++) {
     const bv = views[i]!;
-    const ext = bv.extensions?.[MESHOPT_EXT] as MeshoptBufferViewExt | undefined;
-    if (!ext) continue;
+    const meshopt = getMeshoptBufferViewExtension(bv);
+    if (!meshopt) continue;
+    const { name, value: ext } = meshopt;
+    const isRequired = required.has(name);
 
     if (!decode) {
       // Spec fallback: the bufferView's OWN buffer holds uncompressed data,
       // unless that buffer is a `fallback: true` stub (no real payload).
-      const fallbackStub =
-        (gltf.buffers?.[bv.buffer]?.extensions?.[MESHOPT_EXT] as
-          | { fallback?: boolean }
-          | undefined)?.fallback === true;
+      const fallbackStub = getMeshoptFallbackExtension(gltf.buffers?.[bv.buffer], name)?.fallback === true;
       const fallbackAvailable = !fallbackStub && buffers.has(bv.buffer);
       if (fallbackAvailable) {
         warnings.push(
-          `[vitrum/gltf-adapter] BufferView ${i} uses EXT_meshopt_compression but no ` +
+          `[vitrum/gltf-adapter] BufferView ${i} uses ${name} but no ` +
             'opts.meshoptDecode hook was supplied. Falling back to the uncompressed ' +
             'fallback buffer (larger download, identical data).',
         );
-        _stripExtension(bv, MESHOPT_EXT);
+        _stripExtension(bv, name);
         continue;
       }
       if (isRequired) {
         throw new Error(
-          '[vitrum/gltf-adapter] EXT_meshopt_compression is listed in extensionsRequired ' +
+          `[vitrum/gltf-adapter] ${name} is listed in extensionsRequired ` +
             `but no opts.meshoptDecode hook was supplied and bufferView ${i} has no ` +
             'uncompressed fallback buffer. Supply a decode hook (e.g. meshoptimizer’s ' +
             'MeshoptDecoder.decodeGltfBuffer — see the README "Compressed geometry" section).',
         );
       }
       warnings.push(
-        `[vitrum/gltf-adapter] BufferView ${i} uses EXT_meshopt_compression with no ` +
+        `[vitrum/gltf-adapter] BufferView ${i} uses ${name} with no ` +
           'opts.meshoptDecode hook and no uncompressed fallback buffer. Dependent ' +
           'accessors cannot be read; affected primitives will be skipped.',
       );
@@ -270,7 +300,7 @@ async function _resolveMeshopt(
     const src = buffers.get(ext.buffer);
     if (!src) {
       const msg =
-        `[vitrum/gltf-adapter] EXT_meshopt_compression bufferView ${i} references ` +
+        `[vitrum/gltf-adapter] ${name} bufferView ${i} references ` +
         `buffer ${ext.buffer} which is not available (supply it via opts.buffers).`;
       if (isRequired) throw new Error(msg);
       warnings.push(msg + ' BufferView left unresolved.');
@@ -308,7 +338,7 @@ async function _resolveMeshopt(
     // TRIANGLES / INDICES data is tightly packed scalar elements.
     if (ext.mode === 'ATTRIBUTES') bv.byteStride = ext.byteStride;
     else delete bv.byteStride;
-    _stripExtension(bv, MESHOPT_EXT);
+    _stripExtension(bv, name);
   }
 }
 

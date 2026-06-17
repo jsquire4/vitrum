@@ -334,10 +334,13 @@ function compressedAndAlternateSources(): GltfJson {
   };
 }
 
-function meshoptFallbackBufferSample(opts: { fallbackStub?: boolean } = {}): GltfJson {
+function meshoptFallbackBufferSample(
+  opts: { fallbackStub?: boolean; extensionName?: 'EXT_meshopt_compression' | 'KHR_meshopt_compression' } = {},
+): GltfJson {
+  const extensionName = opts.extensionName ?? 'EXT_meshopt_compression';
   return {
     asset: { version: '2.0', generator: 'KhronosSampleModels/MeshoptFallback-like' },
-    extensionsUsed: ['EXT_meshopt_compression'],
+    extensionsUsed: [extensionName],
     scene: 0,
     scenes: [{ nodes: [0] }],
     nodes: [{ mesh: 0 }],
@@ -358,7 +361,7 @@ function meshoptFallbackBufferSample(opts: { fallbackStub?: boolean } = {}): Glt
         byteLength: 36,
         byteStride: 12,
         extensions: {
-          EXT_meshopt_compression: {
+          [extensionName]: {
             buffer: 1,
             byteOffset: 0,
             byteLength: 16,
@@ -374,7 +377,7 @@ function meshoptFallbackBufferSample(opts: { fallbackStub?: boolean } = {}): Glt
         byteOffset: 36,
         byteLength: 6,
         extensions: {
-          EXT_meshopt_compression: {
+          [extensionName]: {
             buffer: 1,
             byteOffset: 16,
             byteLength: 16,
@@ -388,7 +391,7 @@ function meshoptFallbackBufferSample(opts: { fallbackStub?: boolean } = {}): Glt
     ],
     buffers: [
       opts.fallbackStub
-        ? { byteLength: 0, extensions: { EXT_meshopt_compression: { fallback: true } } }
+        ? { byteLength: 0, extensions: { [extensionName]: { fallback: true } } }
         : { uri: 'fallback.bin', byteLength: 42 },
       { uri: 'meshopt.bin', byteLength: 32 },
     ],
@@ -751,6 +754,27 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
         name: 'EXT_meshopt_compression',
         support: 'requires-hook',
         path: 'bufferViews[0].extensions.EXT_meshopt_compression',
+      }),
+    ]));
+  });
+
+  it('classifies Khronos KHR_meshopt_compression samples with the same hook policy', () => {
+    const report = reportFor(meshoptFallbackBufferSample({
+      fallbackStub: true,
+      extensionName: 'KHR_meshopt_compression',
+    }));
+    const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+
+    expect(report.primitives.usesMeshopt).toBe(true);
+    expect(report.extensions.supported).toContain('KHR_meshopt_compression');
+    expect(report.extensions.requiresHook).toEqual(['KHR_meshopt_compression']);
+    expect(report.extensions.unsupportedRequired).not.toContain('KHR_meshopt_compression');
+    expect(webgl2.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'extension',
+        name: 'KHR_meshopt_compression',
+        support: 'requires-hook',
+        path: 'bufferViews[0].extensions.KHR_meshopt_compression',
       }),
     ]));
   });

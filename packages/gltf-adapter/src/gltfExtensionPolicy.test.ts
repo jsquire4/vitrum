@@ -15,6 +15,13 @@ function f32Buffer(values: number[]): ArrayBuffer {
   return buf;
 }
 
+function i16Buffer(values: number[]): ArrayBuffer {
+  const buf = new ArrayBuffer(values.length * 2);
+  const view = new DataView(buf);
+  values.forEach((v, i) => view.setInt16(i * 2, v, true));
+  return buf;
+}
+
 function concat(buffers: readonly ArrayBuffer[]): ArrayBuffer {
   const total = buffers.reduce((sum, buffer) => sum + buffer.byteLength, 0);
   const out = new Uint8Array(total);
@@ -101,6 +108,55 @@ function textureSourceGltf(extension: GltfTextureSourceExtension): {
 }
 
 describe('glTF common extension policy', () => {
+  it('accepts required KHR_mesh_quantization when normalized accessors unpack to scene floats', async () => {
+    const positions = i16Buffer([
+      -32767, -32767, 0,
+      32767, -32767, 0,
+      -32767, 32767, 0,
+    ]);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
+      extensionsUsed: ['KHR_mesh_quantization'],
+      extensionsRequired: ['KHR_mesh_quantization'],
+      accessors: [{
+        bufferView: 0,
+        componentType: 5122,
+        normalized: true,
+        count: 3,
+        type: 'VEC3',
+      }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength }],
+      buffers: [{ byteLength: positions.byteLength }],
+    };
+
+    const { scene, warnings } = await gltfToScene(gltf, { buffers: new Map([[0, positions]]) });
+    const primitive = scene.primitives[0] as MeshPrimitive;
+
+    expect(warnings.some((warning) => warning.includes('KHR_mesh_quantization'))).toBe(false);
+    expect(primitive.positions[0]).toBeCloseTo(-1);
+    expect(primitive.positions[1]).toBeCloseTo(-1);
+    expect(primitive.positions[3]).toBeCloseTo(1);
+    expect(primitive.positions[4]).toBeCloseTo(-1);
+    expect(primitive.positions[6]).toBeCloseTo(-1);
+    expect(primitive.positions[7]).toBeCloseTo(1);
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.extensions.supported).toContain('KHR_mesh_quantization');
+    expect(report.extensions.unsupportedRequired).not.toContain('KHR_mesh_quantization');
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'extension',
+          name: 'KHR_mesh_quantization',
+        }),
+      ]),
+    );
+  });
+
   it('imports KHR_materials_dispersion as MaterialSpec.dispersionAbbeNumber', async () => {
     const { gltf, buffers } = minimalMaterialGltf({
       name: 'dispersive glass',

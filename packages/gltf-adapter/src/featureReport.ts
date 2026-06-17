@@ -181,6 +181,7 @@ export interface AnalyzeGltfAssetOptions {
 const REQUIRED_EXTENSION_SUPPORT = new Set([
   'KHR_draco_mesh_compression',
   'EXT_meshopt_compression',
+  'KHR_meshopt_compression',
   'KHR_lights_punctual',
   'KHR_materials_unlit',
   'KHR_materials_transmission',
@@ -195,6 +196,7 @@ const REQUIRED_EXTENSION_SUPPORT = new Set([
   'KHR_materials_emissive_strength',
   'KHR_materials_variants',
   'KHR_materials_pbrSpecularGlossiness',
+  'KHR_mesh_quantization',
   'KHR_texture_transform',
   'KHR_texture_basisu',
   'EXT_texture_webp',
@@ -205,6 +207,7 @@ const REQUIRED_EXTENSION_SUPPORT = new Set([
 const EXTENSIONS_REQUIRING_HOST_HOOK = new Set([
   'KHR_draco_mesh_compression',
   'EXT_meshopt_compression',
+  'KHR_meshopt_compression',
   'KHR_texture_basisu',
   'EXT_texture_webp',
   'MSFT_texture_dds',
@@ -217,6 +220,7 @@ const TEXTURE_SOURCE_EXTENSION_NAMES = [
 ] as const satisfies readonly GltfTextureSourceExtensionName[];
 
 const TEXTURE_SOURCE_EXTENSIONS = new Set<string>(TEXTURE_SOURCE_EXTENSION_NAMES);
+const MESHOPT_COMPRESSION_EXTENSIONS = new Set(['EXT_meshopt_compression', 'KHR_meshopt_compression']);
 
 const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
@@ -769,7 +773,7 @@ function extensionRequiresHostHook(
   if (ext === 'KHR_draco_mesh_compression') {
     return dracoCompressionRequiresHostHook(gltf, required.includes(ext));
   }
-  if (ext === 'EXT_meshopt_compression') {
+  if (MESHOPT_COMPRESSION_EXTENSIONS.has(ext)) {
     return meshoptCompressionRequiresHostHook(gltf, required.includes(ext));
   }
   if (!TEXTURE_SOURCE_EXTENSIONS.has(ext)) return true;
@@ -819,7 +823,7 @@ function meshoptCompressionRequiresHostHook(gltf: GltfJson, isRequired: boolean)
   if (isRequired) return true;
 
   for (const bufferView of gltf.bufferViews ?? []) {
-    if (bufferView.extensions?.EXT_meshopt_compression === undefined) continue;
+    if (!hasMeshoptCompressionExtension(bufferView.extensions)) continue;
     if (!meshoptBufferViewHasRealFallback(gltf, bufferView.buffer)) return true;
   }
 
@@ -829,11 +833,25 @@ function meshoptCompressionRequiresHostHook(gltf: GltfJson, isRequired: boolean)
 function meshoptBufferViewHasRealFallback(gltf: GltfJson, bufferIndex: number): boolean {
   const buffer = gltf.buffers?.[bufferIndex];
   if (!buffer) return false;
-  const meshoptExt = buffer.extensions?.EXT_meshopt_compression;
+  const meshoptExt = meshoptCompressionExtensionValue(buffer.extensions);
   if (meshoptExt == null || typeof meshoptExt !== 'object' || Array.isArray(meshoptExt)) {
     return true;
   }
   return (meshoptExt as { readonly fallback?: unknown }).fallback !== true;
+}
+
+function hasMeshoptCompressionExtension(extensions: Record<string, unknown> | undefined): boolean {
+  if (!extensions) return false;
+  return [...MESHOPT_COMPRESSION_EXTENSIONS].some((name) => extensions[name] !== undefined);
+}
+
+function meshoptCompressionExtensionValue(extensions: Record<string, unknown> | undefined): unknown {
+  if (!extensions) return undefined;
+  for (const name of MESHOPT_COMPRESSION_EXTENSIONS) {
+    const value = extensions[name];
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
 function textureSourceExtensionHasImageSource(value: unknown): boolean {
@@ -974,7 +992,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
       }
       const ext = primitive.extensions ?? {};
       if (ext['KHR_draco_mesh_compression']) usesDraco = true;
-      if (Object.keys(ext).includes('EXT_meshopt_compression')) usesMeshopt = true;
+      if (hasMeshoptCompressionExtension(ext)) usesMeshopt = true;
       if ((primitive.targets?.length ?? 0) > 0) {
         hasMorphTargets = true;
         addSourcePath(issuePaths, 'kind:skinned-mesh', `${primitivePath}.targets`);
@@ -1002,7 +1020,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     }
   }
   for (const bv of gltf.bufferViews ?? []) {
-    if (bv.extensions?.['EXT_meshopt_compression']) usesMeshopt = true;
+    if (hasMeshoptCompressionExtension(bv.extensions)) usesMeshopt = true;
   }
   const hasSkins = hasBoundSkinAttrs;
   const expectedPrimitiveKinds = new Set<'mesh' | 'skinned-mesh' | 'instanced-mesh'>();

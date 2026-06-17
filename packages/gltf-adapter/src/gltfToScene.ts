@@ -29,7 +29,7 @@
 //     (TRANSLATION/ROTATION/SCALE accessors; nodeWorld baked into instances;
 //     local instance matrices are returned for GltfSceneController animation).
 //
-//   - KHR_draco_mesh_compression / EXT_meshopt_compression → resolved via
+//   - KHR_draco_mesh_compression / EXT/KHR_meshopt_compression → resolved via
 //     HOST-SUPPLIED decoder hooks (opts.dracoDecode / opts.meshoptDecode; the
 //     package bundles no decoder). Without a hook the spec fallback is used
 //     when present (Draco fallback accessors / meshopt fallback buffer);
@@ -126,6 +126,7 @@ type MaterialTextureRefField = typeof MATERIAL_TEXTURE_REF_FIELDS[number];
 const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   'KHR_draco_mesh_compression',
   'EXT_meshopt_compression',
+  'KHR_meshopt_compression',
   'KHR_lights_punctual',
   'KHR_materials_unlit',
   'KHR_materials_transmission',
@@ -140,6 +141,9 @@ const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   'KHR_materials_emissive_strength',
   'KHR_materials_variants',
   'KHR_materials_pbrSpecularGlossiness',
+  // Accessor unpacking already converts BYTE/SHORT normalized attributes to
+  // float32, which is the representation contract KHR_mesh_quantization needs.
+  'KHR_mesh_quantization',
   'KHR_texture_transform',
   'EXT_mesh_gpu_instancing',
 ]);

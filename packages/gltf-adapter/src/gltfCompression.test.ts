@@ -778,16 +778,40 @@ const meshoptTriHook: MeshoptDecodeFn = (_compressed, count, byteStride) => {
 };
 
 // ────────────────────────────────────────────────────────────────────────────
-// EXT_meshopt_compression
+// EXT/KHR_meshopt_compression
 // ────────────────────────────────────────────────────────────────────────────
 
-describe('EXT_meshopt_compression hooks (GLTF-02)', () => {
+describe('EXT/KHR_meshopt_compression hooks (GLTF-02)', () => {
   it('real meshoptimizer encoded payload imports through the documented host hook', async () => {
     const { gltf, buffers, decode } = await makeRealMeshoptGltf();
 
     const result = await gltfToScene(gltf, { buffers, meshoptDecode: decode });
 
     expect(result.warnings.some(w => w.includes('SKIPPED'))).toBe(false);
+    expect(result.scene.primitives).toHaveLength(1);
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    expect(Array.from(primitive.positions)).toEqual(TRI_POSITIONS);
+    expect(Array.from(primitive.indices!)).toEqual(TRI_INDICES);
+  });
+
+  it('also accepts Khronos KHR_meshopt_compression assets through the meshopt hook', async () => {
+    const { gltf, buffers } = makeMeshoptGltf({
+      extensionsRequired: ['KHR_meshopt_compression'],
+    });
+    gltf.extensionsUsed = ['KHR_meshopt_compression'];
+    for (const bufferView of gltf.bufferViews ?? []) {
+      const ext = bufferView.extensions?.EXT_meshopt_compression;
+      if (!ext) continue;
+      bufferView.extensions = { KHR_meshopt_compression: ext };
+    }
+    gltf.buffers![0] = {
+      byteLength: 0,
+      extensions: { KHR_meshopt_compression: { fallback: true } },
+    };
+
+    const result = await gltfToScene(gltf, { buffers, meshoptDecode: meshoptTriHook });
+
+    expect(result.warnings.some(w => w.includes('KHR_meshopt_compression'))).toBe(false);
     expect(result.scene.primitives).toHaveLength(1);
     const primitive = result.scene.primitives[0] as MeshPrimitive;
     expect(Array.from(primitive.positions)).toEqual(TRI_POSITIONS);
