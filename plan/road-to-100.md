@@ -1124,6 +1124,17 @@ to lite, and fails when a linear-HDR capture is black (`mean luminance <=
 prevents the old failure mode where two lite/black arms could write a misleading
 PASS JSON.
 
+✅ **RADIOMETRIC RESULT-SNAPSHOT / HOST-STATUS CHECK ADDED (2026-06-17):**
+`tools/radiometric-ab/proofs.mjs` plus `check-results.mjs` now make the committed
+SPPM, safe-default BDPT, ReSTIR-PT result JSONs, ReSTIR-PT specialty fixture,
+and walkaround host-status JSON machine-checkable without a new GPU recapture.
+`npm run radiometric-ab:proof-check` verifies the expected 80x80 resolution,
+frame counts, PASS verdicts, per-harness relative-error and variance thresholds,
+SPPM checkpoints, the explicit BDPT multi-vertex research-mode finding recorded
+in `results-bdpt.json`, specialty-lobe `requiresGpuRecapture:false`, and the
+walkaround `HOST-BLOCKED`/do-not-promote marker. This is still snapshot/status
+evidence; full-adapter V28-B recaptures remain the promotion queue.
+
 **Footgun:** Testing only `analyzeGltfAsset` without render proved glTF API "done" but left textures black.
 
 #### 5B — Oracle suite (keep green)
@@ -1147,7 +1158,10 @@ topology, instanced, lite fallback, and analytic paths; and
 `pt-webgpu/src/__tests__/mutationDesyncs.test.ts` now pins router-level
 `updateEmitter()` point-light buffer writes plus same-sized HDRI
 `updateEnvironment()` texel/CDF writes, scene-state commit, and accumulation
-reset without falling through to `setScene()`.
+reset without falling through to `setScene()`, and directly invokes
+`GpuResources.clearReservoirBuffers()` to prove ReSTIR-PT Cur/Prev/Spatial
+history buffers are cleared through the production method instead of a local
+test sketch.
 
 ✅ **ADAPTER-BACKED PT MATERIAL/ENVIRONMENT/EMITTER MUTATION PROOFS ADDED (2026-06-17):**
 `tools/behavioral-gate/gate.mjs` now includes real pt-webgpu mutation lanes that

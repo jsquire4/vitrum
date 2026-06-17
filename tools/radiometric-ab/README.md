@@ -40,6 +40,9 @@ npm run radiometric-ab:restir-pt
 # Static CPU fixture check:
 npm run radiometric-ab:restir-pt-specialty
 
+# Committed result-snapshot and host-status proof check:
+npm run radiometric-ab:proof-check
+
 # Walkaround-hybrid A/Bs. On the current WSL native-Deno host this may classify
 # as HOST-BLOCKED if Deno panics in wgpu-hal before the harness can return a
 # verdict; see `walkaround-ab-host-status.json`.

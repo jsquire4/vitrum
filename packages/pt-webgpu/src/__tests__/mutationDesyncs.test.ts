@@ -19,6 +19,7 @@ import {
   scenePackResultFromPacked,
 } from '../scene/uploadSceneBuffers.js';
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
+import { GpuResources } from '../gpuResources.js';
 import type { MutationHost } from '../sceneMutationRouter.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 import { installGpuConstStubs } from './gpuStub.js';
@@ -441,76 +442,54 @@ describe('applyEmitterCountMutation — Item 2d: directionalAngularDiameter sync
 
 describe('GpuResources.clearReservoirBuffers — Item 2e: reservoir history cleared on scene change', () => {
   it('clears all three reservoir buffers when allocated', () => {
+    installGpuConstStubs();
     const clearBuffer = vi.fn();
     const finishStub = vi.fn(() => 'cmd');
     const encoder = { clearBuffer, finish: finishStub };
     const submit = vi.fn();
     const device = {
+      createBuffer: vi.fn(() => ({ destroy: vi.fn() })),
       createCommandEncoder: vi.fn(() => encoder),
       queue: { submit },
-    };
+    } as unknown as GPUDevice;
 
-    // Minimal GpuResources-like object that exercises clearReservoirBuffers directly
-    // via the public method signature.
     const buf = (label: string) => ({ label });
     const rptReservoirCur = buf('cur');
     const rptReservoirPrev = buf('prev');
     const rptReservoirSpatial = buf('spatial');
 
-    // We test the logic by calling the cleared buffers with a mock.
-    // Import the GpuResources class to test the actual method.
-    // Since GpuResources is a class with private device, we test the clearing
-    // contract via its public method with a synthetic stub.
-
-    // The pattern: clearBuffer is called for each non-null reservoir.
-    // Replicate the logic to verify the contract.
-    function clearReservoirBuffers(res: {
-      device: { createCommandEncoder: (opts: { label: string }) => {
-        clearBuffer: (b: unknown) => void;
-        finish: () => unknown;
-      }; queue: { submit: (cmds: unknown[]) => void } };
-      rptReservoirCur: unknown | null;
-      rptReservoirPrev: unknown | null;
-      rptReservoirSpatial: unknown | null;
-    }) {
-      if (res.rptReservoirCur == null) return;
-      const enc = res.device.createCommandEncoder({ label: 'vitrum.pt-webgpu.restirPt.clearReservoirs' });
-      enc.clearBuffer(res.rptReservoirCur);
-      if (res.rptReservoirPrev != null) enc.clearBuffer(res.rptReservoirPrev);
-      if (res.rptReservoirSpatial != null) enc.clearBuffer(res.rptReservoirSpatial);
-      res.device.queue.submit([enc.finish()]);
-    }
-
-    clearReservoirBuffers({
-      device: device,
-      rptReservoirCur,
-      rptReservoirPrev,
-      rptReservoirSpatial,
-    });
+    const gpu = new GpuResources(device, 'full', false, true);
+    gpu.rptReservoirCur = rptReservoirCur as unknown as GPUBuffer;
+    gpu.rptReservoirPrev = rptReservoirPrev as unknown as GPUBuffer;
+    gpu.rptReservoirSpatial = rptReservoirSpatial as unknown as GPUBuffer;
+    gpu.clearReservoirBuffers();
 
     // Three clearBuffer calls — Cur, Prev, Spatial.
     expect(clearBuffer).toHaveBeenCalledTimes(3);
     expect(clearBuffer).toHaveBeenCalledWith(rptReservoirCur);
     expect(clearBuffer).toHaveBeenCalledWith(rptReservoirPrev);
     expect(clearBuffer).toHaveBeenCalledWith(rptReservoirSpatial);
+    expect(device.createCommandEncoder).toHaveBeenCalledWith({
+      label: 'vitrum.pt-webgpu.restirPt.clearReservoirs',
+    });
+    expect(finishStub).toHaveBeenCalledOnce();
     expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledWith(['cmd']);
   });
 
   it('is a no-op when rptReservoirCur is null', () => {
+    installGpuConstStubs();
     const submit = vi.fn();
-    const device = { queue: { submit }, createCommandEncoder: vi.fn() };
+    const device = {
+      createBuffer: vi.fn(() => ({ destroy: vi.fn() })),
+      createCommandEncoder: vi.fn(),
+      queue: { submit },
+    } as unknown as GPUDevice;
+    const gpu = new GpuResources(device, 'full', false, true);
 
-    // Same logic as above — null guard.
-    function clearReservoirBuffers(res: {
-      device: typeof device;
-      rptReservoirCur: unknown | null;
-    }) {
-      if (res.rptReservoirCur == null) return;
-      const enc = res.device.createCommandEncoder({ label: '' });
-      res.device.queue.submit([enc]);
-    }
+    gpu.clearReservoirBuffers();
 
-    clearReservoirBuffers({ device, rptReservoirCur: null });
+    expect(device.createCommandEncoder).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });
 });
