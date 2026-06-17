@@ -1,0 +1,3505 @@
+{
+"count": 506,
+"items": [
+{
+"file": "packages/gltf-adapter/src/primitiveModeFallback.ts",
+"line": 96,
+"kind": "fallback",
+"text": "function sanitizeRadius(value: number | undefined, fallback: number): number {",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 31,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] Unknown accessor type \"${type}\"`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 49,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] Unknown componentType ${String(ct)}`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 85,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] Unknown componentType ${String(ct)}`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 103,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] Accessor ${accessorIndex} not found`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 108,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] Unknown accessor type \"${accessor.type}\"`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 134,
+"kind": "throw",
+"text": "if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 194,
+"kind": "throw",
+"text": "else throw new Error('[vitrum/gltf-adapter] Sparse indices bufferView not found');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 200,
+"kind": "throw",
+"text": "else throw new Error(`[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 207,
+"kind": "throw",
+"text": "else throw new Error('[vitrum/gltf-adapter] Sparse values bufferView not found');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 213,
+"kind": "throw",
+"text": "else throw new Error(`[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 223,
+"kind": "throw",
+"text": "else throw new Error(message);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 287,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] Accessor ${accessorIndex} not found`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 290,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 301,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 315,
+"kind": "throw",
+"text": "if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 336,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/accessors.ts",
+"line": 355,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 245,
+"kind": "throw",
+"text": "throw new Error('[vitrum/gltf-adapter] GltfSceneController.seek: asset has no animations.');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 286,
+"kind": "throw",
+"text": "throw new Error('[vitrum/gltf-adapter] GltfSceneController.blend: at least one clip is required.');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 289,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 295,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 439,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] GltfSceneController.${caller}: asset has no animations.`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 447,
+"kind": "throw",
+"text": "if (!clip) throw new Error(`[vitrum/gltf-adapter] Animation clip index ${selector} not found.`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 452,
+"kind": "throw",
+"text": "if (!clip) throw new Error(`[vitrum/gltf-adapter] Animation clip \"${selector}\" not found.`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 831,
+"kind": "throw",
+"text": "throw new Error('[vitrum/gltf-adapter] GltfSceneController.blend: at least one weight must be positive.');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 927,
+"kind": "fallback",
+"text": "function readVec3(value: Float32Array, fallback: [number, number, number]): [number, number, number] {",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/sceneController.ts",
+"line": 937,
+"kind": "fallback",
+"text": "fallback: [number, number, number, number],",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/glbParser.ts",
+"line": 30,
+"kind": "throw",
+"text": "throw new Error('[vitrum/gltf-adapter] GLB: buffer too small for header');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/glbParser.ts",
+"line": 35,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/glbParser.ts",
+"line": 42,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/glbParser.ts",
+"line": 49,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/glbParser.ts",
+"line": 64,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/glbParser.ts",
+"line": 82,
+"kind": "throw",
+"text": "throw new Error('[vitrum/gltf-adapter] GLB: no JSON chunk found');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/engineBridge.ts",
+"line": 260,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/engineBridge.ts",
+"line": 288,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/engineBridge.ts",
+"line": 310,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 26,
+"kind": "fallback",
+"text": "//     bufferView's own `buffer`, unless that buffer is a `fallback: true`",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 238,
+"kind": "fallback",
+"text": "// Spec fallback: the bufferView's OWN buffer holds uncompressed data,",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 239,
+"kind": "fallback",
+"text": "// unless that buffer is a `fallback: true` stub (no real payload).",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 255,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 275,
+"kind": "throw",
+"text": "if (isRequired) throw new Error(msg);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 288,
+"kind": "throw",
+"text": "if (isRequired) throw new Error(msg);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 298,
+"kind": "throw",
+"text": "if (isRequired) throw new Error(msg);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 344,
+"kind": "throw",
+"text": "if (isRequired) throw new Error(msg);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 356,
+"kind": "throw",
+"text": "if (isRequired) throw new Error(msg);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 446,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/compression.ts",
+"line": 480,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/featureReport.ts",
+"line": 322,
+"kind": "fallback",
+"text": "fallback: string,",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/featureReport.ts",
+"line": 388,
+"kind": "fallback",
+"text": "else if (issue.support === 'approximate' || issue.support === 'fallback-generated-mesh' || issue.support === 'fallback-rebuild') {",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/assetLoader.ts",
+"line": 255,
+"kind": "fallback",
+"text": "issue.support === 'fallback-rebuild'",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/assetLoader.ts",
+"line": 543,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] ${label} has a malformed data: URI.`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/assetLoader.ts",
+"line": 550,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] ${label} uses base64 data URI but atob() is unavailable.`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/texturePipeline.ts",
+"line": 769,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] decodePixels returned invalid texture dimensions ${pixels.width}x${pixels.height}.`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/texturePipeline.ts",
+"line": 910,
+"kind": "fallback",
+"text": "function clamp01Number(value: unknown, fallback: number): number {",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/gltfTypes.ts",
+"line": 149,
+"kind": "fallback",
+"text": "/** Per-buffer extensions (EXT_meshopt_compression `fallback: true` stubs). */",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/transforms.ts",
+"line": 143,
+"kind": "throw",
+"text": "throw new Error('[vitrum/gltf-adapter] Node matrix must have 16 elements');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/gltfToScene.ts",
+"line": 241,
+"kind": "fallback",
+"text": "* `fallback: true`) uncompressed fallback are read directly (warn);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/gltfToScene.ts",
+"line": 428,
+"kind": "throw",
+"text": "throw new Error('[vitrum/gltf-adapter] Input ArrayBuffer is too small to be a valid glTF');",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/gltfToScene.ts",
+"line": 1930,
+"kind": "throw",
+"text": "throw new Error(`[vitrum/gltf-adapter] Accessor ${accessorIndex} not found`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/gltfToScene.ts",
+"line": 1933,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/gltfToScene.ts",
+"line": 1939,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/gltfToScene.ts",
+"line": 1952,
+"kind": "throw",
+"text": "if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/gltf-adapter/src/gltfToScene.ts",
+"line": 1956,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "gltf-adapter"
+},
+{
+"file": "packages/dev/src/react/DenoiserABToggle.tsx",
+"line": 64,
+"kind": "not_implemented",
+"text": "'[DenoiserABToggle] engine.debug.setDenoiserEnabled() is not implemented on this backend' +",
+"pkg": "dev"
+},
+{
+"file": "packages/engine/src/progressiveHandoff.ts",
+"line": 269,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/progressiveHandoff.ts",
+"line": 300,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/progressiveHandoff.ts",
+"line": 331,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/createEngineInternals.ts",
+"line": 132,
+"kind": "downgrade",
+"text": "*  backend capability downgrades. */",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/adapterProfile.ts",
+"line": 135,
+"kind": "downgrade",
+"text": "// not falsely downgrade the recommendation to 'none'.",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/idempotentDispose.ts",
+"line": 308,
+"kind": "throw",
+"text": "throw new Error(spec.throwMessage ?? `${spec.method}: engine is disposed`);",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/negotiateWebGPUDevice.ts",
+"line": 138,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/negotiateWebGPUDevice.ts",
+"line": 150,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/negotiateWebGPUDevice.ts",
+"line": 203,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/negotiateWebGPUDevice.ts",
+"line": 237,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/gltf.ts",
+"line": 197,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/gltf.ts",
+"line": 205,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/gltf.ts",
+"line": 271,
+"kind": "fallback",
+"text": "fallback: EnginePreference | undefined,",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/createProgressiveEngine.ts",
+"line": 200,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/createProgressiveEngine.ts",
+"line": 209,
+"kind": "throw",
+"text": "throw new Error('createProgressiveEngine: navigator.gpu.requestAdapter() returned null (no WebGPU adapter).');",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/createProgressiveEngine.ts",
+"line": 227,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/createProgressiveEngine.ts",
+"line": 323,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/createProgressiveEngine.ts",
+"line": 330,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/react/VitrumCanvas.tsx",
+"line": 169,
+"kind": "throw",
+"text": "throw new Error('[VitrumCanvas] loadGltfWithEngine did not return an engine.');",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/backends/ptWebgl2.ts",
+"line": 42,
+"kind": "throw",
+"text": "throw new Error('createEngine: WebGL2 is unavailable; canvas.getContext(\"webgl2\") returned null.');",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/backends/ptWebgpu.ts",
+"line": 40,
+"kind": "throw",
+"text": "throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/backends/walkaround.ts",
+"line": 54,
+"kind": "throw",
+"text": "throw new Error('createEngine: WebGPU adapter request returned null even though detectGpu reported support');",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/backends/walkaround.ts",
+"line": 75,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "engine"
+},
+{
+"file": "packages/engine/src/lifecycle/vanilla.ts",
+"line": 314,
+"kind": "not_implemented",
+"text": "* not implement `captureFrame`. See {@link Engine.captureFrame} for the",
+"pkg": "engine"
+},
+{
+"file": "packages/walkaround-rc/src/cascadePyramid.ts",
+"line": 51,
+"kind": "throw",
+"text": "throw new Error(`${path} must be a positive integer; received ${String(value)}`);",
+"pkg": "walkaround-rc"
+},
+{
+"file": "packages/walkaround-rc/src/cascadePyramid.ts",
+"line": 57,
+"kind": "throw",
+"text": "throw new Error(`${path} must be a finite number; received ${String(value)}`);",
+"pkg": "walkaround-rc"
+},
+{
+"file": "packages/walkaround-rc/src/cascadePyramid.ts",
+"line": 71,
+"kind": "throw",
+"text": "throw new Error(`${label} must contain at least one cascade`);",
+"pkg": "walkaround-rc"
+},
+{
+"file": "packages/walkaround-rc/src/cascadePyramid.ts",
+"line": 78,
+"kind": "throw",
+"text": "throw new Error(`${label}[${i}].probes must be a [x, y, z] tuple`);",
+"pkg": "walkaround-rc"
+},
+{
+"file": "packages/walkaround-rc/src/cascadePyramid.ts",
+"line": 87,
+"kind": "throw",
+"text": "throw new Error(`${label}[${i}].rays must be a perfect square; received ${dim.rays}`);",
+"pkg": "walkaround-rc"
+},
+{
+"file": "packages/walkaround-rc/src/cascadePyramid.ts",
+"line": 90,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-rc"
+},
+{
+"file": "packages/walkaround-rc/src/cascadePyramid.ts",
+"line": 100,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-rc"
+},
+{
+"file": "packages/walkaround-rc/src/cascadeDispatch.ts",
+"line": 445,
+"kind": "throw",
+"text": "throw new Error(`[RCDispatcher] buildHandlesRaw failed: ${error.message}`);",
+"pkg": "walkaround-rc"
+},
+{
+"file": "packages/core/src/gpuDetection.ts",
+"line": 39,
+"kind": "fallback",
+"text": "// Last-resort fallback: `requestAdapterInfo()` (deprecated; may exist on",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/inverse.ts",
+"line": 47,
+"kind": "reserved",
+"text": "*  `texture` is reserved for Phase 2 (texture optimization) and is part of the",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/inverse.ts",
+"line": 91,
+"kind": "downgrade",
+"text": "/** Structured reason an inverse-rendering backend downgraded or scoped a",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/inverse.ts",
+"line": 154,
+"kind": "downgrade",
+"text": "*  commonly when a requested `'path-replay'` session downgrades to",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/inverse.ts",
+"line": 216,
+"kind": "downgrade",
+"text": "/** Creation-time diagnostics for method downgrades or scoped inverse-rendering",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 151,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 156,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 161,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 167,
+"kind": "throw",
+"text": "throw new Error(`solveSkin: bones length ${prim.bones.length} not a multiple of 16.`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 170,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 177,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 185,
+"kind": "throw",
+"text": "throw new Error(`solveSkin: skinWeights[${i}] is invalid (${weight}).`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 196,
+"kind": "throw",
+"text": "throw new Error(`solveSkin: skinWeights for vertex ${vertex} sum to ${sum}; expected 1.`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 204,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 210,
+"kind": "throw",
+"text": "throw new Error(`solveSkin: outPositions length ${positions.length} expected ${vertCount * 3}.`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 213,
+"kind": "throw",
+"text": "throw new Error(`solveSkin: outNormals length ${normals.length} expected ${vertCount * 3}.`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 216,
+"kind": "throw",
+"text": "throw new Error(`solveSkin: outTangents length ${tangents.length} expected ${vertCount * 4}.`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 236,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 247,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 257,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 268,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 279,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 295,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/skinSolver.ts",
+"line": 318,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 817,
+"kind": "fallback",
+"text": "*  Geometry/TLAS content edits still fallback-rebuild (full scene-texture/BVH",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 821,
+"kind": "fallback",
+"text": "transform: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 822,
+"kind": "fallback",
+"text": "positions: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 825,
+"kind": "fallback",
+"text": "topology: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 826,
+"kind": "fallback",
+"text": "addPrimitive: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 827,
+"kind": "fallback",
+"text": "removePrimitive: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 834,
+"kind": "fallback",
+"text": "*  add/remove are fallback-rebuild (insert/evict forces a full BLAS/TLAS repack).",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 842,
+"kind": "fallback",
+"text": "addPrimitive: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 843,
+"kind": "fallback",
+"text": "removePrimitive: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 956,
+"kind": "fallback",
+"text": "topology: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 957,
+"kind": "fallback",
+"text": "addPrimitive: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 958,
+"kind": "fallback",
+"text": "removePrimitive: 'fallback-rebuild',",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 982,
+"kind": "not_implemented",
+"text": "// walkaround-hybrid does NOT implement createInverseSession (differentiable RT",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 1048,
+"kind": "fallback",
+"text": "// fallback-rebuild (full scene-texture/BVH repack), while resize is a",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/promiseLedger.ts",
+"line": 1062,
+"kind": "not_implemented",
+"text": "// pt-webgl2 does not implement any of the following optional methods:",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/capabilities.ts",
+"line": 49,
+"kind": "fallback",
+"text": "| 'fallback-rebuild'",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/giState.ts",
+"line": 48,
+"kind": "not_implemented",
+"text": "* state simply do not implement this interface; the facade marks the methods",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/index.ts",
+"line": 314,
+"kind": "not_implemented",
+"text": "*  backend that does not implement this still satisfies the contract; the",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/index.ts",
+"line": 357,
+"kind": "downgrade",
+"text": "* downgrades, and mutation fallbacks. Console output remains for developers;",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/index.ts",
+"line": 419,
+"kind": "not_implemented",
+"text": "* texture allocated yet). Optional: a minimal backend that cannot implement",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/index.ts",
+"line": 441,
+"kind": "not_implemented",
+"text": "* that do not implement ReSTIR-PT reuse omit this method entirely.",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/engine/telemetry.ts",
+"line": 127,
+"kind": "downgrade",
+"text": "* features, approximation downgrades, and mutation fallbacks. They are not",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/material.ts",
+"line": 160,
+"kind": "not_implemented",
+"text": "*  be shown independent of scene lighting. Backends that do not implement an",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/material.ts",
+"line": 226,
+"kind": "reserved",
+"text": "*  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/material.ts",
+"line": 229,
+"kind": "reserved",
+"text": "*  @reserved Accepted; not yet consumed by any backend. */",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/material.ts",
+"line": 232,
+"kind": "reserved",
+"text": "*  @reserved Accepted; not yet consumed by any backend. */",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/analyticParams.ts",
+"line": 36,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/analyticParams.ts",
+"line": 50,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/analyticParams.ts",
+"line": 60,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/primitives.ts",
+"line": 40,
+"kind": "reserved",
+"text": "*  @reserved Accepted; consumed by NO backend ('unsupported' in",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/primitives.ts",
+"line": 200,
+"kind": "reserved",
+"text": "*  @reserved Same status as {@link MeshPrimitive.receiveShadow} \u2014 consumed by",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 42,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 47,
+"kind": "throw",
+"text": "throw new Error(`updatePrimitive: primitive \"${primitive.id}\" id cannot be changed`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 63,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 71,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 76,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 81,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 116,
+"kind": "throw",
+"text": "throw new Error(`updatePrimitive: primitive \"${id}\" not found in current scene`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 139,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 144,
+"kind": "throw",
+"text": "throw new Error(`updateEmitter: emitter \"${id}\" id cannot be changed`);",
+"pkg": "core"
+},
+{
+"file": "packages/core/src/scene/patchScene.ts",
+"line": 149,
+"kind": "throw",
+"text": "throw new Error(`updateEmitter: emitter \"${id}\" not found in current scene`);",
+"pkg": "core"
+},
+{
+"file": "packages/stained-glass-extensions/src/cameUniformUploader.ts",
+"line": 4,
+"kind": "reserved",
+"text": "* @reserved The `CamePackedUBO` output format is defined for the host-app",
+"pkg": "stained-glass-extensions"
+},
+{
+"file": "packages/shared-denoisers/src/svgfRealWebGPU.ts",
+"line": 384,
+"kind": "fallback",
+"text": "// Per-channel fallback: R\u21920.5, G\u21920.5, B\u21921.0 (packed octahedral +Z); alpha=0.",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/bmfrWebGPU.ts",
+"line": 109,
+"kind": "throw",
+"text": "throw new Error('runBmfrWebGPU: invalid rgb buffer or dimensions');",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/hdrLuminanceBilateralWebGPU.ts",
+"line": 64,
+"kind": "throw",
+"text": "throw new Error('runHdrLuminanceBilateralWebGPU: WebGPU not available in this browser');",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/hdrLuminanceBilateralWebGPU.ts",
+"line": 67,
+"kind": "throw",
+"text": "throw new Error('runHdrLuminanceBilateralWebGPU: invalid rgb buffer or dimensions');",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/sharedWebGpuDevice.ts",
+"line": 30,
+"kind": "throw",
+"text": "throw new Error('WebGPU not available');",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/sharedWebGpuDevice.ts",
+"line": 58,
+"kind": "throw",
+"text": "throw new Error('getSharedWebGPUDevice: exhausted retries after concurrent dispose');",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/sharedWebGpuDevice.ts",
+"line": 64,
+"kind": "throw",
+"text": "throw new Error('getSharedWebGPUDevice: failed to request GPU adapter');",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/sharedWebGpuDevice.ts",
+"line": 70,
+"kind": "throw",
+"text": "throw new Error(SUPERSEDED_MSG);",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/sharedWebGpuDevice.ts",
+"line": 157,
+"kind": "throw",
+"text": "throw new Error(`${opts.errorLabel}: WebGPU not available`);",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/sharedWebGpuDevice.ts",
+"line": 168,
+"kind": "throw",
+"text": "throw new Error(`${opts.errorLabel}: failed to request GPU adapter`);",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/atrousVarianceWebGPU.ts",
+"line": 95,
+"kind": "throw",
+"text": "throw new Error('runAtrousVarianceWebGPU: invalid rgb buffer or dimensions');",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/atrousVarianceWebGPU.ts",
+"line": 98,
+"kind": "throw",
+"text": "if (!cond) throw new Error(`runAtrousVarianceWebGPU: ${detail}`);",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/oidnBridge.ts",
+"line": 198,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/oidnBridge.ts",
+"line": 309,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/wgsl/bmfr.wgsl.ts",
+"line": 196,
+"kind": "reserved",
+"text": "// Thread 0 re-reads the whole block in Phase 2 to compute the position mean",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/shared-denoisers/src/wgsl/bmfr.wgsl.ts",
+"line": 220,
+"kind": "reserved",
+"text": "// \u2500\u2500 Phase 2 + 3: thread 0 forms M, r and solves; publishes \u03b1. \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+"pkg": "shared-denoisers"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 455,
+"kind": "reserved",
+"text": "// \u2500\u2500 RC subsystem (W8 Phase 2 \u2014 opt-in via opts.rcEnabled) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 555,
+"kind": "not_implemented",
+"text": "// Non-'none' strategies are not implemented for this backend.",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 598,
+"kind": "not_implemented",
+"text": "`not implement causticStrategy modes. The causticOptions object is ignored.`,",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 665,
+"kind": "reserved",
+"text": "// W8 Phase 2 \u2014 opt-in RC subsystem. RCSubsystem owns its own BVH +",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 941,
+"kind": "fallback",
+"text": "fallback: 'map ignored',",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 957,
+"kind": "fallback",
+"text": "* **Capability filter + analytic fallback:** the scene is first partitioned",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 967,
+"kind": "throw",
+"text": "throw new Error('HybridEngine.setScene: engine is disposed.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1045,
+"kind": "reserved",
+"text": "// W8 Phase 2: rebuild the RC BVH + cascade buffers after async ReSTIR",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1130,
+"kind": "throw",
+"text": "throw new Error('HybridEngine.updatePrimitive: engine is disposed.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1133,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1139,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1146,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1248,
+"kind": "throw",
+"text": "throw new Error('HybridEngine.applyGpuSkinnedRefit: engine is disposed.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1251,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1263,
+"kind": "throw",
+"text": "throw new Error(`applyGpuSkinnedRefit(\"${id}\"): skinned-mesh primitive not found.`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1323,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1391,
+"kind": "throw",
+"text": "throw new Error('HybridEngine.addPrimitive: engine is disposed.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1394,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1400,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1442,
+"kind": "throw",
+"text": "throw new Error('HybridEngine.removePrimitive: engine is disposed.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1445,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1452,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1466,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1473,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1478,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1483,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 1927,
+"kind": "throw",
+"text": "throw new Error('HybridEngine.setSize: engine is disposed.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 2189,
+"kind": "throw",
+"text": "throw new Error('HybridEngine.reset: engine is disposed.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 2207,
+"kind": "throw",
+"text": "throw new Error('pause: engine is disposed or in error state');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 2225,
+"kind": "throw",
+"text": "throw new Error('resume: engine is disposed or in error state');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngine.ts",
+"line": 2375,
+"kind": "reserved",
+"text": "// W8 Phase 2 \u2014 also tear down RC subsystem when active.",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngineRC.ts",
+"line": 28,
+"kind": "reserved",
+"text": "* Plan: `plan/w8-rc-mis-composition.md` (Phase 2 section).",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 461,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 835,
+"kind": "throw",
+"text": "throw new Error(`refitSkinnedMeshAfterGpuWrite(\"${id}\"): BVH not ready \u2014 call setScene first.`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 848,
+"kind": "throw",
+"text": "throw new Error(`refitSkinnedMeshAfterGpuWrite(\"${id}\"): no TLAS binding for primitive.`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 851,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 869,
+"kind": "throw",
+"text": "throw new Error(`refitSkinnedMeshAfterGpuWrite(\"${id}\"): degenerate skinned positions.`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 884,
+"kind": "throw",
+"text": "throw new Error(`refitSkinnedMeshAfterGpuWrite(\"${id}\"): TLAS transform refit failed.`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 902,
+"kind": "throw",
+"text": "throw new Error(`refitSkinnedMeshAfterGpuWrite(\"${id}\"): no mesh vertex range in BVH.`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 905,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 985,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1111,
+"kind": "fallback",
+"text": "fallback: number,",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1175,
+"kind": "fallback",
+"text": "function alphaAtlasUnit(value: number | undefined, fallback: number): number {",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1179,
+"kind": "fallback",
+"text": "function minClampedUnit(value: number | undefined, min: number, fallback: number): number {",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1183,
+"kind": "fallback",
+"text": "function nonNegativeScalar(value: number | undefined, fallback: number): number {",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1190,
+"kind": "fallback",
+"text": "fallback: number,",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1200,
+"kind": "fallback",
+"text": "fallback: number,",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1283,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1288,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1315,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+"line": 1321,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 277,
+"kind": "throw",
+"text": "throw new Error('serializeGIState: ReSTIR-GI reservoir buffers must be equal-length.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 329,
+"kind": "throw",
+"text": "throw new Error(`deserializeGIState: bad magic 0x${magic.toString(16)} (not a GI snapshot).`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 339,
+"kind": "throw",
+"text": "throw new Error(`deserializeGIState: unsupported version ${version} (expected ${GI_SNAPSHOT_VERSION}, 4, or 3; v1/v2 octahedral irradiance is incompatible with SH).`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 358,
+"kind": "throw",
+"text": "throw new Error('deserializeGIState: buffer too small for the declared atlas dimensions.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 375,
+"kind": "throw",
+"text": "throw new Error('deserializeGIState: buffer too small for the ReSTIR-GI sub-header.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 384,
+"kind": "throw",
+"text": "throw new Error('deserializeGIState: buffer too small for the declared ReSTIR-GI reservoir dimensions.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 400,
+"kind": "throw",
+"text": "throw new Error('deserializeGIState: buffer too small for the PPG sub-header.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 420,
+"kind": "throw",
+"text": "throw new Error('deserializeGIState: buffer too small for the declared PPG tree data.');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/giStateSnapshot.ts",
+"line": 428,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
+"line": 687,
+"kind": "fallback",
+"text": "* Motion fallback: above {@link checkerboardMotionThresholdSq} of per-frame",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngineFrameOrchestrator.ts",
+"line": 431,
+"kind": "fallback",
+"text": ": [I, I, I];  // legacy fallback: achromatic (no scene directional)",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/HybridEngineLifecycle.ts",
+"line": 350,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/ddgi/probeGrid.ts",
+"line": 147,
+"kind": "throw",
+"text": "if (!this._params) throw new Error('ProbeGrid not initialized');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/ppg/dTree.ts",
+"line": 120,
+"kind": "reserved",
+"text": "* Helper used by Phase 2 \u2014 given a parent whose own slot is already pushed,",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/ppg/dTree.ts",
+"line": 276,
+"kind": "fallback",
+"text": ": u0; // cold leaf (zero flux) reached via uniform fallback: keep u0.",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/InferenceGraph.ts",
+"line": 186,
+"kind": "throw",
+"text": "throw new Error('[InferenceGraph] not initialized \u2014 call initialize() first');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/tensorDimSolver.ts",
+"line": 107,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/tensorDimSolver.ts",
+"line": 115,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/tensorDimSolver.ts",
+"line": 121,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 75,
+"kind": "throw",
+"text": "throw new Error(`[validateWeightsForSpec] duplicate spec layer '${layer.name}'`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 83,
+"kind": "throw",
+"text": "throw new Error(`[validateWeightsForSpec] duplicate weights for layer '${layerWeights.name}'`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 89,
+"kind": "throw",
+"text": "throw new Error(`[validateWeightsForSpec] unknown layer '${layerWeights.name}' in checkpoint`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 94,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 100,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 112,
+"kind": "throw",
+"text": "throw new Error(`[validateWeightsForSpec] missing weights for layer '${layer.name}'`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 131,
+"kind": "throw",
+"text": "throw new Error(`[validateWeightsForSpec] ${label}[${i}] is not finite`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 254,
+"kind": "throw",
+"text": "throw new Error(`[loadWeightsFromArrayBuffer] truncated at offset ${offset}`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 264,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 276,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 288,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/weights.ts",
+"line": 296,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/nrc/fusedMlpHarness.ts",
+"line": 318,
+"kind": "fallback",
+"text": "const want = (k: string, fallback: number) =>",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/nrc/fusedMlpTrainer.ts",
+"line": 207,
+"kind": "throw",
+"text": "throw new Error(`FusedMlpTrainer.${method}() called after dispose() \u2014 the trainer's GPU buffers are destroyed`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/nrc/fusedMlpTrainer.ts",
+"line": 222,
+"kind": "throw",
+"text": "throw new Error(`fused MLP shared-mem ${sharedBytes}B exceeds adapter limit ${lim}B ` +",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/nrc/fusedMlpTrainer.ts",
+"line": 258,
+"kind": "throw",
+"text": "throw new Error(`shader '${entry}' compile error: ${errs.map((e) => `${e.lineNum}:${e.message}`).join(\"; \")}`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/neural/nrc/hashGridTableTrainer.ts",
+"line": 118,
+"kind": "throw",
+"text": "throw new Error(`shader '${entry}' compile error: ${errs.map((e) => `${e.lineNum}:${e.message}`).join('; ')}`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/shaders/reservoirGi.wgsl.ts",
+"line": 39,
+"kind": "reserved",
+"text": "*   \u2022 Phase 2 \u2014 replace the current scalar RIS reuse with the GRIS pairwise /",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/shaders/resolve.wgsl.ts",
+"line": 124,
+"kind": "fallback",
+"text": "// no ghosting under motion). This is the disocclusion-safe fallback: a gap",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/shaders/risGi.wgsl.ts",
+"line": 657,
+"kind": "reserved",
+"text": "// (GPU reconnection shift) and Phase 2 (GRIS pairwise MIS) will consume them:",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts",
+"line": 140,
+"kind": "fallback",
+"text": "fn sampleMaterialScalarMap(triIndex: u32, slot: u32, channel: u32, uv0: vec2f, uv1: vec2f, fallback: f32) -> f32 {",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/shaders/grisReuse.wgsl.ts",
+"line": 45,
+"kind": "reserved",
+"text": "* Phase 2 \u2014 GRIS generalized-balance-heuristic (pairwise) MIS",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/PassRegistry.ts",
+"line": 28,
+"kind": "throw",
+"text": "throw new Error(`PassRegistry: duplicate pass id \"${pass.id}\"`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/PassRegistry.ts",
+"line": 80,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/PassRegistry.ts",
+"line": 115,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/bindGroupBuilders.ts",
+"line": 369,
+"kind": "throw",
+"text": "throw new Error(`Atrous UBO buffer is too small for byte offset ${byteOffset}`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/wgslComposer.ts",
+"line": 60,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/wgslComposer.ts",
+"line": 68,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/wgslComposer.ts",
+"line": 88,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts",
+"line": 261,
+"kind": "fallback",
+"text": "function clampedUnit(value: number | undefined, fallback: number): number {",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts",
+"line": 265,
+"kind": "fallback",
+"text": "function clampedNonNegative(value: number | undefined, fallback: number): number {",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/gpuMemoryEstimate.ts",
+"line": 124,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/BvhBufferHost.ts",
+"line": 252,
+"kind": "throw",
+"text": "throw new Error('[BvhBufferHost] uploadInitial must run before lightTreeBuffer');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/BvhBufferHost.ts",
+"line": 295,
+"kind": "throw",
+"text": "throw new Error('[BvhBufferHost] uploadInitial must run before sceneBindGroupResources');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/bindGroupLayouts.ts",
+"line": 176,
+"kind": "reserved",
+"text": "* Phase 2B \u2014 combined hybrid-layers bind group (slot 3, shade only).",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/timestampQueries.ts",
+"line": 165,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/PPGCoordinator.ts",
+"line": 125,
+"kind": "reserved",
+"text": "* re-uploads on rebuild cycles (Phase 2 follow-up).",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/PPGCoordinator.ts",
+"line": 441,
+"kind": "reserved",
+"text": "* storage buffers. Called once at init; Phase 2 will call this after each",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/bindGroupDescriptors.ts",
+"line": 376,
+"kind": "throw",
+"text": "if (!e) throw new Error(`[bindGroupDescriptors] unknown table id: ${id}`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/bindGroupDescriptors.ts",
+"line": 456,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/shaderUtils.ts",
+"line": 29,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts",
+"line": 221,
+"kind": "throw",
+"text": "throw new Error(`[ReSTIR] Shader compile error in '${label}': ${errors[0]!.message} (line ${errors[0]!.lineNum})`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts",
+"line": 472,
+"kind": "throw",
+"text": "throw new Error(`[ReSTIR] PPG shader compile error in 'ppg-update': ${errs[0]!.message}`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/pipelineCompiler.ts",
+"line": 497,
+"kind": "throw",
+"text": "throw new Error(`[ReSTIR] ReGIR shader compile error in 'regir-build': ${errs[0]!.message}`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
+"line": 373,
+"kind": "downgrade",
+"text": "* \"downgraded from r16float / r16uint\" notes in resourceManager.ts and the",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
+"line": 1168,
+"kind": "reserved",
+"text": "* D3.1 \u2014 Phase 2: denoiser registry, timestamp init, UBO allocation, and",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
+"line": 1285,
+"kind": "reserved",
+"text": "* CPU refines + re-uploads on rebuild cycles (Phase 2 follow-up).",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
+"line": 1870,
+"kind": "reserved",
+"text": "* D3.2 \u2014 Per-frame Phase 2: sorted-pass dispatch + end-of-frame",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/passes/PPGUpdatePass.ts",
+"line": 63,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/passes/passOrder.ts",
+"line": 109,
+"kind": "throw",
+"text": "if (i < 0) throw new Error('NON_DENOISER_PASS_ORDER must contain denoiser-adapter');",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/denoisers/index.ts",
+"line": 225,
+"kind": "throw",
+"text": "throw new Error(`DenoiserRegistry: duplicate id \"${denoiser.id}\"`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/denoisers/index.ts",
+"line": 236,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/denoisers/index.ts",
+"line": 241,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/denoisers/svgfReal.ts",
+"line": 360,
+"kind": "throw",
+"text": "throw new Error(`SVGFRealDenoiser: missing atrous UBO for iteration ${iter}`);",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/pipeline/denoisers/oidnFinal.ts",
+"line": 169,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/environment/equirectDirectional.ts",
+"line": 23,
+"kind": "todo",
+"text": "* NOTE vs that port: we include the sin\u03b8 solid-angle term (the fork carries a TODO",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/environment/resolveHybridEnvironment.ts",
+"line": 350,
+"kind": "fallback",
+"text": "fallback: number,",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/environment/resolveHybridEnvironment.ts",
+"line": 368,
+"kind": "fallback",
+"text": "fallback: number,",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/environment/resolveHybridEnvironment.ts",
+"line": 464,
+"kind": "fallback",
+"text": "fallback: HybridSkyVec3,",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts",
+"line": 334,
+"kind": "fallback",
+"text": "function unitAlpha(value: unknown, fallback: number): number {",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/restir/bvhCore.ts",
+"line": 116,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/restir/bvhCore.ts",
+"line": 127,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/restir/bvhCore.ts",
+"line": 574,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/walkaround-hybrid/src/skin/GpuSkinningSubsystem.ts",
+"line": 152,
+"kind": "fallback",
+"text": "* CPU skinning fallback: solve the skin on the CPU and push the solved",
+"pkg": "walkaround-hybrid"
+},
+{
+"file": "packages/pt-webgl2/src/capabilities.ts",
+"line": 94,
+"kind": "fallback",
+"text": "transform: 'fallback-rebuild',",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/capabilities.ts",
+"line": 95,
+"kind": "fallback",
+"text": "positions: 'fallback-rebuild',",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/capabilities.ts",
+"line": 98,
+"kind": "fallback",
+"text": "topology: 'fallback-rebuild',",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/capabilities.ts",
+"line": 99,
+"kind": "fallback",
+"text": "addPrimitive: 'fallback-rebuild',",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/capabilities.ts",
+"line": 100,
+"kind": "fallback",
+"text": "removePrimitive: 'fallback-rebuild',",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/traceTier.ts",
+"line": 43,
+"kind": "throw",
+"text": "throw new Error('pt-webgl2: EXT_color_buffer_float required (RGBA32F render targets)');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/traceTier.ts",
+"line": 76,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 263,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 410,
+"kind": "reserved",
+"text": "// SHADOW-01 \u2014 receiveShadow is @reserved on all shipping backends (a",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 479,
+"kind": "throw",
+"text": "throw new Error('addPrimitive: call setScene() before addPrimitive()');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 482,
+"kind": "throw",
+"text": "throw new Error(`addPrimitive: primitive \"${primitive.id}\" already exists in current scene`);",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 494,
+"kind": "throw",
+"text": "throw new Error('removePrimitive: call setScene() before removePrimitive()');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 503,
+"kind": "throw",
+"text": "throw new Error(`removePrimitive: primitive \"${id}\" not found in current scene`);",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 515,
+"kind": "throw",
+"text": "throw new Error('updatePrimitive: call setScene() before updatePrimitive()');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 537,
+"kind": "throw",
+"text": "throw new Error('updateEmitter: call setScene() before updateEmitter()');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 551,
+"kind": "throw",
+"text": "throw new Error('updateEnvironment: call setScene() before updateEnvironment()');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 775,
+"kind": "fallback",
+"text": "code: 'pt-webgl2.primitive-list-fallback-rebuild',",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 794,
+"kind": "fallback",
+"text": "code: 'pt-webgl2.primitive-mutation-fallback-rebuild',",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 832,
+"kind": "throw",
+"text": "throw new Error('renderFrame: singular view/projection matrix');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/index.ts",
+"line": 936,
+"kind": "throw",
+"text": "if (this.#slot.get() === 'disposed') throw new Error(`${method}: engine is disposed`);",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/denoise/oidnFinalDispatcher.ts",
+"line": 46,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/glsl/composeTraceGlsl.ts",
+"line": 76,
+"kind": "throw",
+"text": "throw new Error(`pt-webgl2 compose: missing string export \"${name}\"`);",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/glsl/shader/bsdf/ggx_functions.glsl.js",
+"line": 15,
+"kind": "todo",
+"text": "// TODO: try GGXVNDF implementation from reference [2], here. Needs to update ggxDistribution",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/glsl/shader/common/util_functions.glsl.js",
+"line": 5,
+"kind": "todo",
+"text": "// TODO: possibly this should be renamed something related to material or path tracing logic",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/glsl/bvh/index.ts",
+"line": 19,
+"kind": "throw",
+"text": "throw new Error(`pt-webgl2 bvh glsl: missing string export \"${name}\"`);",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/glsl/render/attenuate_hit_function.glsl.js",
+"line": 48,
+"kind": "todo",
+"text": "// TODO: attenuate the contribution based on the PDF of the resulting ray including refraction values",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/glsl/render/attenuate_hit_function.glsl.js",
+"line": 50,
+"kind": "todo",
+"text": "// TODO: should we account for emissive surfaces here?",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/glsl/render/direct_light_contribution_function.glsl.js",
+"line": 125,
+"kind": "todo",
+"text": "// TODO: this should be improved but how? The env samples could traverse a few layers?",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/BdptSubpathBuilder.ts",
+"line": 159,
+"kind": "throw",
+"text": "if (this.#copyFbo == null) throw new Error('pt-webgl2: failed to create BDPT copy FBO');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glResources.ts",
+"line": 325,
+"kind": "throw",
+"text": "if (this.#accum == null) throw new Error('pt-webgl2: drawAccumStep before ensureAccumResources');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glResources.ts",
+"line": 326,
+"kind": "throw",
+"text": "if (this.#ptProgram == null) throw new Error('pt-webgl2: drawAccumStep before ensureProgram');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glResources.ts",
+"line": 471,
+"kind": "fallback",
+"text": "// Fallback: raw HDR accum (pre-present, e.g. before the first frame).",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glResources.ts",
+"line": 636,
+"kind": "throw",
+"text": "if (t == null) throw new Error('pt-webgl2: failed to create dummy 2D texture');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glResources.ts",
+"line": 650,
+"kind": "throw",
+"text": "if (t == null) throw new Error('pt-webgl2: failed to create dummy 2D-array texture');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/PresentPass.ts",
+"line": 101,
+"kind": "throw",
+"text": "if (fbo == null) throw new Error('pt-webgl2: failed to create present-pass FBO');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/PresentPass.ts",
+"line": 167,
+"kind": "throw",
+"text": "if (typeof tonemapGlsl !== 'string') throw new Error('pt-webgl2: tonemap_functions GLSL not found');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glProgram.ts",
+"line": 55,
+"kind": "throw",
+"text": "if (sh == null) throw new Error('pt-webgl2: gl.createShader returned null');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glProgram.ts",
+"line": 62,
+"kind": "throw",
+"text": "throw new Error(`pt-webgl2: ${kind} shader compile failed:\\n${log}`);",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glProgram.ts",
+"line": 74,
+"kind": "throw",
+"text": "throw new Error('pt-webgl2: gl.createProgram returned null');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/glProgram.ts",
+"line": 87,
+"kind": "throw",
+"text": "throw new Error(`pt-webgl2: program link failed:\\n${log}`);",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/blend.ts",
+"line": 49,
+"kind": "throw",
+"text": "throw new Error(`pt-webgl2: unknown accumulation regime '${String(_exhaustive)}'`);",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/framebuffer.ts",
+"line": 39,
+"kind": "throw",
+"text": "if (tex == null) throw new Error('pt-webgl2: failed to create render-target texture');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/framebuffer.ts",
+"line": 78,
+"kind": "throw",
+"text": "if (fbo == null) throw new Error('pt-webgl2: failed to create framebuffer');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/texAlloc.ts",
+"line": 69,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/texAlloc.ts",
+"line": 78,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/texAlloc.ts",
+"line": 86,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/texAlloc.ts",
+"line": 94,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/texAlloc.ts",
+"line": 101,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/texAlloc.ts",
+"line": 110,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/gl/fullscreenQuad.ts",
+"line": 43,
+"kind": "throw",
+"text": "if (vao == null) throw new Error('pt-webgl2: failed to create fullscreen-quad VAO');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/materialsTexture.ts",
+"line": 74,
+"kind": "fallback",
+"text": "function finiteOr(value: number | undefined, fallback: number): number {",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/lightsTexture.ts",
+"line": 49,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/bvhTextureAdapter.ts",
+"line": 58,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/texturesArray.ts",
+"line": 345,
+"kind": "throw",
+"text": "throw new Error('pt-webgl2: WebGL context lost \u2014 cannot create material texture atlas');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/texturesArray.ts",
+"line": 349,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/texturesArray.ts",
+"line": 356,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/texturesArray.ts",
+"line": 362,
+"kind": "throw",
+"text": "if (tex == null) throw new Error('pt-webgl2: WebGL context lost \u2014 cannot create material texture atlas');",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/equirectHdrInfo.ts",
+"line": 19,
+"kind": "todo",
+"text": "// solid-angle (sin \u03b8) term \u2014 the fork carries a TODO to add it but does not. We",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/attributesTextureArray.ts",
+"line": 68,
+"kind": "fallback",
+"text": "fallback: number,",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/pt-webgl2/src/scene/attributesTextureArray.ts",
+"line": 72,
+"kind": "fallback",
+"text": "return value === undefined ? fallback : value;",
+"pkg": "pt-webgl2"
+},
+{
+"file": "packages/shared-bvh/src/validateBvhEncoding.ts",
+"line": 25,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/buildArrayBvh.ts",
+"line": 421,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/buildArrayBvh.ts",
+"line": 545,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/buildArrayBvh.ts",
+"line": 575,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/buildArrayBvh.ts",
+"line": 617,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/index.ts",
+"line": 82,
+"kind": "throw",
+"text": "*   throw new Error(`BVH index buffer not aligned to stride ${stride}`);",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 173,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 343,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 409,
+"kind": "throw",
+"text": "throw new Error('buildTlas: instances list is empty.');",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 421,
+"kind": "throw",
+"text": "throw new Error(`buildTlas: instance ${i} worldToLocal length ${inst.worldToLocal.length} != 16.`);",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 424,
+"kind": "throw",
+"text": "throw new Error(`buildTlas: instance ${i} has inverted AABB.`);",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 451,
+"kind": "throw",
+"text": "throw new Error('buildTlas: no valid finite instances remain after filtering.');",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 491,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 498,
+"kind": "throw",
+"text": "throw new Error(`refitTlas: instance ${i} has inverted AABB.`);",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/tlas.ts",
+"line": 501,
+"kind": "throw",
+"text": "throw new Error(`refitTlas: instance ${i} has non-finite AABB.`);",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/wgsl/bvhCastShadowMask.wgsl.ts",
+"line": 63,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/wgsl/bvhCastShadowMask.wgsl.ts",
+"line": 77,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-bvh/src/wgsl/bvhCastShadowMask.wgsl.ts",
+"line": 84,
+"kind": "throw",
+"text": "throw new Error(`bvhCastShadowMask.wgsl.ts: unterminated function body for \"${header}\".`);",
+"pkg": "shared-bvh"
+},
+{
+"file": "packages/shared-samplers/src/mixturePdf.ts",
+"line": 94,
+"kind": "throw",
+"text": "throw new Error('mixturePdf: arrays must not be empty');",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/mixturePdf.ts",
+"line": 97,
+"kind": "throw",
+"text": "throw new Error('mixturePdf: probabilities and pdfs must have the same length');",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/mixturePdf.ts",
+"line": 104,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/uboCodegen.ts",
+"line": 171,
+"kind": "throw",
+"text": "throw new Error('defineUbo: field list must not be empty');",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/uboCodegen.ts",
+"line": 179,
+"kind": "throw",
+"text": "throw new Error(`defineUbo: duplicate field name \"${spec.name}\"`);",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/uboCodegen.ts",
+"line": 184,
+"kind": "throw",
+"text": "throw new Error(`defineUbo: unknown field type \"${spec.type}\" for field \"${spec.name}\"`);",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/uboCodegen.ts",
+"line": 323,
+"kind": "throw",
+"text": "throw new Error(`defineUbo.pack: unhandled field type ${_exhaustive as string}`);",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/uboCodegen.ts",
+"line": 361,
+"kind": "throw",
+"text": "throw new Error(`defineUbo.unpack: unhandled field type ${_exhaustive as string}`);",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/lightTree.ts",
+"line": 395,
+"kind": "throw",
+"text": "if (n === 0) throw new Error('buildLightTree: at least one emitter required');",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/lightTree.ts",
+"line": 397,
+"kind": "throw",
+"text": "throw new Error('buildLightTree: powers/centroids/aabbs length mismatch');",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/shared-samplers/src/lightTree.ts",
+"line": 400,
+"kind": "throw",
+"text": "throw new Error('buildLightTree: cones length mismatch (must equal powers.length when supplied)');",
+"pkg": "shared-samplers"
+},
+{
+"file": "packages/pt-webgpu/src/frameParamsPacker.ts",
+"line": 28,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/frameParamsPacker.ts",
+"line": 51,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/frameParamsPacker.ts",
+"line": 150,
+"kind": "throw",
+"text": "throw new Error('renderFrame: non-invertible view-projection matrix');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/sceneMutationRouter.ts",
+"line": 191,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/sceneMutationRouter.ts",
+"line": 213,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/sceneMutationRouter.ts",
+"line": 307,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/traceTier.ts",
+"line": 33,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/traceTier.ts",
+"line": 54,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 550,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 788,
+"kind": "fallback",
+"text": "material: 'fallback-rebuild',",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 902,
+"kind": "throw",
+"text": "throw new Error(`${method}: engine is disposed`);",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 905,
+"kind": "throw",
+"text": "throw new Error(`${method}: engine is in a fatal error state`);",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 912,
+"kind": "throw",
+"text": "throw new Error(`${method}: call setScene() before ${method}`);",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 1231,
+"kind": "reserved",
+"text": "// SHADOW-01 \u2014 `receiveShadow` is @reserved on all shipping backends (a",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 1648,
+"kind": "throw",
+"text": "throw new Error('renderFrame: failed to initialize WebGPU pipeline resources');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 1824,
+"kind": "throw",
+"text": "throw new Error('reset: engine is in a fatal error state');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 1877,
+"kind": "throw",
+"text": "throw new Error('seedAccumulator: seed texture is null/undefined.');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 1926,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 1983,
+"kind": "throw",
+"text": "throw new Error('computeAdjointGradient: no scene/camera (render at least one frame first).');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 2348,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/index.ts",
+"line": 2354,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/adjointPass.ts",
+"line": 112,
+"kind": "throw",
+"text": "throw new Error('computeAdjointGradient: camera viewProj is not invertible.');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/adjointPass.ts",
+"line": 153,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/adjointPass.ts",
+"line": 172,
+"kind": "throw",
+"text": "throw new Error(`computeAdjointGradient: no material index for primitive \"${p.id}\".`);",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/gpuResources.ts",
+"line": 1067,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/denoise/oidnFinalDispatcher.ts",
+"line": 68,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/optimizer.ts",
+"line": 175,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/optimizer.ts",
+"line": 177,
+"kind": "reserved",
+"text": "'Phase 2 and is not yet differentiable in pt-webgpu.',",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/optimizer.ts",
+"line": 181,
+"kind": "throw",
+"text": "throw new Error(`inverse: unknown parameter kind ${String(_exhaustive)}`);",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/optimizer.ts",
+"line": 200,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/optimizer.ts",
+"line": 209,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 92,
+"kind": "downgrade",
+"text": "* engine supplies this so multi-bounce/spectral baselines downgrade honestly.",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 327,
+"kind": "throw",
+"text": "throw new Error('createInverseSession: at least one parameter is required.');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 330,
+"kind": "throw",
+"text": "throw new Error('createInverseSession: target image must have positive dimensions.');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 335,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 412,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 450,
+"kind": "throw",
+"text": "throw new Error('InverseSession.step: session is disposed.');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 482,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1154,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1156,
+"kind": "reserved",
+"text": "'for Phase 2 (texture optimization) and is not yet differentiable in pt-webgpu.',",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1162,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1170,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1183,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1190,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1257,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1355,
+"kind": "throw",
+"text": "default: throw new Error(`inverse: unsupported material field \"${field}\".`);",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+"line": 1363,
+"kind": "throw",
+"text": "default: throw new Error(`inverse: unsupported emitter field \"${field}\".`);",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/wgsl/pathTrace/restirPtCompose.wgsl.ts",
+"line": 161,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/wgsl/pathTrace/restirPtCompose.wgsl.ts",
+"line": 167,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/wgsl/pathTrace/restirPtCompose.wgsl.ts",
+"line": 173,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/wgsl/pathTrace/intersection.wgsl.ts",
+"line": 39,
+"kind": "throw",
+"text": "throw new Error('TLAS SceneHit init anchor changed; update pt-webgpu instance-index augmentation.');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/wgsl/pathTrace/intersection.wgsl.ts",
+"line": 47,
+"kind": "throw",
+"text": "throw new Error('TLAS SceneHit assignment anchor changed; update pt-webgpu instance-index augmentation.');",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/scene/uploadSceneBuffers.ts",
+"line": 1457,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "packages/pt-webgpu/src/scene/emitterPacking.ts",
+"line": 162,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "pt-webgpu"
+},
+{
+"file": "tools/gpu-env/compute-smoke-deno.ts",
+"line": 8,
+"kind": "throw",
+"text": "if (!adapter) throw new Error(\"no adapter\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 531,
+"kind": "throw",
+"text": "throw new Error(\"unexpected Draco attribute id map\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 563,
+"kind": "throw",
+"text": "throw new Error(`glTF behavioral gate selected unexpected backend \"${backend}\"`);",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 566,
+"kind": "throw",
+"text": "throw new Error(\"glTF behavioral gate createEngine received a scene that does not match asset.scene\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 584,
+"kind": "throw",
+"text": "throw new Error(\"glTF behavioral gate did not exercise controller.attachEngine/setScene\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 588,
+"kind": "throw",
+"text": "throw new Error(`glTF fixture \"${kind}\" imported no primitives`);",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 592,
+"kind": "throw",
+"text": "throw new Error(\"glTF unlit fixture lost KHR_materials_unlit\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 595,
+"kind": "throw",
+"text": "throw new Error(\"glTF textured-pbr fixture lost baseColorTexture\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 602,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 608,
+"kind": "throw",
+"text": "throw new Error(`glTF textured-pbr fixture emitted texture decode warnings: ${result.textureDecodeWarnings.join(\" | \")}`);",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 612,
+"kind": "throw",
+"text": "throw new Error(`glTF textured-pbr fixture did not surface a backend-ready CPU texture decode report`);",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 615,
+"kind": "throw",
+"text": "throw new Error(\"glTF textured-pbr fixture did not attach the CPU-linear decoded texture to the engine scene\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 618,
+"kind": "throw",
+"text": "throw new Error(\"glTF textured-pbr fixture attached a scene other than the decoded controller scene\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 625,
+"kind": "throw",
+"text": "throw new Error(`glTF material-sweep fixture missed textureDecodeReport fields: ${missing.join(\", \")}`);",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 628,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 634,
+"kind": "throw",
+"text": "throw new Error(`glTF material-sweep fixture emitted texture decode warnings: ${result.textureDecodeWarnings.join(\" | \")}`);",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 637,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 647,
+"kind": "throw",
+"text": "throw new Error(`glTF material-sweep fixture did not attach CPU-linear handles for: ${missingHandles.join(\", \")}`);",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 650,
+"kind": "throw",
+"text": "throw new Error(\"glTF material-sweep fixture attached a scene other than the decoded controller scene\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 654,
+"kind": "throw",
+"text": "throw new Error(\"glTF transmission fixture lost KHR_materials_transmission\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 657,
+"kind": "throw",
+"text": "if (first.kind !== \"skinned-mesh\") throw new Error(\"glTF skinned fixture did not import a SkinnedMeshPrimitive\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 658,
+"kind": "throw",
+"text": "if ((result.asset.animations?.length ?? 0) === 0) throw new Error(\"glTF skinned fixture lost animation channels\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 661,
+"kind": "throw",
+"text": "throw new Error(\"glTF skinned fixture controller advance did not patch the attached engine\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 665,
+"kind": "throw",
+"text": "throw new Error(`glTF Draco mock emitted compression warning: ${result.asset.warnings.join(\" | \")}`);",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 834,
+"kind": "throw",
+"text": "if (!adapter) throw new Error(\"No WebGPU adapter\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 849,
+"kind": "throw",
+"text": "if (!adapter) throw new Error(\"No WebGPU adapter\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 1108,
+"kind": "throw",
+"text": "if (Date.now() > deadline) throw new Error(\"engine init timeout after 60 s\");",
+"pkg": "tools"
+},
+{
+"file": "tools/behavioral-gate/gate.mjs",
+"line": 1110,
+"kind": "throw",
+"text": "if (engine.state === \"error\") throw new Error(\"engine.state === 'error'\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-ab.mjs",
+"line": 170,
+"kind": "throw",
+"text": "if (!adapter) throw new Error(\"No WebGPU adapter\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-ab.mjs",
+"line": 263,
+"kind": "throw",
+"text": "if (Date.now() > deadline) throw new Error(\"engine init timeout after 90 s\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-ab.mjs",
+"line": 265,
+"kind": "throw",
+"text": "if (engine.state === \"error\") throw new Error(\"engine.state === 'error'\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-sun-control.mjs",
+"line": 32,
+"kind": "throw",
+"text": "if(!adapter)throw new Error(\"No adapter\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-sun-control.mjs",
+"line": 71,
+"kind": "throw",
+"text": "while(engine.state!==\"ready\"&&engine.state!==\"error\"){await new Promise(r=>setTimeout(r,50));if(Date.now()>deadline)throw new Error(\"timeout\");}",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-sun-control.mjs",
+"line": 72,
+"kind": "throw",
+"text": "if(engine.state===\"error\")throw new Error(\"engine error\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/helpers.mjs",
+"line": 110,
+"kind": "throw",
+"text": "if (!adapter) throw new Error(\"No WebGPU adapter \u2014 is VK_ICD_FILENAMES set?\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/helpers.mjs",
+"line": 470,
+"kind": "throw",
+"text": "if (errorMsg) throw new Error(errorMsg);",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/helpers.mjs",
+"line": 471,
+"kind": "throw",
+"text": "if (!rgba) throw new Error(\"No frame captured\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-diag.mjs",
+"line": 38,
+"kind": "throw",
+"text": "if(!adapter)throw new Error(\"No adapter\");",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-diag.mjs",
+"line": 89,
+"kind": "throw",
+"text": "while(engine.state!==\"ready\"&&engine.state!==\"error\"){await new Promise(r=>setTimeout(r,50));if(Date.now()>deadline)throw new Error(\"timeout\");}",
+"pkg": "tools"
+},
+{
+"file": "tools/radiometric-ab/walkaround-diag.mjs",
+"line": 90,
+"kind": "throw",
+"text": "if(engine.state===\"error\")throw new Error(\"engine error\");",
+"pkg": "tools"
+},
+{
+"file": "tools/benchmark-runner/run-acceptance-metrics.mjs",
+"line": 14,
+"kind": "throw",
+"text": "throw new Error(`Invalid VITRUM_ROI=\"${raw}\" (expected x0,y0,x1,y1 in 0..1).`);",
+"pkg": "tools"
+},
+{
+"file": "tools/benchmark-runner/run-acceptance-metrics.mjs",
+"line": 22,
+"kind": "throw",
+"text": "throw new Error(`Degenerate VITRUM_ROI=\"${raw}\".`);",
+"pkg": "tools"
+},
+{
+"file": "tools/benchmark-runner/run-acceptance-metrics.mjs",
+"line": 42,
+"kind": "throw",
+"text": "throw new Error(",
+"pkg": "tools"
+},
+{
+"file": "tools/benchmark-runner/run-acceptance-metrics.mjs",
+"line": 129,
+"kind": "throw",
+"text": "throw new Error(`${envName} must be a finite non-negative number (got \"${raw}\").`);",
+"pkg": "tools"
+}
+]
+}

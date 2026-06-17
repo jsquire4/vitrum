@@ -1,0 +1,82 @@
+{
+  "waveId": "W019",
+  "waveIndex": 19,
+  "bootstrap": false,
+  "agentCap": 25,
+  "taskCount": 4,
+  "lanes": [
+    "core",
+    "pt-webgpu",
+    "repo-root"
+  ],
+  "agents": [
+    {
+      "slot": 1,
+      "agentId": "agent-01",
+      "taskId": "PTWG-072",
+      "lane": "core",
+      "disposition": "DOC",
+      "promptFile": "agents/agent-01.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W019/agents/agent-01.md"
+    },
+    {
+      "slot": 2,
+      "agentId": "agent-02",
+      "taskId": "INV-007",
+      "lane": "pt-webgpu",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-02.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W019/agents/agent-02.md"
+    },
+    {
+      "slot": 3,
+      "agentId": "agent-03",
+      "taskId": "INV-011",
+      "lane": "pt-webgpu",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-03.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W019/agents/agent-03.md"
+    },
+    {
+      "slot": 4,
+      "agentId": "agent-04",
+      "taskId": "RT100-F-BRIDGE",
+      "lane": "repo-root",
+      "disposition": "DOC",
+      "promptFile": "agents/agent-04.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W019/agents/agent-04.md"
+    }
+  ],
+  "dispatch": {
+    "instruction": "Spawn 4 sub-agent(s). Each agent reads its prompt file and executes exactly one task.",
+    "maxConcurrent": 4
+  },
+  "phases": [
+    "build",
+    "verify",
+    "remediate",
+    "smoke",
+    "commit"
+  ],
+  "smoke": {
+    "required": [
+      "typecheck"
+    ],
+    "laneVitest": [
+      {
+        "lane": "core",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run"
+      },
+      {
+        "lane": "pt-webgpu",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run"
+      }
+    ],
+    "bootstrap": false,
+    "behavioralGate": null
+  },
+  "commit": {
+    "message": "chore(gap-remediation): W019 wave — 4 tasks (PTWG-072, INV-007, INV-011, RT100-F-BRIDGE)",
+    "files": "all staged changes from verified tasks"
+  }
+}

@@ -1,0 +1,452 @@
+[
+  {
+    "slot": 1,
+    "taskId": "MUT-06",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgpu/src/sceneMutationRouter.ts"
+    ],
+    "tests": [
+      "npm run typecheck",
+      "npm test"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 2,
+    "taskId": "WH-019",
+    "disposition": "TOG",
+    "files": [
+      "packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 3,
+    "taskId": "WH-040",
+    "disposition": "ACC",
+    "files": [
+      "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 4,
+    "taskId": "WH-045",
+    "disposition": "DOC",
+    "files": [
+      "packages/walkaround-hybrid/src/HybridEngine.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 5,
+    "taskId": "CORE-017",
+    "disposition": "IMP",
+    "files": [
+      "packages/core/src/engine/promiseLedger.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 6,
+    "taskId": "PTGL-016",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgl2/src/scene/texturesArray.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgl2 && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 7,
+    "taskId": "PTWG-020",
+    "disposition": "VERIFY",
+    "files": [
+      "packages/pt-webgpu/src/shaders/bsdf.wgsl.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": false,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 8,
+    "taskId": "PTWG-024",
+    "disposition": "DOC",
+    "files": [
+      "packages/pt-webgpu/src/shaders/pathTrace.wgsl.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 9,
+    "taskId": "PTWG-028",
+    "disposition": "DOC",
+    "files": [
+      "packages/pt-webgpu/src/inverse/inverseSession.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 10,
+    "taskId": "PTWG-040",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgpu/src/scene/uploadSceneBuffers.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 11,
+    "taskId": "PTWG-041",
+    "disposition": "DOC",
+    "files": [
+      "packages/pt-webgpu/README.md"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 12,
+    "taskId": "PTWG-042",
+    "disposition": "DOC",
+    "files": [
+      "packages/pt-webgpu/src/capabilities.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 13,
+    "taskId": "PTWG-046",
+    "disposition": "DOC",
+    "files": [
+      "packages/pt-webgpu/src/gpuResources.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 14,
+    "taskId": "PTWG-051",
+    "disposition": "DOC",
+    "files": [
+      "packages/pt-webgpu/src/sppm/sppmSubsystem.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 15,
+    "taskId": "PTWG-053",
+    "disposition": "DOC",
+    "files": [
+      "packages/pt-webgpu/src/mnee/mneeSubsystem.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 16,
+    "taskId": "PTWG-054",
+    "disposition": "TEST",
+    "files": [
+      "packages/pt-webgpu/src/restirPt/__tests__/"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 17,
+    "taskId": "PTWG-055",
+    "disposition": "TEST",
+    "files": [
+      "packages/pt-webgpu/src/restirPt/restirPtSubsystem.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 18,
+    "taskId": "PTWG-056",
+    "disposition": "TEST",
+    "files": [
+      "packages/pt-webgpu/src/restirPt/"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 19,
+    "taskId": "PTWG-057",
+    "disposition": "TEST",
+    "files": [
+      "packages/pt-webgpu/src/index.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 20,
+    "taskId": "PTWG-063",
+    "disposition": "VERIFY",
+    "files": [
+      "packages/pt-webgpu/src/__tests__/updatePrimitiveIncremental.test.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": false,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 21,
+    "taskId": "PTWG-065",
+    "disposition": "BUG",
+    "files": [
+      "packages/pt-webgpu/src/inverse/optimizer.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": true
+    }
+  },
+  {
+    "slot": 22,
+    "taskId": "PTWG-066",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgpu/src/inverse/adjointPass.wgsl.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 23,
+    "taskId": "PTWG-068",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgpu/src/shaders/transport.wgsl.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 24,
+    "taskId": "PTWG-069",
+    "disposition": "BUG",
+    "files": [
+      "packages/pt-webgpu/src/scene/meshAreaLights.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": true
+    }
+  },
+  {
+    "slot": 25,
+    "taskId": "PTWG-077",
+    "disposition": "VERIFY",
+    "files": [
+      "packages/pt-webgpu/src/__tests__/"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": false,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  }
+]

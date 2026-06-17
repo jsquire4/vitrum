@@ -1,0 +1,40 @@
+[
+  {
+    "slot": 1,
+    "taskId": "MAT-WH-alphaCutoff",
+    "disposition": "TOG",
+    "files": [
+      "packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts",
+      "packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts",
+      "packages/core/src/engine/promiseLedger.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run src/__tests__/ledgerVsCapabilities.test.ts"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 2,
+    "taskId": "INV-016",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgpu/src/inverse/adjointPass.wgsl.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run src/inverse/",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  }
+]

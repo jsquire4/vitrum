@@ -1,0 +1,92 @@
+[
+  {
+    "slot": 1,
+    "taskId": "CORE-031",
+    "disposition": "DOC",
+    "files": [
+      "packages/core/src/engine/promiseLedger.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 2,
+    "taskId": "RC-006",
+    "disposition": "IMP",
+    "files": [
+      "packages/walkaround-rc/src/cascadeDispatch.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-rc && npx vitest run",
+      "npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 3,
+    "taskId": "INV-003",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgpu/src/inverse/inverseSession.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run src/inverse/",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 4,
+    "taskId": "INV-006",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgpu/src/inverse/adjointPass.wgsl.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run src/inverse/",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 5,
+    "taskId": "RT100-F5-VOLUMES",
+    "disposition": "ACC",
+    "files": [
+      "plan/road-to-100.md",
+      "packages/core/src/scene/"
+    ],
+    "tests": [
+      "npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  }
+]

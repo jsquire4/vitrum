@@ -1,0 +1,28 @@
+---
+description: Gap remediation orchestrator — worktree, commits, validation deferral
+alwaysApply: true
+---
+
+# Gap remediation campaign (`feat/gap-remediation`)
+
+## Worktree
+
+All gap remediation work runs in:
+
+`/home/jsquire4/projects/vitrum-gap-remediation`
+
+Branch: `feat/gap-remediation`. Keep `/home/jsquire4/projects/vitrum` (main worktree) clean.
+
+## Git policy
+
+- **Commit:** Agents and orchestrator MAY commit freely on `feat/gap-remediation` (one commit per wave via `orchestrator-run.mjs --commit --yes`).
+- **Push:** NEVER push without explicit user instruction.
+- **Branch:** Do not commit gap remediation to `main` directly.
+
+## Code-first policy
+
+GPU A/B, golden PNG, reference-render, behavioral-gate render proof, and wsl-gpu tasks are **deferred**. See `plan/VALIDATION-DEFERRED.md`. Do not dispatch skipped validation tasks.
+
+## Orchestrator
+
+Read `plan/ORCHESTRATOR_AGENT.md` and `plan/ORCHESTRATOR_RESUME.md`. Loop until `phase: done`. Workers read `plan/waves/Wnnn/agents/agent-NN.md` only.

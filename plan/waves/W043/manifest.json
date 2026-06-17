@@ -1,0 +1,49 @@
+{
+  "waveId": "W043",
+  "waveIndex": 43,
+  "bootstrap": false,
+  "agentCap": 25,
+  "taskCount": 1,
+  "lanes": [
+    "core"
+  ],
+  "agents": [
+    {
+      "slot": 1,
+      "agentId": "agent-01",
+      "taskId": "MAT-WH-clearcoatMap",
+      "lane": "core",
+      "disposition": "TOG",
+      "promptFile": "agents/agent-01.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W043/agents/agent-01.md"
+    }
+  ],
+  "dispatch": {
+    "instruction": "Spawn 1 sub-agent(s). Each agent reads its prompt file and executes exactly one task.",
+    "maxConcurrent": 1
+  },
+  "phases": [
+    "build",
+    "verify",
+    "remediate",
+    "smoke",
+    "commit"
+  ],
+  "smoke": {
+    "required": [
+      "typecheck"
+    ],
+    "laneVitest": [
+      {
+        "lane": "core",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run"
+      }
+    ],
+    "bootstrap": false,
+    "behavioralGate": null
+  },
+  "commit": {
+    "message": "chore(gap-remediation): W043 wave — 1 tasks (MAT-WH-clearcoatMap)",
+    "files": "all staged changes from verified tasks"
+  }
+}
