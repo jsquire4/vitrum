@@ -1,0 +1,452 @@
+[
+  {
+    "slot": 1,
+    "taskId": "MUT-02",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgl2/src/scene/mutateSceneTextures.ts"
+    ],
+    "tests": [
+      "npm run typecheck",
+      "npm test"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 2,
+    "taskId": "PTWG-006",
+    "disposition": "IMP",
+    "files": [
+      "packages/pt-webgpu/src/index.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 3,
+    "taskId": "WH-004",
+    "disposition": "RT",
+    "files": [
+      "packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 4,
+    "taskId": "WH-023",
+    "disposition": "IMP",
+    "files": [
+      "packages/walkaround-hybrid/src/HybridEngine.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 5,
+    "taskId": "WH-037",
+    "disposition": "IMP",
+    "files": [
+      "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 6,
+    "taskId": "WH-044",
+    "disposition": "IMP",
+    "files": [
+      "packages/walkaround-hybrid/src/gpuSkin/gpuSkinBvh.wgsl.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 7,
+    "taskId": "GLTF-003",
+    "disposition": "IMP",
+    "files": [
+      "packages/gltf-adapter/src/compression.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/gltf-adapter && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 8,
+    "taskId": "GLTF-007",
+    "disposition": "IMP",
+    "files": [
+      "packages/gltf-adapter/src/textures.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/gltf-adapter && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 9,
+    "taskId": "GLTF-010",
+    "disposition": "IMP",
+    "files": [
+      "packages/gltf-adapter/src/texturePipeline.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/gltf-adapter && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 10,
+    "taskId": "CORE-013",
+    "disposition": "DOC",
+    "files": [
+      "packages/core/src/engine/promiseLedger.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 11,
+    "taskId": "CORE-027",
+    "disposition": "IMP",
+    "files": [
+      "packages/core/src/scene/tlasAudit.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 12,
+    "taskId": "CORE-033",
+    "disposition": "IMP",
+    "files": [
+      "packages/core/src/scene/emitters.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 13,
+    "taskId": "CORE-044",
+    "disposition": "IMP",
+    "files": [
+      "packages/core/src/engine/telemetry.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 14,
+    "taskId": "CORE-045",
+    "disposition": "DOC",
+    "files": [
+      "packages/core/src/scene/patchScene.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 15,
+    "taskId": "CORE-046",
+    "disposition": "IMP",
+    "files": [
+      "packages/core/src/gpuDetection.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 16,
+    "taskId": "CORE-047",
+    "disposition": "DOC",
+    "files": [
+      "packages/core/src/adapterProfile.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 17,
+    "taskId": "ENG-011",
+    "disposition": "IMP",
+    "files": [
+      "packages/engine/src/sceneAABB.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 18,
+    "taskId": "ENG-012",
+    "disposition": "IMP",
+    "files": [
+      "packages/engine/src/backends/walkaround.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 19,
+    "taskId": "ENG-014",
+    "disposition": "IMP",
+    "files": [
+      "packages/engine/src/gltf.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 20,
+    "taskId": "ENG-015",
+    "disposition": "IMP",
+    "files": [
+      "packages/engine/src/negotiateWebGPUDevice.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 21,
+    "taskId": "ENG-016",
+    "disposition": "DOC",
+    "files": [
+      "packages/engine/src/lifecycle/vanilla.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 22,
+    "taskId": "ENG-017",
+    "disposition": "IMP",
+    "files": [
+      "packages/engine/src/progressiveHandoff.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 23,
+    "taskId": "ENG-018",
+    "disposition": "IMP",
+    "files": [
+      "packages/engine/src/configureWebGpuCanvas.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 24,
+    "taskId": "ENG-019",
+    "disposition": "IMP",
+    "files": [
+      "packages/engine/src/index.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  },
+  {
+    "slot": 25,
+    "taskId": "ENG-020",
+    "disposition": "DOC",
+    "files": [
+      "packages/engine/src/gpuDetection.ts"
+    ],
+    "tests": [
+      "cd /home/jsquire4/projects/vitrum/packages/engine && npx vitest run",
+      "cd /home/jsquire4/projects/vitrum && npm run typecheck"
+    ],
+    "baseSha": "__WAVE_BASE_SHA__",
+    "checks": {
+      "requireGitDiff": true,
+      "requireTestsPass": true,
+      "requireTestAdded": false
+    }
+  }
+]

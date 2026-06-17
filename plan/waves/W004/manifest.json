@@ -1,0 +1,285 @@
+{
+  "waveId": "W004",
+  "waveIndex": 4,
+  "bootstrap": false,
+  "agentCap": 25,
+  "taskCount": 25,
+  "lanes": [
+    "walkaround-hybrid",
+    "pt-webgl2",
+    "pt-webgpu",
+    "gltf-adapter",
+    "core"
+  ],
+  "agents": [
+    {
+      "slot": 1,
+      "agentId": "agent-01",
+      "taskId": "FP-06",
+      "lane": "walkaround-hybrid",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-01.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-01.md"
+    },
+    {
+      "slot": 2,
+      "agentId": "agent-02",
+      "taskId": "MUT-01",
+      "lane": "pt-webgl2",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-02.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-02.md"
+    },
+    {
+      "slot": 3,
+      "agentId": "agent-03",
+      "taskId": "PTWG-003",
+      "lane": "pt-webgpu",
+      "disposition": "DOC",
+      "promptFile": "agents/agent-03.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-03.md"
+    },
+    {
+      "slot": 4,
+      "agentId": "agent-04",
+      "taskId": "WH-003",
+      "lane": "walkaround-hybrid",
+      "disposition": "RT",
+      "promptFile": "agents/agent-04.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-04.md"
+    },
+    {
+      "slot": 5,
+      "agentId": "agent-05",
+      "taskId": "WH-010",
+      "lane": "walkaround-hybrid",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-05.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-05.md"
+    },
+    {
+      "slot": 6,
+      "agentId": "agent-06",
+      "taskId": "WH-032",
+      "lane": "walkaround-hybrid",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-06.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-06.md"
+    },
+    {
+      "slot": 7,
+      "agentId": "agent-07",
+      "taskId": "WH-036",
+      "lane": "walkaround-hybrid",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-07.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-07.md"
+    },
+    {
+      "slot": 8,
+      "agentId": "agent-08",
+      "taskId": "WH-041",
+      "lane": "walkaround-hybrid",
+      "disposition": "VERIFY",
+      "promptFile": "agents/agent-08.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-08.md"
+    },
+    {
+      "slot": 9,
+      "agentId": "agent-09",
+      "taskId": "WH-043",
+      "lane": "walkaround-hybrid",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-09.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-09.md"
+    },
+    {
+      "slot": 10,
+      "agentId": "agent-10",
+      "taskId": "GLTF-002",
+      "lane": "gltf-adapter",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-10.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-10.md"
+    },
+    {
+      "slot": 11,
+      "agentId": "agent-11",
+      "taskId": "GLTF-006",
+      "lane": "gltf-adapter",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-11.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-11.md"
+    },
+    {
+      "slot": 12,
+      "agentId": "agent-12",
+      "taskId": "GLTF-009",
+      "lane": "gltf-adapter",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-12.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-12.md"
+    },
+    {
+      "slot": 13,
+      "agentId": "agent-13",
+      "taskId": "CORE-012",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-13.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-13.md"
+    },
+    {
+      "slot": 14,
+      "agentId": "agent-14",
+      "taskId": "CORE-026",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-14.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-14.md"
+    },
+    {
+      "slot": 15,
+      "agentId": "agent-15",
+      "taskId": "CORE-028",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-15.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-15.md"
+    },
+    {
+      "slot": 16,
+      "agentId": "agent-16",
+      "taskId": "CORE-032",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-16.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-16.md"
+    },
+    {
+      "slot": 17,
+      "agentId": "agent-17",
+      "taskId": "CORE-034",
+      "lane": "core",
+      "disposition": "DOC",
+      "promptFile": "agents/agent-17.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-17.md"
+    },
+    {
+      "slot": 18,
+      "agentId": "agent-18",
+      "taskId": "CORE-035",
+      "lane": "core",
+      "disposition": "DOC",
+      "promptFile": "agents/agent-18.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-18.md"
+    },
+    {
+      "slot": 19,
+      "agentId": "agent-19",
+      "taskId": "CORE-036",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-19.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-19.md"
+    },
+    {
+      "slot": 20,
+      "agentId": "agent-20",
+      "taskId": "CORE-037",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-20.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-20.md"
+    },
+    {
+      "slot": 21,
+      "agentId": "agent-21",
+      "taskId": "CORE-038",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-21.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-21.md"
+    },
+    {
+      "slot": 22,
+      "agentId": "agent-22",
+      "taskId": "CORE-039",
+      "lane": "core",
+      "disposition": "DOC",
+      "promptFile": "agents/agent-22.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-22.md"
+    },
+    {
+      "slot": 23,
+      "agentId": "agent-23",
+      "taskId": "CORE-040",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-23.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-23.md"
+    },
+    {
+      "slot": 24,
+      "agentId": "agent-24",
+      "taskId": "CORE-042",
+      "lane": "core",
+      "disposition": "DOC",
+      "promptFile": "agents/agent-24.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-24.md"
+    },
+    {
+      "slot": 25,
+      "agentId": "agent-25",
+      "taskId": "CORE-043",
+      "lane": "core",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-25.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W004/agents/agent-25.md"
+    }
+  ],
+  "dispatch": {
+    "instruction": "Spawn 25 sub-agent(s). Each agent reads its prompt file and executes exactly one task.",
+    "maxConcurrent": 25
+  },
+  "phases": [
+    "build",
+    "verify",
+    "remediate",
+    "smoke",
+    "commit"
+  ],
+  "smoke": {
+    "required": [
+      "typecheck"
+    ],
+    "laneVitest": [
+      {
+        "lane": "walkaround-hybrid",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/walkaround-hybrid && npx vitest run"
+      },
+      {
+        "lane": "pt-webgl2",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/pt-webgl2 && npx vitest run"
+      },
+      {
+        "lane": "pt-webgpu",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run"
+      },
+      {
+        "lane": "gltf-adapter",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/gltf-adapter && npx vitest run"
+      },
+      {
+        "lane": "core",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run"
+      }
+    ],
+    "bootstrap": false,
+    "behavioralGate": null
+  },
+  "commit": {
+    "message": "chore(gap-remediation): W004 wave — 25 tasks (FP-06, MUT-01, PTWG-003, WH-003, WH-010, WH-032, WH-036, WH-041 +17 more)",
+    "files": "all staged changes from verified tasks"
+  }
+}

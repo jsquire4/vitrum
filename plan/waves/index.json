@@ -1,0 +1,422 @@
+[
+  {
+    "waveId": "W000",
+    "waveIndex": 0,
+    "taskCount": 8,
+    "dir": "plan/waves/W000"
+  },
+  {
+    "waveId": "W001",
+    "waveIndex": 1,
+    "taskCount": 25,
+    "dir": "plan/waves/W001"
+  },
+  {
+    "waveId": "W002",
+    "waveIndex": 2,
+    "taskCount": 25,
+    "dir": "plan/waves/W002"
+  },
+  {
+    "waveId": "W003",
+    "waveIndex": 3,
+    "taskCount": 25,
+    "dir": "plan/waves/W003"
+  },
+  {
+    "waveId": "W004",
+    "waveIndex": 4,
+    "taskCount": 25,
+    "dir": "plan/waves/W004"
+  },
+  {
+    "waveId": "W005",
+    "waveIndex": 5,
+    "taskCount": 25,
+    "dir": "plan/waves/W005"
+  },
+  {
+    "waveId": "W006",
+    "waveIndex": 6,
+    "taskCount": 25,
+    "dir": "plan/waves/W006"
+  },
+  {
+    "waveId": "W007",
+    "waveIndex": 7,
+    "taskCount": 25,
+    "dir": "plan/waves/W007"
+  },
+  {
+    "waveId": "W008",
+    "waveIndex": 8,
+    "taskCount": 25,
+    "dir": "plan/waves/W008"
+  },
+  {
+    "waveId": "W009",
+    "waveIndex": 9,
+    "taskCount": 25,
+    "dir": "plan/waves/W009"
+  },
+  {
+    "waveId": "W010",
+    "waveIndex": 10,
+    "taskCount": 25,
+    "dir": "plan/waves/W010"
+  },
+  {
+    "waveId": "W011",
+    "waveIndex": 11,
+    "taskCount": 25,
+    "dir": "plan/waves/W011"
+  },
+  {
+    "waveId": "W012",
+    "waveIndex": 12,
+    "taskCount": 25,
+    "dir": "plan/waves/W012"
+  },
+  {
+    "waveId": "W013",
+    "waveIndex": 13,
+    "taskCount": 25,
+    "dir": "plan/waves/W013"
+  },
+  {
+    "waveId": "W014",
+    "waveIndex": 14,
+    "taskCount": 25,
+    "dir": "plan/waves/W014"
+  },
+  {
+    "waveId": "W015",
+    "waveIndex": 15,
+    "taskCount": 25,
+    "dir": "plan/waves/W015"
+  },
+  {
+    "waveId": "W016",
+    "waveIndex": 16,
+    "taskCount": 17,
+    "dir": "plan/waves/W016"
+  },
+  {
+    "waveId": "W017",
+    "waveIndex": 17,
+    "taskCount": 6,
+    "dir": "plan/waves/W017"
+  },
+  {
+    "waveId": "W018",
+    "waveIndex": 18,
+    "taskCount": 5,
+    "dir": "plan/waves/W018"
+  },
+  {
+    "waveId": "W019",
+    "waveIndex": 19,
+    "taskCount": 4,
+    "dir": "plan/waves/W019"
+  },
+  {
+    "waveId": "W020",
+    "waveIndex": 20,
+    "taskCount": 3,
+    "dir": "plan/waves/W020"
+  },
+  {
+    "waveId": "W021",
+    "waveIndex": 21,
+    "taskCount": 3,
+    "dir": "plan/waves/W021"
+  },
+  {
+    "waveId": "W022",
+    "waveIndex": 22,
+    "taskCount": 2,
+    "dir": "plan/waves/W022"
+  },
+  {
+    "waveId": "W023",
+    "waveIndex": 23,
+    "taskCount": 2,
+    "dir": "plan/waves/W023"
+  },
+  {
+    "waveId": "W024",
+    "waveIndex": 24,
+    "taskCount": 2,
+    "dir": "plan/waves/W024"
+  },
+  {
+    "waveId": "W025",
+    "waveIndex": 25,
+    "taskCount": 2,
+    "dir": "plan/waves/W025"
+  },
+  {
+    "waveId": "W026",
+    "waveIndex": 26,
+    "taskCount": 1,
+    "dir": "plan/waves/W026"
+  },
+  {
+    "waveId": "W027",
+    "waveIndex": 27,
+    "taskCount": 1,
+    "dir": "plan/waves/W027"
+  },
+  {
+    "waveId": "W028",
+    "waveIndex": 28,
+    "taskCount": 1,
+    "dir": "plan/waves/W028"
+  },
+  {
+    "waveId": "W029",
+    "waveIndex": 29,
+    "taskCount": 1,
+    "dir": "plan/waves/W029"
+  },
+  {
+    "waveId": "W030",
+    "waveIndex": 30,
+    "taskCount": 1,
+    "dir": "plan/waves/W030"
+  },
+  {
+    "waveId": "W031",
+    "waveIndex": 31,
+    "taskCount": 1,
+    "dir": "plan/waves/W031"
+  },
+  {
+    "waveId": "W032",
+    "waveIndex": 32,
+    "taskCount": 1,
+    "dir": "plan/waves/W032"
+  },
+  {
+    "waveId": "W033",
+    "waveIndex": 33,
+    "taskCount": 1,
+    "dir": "plan/waves/W033"
+  },
+  {
+    "waveId": "W034",
+    "waveIndex": 34,
+    "taskCount": 1,
+    "dir": "plan/waves/W034"
+  },
+  {
+    "waveId": "W035",
+    "waveIndex": 35,
+    "taskCount": 1,
+    "dir": "plan/waves/W035"
+  },
+  {
+    "waveId": "W036",
+    "waveIndex": 36,
+    "taskCount": 1,
+    "dir": "plan/waves/W036"
+  },
+  {
+    "waveId": "W037",
+    "waveIndex": 37,
+    "taskCount": 1,
+    "dir": "plan/waves/W037"
+  },
+  {
+    "waveId": "W038",
+    "waveIndex": 38,
+    "taskCount": 1,
+    "dir": "plan/waves/W038"
+  },
+  {
+    "waveId": "W039",
+    "waveIndex": 39,
+    "taskCount": 1,
+    "dir": "plan/waves/W039"
+  },
+  {
+    "waveId": "W040",
+    "waveIndex": 40,
+    "taskCount": 1,
+    "dir": "plan/waves/W040"
+  },
+  {
+    "waveId": "W041",
+    "waveIndex": 41,
+    "taskCount": 1,
+    "dir": "plan/waves/W041"
+  },
+  {
+    "waveId": "W042",
+    "waveIndex": 42,
+    "taskCount": 1,
+    "dir": "plan/waves/W042"
+  },
+  {
+    "waveId": "W043",
+    "waveIndex": 43,
+    "taskCount": 1,
+    "dir": "plan/waves/W043"
+  },
+  {
+    "waveId": "W044",
+    "waveIndex": 44,
+    "taskCount": 1,
+    "dir": "plan/waves/W044"
+  },
+  {
+    "waveId": "W045",
+    "waveIndex": 45,
+    "taskCount": 1,
+    "dir": "plan/waves/W045"
+  },
+  {
+    "waveId": "W046",
+    "waveIndex": 46,
+    "taskCount": 1,
+    "dir": "plan/waves/W046"
+  },
+  {
+    "waveId": "W047",
+    "waveIndex": 47,
+    "taskCount": 1,
+    "dir": "plan/waves/W047"
+  },
+  {
+    "waveId": "W048",
+    "waveIndex": 48,
+    "taskCount": 1,
+    "dir": "plan/waves/W048"
+  },
+  {
+    "waveId": "W049",
+    "waveIndex": 49,
+    "taskCount": 1,
+    "dir": "plan/waves/W049"
+  },
+  {
+    "waveId": "W050",
+    "waveIndex": 50,
+    "taskCount": 1,
+    "dir": "plan/waves/W050"
+  },
+  {
+    "waveId": "W051",
+    "waveIndex": 51,
+    "taskCount": 1,
+    "dir": "plan/waves/W051"
+  },
+  {
+    "waveId": "W052",
+    "waveIndex": 52,
+    "taskCount": 1,
+    "dir": "plan/waves/W052"
+  },
+  {
+    "waveId": "W053",
+    "waveIndex": 53,
+    "taskCount": 1,
+    "dir": "plan/waves/W053"
+  },
+  {
+    "waveId": "W054",
+    "waveIndex": 54,
+    "taskCount": 1,
+    "dir": "plan/waves/W054"
+  },
+  {
+    "waveId": "W055",
+    "waveIndex": 55,
+    "taskCount": 1,
+    "dir": "plan/waves/W055"
+  },
+  {
+    "waveId": "W056",
+    "waveIndex": 56,
+    "taskCount": 1,
+    "dir": "plan/waves/W056"
+  },
+  {
+    "waveId": "W057",
+    "waveIndex": 57,
+    "taskCount": 1,
+    "dir": "plan/waves/W057"
+  },
+  {
+    "waveId": "W058",
+    "waveIndex": 58,
+    "taskCount": 1,
+    "dir": "plan/waves/W058"
+  },
+  {
+    "waveId": "W059",
+    "waveIndex": 59,
+    "taskCount": 1,
+    "dir": "plan/waves/W059"
+  },
+  {
+    "waveId": "W060",
+    "waveIndex": 60,
+    "taskCount": 1,
+    "dir": "plan/waves/W060"
+  },
+  {
+    "waveId": "W061",
+    "waveIndex": 61,
+    "taskCount": 1,
+    "dir": "plan/waves/W061"
+  },
+  {
+    "waveId": "W062",
+    "waveIndex": 62,
+    "taskCount": 1,
+    "dir": "plan/waves/W062"
+  },
+  {
+    "waveId": "W063",
+    "waveIndex": 63,
+    "taskCount": 1,
+    "dir": "plan/waves/W063"
+  },
+  {
+    "waveId": "W064",
+    "waveIndex": 64,
+    "taskCount": 1,
+    "dir": "plan/waves/W064"
+  },
+  {
+    "waveId": "W065",
+    "waveIndex": 65,
+    "taskCount": 1,
+    "dir": "plan/waves/W065"
+  },
+  {
+    "waveId": "W066",
+    "waveIndex": 66,
+    "taskCount": 1,
+    "dir": "plan/waves/W066"
+  },
+  {
+    "waveId": "W067",
+    "waveIndex": 67,
+    "taskCount": 1,
+    "dir": "plan/waves/W067"
+  },
+  {
+    "waveId": "W068",
+    "waveIndex": 68,
+    "taskCount": 1,
+    "dir": "plan/waves/W068"
+  },
+  {
+    "waveId": "W069",
+    "waveIndex": 69,
+    "taskCount": 1,
+    "dir": "plan/waves/W069"
+  }
+]

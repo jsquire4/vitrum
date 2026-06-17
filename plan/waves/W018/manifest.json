@@ -1,0 +1,95 @@
+{
+  "waveId": "W018",
+  "waveIndex": 18,
+  "bootstrap": false,
+  "agentCap": 25,
+  "taskCount": 5,
+  "lanes": [
+    "core",
+    "walkaround-rc",
+    "pt-webgpu"
+  ],
+  "agents": [
+    {
+      "slot": 1,
+      "agentId": "agent-01",
+      "taskId": "CORE-031",
+      "lane": "core",
+      "disposition": "DOC",
+      "promptFile": "agents/agent-01.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W018/agents/agent-01.md"
+    },
+    {
+      "slot": 2,
+      "agentId": "agent-02",
+      "taskId": "RC-006",
+      "lane": "walkaround-rc",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-02.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W018/agents/agent-02.md"
+    },
+    {
+      "slot": 3,
+      "agentId": "agent-03",
+      "taskId": "INV-003",
+      "lane": "pt-webgpu",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-03.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W018/agents/agent-03.md"
+    },
+    {
+      "slot": 4,
+      "agentId": "agent-04",
+      "taskId": "INV-006",
+      "lane": "pt-webgpu",
+      "disposition": "IMP",
+      "promptFile": "agents/agent-04.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W018/agents/agent-04.md"
+    },
+    {
+      "slot": 5,
+      "agentId": "agent-05",
+      "taskId": "RT100-F5-VOLUMES",
+      "lane": "core",
+      "disposition": "ACC",
+      "promptFile": "agents/agent-05.md",
+      "promptAbsPath": "/home/jsquire4/projects/vitrum/plan/waves/W018/agents/agent-05.md"
+    }
+  ],
+  "dispatch": {
+    "instruction": "Spawn 5 sub-agent(s). Each agent reads its prompt file and executes exactly one task.",
+    "maxConcurrent": 5
+  },
+  "phases": [
+    "build",
+    "verify",
+    "remediate",
+    "smoke",
+    "commit"
+  ],
+  "smoke": {
+    "required": [
+      "typecheck"
+    ],
+    "laneVitest": [
+      {
+        "lane": "core",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/core && npx vitest run"
+      },
+      {
+        "lane": "walkaround-rc",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/walkaround-rc && npx vitest run"
+      },
+      {
+        "lane": "pt-webgpu",
+        "cmd": "cd /home/jsquire4/projects/vitrum/packages/pt-webgpu && npx vitest run"
+      }
+    ],
+    "bootstrap": false,
+    "behavioralGate": null
+  },
+  "commit": {
+    "message": "chore(gap-remediation): W018 wave — 5 tasks (CORE-031, RC-006, INV-003, INV-006, RT100-F5-VOLUMES)",
+    "files": "all staged changes from verified tasks"
+  }
+}
