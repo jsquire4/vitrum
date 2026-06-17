@@ -1077,7 +1077,11 @@ lavapipe PNG baselines for the same three real public assets. The normal
 the config as `GOLDEN-DELTA` if byte RMSE, mean absolute error, or max-channel
 delta exceeds the per-asset tolerance. Recapture is explicit via
 `tools/behavioral-gate/gate.mjs --filter gltf-real --update-goldens` with
-write permission to the reference-render directory.
+write permission to the reference-render directory. The 2026-06-17 proof
+metadata follow-up adds `tools/gltf-real-asset-sweep/proofs.mjs` plus
+`tools/reference-renders/gltf-real-behavioral/manifest.json`, so the import/decode
+sweep reports `renderStatus:"covered-by-behavioral-gate"` with the exact proof
+label, golden path, and tolerances for each committed real asset.
 
 ✅ **SYNTHETIC MATERIAL-SWEEP GOLDEN/TOLERANCE GATE ADDED (2026-06-17):**
 `tools/reference-renders/gltf-material-sweep-behavioral/` now contains the

@@ -67,6 +67,7 @@ import {
   makeSweepGltf,
   makeSweepTextureDecodeHooks,
 } from "../gltf-material-sweep/fixture.mjs";
+import { REAL_GLTF_BEHAVIORAL_PROOFS } from "../gltf-real-asset-sweep/proofs.mjs";
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
@@ -210,6 +211,16 @@ const WH_CONFIGS = [
   // indirect contribution visible through the pane.
   { label: "wh/glass-gi",          eng: {},                                    scene: { glass: true } },
 ];
+
+const REAL_GLTF_GOLDENS = Object.fromEntries(REAL_GLTF_BEHAVIORAL_PROOFS.map((proof) => [
+  proof.label,
+  {
+    path: proof.goldenPath,
+    maxRmse: proof.thresholds.maxRmse,
+    maxMeanAbs: proof.thresholds.maxMeanAbs,
+    maxAbs: proof.thresholds.maxAbs,
+  },
+]));
 
 // ── Scene builder ─────────────────────────────────────────────────────────────
 
@@ -1453,24 +1464,7 @@ const GLTF_GOLDENS = {
     maxMeanAbs: 4.0,
     maxAbs: 48,
   },
-  "pt/gltf-real-box-textured": {
-    path: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-box-textured.png",
-    maxRmse: 8.0,
-    maxMeanAbs: 4.0,
-    maxAbs: 48,
-  },
-  "pt/gltf-real-draco": {
-    path: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-draco.png",
-    maxRmse: 8.0,
-    maxMeanAbs: 4.0,
-    maxAbs: 48,
-  },
-  "pt/gltf-real-meshopt": {
-    path: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-meshopt.png",
-    maxRmse: 8.0,
-    maxMeanAbs: 4.0,
-    maxAbs: 48,
-  },
+  ...REAL_GLTF_GOLDENS,
   "pt/gltf-point-line-fallback": {
     path: "tools/reference-renders/gltf-point-line-behavioral/pt-gltf-point-line-fallback.png",
     maxRmse: 8.0,

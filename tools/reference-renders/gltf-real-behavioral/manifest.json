@@ -1,0 +1,33 @@
+{
+  "kind": "vitrum-real-gltf-behavioral-goldens",
+  "backend": "pt-webgpu",
+  "resolution": [64, 64],
+  "samplesPerPixel": 8,
+  "gateCommand": "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json npm run behavioral-gate -- --filter gltf-real",
+  "updateCommand": "VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-net --allow-write=tools/reference-renders/gltf-real-behavioral tools/behavioral-gate/gate.mjs --filter gltf-real --update-goldens",
+  "assets": [
+    {
+      "assetId": "box-textured-glb",
+      "label": "pt/gltf-real-box-textured",
+      "kind": "textured-glb",
+      "goldenPath": "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-box-textured.png",
+      "thresholds": { "maxRmse": 8.0, "maxMeanAbs": 4.0, "maxAbs": 48 }
+    },
+    {
+      "assetId": "cesium-milk-truck-draco",
+      "label": "pt/gltf-real-draco",
+      "kind": "draco",
+      "requiredExtensions": ["KHR_draco_mesh_compression"],
+      "goldenPath": "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-draco.png",
+      "thresholds": { "maxRmse": 8.0, "maxMeanAbs": 4.0, "maxAbs": 48 }
+    },
+    {
+      "assetId": "meshopt-cube-real",
+      "label": "pt/gltf-real-meshopt",
+      "kind": "meshopt",
+      "requiredExtensions": ["KHR_meshopt_compression"],
+      "goldenPath": "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-meshopt.png",
+      "thresholds": { "maxRmse": 8.0, "maxMeanAbs": 4.0, "maxAbs": 48 }
+    }
+  ]
+}

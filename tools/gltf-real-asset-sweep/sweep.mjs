@@ -10,8 +10,8 @@
  * - supplies real Draco and meshopt decoder hooks from installed packages;
  * - reports texture readiness, compatibility, warnings, and diagnostics.
  *
- * It intentionally stops at import/decode/compatibility proof. Render/golden PNG
- * capture remains a separate GPU harness step.
+ * It intentionally stops at import/decode/compatibility proof, then reports the
+ * matching behavioral-gate golden PNG lane when one is committed for the asset.
  */
 
 import { loadGltfForEngine } from "@vitrum/gltf-adapter";
@@ -20,6 +20,7 @@ import {
   decodeImagePixels,
   makeRealGltfDecodeHooks,
 } from "./assets.mjs";
+import { proofForRealGltfAsset } from "./proofs.mjs";
 
 const jsonMode = Deno.args.includes("--json");
 const selectedIds = new Set(readMultiFlag("--asset"));
@@ -88,6 +89,7 @@ async function sweepAsset(asset, hooks) {
     meshoptDecode: hooks.meshoptDecode,
   });
   assertAssetExpectations(asset, result);
+  const renderProof = proofForRealGltfAsset(asset.id);
   return {
     id: asset.id,
     kind: asset.kind,
@@ -114,7 +116,8 @@ async function sweepAsset(asset, hooks) {
     compatibility: summarizeCompatibility(result),
     warnings: result.warnings,
     diagnostics: result.diagnostics,
-    renderStatus: "queued",
+    renderStatus: renderProof ? "covered-by-behavioral-gate" : "queued",
+    renderProof,
   };
 }
 
@@ -134,9 +137,11 @@ for (const asset of assets) {
 const summary = {
   assetCount: results.length,
   assets: results,
-  renderStatus: "queued",
+  renderStatus: results.every((item) => item.renderStatus === "covered-by-behavioral-gate")
+    ? "covered-by-behavioral-gate"
+    : "partial",
   renderQueueReason:
-    "This harness proves real URL load/decode/compression hooks. Golden PNG rendering remains a separate GPU capture queue item.",
+    "This harness proves real URL load/decode/compression hooks; renderProof points to the behavioral-gate golden PNG lane for assets with committed references.",
 };
 
 if (jsonMode) {
@@ -150,5 +155,10 @@ if (jsonMode) {
         `ext=${item.extensionsUsed.join(",") || "(none)"}`,
     );
   }
-  console.log("[gltf-real-asset-sweep] renderStatus=queued (GPU golden capture remains separate)");
+  console.log(`[gltf-real-asset-sweep] renderStatus=${summary.renderStatus}`);
+  for (const item of results) {
+    if (item.renderProof) {
+      console.log(`[gltf-real-asset-sweep] ${item.id}: renderProof=${item.renderProof.label} golden=${item.renderProof.goldenPath}`);
+    }
+  }
 }

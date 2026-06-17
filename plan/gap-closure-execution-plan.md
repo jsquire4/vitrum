@@ -260,7 +260,11 @@ turning this into renderer research.
 Status 2026-06-17: **CLOSED for available WSL proof lanes.**
 `gltf-material-sweep` passed and `behavioral-gate -- --filter gltf` passed all
 six pt-webgpu glTF configs with finite non-black output and zero GPU errors.
-Golden PNG capture remains in the validation queue, as intended.
+The real public-asset lane now also has committed pt-webgpu lavapipe golden PNGs
+for BoxTextured, CesiumMilkTruck Draco, and MeshoptCubeTest meshopt assets; the
+real-asset import/decode sweep reports those `behavioral-gate` proof labels and
+golden paths through shared metadata. Recommended-backend/browser captures
+remain in the validation queue, as intended.
 
 Allowed work:
 
@@ -342,7 +346,8 @@ These are not code blockers, but they are required before a high-confidence
 - Neural denoiser quality A/B once production weights exist.
 - BDPT material/radiometric A/B.
 - pt-webgpu full-tier material-furnace/reference-render sweeps.
-- Real glTF golden PNG sweep on recommended backends.
+- Real glTF golden PNG sweep on recommended backends (pt-webgpu WSL public-asset
+  golden lane is covered; pt-webgl2/browser recommended-backend proof remains).
 - Mutation matrix on real GPU/browser harness: buffers, bind groups, denoiser
   history, and GI propagation together.
 
@@ -419,7 +424,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | pt-webgl2 material furnace | pt-webgl2 | Thickness/SSS/procedural-sky/emissive panels against references. |
 | Rich-material GI | walkaround | A/B showing receiver-lobe material target improves or preserves correctness. |
 | Transparent OIT visual proof | walkaround | Alpha blend scenes with sun/point/area/shadow transmittance references. |
-| Real glTF golden sweep | glTF/tools | Recommended-backend render, mean luminance, no GPU errors, PNG tolerance. |
+| Real glTF golden sweep | glTF/tools | pt-webgpu WSL public-asset golden lane covered; recommended-backend/browser render, mean luminance, no GPU errors, and PNG tolerance remain for final promotion. |
 | Mutation matrix on real GPU | engine/backends | Real buffers, bind groups, denoiser history, GI propagation together. |
 | Browser/adapter coverage | tools | Browser or real-adapter validation for rows WSL lavapipe cannot prove. |
 

@@ -40,6 +40,7 @@
     "radiometric-ab:restir-pt-specialty": "node tools/radiometric-ab/ab-restir-pt-specialty.mjs --check",
     "radiometric-ab:walkaround": "node tools/radiometric-ab/run-walkaround-ab.mjs",
     "gltf-material-sweep": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/sweep.mjs",
+    "gltf-real-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-real-asset-sweep/check-proofs.mjs",
     "gltf-real-asset-sweep": "deno run --sloppy-imports --allow-read --allow-net tools/gltf-real-asset-sweep/sweep.mjs"
   },
   "engines": {
