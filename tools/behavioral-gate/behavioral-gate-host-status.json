@@ -1,0 +1,20 @@
+{
+  "generatedAt": "2026-06-17T06:39:40.914Z",
+  "harness": "behavioral-gate",
+  "verdict": "HOST-BLOCKED",
+  "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-net --allow-write=tools/reference-renders tools/behavioral-gate/gate.mjs --filter wh/default",
+  "filter": "wh/default",
+  "icd": "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
+  "exitStatus": 1,
+  "signal": null,
+  "reason": {
+    "code": "deno-wgpu-hal-gles-index-oob",
+    "location": "wgpu-hal-28.0.0/src/gles/command.rs:771:21",
+    "message": "Deno native WebGPU panicked before behavioral-gate could classify the selected lanes."
+  },
+  "nextSteps": [
+    "Use pt-webgpu-focused filters such as --filter gltf on the current WSL native-Deno lane.",
+    "Run walkaround behavioral lanes in the browser/real-adapter validation lane.",
+    "Re-run this wrapper after the Deno native WebGPU panic is fixed or the host path changes."
+  ]
+}

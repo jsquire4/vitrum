@@ -32,7 +32,7 @@
     "codegen:wgsl-layouts": "node ./tools/generate-wgsl-layouts.mjs",
     "shader-gate": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env tools/shader-gate/gate.mjs",
     "shader-gate:glsl": "deno run --sloppy-imports --allow-read --allow-env --allow-run --allow-write=/tmp tools/shader-gate/glslGate.mjs",
-    "behavioral-gate": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-net --allow-write=tools/reference-renders tools/behavioral-gate/gate.mjs",
+    "behavioral-gate": "node tools/behavioral-gate/run-gate.mjs",
     "behavioral-gate:tlas-glass-shadow": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env tools/behavioral-gate/tlas-glass-shadow-oracle.mjs",
     "radiometric-ab:sppm": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-sppm.mjs",
     "radiometric-ab:bdpt": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-bdpt.mjs",

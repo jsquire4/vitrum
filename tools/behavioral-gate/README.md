@@ -21,6 +21,10 @@ sudo apt-get install -y mesa-vulkan-drivers
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate
 
+# The npm script is a Node wrapper around the Deno gate. Normal successful runs
+# stream the underlying gate output unchanged; a known Deno native-WebGPU host
+# panic is classified as HOST-BLOCKED in `behavioral-gate-host-status.json`.
+
 # Self-test mode (injects a synthetic BLACK result and verifies detection):
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate -- --self-test
@@ -139,9 +143,11 @@ None. Every config in `EXPECTATION_TABLE` is currently expected to return `ok`.
 
 Local WSL/Deno note: Deno 2.8.1's WebGPU GLES path can panic in wgpu-hal on
 this adapter while running the existing walkaround-hybrid configs, including
-`wh/default`. The focused `--filter gltf` lane is currently a pt-webgpu lane and
-passes on WSL lavapipe; walkaround render-gate promotion should be re-enabled
-after that Deno/WebGPU harness issue is cleared.
+`wh/default`. The npm wrapper writes `behavioral-gate-host-status.json` and
+exits non-zero when that known host panic occurs. The focused `--filter gltf`
+lane is currently a pt-webgpu lane and passes on WSL lavapipe; walkaround
+render-gate promotion should be re-enabled after that Deno/WebGPU harness issue
+is cleared.
 
 ## Naga gap patches
 
