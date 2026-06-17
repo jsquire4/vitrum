@@ -40,9 +40,9 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 # Run the same gate through the companion WSL dzn runtime for full-tier proof:
 npm run behavioral-gate:dzn -- --filter gltf --require-full-tier
 
-# The dzn wrapper fail-closes long host hangs as HOST-BLOCKED in
-# behavioral-gate-dzn-host-status.json. Override the default 180s budget when
-# deliberately collecting a slower full-tier lane:
+# The dzn wrapper writes behavioral-gate-dzn-host-status.json on PASS and
+# fail-closes long host hangs as HOST-BLOCKED. Override the default 180s budget
+# when deliberately collecting a slower full-tier lane:
 VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS=600000 \
   npm run behavioral-gate:dzn -- --filter gltf --require-full-tier
 

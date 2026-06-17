@@ -85,6 +85,23 @@ if (result.status === 124) {
   process.exit(2);
 }
 
+if (result.status === 0) {
+  const filter = readFlagValue(gateArgs, '--filter');
+  const status = {
+    generatedAt: new Date().toISOString(),
+    harness: 'behavioral-gate:dzn',
+    verdict: 'PASS',
+    command: `npm run behavioral-gate:dzn -- ${gateArgs.join(' ')}`.trim(),
+    filter: filter || null,
+    timeoutMs,
+    dznEnv,
+    exitStatus: result.status,
+    signal: result.signal,
+    summary: parseSummary(result.stdout ?? ''),
+  };
+  writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
+}
+
 process.exit(result.status ?? 1);
 
 function parseTimeoutMs(raw, fallback) {
@@ -102,4 +119,14 @@ function readFlagValue(args, name) {
   if (eq) return eq.slice(name.length + 1);
   const i = args.indexOf(name);
   return i >= 0 ? (args[i + 1] ?? '') : '';
+}
+
+function parseSummary(stdout) {
+  const match = stdout.match(/=== summary: (\d+) configs total, (\d+) failures, (\d+) known-residuals ===/);
+  if (!match) return null;
+  return {
+    totalConfigs: Number(match[1]),
+    failures: Number(match[2]),
+    knownResiduals: Number(match[3]),
+  };
 }

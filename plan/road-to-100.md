@@ -18,7 +18,8 @@
 > `ppgGuidedSampling.test.ts` now mirrors the production equal-area cylindrical PPG direction map rather than the
 > retired octahedral map.
 > For this ledger, "100%" = everything fully implemented.
-> **R7a-R7d campaign additions:** behavioral gate (26/26 pass, permanent CI); anisotropic
+> **R7a-R7d campaign additions:** behavioral gate coverage (43 lanes today: 33
+> pt-webgpu + 10 walkaround-hybrid; permanent CI); anisotropic
 > GGX (A-item closed — `materialAnisotropy` now renders); engine error surface (`onError` —
 > silent-GPU-error class dead); `@vitrum/gltf-adapter` new package (glTF 2.0 → core Scene);
 > `captureFrame` pixel-readback API + `pickPrimitive` real on all 3 backends;
@@ -1112,16 +1113,17 @@ hard-coded topology golden entries, and `npm run gltf-topology-proof-check`
 verifies both manifests, proof metadata, 64x64/8spp expectations, and PNG
 headers.
 
-✅ **FULL-TIER MATERIAL-SWEEP ASSERTION ADDED (2026-06-17):** WSL lavapipe still
-proves the default/auto glTF material-sweep PNG path in the lite profile, but
-the companion dzn runtime now has a checked command for the same fixture on the
-pt-webgpu full tier:
+✅ **FULL-TIER MATERIAL-SWEEP COMMAND/STATUS PATH ADDED (2026-06-17):** WSL lavapipe still
+proves the default/auto glTF material-sweep PNG path in the lite profile. The
+companion dzn runtime now has a checked command for the same fixture on the
+pt-webgpu full tier, and the dzn wrapper writes a machine-readable
+`behavioral-gate-dzn-host-status.json` with `PASS` or `HOST-BLOCKED` when run:
 `npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier`.
-That lane resolves `tier=full`, reports zero GPU errors, and compares against the
-committed material-sweep golden within tolerance (RMSE 0.544, meanAbs 0.070,
-maxAbs 16). `tools/behavioral-gate/gate.mjs` prints the resolved
-`tier=full|lite`, and `--require-full-tier` now actively requests full tier
-before failing any selected non-lite pt-webgpu config that cannot resolve there.
+No committed dzn `PASS` artifact is currently treated as promotion evidence in
+this Road; the checked artifact in-repo remains the lavapipe golden. `tools/behavioral-gate/gate.mjs`
+prints the resolved `tier=full|lite`, and `--require-full-tier` now actively
+requests full tier before failing any selected non-lite pt-webgpu config that
+cannot resolve there.
 Broader material-furnace/reference sweeps for individual clearcoat/sheen/
 iridescence/aniso/specular rows remain queued, but a green lite run can no
 longer be mistaken for this full-tier synthetic material-sweep evidence.
