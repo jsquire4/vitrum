@@ -22,7 +22,7 @@
 // Light types (must match the GLSL `#define`s):
 //   RECT_AREA = 0, CIRC_AREA = 1, SPOT = 2, DIR = 3, POINT = 4
 
-import type { SceneEmitter, Vec3 } from '@vitrum/core';
+import type { EngineWarning, SceneEmitter, Vec3 } from '@vitrum/core';
 import type { LightsTextureData } from './sceneTextures.js';
 
 // ── D10.10: dev-only slot-cursor guard ────────────────────────────────────────
@@ -62,6 +62,33 @@ const CIRC_AREA_LIGHT = 1;
 const SPOT_LIGHT = 2;
 const DIR_LIGHT = 3;
 const POINT_LIGHT = 4;
+
+export function directionalAngularDiameterWarnings(
+  emitters: readonly SceneEmitter[],
+  options: { readonly phase: string; readonly method: string },
+): EngineWarning[] {
+  const warnings: EngineWarning[] = [];
+  for (const emitter of emitters) {
+    if (emitter.kind !== 'directional') continue;
+    const angularDiameter = emitter.angularDiameter;
+    if (angularDiameter == null || !Number.isFinite(angularDiameter) || angularDiameter <= 0) continue;
+    warnings.push({
+      code: 'pt-webgl2.unconsumed-directional-angular-diameter',
+      backend: 'pt-webgl2',
+      phase: options.phase,
+      method: options.method,
+      message:
+        `[vitrum/pt-webgl2] Directional emitter "${emitter.id}" sets angularDiameter=${angularDiameter}, ` +
+        'but pt-webgl2 currently renders directional lights as delta/hard-shadow lights; soft-sun angular spread is ignored.',
+      details: {
+        emitterId: emitter.id,
+        angularDiameter,
+        support: 'unsupported',
+      },
+    });
+  }
+  return warnings;
+}
 
 /** Rec.709 relative luminance — identical coefficients to the fork's
  *  `luminance()` so the packed `power` field matches byte-for-byte. */

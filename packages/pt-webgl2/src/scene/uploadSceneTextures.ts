@@ -26,7 +26,7 @@ import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { packAttributesArray } from './attributesTextureArray.js';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
-import { packLightsTexture } from './lightsTexture.js';
+import { directionalAngularDiameterWarnings, packLightsTexture } from './lightsTexture.js';
 import { packMeshAreaLights } from './meshAreaLights.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import { solveSkinPrimitives } from './solveSkinPrimitives.js';
@@ -107,6 +107,10 @@ export function buildSceneTextures(
 
   // (5) lights (6px/light) — driven from the original scene's emitters.
   const lightsData = packLightsTexture(supported.emitters);
+  structuredWarnings.push(...directionalAngularDiameterWarnings(supported.emitters, {
+    phase: 'setScene',
+    method: 'setScene',
+  }));
   const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights');
 
   // (5b) B4 — mesh-area triangle lights for NEE, built from explicit mesh-area

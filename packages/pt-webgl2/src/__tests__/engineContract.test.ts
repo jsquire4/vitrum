@@ -50,6 +50,23 @@ function sceneWithEmitter(): Scene {
   };
 }
 
+function sceneWithSoftDirectionalEmitter(): Scene {
+  return {
+    primitives: [tri('tri', 0)],
+    emitters: [
+      {
+        kind: 'directional',
+        id: 'sun',
+        direction: [0, -1, 0],
+        color: [1, 1, 1],
+        intensity: 2,
+        angularDiameter: 0.01,
+      },
+    ],
+    environment: { kind: 'none' },
+  };
+}
+
 function sceneWithMeshAreaEmitter(): Scene {
   return {
     primitives: [tri('panel', 0)],
@@ -646,6 +663,54 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugSceneTex?.envMap).toBe(true);
     expect(e._debugSceneTex?.envTotalSum).toBeGreaterThan(0);
     expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+  });
+
+  it('warns when directional angularDiameter is supplied because pt-webgl2 renders hard directional lights', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+
+      e.setScene(sceneWithSoftDirectionalEmitter());
+      const uploadWarning = structured.find((w) =>
+        w.code === 'pt-webgl2.unconsumed-directional-angular-diameter' &&
+        w.phase === 'setScene',
+      );
+      expect(uploadWarning?.method).toBe('setScene');
+      expect(uploadWarning?.details).toEqual({
+        emitterId: 'sun',
+        angularDiameter: 0.01,
+        support: 'unsupported',
+      });
+      expect(warn.mock.calls.flat().map(String).some((m) =>
+        m.includes('angularDiameter=0.01') &&
+        m.includes('soft-sun angular spread is ignored'),
+      )).toBe(true);
+
+      structured.length = 0;
+      warn.mockClear();
+      e.updateEmitter?.('sun', { angularDiameter: 0.02 } as never);
+
+      const mutationWarning = structured.find((w) =>
+        w.code === 'pt-webgl2.unconsumed-directional-angular-diameter' &&
+        w.phase === 'mutation',
+      );
+      expect(mutationWarning?.method).toBe('updateEmitter');
+      expect(mutationWarning?.details).toEqual({
+        emitterId: 'sun',
+        angularDiameter: 0.02,
+        support: 'unsupported',
+      });
+      expect(warn.mock.calls.flat().map(String).some((m) =>
+        m.includes('angularDiameter=0.02') &&
+        m.includes('soft-sun angular spread is ignored'),
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('updateEmitter mesh-area patches folded material and mesh-light textures without rebuilding BVH geometry', async () => {
