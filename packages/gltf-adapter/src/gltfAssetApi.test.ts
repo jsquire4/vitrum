@@ -2567,6 +2567,31 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('rejects unknown material extension diagnostics in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      material: 0,
+    };
+    gltf.materials = [{
+      extensions: {
+        VENDOR_material_magic: { mode: 'mystery' },
+      },
+    }];
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow(
+      'import:unknown-material-extension=approximate at materials[0].extensions.VENDOR_material_magic',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('allows opaque texture handles in strict mode when the host asserts backend readiness', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const engine = { setScene: vi.fn() };

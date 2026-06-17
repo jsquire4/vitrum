@@ -1152,8 +1152,14 @@ describe('material field mapping', () => {
         MY_custom_extension: { foo: 42 },
       },
     });
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     expect(warnings.some(w => w.includes('MY_custom_extension'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'unknown-material-extension',
+      path: 'materials[0].extensions.MY_custom_extension',
+      extensionName: 'MY_custom_extension',
+      materialIndex: 0,
+    }));
     const mat = (scene.primitives[0] as MeshPrimitive).material;
     expect((mat.extensions as Record<string, unknown>)?.['MY_custom_extension']).toEqual({ foo: 42 });
   });

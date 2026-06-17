@@ -20,6 +20,24 @@ import type { GltfJson, GltfMaterial } from './gltfTypes.js';
 import type { MaterialSpec, Vec3 } from '@vitrum/core';
 import { resolveTextureRef, type GltfTextureSourceExtension } from './textures.js';
 
+export type GltfMaterialDiagnosticCode =
+  | 'invalid-material-dispersion'
+  | 'spec-gloss-approximation'
+  | 'spec-gloss-texture-alpha-approximation'
+  | 'unsupported-material-extension'
+  | 'unknown-material-extension';
+
+export interface GltfMaterialDiagnostic {
+  readonly severity: 'warning';
+  readonly code: GltfMaterialDiagnosticCode;
+  readonly path: string;
+  readonly message: string;
+  readonly materialIndex?: number;
+  readonly extensionName?: string;
+}
+
+export type GltfMaterialDiagnosticSink = (diagnostic: GltfMaterialDiagnostic) => void;
+
 const KNOWN_KHR_EXTENSIONS = new Set([
   'KHR_materials_unlit',
   'KHR_materials_transmission',
@@ -326,15 +344,23 @@ function _parseDispersionExt(
   ext: Record<string, unknown>,
   warnings: string[],
   materialName: string,
+  materialIndex: number | undefined,
+  onDiagnostic: GltfMaterialDiagnosticSink | undefined,
 ): Partial<MaterialSpec> {
   const dispersionExt = ext['KHR_materials_dispersion'] as { dispersion?: number } | undefined;
   if (!dispersionExt || dispersionExt.dispersion === undefined) return {};
   const dispersion = dispersionExt.dispersion;
   if (!Number.isFinite(dispersion) || dispersion < 0) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Material "${materialName}" uses KHR_materials_dispersion ` +
+    emitMaterialDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'invalid-material-dispersion',
+      path: materialSourcePath(materialIndex, 'extensions.KHR_materials_dispersion.dispersion'),
+      ...materialDiagnosticIndex(materialIndex),
+      extensionName: 'KHR_materials_dispersion',
+      message:
+        `[vitrum/gltf-adapter] Material "${materialName}" uses KHR_materials_dispersion ` +
         `with invalid dispersion=${String(dispersion)}. Dispersion is ignored.`,
-    );
+    });
     return {};
   }
   if (dispersion === 0) return {};
@@ -353,6 +379,7 @@ function _parseSpecularGlossinessExt(
   alphaMode: MaterialSpec['alphaMode'],
   materialIndex: number | undefined,
   textureSourceExtensions: readonly GltfTextureSourceExtension[],
+  onDiagnostic: GltfMaterialDiagnosticSink | undefined,
 ): Partial<MaterialSpec> {
   const sgExt = ext['KHR_materials_pbrSpecularGlossiness'] as
     | {
@@ -365,11 +392,17 @@ function _parseSpecularGlossinessExt(
     | undefined;
   if (!sgExt) return {};
 
-  warnings.push(
-    `[vitrum/gltf-adapter] Material "${materialName}" uses archived ` +
+  emitMaterialDiagnostic(warnings, onDiagnostic, {
+    severity: 'warning',
+    code: 'spec-gloss-approximation',
+    path: materialSourcePath(materialIndex, 'extensions.KHR_materials_pbrSpecularGlossiness'),
+    ...materialDiagnosticIndex(materialIndex),
+    extensionName: 'KHR_materials_pbrSpecularGlossiness',
+    message:
+      `[vitrum/gltf-adapter] Material "${materialName}" uses archived ` +
       'KHR_materials_pbrSpecularGlossiness. Scalar diffuse/specular/glossiness ' +
       'values are converted approximately to metallic-roughness + specular fields.',
-  );
+  });
 
   const diffuseFactor = sgExt.diffuseFactor ?? [1, 1, 1, 1];
   const specularFactor = sgExt.specularFactor ?? [1, 1, 1];
@@ -396,14 +429,23 @@ function _parseSpecularGlossinessExt(
   );
 
   if (specularGlossinessTexture) {
-    warnings.push(
-      `[vitrum/gltf-adapter] Material "${materialName}" uses ` +
+    emitMaterialDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'spec-gloss-texture-alpha-approximation',
+      path: materialSourcePath(
+        materialIndex,
+        'extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+      ),
+      ...materialDiagnosticIndex(materialIndex),
+      extensionName: 'KHR_materials_pbrSpecularGlossiness',
+      message:
+        `[vitrum/gltf-adapter] Material "${materialName}" uses ` +
         'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture. The RGB ' +
         'specular map is imported as specularColorMap. Raw import uses scalar ' +
         'glossinessFactor for roughness until loadGltfAndDecodeTextures() or ' +
         'decodeSceneTextures() can bake glossiness-in-alpha ' +
         'into a roughnessMap.',
-    );
+    });
   }
 
   const opacity = diffuseFactor[3] < 1 && alphaMode !== 'opaque'
@@ -436,6 +478,7 @@ export function convertMaterial(
   gltf?: GltfJson,
   materialIndex?: number,
   textureSourceExtensions: readonly GltfTextureSourceExtension[] = [],
+  onDiagnostic?: GltfMaterialDiagnosticSink,
 ): MaterialSpec {
   const pbr = gltfMat.pbrMetallicRoughness ?? {};
   const ext = gltfMat.extensions ?? {};
@@ -519,15 +562,27 @@ export function convertMaterial(
   for (const key of Object.keys(ext)) {
     const unsupportedMessage = KNOWN_UNSUPPORTED_EXTENSION_MESSAGES[key];
     if (unsupportedMessage) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Material "${gltfMat.name ?? '(unnamed)'}" uses ${key}. ` +
+      emitMaterialDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'unsupported-material-extension',
+        path: materialSourcePath(materialIndex, `extensions.${key}`),
+        ...materialDiagnosticIndex(materialIndex),
+        extensionName: key,
+        message:
+          `[vitrum/gltf-adapter] Material "${gltfMat.name ?? '(unnamed)'}" uses ${key}. ` +
           unsupportedMessage,
-      );
+      });
     } else if (!KNOWN_KHR_EXTENSIONS.has(key)) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Material "${gltfMat.name ?? '(unnamed)'}" uses unknown extension ` +
+      emitMaterialDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'unknown-material-extension',
+        path: materialSourcePath(materialIndex, `extensions.${key}`),
+        ...materialDiagnosticIndex(materialIndex),
+        extensionName: key,
+        message:
+          `[vitrum/gltf-adapter] Material "${gltfMat.name ?? '(unnamed)'}" uses unknown extension ` +
           `"${key}" which is not mapped to a core MaterialSpec field. It is stored in extensions.`,
-      );
+      });
     }
   }
 
@@ -540,7 +595,13 @@ export function convertMaterial(
   const clearcoatPartial    = _parseClearcoatExt(ext, handleMap, gltf, materialIndex, textureSourceExtensions);
   const iridescencePartial  = _parseIridescenceExt(ext, handleMap, gltf, materialIndex, textureSourceExtensions);
   const anisotropyPartial   = _parseAnisotropyExt(ext, handleMap, gltf, materialIndex, textureSourceExtensions);
-  const dispersionPartial   = _parseDispersionExt(ext, warnings, gltfMat.name ?? '(unnamed)');
+  const dispersionPartial   = _parseDispersionExt(
+    ext,
+    warnings,
+    gltfMat.name ?? '(unnamed)',
+    materialIndex,
+    onDiagnostic,
+  );
   const specGlossPartial    = _parseSpecularGlossinessExt(
     ext,
     handleMap,
@@ -550,6 +611,7 @@ export function convertMaterial(
     alphaMode,
     materialIndex,
     textureSourceExtensions,
+    onDiagnostic,
   );
 
   // ── Assemble MaterialSpec ─────────────────────────────────────────────────
@@ -599,6 +661,26 @@ export function convertMaterial(
 
 function materialTextureSourcePath(materialIndex: number | undefined, suffix: string): string | undefined {
   return materialIndex === undefined ? undefined : `materials[${materialIndex}].${suffix}`;
+}
+
+function materialSourcePath(materialIndex: number | undefined, suffix: string): string {
+  return materialIndex === undefined ? `materials[?].${suffix}` : `materials[${materialIndex}].${suffix}`;
+}
+
+function materialDiagnosticIndex(materialIndex: number | undefined): Pick<GltfMaterialDiagnostic, 'materialIndex'> | {} {
+  return materialIndex === undefined ? {} : { materialIndex };
+}
+
+function emitMaterialDiagnostic(
+  warnings: string[],
+  onDiagnostic: GltfMaterialDiagnosticSink | undefined,
+  diagnostic: GltfMaterialDiagnostic,
+): void {
+  if (onDiagnostic) {
+    onDiagnostic(diagnostic);
+    return;
+  }
+  warnings.push(diagnostic.message);
 }
 
 /**

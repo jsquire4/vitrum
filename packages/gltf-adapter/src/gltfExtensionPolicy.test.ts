@@ -166,7 +166,7 @@ describe('glTF common extension policy', () => {
       },
     });
     gltf.extensionsUsed = ['KHR_materials_dispersion'];
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     const material = (scene.primitives[0] as MeshPrimitive).material;
 
     expect(material.ior).toBeCloseTo(1.5);
@@ -194,11 +194,17 @@ describe('glTF common extension policy', () => {
     gltf.extensionsUsed = ['KHR_materials_unlit', 'KHR_materials_pbrSpecularGlossiness'];
     gltf.extensionsRequired = ['KHR_materials_unlit', 'KHR_materials_pbrSpecularGlossiness'];
 
-    const { scene, warnings } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     const material = (scene.primitives[0] as MeshPrimitive).material;
 
     expect(warnings.some((w) => w.includes('KHR_materials_unlit'))).toBe(false);
     expect(warnings.some((w) => w.includes('KHR_materials_pbrSpecularGlossiness') && w.includes('converted approximately'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'spec-gloss-approximation',
+      path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness',
+      extensionName: 'KHR_materials_pbrSpecularGlossiness',
+      materialIndex: 0,
+    }));
     expect(material.shadingModel).toBe('unlit');
     expect(material.baseColor).toEqual([1, 0, 0]);
     expect(material.roughness).toBeCloseTo(0.5);
@@ -246,7 +252,7 @@ describe('glTF common extension policy', () => {
     gltf.images = [{ uri: 'spec-gloss.png', mimeType: 'image/png' }];
     const decodedHandle = { kind: 'decoded-spec-gloss' };
 
-    const { scene, warnings } = await gltfToScene(gltf, {
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, {
       buffers,
       imageBytes: {
         0: { bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]), mimeType: 'image/png' },
@@ -259,6 +265,12 @@ describe('glTF common extension policy', () => {
     expect(material.roughness).toBeCloseTo(0.25);
     expect(material.roughnessMap).toBeUndefined();
     expect(warnings.some((w) => w.includes('glossiness-in-alpha'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'spec-gloss-texture-alpha-approximation',
+      path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+      extensionName: 'KHR_materials_pbrSpecularGlossiness',
+      materialIndex: 0,
+    }));
 
     const report = analyzeGltfAsset(gltf);
     expect(report.materials.specularGlossinessTextureCount).toBe(1);

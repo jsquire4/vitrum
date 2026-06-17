@@ -82,7 +82,12 @@ import {
   type GltfAccessorDiagnosticCode,
 } from './accessors.js';
 import { buildWorldTransforms, composeTrsMat4, mat4Invert, mat4Mul } from './transforms.js';
-import { convertMaterial, GLTF_DEFAULT_MATERIAL } from './materials.js';
+import {
+  convertMaterial,
+  GLTF_DEFAULT_MATERIAL,
+  type GltfMaterialDiagnostic,
+  type GltfMaterialDiagnosticCode,
+} from './materials.js';
 import { generateFlatNormals } from './normals.js';
 import { generateTangents } from './tangents.js';
 import { animationNodeId, convertAnimations, type GltfAnimationImportDiagnosticCode } from './animations.js';
@@ -344,6 +349,7 @@ export type GltfImportDiagnosticCode =
   | GltfTextureAcquisitionDiagnosticCode
   | GltfAnimationImportDiagnosticCode
   | GltfAccessorDiagnosticCode
+  | GltfMaterialDiagnosticCode
   | 'unsupported-version'
   | 'unsupported-required-extension'
   | 'ignored-camera'
@@ -449,6 +455,9 @@ export async function gltfToScene(
   const onAccessorDiagnostic = (diagnostic: GltfAccessorDiagnostic): void => {
     emitImportDiagnostic(warnings, diagnostics, diagnostic);
   };
+  const onMaterialDiagnostic = (diagnostic: GltfMaterialDiagnostic): void => {
+    emitImportDiagnostic(warnings, diagnostics, diagnostic);
+  };
 
   // ── 2. Validate version ────────────────────────────────────────────────────
   const version = gltf.asset?.version;
@@ -536,7 +545,15 @@ export async function gltfToScene(
 
   // ── 5. Pre-convert materials ───────────────────────────────────────────────
   const coreMaterials = (gltf.materials ?? []).map((m, materialIndex) =>
-    convertMaterial(m, handleMap, warnings, gltf, materialIndex, opts.textureSourceExtensions),
+    convertMaterial(
+      m,
+      handleMap,
+      warnings,
+      gltf,
+      materialIndex,
+      opts.textureSourceExtensions,
+      onMaterialDiagnostic,
+    ),
   );
   for (const [materialIndex, material] of (gltf.materials ?? []).entries()) {
     if (material.doubleSided !== true) continue;

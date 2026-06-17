@@ -115,6 +115,10 @@ export type {
   GltfAccessorDiagnostic,
   GltfAccessorDiagnosticCode,
 } from './accessors.js';
+export type {
+  GltfMaterialDiagnostic,
+  GltfMaterialDiagnosticCode,
+} from './materials.js';
 export type { GltfJson } from './gltfTypes.js';
 export { GLTF_TEXTURE_SOURCE_EXTENSIONS } from './textures.js';
 export type {

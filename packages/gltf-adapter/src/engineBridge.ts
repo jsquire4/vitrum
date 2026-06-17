@@ -365,6 +365,9 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'sparse-values-buffer-unavailable',
   'invalid-sparse-indices-component-type',
   'sparse-index-out-of-range',
+  'invalid-material-dispersion',
+  'unsupported-material-extension',
+  'unknown-material-extension',
 ]);
 
 function importDiagnosticFailures(
