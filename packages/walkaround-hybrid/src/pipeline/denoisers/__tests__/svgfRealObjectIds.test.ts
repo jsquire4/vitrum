@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { PipelineResourceCache } from '../../PipelineResourceCache.js';
 import { SVGFRealDenoiser } from '../svgfReal.js';
 
 type TestTexture = GPUTexture & {
@@ -119,5 +120,92 @@ describe('SVGFRealDenoiser object IDs', () => {
       { texture: previousObjectId },
       { width: currentObjectId.width, height: currentObjectId.height, depthOrArrayLayers: 1 },
     );
+  });
+
+  it('uses the pipeline resource cache for repeated SVGF texture views', () => {
+    const device = {
+      queue: { writeBuffer: vi.fn() },
+      createBindGroup: vi.fn(
+        (desc: GPUBindGroupDescriptor) => ({ label: desc.label }) as unknown as GPUBindGroup,
+      ),
+    } as unknown as GPUDevice;
+    const pass = {
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn(),
+      dispatchWorkgroups: vi.fn(),
+      end: vi.fn(),
+    };
+    const encoder = {
+      beginComputePass: vi.fn(() => pass),
+      copyTextureToTexture: vi.fn(),
+    } as unknown as GPUCommandEncoder;
+
+    const denoiser = new SVGFRealDenoiser();
+    const internals = denoiser as unknown as {
+      _reprojPipeline: GPUComputePipeline;
+      _momentsPipeline: GPUComputePipeline;
+      _fallbackPipeline: GPUComputePipeline;
+      _atrousPipeline: GPUComputePipeline;
+      _reprojUboRef: { buf?: GPUBuffer };
+      _atrousUboRefs: Array<{ buf?: GPUBuffer }>;
+    };
+    const ubo = { label: 'ubo' } as unknown as GPUBuffer;
+    internals._reprojPipeline = pipeline('reproj');
+    internals._momentsPipeline = pipeline('moments');
+    internals._fallbackPipeline = pipeline('fallback');
+    internals._atrousPipeline = pipeline('atrous');
+    internals._reprojUboRef.buf = ubo;
+    for (const ref of internals._atrousUboRefs) ref.buf = ubo;
+
+    const gNormalDepth = tex('g-normal-depth');
+    const prevNormalDepth = tex('prev-normal-depth');
+    const hdr = tex('hdr');
+    const histB = tex('hist-b');
+    const momB = tex('mom-b');
+    const varianceIntermed = tex('variance-intermed');
+    const variance = tex('variance');
+    const resources = {
+      common: {
+        hdrColorTexture: hdr,
+        motionVectorTexture: tex('motion'),
+        gNormalDepthTexture: gNormalDepth,
+        denoisedPingTexture: tex('ping'),
+        denoisedPongTexture: tex('pong'),
+      },
+      svgf: {
+        svgfObjIdPlaceholderTexture: tex('placeholder-object-id', 1, 1),
+        svgfPrevObjIdPlaceholderTexture: tex('placeholder-prev-object-id', 1, 1),
+        svgfCurrentObjectIdTexture: null,
+        svgfPreviousObjectIdTexture: null,
+        svgfPrevNormalDepthTexture: prevNormalDepth,
+        svgfHistoryLengthTextureA: tex('hist-a'),
+        svgfHistoryLengthTextureB: histB,
+        svgfMomentsTextureA: tex('mom-a'),
+        svgfMomentsTextureB: momB,
+        svgfPrevRadianceTextureA: tex('rad-a'),
+        svgfPrevRadianceTextureB: tex('rad-b'),
+        svgfVarianceTexture: variance,
+        svgfVarianceMomentsIntermedTexture: varianceIntermed,
+      },
+    };
+
+    denoiser.dispatch({
+      device,
+      encoder,
+      resources,
+      gNormalDepthView: gNormalDepth.view,
+      wgX16: 1,
+      wgY16: 1,
+      computeDesc: (label: string) => ({ label }),
+      resourceCache: new PipelineResourceCache(),
+    } as never);
+
+    expect(gNormalDepth.createView).toHaveBeenCalledTimes(1);
+    expect(prevNormalDepth.createView).toHaveBeenCalledTimes(1);
+    expect(hdr.createView).toHaveBeenCalledTimes(1);
+    expect(histB.createView).toHaveBeenCalledTimes(1);
+    expect(momB.createView).toHaveBeenCalledTimes(1);
+    expect(varianceIntermed.createView).toHaveBeenCalledTimes(1);
+    expect(variance.createView).toHaveBeenCalledTimes(1);
   });
 });

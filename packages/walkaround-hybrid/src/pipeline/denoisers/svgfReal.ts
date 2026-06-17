@@ -52,6 +52,8 @@ import {
   type DenoiserState,
 } from './index.js';
 
+type TextureViewFor = (texture: GPUTexture) => GPUTextureView;
+
 export class SVGFRealDenoiser implements Denoiser {
   readonly id = 'svgf-real' as const;
   readonly passLabels = DENOISER_PASS_LABELS['svgf-real'];
@@ -168,25 +170,26 @@ export class SVGFRealDenoiser implements Denoiser {
     momWrite: GPUTexture,
     currObjIdTexture: GPUTexture,
     prevObjIdTexture: GPUTexture,
+    textureViewFor: TextureViewFor,
   ): GPUBindGroup {
     return device.createBindGroup({
       label: 'svgf-real-reproj-bg',
       layout: this._reprojPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: common.hdrColorTexture.createView() },          // currColor (sampled)
-        { binding: 1, resource: radRead.createView() },                          // prevColor (sampled)
-        { binding: 2, resource: common.motionVectorTexture.createView() },       // motionVec
-        { binding: 3, resource: common.gNormalDepthTexture.createView() },       // currDepth (.r)
-        { binding: 4, resource: common.gNormalDepthTexture.createView() },       // currNormal (.xyz 0..1)
-        { binding: 5, resource: currObjIdTexture.createView() },                 // currObjId
-        { binding: 6, resource: svgf.svgfPrevNormalDepthTexture.createView() },   // prevDepth
-        { binding: 7, resource: svgf.svgfPrevNormalDepthTexture.createView() },   // prevNormal
-        { binding: 8, resource: prevObjIdTexture.createView() },                 // prevObjId
-        { binding: 9, resource: histRead.createView() },                         // historyLengthIn
-        { binding: 10, resource: momRead.createView() },                         // momentsIn
-        { binding: 11, resource: radWrite.createView() },                        // colorOut (storage write)
-        { binding: 12, resource: histWrite.createView() },                       // historyOut (storage write)
-        { binding: 13, resource: momWrite.createView() },                        // momentsOut (storage write)
+        { binding: 0, resource: textureViewFor(common.hdrColorTexture) },        // currColor (sampled)
+        { binding: 1, resource: textureViewFor(radRead) },                       // prevColor (sampled)
+        { binding: 2, resource: textureViewFor(common.motionVectorTexture) },    // motionVec
+        { binding: 3, resource: textureViewFor(common.gNormalDepthTexture) },    // currDepth (.r)
+        { binding: 4, resource: textureViewFor(common.gNormalDepthTexture) },    // currNormal (.xyz 0..1)
+        { binding: 5, resource: textureViewFor(currObjIdTexture) },              // currObjId
+        { binding: 6, resource: textureViewFor(svgf.svgfPrevNormalDepthTexture) }, // prevDepth
+        { binding: 7, resource: textureViewFor(svgf.svgfPrevNormalDepthTexture) }, // prevNormal
+        { binding: 8, resource: textureViewFor(prevObjIdTexture) },              // prevObjId
+        { binding: 9, resource: textureViewFor(histRead) },                      // historyLengthIn
+        { binding: 10, resource: textureViewFor(momRead) },                      // momentsIn
+        { binding: 11, resource: textureViewFor(radWrite) },                     // colorOut (storage write)
+        { binding: 12, resource: textureViewFor(histWrite) },                    // historyOut (storage write)
+        { binding: 13, resource: textureViewFor(momWrite) },                     // momentsOut (storage write)
         { binding: 14, resource: { buffer: this._reprojUboRef.buf! } },
       ],
     });
@@ -197,14 +200,15 @@ export class SVGFRealDenoiser implements Denoiser {
     svgf: DenoiserDispatchContext['resources']['svgf'],
     momWrite: GPUTexture,
     histWrite: GPUTexture,
+    textureViewFor: TextureViewFor,
   ): GPUBindGroup {
     return device.createBindGroup({
       label: 'svgf-real-moments-bg',
       layout: this._momentsPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: momWrite.createView() },
-        { binding: 1, resource: histWrite.createView() },
-        { binding: 2, resource: svgf.svgfVarianceMomentsIntermedTexture.createView() },
+        { binding: 0, resource: textureViewFor(momWrite) },
+        { binding: 1, resource: textureViewFor(histWrite) },
+        { binding: 2, resource: textureViewFor(svgf.svgfVarianceMomentsIntermedTexture) },
       ],
     });
   }
@@ -214,15 +218,16 @@ export class SVGFRealDenoiser implements Denoiser {
     common: DenoiserDispatchContext['resources']['common'],
     svgf: DenoiserDispatchContext['resources']['svgf'],
     histWrite: GPUTexture,
+    textureViewFor: TextureViewFor,
   ): GPUBindGroup {
     return device.createBindGroup({
       label: 'svgf-real-7x7-bg',
       layout: this._fallbackPipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: common.hdrColorTexture.createView() },
-        { binding: 1, resource: histWrite.createView() },
-        { binding: 2, resource: svgf.svgfVarianceMomentsIntermedTexture.createView() },
-        { binding: 3, resource: svgf.svgfVarianceTexture.createView() },
+        { binding: 0, resource: textureViewFor(common.hdrColorTexture) },
+        { binding: 1, resource: textureViewFor(histWrite) },
+        { binding: 2, resource: textureViewFor(svgf.svgfVarianceMomentsIntermedTexture) },
+        { binding: 3, resource: textureViewFor(svgf.svgfVarianceTexture) },
       ],
     });
   }
@@ -240,6 +245,9 @@ export class SVGFRealDenoiser implements Denoiser {
     } = ctx;
     const common = resources.common;
     const svgf = resources.svgf;
+    const textureViewFor: TextureViewFor = resourceCache
+      ? (texture) => resourceCache.textureView(texture)
+      : (texture) => texture.createView();
 
     // ── Pass 1: Reprojection ─────────────────────────────────────────────
     // Bindings follow svgfReprojection.wgsl.ts binding declarations (0..14).
@@ -273,6 +281,7 @@ export class SVGFRealDenoiser implements Denoiser {
         histRead, histWrite,
         momRead, momWrite,
         currObjIdTexture, prevObjIdTexture,
+        textureViewFor,
       );
       const bg = resourceCache?.bindGroup('denoiser:svgf-real:reproj', [
         common.hdrColorTexture,
@@ -299,7 +308,13 @@ export class SVGFRealDenoiser implements Denoiser {
     // ── Pass 2: Variance from moments ────────────────────────────────────
     // Reads momWrite (just written by reproj) and histWrite.
     {
-      const buildBg = (): GPUBindGroup => this._buildMomentsBindGroup(device, svgf, momWrite, histWrite);
+      const buildBg = (): GPUBindGroup => this._buildMomentsBindGroup(
+        device,
+        svgf,
+        momWrite,
+        histWrite,
+        textureViewFor,
+      );
       const bg = resourceCache?.bindGroup('denoiser:svgf-real:moments', [
         momWrite,
         histWrite,
@@ -314,7 +329,13 @@ export class SVGFRealDenoiser implements Denoiser {
 
     // ── Pass 3: 7×7 spatial fallback ─────────────────────────────────────
     {
-      const buildBg = (): GPUBindGroup => this._buildFallbackBindGroup(device, common, svgf, histWrite);
+      const buildBg = (): GPUBindGroup => this._buildFallbackBindGroup(
+        device,
+        common,
+        svgf,
+        histWrite,
+        textureViewFor,
+      );
       const bg = resourceCache?.bindGroup('denoiser:svgf-real:fallback', [
         common.hdrColorTexture,
         histWrite,

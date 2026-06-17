@@ -1188,10 +1188,16 @@ adapter-to-engine boot/render for these glTF features; full material-lobe fideli
 promotion remains owned by the renderer fidelity matrix and package material
 oracles.
 
-Validation note: the walkaround-hybrid Deno behavioral lane currently panics in
-Deno 2.8.1 / wgpu-hal on this WSL adapter even for the pre-existing
-`wh/default` config, so walkaround glTF render-gate promotion requires the
-separate Deno/WebGPU harness issue to be cleared first.
+Validation note: the walkaround-hybrid native-Deno behavioral lane is
+fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the
+pre-existing `wh/default` config returns a renderer verdict; the npm wrapper now
+classifies that as `HOST-BLOCKED` and writes
+`tools/behavioral-gate/behavioral-gate-host-status.json` instead of letting the
+gap look like a renderer failure. The same classification exists for
+`npm run radiometric-ab:walkaround` via
+`tools/radiometric-ab/walkaround-ab-host-status.json`. Walkaround glTF
+render-gate promotion still requires a browser/adapter harness that can run the
+walkaround path without this native-Deno host panic.
 
 ---
 
