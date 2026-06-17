@@ -47,6 +47,7 @@ import {
   emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
   forEachBarycentricSubTriangle,
+  forEachEmissiveMapTexelSubTriangle,
   mergeUv1FromCore,
   type BarycentricWeights,
   type WorldSpaceMergeResult,
@@ -324,10 +325,11 @@ export function packMeshAreaLights(
         tuv1A: readonly [number, number],
         tuv1B: readonly [number, number],
         tuv1C: readonly [number, number],
+        radianceOverride?: readonly [number, number, number],
       ): void => {
         const triArea = 0.5 * length(cross(sub(tv1, tv0), sub(tv2, tv0)));
         if (triArea <= 0) return;
-        const rad = emitter.implicitMaterial == null
+        const rad = radianceOverride ?? (emitter.implicitMaterial == null
           ? emitter.radiance
           : estimateMaterialSpecEmissiveLeOverTriangle(
               emitter.implicitMaterial,
@@ -337,7 +339,7 @@ export function packMeshAreaLights(
               tuv1A,
               tuv1B,
               tuv1C,
-            );
+            ));
         if (rad == null || luminanceRgb(rad) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
           return;
         }
@@ -351,6 +353,33 @@ export function packMeshAreaLights(
         });
         totalEmissiveArea += triArea;
       };
+
+      const exactTexelHandled = emitter.implicitMaterial == null
+        ? false
+        : forEachEmissiveMapTexelSubTriangle(
+            emitter.implicitMaterial,
+            uv0A,
+            uv0B,
+            uv0C,
+            uv1A,
+            uv1B,
+            uv1C,
+            (wa, wb, wc, texelRadiance) => {
+              pushLight(
+                baryVec3(v0, v1, v2, wa),
+                baryVec3(v0, v1, v2, wb),
+                baryVec3(v0, v1, v2, wc),
+                baryUv2(uv0A, uv0B, uv0C, wa),
+                baryUv2(uv0A, uv0B, uv0C, wb),
+                baryUv2(uv0A, uv0B, uv0C, wc),
+                baryUv2(uv1A, uv1B, uv1C, wa),
+                baryUv2(uv1A, uv1B, uv1C, wb),
+                baryUv2(uv1A, uv1B, uv1C, wc),
+                texelRadiance,
+              );
+            },
+          );
+      if (exactTexelHandled) continue;
 
       const subdiv = emitter.implicitMaterial == null
         ? 1

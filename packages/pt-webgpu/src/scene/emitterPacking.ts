@@ -3,6 +3,7 @@ import {
   emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
   forEachBarycentricSubTriangle,
+  forEachEmissiveMapTexelSubTriangle,
   type BarycentricWeights,
 } from '@vitrum/shared-bvh';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
@@ -505,9 +506,10 @@ function packMeshAreaTriangles(
         tuv1A: readonly [number, number],
         tuv1B: readonly [number, number],
         tuv1C: readonly [number, number],
+        radianceOverride?: readonly [number, number, number],
       ): void => {
         if (meshTriangleArea(triA, triB, triC) < 1e-12) return;
-        const triangleRadiance = mappedRadianceMaterial == null
+        const triangleRadiance = radianceOverride ?? (mappedRadianceMaterial == null
           ? radiance
           : estimateMaterialSpecEmissiveLeOverTriangle(
               mappedRadianceMaterial,
@@ -517,7 +519,7 @@ function packMeshAreaTriangles(
               tuv1A,
               tuv1B,
               tuv1C,
-            );
+            ));
         if (
           triangleRadiance == null ||
           luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) <
@@ -529,10 +531,37 @@ function packMeshAreaTriangles(
           triA,
           triB,
           triC,
-          radiance: triangleRadiance,
+          radiance: [triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]],
           castShadowDisabled,
         });
       };
+
+      const exactTexelHandled = mappedRadianceMaterial == null
+        ? false
+        : forEachEmissiveMapTexelSubTriangle(
+            mappedRadianceMaterial,
+            uv0A,
+            uv0B,
+            uv0C,
+            uv1A,
+            uv1B,
+            uv1C,
+            (wa, wb, wc, texelRadiance) => {
+              pushTriangle(
+                baryVec3(a, b, c, wa),
+                baryVec3(a, b, c, wb),
+                baryVec3(a, b, c, wc),
+                baryUv2(uv0A, uv0B, uv0C, wa),
+                baryUv2(uv0A, uv0B, uv0C, wb),
+                baryUv2(uv0A, uv0B, uv0C, wc),
+                baryUv2(uv1A, uv1B, uv1C, wa),
+                baryUv2(uv1A, uv1B, uv1C, wb),
+                baryUv2(uv1A, uv1B, uv1C, wc),
+                texelRadiance,
+              );
+            },
+          );
+      if (exactTexelHandled) continue;
 
       const subdiv = mappedRadianceMaterial == null
         ? 1

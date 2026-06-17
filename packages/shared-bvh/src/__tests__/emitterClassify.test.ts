@@ -5,6 +5,7 @@ import {
   emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
   forEachBarycentricSubTriangle,
+  forEachEmissiveMapTexelSubTriangle,
   materialSpecEmissiveLe,
   materialSpecEmissiveLeAtUv,
 } from '../emitterClassify.js';
@@ -177,6 +178,57 @@ describe('materialSpecEmissiveLe', () => {
 
     expect(tris).toHaveLength(4);
     expect(tris[0]).toBe('1,0,0|0.5,0.5,0|0.5,0,0.5');
+  });
+
+  it('clips readable emissive maps into exact texel-cell sub-triangles', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+      ]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    };
+    const patches: {
+      areaRatio: number;
+      radiance: readonly [number, number, number];
+      texelX: number;
+    }[] = [];
+    const area2 = (
+      a: readonly [number, number, number],
+      b: readonly [number, number, number],
+      c: readonly [number, number, number],
+    ): number => Math.abs(
+      (b[1] - a[1]) * (c[2] - a[2]) -
+      (b[2] - a[2]) * (c[1] - a[1]),
+    );
+
+    const handled = forEachEmissiveMapTexelSubTriangle(
+      material({
+        emissive: [2, 2, 2],
+        emissiveMap: { handle },
+      }),
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      undefined,
+      undefined,
+      undefined,
+      (a, b, c, radiance, texelX) => {
+        patches.push({ areaRatio: area2(a, b, c), radiance, texelX });
+      },
+    );
+
+    expect(handled).toBe(true);
+    expect(patches).toHaveLength(3);
+    expect(patches.reduce((sum, p) => sum + p.areaRatio, 0)).toBeCloseTo(1, 12);
+    expect(patches.filter((p) => p.texelX === 0).reduce((sum, p) => sum + p.areaRatio, 0))
+      .toBeCloseTo(0.75, 12);
+    expect(patches.filter((p) => p.texelX === 1).reduce((sum, p) => sum + p.areaRatio, 0))
+      .toBeCloseTo(0.25, 12);
+    expect(patches.some((p) => p.radiance[0] === 2 && p.radiance[1] === 0)).toBe(true);
+    expect(patches.some((p) => p.radiance[0] === 0 && p.radiance[1] === 2)).toBe(true);
   });
 });
 

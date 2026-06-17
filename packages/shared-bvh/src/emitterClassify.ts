@@ -44,6 +44,17 @@ type MutableTextureHandleHint = {
 
 export type BarycentricWeights = readonly [number, number, number];
 
+interface TexelClipVertex {
+  readonly weights: BarycentricWeights;
+  readonly texUv: readonly [number, number];
+}
+
+interface TextureCellInterval {
+  readonly lo: number;
+  readonly hi: number;
+  readonly texel: number;
+}
+
 function halfToFloat(h: number): number {
   const s = (h & 0x8000) >> 15;
   const e = (h & 0x7c00) >> 10;
@@ -153,7 +164,7 @@ function averageReadableTextureRgb(
   return n > 0 ? [r / n, g / n, b / n] : null;
 }
 
-function wrapUv1(value: number, mode: TextureRef['wrapS'] | TextureRef['wrapT']): number {
+function wrapUv1(value: number, mode: TextureRef['wrapS']): number {
   if (mode === 'clamp-to-edge') return Math.min(1, Math.max(0, value));
   if (mode === 'mirrored-repeat') {
     const f = value * 0.5 - Math.floor(value * 0.5);
@@ -163,6 +174,11 @@ function wrapUv1(value: number, mode: TextureRef['wrapS'] | TextureRef['wrapT'])
 }
 
 function transformTextureUv(ref: TextureRef, uv: readonly [number, number]): [number, number] {
+  const raw = transformTextureUvUnwrapped(ref, uv);
+  return [wrapUv1(raw[0], ref.wrapS), wrapUv1(raw[1], ref.wrapT)];
+}
+
+function transformTextureUvUnwrapped(ref: TextureRef, uv: readonly [number, number]): [number, number] {
   const sx = ref.transform?.scale?.[0] ?? 1;
   const sy = ref.transform?.scale?.[1] ?? 1;
   const x = uv[0] * sx;
@@ -173,9 +189,59 @@ function transformTextureUv(ref: TextureRef, uv: readonly [number, number]): [nu
   const ox = ref.transform?.offset?.[0] ?? 0;
   const oy = ref.transform?.offset?.[1] ?? 0;
   return [
-    wrapUv1(x * c - y * s + ox, ref.wrapS),
-    wrapUv1(x * s + y * c + oy, ref.wrapT),
+    x * c - y * s + ox,
+    x * s + y * c + oy,
   ];
+}
+
+function readTextureRgbAtTexel(
+  ref: TextureRef | undefined,
+  x: number,
+  y: number,
+  fieldColorSpace: 'srgb' | 'linear',
+): [number, number, number] | null {
+  const handle = ref?.handle as ReadableTextureHandle | null | undefined;
+  if (handle == null) return null;
+
+  const src = handle.data ?? handle.image?.data;
+  const width = Math.floor(Number(handle.width ?? handle.image?.width ?? 0));
+  const height = Math.floor(Number(handle.height ?? handle.image?.height ?? 0));
+  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
+    return null;
+  }
+
+  const pixelCount = width * height;
+  const hint = textureHint(handle);
+  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
+  const stride = hint?.channels ?? heuristicStride;
+  if (stride < 1 || stride > 4 || src.length < pixelCount * stride) {
+    return null;
+  }
+
+  const isHalf = src instanceof Uint16Array;
+  const isFloat = src instanceof Float32Array;
+  const useHalf = hint?.dataType != null ? hint.dataType === 'uint16' : isHalf;
+  const useFloat = hint?.dataType != null ? hint.dataType === 'float32' : isFloat;
+  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+  const intMax = useHalf || useFloat ? 0 : 2 ** (8 * bpe) - 1;
+  const decode = (v: number): number => (
+    useHalf ? halfToFloat(v) : useFloat ? v : intMax > 0 ? v / intMax : v
+  );
+  const needsSrgbDecode = fieldColorSpace === 'srgb' && hint?.colorSpace !== 'linear';
+
+  const ix = Math.min(width - 1, Math.max(0, Math.floor(x)));
+  const iy = Math.min(height - 1, Math.max(0, Math.floor(y)));
+  const base = (iy * width + ix) * stride;
+  let r = decode(Number(src[base] ?? 0));
+  let g = decode(Number(src[base + (stride > 1 ? 1 : 0)] ?? 0));
+  let b = decode(Number(src[base + (stride > 2 ? 2 : 0)] ?? 0));
+  if (needsSrgbDecode) {
+    r = srgbToLinear(r);
+    g = srgbToLinear(g);
+    b = srgbToLinear(b);
+  }
+  if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return null;
+  return [r, g, b];
 }
 
 /**
@@ -325,6 +391,201 @@ export function forEachBarycentricSubTriangle(
       }
     }
   }
+}
+
+function clipTexelPolygonHalfPlane(
+  poly: readonly TexelClipVertex[],
+  axis: 0 | 1,
+  bound: number,
+  keepGreater: boolean,
+): TexelClipVertex[] {
+  if (poly.length === 0) return [];
+  const out: TexelClipVertex[] = [];
+  const isInside = (v: TexelClipVertex): boolean => (
+    keepGreater ? v.texUv[axis] >= bound - 1e-12 : v.texUv[axis] <= bound + 1e-12
+  );
+  const interpolate = (
+    a: TexelClipVertex,
+    b: TexelClipVertex,
+  ): TexelClipVertex => {
+    const av = a.texUv[axis];
+    const bv = b.texUv[axis];
+    const denom = bv - av;
+    const t = Math.abs(denom) < 1e-20 ? 0 : (bound - av) / denom;
+    const clamped = Math.min(1, Math.max(0, t));
+    return {
+      weights: [
+        a.weights[0] + (b.weights[0] - a.weights[0]) * clamped,
+        a.weights[1] + (b.weights[1] - a.weights[1]) * clamped,
+        a.weights[2] + (b.weights[2] - a.weights[2]) * clamped,
+      ],
+      texUv: [
+        a.texUv[0] + (b.texUv[0] - a.texUv[0]) * clamped,
+        a.texUv[1] + (b.texUv[1] - a.texUv[1]) * clamped,
+      ],
+    };
+  };
+
+  for (let i = 0; i < poly.length; i += 1) {
+    const current = poly[i]!;
+    const previous = poly[(i + poly.length - 1) % poly.length]!;
+    const currentInside = isInside(current);
+    const previousInside = isInside(previous);
+    if (currentInside !== previousInside) {
+      out.push(interpolate(previous, current));
+    }
+    if (currentInside) out.push(current);
+  }
+  return out;
+}
+
+function clipTexelPolygonToCell(
+  poly: readonly TexelClipVertex[],
+  x0: number,
+  x1: number,
+  y0: number,
+  y1: number,
+): TexelClipVertex[] {
+  let clipped = clipTexelPolygonHalfPlane(poly, 0, x0, true);
+  clipped = clipTexelPolygonHalfPlane(clipped, 0, x1, false);
+  clipped = clipTexelPolygonHalfPlane(clipped, 1, y0, true);
+  clipped = clipTexelPolygonHalfPlane(clipped, 1, y1, false);
+  return clipped.length >= 3 ? clipped : [];
+}
+
+function buildTextureCellIntervals(
+  minValue: number,
+  maxValue: number,
+  texelCount: number,
+  mode: TextureRef['wrapS'],
+): TextureCellInterval[] | null {
+  if (texelCount <= 0 || !Number.isFinite(minValue) || !Number.isFinite(maxValue)) return null;
+  if (mode === 'mirrored-repeat') return null;
+  if (texelCount === 1) {
+    return [{ lo: minValue, hi: maxValue, texel: 0 }];
+  }
+
+  if (mode === 'clamp-to-edge') {
+    const out: TextureCellInterval[] = [];
+    for (let texel = 0; texel < texelCount; texel += 1) {
+      const lo = texel === 0 ? minValue : texel / texelCount;
+      const hi = texel === texelCount - 1 ? maxValue : (texel + 1) / texelCount;
+      const clippedLo = Math.max(lo, minValue);
+      const clippedHi = Math.min(hi, maxValue);
+      if (clippedHi > clippedLo + 1e-12) out.push({ lo: clippedLo, hi: clippedHi, texel });
+    }
+    return out;
+  }
+
+  const first = Math.floor(minValue * texelCount);
+  const last = Math.floor(maxValue * texelCount);
+  const out: TextureCellInterval[] = [];
+  for (let cell = first; cell <= last; cell += 1) {
+    const texel = ((cell % texelCount) + texelCount) % texelCount;
+    const lo = Math.max(cell / texelCount, minValue);
+    const hi = Math.min((cell + 1) / texelCount, maxValue);
+    if (hi > lo + 1e-12) out.push({ lo, hi, texel });
+  }
+  return out;
+}
+
+function texUvArea2(
+  a: readonly [number, number],
+  b: readonly [number, number],
+  c: readonly [number, number],
+): number {
+  return Math.abs(
+    (b[0] - a[0]) * (c[1] - a[1]) -
+    (b[1] - a[1]) * (c[0] - a[0]),
+  );
+}
+
+/**
+ * Splits a CPU-readable emissive-map triangle along exact texel-cell boundaries
+ * in transformed texture space and visits constant-radiance barycentric
+ * sub-triangles. This gives emitter CDF/PDF construction a texel-space support
+ * instead of the older fixed quadrature estimate.
+ *
+ * Returns `false` when an exact split is not representable or bounded here
+ * (unreadable map, mirrored repeat, degenerate UVs, or too many covered cells);
+ * callers should then fall back to the conservative barycentric subdivision.
+ * Returns `true` when the texture was handled, even if all covered texels were
+ * black and no sub-triangles were emitted.
+ */
+export function forEachEmissiveMapTexelSubTriangle(
+  material: MaterialSpec,
+  uv0A: readonly [number, number],
+  uv0B: readonly [number, number],
+  uv0C: readonly [number, number],
+  uv1A: readonly [number, number] | undefined,
+  uv1B: readonly [number, number] | undefined,
+  uv1C: readonly [number, number] | undefined,
+  visit: (
+    a: BarycentricWeights,
+    b: BarycentricWeights,
+    c: BarycentricWeights,
+    radiance: readonly [number, number, number],
+    texelX: number,
+    texelY: number,
+    ordinal: number,
+  ) => void,
+  maxCoveredCells = 4096,
+): boolean {
+  const scalar = materialSpecScalarEmissiveLe(material);
+  const ref = material.emissiveMap;
+  if (scalar == null || ref == null) return false;
+  const dims = readableTextureDimensions(ref);
+  if (dims == null) return false;
+
+  const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
+  const useUv1 = texCoord === 1 && uv1A != null && uv1B != null && uv1C != null;
+  const srcA = useUv1 ? uv1A : uv0A;
+  const srcB = useUv1 ? uv1B : uv0B;
+  const srcC = useUv1 ? uv1C : uv0C;
+  const texA = transformTextureUvUnwrapped(ref, srcA);
+  const texB = transformTextureUvUnwrapped(ref, srcB);
+  const texC = transformTextureUvUnwrapped(ref, srcC);
+  if (texUvArea2(texA, texB, texC) < 1e-14) return false;
+
+  const minX = Math.min(texA[0], texB[0], texC[0]);
+  const maxX = Math.max(texA[0], texB[0], texC[0]);
+  const minY = Math.min(texA[1], texB[1], texC[1]);
+  const maxY = Math.max(texA[1], texB[1], texC[1]);
+  const xIntervals = buildTextureCellIntervals(minX, maxX, dims.width, ref.wrapS);
+  const yIntervals = buildTextureCellIntervals(minY, maxY, dims.height, ref.wrapT);
+  if (xIntervals == null || yIntervals == null) return false;
+  if (xIntervals.length * yIntervals.length > maxCoveredCells) return false;
+
+  const initial: TexelClipVertex[] = [
+    { weights: [1, 0, 0], texUv: texA },
+    { weights: [0, 1, 0], texUv: texB },
+    { weights: [0, 0, 1], texUv: texC },
+  ];
+
+  let ordinal = 0;
+  for (const xi of xIntervals) {
+    for (const yi of yIntervals) {
+      const clipped = clipTexelPolygonToCell(initial, xi.lo, xi.hi, yi.lo, yi.hi);
+      if (clipped.length < 3) continue;
+      const texelRgb = readTextureRgbAtTexel(ref, xi.texel, yi.texel, 'srgb');
+      if (texelRgb == null) return false;
+      const radiance: [number, number, number] = [
+        scalar[0] * texelRgb[0],
+        scalar[1] * texelRgb[1],
+        scalar[2] * texelRgb[2],
+      ];
+      if (radiance[0] <= 0 && radiance[1] <= 0 && radiance[2] <= 0) continue;
+      const anchor = clipped[0]!;
+      for (let i = 1; i + 1 < clipped.length; i += 1) {
+        const b = clipped[i]!;
+        const c = clipped[i + 1]!;
+        if (texUvArea2(anchor.texUv, b.texUv, c.texUv) < 1e-16) continue;
+        visit(anchor.weights, b.weights, c.weights, radiance, xi.texel, yi.texel, ordinal);
+        ordinal += 1;
+      }
+    }
+  }
+  return true;
 }
 
 function baryUv(

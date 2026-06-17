@@ -208,6 +208,54 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.warnings).toEqual([]);
   });
 
+  it('clips CPU-readable emissiveMap UV footprints to exact texel cells', () => {
+    const emissiveMap = {
+      handle: {
+        width: 2,
+        height: 1,
+        data: new Uint8Array([
+          255, 0, 0, 255,
+          0, 255, 0, 255,
+        ]),
+      },
+    };
+    const oneTri = new Uint32Array([0, 1, 3]);
+    const out = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [2, 2, 2],
+        emissiveMap,
+      }))),
+      fakeMerged({
+        indices: oneTri,
+        mergedIndices: oneTri,
+        bvhTriToMergedTri: new Uint32Array([0]),
+        triMaterialId: new Uint32Array([0]),
+        mergedTriMaterialId: new Uint32Array([0]),
+        meshVertexRanges: [
+          { name: 'panel', vertexStart: 0, vertexCount: 4, triStart: 0, triCount: 1 },
+        ],
+        triangleCount: 1,
+        uvs: new Float32Array([
+          0, 0,
+          1, 0,
+          0, 0,
+          0, 1,
+        ]),
+      }),
+    );
+
+    expect(out.triLightCount).toBe(3);
+    expect(out.totalEmissiveArea).toBeCloseTo(0.5, 6);
+    expect(out.data![4]).toBeCloseTo(2, 6);
+    expect(out.data![5]).toBeCloseTo(0, 6);
+    expect(out.data![6]).toBeCloseTo(0, 6);
+    const radianceRecords = Array.from({ length: out.triLightCount }, (_, i) => {
+      const base = i * TRI_LIGHT_PIXELS * 4;
+      return [out.data![base + 4], out.data![base + 5], out.data![base + 6]].join(',');
+    });
+    expect(radianceRecords).toContain('0,2,0');
+  });
+
   it('subdivides explicit mesh-area triangle lights through the referenced material emissiveMap', () => {
     const emissiveMap = {
       handle: {

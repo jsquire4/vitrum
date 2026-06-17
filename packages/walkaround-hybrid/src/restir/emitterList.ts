@@ -29,6 +29,7 @@ import {
   emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
   forEachBarycentricSubTriangle,
+  forEachEmissiveMapTexelSubTriangle,
   materialSpecScalarEmissiveLe,
 } from '@vitrum/shared-bvh';
 
@@ -208,7 +209,42 @@ export function buildEmitterListFromCore(
         options.uvs,
         options.uv1s,
       ) ?? classified.color;
+      const exactTexelSubTriangles: {
+        a: BarycentricWeights;
+        b: BarycentricWeights;
+        c: BarycentricWeights;
+        radiance: [number, number, number];
+      }[] = [];
+      const i0 = indices[t * 3 + 0] ?? 0;
+      const i1 = indices[t * 3 + 1] ?? 0;
+      const i2 = indices[t * 3 + 2] ?? 0;
+      const exactTexelHandled = mat.emissiveMap != null &&
+        forEachEmissiveMapTexelSubTriangle(
+          mat,
+          uvAt(options.uvs, i0),
+          uvAt(options.uvs, i1),
+          uvAt(options.uvs, i2),
+          uvAt(options.uv1s, i0),
+          uvAt(options.uv1s, i1),
+          uvAt(options.uv1s, i2),
+          (wa, wb, wc, radiance) => {
+            exactTexelSubTriangles.push({
+              a: wa,
+              b: wb,
+              c: wc,
+              radiance: [radiance[0], radiance[1], radiance[2]],
+            });
+          },
+        );
       const sourceTriIndex = options.sourceTriIndexForTriangle?.(t) ?? t;
+      if (exactTexelHandled) {
+        return {
+          ...classified,
+          color: scalarLe,
+          selectionColor,
+          texelSubTriangles: exactTexelSubTriangles,
+        };
+      }
       if (
         !Number.isFinite(sourceTriIndex) ||
         (sourceTriIndex < 0 && Math.trunc(sourceTriIndex) !== sourceTriIndex) ||
@@ -270,6 +306,13 @@ type TriangleEmitterClassifier = (
     wb: BarycentricWeights,
     wc: BarycentricWeights,
   ) => [number, number, number];
+  /** Exact CPU-readable emissive-map texel cells, expressed in parent barycentrics. */
+  texelSubTriangles?: readonly {
+    a: BarycentricWeights;
+    b: BarycentricWeights;
+    c: BarycentricWeights;
+    radiance: [number, number, number];
+  }[];
 } | null;
 
 function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, number] | null {
@@ -475,6 +518,35 @@ function buildEmitterListCore(
     const parentB: [number, number, number] = [bx, by, bz];
     const parentC: [number, number, number] = [cx0, cy0, cz0];
     const normal: [number, number, number] = [nx, ny, nz];
+    if (classified.texelSubTriangles != null) {
+      for (const patch of classified.texelSubTriangles) {
+        const subA = baryVec3(parentA, parentB, parentC, patch.a);
+        const subB = baryVec3(parentA, parentB, parentC, patch.b);
+        const subC = baryVec3(parentA, parentB, parentC, patch.c);
+        const sx = subB[0] - subA[0], sy = subB[1] - subA[1], sz = subB[2] - subA[2];
+        const tx = subC[0] - subA[0], ty = subC[1] - subA[1], tz = subC[2] - subA[2];
+        const subArea = 0.5 * Math.sqrt(
+          (sy * tz - sz * ty) ** 2 +
+          (sz * tx - sx * tz) ** 2 +
+          (sx * ty - sy * tx) ** 2,
+        );
+        if (subArea < 1e-12) continue;
+        pushEmitter({
+          triIdx: t,
+          sourceTriIndex: -1,
+          vA: subA,
+          vB: subB,
+          vC: subC,
+          normal,
+          area: subArea,
+          color: patch.radiance,
+          intensity: 1,
+          castShadowDisabled: false,
+          selectionColor: patch.radiance,
+        });
+      }
+      continue;
+    }
     const sourceTriIndex = classified.sourceTriIndex ?? -1;
     const subdivisionLevel = Math.max(1, Math.floor(classified.subdivisionLevel ?? 1));
     if (sourceTriIndex !== -1 && subdivisionLevel > 1) {

@@ -11,6 +11,7 @@ import {
   emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
   forEachBarycentricSubTriangle,
+  forEachEmissiveMapTexelSubTriangle,
   type BarycentricWeights,
   type PrimitiveTlasBinding,
 } from '@vitrum/shared-bvh';
@@ -355,6 +356,8 @@ export function collectMeshAreaEmitterTrisFromCore(
         tuv1C: readonly [number, number],
         sourceSubdivLevel?: number,
         sourceSubdivOrdinal?: number,
+        radianceOverride?: readonly [number, number, number],
+        forceScalarLe = false,
       ): void => {
         const sx = triB[0] - triA[0], sy = triB[1] - triA[1], sz = triB[2] - triA[2];
         const tx = triC[0] - triA[0], ty = triC[1] - triA[1], tz = triC[2] - triA[2];
@@ -364,7 +367,7 @@ export function collectMeshAreaEmitterTrisFromCore(
           (sx * ty - sy * tx) ** 2,
         );
         if (triArea < 1e-12) return;
-        const triLe = mappedRadianceMaterial == null
+        const triLe = radianceOverride ?? (mappedRadianceMaterial == null
           ? Le
           : estimateMaterialSpecEmissiveLeOverTriangle(
               mappedRadianceMaterial,
@@ -374,7 +377,7 @@ export function collectMeshAreaEmitterTrisFromCore(
               tuv1A,
               tuv1B,
               tuv1C,
-            );
+            ));
         if (triLe == null) return;
         out.push({
           vA: triA,
@@ -382,13 +385,43 @@ export function collectMeshAreaEmitterTrisFromCore(
           vC: triC,
           normal,
           area: triArea,
-          Le: triLe,
+          Le: [triLe[0], triLe[1], triLe[2]],
           ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
-          ...(sourceTriIndex != null ? { sourceTriIndex } : {}),
-          ...(sourceSubdivLevel != null ? { sourceSubdivLevel } : {}),
-          ...(sourceSubdivOrdinal != null ? { sourceSubdivOrdinal } : {}),
+          ...(sourceTriIndex != null && !forceScalarLe ? { sourceTriIndex } : {}),
+          ...(sourceSubdivLevel != null && !forceScalarLe ? { sourceSubdivLevel } : {}),
+          ...(sourceSubdivOrdinal != null && !forceScalarLe ? { sourceSubdivOrdinal } : {}),
         });
       };
+
+      const exactTexelHandled = mappedRadianceMaterial == null
+        ? false
+        : forEachEmissiveMapTexelSubTriangle(
+            mappedRadianceMaterial,
+            uv0A,
+            uv0B,
+            uv0C,
+            uv1A,
+            uv1B,
+            uv1C,
+            (wa, wb, wc, texelLe) => {
+              pushTri(
+                baryVec3(vA, vB, vC, wa),
+                baryVec3(vA, vB, vC, wb),
+                baryVec3(vA, vB, vC, wc),
+                baryUv2(uv0A, uv0B, uv0C, wa),
+                baryUv2(uv0A, uv0B, uv0C, wb),
+                baryUv2(uv0A, uv0B, uv0C, wc),
+                baryUv2(uv1A, uv1B, uv1C, wa),
+                baryUv2(uv1A, uv1B, uv1C, wb),
+                baryUv2(uv1A, uv1B, uv1C, wc),
+                undefined,
+                undefined,
+                texelLe,
+                true,
+              );
+            },
+          );
+      if (exactTexelHandled) continue;
 
       const subdiv = mappedRadianceMaterial == null
         ? 1

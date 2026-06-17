@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import type { MaterialSpec, Scene, TextureRef } from '@vitrum/core';
+import type { MaterialSpec, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
 import { packEmitterArrays } from '../scene/emitterPacking.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -100,6 +100,39 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(packed.meshAreaLightsData[12]).toBeCloseTo(2, 5);
     expect(packed.meshAreaLightsData[13]).toBeCloseTo(0, 5);
     expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
+  });
+
+  it('clips CPU-readable emissiveMap UV footprints to exact texel cells', () => {
+    const scene: Scene = {
+      primitives: [{
+        ...(triMesh('mapped-glow-exact', [2, 2, 2], 1, {
+          emissiveMap: emissiveMap(
+            new Float32Array([
+              1, 0, 0, 1,
+              0, 1, 0, 1,
+            ]),
+            2,
+            1,
+          ),
+        }) as MeshPrimitive),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packEmitterArrays(scene);
+    expect(packed.meshAreaLightCount).toBe(3);
+    expect(packed.meshAreaLightsData[12]).toBeCloseTo(2, 5);
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
+    expect(Array.from({ length: packed.meshAreaLightCount }, (_, i) => {
+      const base = i * 16;
+      return [
+        packed.meshAreaLightsData[base + 12]!,
+        packed.meshAreaLightsData[base + 13]!,
+        packed.meshAreaLightsData[base + 14]!,
+      ].join(',');
+    })).toContain('0,2,0');
   });
 
   it('subdivides explicit mesh-area radiance through the referenced material emissiveMap', () => {
