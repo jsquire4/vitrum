@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { unpackAccessorFloat, unpackAccessorUint32 } from './accessors.js';
+import {
+  unpackAccessorFloat,
+  unpackAccessorUint32,
+  type GltfAccessorDiagnostic,
+} from './accessors.js';
 import { GltfComponentType, type GltfJson } from './gltfTypes.js';
 
 function bytes(values: number[]): ArrayBuffer {
@@ -125,9 +129,17 @@ describe('unpackAccessorFloat sparse accessors', () => {
       buffers: [{ byteLength: buffer.byteLength }],
     };
     const warnings: string[] = [];
-    const out = unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, warnings);
+    const diagnostics: GltfAccessorDiagnostic[] = [];
+    const out = unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, warnings, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    });
     expect(Array.from(out)).toEqual([0, 0, 7, 8, 0, 0]);
-    expect(warnings.some((w) => w.includes('Sparse index 4 is outside accessor count 3'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'sparse-index-out-of-range',
+      path: 'accessors[0].sparse.indices[1]',
+      accessorIndex: 0,
+      sparseEntryIndex: 1,
+    }));
   });
 
   it('warns and skips sparse patches with invalid signed index component types', () => {
@@ -153,9 +165,17 @@ describe('unpackAccessorFloat sparse accessors', () => {
       buffers: [{ byteLength: buffer.byteLength }],
     };
     const warnings: string[] = [];
-    const out = unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, warnings);
+    const diagnostics: GltfAccessorDiagnostic[] = [];
+    const out = unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, warnings, (diagnostic) => {
+      diagnostics.push(diagnostic);
+    });
     expect(Array.from(out)).toEqual([0, 0, 0, 0]);
-    expect(warnings.some((w) => w.includes('Sparse indices componentType'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'invalid-sparse-indices-component-type',
+      path: 'accessors[0].sparse.indices.componentType',
+      accessorIndex: 0,
+      componentType: GltfComponentType.BYTE,
+    }));
   });
 });
 

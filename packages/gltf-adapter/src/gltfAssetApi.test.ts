@@ -2543,6 +2543,30 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('rejects malformed sparse accessor diagnostics in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.accessors![0] = {
+      ...gltf.accessors![0]!,
+      sparse: {
+        count: 1,
+        indices: { bufferView: 0, componentType: 5120 },
+        values: { bufferView: 0 },
+      },
+    };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow(
+      'import:invalid-sparse-indices-component-type=approximate at accessors[0].sparse.indices.componentType',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('allows opaque texture handles in strict mode when the host asserts backend readiness', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const engine = { setScene: vi.fn() };

@@ -34,7 +34,7 @@ import type {
   AnimationTargetPath,
 } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
-import { unpackAccessorFloat } from './accessors.js';
+import { unpackAccessorFloat, type GltfAccessorDiagnosticSink } from './accessors.js';
 
 /** Stable channel-target node id for glTF node `nodeIndex` (`gltf-node-<i>`). */
 export function animationNodeId(nodeIndex: number): string {
@@ -89,6 +89,7 @@ export function convertAnimations(
   buffers: Map<number, ArrayBuffer>,
   warnings: string[],
   onDiagnostic?: GltfAnimationImportDiagnosticSink,
+  onAccessorDiagnostic?: GltfAccessorDiagnosticSink,
 ): AnimationClip[] {
   const clips: AnimationClip[] = [];
   const animations = gltf.animations ?? [];
@@ -136,8 +137,8 @@ export function convertAnimations(
           }
         }
         try {
-          const times = unpackAccessorFloat(gltf, buffers, sampler.input, warnings);
-          const values = unpackAccessorFloat(gltf, buffers, sampler.output, warnings);
+          const times = unpackAccessorFloat(gltf, buffers, sampler.input, warnings, onAccessorDiagnostic);
+          const values = unpackAccessorFloat(gltf, buffers, sampler.output, warnings, onAccessorDiagnostic);
           result = { times, values, interpolation };
         } catch (e) {
           emitAnimationDiagnostic(warnings, onDiagnostic, {

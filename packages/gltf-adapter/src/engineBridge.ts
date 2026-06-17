@@ -359,6 +359,12 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'data-uri-decode-failed',
   'image-decoder-missing',
   'disabled-texture-source-extension',
+  'sparse-indices-buffer-view-not-found',
+  'sparse-indices-buffer-unavailable',
+  'sparse-values-buffer-view-not-found',
+  'sparse-values-buffer-unavailable',
+  'invalid-sparse-indices-component-type',
+  'sparse-index-out-of-range',
 ]);
 
 function importDiagnosticFailures(

@@ -10,6 +10,29 @@
 import type { GltfJson, GltfAccessor } from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
 
+export type GltfAccessorDiagnosticCode =
+  | 'sparse-accessor-applied'
+  | 'sparse-indices-buffer-view-not-found'
+  | 'sparse-indices-buffer-unavailable'
+  | 'sparse-values-buffer-view-not-found'
+  | 'sparse-values-buffer-unavailable'
+  | 'invalid-sparse-indices-component-type'
+  | 'sparse-index-out-of-range';
+
+export interface GltfAccessorDiagnostic {
+  readonly severity: 'warning';
+  readonly code: GltfAccessorDiagnosticCode;
+  readonly path: string;
+  readonly message: string;
+  readonly accessorIndex: number;
+  readonly sparseEntryIndex?: number;
+  readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
+  readonly componentType?: number;
+}
+
+export type GltfAccessorDiagnosticSink = (diagnostic: GltfAccessorDiagnostic) => void;
+
 /** Number of scalar elements per accessor type. */
 const TYPE_COMPONENT_COUNT: Record<string, number> = {
   SCALAR: 1,
@@ -97,6 +120,7 @@ export function unpackAccessorFloat(
   buffers: Map<number, ArrayBuffer>,
   accessorIndex: number,
   warnings: string[],
+  onDiagnostic?: GltfAccessorDiagnosticSink,
 ): Float32Array {
   const accessor = gltf.accessors?.[accessorIndex];
   if (!accessor) {
@@ -116,7 +140,7 @@ export function unpackAccessorFloat(
   // If bufferView is absent, result stays zero-initialized (valid per spec for sparse).
 
   if (accessor.sparse) {
-    _applySparsePatch(gltf, buffers, accessor, componentCount, result, warnings);
+    _applySparsePatch(gltf, buffers, accessorIndex, accessor, componentCount, result, warnings, onDiagnostic);
   }
 
   return result;
@@ -183,34 +207,70 @@ function _isSparseIndexComponentType(ct: GltfComponentType): boolean {
 function _resolveSparseViews(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
+  accessorIndex: number,
   accessor: GltfAccessor,
   warnings: string[] | null,
+  onDiagnostic: GltfAccessorDiagnosticSink | undefined,
 ): SparseViews | null {
   const sparse = accessor.sparse!;
 
   const idxBv = gltf.bufferViews?.[sparse.indices.bufferView];
   if (!idxBv) {
-    if (warnings) warnings.push('[vitrum/gltf-adapter] Sparse indices bufferView not found; patch skipped.');
-    else throw new Error('[vitrum/gltf-adapter] Sparse indices bufferView not found');
+    const message = '[vitrum/gltf-adapter] Sparse indices bufferView not found; patch skipped.';
+    emitAccessorDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'sparse-indices-buffer-view-not-found',
+      path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
+      message,
+      accessorIndex,
+      bufferViewIndex: sparse.indices.bufferView,
+    });
+    if (!warnings) throw new Error('[vitrum/gltf-adapter] Sparse indices bufferView not found');
     return null;
   }
   const idxBuf = buffers.get(idxBv.buffer);
   if (!idxBuf) {
-    if (warnings) warnings.push(`[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable; patch skipped.`);
-    else throw new Error(`[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable`);
+    const message = `[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable; patch skipped.`;
+    emitAccessorDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'sparse-indices-buffer-unavailable',
+      path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
+      message,
+      accessorIndex,
+      bufferViewIndex: sparse.indices.bufferView,
+      bufferIndex: idxBv.buffer,
+    });
+    if (!warnings) throw new Error(`[vitrum/gltf-adapter] Sparse indices buffer ${idxBv.buffer} unavailable`);
     return null;
   }
 
   const valBv = gltf.bufferViews?.[sparse.values.bufferView];
   if (!valBv) {
-    if (warnings) warnings.push('[vitrum/gltf-adapter] Sparse values bufferView not found; patch skipped.');
-    else throw new Error('[vitrum/gltf-adapter] Sparse values bufferView not found');
+    const message = '[vitrum/gltf-adapter] Sparse values bufferView not found; patch skipped.';
+    emitAccessorDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'sparse-values-buffer-view-not-found',
+      path: `accessors[${accessorIndex}].sparse.values.bufferView`,
+      message,
+      accessorIndex,
+      bufferViewIndex: sparse.values.bufferView,
+    });
+    if (!warnings) throw new Error('[vitrum/gltf-adapter] Sparse values bufferView not found');
     return null;
   }
   const valBuf = buffers.get(valBv.buffer);
   if (!valBuf) {
-    if (warnings) warnings.push(`[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable; patch skipped.`);
-    else throw new Error(`[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable`);
+    const message = `[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable; patch skipped.`;
+    emitAccessorDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'sparse-values-buffer-unavailable',
+      path: `accessors[${accessorIndex}].sparse.values.bufferView`,
+      message,
+      accessorIndex,
+      bufferViewIndex: sparse.values.bufferView,
+      bufferIndex: valBv.buffer,
+    });
+    if (!warnings) throw new Error(`[vitrum/gltf-adapter] Sparse values buffer ${valBv.buffer} unavailable`);
     return null;
   }
 
@@ -219,8 +279,15 @@ function _resolveSparseViews(
     const message =
       `[vitrum/gltf-adapter] Sparse indices componentType ${idxCt} is invalid; ` +
       'expected UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT.';
-    if (warnings) warnings.push(`${message} Patch skipped.`);
-    else throw new Error(message);
+    emitAccessorDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'invalid-sparse-indices-component-type',
+      path: `accessors[${accessorIndex}].sparse.indices.componentType`,
+      message: `${message} Patch skipped.`,
+      accessorIndex,
+      componentType: idxCt,
+    });
+    if (!warnings) throw new Error(message);
     return null;
   }
   const idxCompSize = componentByteSize(idxCt);
@@ -241,25 +308,36 @@ function _resolveSparseViews(
 function _applySparsePatch(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
+  accessorIndex: number,
   accessor: GltfAccessor,
   componentCount: number,
   result: Float32Array,
   warnings: string[],
+  onDiagnostic: GltfAccessorDiagnosticSink | undefined,
 ): void {
-  warnings.push(
-    `[vitrum/gltf-adapter] Accessor uses sparse storage (count=${accessor.sparse!.count}); applying patch.`,
-  );
+  emitAccessorDiagnostic(warnings, onDiagnostic, {
+    severity: 'warning',
+    code: 'sparse-accessor-applied',
+    path: `accessors[${accessorIndex}].sparse`,
+    message: `[vitrum/gltf-adapter] Accessor uses sparse storage (count=${accessor.sparse!.count}); applying patch.`,
+    accessorIndex,
+  });
 
-  const sv = _resolveSparseViews(gltf, buffers, accessor, warnings);
+  const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, warnings, onDiagnostic);
   if (!sv) return;
 
   const normalized = accessor.normalized ?? false;
   for (let s = 0; s < sv.count; s++) {
     const idx = Math.round(readScalar(sv.idxView, s * sv.idxCompSize, sv.idxCt, false));
     if (idx < 0 || idx >= accessor.count) {
-      warnings.push(
-        `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}; patch entry skipped.`,
-      );
+      emitAccessorDiagnostic(warnings, onDiagnostic, {
+        severity: 'warning',
+        code: 'sparse-index-out-of-range',
+        path: `accessors[${accessorIndex}].sparse.indices[${s}]`,
+        message: `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}; patch entry skipped.`,
+        accessorIndex,
+        sparseEntryIndex: s,
+      });
       continue;
     }
     for (let c = 0; c < componentCount; c++) {
@@ -281,6 +359,8 @@ export function unpackAccessorUint32(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   accessorIndex: number,
+  warnings: string[] | null = null,
+  onDiagnostic?: GltfAccessorDiagnosticSink,
 ): Uint32Array {
   const accessor = gltf.accessors?.[accessorIndex];
   if (!accessor) {
@@ -327,12 +407,28 @@ export function unpackAccessorUint32(
 
   if (accessor.sparse) {
     // Sparse integer index buffers are legal but extremely rare.
-    // Uses null warnings → missing bufferViews silently skip (graceful degrade).
-    const sv = _resolveSparseViews(gltf, buffers, accessor, null);
+    // Uses null warnings by default so malformed index-buffer sparse patches
+    // preserve the historical hard-fail behavior.
+    emitAccessorDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'sparse-accessor-applied',
+      path: `accessors[${accessorIndex}].sparse`,
+      message: `[vitrum/gltf-adapter] Accessor uses sparse storage (count=${accessor.sparse.count}); applying patch.`,
+      accessorIndex,
+    });
+    const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, warnings, onDiagnostic);
     if (sv) {
       for (let s = 0; s < sv.count; s++) {
         const idx = Math.round(readScalar(sv.idxView, s * sv.idxCompSize, sv.idxCt, false));
         if (idx < 0 || idx >= accessor.count) {
+          emitAccessorDiagnostic(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: 'sparse-index-out-of-range',
+            path: `accessors[${accessorIndex}].sparse.indices[${s}]`,
+            message: `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}`,
+            accessorIndex,
+            sparseEntryIndex: s,
+          });
           throw new Error(
             `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}`,
           );
@@ -343,6 +439,18 @@ export function unpackAccessorUint32(
   }
 
   return result;
+}
+
+function emitAccessorDiagnostic(
+  warnings: string[] | null,
+  onDiagnostic: GltfAccessorDiagnosticSink | undefined,
+  diagnostic: GltfAccessorDiagnostic,
+): void {
+  if (onDiagnostic) {
+    onDiagnostic(diagnostic);
+    return;
+  }
+  if (warnings) warnings.push(diagnostic.message);
 }
 
 function _getBuffer(

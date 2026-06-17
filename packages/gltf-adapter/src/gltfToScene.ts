@@ -75,7 +75,12 @@ import {
   type GltfTextureSourceExtension,
 } from './textures.js';
 import { parseGlb } from './glbParser.js';
-import { unpackAccessorFloat, unpackAccessorUint32 } from './accessors.js';
+import {
+  unpackAccessorFloat,
+  unpackAccessorUint32,
+  type GltfAccessorDiagnostic,
+  type GltfAccessorDiagnosticCode,
+} from './accessors.js';
 import { buildWorldTransforms, composeTrsMat4, mat4Invert, mat4Mul } from './transforms.js';
 import { convertMaterial, GLTF_DEFAULT_MATERIAL } from './materials.js';
 import { generateFlatNormals } from './normals.js';
@@ -338,6 +343,7 @@ export interface GltfInstancingBinding {
 export type GltfImportDiagnosticCode =
   | GltfTextureAcquisitionDiagnosticCode
   | GltfAnimationImportDiagnosticCode
+  | GltfAccessorDiagnosticCode
   | 'unsupported-version'
   | 'unsupported-required-extension'
   | 'ignored-camera'
@@ -440,6 +446,9 @@ export async function gltfToScene(
   }
 
   const diagnostics: GltfImportDiagnostic[] = [];
+  const onAccessorDiagnostic = (diagnostic: GltfAccessorDiagnostic): void => {
+    emitImportDiagnostic(warnings, diagnostics, diagnostic);
+  };
 
   // ── 2. Validate version ────────────────────────────────────────────────────
   const version = gltf.asset?.version;
@@ -589,6 +598,7 @@ export async function gltfToScene(
       worldMat,
       warnings,
       diagnostics,
+      onAccessorDiagnostic,
     );
     let instanceFallbackWarned = false;
 
@@ -599,7 +609,7 @@ export async function gltfToScene(
     // glTF 2.0 §3.8: a node may reference a skin by index. All primitives in
     // the node's mesh share the same skin.
     const skinData = _extractSkinData(
-      gltf, buffers, gltfSkins, node.skin, worldMat, worldTransforms, warnings,
+      gltf, buffers, gltfSkins, node.skin, worldMat, worldTransforms, warnings, onAccessorDiagnostic,
     );
     const { bones, boneInverses } = skinData ?? {};
 
@@ -659,7 +669,7 @@ export async function gltfToScene(
 
       let positions: Float32Array;
       try {
-        positions = unpackAccessorFloat(gltf, buffers, posIdx, warnings);
+        positions = unpackAccessorFloat(gltf, buffers, posIdx, warnings, onAccessorDiagnostic);
       } catch (e) {
         emitImportDiagnostic(warnings, diagnostics, {
           severity: 'warning',
@@ -676,7 +686,7 @@ export async function gltfToScene(
       let indices: Uint32Array | undefined;
       if (prim.indices !== undefined) {
         try {
-          indices = unpackAccessorUint32(gltf, buffers, prim.indices);
+          indices = unpackAccessorUint32(gltf, buffers, prim.indices, null, onAccessorDiagnostic);
         } catch (e) {
           emitImportDiagnostic(warnings, diagnostics, {
             severity: 'warning',
@@ -715,7 +725,7 @@ export async function gltfToScene(
       const normIdx = prim.attributes['NORMAL'];
       const normAttempt = _tryUnpackFloat(
         gltf, buffers, normIdx,
-        `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings,
+        `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
       );
       if (normAttempt === undefined && normIdx === undefined) {
         warnings.push(
@@ -733,23 +743,23 @@ export async function gltfToScene(
       // UVs — optional.
       let uvs = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TEXCOORD_0'],
-        `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings,
+        `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
       );
       let uv1 = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TEXCOORD_1'],
-        `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings,
+        `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
       );
 
       // Tangents — optional (xyzw per vertex).
       let tangents = _tryUnpackFloat(
         gltf, buffers, prim.attributes['TANGENT'],
-        `TANGENT for "${mesh.name ?? node.mesh}"`, warnings,
+        `TANGENT for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
       );
 
       // Vertex colors — optional (COLOR_0).
       let colors = _tryUnpackFloat(
         gltf, buffers, prim.attributes['COLOR_0'],
-        `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings,
+        `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
       );
       for (const attrName of Object.keys(prim.attributes).sort()) {
         if (/^COLOR_[1-9][0-9]*$/.test(attrName)) {
@@ -796,7 +806,7 @@ export async function gltfToScene(
             );
           }
           try {
-            skinWeights = unpackAccessorFloat(gltf, buffers, weightsIdx, warnings);
+            skinWeights = unpackAccessorFloat(gltf, buffers, weightsIdx, warnings, onAccessorDiagnostic);
           } catch (e) {
             warnings.push(
               `[vitrum/gltf-adapter] Failed to read WEIGHTS_0 for "${mesh.name ?? node.mesh}": ` +
@@ -835,7 +845,7 @@ export async function gltfToScene(
       // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT deltas + node/mesh weights.
       let morph = _extractMorphTargets(
         gltf, buffers, prim.targets, node.weights ?? mesh.weights,
-        positions.length / 3, `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics,
+        positions.length / 3, `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics, onAccessorDiagnostic,
       );
 
       // Material.
@@ -861,6 +871,7 @@ export async function gltfToScene(
         diagnostics,
         primitivePath,
         mesh.name ?? node.mesh,
+        onAccessorDiagnostic,
       );
       uv1 = uvResolvedMaterial.uv1;
       if (isPointLineMode(mode)) {
@@ -1046,7 +1057,7 @@ export async function gltfToScene(
   // ── 10. Convert animations (GLTF-03) ───────────────────────────────────────
   const animations = convertAnimations(gltf, buffers, warnings, (diagnostic) => {
     diagnostics.push(diagnostic);
-  });
+  }, onAccessorDiagnostic);
 
   const scene: Scene = {
     primitives,
@@ -1235,6 +1246,7 @@ function _extractMeshGpuInstancing(
   worldMat: Mat4,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): MeshGpuInstancingTransforms | undefined {
   const extension = node.extensions?.EXT_mesh_gpu_instancing;
   if (extension === undefined) return undefined;
@@ -1311,7 +1323,7 @@ function _extractMeshGpuInstancing(
       return undefined;
     }
     try {
-      return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings);
+      return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings, onAccessorDiagnostic);
     } catch (e) {
       fail(
         attrPath,
@@ -1394,10 +1406,11 @@ function _tryUnpackFloat(
   accessorIndex: number | undefined,
   label: string,
   warnings: string[],
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): Float32Array | undefined {
   if (accessorIndex === undefined) return undefined;
   try {
-    return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings);
+    return unpackAccessorFloat(gltf, buffers, accessorIndex, warnings, onAccessorDiagnostic);
   } catch (e) {
     warnings.push(`[vitrum/gltf-adapter] Failed to read ${label}: ${String(e)}`);
     return undefined;
@@ -1421,6 +1434,7 @@ function _extractSkinData(
   meshWorld: Float32Array,
   worldTransforms: Map<number, Float32Array>,
   warnings: string[],
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): SkinData | undefined {
   if (skinIdx === undefined) return undefined;
   const gltfSkin = gltfSkins[skinIdx];
@@ -1452,7 +1466,13 @@ function _extractSkinData(
   let boneInverses: Float32Array | undefined;
   if (gltfSkin.inverseBindMatrices !== undefined) {
     try {
-      boneInverses = unpackAccessorFloat(gltf, buffers, gltfSkin.inverseBindMatrices, warnings);
+      boneInverses = unpackAccessorFloat(
+        gltf,
+        buffers,
+        gltfSkin.inverseBindMatrices,
+        warnings,
+        onAccessorDiagnostic,
+      );
     } catch (e) {
       warnings.push(
         `[vitrum/gltf-adapter] Failed to read inverseBindMatrices for skin "${gltfSkin.name ?? skinIdx}": ` +
@@ -1510,6 +1530,7 @@ function _resolvePrimitiveUvMaterial(
   diagnostics: GltfImportDiagnostic[],
   primitivePath: string,
   meshName: string | number,
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): PrimitiveUvMaterialResolution {
   const highFields: { field: MaterialTextureRefField; ref: TextureRef; texCoord: number }[] = [];
   const highTexCoords = new Set<number>();
@@ -1538,6 +1559,7 @@ function _resolvePrimitiveUvMaterial(
       primitive.attributes[attrName],
       `${attrName} for "${meshName}"`,
       warnings,
+      onAccessorDiagnostic,
     );
     if (remapUv !== undefined) {
       let remapped = material;
@@ -1754,6 +1776,7 @@ function _extractMorphTargets(
   primitivePath: string,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): MorphData | undefined {
   if (!targets || targets.length === 0) return undefined;
   const tCount = targets.length;
@@ -1770,7 +1793,7 @@ function _extractMorphTargets(
     // POSITION delta.
     let posDelta = _tryUnpackFloat(
       gltf, buffers, target['POSITION'],
-      `morph target ${t} POSITION for "${meshLabel}"`, warnings,
+      `morph target ${t} POSITION for "${meshLabel}"`, warnings, onAccessorDiagnostic,
     );
     if (posDelta && posDelta.length !== vertexCount * 3) {
       warnings.push(
@@ -1784,7 +1807,7 @@ function _extractMorphTargets(
     // NORMAL delta.
     let nrmDelta = _tryUnpackFloat(
       gltf, buffers, target['NORMAL'],
-      `morph target ${t} NORMAL for "${meshLabel}"`, warnings,
+      `morph target ${t} NORMAL for "${meshLabel}"`, warnings, onAccessorDiagnostic,
     );
     if (nrmDelta && nrmDelta.length !== vertexCount * 3) {
       warnings.push(
@@ -1800,7 +1823,7 @@ function _extractMorphTargets(
     // handedness remains in the base TANGENT.w lane).
     let tanDelta = _tryUnpackFloat(
       gltf, buffers, target['TANGENT'],
-      `morph target ${t} TANGENT for "${meshLabel}"`, warnings,
+      `morph target ${t} TANGENT for "${meshLabel}"`, warnings, onAccessorDiagnostic,
     );
     if (tanDelta && tanDelta.length !== vertexCount * 3) {
       warnings.push(

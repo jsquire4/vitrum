@@ -111,6 +111,10 @@ export type {
   GltfAnimationImportDiagnostic,
   GltfAnimationImportDiagnosticCode,
 } from './animations.js';
+export type {
+  GltfAccessorDiagnostic,
+  GltfAccessorDiagnosticCode,
+} from './accessors.js';
 export type { GltfJson } from './gltfTypes.js';
 export { GLTF_TEXTURE_SOURCE_EXTENSIONS } from './textures.js';
 export type {

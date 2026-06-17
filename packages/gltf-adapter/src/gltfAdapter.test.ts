@@ -1331,7 +1331,7 @@ describe('sparse accessor', () => {
 
     // Append the index buffer (u16: 0,1,2)
     const finalBuf = concatBuffers(totalBuf, u16Buffer([0, 1, 2]));
-    const { scene, warnings } = await gltfToScene(gltf, { buffers: new Map([[0, finalBuf]]) });
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers: new Map([[0, finalBuf]]) });
 
     expect(scene.primitives).toHaveLength(1);
     const prim = scene.primitives[0] as MeshPrimitive;
@@ -1341,6 +1341,11 @@ describe('sparse accessor', () => {
     expect(prim.positions[8]).toBeCloseTo(7);
     // Check that a sparse warning was emitted
     expect(warnings.some(w => w.includes('sparse'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'sparse-accessor-applied',
+      path: 'accessors[0].sparse',
+    }));
   });
 });
 
