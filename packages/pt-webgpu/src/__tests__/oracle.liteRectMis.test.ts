@@ -374,9 +374,10 @@ describe('PTWG-LITE-01 oracle — lite rect area-light paired MIS', () => {
         `lite rect NEE [${m.name}]: measured/truth = ${ratio.toFixed(4)} ` +
         `(deficit ${(100 * (1 - ratio)).toFixed(1)}%). The NEE half is weighted by ` +
         `powerHeuristic(lightPdf, brdfPdf) in the historical lite path, but the ` +
-        `complementary BSDF→light half is a zero stub (connectLite.wgsl.ts:136-159) ` +
-        `and lite rect lights are not geometry — the w_bsdf share of the energy is ` +
-        `simply discarded, a deterministic under-estimate (not variance).`;
+        `complementary BSDF→light half was historically a zero stub (the current ` +
+        `connectLite.wgsl.ts intersects packed liteLightTex rect/disc records) ` +
+        `and lite rect lights were not geometry — the w_bsdf share of the energy ` +
+        `was simply discarded, a deterministic under-estimate (not variance).`;
       // eslint-disable-next-line no-console
       console.log(`[oracle.liteRectMis] ${msg}`);
       // The deficit is material/geometry dependent; both cases must show a
