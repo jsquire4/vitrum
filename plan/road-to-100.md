@@ -593,6 +593,11 @@ buckets that the A–D framing was missing:**
   `rotationY` helper behavior: zero-rotation identity, +/-90 degree lookup
   convention, inverse relationship, direction-length preservation, and
   full/lite call-site linkage.
+  `bdptEmitterPickCpu.test.ts` now independently pins the BDPT selectable-emitter
+  power rule: Rec.709 luminance equivalence for differently-coloured point-like
+  emitters, the `1e-20` positive floor for non-positive light colours, finite
+  rect/disc/mesh area multiplication, and the WGSL helper's linkage to canonical
+  `luminance(c)` with the same floor.
   `pt-webgl2`'s `uploadGapGuard.test.ts` now pins the environment upload path:
   `environment:'none'` drives both `envMapInfo.totalSum` and
   `environmentIntensity` to zero, while a raw HDRI scene drives them positive.

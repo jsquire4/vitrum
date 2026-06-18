@@ -6,6 +6,25 @@ import {
   bdptPickEmitterFlat,
   sampleBdptBounce0Cpu,
 } from '../bdpt/bdptEmitterPickCpu.js';
+import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from '../wgsl/bdpt/bdptLightSubpath.wgsl.js';
+
+const REC709_R = 0.2126;
+const REC709_G = 0.7152;
+const REC709_B = 0.0722;
+const LUMINANCE_FLOOR = 1e-20;
+
+function independentLuminance(rgb: readonly [number, number, number]): number {
+  return rgb[0] * REC709_R + rgb[1] * REC709_G + rgb[2] * REC709_B;
+}
+
+function independentLightLuminance(rgb: readonly [number, number, number]): number {
+  return Math.max(independentLuminance(rgb), LUMINANCE_FLOOR);
+}
+
+function expectRelative(actual: number, expected: number, relative = 1e-6): void {
+  const tolerance = Math.max(1e-30, Math.abs(expected) * relative);
+  expect(Math.abs(actual - expected)).toBeLessThanOrEqual(tolerance);
+}
 
 function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers {
   const base = {
@@ -73,6 +92,60 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
 }
 
 describe('bdptEmitterPickCpu', () => {
+  it('uses Rec.709 luminance with a positive floor for directional, point, and spot power', () => {
+    const sameAsRedViaGreen: [number, number, number] = [0, REC709_R / REC709_G, 0];
+    const red: [number, number, number] = [1, 0, 0];
+    const negative: [number, number, number] = [-10, -1, -10];
+
+    const spot = new Float32Array(16);
+    spot.set([0, 0, 0, 0, 0, -1, 0, 0.5, sameAsRedViaGreen[0], sameAsRedViaGreen[1], sameAsRedViaGreen[2], 0.25], 0);
+    const sb = stubScene({
+      directionalLightCount: 1,
+      directionalLightsData: new Float32Array([0, -1, 0, 0, negative[0], negative[1], negative[2], 0]),
+      pointLightCount: 1,
+      pointLightsData: new Float32Array([0, 0, 0, 0, red[0], red[1], red[2], 0, 0, 0, 0, 0]),
+      spotLightCount: 1,
+      spotLightsData: spot,
+    });
+
+    expect(bdptEmitterCount(sb)).toBe(3);
+    expect(bdptEmitterPower(sb, 0)).toBe(LUMINANCE_FLOOR);
+    expectRelative(bdptEmitterPower(sb, 1), independentLightLuminance(red));
+    expectRelative(bdptEmitterPower(sb, 2), independentLightLuminance(sameAsRedViaGreen));
+    expectRelative(bdptEmitterPower(sb, 2), bdptEmitterPower(sb, 1));
+  });
+
+  it('multiplies finite-emitter power by independent geometric area and luminance', () => {
+    const rectRgb: [number, number, number] = [1, 0, 0];
+    const discRgb: [number, number, number] = [-1, -1, -1];
+    const meshRgb: [number, number, number] = [0, 0, 1];
+    const rect = new Float32Array(32);
+    // Rect: area = 4 * |u x v| = 4 * 6 = 24.
+    rect.set([0, 0, 0, 0, 2, 0, 0, 0, 0, 3, 0, 0, rectRgb[0], rectRgb[1], rectRgb[2], 0], 0);
+    // Disc: shapeTag=1, radius=2 from |u|, area = 4π; negative luminance floors.
+    rect.set([0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 3, 0, discRgb[0], discRgb[1], discRgb[2], 1], 16);
+    const mesh = new Float32Array(16);
+    // Mesh triangle: area = 0.5 * |(4,0,0) x (0,3,0)| = 6.
+    mesh.set([0, 0, 0, 0, 4, 0, 0, 0, 0, 3, 0, 0, meshRgb[0], meshRgb[1], meshRgb[2], 0], 0);
+
+    const sb = stubScene({
+      rectAreaLightCount: 2,
+      rectAreaLightsData: rect,
+      meshAreaLightCount: 1,
+      meshAreaLightsData: mesh,
+    });
+
+    expect(bdptEmitterCount(sb)).toBe(3);
+    expectRelative(bdptEmitterPower(sb, 0), 24 * independentLightLuminance(rectRgb));
+    expectRelative(bdptEmitterPower(sb, 1), 4 * Math.PI * independentLightLuminance(discRgb));
+    expectRelative(bdptEmitterPower(sb, 2), 6 * independentLightLuminance(meshRgb));
+  });
+
+  it('keeps the GPU BDPT emitter-power helper linked to canonical luminance with the floor', () => {
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fn bdptLightLuminance(c: vec3f) -> f32');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('return max(luminance(c), 1e-20);');
+  });
+
   it('counts directional + point + spot + rect + mesh + env', () => {
     const sb = stubScene({
       directionalLightCount: 1,
