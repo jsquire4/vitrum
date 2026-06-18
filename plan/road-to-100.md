@@ -1552,7 +1552,9 @@ classifies that as `HOST-BLOCKED` and writes
 gap look like a renderer failure. The radiometric walkaround lane is no longer
 host-blocked on this WSL setup: `npm run radiometric-ab:walkaround` now records
 `PASS-PARTIAL` in `tools/radiometric-ab/walkaround-ab-host-status.json`, with a
-do-not-promote warning because the low-spp SUN analytic case remains partial.
+do-not-promote warning because the low-spp SUN analytic case remains partial
+and the GLASS/GLOSSY material probes are currently `PASS-WEAK` no-delta checks
+(non-black/plausible, but no observed material-effect delta at 16 spp).
 Walkaround glTF render-gate promotion still requires a browser/adapter harness
 and higher-confidence reference captures.
 

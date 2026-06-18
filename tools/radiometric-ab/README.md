@@ -239,7 +239,7 @@ snapshot cannot silently drift into a vague "partial" claim. Scenes with large
 emitters, deep occlusion, or dramatic M-count gradients still need separate
 promotion captures before changing the default policy.
 
-Render time: 9.7 s for the A8 pair.
+Render time: 10.7 s for the A8 pair.
 
 ### SUN — Sun-NEE Analytic Self-Validation
 
@@ -261,11 +261,13 @@ The SUN case remains useful as a live-path proof: the directional light produces
 finite direct signal and the sun-shadowed wall stays dark. It is not promotion
 evidence for analytic absolute radiometry yet; the committed host status keeps
 the walkaround harness at `PASS-PARTIAL` and preserves a do-not-promote warning.
-Render time: 4.1 s.
+Render time: 4.5 s.
 
 ### GLASS — Glass-GI Transmitted Light Validation
 
-**Verdict: PASS**
+**Verdict: PASS-WEAK** — the through-glass region is non-black, but the
+glass/no-glass captures are indistinguishable at this SPP (`delta=0`), so this
+is not material-transport promotion evidence.
 
 Cornell+glass pane (transmission=1.0, z=0.5) vs Cornell-no-glass, ceiling emitter, SPP=16.
 
@@ -274,16 +276,20 @@ Cornell+glass pane (transmission=1.0, z=0.5) vs Cornell-no-glass, ceiling emitte
 | Glass centre lum | 0.1541 |
 | No-glass centre lum | 0.1541 |
 | Centre ratio | 1.000 |
+| Centre delta | 0.0000 |
 
 The current linear-HDR harness no longer has the old 8-bit readback caveat, but
-this scene is still a conservative black/through-glass regression check rather
-than a precision glass-transport promotion proof.
+this scene is only a conservative non-black/through-glass smoke. Because the two
+arms are identical within the committed measurement, it cannot prove that glass
+transport changed the render.
 
-Render time: 8.8 s for the pair.
+Render time: 8.5 s for the pair.
 
 ### GLOSSY — B2 Metallic Probe Check (Specular Indirect)
 
-**Verdict: PASS**
+**Verdict: PASS-WEAK** — the metallic floor is non-black and passes the broad
+ratio floor, but the metal/diffuse captures are indistinguishable at this SPP
+(`delta=0`), so this is not glossy probe promotion evidence.
 
 Metal floor (metalness=1.0, rough=0.05) vs diffuse floor (metalness=0.0, rough=1.0), Cornell,
 ceiling emitter, SPP=16.
@@ -293,11 +299,12 @@ ceiling emitter, SPP=16.
 | Metal floor lum | 0.0526 |
 | Diffuse floor lum | 0.0526 |
 | Floor ratio | 1.000 |
+| Floor delta | 0.0000 |
 
-The metallic-probe check remains a bounded live-path proof for the current
-walkaround approximation, not a glossy-reference material furnace. Higher-SPP
+The metallic-probe check remains a bounded non-black live-path proof for the
+current walkaround approximation, not a glossy-reference material furnace. Higher-SPP
 or case-specific reference captures are still required before promoting glossy
-walkaround rows beyond their current approximate status. Render time: 8.7 s.
+walkaround rows beyond their current approximate status. Render time: 8.4 s.
 
 ### Summary
 
@@ -305,8 +312,8 @@ walkaround rows beyond their current approximate status. Render time: 8.7 s.
 |-----|---------|-----------|
 | A8 GRIS bias | NEGLIGIBLE | overall delta = -0.000020 (0.03% of mean) |
 | SUN analytic | PASS-PARTIAL | floor ratio = 0.371; shadow correctness passes |
-| GLASS GI | PASS | centre ratio = 1.000 |
-| GLOSSY probe | PASS | floor ratio = 1.000 |
+| GLASS GI | PASS-WEAK | centre ratio = 1.000; delta = 0 |
+| GLOSSY probe | PASS-WEAK | floor ratio = 1.000; delta = 0 |
 
 ### Legacy 8-bit Baseline (2026-06-10)
 

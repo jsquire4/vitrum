@@ -297,6 +297,18 @@ function checkWalkaroundGlass(proof, result) {
   if (result.centreRatio < proof.minCentreRatio) {
     fail(`walkaround-ab GLASS: centreRatio ${result.centreRatio} is below ${proof.minCentreRatio}`);
   }
+  assertFiniteNumber(result.delta?.centreRegionLum, "walkaround-ab GLASS: delta.centreRegionLum");
+  assertFiniteNumber(result.delta?.overall, "walkaround-ab GLASS: delta.overall");
+  const signal = Math.max(Math.abs(result.delta.centreRegionLum), Math.abs(result.delta.overall));
+  if (result.materialEffectObserved !== (signal >= proof.minSignalDeltaForPass)) {
+    fail("walkaround-ab GLASS: materialEffectObserved does not match committed deltas");
+  }
+  if (result.verdict === "PASS" && signal < proof.minSignalDeltaForPass) {
+    fail(
+      `walkaround-ab GLASS: PASS requires observed material effect; max delta ${signal} ` +
+      `is below ${proof.minSignalDeltaForPass}`,
+    );
+  }
 }
 
 /**
@@ -308,6 +320,18 @@ function checkWalkaroundGlossy(proof, result) {
   assertFiniteNumber(result.floorRatio, "walkaround-ab GLOSSY: floorRatio");
   if (result.floorRatio < proof.minFloorRatio) {
     fail(`walkaround-ab GLOSSY: floorRatio ${result.floorRatio} is below ${proof.minFloorRatio}`);
+  }
+  assertFiniteNumber(result.delta?.floorLum, "walkaround-ab GLOSSY: delta.floorLum");
+  assertFiniteNumber(result.delta?.overall, "walkaround-ab GLOSSY: delta.overall");
+  const signal = Math.max(Math.abs(result.delta.floorLum), Math.abs(result.delta.overall));
+  if (result.materialEffectObserved !== (signal >= proof.minSignalDeltaForPass)) {
+    fail("walkaround-ab GLOSSY: materialEffectObserved does not match committed deltas");
+  }
+  if (result.verdict === "PASS" && signal < proof.minSignalDeltaForPass) {
+    fail(
+      `walkaround-ab GLOSSY: PASS requires observed material effect; max delta ${signal} ` +
+      `is below ${proof.minSignalDeltaForPass}`,
+    );
   }
 }
 

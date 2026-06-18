@@ -25,7 +25,7 @@
       "leftWall": 0.000004769051508474523,
       "rightWall": -6.802122701279889e-7
     },
-    "renderTimeSec": 9.7,
+    "renderTimeSec": 10.7,
     "verdict": "NEGLIGIBLE",
     "notes": [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
@@ -55,7 +55,7 @@
     "floorRatioToAnalytic": 0.37080493882992377,
     "analyticAgreement": false,
     "shadowCorrect": true,
-    "renderTimeSec": 4.1,
+    "renderTimeSec": 4.5,
     "verdict": "PASS-PARTIAL",
     "notes": [
       "analytic = I × cosθ × albedo (Lambertian: brdf=albedo/π, hemisphere integral=π → Lo=albedo×I×cosθ).",
@@ -81,12 +81,19 @@
     },
     "centreRatio": 1,
     "overallRatio": 1,
-    "renderTimeSec": 8.8,
-    "verdict": "PASS",
+    "delta": {
+      "centreRegionLum": 0,
+      "overall": 0
+    },
+    "minSignalDelta": 0.0001,
+    "materialEffectObserved": false,
+    "renderTimeSec": 8.5,
+    "verdict": "PASS-WEAK",
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer absorption = 0 (white glass).",
       "Expected centreRatio ≥ 0.50 — conservative; denoiser can attenuate through-glass signal at low SPP.",
-      "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true)."
+      "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
+      "PASS-WEAK means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone."
     ]
   },
   "glossy": {
@@ -103,14 +110,21 @@
       "overall": 0.06001685047624235
     },
     "floorRatio": 1,
+    "delta": {
+      "floorLum": 0,
+      "overall": 0
+    },
     "expectedMinFloorRatio": 0.8,
-    "renderTimeSec": 8.7,
-    "verdict": "PASS",
+    "minSignalDelta": 0.0001,
+    "materialEffectObserved": false,
+    "renderTimeSec": 8.4,
+    "verdict": "PASS-WEAK",
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
       "Metal floor (n=1.0, rough=0.05): GGX specular lobe reflects the ceiling emitter → brighter than Lambertian.",
       "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
-      "Lavapipe SPP=16; metallic-mirror at low SPP has high variance — ratio check uses ≥0.80."
+      "Lavapipe SPP=16; metallic-mirror at low SPP has high variance — ratio check uses ≥0.80.",
+      "PASS-WEAK means the metallic floor is non-black/plausible but the metal/diffuse captures are statistically indistinguishable at this SPP; do not promote glossy probe quality from that alone."
     ]
   }
 }

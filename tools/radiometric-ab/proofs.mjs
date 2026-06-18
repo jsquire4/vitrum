@@ -98,11 +98,13 @@ export const WALKAROUND_AB_RESULT_PROOF = {
       id: "GLASS",
       allowedVerdicts: ["PASS", "PASS-WEAK"],
       minCentreRatio: 0.5,
+      minSignalDeltaForPass: 1e-4,
     },
     glossy: {
       id: "GLOSSY",
-      allowedVerdicts: ["PASS"],
+      allowedVerdicts: ["PASS", "PASS-WEAK"],
       minFloorRatio: 0.8,
+      minSignalDeltaForPass: 1e-4,
     },
   },
 };

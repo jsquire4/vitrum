@@ -219,6 +219,10 @@ function regionLuminance(pixels, texW, x0, y0, x1, y1) {
   return count > 0 ? sum / count : 0;
 }
 
+function absDelta(a, b) {
+  return Math.abs(a - b);
+}
+
 // ── Engine runner ─────────────────────────────────────────────────────────────
 async function runVariant(label, engineOpts, sceneFactory) {
   let device;
@@ -538,21 +542,28 @@ async function runGlass() {
   // A ratio of 0.0 means the glass region is black (GI not propagating through glass).
   const centerRatio = noGlassCenter > 0.01 ? glassCenter / noGlassCenter : 0;
   const overallRatio = noGlassResult.lum > 0.01 ? overallGlass / noGlassResult.lum : 0;
+  const centreDelta = glassCenter - noGlassCenter;
+  const overallDelta = overallGlass - overallNoGlass;
 
   // Fresnel-T at normal incidence n=1.5: T = 1 - ((1.5-1)/(1.5+1))^2 = 1 - 0.04 = 0.96
   // Two surfaces (enter + exit): T_total ≈ 0.96^2 ≈ 0.92. Beer absorption = none (no tint).
   // Expected centre ratio > 0.5 (allowing for denoiser, GTAO, temporal).
   const EXPECTED_MIN_RATIO = 0.5;
+  const MIN_SIGNAL_DELTA = 1e-4;
   const notBlack  = glassCenter > 0.01;
   const ratioPass = centerRatio >= EXPECTED_MIN_RATIO;
-  const verdict   = notBlack && ratioPass ? "PASS"
+  const materialEffectObserved =
+    Math.max(absDelta(glassCenter, noGlassCenter), absDelta(overallGlass, overallNoGlass)) >= MIN_SIGNAL_DELTA;
+  const verdict   = notBlack && ratioPass && materialEffectObserved ? "PASS"
+                  : notBlack && ratioPass ? "PASS-WEAK"
                   : notBlack ? "PASS-WEAK"
                   : "FAIL";
 
   console.log(`  glass centre:   ${glassCenter.toFixed(4)}  overall=${overallGlass.toFixed(4)}`);
   console.log(`  no-glass centre:${noGlassCenter.toFixed(4)}  overall=${overallNoGlass.toFixed(4)}`);
-  console.log(`  centre ratio:   ${centerRatio.toFixed(3)}  (expected ≥ ${EXPECTED_MIN_RATIO})`);
+  console.log(`  centre ratio:   ${centerRatio.toFixed(3)}  (expected ≥ ${EXPECTED_MIN_RATIO}); delta=${centreDelta.toExponential(3)}`);
   console.log(`  overall ratio:  ${overallRatio.toFixed(3)}`);
+  console.log(`  effect observed:${materialEffectObserved ? "YES" : "NO"}  (min |delta|=${MIN_SIGNAL_DELTA})`);
   console.log(`  verdict:        ${verdict} — render time ${dt}s`);
 
   return {
@@ -572,12 +583,19 @@ async function runGlass() {
     },
     centreRatio:  centerRatio,
     overallRatio: overallRatio,
+    delta: {
+      centreRegionLum: centreDelta,
+      overall: overallDelta,
+    },
+    minSignalDelta: MIN_SIGNAL_DELTA,
+    materialEffectObserved,
     renderTimeSec: parseFloat(dt),
     verdict,
     notes: [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer absorption = 0 (white glass).",
       "Expected centreRatio ≥ 0.50 — conservative; denoiser can attenuate through-glass signal at low SPP.",
       "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
+      "PASS-WEAK means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.",
     ],
   };
 }
@@ -618,22 +636,28 @@ async function runGlossy() {
   // Floor region — bottom strip of image (camera looks slightly down)
   const floorMetal   = regionLuminance(metalResult.pixels,   W, 20, 85, 108, 127);
   const floorDiffuse = regionLuminance(diffuseResult.pixels, W, 20, 85, 108, 127);
+  const floorDelta = floorMetal - floorDiffuse;
+  const overallDelta = overallMetal - overallDiffuse;
 
   // Check: metallic floor must be nonzero and at least 0.8× the diffuse floor.
   // The mirror floor reflects the bright ceiling emitter → should be brighter or equal.
   const floorRatio = floorDiffuse > 0.01 ? floorMetal / floorDiffuse : 0;
   const notBlack   = floorMetal > 0.01;
+  const MIN_SIGNAL_DELTA = 1e-4;
+  const materialEffectObserved =
+    Math.max(absDelta(floorMetal, floorDiffuse), absDelta(overallMetal, overallDiffuse)) >= MIN_SIGNAL_DELTA;
   // Structural assertion: metallic floor is directionally plausible (bright where
   // reflected probe field is bright). At low SPP we just check nonzero + plausible ratio.
   const plausible  = floorRatio >= 0.8;
 
-  const verdict = notBlack && plausible ? "PASS"
+  const verdict = notBlack && plausible && materialEffectObserved ? "PASS"
                 : notBlack ? "PASS-WEAK"
                 : "FAIL";
 
   console.log(`  metallic  floor: ${floorMetal.toFixed(4)}  overall=${overallMetal.toFixed(4)}`);
   console.log(`  diffuse   floor: ${floorDiffuse.toFixed(4)}  overall=${overallDiffuse.toFixed(4)}`);
-  console.log(`  floor ratio (metal/diffuse): ${floorRatio.toFixed(3)}  (expected ≥ 0.80)`);
+  console.log(`  floor ratio (metal/diffuse): ${floorRatio.toFixed(3)}  (expected ≥ 0.80); delta=${floorDelta.toExponential(3)}`);
+  console.log(`  effect observed:${materialEffectObserved ? "YES" : "NO"}  (min |delta|=${MIN_SIGNAL_DELTA})`);
   console.log(`  verdict:  ${verdict} — render time ${dt}s`);
 
   return {
@@ -650,7 +674,13 @@ async function runGlossy() {
       overall:  overallDiffuse,
     },
     floorRatio,
+    delta: {
+      floorLum: floorDelta,
+      overall: overallDelta,
+    },
     expectedMinFloorRatio: 0.8,
+    minSignalDelta: MIN_SIGNAL_DELTA,
+    materialEffectObserved,
     renderTimeSec: parseFloat(dt),
     verdict,
     notes: [
@@ -658,6 +688,7 @@ async function runGlossy() {
       "Metal floor (n=1.0, rough=0.05): GGX specular lobe reflects the ceiling emitter → brighter than Lambertian.",
       "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
       "Lavapipe SPP=16; metallic-mirror at low SPP has high variance — ratio check uses ≥0.80.",
+      "PASS-WEAK means the metallic floor is non-black/plausible but the metal/diffuse captures are statistically indistinguishable at this SPP; do not promote glossy probe quality from that alone.",
     ],
   };
 }
