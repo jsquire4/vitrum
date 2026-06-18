@@ -293,6 +293,21 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     expect(mocks.createEngine).toHaveBeenCalledTimes(1);
   });
 
+  it('accepts adapter-refined lite rows for bakeable COLOR_0 under reject-unsupported', async () => {
+    mocks.state.liteIssues = [];
+
+    await expect(
+      loadGltfWithEngine('constant-color.glb', { compatibilityMode: 'reject-unsupported' }),
+    ).resolves.toMatchObject({
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      attached: true,
+    });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+  });
+
   it('treats KHR_meshopt_compression as satisfied by the engine meshoptDecode hook', async () => {
     mocks.state.liteIssues = [mocks.khrMeshoptHookIssue];
 
