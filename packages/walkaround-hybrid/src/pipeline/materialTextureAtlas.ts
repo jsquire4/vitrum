@@ -1,7 +1,41 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-const MATERIAL_MAP_META_TEXELS_PER_TRI = 53;
+export const MATERIAL_MAP_META_TEXELS_PER_TRI = 53;
+export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
+  BASE_COLOR: 0,
+  ROUGHNESS: 2,
+  METALLIC: 4,
+  AO: 6,
+  ALPHA: 8,
+  ALPHA_COVERAGE: 10,
+  EMISSIVE: 11,
+  TRANSMISSION: 13,
+  NORMAL: 15,
+  NORMAL_SCALE: 17,
+  LIGHT: 18,
+  LIGHT_INTENSITY: 20,
+  SPECULAR: 21,
+  CLEARCOAT: 22,
+  SHEEN_COLOR: 23,
+  SPECULAR_COLOR: 24,
+  SPECULAR_INTENSITY: 26,
+  CLEARCOAT_FACTOR: 28,
+  CLEARCOAT_ROUGHNESS: 30,
+  SHEEN_COLOR_MAP: 32,
+  SHEEN_ROUGHNESS: 34,
+  CLEARCOAT_NORMAL: 36,
+  CLEARCOAT_NORMAL_SCALE: 38,
+  ANISOTROPY: 39,
+  ANISOTROPY_SCALAR: 41,
+  IRIDESCENCE: 42,
+  IRIDESCENCE_THICKNESS: 44,
+  IRIDESCENCE_SCALAR: 46,
+  THICKNESS: 47,
+  BUMP: 49,
+  BUMP_SCALE: 51,
+  ENV_INTENSITY: 52,
+} as const;
 
 export type AtlasMapField =
   | 'baseColorMap'
@@ -634,38 +668,39 @@ export function packMaterialTextureAtlas(
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
-    writeMapMeta(mat, 'baseColorMap', 'srgb', baseTexel);
-    writeMapMeta(mat, 'roughnessMap', 'linear', baseTexel + 2);
-    writeMapMeta(mat, 'metallicMap', 'linear', baseTexel + 4);
-    writeMapMeta(mat, 'aoMap', 'linear', baseTexel + 6);
-    writeMapMeta(mat, 'alphaMap', 'linear', baseTexel + 8);
-    writeAlphaCoverageMeta(mat, baseTexel + 10);
-    writeMapMeta(mat, 'emissiveMap', 'srgb', baseTexel + 11);
-    writeMapMeta(mat, 'transmissionMap', 'linear', baseTexel + 13);
-    writeMapMeta(mat, 'normalMap', 'linear', baseTexel + 15);
-    writeNormalScaleMeta(mat, baseTexel + 17);
-    writeMapMeta(mat, 'lightMap', 'linear', baseTexel + 18);
-    writeLightMapIntensityMeta(mat, baseTexel + 20);
-    writeSpecularMeta(mat, baseTexel + 21);
-    writeClearcoatMeta(mat, baseTexel + 22);
-    writeSheenColorMeta(mat, baseTexel + 23);
-    writeMapMeta(mat, 'specularColorMap', 'srgb', baseTexel + 24);
-    writeMapMeta(mat, 'specularIntensityMap', 'linear', baseTexel + 26);
-    writeMapMeta(mat, 'clearcoatMap', 'linear', baseTexel + 28);
-    writeMapMeta(mat, 'clearcoatRoughnessMap', 'linear', baseTexel + 30);
-    writeMapMeta(mat, 'sheenColorMap', 'srgb', baseTexel + 32);
-    writeMapMeta(mat, 'sheenRoughnessMap', 'linear', baseTexel + 34);
-    writeMapMeta(mat, 'clearcoatNormalMap', 'linear', baseTexel + 36);
-    writeClearcoatNormalScaleMeta(mat, baseTexel + 38);
-    writeMapMeta(mat, 'anisotropyMap', 'linear', baseTexel + 39);
-    writeAnisotropyMeta(mat, baseTexel + 41);
-    writeMapMeta(mat, 'iridescenceMap', 'linear', baseTexel + 42);
-    writeMapMeta(mat, 'iridescenceThicknessMap', 'linear', baseTexel + 44);
-    writeIridescenceMeta(mat, baseTexel + 46);
-    writeMapMeta(mat, 'thicknessMap', 'linear', baseTexel + 47);
-    writeMapMeta(mat, 'bumpMap', 'linear', baseTexel + 49);
-    writeBumpScaleMeta(mat, baseTexel + 51);
-    writeEnvMapIntensityMeta(mat, baseTexel + 52);
+    const offsets = MATERIAL_MAP_META_TEXEL_OFFSETS;
+    writeMapMeta(mat, 'baseColorMap', 'srgb', baseTexel + offsets.BASE_COLOR);
+    writeMapMeta(mat, 'roughnessMap', 'linear', baseTexel + offsets.ROUGHNESS);
+    writeMapMeta(mat, 'metallicMap', 'linear', baseTexel + offsets.METALLIC);
+    writeMapMeta(mat, 'aoMap', 'linear', baseTexel + offsets.AO);
+    writeMapMeta(mat, 'alphaMap', 'linear', baseTexel + offsets.ALPHA);
+    writeAlphaCoverageMeta(mat, baseTexel + offsets.ALPHA_COVERAGE);
+    writeMapMeta(mat, 'emissiveMap', 'srgb', baseTexel + offsets.EMISSIVE);
+    writeMapMeta(mat, 'transmissionMap', 'linear', baseTexel + offsets.TRANSMISSION);
+    writeMapMeta(mat, 'normalMap', 'linear', baseTexel + offsets.NORMAL);
+    writeNormalScaleMeta(mat, baseTexel + offsets.NORMAL_SCALE);
+    writeMapMeta(mat, 'lightMap', 'linear', baseTexel + offsets.LIGHT);
+    writeLightMapIntensityMeta(mat, baseTexel + offsets.LIGHT_INTENSITY);
+    writeSpecularMeta(mat, baseTexel + offsets.SPECULAR);
+    writeClearcoatMeta(mat, baseTexel + offsets.CLEARCOAT);
+    writeSheenColorMeta(mat, baseTexel + offsets.SHEEN_COLOR);
+    writeMapMeta(mat, 'specularColorMap', 'srgb', baseTexel + offsets.SPECULAR_COLOR);
+    writeMapMeta(mat, 'specularIntensityMap', 'linear', baseTexel + offsets.SPECULAR_INTENSITY);
+    writeMapMeta(mat, 'clearcoatMap', 'linear', baseTexel + offsets.CLEARCOAT_FACTOR);
+    writeMapMeta(mat, 'clearcoatRoughnessMap', 'linear', baseTexel + offsets.CLEARCOAT_ROUGHNESS);
+    writeMapMeta(mat, 'sheenColorMap', 'srgb', baseTexel + offsets.SHEEN_COLOR_MAP);
+    writeMapMeta(mat, 'sheenRoughnessMap', 'linear', baseTexel + offsets.SHEEN_ROUGHNESS);
+    writeMapMeta(mat, 'clearcoatNormalMap', 'linear', baseTexel + offsets.CLEARCOAT_NORMAL);
+    writeClearcoatNormalScaleMeta(mat, baseTexel + offsets.CLEARCOAT_NORMAL_SCALE);
+    writeMapMeta(mat, 'anisotropyMap', 'linear', baseTexel + offsets.ANISOTROPY);
+    writeAnisotropyMeta(mat, baseTexel + offsets.ANISOTROPY_SCALAR);
+    writeMapMeta(mat, 'iridescenceMap', 'linear', baseTexel + offsets.IRIDESCENCE);
+    writeMapMeta(mat, 'iridescenceThicknessMap', 'linear', baseTexel + offsets.IRIDESCENCE_THICKNESS);
+    writeIridescenceMeta(mat, baseTexel + offsets.IRIDESCENCE_SCALAR);
+    writeMapMeta(mat, 'thicknessMap', 'linear', baseTexel + offsets.THICKNESS);
+    writeMapMeta(mat, 'bumpMap', 'linear', baseTexel + offsets.BUMP);
+    writeBumpScaleMeta(mat, baseTexel + offsets.BUMP_SCALE);
+    writeEnvMapIntensityMeta(mat, baseTexel + offsets.ENV_INTENSITY);
   }
 
   return {

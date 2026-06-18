@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MaterialSpec, TextureRef } from '@vitrum/core';
-import { packMaterialTextureAtlas } from '../pipeline/materialTextureAtlas.js';
+import {
+  BASE_COLOR_MAP_META_TEX_WIDTH,
+  MATERIAL_MAP_META_TEXEL_OFFSETS,
+  MATERIAL_MAP_META_TEXELS_PER_TRI,
+  packMaterialTextureAtlas,
+} from '../pipeline/materialTextureAtlas.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
 
@@ -9,6 +14,17 @@ const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
 function srgbToLinear(v: number): number {
   const c = Math.max(0, Math.min(1, v));
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+function parseMaterialAtlasU32Constants(wgsl: string): Map<string, number> {
+  const constants = new Map<string, number>();
+  const re = /const\s+([A-Z0-9_]+):\s*u32\s*=\s*(\d+)u;/g;
+  let match: RegExpExecArray | null = re.exec(wgsl);
+  while (match != null) {
+    constants.set(match[1]!, Number(match[2]));
+    match = re.exec(wgsl);
+  }
+  return constants;
 }
 
 describe('walkaround materialTextureAtlas', () => {
@@ -867,36 +883,52 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[207]).toBe(0);
   });
 
+  it('WGSL atlas metadata constants mirror the host packer offsets', () => {
+    const constants = parseMaterialAtlasU32Constants(MATERIAL_ATLAS_WGSL);
+    const offsets = MATERIAL_MAP_META_TEXEL_OFFSETS;
+    const expected: Readonly<Record<string, number>> = {
+      BASE_COLOR_MAP_META_TEX_WIDTH,
+      MATERIAL_MAP_META_TEXELS_PER_TRI,
+      MATERIAL_MAP_SLOT_BASE_COLOR: offsets.BASE_COLOR / 2,
+      MATERIAL_MAP_SLOT_ROUGHNESS: offsets.ROUGHNESS / 2,
+      MATERIAL_MAP_SLOT_METALLIC: offsets.METALLIC / 2,
+      MATERIAL_MAP_SLOT_AO: offsets.AO / 2,
+      MATERIAL_MAP_SLOT_ALPHA: offsets.ALPHA / 2,
+      MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: offsets.ALPHA_COVERAGE,
+      MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: offsets.EMISSIVE,
+      MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: offsets.TRANSMISSION,
+      MATERIAL_MAP_NORMAL_TEXEL_OFFSET: offsets.NORMAL,
+      MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET: offsets.NORMAL_SCALE,
+      MATERIAL_MAP_LIGHT_TEXEL_OFFSET: offsets.LIGHT,
+      MATERIAL_MAP_LIGHT_INTENSITY_TEXEL_OFFSET: offsets.LIGHT_INTENSITY,
+      MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: offsets.SPECULAR,
+      MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: offsets.CLEARCOAT,
+      MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: offsets.SHEEN_COLOR,
+      MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: offsets.SPECULAR_COLOR,
+      MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: offsets.SPECULAR_INTENSITY,
+      MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET: offsets.CLEARCOAT_FACTOR,
+      MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET: offsets.CLEARCOAT_ROUGHNESS,
+      MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: offsets.SHEEN_COLOR_MAP,
+      MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: offsets.SHEEN_ROUGHNESS,
+      MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: offsets.CLEARCOAT_NORMAL,
+      MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET: offsets.CLEARCOAT_NORMAL_SCALE,
+      MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET: offsets.ANISOTROPY,
+      MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: offsets.ANISOTROPY_SCALAR,
+      MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: offsets.IRIDESCENCE,
+      MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: offsets.IRIDESCENCE_THICKNESS,
+      MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: offsets.IRIDESCENCE_SCALAR,
+      MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: offsets.THICKNESS,
+      MATERIAL_MAP_BUMP_TEXEL_OFFSET: offsets.BUMP,
+      MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: offsets.BUMP_SCALE,
+      MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: offsets.ENV_INTENSITY,
+    };
+
+    for (const [name, expectedValue] of Object.entries(expected)) {
+      expect(constants.get(name), name).toBe(expectedValue);
+    }
+  });
+
   it('shade and traversal sample material maps from the shared atlas module', () => {
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_AO: u32 = 3u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_LIGHT_TEXEL_OFFSET: u32 = 18u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: u32 = 22u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET: u32 = 28u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET: u32 = 30u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: u32 = 32u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: u32 = 36u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET: u32 = 38u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET: u32 = 39u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: u32 = 41u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: u32 = 42u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: u32 = 44u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('const MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: u32 = 52u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEmissiveMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleTransmissionMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleLightMap(');
