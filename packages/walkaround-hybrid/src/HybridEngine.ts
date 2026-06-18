@@ -1298,7 +1298,9 @@ export class HybridEngine implements Engine {
    * Uniform epilogue for every primitive-update path: swap the freshly-built
    * BVH buffers + patched scene into engine state, then — unless the path
    * opted out (`applySubsystems === false`, the material-only fast path) —
-   * re-sync the GI subsystems against the new BVH.
+   * re-sync the GI subsystems against the new BVH. Material-only paths can
+   * still request a DDGI material-snapshot refresh without RC geometry
+   * propagation.
    */
   private _applyUpdateResult(result: PrimitiveUpdateResult): void {
     this._bvhBuffers = result.bvhBuffers;
@@ -1313,6 +1315,8 @@ export class HybridEngine implements Engine {
     }
     if (result.applySubsystems !== false) {
       this._applyPrimitiveUpdateSubsystems(result);
+    } else if (result.refreshDdgiMaterialSnapshot === true) {
+      this._ddgi.syncRestirBvhBuffers(result.bvhBuffers, this._renderScene ?? undefined);
     }
   }
 

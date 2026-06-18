@@ -428,12 +428,15 @@ export interface PrimitiveUpdateResult {
    * Geometry paths (transform / positions / topology / skinned refit) DO —
    * they changed the BVH that DDGI + RC index off. The material-only fast path
    * sets this `false`: it re-packs material/emissive slices in place without
-   * moving geometry, so the cached GI signals stay valid. Absent ⇒ apply
-   * (the geometry-path default).
+   * moving geometry. Material-only paths may still request a DDGI material
+   * snapshot refresh so probe rays see the new BRDF/emissive payload. Absent
+   * ⇒ apply (the geometry-path default).
    */
   readonly applySubsystems?: boolean;
   /** Material-only paths changed RC-visible material/emitter data without moving geometry. */
   readonly refreshRcMaterials?: boolean;
+  /** Material-only paths changed DDGI-visible material data without moving geometry. */
+  readonly refreshDdgiMaterialSnapshot?: boolean;
 }
 
 function findSkinnedPrimitive(scene: Scene, id: string): SkinnedMeshPrimitive | null {
@@ -1097,6 +1100,15 @@ function materialRadianceOrVisibilityChanged(
     || color3Changed(prev?.baseColor, next?.baseColor, [1, 1, 1]);
 }
 
+function materialAffectsDdgiProbeCache(
+  prev: MaterialSpec | undefined,
+  next: MaterialSpec | undefined,
+): boolean {
+  return materialRadianceOrVisibilityChanged(prev, next)
+    || (prev?.roughness ?? 0.5) !== (next?.roughness ?? 0.5)
+    || (prev?.metallic ?? 0) !== (next?.metallic ?? 0);
+}
+
 function textureRefLike(value: unknown): {
   readonly handle: unknown;
   readonly texCoord?: number;
@@ -1465,8 +1477,10 @@ export function materialPatch(
 
   let outBvh: SceneBVHBuffers = { ...bvh, bvhEmissiveLe: updatedEmissiveLe, coreMaterials: updatedCoreMaterials };
   const emitterAffectingMaterialChanged = materialRadianceOrVisibilityChanged(prevMaterial, nextMaterial);
-  if (emitterAffectingMaterialChanged) {
+  if (materialAffectsDdgiProbeCache(prevMaterial, nextMaterial)) {
     ctx.ddgi.invalidateProbeCache();
+  }
+  if (emitterAffectingMaterialChanged) {
     const emitterOptions = {
       primaryLightDir: {
         x: ctx.primaryLightDir[0],
@@ -1496,8 +1510,14 @@ export function materialPatch(
   ctx.pipeline.requestAccumReset();
 
   // Material-only edits re-pack material/emissive slices in place — the BVH
-  // geometry that DDGI + RC index off is unchanged, so the GI-subsystem
-  // propagation epilogue is intentionally skipped (matches the pre-collapse
-  // dispatcher, where the materialPatch branch omitted that call).
-  return { bvhBuffers: outBvh, updatedScene, applySubsystems: false, refreshRcMaterials: true };
+  // geometry that DDGI + RC index off is unchanged, so geometry propagation is
+  // skipped. DDGI still needs a fresh RestirBvhSnapshot because probe rays read
+  // coreMaterials/materialTextureAtlas from that snapshot.
+  return {
+    bvhBuffers: outBvh,
+    updatedScene,
+    applySubsystems: false,
+    refreshRcMaterials: true,
+    refreshDdgiMaterialSnapshot: true,
+  };
 }

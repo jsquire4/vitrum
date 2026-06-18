@@ -389,7 +389,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) uploads material resources, refreshes RC materials, and skips geometry GI propagation', () => {
+  it('updatePrimitive(material) refreshes DDGI material snapshots without geometry GI propagation', () => {
     const { engine, pipeline, ddgi, rc } = seedEngine(baseScene(), { bvhMode: 'tlas', rc: true });
     try {
       engine.updatePrimitive('mesh-a', {
@@ -399,8 +399,15 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
       expect(rc?.refreshMaterialsFromCore).toHaveBeenCalledTimes(1);
-      expect(ddgi.syncRestirBvhBuffers).not.toHaveBeenCalled();
-      expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
+      expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
+      const [syncedBuffers, syncedScene] = ddgi.syncRestirBvhBuffers.mock.calls[0] as [
+        SceneBVHBuffers,
+        Scene,
+      ];
+      expect(syncedBuffers.coreMaterials[0]?.roughness).toBe(0.25);
+      expect((syncedScene.primitives[0] as { material: { roughness: number } }).material.roughness)
+        .toBe(0.25);
+      expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
       expect(pipeline.updateEmitters).not.toHaveBeenCalled();
       expect((storedScene(engine).primitives[0] as { material: { roughness: number } }).material.roughness)
         .toBe(0.25);
@@ -444,6 +451,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
       expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
+      expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
       expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
     } finally {
       engine.dispose();
@@ -468,7 +476,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
-      expect(ddgi.syncRestirBvhBuffers).not.toHaveBeenCalled();
+      expect(ddgi.syncRestirBvhBuffers).toHaveBeenCalledTimes(1);
       expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
     } finally {
       engine.dispose();

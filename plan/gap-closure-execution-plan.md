@@ -141,11 +141,12 @@ and package-gated: `npm run typecheck`,
   - `cd packages/walkaround-hybrid && npx vitest run` focused denoiser/config tests
   - root `npm run typecheck`
 
-### VQ-004 — walkaround material-only beer/tint edits should invalidate DDGI probes
+### VQ-004 — walkaround material-only edits should refresh DDGI probe state
 
 - Label: **CLOSE-NOW**
-- Status: **CLOSED 2026-06-17** — material-slice edits that change receiver
-  radiance/visibility invalidate DDGI without forcing a geometry rebuild.
+- Status: **CLOSED 2026-06-18** — material-slice edits refresh DDGI's
+  material snapshot without forcing RC geometry propagation; receiver
+  radiance/visibility plus roughness/metallic changes invalidate DDGI probes.
 - Files:
   - `packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts`
   - `packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts`
@@ -154,15 +155,20 @@ and package-gated: `npm run typecheck`,
     (transmission-threshold/emissive radiance), but beer/tint fields that change
     probe lighting are not clearly covered.
 - Desired behavior:
-  - Material-only patches that affect DDGI radiance or visibility invalidate the
-    probe cache without forcing geometry subsystem rebuilds.
-- Fields to consider:
-  - `attenuationColor`, `attenuationDistance`, `thickness`, `thicknessMap`,
-    `transmission`, `transmissionMap`, Beer/tint-relevant `baseColor`, and
-    atlas-backed maps that DDGI visibility/lighting samples.
-- Minimum tests:
+  - Material-only patches refresh DDGI's material snapshot without forcing
+    geometry subsystem rebuilds.
+  - Material-only patches that affect DDGI radiance, visibility, or the glossy
+    probe BRDF invalidate the probe cache.
+- Fields covered:
+  - Scalar slice path: `attenuationColor`, `attenuationDistance`, `thickness`,
+    `transmission`, Beer/tint-relevant `baseColor`, `roughness`, and
+    `metallic`.
+  - Atlas-backed maps still route through the full rebuild path when map handles
+    or atlas metadata change.
+- Tests:
   - `attenuationDistance`-only patch calls `invalidateProbeCache()`.
-  - `thickness`/`thicknessMap` or `attenuationColor` coverage if easy.
+  - Roughness-only scalar patch refreshes DDGI snapshot and invalidates probes
+    without emitter rebuild.
   - `cd packages/walkaround-hybrid && npx vitest run src/__tests__/mutationMatrix.test.ts`
   - root `npm run typecheck`
 
@@ -424,8 +430,11 @@ replacement for V28-B recaptures.
   Walkaround denoiser-history reset is now source/shader pinned: frame-zero
   mutation resets drive Welford `forceReset`, BMFR `hasHistory=0`, and
   SVGF-real reprojection `forceReset` through the old UBO pad slot, with
-  focused shared-denoiser and walkaround tests. Broader walkaround GI
-  propagation and combined real-adapter mutation-matrix promotion remain.
+  focused shared-denoiser and walkaround tests. Walkaround material-only
+  mutations now also refresh DDGI's `RestirBvhSnapshot` material payload without
+  RC geometry propagation, and roughness/metallic edits invalidate DDGI probe
+  cache because probe rays consume those fields. Broader combined real-adapter
+  mutation-matrix promotion remains.
 
 ## How To Use This Plan
 
@@ -466,7 +475,7 @@ scope.
 | Lite material mutation fast path | pt-webgpu | `sceneMutationRouter.ts`; lite material patch tests | **CLOSED 2026-06-17.** VQ-001 landed; lite material patches now write the material buffer and advertise `native`. |
 | Mesh-light repack uses stale geometry/material pack | pt-webgl2 | `mutateSceneTextures.ts`; mesh-area light mutation tests | **CLOSED 2026-06-17.** VQ-002 landed; mesh-light repack uses `nextGeoPack` with a radiance regression. |
 | Public `denoiser:'none'` mismatch | walkaround | `HybridEngineOptions.ts`; denoiser registry | **CLOSED 2026-06-17.** VQ-003 landed; `none` is a supported pass-through mode. |
-| DDGI invalidation for beer/tint material edits | walkaround | `HybridEnginePrimitiveUpdates.ts`; mutation matrix | **CLOSED 2026-06-17.** VQ-004 landed; radiance/visibility material-slice edits invalidate DDGI without geometry rebuild. |
+| DDGI material snapshot/invalidation for material edits | walkaround | `HybridEnginePrimitiveUpdates.ts`; mutation matrix | **CLOSED 2026-06-18.** VQ-004 follow-up landed; material-slice edits refresh DDGI's snapshot without RC geometry propagation, and radiance/visibility plus roughness/metallic changes invalidate DDGI probes. |
 | `supportsAuxBuffers` truthfulness | core / backends | `promiseLedger.ts`; backend capabilities; frame outputs | **CLOSED BY EXISTING SOURCE/TESTS.** Ledger records full-tier WebGL2/pt-webgpu aux support and walkaround `false`; lite downgrades are runtime-profile rows. Pinned by `ledgerVsCapabilities` and backend promise tests. |
 | pt-webgl2 behavioral gate coverage | tools | `tools/behavioral-gate/gate.mjs`; available WebGL2 harness | **VALIDATION-DEFERRED.** Current behavioral gate is WebGPU/Deno-lavapipe oriented. pt-webgl2 has package behavior tests plus GLSL gate; real WebGL2/browser render proof stays in the validation queue. |
 | pt-webgl2 procedural/fog/background feature flags | pt-webgl2 | `featureTypes.ts`; active GLSL defines | **CLOSED BY EXISTING SOURCE/TESTS.** `featureTypes.ts` pins fog/backgroundMap/random/debug to safe defaults with explicit rationale; upload/compose tests cover the flags and procedural-sky environment bake. |

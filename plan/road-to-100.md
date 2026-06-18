@@ -145,6 +145,10 @@
 > `walkaround-hybrid.directional-angular-diameter-partial-support` with
 > `support:"direct-sun-cone-only"` for authored angular diameters. V28-B
 > recapture remains required for the visible direct-light change.
+> **2026-06-18 walkaround mutation follow-up:** material-only scalar edits now
+> refresh DDGI's `RestirBvhSnapshot` material payload without RC geometry
+> propagation, and roughness/metallic scalar edits invalidate DDGI probe cache
+> because the DDGI glossy probe bounce consumes those fields.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped single-bounce RGB direct-light/unlit-primary slice; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive
@@ -957,13 +961,14 @@ deliberately unsupported until a true geometry/BVH displacement path exists.
 | Tangent buffer | ✅ FOURTH SLICE: `shared-bvh/worldSpaceMerge.ts`, `restir/bvhCore.ts`, `pipeline/bvhTangentTexture.ts`, `materialAtlas.wgsl.ts` | TLAS packs forward `packSceneFromCore().tangents`; merged-world packs transform authored/generated tangent directions and flips handedness for mirrored transforms; walkaround uploads the vec4 stream as scene binding 22 (`rgba32float` texture) and the normal/clearcoat-normal TBN path prefers it before falling back to UV-gradient derivation. Ledger rows stay approximate for reservoir/GI/PDF scope, not because tangent data is dropped. |
 | Bind group | ✅ FOURTH SLICE: `bindGroupDescriptors.ts`, `bindGroupBuilders.ts`, `BvhBufferHost.ts` | Scene bindings 20-22 add a shared material-map atlas + metadata + tangent texture as textures, not storage buffers, preserving the storage-buffer budget. |
 | Material index per tri | ✅ FOURTH SLICE: metadata texture keyed by triangle index | Current atlas-backed maps, including `baseColorMap`, normal/ORM/AO/alpha/emissive/transmission, `thicknessMap`, `lightMap`, and extension-lobe maps, use `triangleMaterialIds` at pack time; scalar lanes stay as fallback when no readable map exists. |
-| `materialPatch` fast path | ✅ THIRD SLICE: `HybridEnginePrimitiveUpdates.ts` | Scalar-only material edits keep the slice upload path; atlas-backed map handle/UV/wrap/transform changes route through full rebuild, and atlas metadata scalar edits (`normalScale`, `lightMapIntensity`, `envMapIntensity`, `alphaMode` / `opacity` / `alphaCutoff` when a relevant map exists) also rebuild so metadata cannot go stale. A narrower atlas refresh remains an optimization follow-up. |
+| `materialPatch` fast path | ✅ THIRD SLICE + 2026-06-18 DDGI snapshot follow-up: `HybridEnginePrimitiveUpdates.ts`, `HybridEngine.ts` | Scalar-only material edits keep the slice upload path; atlas-backed map handle/UV/wrap/transform changes route through full rebuild, and atlas metadata scalar edits (`normalScale`, `lightMapIntensity`, `envMapIntensity`, `alphaMode` / `opacity` / `alphaCutoff` when a relevant map exists) also rebuild so metadata cannot go stale. Material-only scalar edits now refresh DDGI's `RestirBvhSnapshot` material payload without RC geometry propagation; radiance/visibility changes plus `roughness`/`metallic` invalidate DDGI probes. A narrower atlas refresh remains an optimization follow-up. |
 | Ledger | ✅ FOURTH SLICE: `WALKAROUND_MATERIALS`, `CONSUMED_MATERIAL_FIELDS` | `baseColorMap`, `normalMap`, `normalScale`, `roughnessMap`, `metallicMap`, `aoMap`, `aoMapIntensity`, `alphaMap`, `emissiveMap`, `transmissionMap`, `thicknessMap`, `lightMap`, `lightMapIntensity`, specular maps, clearcoat factor/roughness/normal maps, sheen color/roughness maps, anisotropy controls/maps, and iridescence controls/maps promoted to `approximate` with tests; `envMapIntensity` is `native` for HDRI ReSTIR-DI scoring/reuse/resolve. Remaining maps remain unsupported until each has shader consumption or explicit routing. |
 
 **Footguns:**
 - Sampling baseColor UV for all maps (pt-webgpu v1 bug) — use per-map `TextureRef.texCoord` + `transform` from glTF.
 - `materialPatch` with atlas-backed maps now rebuilds correctly (`mutationMatrix.test.ts`);
-  the remaining footgun is cost, not correctness: map/atlas-metadata edits still route
+  scalar material patches also refresh DDGI's material snapshot. The remaining
+  footgun is cost, not correctness: map/atlas-metadata edits still route
   through a full rebuild instead of a narrower atlas refresh.
 - ~~ReSTIR primary hit uses different UV than shade~~ ✅ SOURCE-VERIFIED STALE:
   RIS/primary/OIT paths call the shared material-atlas helpers with hit UV0 plus
