@@ -6,11 +6,15 @@ interface ColorLike {
   readonly b: number;
 }
 
+type ColorSource = ColorLike | Vec3;
+
 interface StandardMaterialScalars {
-  readonly color?: ColorLike;
-  readonly emissive?: ColorLike;
+  readonly baseColor?: Vec3;
+  readonly color?: ColorSource;
+  readonly emissive?: ColorSource;
   readonly emissiveIntensity?: number;
   readonly roughness?: number;
+  readonly metallic?: number;
   readonly metalness?: number;
   readonly userData?: unknown;
 }
@@ -18,7 +22,7 @@ interface StandardMaterialScalars {
 interface PhysicalMaterialScalars extends StandardMaterialScalars {
   readonly transmission?: number;
   readonly ior?: number;
-  readonly attenuationColor?: ColorLike;
+  readonly attenuationColor?: ColorSource;
   readonly attenuationDistance?: number;
   readonly thickness?: number;
 }
@@ -66,14 +70,21 @@ const PBR_DEFAULTS: PbrDefaults = {
   thickness: 0,
 };
 
-function colorToVec3(c: ColorLike): Vec3 {
-  return [c.r, c.g, c.b];
+function colorToVec3(c: ColorSource): Vec3 {
+  if ('r' in c) return [c.r, c.g, c.b];
+  return [c[0], c[1], c[2]];
+}
+
+function scalarColorToVec3(mat: StandardMaterialScalars, fallback: Vec3): Vec3 {
+  if (mat.baseColor != null) return mat.baseColor;
+  return mat.color ? colorToVec3(mat.color) : fallback;
 }
 
 /**
- * Structural PBR scalar extraction for material-like host objects. Keep the
- * same `?? default` semantics as the core Material conversion path so legacy
- * material-pack bytes stay stable while callers move through core Scene data.
+ * Structural PBR scalar extraction for material-like host objects. Accept both
+ * THREE-style fields (`color`, `metalness`) and core `MaterialSpec` spelling
+ * (`baseColor`, `metallic`) so fallback DDGI/RC material packing cannot silently
+ * drop core-scene material data when no ReSTIR snapshot is available.
  */
 export function extractPbrScalars(
   mat: PbrScalarSource,
@@ -82,14 +93,13 @@ export function extractPbrScalars(
   const d = { ...PBR_DEFAULTS, ...defaults };
   const stdMat = mat as StandardMaterialScalars;
   const physMat = mat;
-  const color = stdMat.color;
   const emissive = stdMat.emissive;
   return {
-    baseColor: color ? colorToVec3(color) : d.baseColor,
+    baseColor: scalarColorToVec3(stdMat, d.baseColor),
     emissive: emissive ? colorToVec3(emissive) : d.emissive,
     emissiveIntensity: stdMat.emissiveIntensity ?? d.emissiveIntensity,
     roughness: stdMat.roughness ?? d.roughness,
-    metallic: stdMat.metalness ?? d.metallic,
+    metallic: stdMat.metallic ?? stdMat.metalness ?? d.metallic,
     transmission: physMat.transmission ?? d.transmission,
     ior: physMat.ior ?? d.ior,
     attenuationColor: physMat.attenuationColor
