@@ -733,8 +733,18 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(listWarnings).toHaveLength(2);
       expect(listWarnings.map((w) => w.method)).toEqual(['addPrimitive', 'removePrimitive']);
       expect(listWarnings.map((w) => w.details)).toEqual([
-        { primitiveId: 'extra', operation: 'addPrimitive' },
-        { primitiveId: 'extra', operation: 'removePrimitive' },
+        {
+          primitiveId: 'extra',
+          operation: 'addPrimitive',
+          fallbackReason: 'primitive-list-scene-repack',
+          nativePatchMissing: 'targeted-primitive-list-splice',
+        },
+        {
+          primitiveId: 'extra',
+          operation: 'removePrimitive',
+          fallbackReason: 'primitive-list-scene-repack',
+          nativePatchMissing: 'targeted-primitive-list-splice',
+        },
       ]);
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('primitive-list-fallback-rebuild') ||

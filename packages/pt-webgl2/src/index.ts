@@ -898,7 +898,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         `[vitrum/pt-webgl2] ${method}("${primitiveId}") rebuilds the backend ` +
         'scene-texture/BVH pack. This is supported, but it is not a targeted ' +
         'native geometry patch.',
-      details: { primitiveId, operation: method },
+      details: {
+        primitiveId,
+        operation: method,
+        fallbackReason: 'primitive-list-scene-repack',
+        nativePatchMissing: 'targeted-primitive-list-splice',
+      },
     });
   }
 
