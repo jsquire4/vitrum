@@ -79,13 +79,14 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
       const attenuationDistance = mat.attenuationDistance ?? 0;
       const attenuationColor = mat.attenuationColor ?? [0, 0, 0];
       const iridescenceThicknessRange = mat.iridescenceThicknessRange ?? [0, 0];
+      const anisotropyRotation = mat.anisotropyRotation ?? 0;
       const normalOrBumpScale = (mat.normalScale ?? 0) + (mat.bumpScale ?? 0) + (mat.clearcoatNormalScale ?? 0);
       const materialMapIntensity = (mat.aoMapIntensity ?? 0) + (mat.lightMapIntensity ?? 0) + (mat.envMapIntensity ?? 0);
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
         rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0] + iridescenceThicknessRange[0] / 1000;
         rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1] + iridescenceThicknessRange[1] / 1000;
-        rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2];
+        rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2] + anisotropyRotation;
       }
       return { rgb, channels: 3 as const };
     },
@@ -262,6 +263,32 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
     expect(fake.scene.primitives[0]!.material.transmission).toBeCloseTo(session.currentValues()[0]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.thickness).toBeCloseTo(session.currentValues()[1]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.attenuationDistance).toBeCloseTo(session.currentValues()[2]![0]!, 6);
+    session.dispose();
+  });
+
+  it('does not clamp anisotropyRotation to a half-turn by default', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, anisotropy: 0.75, anisotropyRotation: 4.0 } }
+          : pr,
+      ),
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.2, 0.2, 5.2]),
+      parameters: [{ path: 'materials.panel.anisotropyRotation', kind: 'scalar' }],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.25, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.currentValues()[0]![0]).toBeGreaterThan(Math.PI);
+    const result = await session.step();
+    expect(result.gradient[0]![0]).toBeLessThan(0);
+    expect(session.currentValues()[0]![0]).toBeGreaterThan(4.0);
+    expect(session.currentValues()[0]![0]).toBeGreaterThan(Math.PI);
+    expect(fake.scene.primitives[0]!.material.anisotropyRotation).toBeCloseTo(session.currentValues()[0]![0]!, 6);
     session.dispose();
   });
 

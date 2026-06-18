@@ -1285,11 +1285,10 @@ function defaultClampRange(field: string): [number, number] {
       return [1, 3];
     case 'iridescenceThicknessRange':
       return [0, Infinity];
-    case 'anisotropyRotation':
-      return [0, Math.PI];
     case 'emissive':
     case 'emissiveIntensity':
     case 'thickness':
+    case 'anisotropyRotation':
     case 'normalScale':
     case 'bumpScale':
     case 'clearcoatNormalScale':

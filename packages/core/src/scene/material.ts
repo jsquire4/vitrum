@@ -389,7 +389,9 @@ export interface MaterialSpec {
   readonly anisotropy?: number;
 
   /**
-   * Rotation of the anisotropic highlight in radians ∈ [0, π].
+   * Rotation of the anisotropic highlight in radians.
+   * The angle is periodic; glTF does not impose a numeric min/max on
+   * `KHR_materials_anisotropy.anisotropyRotation`.
    * Only meaningful when `anisotropy` > 0.
    *
    * Consumed natively by pt-webgpu/pt-webgl2 and approximately by
