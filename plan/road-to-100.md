@@ -742,11 +742,10 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 
 #### 2C — PTWG-MAT-01 integrator audit (mandatory for extension lobes)
 
-> **SCOPE WIDENED (2026-06-12):** the audit is NOT extension-lobes-only. It must
-> also close the **grayscale single-directional shortcut class** — MNEE
-> cone-search (`caustic.wgsl.ts:846,883`) and BDPT bounce-0 still light from
-> the mean-gray mirrored directional the megakernel outgrew (chromatic loss +
-> missing light kinds in those paths).
+> **SCOPE WIDENED (2026-06-12) / shortcut class CLOSED (2026-06-15):** the audit
+> was not extension-lobes-only. It also closed the **grayscale single-directional
+> shortcut class** across MNEE cone-search and BDPT bounce-0: both now loop packed
+> N-directional RGB records instead of the retired mean-gray mirrored directional.
 > ✅ **in-medium NEE CLOSED (2026-06-15):** the volumetric random-walk block now
 > loops `directionalLights[]`, preserves RGB irradiance, honors the directional
 > `castShadow:false` sign bit, and `volumetricSss.test.ts` pins the no-scalar
@@ -791,14 +790,14 @@ Audit **every** `evaluateBrdf` / `brdfDirectionalPdf` call site — glTF extensi
 | ~~Analytic primitives~~ ✅ DONE/fallback-generated mesh | `PT_WEBGL2_SUPPORT` now advertises `analytic` plus the supported analytic shapes, `buildSceneTextures()` expands analytic primitives through `analyticPrimitiveToMesh()` before `partitionSceneBySupport`, and `engineContract.test.ts` pins both the capability row (`supportDetails.primitives.analytic === 'fallback-generated-mesh'`) and the runtime tessellation path. | pt-webgl2 does not traverse analytic primitives natively; it consumes generated triangle meshes. That is a truthful support grade, not a planner drop. |
 | ~~Procedural sky~~ ✅ DONE/approx | pt-webgl2 now bakes `procedural-sky` through shared-samplers' Preetham equirect helper and feeds the existing HDRI/CDF path | Ledger grade is `approximate` for finite 256x128 bake resolution; glTF has no sky |
 | ~~Procedural sky on PT~~ ✅ DONE/approx | Shared `bakePreethamSkyEquirect()` now feeds both pt-webgl2 and pt-webgpu | |
-| Mutations mostly `fallback-rebuild` | ✅ PARTIAL CODE CLOSED — pt-webgl2 now fast-paths scalar material edits, analytic emitter edits, mesh-area emitter edits, and environment swaps by replacing only the affected scene textures (`mutateSceneTextures.ts`, `index.ts`, `engineContract.test.ts`). The public promise promotes `material`, `emitter`, and `environment` to `native`; mesh-area emitter changes refresh both the folded emissive material texture and mesh-light NEE texture without rebuilding BVH geometry. 2026-06-15 follow-up: material fast-path edits on a primitive referenced by a `mesh-area` emitter now preserve the folded emissive radiance in the GPU material texture, so scalar material edits no longer desync camera/path-hit emission from mesh-light NEE. 2026-06-16 follow-up: scalar material edits that create/remove ordinary emissive mesh lights now repack the implicit mesh-light texture and `uTotalEmissiveArea` without BVH rebuild. Geometry/TLAS edits (`transform`, `positions`, `topology`, add/remove) still fallback-rebuild, but the fallback is now explicit: `updatePrimitive()` and primitive add/remove emit deduped structured `EngineWarning`s when they rebuild the scene-texture/BVH pack instead of taking a targeted native patch. | Animation via controller still causes full repack when it changes transforms/positions/bones; port the BLAS/TLAS refit/splice class from `sceneMutationRouter.ts` before calling animation fully native. |
+| Geometry/list mutations `fallback-rebuild`; material/emitter/env native | ✅ PARTIAL CODE CLOSED — pt-webgl2 now fast-paths scalar material edits, analytic emitter edits, mesh-area emitter edits, and environment swaps by replacing only the affected scene textures (`mutateSceneTextures.ts`, `index.ts`, `engineContract.test.ts`). The public promise promotes `material`, `emitter`, and `environment` to `native`; mesh-area emitter changes refresh both the folded emissive material texture and mesh-light NEE texture without rebuilding BVH geometry. 2026-06-15 follow-up: material fast-path edits on a primitive referenced by a `mesh-area` emitter now preserve the folded emissive radiance in the GPU material texture, so scalar material edits no longer desync camera/path-hit emission from mesh-light NEE. 2026-06-16 follow-up: scalar material edits that create/remove ordinary emissive mesh lights now repack the implicit mesh-light texture and `uTotalEmissiveArea` without BVH rebuild. Geometry/TLAS edits (`transform`, `positions`, `topology`, add/remove) still fallback-rebuild, but the fallback is now explicit: `updatePrimitive()` and primitive add/remove emit deduped structured `EngineWarning`s when they rebuild the scene-texture/BVH pack instead of taking a targeted native patch. | Animation via controller still causes full repack when it changes transforms/positions/bones; port the BLAS/TLAS refit/splice class from `sceneMutationRouter.ts` before calling animation fully native. |
 | ~~No `setSize`~~ ✅ DONE (pt-webgl2) | `PTEngineWebGL2.setSize()` stores explicit canvas size, reallocates existing render targets, and resets accumulation without scene/BVH repack | `pt-webgpu` still honors `FrameInput.viewport` per frame and omits `setSize`; pt-webgl2 ledger grades resize `native` |
 | ~~Denoiser~~ ✅ DONE | `oidn-final` is now an in-engine asynchronous final-pass path on pt-webgl2 (`OIDNFinalDispatcher`, aux readback, `oidnFinal.test.ts`, `engineContract.test.ts`). | Non-OIDN realtime denoisers remain unsupported on converged pt-webgl2; hosts must provide `oidn.modelUrl` + optional bridge/runtime. |
 | ~~Caustics~~ ✅ DOC/TEST CLOSED | pt-webgl2 `manifold-nee` remains a deterministic refraction-walk heuristic, not Newton-solve MNEE (`options.ts`, README, core factory note). `renderer-fidelity-matrix.md` grades pt-webgl2 caustics `approximate`, and `engineContract.test.ts` pins that the backend surfaces caustic choices only through `capabilities.causticStrategy` rather than advertising native MNEE feature support. | Keep pt-webgpu `manifold-nee` as the validated reference; pt-webgl2 caustics stay approximate unless a real MNEE port lands. |
 
 #### 2E — pt-webgpu lite tier policy
 
-**For arbitrary glTF 100%:** lite is **not** a target. Code required:
+**For arbitrary glTF 100%:** lite is **not** a target. Policy/code is closed below; keep these rows as regression gates:
 
 | Task | File | Behavior |
 |------|------|----------|
@@ -1427,16 +1426,16 @@ walkaround path without this native-Deno host panic.
 | `solveSkin` morph-normal silent skip | `packages/core/src/skinSolver.ts:242`; `packages/core/src/__tests__/skinSolver.test.ts` | ✅ DONE (Wave 1): active morphs now throw when `morphTargetNormals.length !== morphTargets.length`, and malformed normal-delta entry lengths remain throw-on-read. Focused test pins both cases. |
 | ~~Core contract additions from Wave 3~~ ✅ DONE | `packages/core/src/scene/material.ts`; `packages/core/src/scene/primitives.ts`; `packages/gltf-adapter/src/materials.ts`; `packages/gltf-adapter/src/gltfToScene.ts`; `featureReport.ts` | `thicknessMap` is a first-class `MaterialSpec` field and is now included in the shared `MaterialMapFields` slice; `KHR_materials_volume.thicknessTexture` imports to it; `doubleSided` is preserved in `MaterialSpec.extensions.doubleSided` and compatibility reports the renderer limitation as `approximate`; `morphTargetTangents` is now a first-class `SkinnedMeshPrimitive` field with glTF TANGENT-delta import and approximate compatibility diagnostics. |
 
-### Suggested commit sequence (no dates)
+### Historical commit sequence (mostly executed)
 
-1. Land glTF API + engine bridge + controller + unlit all backends
-2. Texture decode helper + pt-webgl2/pt-webgpu upload integration
-3. P0 walkaround + pt-webgpu correctness (W-HYB, PTWG, H25-H29)
-4. WEBGL2-01 + H49 residuals (GLTF-01 and CORE-01 are closed)
-5. PTWG-MAT-01 integrator audit + material descriptor expansion
-6. Walkaround texture atlas + UV/tangent buffers
-7. Walkaround alpha + shadow GI parity
-8. `createEngine` + `pickBackend` glTF-aware + `examples/gltf-viewer`
+1. ✅ Land glTF API + engine bridge + controller + unlit all backends
+2. ✅ Texture decode helper + pt-webgl2/pt-webgpu upload integration
+3. ✅ P0 walkaround + pt-webgpu correctness (W-HYB, PTWG, H25-H29)
+4. ✅ WEBGL2-01 + H49 residuals (GLTF-01 and CORE-01 are closed)
+5. ✅ PTWG-MAT-01 integrator audit + material descriptor expansion
+6. ✅ Walkaround texture atlas + UV/tangent buffers
+7. ✅ Walkaround alpha + shadow GI parity
+8. ✅ `createEngine` + `pickBackend` glTF-aware + `examples/gltf-viewer`
 9. ~~Additional glTF material sweep beyond the closed behavioral gate fixtures~~
    ✅ narrowed by `pt/gltf-material-sweep`; default lavapipe golden and dzn
    full-tier assertion now cover API boot/readback for the material-heavy
@@ -1481,7 +1480,7 @@ targets.
 
 - **Condensed to 5 phases:** land gates → glTF → PT → walkaround → orchestration → proof.
 - **Specificity:** file-level plug-in points, decoder contracts, bind-group footguns, integrator audit matrix, texture atlas architecture.
-- **Gap fill vs 85%:** texture decode bridge, EXT_mesh_gpu_instancing decision, animation×temporal GI, lite-tier rejection for fidelity, PTWG-MAT all paths, walkaround alpha/blending, examples/gltf-viewer, render-based glTF sweep (not analyze-only), `pickBackend` fix, double-sided/vertex-color, tangent generation at import, engine `gltfAsset` passthrough, documentation sync as part of done. 2026-06-14 proof addendum: the progressive glTF engine helper now has regression coverage for `textureDecodeReport` + warning passthrough, and the texture sweep covers enabled `MSFT_texture_dds` alternate-source selection through `loadGltfAsset()`.
+- **Gap fill vs 85%:** the listed implementation items are now code-closed unless otherwise marked in their detailed rows: texture decode bridge, EXT_mesh_gpu_instancing policy/import, animation×temporal GI reset paths, lite-tier rejection for fidelity, PTWG-MAT specialty paths, walkaround alpha/blending, examples/gltf-viewer, `pickBackend`/`gltfAsset` passthrough, double-sided/vertex-color, tangent generation at import, and documentation sync. 2026-06-14 proof addendum: the progressive glTF engine helper has regression coverage for `textureDecodeReport` + warning passthrough, and the texture sweep covers enabled `MSFT_texture_dds` alternate-source selection through `loadGltfAsset()`. Remaining work is broader material-furnace/reference fidelity promotion and validation breadth, not missing API plumbing.
 - **Performance work preserved:** low-discrepancy sampling and compressed wide
   BVH traversal are tracked as active SOTA/performance work, but not as
   arbitrary-glTF API contract blockers. Shipped denoiser weights remain
