@@ -29,6 +29,7 @@ import {
 import type { AABB, STree } from '../ppg/types.js';
 import { allocatePPGResources, type FrameResources, type PPGFrameResources } from './resourceManager.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
+import type { EngineError, EngineWarning } from '@vitrum/core';
 
 /**
  * W9 — derive a world-space AABB for the PPG sTree from the uploaded BVH data.
@@ -61,6 +62,8 @@ function isPPGAllocated(ppg: FrameResources['ppg']): ppg is PPGFrameResources {
  */
 export class PPGCoordinator implements PipelineSubsystem {
   private readonly _device: GPUDevice;
+  private readonly _onWarning: ((warning: EngineWarning) => void) | null;
+  private readonly _onError: ((error: EngineError) => void) | null;
   private static readonly _FLUX_SCALE = 65536.0;
   private static readonly _DEFAULT_READBACK_INTERVAL_FRAMES = 64;
   private _enabled = false;
@@ -89,6 +92,7 @@ export class PPGCoordinator implements PipelineSubsystem {
    *  happened mid-flight, so the frameResources arg is stale and any write
    *  through it would target destroyed GPU buffers. */
   private _frameResourcesGeneration = 0;
+  private _lastTrainingReadbackErrorMessage: string | null = null;
   /**
    * Reusable zero-fill scratch for clearing the GPU flux accumulators after a
    * refine cycle. Grown on demand to the active-prefix byte count we actually
@@ -96,8 +100,16 @@ export class PPGCoordinator implements PipelineSubsystem {
    * would churn the GC with a multi-MB allocation every readback window.
    */
   private _fluxZeroScratch: Uint32Array | null = null;
-  constructor(device: GPUDevice) {
+  constructor(
+    device: GPUDevice,
+    diagnostics: {
+      onWarning?: (warning: EngineWarning) => void;
+      onError?: (error: EngineError) => void;
+    } = {},
+  ) {
     this._device = device;
+    this._onWarning = diagnostics.onWarning ?? null;
+    this._onError = diagnostics.onError ?? null;
   }
 
   /** Whether PPG dispatch is live. Mirrors the gate the pipeline forwards
@@ -293,9 +305,10 @@ export class PPGCoordinator implements PipelineSubsystem {
         this._mergeFluxAndRefine(
           raw, cellCounts, frameResources, maxSpatialCells, maxDTreeNodesPerCell,
         );
+        this._lastTrainingReadbackErrorMessage = null;
       })
       .catch((err) => {
-        console.warn('[PPGCoordinator] training refine readback failed:', err);
+        this._reportTrainingReadbackFailure(err);
       })
       .finally(() => {
         this._fluxReadbackInFlight = false;
@@ -351,7 +364,7 @@ export class PPGCoordinator implements PipelineSubsystem {
    *      snapshot trained on a different scene's geometry is rejected before
    *      its guiding distribution poisons the live training.
    *
-   * Returns `false` and prints a warning for any mismatch, `true` on success.
+   * Returns `false` and emits a structured warning for any mismatch, `true` on success.
    *
    * No-op (returns false) when PPG is disabled or not yet initialised —
    * the importGIState caller treats false as "PPG restore skipped" and
@@ -374,11 +387,21 @@ export class PPGCoordinator implements PipelineSubsystem {
     // ── Compatibility: maxSpatialCells ───────────────────────────────────────
     const liveCap = this._maxSpatialCells ?? PPG_DEFAULT_SPATIAL_CELLS;
     if (snapshot.maxSpatialCells !== liveCap) {
-      console.warn(
-        `[PPGCoordinator] importSTree: maxSpatialCells mismatch — ` +
-        `snapshot=${snapshot.maxSpatialCells}, live=${liveCap}. ` +
-        `PPG restore rejected; guided sampling will restart cold.`,
-      );
+      this._warn({
+        code: 'walkaround-hybrid.ppg-import-max-spatial-cells-mismatch',
+        backend: 'walkaround-hybrid',
+        phase: 'lifecycle',
+        method: 'importGIState',
+        message:
+          `[PPGCoordinator] importSTree: maxSpatialCells mismatch — ` +
+          `snapshot=${snapshot.maxSpatialCells}, live=${liveCap}. ` +
+          `PPG restore rejected; guided sampling will restart cold.`,
+        details: {
+          snapshotMaxSpatialCells: snapshot.maxSpatialCells,
+          liveMaxSpatialCells: liveCap,
+          fallback: 'cold PPG restart',
+        },
+      });
       return false;
     }
 
@@ -386,11 +409,21 @@ export class PPGCoordinator implements PipelineSubsystem {
     const liveDTreeCap = this._maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
     const snapshotDTreeCap = snapshot.maxDTreeNodesPerCell ?? PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL;
     if (snapshotDTreeCap !== liveDTreeCap) {
-      console.warn(
-        `[PPGCoordinator] importSTree: maxDTreeNodesPerCell mismatch — ` +
-        `snapshot=${snapshotDTreeCap}, live=${liveDTreeCap}. ` +
-        `PPG restore rejected; guided sampling will restart cold.`,
-      );
+      this._warn({
+        code: 'walkaround-hybrid.ppg-import-max-dtree-nodes-mismatch',
+        backend: 'walkaround-hybrid',
+        phase: 'lifecycle',
+        method: 'importGIState',
+        message:
+          `[PPGCoordinator] importSTree: maxDTreeNodesPerCell mismatch — ` +
+          `snapshot=${snapshotDTreeCap}, live=${liveDTreeCap}. ` +
+          `PPG restore rejected; guided sampling will restart cold.`,
+        details: {
+          snapshotMaxDTreeNodesPerCell: snapshotDTreeCap,
+          liveMaxDTreeNodesPerCell: liveDTreeCap,
+          fallback: 'cold PPG restart',
+        },
+      });
       return false;
     }
 
@@ -405,10 +438,27 @@ export class PPGCoordinator implements PipelineSubsystem {
       Math.abs(snapshot.sceneBoundsMax[1] - sb.max[1]) <= eps &&
       Math.abs(snapshot.sceneBoundsMax[2] - sb.max[2]) <= eps;
     if (!boundsOk) {
-      console.warn(
-        `[PPGCoordinator] importSTree: scene-bounds mismatch — snapshot covers a different ` +
-        `scene geometry. PPG restore rejected; guided sampling will restart cold.`,
-      );
+      this._warn({
+        code: 'walkaround-hybrid.ppg-import-scene-bounds-mismatch',
+        backend: 'walkaround-hybrid',
+        phase: 'lifecycle',
+        method: 'importGIState',
+        message:
+          `[PPGCoordinator] importSTree: scene-bounds mismatch — snapshot covers a different ` +
+          `scene geometry. PPG restore rejected; guided sampling will restart cold.`,
+        details: {
+          snapshotSceneBounds: {
+            min: snapshot.sceneBoundsMin,
+            max: snapshot.sceneBoundsMax,
+          },
+          liveSceneBounds: {
+            min: sb.min,
+            max: sb.max,
+          },
+          epsilon: eps,
+          fallback: 'cold PPG restart',
+        },
+      });
       return false;
     }
 
@@ -436,6 +486,42 @@ export class PPGCoordinator implements PipelineSubsystem {
     this._cellCountReadbackBuffer?.destroy();
     this._cellCountReadbackBuffer = null;
     this._fluxZeroScratch = null;
+    this._lastTrainingReadbackErrorMessage = null;
+  }
+
+  private _warn(warning: EngineWarning): void {
+    if (this._onWarning) {
+      try {
+        this._onWarning(warning);
+      } catch {
+        // Host warning callbacks must not break PPG training or state restore.
+      }
+      return;
+    }
+    console.warn(warning.message);
+  }
+
+  private _reportTrainingReadbackFailure(raw: unknown): void {
+    if (!this._enabled) return;
+    const detail = raw instanceof Error ? raw.message : String(raw);
+    if (this._lastTrainingReadbackErrorMessage === detail) return;
+    this._lastTrainingReadbackErrorMessage = detail;
+    const message =
+      `[PPGCoordinator] training refine readback failed; retaining previous PPG guide. ${detail}`;
+    if (this._onError) {
+      try {
+        this._onError({
+          kind: 'render',
+          message,
+          fatal: false,
+          raw,
+        });
+      } catch {
+        // Host error callbacks must not break the render loop.
+      }
+      return;
+    }
+    console.warn(message);
   }
 
   /**

@@ -35,7 +35,7 @@
  */
 
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
-import type { EngineError, Scene } from '@vitrum/core';
+import type { EngineError, EngineWarning, Scene } from '@vitrum/core';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import type { BvhUpdateSink } from './BvhUpdateSink.js';
 import type { PipelineDebugTextures } from './PipelineDebugTextures.js';
@@ -896,14 +896,23 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     device: GPUDevice,
     width: number,
     height: number,
-    diagnostics: { onError?: (error: EngineError) => void } = {},
+    diagnostics: {
+      onError?: (error: EngineError) => void;
+      onWarning?: (warning: EngineWarning) => void;
+    } = {},
   ) {
     this._device = device;
     this._width  = width;
     this._height = height;
     this._onError = diagnostics.onError ?? null;
     this._ddgi = new OptionalSubsystemBindingState(device);
-    this._ppg  = new PPGCoordinator(device);
+    const ppgDiagnostics: {
+      onError?: (error: EngineError) => void;
+      onWarning?: (warning: EngineWarning) => void;
+    } = {};
+    if (diagnostics.onError) ppgDiagnostics.onError = diagnostics.onError;
+    if (diagnostics.onWarning) ppgDiagnostics.onWarning = diagnostics.onWarning;
+    this._ppg = new PPGCoordinator(device, ppgDiagnostics);
   }
 
   /**

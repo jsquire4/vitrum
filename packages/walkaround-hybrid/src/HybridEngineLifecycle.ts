@@ -405,6 +405,7 @@ export class PipelineInitCoordinator {
       // ── Phase: initializePipeline ────────────────────────────────────
       pipeline = new WalkaroundGPUPipeline(device, host.width, host.height, {
         onError: (error) => host.reportError(error),
+        onWarning: (warning) => host.reportWarning(warning),
       });
       const pipelineStart = performance.now();
 
