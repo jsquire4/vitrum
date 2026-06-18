@@ -307,9 +307,18 @@ struct RCLightBuffer {
 
 const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
 const RC_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
+const RC_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
+const RC_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
 const RC_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
 const RC_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
 const RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
+const RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;
+const RC_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET: u32 = 17u;
+const RC_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;
+const RC_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;
+const RC_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;
+const RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
+const RC_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 
 fn rcMaterialMetaCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(rc_materialMapMeta);
@@ -410,7 +419,13 @@ fn rcEmitterParentBarycentricFromLocal(localBary: vec3f, levelF: f32, ordinalF: 
   return localBary;
 }
 
-fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+fn rcSampleMaterialAtlasRawAtOffsetDelta(
+  triIndex: u32,
+  metaOffset: u32,
+  uv0: vec2f,
+  uv1: vec2f,
+  transformedDelta: vec2f,
+) -> vec4f {
   let metaDims = textureDimensions(rc_materialMapMeta);
   let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
   if (metaTexel + 1u >= metaDims.x * metaDims.y) {
@@ -429,7 +444,7 @@ fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, 
   let transformed = vec2f(
     scaled.x * meta1.z - scaled.y * meta1.w,
     scaled.x * meta1.w + scaled.y * meta1.z,
-  ) + meta0.zw;
+  ) + meta0.zw + transformedDelta;
   let wrapped = rcWrapMaterialUv(transformed, wrapPacked);
   let dims = textureDimensions(rc_materialTextureAtlas);
   let texel = vec2i(
@@ -439,20 +454,268 @@ fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, 
   return textureLoad(rc_materialTextureAtlas, texel, layer, 0);
 }
 
+fn rcSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  return rcSampleMaterialAtlasRawAtOffsetDelta(triIndex, metaOffset, uv0, uv1, vec2f(0.0));
+}
+
 fn rcSampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   return rcSampleMaterialAtlasRawAtOffset(triIndex, slot * 2u, uv0, uv1);
 }
 
+fn rcMaterialMapChannel(v: vec4f, channel: u32) -> f32 {
+  if (channel == 1u) { return v.g; }
+  if (channel == 2u) { return v.b; }
+  if (channel == 3u) { return v.a; }
+  return v.r;
+}
+
+fn rcSampleMaterialScalarMap(
+  triIndex: u32,
+  slot: u32,
+  channel: u32,
+  uv0: vec2f,
+  uv1: vec2f,
+  fallback: f32,
+) -> f32 {
+  let texel = rcSampleMaterialAtlasRaw(triIndex, slot, uv0, uv1);
+  if (texel.x < 0.0) {
+    return fallback;
+  }
+  return clamp(rcMaterialMapChannel(texel, channel), 0.0, 1.0);
+}
+
+fn rcSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let metaDims = textureDimensions(rc_materialMapMeta);
+  let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET;
+  var color = vec3f(1.0);
+  var intensity = 1.0;
+  if (metaTexel < metaDims.x * metaDims.y) {
+    let spec = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
+    color = clamp(spec.rgb, vec3f(0.0), vec3f(1.0));
+    intensity = clamp(spec.a, 0.0, 1.0);
+  }
+
+  let colorMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET, uv0, uv1);
+  if (colorMap.x >= 0.0) {
+    color = clamp(color * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+  }
+  let intensityMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET, uv0, uv1);
+  if (intensityMap.x >= 0.0) {
+    intensity = clamp(intensity * intensityMap.a, 0.0, 1.0);
+  }
+  return vec4f(color, intensity);
+}
+
+fn rcSmoothNormalForHit(hit: IntersectionResult, fallbackNormal: vec3f) -> vec3f {
+  let i0 = hit.indices.x;
+  let i1 = hit.indices.y;
+  let i2 = hit.indices.z;
+  if (i0 >= arrayLength(&rc_geom_normal) || i1 >= arrayLength(&rc_geom_normal) || i2 >= arrayLength(&rc_geom_normal)) {
+    return fallbackNormal;
+  }
+  let n = normalize(
+    hit.barycoord.x * rc_geom_normal[i0].xyz +
+    hit.barycoord.y * rc_geom_normal[i1].xyz +
+    hit.barycoord.z * rc_geom_normal[i2].xyz
+  );
+  return select(-n, n, dot(n, fallbackNormal) >= 0.0);
+}
+
+struct RCMaterialTangentFrame {
+  tangent: vec3f,
+  bitangent: vec3f,
+}
+
+fn rcFallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
+  let b = cross(n, t);
+  let len2 = dot(b, b);
+  if (len2 < 1e-8) {
+    let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.95);
+    return normalize(cross(n, up));
+  }
+  return b * inverseSqrt(len2);
+}
+
+fn rcMaterialTangentFrameForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  mapOffset: u32,
+) -> RCMaterialTangentFrame {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + mapOffset;
+  let meta0 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
+  let flags = u32(max(meta0.y, 0.0) + 0.5);
+  let useUv1 = ((flags >> 4u) & 0x3u) == 1u;
+
+  let p0 = rc_geom_position[hit.indices.x];
+  let p1 = rc_geom_position[hit.indices.y];
+  let p2 = rc_geom_position[hit.indices.z];
+  let n0 = rc_geom_normal[hit.indices.x];
+  let n1 = rc_geom_normal[hit.indices.y];
+  let n2 = rc_geom_normal[hit.indices.z];
+  let uv0a = rcPackedUvFromVec4(p0);
+  let uv0b = rcPackedUvFromVec4(p1);
+  let uv0c = rcPackedUvFromVec4(p2);
+  let uv1a = rcPackedUvFromVec4(n0);
+  let uv1b = rcPackedUvFromVec4(n1);
+  let uv1c = rcPackedUvFromVec4(n2);
+  let ta = select(uv0a, uv1a, useUv1);
+  let tb = select(uv0b, uv1b, useUv1);
+  let tc = select(uv0c, uv1c, useUv1);
+
+  let dp1 = p1.xyz - p0.xyz;
+  let dp2 = p2.xyz - p0.xyz;
+  let duv1 = tb - ta;
+  let duv2 = tc - ta;
+  let det = duv1.x * duv2.y - duv1.y * duv2.x;
+  var tangent = dp1;
+  var bitangent = rcFallbackBitangentForNormal(frameNormal, tangent);
+  if (abs(det) > 1e-8) {
+    let invDet = 1.0 / det;
+    tangent = (dp1 * duv2.y - dp2 * duv1.y) * invDet;
+    bitangent = (dp2 * duv1.x - dp1 * duv2.x) * invDet;
+  }
+
+  tangent = tangent - frameNormal * dot(frameNormal, tangent);
+  let tLen2 = dot(tangent, tangent);
+  if (tLen2 < 1e-8) {
+    let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(frameNormal.y) > 0.95);
+    tangent = normalize(cross(up, frameNormal));
+  } else {
+    tangent = tangent * inverseSqrt(tLen2);
+  }
+
+  bitangent = bitangent - frameNormal * dot(frameNormal, bitangent) - tangent * dot(tangent, bitangent);
+  let bLen2 = dot(bitangent, bitangent);
+  if (bLen2 < 1e-8) {
+    bitangent = rcFallbackBitangentForNormal(frameNormal, tangent);
+  } else {
+    bitangent = bitangent * inverseSqrt(bLen2);
+  }
+
+  return RCMaterialTangentFrame(tangent, bitangent);
+}
+
+fn rcApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET;
+  let metaDims = textureDimensions(rc_materialMapMeta);
+  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+    return baseNormal;
+  }
+  let meta0 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
+  if (i32(meta0.x) < 0) {
+    return baseNormal;
+  }
+
+  let uvs = rcHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return baseNormal;
+  }
+  let texelColor = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET, uvs.uv0, uvs.uv1);
+  if (texelColor.x < 0.0) {
+    return baseNormal;
+  }
+
+  let scaleMeta = textureLoad(
+    rc_materialMapMeta,
+    rcMaterialMetaCoord(triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET),
+    0,
+  );
+  let normalScale = max(scaleMeta.x, 0.0);
+  let tangentSample = normalize(vec3f(
+    (texelColor.r * 2.0 - 1.0) * normalScale,
+    (texelColor.g * 2.0 - 1.0) * normalScale,
+    texelColor.b * 2.0 - 1.0,
+  ));
+
+  let frame = rcMaterialTangentFrameForHit(hit, baseNormal, RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET);
+  let perturbed = normalize(frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + baseNormal * tangentSample.z);
+  return select(-perturbed, perturbed, dot(perturbed, baseNormal) >= 0.0);
+}
+
+fn rcApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET;
+  let metaDims = textureDimensions(rc_materialMapMeta);
+  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+    return shadingNormal;
+  }
+  let meta0 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
+  if (i32(meta0.x) < 0) {
+    return shadingNormal;
+  }
+
+  let scaleMeta = textureLoad(
+    rc_materialMapMeta,
+    rcMaterialMetaCoord(triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET),
+    0,
+  );
+  let bumpScale = scaleMeta.x;
+  if (abs(bumpScale) < 1e-8) {
+    return shadingNormal;
+  }
+
+  let uvs = rcHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return shadingNormal;
+  }
+  let hC = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET, uvs.uv0, uvs.uv1);
+  if (hC.x < 0.0) {
+    return shadingNormal;
+  }
+
+  let atlasDims = textureDimensions(rc_materialTextureAtlas);
+  let atlasTexelStep = vec2f(
+    1.0 / f32(max(atlasDims.x, 1u)),
+    1.0 / f32(max(atlasDims.y, 1u)),
+  );
+  let bumpTexelStep = vec2f(
+    1.0 / max(scaleMeta.y, 1.0),
+    1.0 / max(scaleMeta.z, 1.0),
+  );
+  let texelStep = select(atlasTexelStep, bumpTexelStep, scaleMeta.y > 0.0 && scaleMeta.z > 0.0);
+  let hU = rcSampleMaterialAtlasRawAtOffsetDelta(
+    triIndex,
+    RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+    vec2f(texelStep.x, 0.0),
+  ).r;
+  let hV = rcSampleMaterialAtlasRawAtOffsetDelta(
+    triIndex,
+    RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+    vec2f(0.0, texelStep.y),
+  ).r;
+  let dhdu = (hU - hC.r) / texelStep.x;
+  let dhdv = (hV - hC.r) / texelStep.y;
+  let frame = rcMaterialTangentFrameForHit(hit, shadingNormal, RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET);
+  let perturbed = shadingNormal - bumpScale * (dhdu * frame.tangent + dhdv * frame.bitangent);
+  let plen = length(perturbed);
+  let n = select(shadingNormal, perturbed / plen, plen > 1e-6);
+  return select(-n, n, dot(n, shadingNormal) >= 0.0);
+}
+
 struct RCProbeHitMaterial {
   albedo: vec3f,
+  roughness: f32,
+  metalness: f32,
+  specular: vec4f,
 }
 
 fn rcSampleProbeHitMaterial(
   hit: IntersectionResult,
   scalarBaseColor: vec3f,
+  scalarRoughness: f32,
+  scalarMetalness: f32,
 ) -> RCProbeHitMaterial {
   var out: RCProbeHitMaterial;
   out.albedo = scalarBaseColor;
+  out.roughness = scalarRoughness;
+  out.metalness = scalarMetalness;
+  out.specular = vec4f(1.0);
 
   let uvs = rcHitMaterialUvs(hit);
   if (uvs.valid == 0u) {
@@ -468,7 +731,59 @@ fn rcSampleProbeHitMaterial(
   if (baseColorTexel.x >= 0.0) {
     out.albedo = scalarBaseColor * baseColorTexel.rgb;
   }
+  out.roughness = rcSampleMaterialScalarMap(
+    hit.indices.w,
+    RC_MATERIAL_MAP_SLOT_ROUGHNESS,
+    1u,
+    uvs.uv0,
+    uvs.uv1,
+    scalarRoughness,
+  );
+  out.metalness = rcSampleMaterialScalarMap(
+    hit.indices.w,
+    RC_MATERIAL_MAP_SLOT_METALLIC,
+    2u,
+    uvs.uv0,
+    uvs.uv1,
+    scalarMetalness,
+  );
+  out.specular = rcSampleSpecularControls(hit.indices.w, uvs.uv0, uvs.uv1);
   return out;
+}
+
+fn rcProbeMaterialF0(mat: RCProbeHitMaterial) -> vec3f {
+  let dielectricF0 = vec3f(0.04) * mat.specular.rgb * mat.specular.a;
+  return mix(dielectricF0, mat.albedo, clamp(mat.metalness, 0.0, 1.0));
+}
+
+fn rcFresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
+  let f = pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+  return f0 + (vec3f(1.0) - f0) * f;
+}
+
+fn rcEvaluateProbeDirectResponse(mat: RCProbeHitMaterial, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+  let nDotL = max(0.0, dot(n, wi));
+  if (nDotL <= 1e-6) {
+    return vec3f(0.0);
+  }
+  let v = safe_normalize(wo);
+  let l = safe_normalize(wi);
+  let h = safe_normalize(v + l);
+  let nDotV = max(0.0, dot(n, v));
+  let nDotH = max(0.0, dot(n, h));
+  let vDotH = max(0.0, dot(v, h));
+  let rough = clamp(mat.roughness, 0.04, 1.0);
+  let alpha = rough * rough;
+  let alpha2 = alpha * alpha;
+  let denom = max(3.14159265 * pow(nDotH * nDotH * (alpha2 - 1.0) + 1.0, 2.0), 1e-6);
+  let D = alpha2 / denom;
+  let k = pow(rough + 1.0, 2.0) * 0.125;
+  let Gv = nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
+  let Gl = nDotL / max(nDotL * (1.0 - k) + k, 1e-6);
+  let F = rcFresnelSchlick(vDotH, rcProbeMaterialF0(mat));
+  let spec = (D * Gv * Gl) * F / max(4.0 * max(nDotV, 1e-6) * nDotL, 1e-6);
+  let diffuse = mat.albedo * (1.0 - clamp(mat.metalness, 0.0, 1.0)) * 0.31831;
+  return (diffuse + spec) * nDotL;
 }
 
 struct RCAlphaCoverage {
@@ -675,9 +990,13 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     let mat    = rc_materials[matId];
 
     let hitPos = ray.origin + ray.direction * hit.dist;
-    let n      = hit.normal;
+    let geoNormal = hit.normal;
+    let smoothNormal = rcSmoothNormalForHit(hit, geoNormal);
+    let normalMapped = rcApplyNormalMapForHit(hit, smoothNormal);
+    let n = rcApplyBumpMapForHit(hit, normalMapped);
+    let wo = -ray.direction;
 
-    let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor);
+    let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness);
     let matColor    = probeMat.albedo;
     let matAtten    = mat.attenuationColor;
     let matEmissive = mat.emissive;
@@ -690,16 +1009,15 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     if (u.sunCastShadowDisabled == 0u) {
       sunVis = traceSunVisibility(hitPos + n * normalBias, u.sunDirection, slabStep, triEps);
     }
-    let nDotL  = max(0.0, dot(n, u.sunDirection));
-    let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;
+    let directSun = u.sunColor * rcEvaluateProbeDirectResponse(probeMat, n, wo, u.sunDirection) * sunVis;
 
     // Rect-area emitter NEE (2026-06-07): closes the regime gap where RC saw
     // sun + emissive geometry + env but NOT the abstract rect-area emitter
     // list. emitterCount==0 ⇒ no-op (RC's prior light model, byte-identical).
-    let emitterNEE = rcEmitterNEE(hitPos, n, matColor, u.emitterCount, jSeed, triEps, normalBias);
+    let emitterNEE = rcEmitterNEE(hitPos, n, wo, probeMat, u.emitterCount, jSeed, triEps, normalBias);
 
     // A7 (2026-06-10): point/spot analytic lights (fixtures). lightCount==0 ⇒ no-op.
-    let pointSpotLights = evalRCPointSpotLights(hitPos, n, matColor, normalBias, triEps);
+    let pointSpotLights = evalRCPointSpotLights(hitPos, n, wo, probeMat, normalBias, triEps);
 
     let emissive = matEmissive;
 
@@ -720,17 +1038,21 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
         let secondPos   = refRay.origin + refRay.direction * secondHit.dist;
         let secondMatId = rc_triMatId[secondHit.indices.w];
         let secondMat   = rc_materials[secondMatId];
-        let secondColor = secondMat.baseColor;
+        let secondSmoothNormal = rcSmoothNormalForHit(secondHit, secondHit.normal);
+        let secondNormalMapped = rcApplyNormalMapForHit(secondHit, secondSmoothNormal);
+        let secondNormal = rcApplyBumpMapForHit(secondHit, secondNormalMapped);
+        let secondProbeMat = rcSampleProbeHitMaterial(secondHit, secondMat.baseColor, secondMat.roughness, secondMat.metalness);
+        let secondColor = secondProbeMat.albedo;
         var sunVis2 = vec3f(1.0);
         if (u.sunCastShadowDisabled == 0u) {
           sunVis2 = traceSunVisibility(
-            secondPos + secondHit.normal * normalBias,
+            secondPos + secondNormal * normalBias,
             u.sunDirection,
             slabStep,
             triEps,
           );
         }
-        let nDotL2 = max(0.0, dot(secondHit.normal, u.sunDirection));
+        let nDotL2 = max(0.0, dot(secondNormal, u.sunDirection));
         transContrib = u.sunColor * secondColor * nDotL2 * 0.31831
                        * beerAttenColor * matColor * sunVis2;
       }

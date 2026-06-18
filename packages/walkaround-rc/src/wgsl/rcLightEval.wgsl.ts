@@ -103,13 +103,15 @@ export const RC_NEE_POINTSPOT_WGSL = /* wgsl */`// ─── Rect-area emitter N
 // (the 2026-06-07 "RC cascade-zero" regime gap). This adds one-sample-per-
 // emitter next-event estimation at the probe-ray hit: for each emitter triangle
 // sample a point, shadow-test through RC's own BVH unless the source emitter
-// set castShadow:false, and add the Lambertian
-// diffuse-reflected contribution. Summing one sample per emitter (rather than
-// CDF-importance-sampling a single emitter) is unbiased and lower-variance for
-// the handful of emitters a walkaround scene carries, and needs no CDF buffer.
+// set castShadow:false, and add a compact material BRDF response using the
+// probe-hit albedo/roughness/metalness/specular payload. Summing one sample per
+// emitter (rather than CDF-importance-sampling a single emitter) is unbiased
+// and lower-variance for the handful of emitters a walkaround scene carries,
+// and needs no CDF buffer.
 //
 // Estimator (area-form, pdf = 1/area ⇒ 1/pdf = area):
-//   Lo += (albedo/π) · Le · (cosSurf · cosLight / dist²) · area · vis
+//   Lo += f_r(albedo, rough, metal, specular) · cosSurf · Le
+//         · (cosLight / dist²) · area · vis
 // cosLight uses the emitter's front face only (one-sided), matching the
 // shade/ReSTIR-DI convention. The shadow ray uses RC's alpha transmittance walk:
 // alpha-mask/blend surfaces attenuate through the material atlas while scalar
@@ -120,7 +122,7 @@ export const RC_NEE_POINTSPOT_WGSL = /* wgsl */`// ─── Rect-area emitter N
 // that were Cornell-specific and silently wrong for other scene scales.
 // Passed by the entry point as 'normalBias' so it is computed once per thread.
 
-fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, triEps: f32, normalBias: f32) -> vec3f {
+fn rcEmitterNEE(hitPos: vec3f, n: vec3f, wo: vec3f, material: RCProbeHitMaterial, count: u32, seed0: u32, triEps: f32, normalBias: f32) -> vec3f {
   var Lo = vec3f(0.0);
   for (var ei: u32 = 0u; ei < count; ei = ei + 1u) {
     let e = rc_emitters[ei];
@@ -135,9 +137,10 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, 
     let dist2  = max(dot(toL, toL), 1e-8);
     let dist   = sqrt(dist2);
     let wi     = toL / dist;
-    let cosSurf  = dot(n, wi);
+    let response = rcEvaluateProbeDirectResponse(material, n, wo, wi);
+    let responsePower = max(response.r, max(response.g, response.b));
     let cosLight = dot(e.normal, -wi);   // emitter front face only
-    if (cosSurf <= 0.0 || cosLight <= 0.0) { continue; }
+    if (responsePower <= 0.0 || cosLight <= 0.0) { continue; }
 
     // Alpha-aware shadow transmittance toward the light sample (stop just short
     // of it). H37's scalar-glass skip is preserved inside the helper so emitters
@@ -150,9 +153,9 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, 
       if (shadowT <= 0.001) { continue; }
     }
 
-    let G = (cosSurf * cosLight) / dist2;
+    let G = cosLight / dist2;
     let Le = rcSampleEmitterLeAtBary(e, localBary, e.Le);
-    Lo = Lo + albedo * 0.31831 * Le * G * e.area * shadowT;   // 0.31831 = 1/π
+    Lo = Lo + response * Le * G * e.area * shadowT;
   }
   return Lo;
 }
@@ -163,7 +166,7 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, count: u32, seed0: u32, 
 // using the same scene-scale-proportional normalBias and alpha/glass visibility.
 // Called only when lightCount > 0, so sun-only and emitter-only scenes are
 // byte-identical.
-fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32, triEps: f32) -> vec3f {
+fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, wo: vec3f, material: RCProbeHitMaterial, normalBias: f32, triEps: f32) -> vec3f {
   let count = min(rc_lights.count, RC_MAX_LIGHTS);
   if (count == 0u) { return vec3f(0.0); }
   var Lo = vec3f(0.0);
@@ -177,8 +180,8 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
     let dist    = length(toLight);
     if (dist < 1e-6) { continue; }
     let lightDir = toLight / dist;
-    let nDotL = max(0.0, dot(n, lightDir));
-    if (nDotL < 1e-3) { continue; }
+    let response = rcEvaluateProbeDirectResponse(material, n, wo, lightDir);
+    if (max(response.r, max(response.g, response.b)) < 1e-6) { continue; }
 
     // Spot cone falloff (KHR_lights_punctual convention; point → no cone).
     // light.direction is the spot beam/travel axis, so a receiver-to-light
@@ -221,8 +224,7 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, albedo: vec3f, normalBias: f32
       distanceAttenuation = distanceAttenuation * x * x;
     }
     let atten = light.intensity * distanceAttenuation;
-    // Lambertian receiver: Lo += (albedo/π) · light_irradiance
-    Lo = Lo + albedo * 0.31831 * light.color * atten * nDotL * coneFalloff * shadowT;
+    Lo = Lo + response * light.color * atten * coneFalloff * shadowT;
   }
   return Lo;
 }`;

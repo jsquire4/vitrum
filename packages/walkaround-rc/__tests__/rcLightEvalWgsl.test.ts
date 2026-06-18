@@ -26,7 +26,8 @@ describe('RC light-eval WGSL contract', () => {
     expect(emitterNee).toContain('shadowT = rcTraceShadowTransmittance(hitPos + n * normalBias, wi, shadowTMax, triEps, true);');
     expect(emitterNee).toContain('if (shadowT <= 0.001) { continue; }');
     expect(emitterNee).toContain('Emitter castShadow:false rides the shared EmitterTri fifth-vec4 .w lane.');
-    expect(emitterNee).toContain('Lo = Lo + albedo * 0.31831 * Le * G * e.area * shadowT;');
+    expect(emitterNee).toContain('let response = rcEvaluateProbeDirectResponse(material, n, wo, wi);');
+    expect(emitterNee).toContain('Lo = Lo + response * Le * G * e.area * shadowT;');
     expect(emitterNee).not.toContain('rcTraceAnyCastShadow(hitPos + n * normalBias, wi, shadowTMax, triEps, true)');
     expect(emitterNee).not.toContain('let sHit = rcTraceFirstHit');
     expect(emitterNee).not.toContain('sHit.didHit && sHit.dist < dist - normalBias');
@@ -37,7 +38,8 @@ describe('RC light-eval WGSL contract', () => {
     expect(pointSpot).toContain('let kind = light.kind & RC_LIGHT_KIND_MASK;');
     expect(pointSpot).toContain('let castShadowDisabled = (light.kind & RC_LIGHT_CAST_SHADOW_DISABLED) != 0u;');
     expect(pointSpot).toContain('shadowT = rcTraceShadowTransmittance(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true);');
-    expect(pointSpot).toContain('Lo = Lo + albedo * 0.31831 * light.color * atten * nDotL * coneFalloff * shadowT;');
+    expect(pointSpot).toContain('let response = rcEvaluateProbeDirectResponse(material, n, wo, lightDir);');
+    expect(pointSpot).toContain('Lo = Lo + response * light.color * atten * coneFalloff * shadowT;');
     expect(pointSpot).not.toContain('rcTraceAnyCastShadow(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true)');
     expect(pointSpot).not.toContain('let shadow = rcTraceFirstHit');
     expect(pointSpot).not.toContain('shadow.didHit && shadow.dist < dist - normalBias');
@@ -89,17 +91,49 @@ describe('RC light-eval WGSL contract', () => {
     expect(sunVisibility).toContain('visibility = visibility * alphaT;');
   });
 
-  it('samples mapped baseColor for RC probe-hit Lambertian material response', () => {
+  it('samples mapped material controls for RC probe-hit direct material response', () => {
     const probeMaterial = functionBody(PROBE_RAY_CAST_WGSL, 'rcSampleProbeHitMaterial');
     const probeKernel = functionBody(PROBE_RAY_CAST_WGSL, 'probeRayCastKernel');
+    const response = functionBody(PROBE_RAY_CAST_WGSL, 'rcEvaluateProbeDirectResponse');
 
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSampleMaterialScalarMap(');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSampleSpecularControls(');
+    expect(PROBE_RAY_CAST_WGSL).toContain('struct RCProbeHitMaterial');
+    expect(PROBE_RAY_CAST_WGSL).toContain('roughness: f32,');
+    expect(PROBE_RAY_CAST_WGSL).toContain('metalness: f32,');
+    expect(PROBE_RAY_CAST_WGSL).toContain('specular: vec4f,');
     expect(probeMaterial).toContain('out.albedo = scalarBaseColor * baseColorTexel.rgb;');
     expect(probeMaterial).toContain('RC_MATERIAL_MAP_SLOT_BASE_COLOR');
-    expect(probeKernel).toContain('let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor);');
+    expect(probeMaterial).toContain('RC_MATERIAL_MAP_SLOT_ROUGHNESS');
+    expect(probeMaterial).toContain('RC_MATERIAL_MAP_SLOT_METALLIC');
+    expect(probeMaterial).toContain('out.specular = rcSampleSpecularControls(hit.indices.w, uvs.uv0, uvs.uv1);');
+    expect(response).toContain('let diffuse = mat.albedo * (1.0 - clamp(mat.metalness, 0.0, 1.0)) * 0.31831;');
+    expect(response).toContain('let spec = (D * Gv * Gl) * F / max(4.0 * max(nDotV, 1e-6) * nDotL, 1e-6);');
+    expect(probeKernel).toContain('let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness);');
     expect(probeKernel).toContain('let matColor    = probeMat.albedo;');
-    expect(probeKernel).toContain('let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;');
-    expect(probeKernel).toContain('let emitterNEE = rcEmitterNEE(hitPos, n, matColor, u.emitterCount, jSeed, triEps, normalBias);');
-    expect(probeKernel).toContain('let pointSpotLights = evalRCPointSpotLights(hitPos, n, matColor, normalBias, triEps);');
+    expect(probeKernel).toContain('let directSun = u.sunColor * rcEvaluateProbeDirectResponse(probeMat, n, wo, u.sunDirection) * sunVis;');
+    expect(probeKernel).toContain('let emitterNEE = rcEmitterNEE(hitPos, n, wo, probeMat, u.emitterCount, jSeed, triEps, normalBias);');
+    expect(probeKernel).toContain('let pointSpotLights = evalRCPointSpotLights(hitPos, n, wo, probeMat, normalBias, triEps);');
+  });
+
+  it('applies mapped normal and bump maps to RC probe-hit lighting normals', () => {
+    const probeKernel = functionBody(PROBE_RAY_CAST_WGSL, 'probeRayCastKernel');
+
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSmoothNormalForHit(hit: IntersectionResult, fallbackNormal: vec3f) -> vec3f');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcMaterialTangentFrameForHit(');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f');
+    expect(probeKernel).toContain('let geoNormal = hit.normal;');
+    expect(probeKernel).toContain('let smoothNormal = rcSmoothNormalForHit(hit, geoNormal);');
+    expect(probeKernel).toContain('let normalMapped = rcApplyNormalMapForHit(hit, smoothNormal);');
+    expect(probeKernel).toContain('let n = rcApplyBumpMapForHit(hit, normalMapped);');
+    expect(probeKernel).toContain('let secondNormal = rcApplyBumpMapForHit(secondHit, secondNormalMapped);');
   });
 
   it('samples mapped material-backed emitter radiance for RC emitter NEE', () => {
@@ -116,6 +150,6 @@ describe('RC light-eval WGSL contract', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('return scalarEmission * texel.rgb;');
     expect(emitterNee).toContain('let localBary = vec3f(1.0 - su, su * (1.0 - s1), su * s1);');
     expect(emitterNee).toContain('let Le = rcSampleEmitterLeAtBary(e, localBary, e.Le);');
-    expect(emitterNee).toContain('Lo = Lo + albedo * 0.31831 * Le * G * e.area * shadowT;');
+    expect(emitterNee).toContain('Lo = Lo + response * Le * G * e.area * shadowT;');
   });
 });
