@@ -83,7 +83,7 @@ glass-GI modes.
 
 ## What it covers
 
-### pt-webgpu configs (33)
+### pt-webgpu configs (34)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
@@ -120,6 +120,7 @@ glass-GI modes.
 | `pt/mutation-material` | — | real adapter render → `updatePrimitive()` material patch → render, requires readback delta |
 | `pt/mutation-environment` | — | real adapter render → same-sized `updateEnvironment()` HDRI patch → render, requires readback delta |
 | `pt/mutation-emitter` | — | real adapter render → `updateEmitter()` point-light patch → render, requires readback delta |
+| `pt/mutation-transform` | — | real adapter render → `updatePrimitive()` transform/TLAS patch → render, requires readback delta |
 
 The glTF rows are end-to-end import/engine smoke fixtures: they assert that the
 adapter preserves the named feature, boots the selected engine, uploads the scene,

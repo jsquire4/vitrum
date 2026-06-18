@@ -1,15 +1,16 @@
 {
-  "generatedAt": "2026-06-17T18:12:00.067Z",
+  "generatedAt": "2026-06-18T02:28:46.430Z",
   "harness": "behavioral-gate:dzn",
   "verdict": "PASS",
   "command": "npm run behavioral-gate:dzn -- --filter mutation --require-full-tier",
   "filter": "mutation",
+  "goldenVariant": "dzn-full",
   "timeoutMs": 180000,
   "dznEnv": "/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh",
   "exitStatus": 0,
   "signal": null,
   "summary": {
-    "totalConfigs": 3,
+    "totalConfigs": 4,
     "failures": 0,
     "knownResiduals": 0
   },
@@ -28,6 +29,7 @@
       "mutationMaxAbs": 174,
       "golden": null,
       "goldenStatus": null,
+      "goldenVariant": null,
       "rmse": null,
       "meanAbs": null,
       "maxAbs": null,
@@ -48,6 +50,7 @@
       "mutationMaxAbs": 190,
       "golden": null,
       "goldenStatus": null,
+      "goldenVariant": null,
       "rmse": null,
       "meanAbs": null,
       "maxAbs": null,
@@ -68,11 +71,33 @@
       "mutationMaxAbs": 187,
       "golden": null,
       "goldenStatus": null,
+      "goldenVariant": null,
       "rmse": null,
       "meanAbs": null,
       "maxAbs": null,
       "thresholds": null,
       "rawLine": "PASS | pt/mutation-emitter          | OK | tier=full lum=0.3347 gpuErrs=0 nan=false | mutation=emitter meanAbs=36.566 maxAbs=187"
+    },
+    {
+      "verdict": "PASS",
+      "label": "pt/mutation-transform",
+      "rawStatus": "OK",
+      "tier": "full",
+      "luminance": 0.1212,
+      "gpuErrors": 0,
+      "nan": false,
+      "mutation": "mutation=transform meanAbs=38.924 maxAbs=230",
+      "mutationKind": "transform",
+      "mutationMeanAbs": 38.924,
+      "mutationMaxAbs": 230,
+      "golden": null,
+      "goldenStatus": null,
+      "goldenVariant": null,
+      "rmse": null,
+      "meanAbs": null,
+      "maxAbs": null,
+      "thresholds": null,
+      "rawLine": "PASS | pt/mutation-transform        | OK | tier=full lum=0.1212 gpuErrs=0 nan=false | mutation=transform meanAbs=38.924 maxAbs=230"
     }
   ]
 }

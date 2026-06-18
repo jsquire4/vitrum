@@ -125,6 +125,7 @@ const EXPECTATION_TABLE = {
   "pt/mutation-material": { expected: "ok" },
   "pt/mutation-environment": { expected: "ok" },
   "pt/mutation-emitter": { expected: "ok" },
+  "pt/mutation-transform": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -188,6 +189,7 @@ const PT_CONFIGS = [
   { label: "pt/mutation-material", eng: {},                                     scene: { mutation: "material" } },
   { label: "pt/mutation-environment", eng: {},                                  scene: { mutation: "environment" } },
   { label: "pt/mutation-emitter", eng: {},                                      scene: { mutation: "emitter" } },
+  { label: "pt/mutation-transform", eng: {},                                    scene: { mutation: "transform" } },
 ];
 
 const WH_CONFIGS = [
@@ -350,6 +352,27 @@ function buildMutationMaterialScene() {
     primitives: [{
       kind: "mesh",
       id: "mutation-quad",
+      positions: GLTF_QUAD.positions,
+      normals: GLTF_QUAD.normals,
+      uvs: GLTF_QUAD.uvs,
+      indices: new Uint32Array(GLTF_QUAD.indices),
+      material: {
+        shadingModel: "unlit",
+        baseColor: [0.95, 0.1, 0.08],
+        roughness: 1.0,
+        metallic: 0.0,
+      },
+    }],
+    emitters: [],
+    environment: { kind: "none" },
+  };
+}
+
+function buildMutationTransformScene() {
+  return {
+    primitives: [{
+      kind: "mesh",
+      id: "mutation-transform-quad",
       positions: GLTF_QUAD.positions,
       normals: GLTF_QUAD.normals,
       uvs: GLTF_QUAD.uvs,
@@ -1194,6 +1217,7 @@ async function buildGateScene(opts = {}) {
   if (opts.mutation === "material") return buildMutationMaterialScene();
   if (opts.mutation === "environment") return buildMutationEnvironmentScene();
   if (opts.mutation === "emitter") return buildMutationEmitterScene();
+  if (opts.mutation === "transform") return buildMutationTransformScene();
   return buildCornellScene(opts);
 }
 
@@ -1597,6 +1621,7 @@ const MUTATION_DELTA_THRESHOLDS = {
   material: { meanAbs: 2.0, maxAbs: 8 },
   environment: { meanAbs: 2.0, maxAbs: 8 },
   emitter: { meanAbs: 2.0, maxAbs: 8 },
+  transform: { meanAbs: 2.0, maxAbs: 8 },
 };
 
 /**
@@ -1701,6 +1726,15 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
           intensity: 14.0,
           position: [0.18, -0.08, 1.15],
           castShadow: false,
+        });
+      } else if (sceneOpts.mutation === "transform") {
+        engine.updatePrimitive("mutation-transform-quad", {
+          transform: asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0.95, 0, 0, 1,
+          ])),
         });
       } else {
         throw new Error(`unknown mutation gate kind: ${sceneOpts.mutation}`);
