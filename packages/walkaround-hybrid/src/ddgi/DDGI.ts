@@ -155,6 +155,18 @@ export class DDGI {
     }
   }
 
+  private _warn(warning: EngineWarning): void {
+    if (this._onWarning) {
+      try {
+        this._onWarning(warning);
+      } catch {
+        // Host warning callbacks must not break the DDGI frame loop.
+      }
+      return;
+    }
+    console.warn(warning.message);
+  }
+
   // ── Read-only accessors matching the old DDGIHandle shape ─────────────────
 
   get bvh():        SceneBvh    { return this._bvh; }
@@ -439,7 +451,14 @@ export class DDGI {
       ? { backend: { device: inputs.device, isWebGPUBackend: true as const } }
       : undefined;
     if (!rendererAdapter) {
-      console.warn('[DDGI] updateFrame called without device; skipping.');
+      this._warn({
+        code: 'walkaround-hybrid.ddgi-missing-device',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'DDGI.updateFrame',
+        message: '[DDGI] updateFrame called without device; skipping.',
+        details: { fallback: 'skip-ddgi-frame' },
+      });
       if (!this._reportedMissingDevice) {
         this._reportedMissingDevice = true;
         this._reportError('[DDGI] updateFrame called without device; skipping.');
@@ -462,7 +481,14 @@ export class DDGI {
       }
       this._gpuOk = ok;
       if (!ok) {
-        console.warn('[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).');
+        this._warn({
+          code: 'walkaround-hybrid.ddgi-init-disabled',
+          backend: 'walkaround-hybrid',
+          phase: 'renderFrame',
+          method: 'DDGI.updateFrame',
+          message: '[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).',
+          details: { fallback: 'disable-ddgi-compute' },
+        });
         if (!initErrorReported) {
           this._reportError('[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).');
         }
@@ -477,7 +503,14 @@ export class DDGI {
         if (inputs.coreScene != null) {
           this._bvh.updateFromCore(inputs.coreScene);
         } else {
-          console.warn('[DDGI] updateFrame called without a core scene; skipping BVH update.');
+          this._warn({
+            code: 'walkaround-hybrid.ddgi-missing-core-scene',
+            backend: 'walkaround-hybrid',
+            phase: 'renderFrame',
+            method: 'DDGI.updateFrame',
+            message: '[DDGI] updateFrame called without a core scene; skipping BVH update.',
+            details: { fallback: 'skip-ddgi-bvh-update' },
+          });
         }
       } catch (e) {
         console.error('[DDGI] BVH update failed:', e);

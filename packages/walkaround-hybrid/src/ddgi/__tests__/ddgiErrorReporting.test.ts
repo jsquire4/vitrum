@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { EngineError, Scene } from '@vitrum/core';
+import type { EngineError, EngineWarning, Scene } from '@vitrum/core';
 import { SceneBvh } from '@vitrum/shared-bvh';
 import { DDGI } from '../DDGI.js';
 import { ProbeUpdatePass } from '../probeUpdatePass.js';
@@ -34,6 +34,35 @@ afterEach(() => {
 });
 
 describe('DDGI structured error reporting', () => {
+  it('routes missing-device skips through the structured warning sink', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const warnings: EngineWarning[] = [];
+    const errors: EngineError[] = [];
+
+    const ddgi = new DDGI({
+      onWarning: (warning) => warnings.push(warning),
+      onError: (error) => errors.push(error),
+    });
+    await ddgi.updateFrame({ enabled: true });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      code: 'walkaround-hybrid.ddgi-missing-device',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'DDGI.updateFrame',
+      details: { fallback: 'skip-ddgi-frame' },
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      kind: 'render',
+      message: '[DDGI] updateFrame called without device; skipping.',
+      fatal: false,
+    });
+    ddgi.dispose();
+  });
+
   it('reports GPU init failure through the structured error sink', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(ProbeUpdatePass.prototype, 'init').mockResolvedValue(false);
@@ -53,6 +82,40 @@ describe('DDGI structured error reporting', () => {
     });
     expect(ddgi.state()).toBe('failed');
     expect(warnSpy).toHaveBeenCalled();
+    ddgi.dispose();
+  });
+
+  it('routes GPU init disabled fallback through the structured warning sink', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(ProbeUpdatePass.prototype, 'init').mockResolvedValue(false);
+    const warnings: EngineWarning[] = [];
+    const errors: EngineError[] = [];
+
+    const ddgi = new DDGI({
+      onWarning: (warning) => warnings.push(warning),
+      onError: (error) => errors.push(error),
+    });
+    await ddgi.updateFrame({
+      coreScene: makeBoxScene(),
+      device: {} as unknown as GPUDevice,
+      enabled: true,
+    });
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      code: 'walkaround-hybrid.ddgi-init-disabled',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'DDGI.updateFrame',
+      details: { fallback: 'disable-ddgi-compute' },
+    });
+    expect(errors).toContainEqual({
+      kind: 'render',
+      message: '[DDGI] GPU init failed — DDGI compute disabled (scene still renders without indirect).',
+      fatal: false,
+    });
+    expect(ddgi.state()).toBe('failed');
     ddgi.dispose();
   });
 

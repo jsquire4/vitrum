@@ -192,6 +192,10 @@
 > failures now mirror the mutation path by emitting structured
 > `pt-webgpu.set-scene-skin-fallback` warnings with the primitive id and
 > `fallback:"rest-pose"`, while direct packer calls keep their console fallback.
+> Same-day DDGI runtime-warning follow-up: missing-device skips, GPU-init
+> disabled fallback, and missing-core-scene BVH skips now route through DDGI's
+> structured warning sink (`walkaround-hybrid.ddgi-*`) while standalone DDGI
+> keeps console fallback and existing non-fatal `onError` reports.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel
