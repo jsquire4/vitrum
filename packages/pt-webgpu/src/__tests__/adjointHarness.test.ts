@@ -44,8 +44,25 @@ import {
   ADJOINT_EMITTER_TARGET_RECT,
   ADJOINT_EMITTER_TARGET_MESH,
 } from '../wgsl/pathTrace/adjointPass.wgsl.js';
+import {
+  MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET,
+  MATERIAL_TEX_UV_META_VEC4_OFFSET,
+  MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
+  MATERIAL_TEX_VEC4_STRIDE,
+} from '../scene/materialTextures.js';
 
 const ADJOINT_PASS_TS = readFileSync(new URL('../adjointPass.ts', import.meta.url), 'utf8');
+
+function parseAdjointMaterialTexConstants(wgsl: string): Map<string, number> {
+  const constants = new Map<string, number>();
+  const re = /const\s+(ADJOINT_MATERIAL_TEX_[A-Z0-9_]+)\s*=\s*(\d+)u;/g;
+  let match: RegExpExecArray | null = re.exec(wgsl);
+  while (match != null) {
+    constants.set(match[1]!, Number(match[2]));
+    match = re.exec(wgsl);
+  }
+  return constants;
+}
 
 describe('adjoint harness (V24 GPU partials A/B)', () => {
   it('packs an input into the 16-float vec4-aligned AdjIn record', () => {
@@ -224,21 +241,6 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(17) var                      materialTexSampler');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(18) var<storage, read>       meshVertexColors');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(19) var                      materialTexturesLinear');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_VEC4_STRIDE = 82u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_BASE_COLOR = 19u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = 21u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS = 25u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_METALLIC = 27u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_AO = 29u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT = 51u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS = 53u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR = 55u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SHEEN_ROUGHNESS = 57u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_IRIDESCENCE = 59u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS = 61u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SPECULAR_COLOR = 63u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_SPECULAR_INTENSITY = 65u;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_ANISOTROPY = 35u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointEmissiveTexture');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveTexel = sampleAdjointEmissiveTexture(matId, hit.tri, vec2f(hit.bary.y, hit.bary.z)).rgb');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let emissiveIntensity = bitcast<f32>(d.w)');
@@ -293,6 +295,34 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_EMITTER_TARGET_SPOT).toBe(3);
     expect(ADJOINT_EMITTER_TARGET_RECT).toBe(4);
     expect(ADJOINT_EMITTER_TARGET_MESH).toBe(5);
+  });
+
+  it('adjoint material texture constants mirror the forward material descriptor layout', () => {
+    const constants = parseAdjointMaterialTexConstants(PT_WEBGPU_ADJOINT_PASS_WGSL);
+    const mainUv = (slot: number): number =>
+      MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * slot;
+    const extensionUv = (slot: number): number =>
+      MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * slot;
+    const expected: Readonly<Record<string, number>> = {
+      ADJOINT_MATERIAL_TEX_VEC4_STRIDE: MATERIAL_TEX_VEC4_STRIDE,
+      ADJOINT_MATERIAL_TEX_UV_BASE_COLOR: mainUv(0),
+      ADJOINT_MATERIAL_TEX_UV_EMISSIVE: mainUv(1),
+      ADJOINT_MATERIAL_TEX_UV_ROUGHNESS: mainUv(3),
+      ADJOINT_MATERIAL_TEX_UV_METALLIC: mainUv(4),
+      ADJOINT_MATERIAL_TEX_UV_AO: mainUv(5),
+      ADJOINT_MATERIAL_TEX_UV_LIGHT: mainUv(6),
+      ADJOINT_MATERIAL_TEX_UV_ANISOTROPY: mainUv(8),
+      ADJOINT_MATERIAL_TEX_UV_CLEARCOAT: extensionUv(0),
+      ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS: extensionUv(1),
+      ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR: extensionUv(2),
+      ADJOINT_MATERIAL_TEX_UV_SHEEN_ROUGHNESS: extensionUv(3),
+      ADJOINT_MATERIAL_TEX_UV_IRIDESCENCE: extensionUv(4),
+      ADJOINT_MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS: extensionUv(5),
+      ADJOINT_MATERIAL_TEX_UV_SPECULAR_COLOR: extensionUv(6),
+      ADJOINT_MATERIAL_TEX_UV_SPECULAR_INTENSITY: extensionUv(7),
+    };
+
+    expect(Object.fromEntries(constants)).toEqual(expected);
   });
 
   it('engine adjoint PASS binds the material texture replay resources', () => {
