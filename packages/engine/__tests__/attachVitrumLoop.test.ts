@@ -294,6 +294,58 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     handle.dispose();
   });
 
+  it('forwards previous view/projection matrices starting on the second RAF tick', async () => {
+    const scheduledFrames: FrameRequestCallback[] = [];
+    (globalThis as Record<string, unknown>).requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
+      scheduledFrames.push(cb);
+      return scheduledFrames.length;
+    });
+    (globalThis as Record<string, unknown>).cancelAnimationFrame = vi.fn();
+
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const createEngineModule = await import('../src/createEngine.js');
+    const createSpy = vi.spyOn(createEngineModule, 'createEngine')
+      .mockRejectedValue(new Error('createEngine should not be called for supplied engines'));
+
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    const { asMat4 } = await import('@vitrum/core');
+    const identity = asMat4(new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]));
+    const camera = {
+      updateMatrixWorld: vi.fn(),
+      matrixWorldInverse: { elements: identity },
+      projectionMatrix: { elements: identity },
+      position: { x: 0, y: 0, z: 0 },
+    };
+    const scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const engine = Object.assign(makeMockEngine(), { backendId: 'pt-webgl2' as const }) as
+      EngineWithBackendId & { readonly _renders: FrameInput[] };
+
+    const handle = await attachVitrum({
+      canvas,
+      scene,
+      camera,
+      engine,
+    });
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(scheduledFrames).toHaveLength(1);
+
+    scheduledFrames.shift()?.(1000);
+    scheduledFrames.shift()?.(1016);
+
+    expect(engine._renders).toHaveLength(2);
+    expect(engine._renders[0]?.prevViewMatrix).toBeUndefined();
+    expect(engine._renders[0]?.prevProjMatrix).toBeUndefined();
+    expect(engine._renders[1]?.prevViewMatrix).toBe(engine._renders[0]?.viewMatrix);
+    expect(engine._renders[1]?.prevProjMatrix).toBe(engine._renders[0]?.projMatrix);
+
+    handle.dispose();
+  });
+
   it('H30 — CSS size × DPR backing store is applied before createEngine runs', async () => {
     const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
     const createEngineModule = await import('../src/createEngine.js');
