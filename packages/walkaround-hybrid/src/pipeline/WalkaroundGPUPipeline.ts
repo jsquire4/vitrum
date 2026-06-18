@@ -802,9 +802,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *   albedo        — rgba16float, demodulated visible-point diffuse albedo
    *                   (Schied 2017 §4.1) — lighting × albedo = final colour.
    *   motionVectors — rgba32float, (dx, dy) screen-space pixels in .xy.
-   * Fresh views per call (cheap); owned by the pipeline — callers MUST NOT
-   * destroy them, and the handles are invalidated on the next setScene / resize
-   * / dispose. Null before initialize() resolves.
+   * Descriptor-free views are cached while resources are stable; owned by the
+   * pipeline — callers MUST NOT destroy them, and the handles are invalidated on
+   * the next setScene / resize / dispose. Null before initialize() resolves.
    */
   getAuxBufferTextures(): {
     normalDepth: GPUTextureView;
@@ -814,9 +814,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     if (!this._initialized) return null;
     const c = this._res.common;
     return {
-      normalDepth: c.gNormalDepthTexture.createView(),
-      albedo: c.albedoTexture.createView(),
-      motionVectors: c.motionVectorTexture.createView(),
+      normalDepth: this._resourceCache.textureView(c.gNormalDepthTexture),
+      albedo: this._resourceCache.textureView(c.albedoTexture),
+      motionVectors: this._resourceCache.textureView(c.motionVectorTexture),
     };
   }
 

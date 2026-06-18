@@ -126,6 +126,20 @@ beforeEach(() => {
 });
 
 describe('pass bind-group cache', () => {
+  it('reuses descriptor-free texture views until the cache is cleared', () => {
+    const cache = new PipelineResourceCache();
+    const tex = texture('aux-buffer');
+
+    const first = cache.textureView(tex);
+    const second = cache.textureView(tex);
+    cache.clear();
+    const afterClear = cache.textureView(tex);
+
+    expect(first).toBe(second);
+    expect(afterClear).not.toBe(first);
+    expect(tex.createView).toHaveBeenCalledTimes(2);
+  });
+
   it('reuses stable GTAO upsample bind groups and texture views', () => {
     const { ctx, common } = baseCtx();
     const pass = new GTAOUpsamplePass({} as GPUComputePipeline);
