@@ -88,6 +88,7 @@ describe('H14-E/H25-H28 — Road/items ledger reconciliation guard', () => {
 
     expect(combined).not.toContain('H14-E (HDRI sun-off pt-webgpu)');
     expect(combined).not.toContain('HDRI sun-off pt-webgpu');
+    expect(combined).not.toContain('pt-webgpu cross-backend halves of H6/H52');
     expect(combined).not.toContain('H25 ◻');
     expect(combined).not.toContain('H26 ◻');
     expect(combined).not.toContain('H27 ◻');
