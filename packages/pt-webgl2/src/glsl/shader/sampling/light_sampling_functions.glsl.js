@@ -37,6 +37,9 @@ export const light_sampling_functions = /* glsl */`
 		// SHADOW-01 — 1.0 when the source emitter set castShadow:false (skip the
 		// NEE shadow test for this light); 0.0 default.
 		float castShadowDisabled;
+		// 1.0 for singular point/spot/hard-directional samples that cannot be
+		// reached by BSDF sampling; 0.0 for finite-area/finite-cone samples.
+		float delta;
 
 	};
 
@@ -77,6 +80,7 @@ export const light_sampling_functions = /* glsl */`
 				lightRec.type = light.type;
 				lightRec.discretePdf = 1.0;
 				lightRec.castShadowDisabled = light.castShadowDisabled;
+				lightRec.delta = 0.0;
 
 			}
 
@@ -126,6 +130,7 @@ export const light_sampling_functions = /* glsl */`
 		lightRec.pdf = max( lightDistSq / denom, EPSILON );
 		lightRec.discretePdf = 1.0;
 		lightRec.castShadowDisabled = light.castShadowDisabled;
+		lightRec.delta = 0.0;
 
 		return lightRec;
 
@@ -166,6 +171,7 @@ export const light_sampling_functions = /* glsl */`
 		lightRec.pdf = 1.0;
 		lightRec.discretePdf = 1.0;
 		lightRec.castShadowDisabled = light.castShadowDisabled;
+		lightRec.delta = 1.0;
 
 		return lightRec;
 
@@ -176,52 +182,53 @@ export const light_sampling_functions = /* glsl */`
 	//   s0 = (v0.xyz, type=TRI_AREA_LIGHT_TYPE=5)
 	//   s1 = (radiance.rgb, 0)
 	//   s2 = (v1.xyz, 0)
-		//   s3 = (v2.xyz, triArea)
-		//   s4.r = selectionPower = luminance(radiance) * triArea
-		//   s5.g = castShadowDisabled
-		struct MeshTriLight { vec3 v0; vec3 v1; vec3 v2; vec3 radiance; float area; float power; float castShadowDisabled; };
+	//   s3 = (v2.xyz, triArea)
+	//   s4.r = selectionPower = luminance(radiance) * triArea
+	//   s5.g = castShadowDisabled
+	struct MeshTriLight { vec3 v0; vec3 v1; vec3 v2; vec3 radiance; float area; float power; float castShadowDisabled; };
 
 	MeshTriLight readMeshTriLight( sampler2D tex, uint index ) {
 		uint i = index * 6u;
 		vec4 s0 = texelFetch1D( tex, i + 0u );
-			vec4 s1 = texelFetch1D( tex, i + 1u );
-			vec4 s2 = texelFetch1D( tex, i + 2u );
-			vec4 s3 = texelFetch1D( tex, i + 3u );
-			vec4 s4 = texelFetch1D( tex, i + 4u );
-			vec4 s5 = texelFetch1D( tex, i + 5u );
+		vec4 s1 = texelFetch1D( tex, i + 1u );
+		vec4 s2 = texelFetch1D( tex, i + 2u );
+		vec4 s3 = texelFetch1D( tex, i + 3u );
+		vec4 s4 = texelFetch1D( tex, i + 4u );
+		vec4 s5 = texelFetch1D( tex, i + 5u );
 		MeshTriLight t;
 		t.v0 = s0.xyz;
 		t.radiance = s1.rgb;
 		t.v1 = s2.xyz;
-			t.v2 = s3.xyz;
-			t.area = s3.a;
-			t.power = s4.r;
-			t.castShadowDisabled = s5.g;
-			return t;
-		}
+		t.v2 = s3.xyz;
+		t.area = s3.a;
+		t.power = s4.r;
+		t.castShadowDisabled = s5.g;
+		return t;
+	}
 
-		// Sample a point uniformly on the chosen emissive triangle, selecting triangles
-		// by emitted power (luminance(radiance) * area). The resulting area-density is
-		// luminance(radiance) / totalEmissivePower, which the forward emissive hit can
-		// recover from surf.emission without a triangle→index map.
-		LightRecord sampleMeshAreaLight(
-			sampler2D meshLights, uint meshLightCount, float totalEmissivePower, vec3 rayOrigin, vec3 ruv
-		) {
+	// Sample a point uniformly on the chosen emissive triangle, selecting triangles
+	// by emitted power (luminance(radiance) * area). The resulting area-density is
+	// luminance(radiance) / totalEmissivePower, which the forward emissive hit can
+	// recover from surf.emission without a triangle→index map.
+	LightRecord sampleMeshAreaLight(
+		sampler2D meshLights, uint meshLightCount, float totalEmissivePower, vec3 rayOrigin, vec3 ruv
+	) {
 		LightRecord rec;
 		rec.pdf = 0.0;
-			rec.discretePdf = 1.0;
-			rec.type = TRI_AREA_LIGHT_TYPE;
-			rec.castShadowDisabled = 0.0;
-			if ( meshLightCount == 0u || totalEmissivePower <= 0.0 ) return rec;
+		rec.discretePdf = 1.0;
+		rec.type = TRI_AREA_LIGHT_TYPE;
+		rec.castShadowDisabled = 0.0;
+		rec.delta = 0.0;
+		if ( meshLightCount == 0u || totalEmissivePower <= 0.0 ) return rec;
 
-			// Power-proportional triangle selection by cumulative emitted power.
-			float uPick = ruv.x * totalEmissivePower;
-			uint chosen = meshLightCount - 1u;
-			float cum = 0.0;
-			for ( uint ii = 0u; ii < meshLightCount; ii ++ ) {
-				cum += max( readMeshTriLight( meshLights, ii ).power, 0.0 );
-				if ( uPick <= cum ) { chosen = ii; break; }
-			}
+		// Power-proportional triangle selection by cumulative emitted power.
+		float uPick = ruv.x * totalEmissivePower;
+		uint chosen = meshLightCount - 1u;
+		float cum = 0.0;
+		for ( uint ii = 0u; ii < meshLightCount; ii ++ ) {
+			cum += max( readMeshTriLight( meshLights, ii ).power, 0.0 );
+			if ( uPick <= cum ) { chosen = ii; break; }
+		}
 
 		MeshTriLight tri = readMeshTriLight( meshLights, chosen );
 		rec.castShadowDisabled = tri.castShadowDisabled;
@@ -246,20 +253,32 @@ export const light_sampling_functions = /* glsl */`
 		rec.point = pos;
 		rec.normal = triNormal;
 		rec.dist = dist;
-			rec.direction = direction;
-			rec.emission = tri.radiance;
-			float areaDensity = max( tri.power, 0.0 ) / ( max( tri.area, EPSILON ) * totalEmissivePower );
-			rec.pdf = max( areaDensity * distSq / max( cosLight, EPSILON ), EPSILON );
-			return rec;
-		}
+		rec.direction = direction;
+		rec.emission = tri.radiance;
+		float areaDensity = max( tri.power, 0.0 ) / ( max( tri.area, EPSILON ) * totalEmissivePower );
+		rec.pdf = max( areaDensity * distSq / max( cosLight, EPSILON ), EPSILON );
+		return rec;
+	}
 
-		// SOLID-ANGLE NEE pdf of a FORWARD emissive hit under the emitted-power mesh
-		// strategy. The area density is luminance(surface emission) / totalPower.
-		float meshAreaLightForwardPdf( float distSq, float cosLight, float totalEmissivePower, vec3 emission ) {
-			if ( totalEmissivePower <= 0.0 ) return 0.0;
-			float areaDensity = max( luminance( emission ), 0.0 ) / totalEmissivePower;
-			return areaDensity * distSq / max( abs( cosLight ), EPSILON );
-		}
+	// SOLID-ANGLE NEE pdf of a FORWARD emissive hit under the emitted-power mesh
+	// strategy. The area density is luminance(surface emission) / totalPower.
+	float meshAreaLightForwardPdf( float distSq, float cosLight, float totalEmissivePower, vec3 emission ) {
+		if ( totalEmissivePower <= 0.0 ) return 0.0;
+		float areaDensity = max( luminance( emission ), 0.0 ) / totalEmissivePower;
+		return areaDensity * distSq / max( abs( cosLight ), EPSILON );
+	}
+
+	vec3 sampleDirectionalCone( vec3 axis, float angularDiameter, vec2 uv, out float pdf ) {
+
+		float cosHalfAngle = cos( angularDiameter * 0.5 );
+		float cosTheta = mix( cosHalfAngle, 1.0, uv.x );
+		float sinTheta = sqrt( max( 0.0, 1.0 - cosTheta * cosTheta ) );
+		float phi = 2.0 * PI * uv.y;
+		vec3 localDir = vec3( cos( phi ) * sinTheta, sin( phi ) * sinTheta, cosTheta );
+		pdf = 1.0 / max( 2.0 * PI * ( 1.0 - cosHalfAngle ), EPSILON );
+		return normalize( getBasisFromNormal( normalize( axis ) ) * localDir );
+
+	}
 
 	LightRecord randomLightSample( sampler2D lights, uint lightCount, vec3 rayOrigin, vec3 ruv ) {
 
@@ -335,16 +354,25 @@ export const light_sampling_functions = /* glsl */`
 			rec.type = light.type;
 			rec.discretePdf = 1.0;
 			rec.castShadowDisabled = light.castShadowDisabled;
+			rec.delta = 1.0;
 			result = rec;
 
 		} else if ( light.type == DIR_LIGHT_TYPE ) {
 
 			LightRecord rec;
 			rec.dist = 1e10;
-			rec.direction = light.u;
-			rec.point = - light.u * rec.dist;
-			rec.normal = light.u;
-			rec.pdf = 1.0;
+			if ( light.angularDiameter > 0.0 ) {
+				float conePdf;
+				rec.direction = sampleDirectionalCone( light.u, light.angularDiameter, ruv.yz, conePdf );
+				rec.pdf = conePdf;
+				rec.delta = 0.0;
+			} else {
+				rec.direction = light.u;
+				rec.pdf = 1.0;
+				rec.delta = 1.0;
+			}
+			rec.point = - rec.direction * rec.dist;
+			rec.normal = rec.direction;
 			rec.emission = light.color * light.intensity;
 			rec.type = light.type;
 			rec.discretePdf = 1.0;

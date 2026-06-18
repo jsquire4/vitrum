@@ -165,6 +165,12 @@
 > `walkaround-hybrid.directional-angular-diameter-partial-support` with
 > `support:"direct-sun-cone-only"` for authored angular diameters. V28-B
 > recapture remains required for the visible direct-light change.
+> Same-day pt-webgl2 soft-sun follow-up: directional emitters now pack
+> positive finite `angularDiameter` into the lights texture, GLSL decodes it,
+> and `randomLightSample()` samples a finite cone with a solid-angle PDF instead
+> of warning that the field is ignored. Hard directional lights keep the legacy
+> delta shortcut; finite cones enter the regular MIS path. GPU recapture remains
+> a promotion/proof item because this is render-changing.
 > **2026-06-18 walkaround mutation follow-up:** material-only scalar edits now
 > refresh DDGI's `RestirBvhSnapshot` material payload without RC geometry
 > propagation, and roughness/metallic scalar edits invalidate DDGI probe cache

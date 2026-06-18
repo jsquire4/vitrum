@@ -773,7 +773,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
   });
 
-  it('warns when directional angularDiameter is supplied because pt-webgl2 renders hard directional lights', async () => {
+  it('accepts directional angularDiameter on setScene and updateEmitter without unsupported-field warnings', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
@@ -783,39 +783,21 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       });
 
       e.setScene(sceneWithSoftDirectionalEmitter());
-      const uploadWarning = structured.find((w) =>
-        w.code === 'pt-webgl2.unconsumed-directional-angular-diameter' &&
-        w.phase === 'setScene',
-      );
-      expect(uploadWarning?.method).toBe('setScene');
-      expect(uploadWarning?.details).toEqual({
-        emitterId: 'sun',
-        angularDiameter: 0.01,
-        support: 'unsupported',
-      });
+      expect(e.getScene?.()?.emitters[0]).toMatchObject({ id: 'sun', angularDiameter: 0.01 });
+      expect(structured.find((w) => w.code === 'pt-webgl2.unconsumed-directional-angular-diameter')).toBeUndefined();
       expect(warn.mock.calls.flat().map(String).some((m) =>
-        m.includes('angularDiameter=0.01') &&
         m.includes('soft-sun angular spread is ignored'),
-      )).toBe(true);
+      )).toBe(false);
 
       structured.length = 0;
       warn.mockClear();
       e.updateEmitter?.('sun', { angularDiameter: 0.02 } as never);
 
-      const mutationWarning = structured.find((w) =>
-        w.code === 'pt-webgl2.unconsumed-directional-angular-diameter' &&
-        w.phase === 'mutation',
-      );
-      expect(mutationWarning?.method).toBe('updateEmitter');
-      expect(mutationWarning?.details).toEqual({
-        emitterId: 'sun',
-        angularDiameter: 0.02,
-        support: 'unsupported',
-      });
+      expect(e.getScene?.()?.emitters[0]).toMatchObject({ id: 'sun', angularDiameter: 0.02 });
+      expect(structured.find((w) => w.code === 'pt-webgl2.unconsumed-directional-angular-diameter')).toBeUndefined();
       expect(warn.mock.calls.flat().map(String).some((m) =>
-        m.includes('angularDiameter=0.02') &&
         m.includes('soft-sun angular spread is ignored'),
-      )).toBe(true);
+      )).toBe(false);
     } finally {
       warn.mockRestore();
     }

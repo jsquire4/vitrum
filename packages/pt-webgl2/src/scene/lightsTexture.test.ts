@@ -243,6 +243,21 @@ describe('assertSlotCursor — packing cursor is correct for each light kind', (
     };
     expect(() => packLightsTexture([dir])).not.toThrow();
   });
+
+  it('directional: packs angularDiameter into s5.b without disturbing the shadow flag', () => {
+    const dir: DirectionalEmitter = {
+      id: 'soft-sun',
+      kind: 'directional',
+      color: [1, 1, 1],
+      intensity: 1,
+      direction: [0, 1, 0],
+      angularDiameter: 0.011,
+      castShadow: false,
+    };
+    const packed = packLightsTexture([dir]);
+    expect(texel(packed.data, 0, 5, 1)).toBe(1);
+    expect(texel(packed.data, 0, 5, 2)).toBeCloseTo(0.011, 6);
+  });
 });
 
 // ── Item 10: GLSL structural test — CIRC_AREA handling in composed shader ─────
@@ -295,5 +310,17 @@ describe('SHADOW-01 — castShadowDisabled lane (s5.g, channel 21)', () => {
     const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
     expect(src).toContain('l.castShadowDisabled = s5.g;');
     expect(src).toContain('lightRec.castShadowDisabled > 0.5 || ! attenuateHit(');
+  });
+
+  it('GLSL decoder and sampler consume directional angularDiameter as a cone pdf', async () => {
+    const { composeTraceGlsl } = await import('../glsl/composeTraceGlsl.js');
+    const { DEFAULT_TRACE_FEATURES } = await import('../featureTypes.js');
+    const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
+    expect(src).toContain('l.angularDiameter = l.type == DIR_LIGHT_TYPE ? max( s5.b, 0.0 ) : 0.0;');
+    expect(src).toContain('vec3 sampleDirectionalCone(');
+    expect(src).toContain('if ( light.angularDiameter > 0.0 )');
+    expect(src).toContain('rec.direction = sampleDirectionalCone( light.u, light.angularDiameter, ruv.yz, conePdf );');
+    expect(src).toContain('float delta;');
+    expect(src).toContain('bool deltaLight = lightRec.delta > 0.5;');
   });
 });

@@ -61,7 +61,8 @@ export const direct_light_contribution_function = /*glsl*/`
 					// weight the direct light contribution
 					float lightPdf =
 						lightRec.pdf / lightsDenom * float( lights.count ) * lightRec.discretePdf;
-					float misWeight = lightRec.type == SPOT_LIGHT_TYPE || lightRec.type == DIR_LIGHT_TYPE || lightRec.type == POINT_LIGHT_TYPE ? 1.0 : misHeuristic( lightPdf, lightMaterialPdf );
+					bool deltaLight = lightRec.delta > 0.5;
+					float misWeight = deltaLight ? 1.0 : misHeuristic( lightPdf, lightMaterialPdf );
 					result = attenuatedColor * lightRec.emission * throughputRgb * sampleColor * misWeight / lightPdf;
 
 				}

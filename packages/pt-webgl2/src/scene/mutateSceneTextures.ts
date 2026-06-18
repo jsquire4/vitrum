@@ -1,7 +1,7 @@
 import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packMaterialsTexture } from './materialsTexture.js';
-import { directionalAngularDiameterWarnings, packLightsTexture } from './lightsTexture.js';
+import { packLightsTexture } from './lightsTexture.js';
 import { hasMeshAreaLightForPrimitive, packMeshAreaLights } from './meshAreaLights.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
@@ -327,10 +327,7 @@ export function tryFastPathEmitterMutation(
   const changed = nextScene.emitters.find((e) => String(e.id) === emitterId);
   const isMeshAreaMutation = changed?.kind === 'mesh-area';
   const lightsData = packLightsTexture(nextScene.emitters);
-  const structuredWarnings = directionalAngularDiameterWarnings(nextScene.emitters, {
-    phase: 'mutation',
-    method: 'updateEmitter',
-  });
+  const structuredWarnings: EngineWarning[] = [];
   const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights');
   const meshLightsData = packMeshAreaLights(nextScene, geoPack);
   const meshLights = meshLightsData.data != null

@@ -35,11 +35,14 @@ export const lights_struct = /* glsl */`
 		float distance;
 		float coneCos;
 		float penumbraCos;
-		// SHADOW-01 — s5.g (the former IES padding slot) carries 1.0 when the
-		// emitter set castShadow:false (0.0 default). Packed for EVERY light kind
-		// by lightsTexture.ts; consumed by directLightContribution to skip the
-		// NEE shadow test for that light.
-		float castShadowDisabled;
+			// SHADOW-01 — s5.g (the former IES padding slot) carries 1.0 when the
+			// emitter set castShadow:false (0.0 default). Packed for EVERY light kind
+			// by lightsTexture.ts; consumed by directLightContribution to skip the
+			// NEE shadow test for that light.
+			float castShadowDisabled;
+			// DirectionalEmitter.angularDiameter in radians. Packed in s5.b for
+			// directional lights; 0 keeps the historical delta/hard-sun path.
+			float angularDiameter;
 
 	};
 
@@ -67,8 +70,9 @@ export const lights_struct = /* glsl */`
 		// SHADOW-01 — s5.g carries castShadowDisabled for EVERY light kind, so s5
 		// is fetched unconditionally (one extra texel fetch; the grid always has
 		// 6 texels per light).
-		vec4 s5 = texelFetch1D( tex, i + 5u );
-		l.castShadowDisabled = s5.g;
+			vec4 s5 = texelFetch1D( tex, i + 5u );
+			l.castShadowDisabled = s5.g;
+			l.angularDiameter = l.type == DIR_LIGHT_TYPE ? max( s5.b, 0.0 ) : 0.0;
 
 		if ( l.type == SPOT_LIGHT_TYPE || l.type == POINT_LIGHT_TYPE ) {
 
