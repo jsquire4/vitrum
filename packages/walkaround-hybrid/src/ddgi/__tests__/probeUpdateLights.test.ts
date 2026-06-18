@@ -390,6 +390,34 @@ describe('packDDGIProbeLights — inactive lights', () => {
 
     warnSpy.mockRestore();
   });
+
+  it('unknown active light kinds route through structured warning sink when supplied', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const warnings: unknown[] = [];
+
+    const buf = packDDGIProbeLights([
+      { kind: 'future-kind', on: true, intensity: 99 },
+      { kind: 'fixture', on: true, intensity: 5, position: { x: 1, y: 2, z: 3 } },
+    ], 1, (warning) => warnings.push(warning));
+    const { u32 } = decode(buf);
+
+    expect(u32[0]).toBe(1);
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        code: 'walkaround-hybrid.ddgi-unsupported-probe-light-kind',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'ProbeUpdatePass._uploadLights',
+        details: expect.objectContaining({
+          unsupportedKinds: ['future-kind'],
+          activeLightCount: 2,
+        }),
+      }),
+    ]);
+
+    warnSpy.mockRestore();
+  });
 });
 
 // ── truncation cap ────────────────────────────────────────────────────────────
@@ -421,6 +449,38 @@ describe('packDDGIProbeLights — MAX_DDGI_PROBE_LIGHTS truncation', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0]![0]).toMatch(/DDGI/);
     expect(warnSpy.mock.calls[0]![0]).toMatch(/16/);
+
+    warnSpy.mockRestore();
+  });
+
+  it('routes truncation through structured warning sink when supplied', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const warnings: unknown[] = [];
+    const lights = Array.from({ length: 17 }, (_, i) => ({
+      kind: 'fixture' as const,
+      on: true,
+      intensity: i + 1,
+      position: { x: i, y: 0, z: 0 },
+    }));
+
+    const buf = packDDGIProbeLights(lights, 1, (warning) => warnings.push(warning));
+    const { u32 } = decode(buf);
+
+    expect(u32[0]).toBe(16);
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        code: 'walkaround-hybrid.ddgi-probe-light-cap-exceeded',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'ProbeUpdatePass._uploadLights',
+        details: expect.objectContaining({
+          activePackableLightCount: 17,
+          maxProbeLights: 16,
+          ignoredLightCount: 1,
+        }),
+      }),
+    ]);
 
     warnSpy.mockRestore();
   });

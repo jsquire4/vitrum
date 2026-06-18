@@ -696,6 +696,7 @@ export class HybridEngine implements Engine {
       debug: this._cfg.debug,
       ...(opts.ddgiMaxMaterials !== undefined ? { maxMaterials: opts.ddgiMaxMaterials } : {}),
       onError: (error) => this._emitError(error),
+      onWarning: (warning) => this._warn(warning),
     });
     this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
     // Phase-0 — apply the quality-preset DDGI probe-update divisor (default 4).

@@ -31,7 +31,7 @@ import {
   packDDGIMaterialsFromCoreN,
   packDDGIMaterialsN,
 } from './probeUpdateMaterials.js';
-import type { MaterialSpec } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec } from '@vitrum/core';
 import type { PbrScalarSource } from '../pbrScalars.js';
 import type { ProbeGrid } from './probeGrid.js';
 import type { DDGILight } from './types.js';
@@ -121,6 +121,11 @@ export interface ProbeUpdatePassOptions {
    * @since Sprint 16 (M9 audit remediation)
    */
   maxMaterials?: number;
+  /**
+   * Optional structured warning sink. When omitted, standalone pass callers keep
+   * the historical console.warn behavior for DDGI probe-light/material caps.
+   */
+  onWarning?: (warning: EngineWarning) => void;
 }
 
 export class ProbeUpdatePass {
@@ -195,6 +200,7 @@ export class ProbeUpdatePass {
 
   // Max materials for the WGSL compile-time array size (M9 audit remediation).
   private _ddgiMaxMaterials: number;
+  private readonly _onWarning: ((warning: EngineWarning) => void) | undefined;
 
   // H18 Stage 2 — packed EmitterTri array for area-emitter NEE in the probe kernel.
   // Each EmitterTri is 80 bytes (5 × vec4f) matching the RC probeRayCast layout.
@@ -206,11 +212,27 @@ export class ProbeUpdatePass {
     this._bvh  = bvh;
     this._grid = grid;
     this._debug = opts.debug ?? false;
+    this._onWarning = opts.onWarning;
     this._ddgiMaxMaterials = opts.maxMaterials ?? DDGI_MAX_MATERIALS;
     if (this._ddgiMaxMaterials < 1) {
-      console.warn(`[DDGI] ProbeUpdatePass: maxMaterials=${this._ddgiMaxMaterials} is invalid; clamping to 1.`);
+      this._warn({
+        code: 'walkaround-hybrid.ddgi-invalid-max-materials',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'ProbeUpdatePass.constructor',
+        message: `[DDGI] ProbeUpdatePass: maxMaterials=${this._ddgiMaxMaterials} is invalid; clamping to 1.`,
+        details: { requested: this._ddgiMaxMaterials, clampedTo: 1 },
+      });
       this._ddgiMaxMaterials = 1;
     }
+  }
+
+  private _warn(warning: EngineWarning): void {
+    if (this._onWarning) {
+      this._onWarning(warning);
+      return;
+    }
+    console.warn(warning.message);
   }
 
   /** PR-5.1 — share ReSTIR scene buffers; pass `null` to fall back to SceneBvh. */
@@ -771,10 +793,21 @@ export class ProbeUpdatePass {
   private _uploadMaterials(device: GPUDevice, mats: PbrScalarSource[]): void {
     // M9: runtime warning when scene exceeds the compiled-in cap.
     if (mats.length > this._ddgiMaxMaterials) {
-      console.warn(
-        `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
-        `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
-      );
+      this._warn({
+        code: 'walkaround-hybrid.ddgi-material-cap-exceeded',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'ProbeUpdatePass._uploadMaterials',
+        message:
+          `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
+          `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
+        details: {
+          materialCount: mats.length,
+          maxMaterials: this._ddgiMaxMaterials,
+          ignoredMaterialCount: mats.length - this._ddgiMaxMaterials,
+          source: 'pbr-scalar',
+        },
+      });
     }
     const buf = packDDGIMaterialsN(mats, this._ddgiMaxMaterials);
     device.queue.writeBuffer(this._gpu!.materialsBuf, 0, buf);
@@ -786,17 +819,28 @@ export class ProbeUpdatePass {
    *  `packDDGIMaterialsFromCoreN`. */
   private _uploadCoreMaterials(device: GPUDevice, mats: readonly MaterialSpec[]): void {
     if (mats.length > this._ddgiMaxMaterials) {
-      console.warn(
-        `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
-        `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
-      );
+      this._warn({
+        code: 'walkaround-hybrid.ddgi-material-cap-exceeded',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'ProbeUpdatePass._uploadCoreMaterials',
+        message:
+          `[DDGI] Scene has ${mats.length} materials but ddgiMaxMaterials=${this._ddgiMaxMaterials}. ` +
+          `Materials beyond the cap are ignored. Raise ddgiMaxMaterials in HybridEngineOptions to fix.`,
+        details: {
+          materialCount: mats.length,
+          maxMaterials: this._ddgiMaxMaterials,
+          ignoredMaterialCount: mats.length - this._ddgiMaxMaterials,
+          source: 'core-material',
+        },
+      });
     }
     const buf = packDDGIMaterialsFromCoreN(mats, this._ddgiMaxMaterials);
     device.queue.writeBuffer(this._gpu!.materialsBuf, 0, buf);
   }
 
   private _uploadLights(device: GPUDevice): void {
-    const buf = packDDGIProbeLights(this._lights, this._sunIntensityMul);
+    const buf = packDDGIProbeLights(this._lights, this._sunIntensityMul, this._onWarning);
     device.queue.writeBuffer(this._gpu!.lightsBuf, 0, buf);
   }
 

@@ -27,7 +27,7 @@
  */
 
 import { SceneBvh } from '@vitrum/shared-bvh';
-import type { EngineError, Scene } from '@vitrum/core';
+import type { EngineError, EngineWarning, Scene } from '@vitrum/core';
 import { ProbeGrid } from './probeGrid.js';
 import type { ProbeGridParams } from './probeGrid.js';
 import { ProbeUpdatePass } from './probeUpdatePass.js';
@@ -73,6 +73,11 @@ export interface DDGIOptions {
    * standalone DDGI consumers may use it for the same non-fatal diagnostics.
    */
   onError?: (error: EngineError) => void;
+  /**
+   * Optional structured warning sink. HybridEngine wires this to Engine.onWarning;
+   * standalone DDGI consumers may use it for probe-light/material cap telemetry.
+   */
+  onWarning?: (warning: EngineWarning) => void;
 }
 
 /** Per-frame inputs supplied by the host for a DDGI update tick. */
@@ -108,6 +113,7 @@ export class DDGI {
   private _lastFrameTs: number   = 0;
   private _debug:       boolean;
   private readonly _onError: ((error: EngineError) => void) | undefined;
+  private readonly _onWarning: ((warning: EngineWarning) => void) | undefined;
   private _reportedMissingDevice: boolean = false;
   // M11: probe grid parameters forwarded to computeFromBounds each frame.
   private _probeSpacing:      number | undefined;
@@ -124,6 +130,7 @@ export class DDGI {
   constructor(opts: DDGIOptions = {}) {
     this._debug = opts.debug ?? false;
     this._onError = opts.onError;
+    this._onWarning = opts.onWarning;
     this._probeSpacing     = opts.probeSpacing;
     this._maxProbesPerAxis = opts.maxProbesPerAxis ?? 16;
     this._bvh   = new SceneBvh();
@@ -131,6 +138,7 @@ export class DDGI {
     this._pass  = new ProbeUpdatePass(this._bvh, this._grid, {
       debug: this._debug,
       ...(opts.maxMaterials !== undefined ? { maxMaterials: opts.maxMaterials } : {}),
+      ...(this._onWarning !== undefined ? { onWarning: this._onWarning } : {}),
     });
   }
 

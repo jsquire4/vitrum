@@ -1,6 +1,7 @@
 /**
  * DDGI probe-update light UBO packing (up to 16 lights × 64 B).
  */
+import type { EngineWarning } from '@vitrum/core';
 import type { DDGILight } from './types.js';
 
 const MAX_DDGI_PROBE_LIGHTS = 16;
@@ -12,6 +13,8 @@ export const DDGI_LIGHT_CAST_SHADOW_DISABLED = 0x80000000;
 export const DDGI_PROBE_LIGHTS_BUFFER_BYTES =
   (4 + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS) * Float32Array.BYTES_PER_ELEMENT;
 
+export type DDGIProbeLightWarningSink = (warning: EngineWarning) => void;
+
 function isPackableDDGILight(l: DDGILight): boolean {
   return l.kind === 'sun' || l.kind === 'fixture' || l.kind === 'teaLight';
 }
@@ -19,6 +22,7 @@ function isPackableDDGILight(l: DDGILight): boolean {
 export function packDDGIProbeLights(
   lights: readonly DDGILight[],
   sunIntensityMul: number,
+  onWarning?: DDGIProbeLightWarningSink,
 ): ArrayBuffer {
   const headerSize = 4;
   const data = new Float32Array(headerSize + MAX_DDGI_PROBE_LIGHTS * LIGHT_STRIDE_FLOATS);
@@ -28,19 +32,35 @@ export function packDDGIProbeLights(
     .filter((l) => !isPackableDDGILight(l))
     .map((l) => l.kind))];
   if (unsupportedKinds.length > 0) {
-    console.warn(
-      `[DDGI] packDDGIProbeLights: unsupported DDGI light kind(s) ${unsupportedKinds.join(', ')} ` +
-      'were ignored for probe-update GI.',
-    );
+    emitProbeLightWarning(onWarning, {
+      code: 'walkaround-hybrid.ddgi-unsupported-probe-light-kind',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'ProbeUpdatePass._uploadLights',
+      message:
+        `[DDGI] packDDGIProbeLights: unsupported DDGI light kind(s) ${unsupportedKinds.join(', ')} ` +
+        'were ignored for probe-update GI.',
+      details: { unsupportedKinds, activeLightCount: active.length },
+    });
   }
   const packable = active.filter(isPackableDDGILight);
   // H18 Stage 1 — warn on truncation so hosts know lights beyond the cap are dropped.
   if (packable.length > MAX_DDGI_PROBE_LIGHTS) {
-    console.warn(
-      `[DDGI] packDDGIProbeLights: scene has ${packable.length} active packable lights but the DDGI probe ` +
-      `shader supports at most ${MAX_DDGI_PROBE_LIGHTS}. Lights beyond this cap are silently ` +
-      `ignored for probe-update GI. Reduce your light count or raise MAX_DDGI_PROBE_LIGHTS.`,
-    );
+    emitProbeLightWarning(onWarning, {
+      code: 'walkaround-hybrid.ddgi-probe-light-cap-exceeded',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'ProbeUpdatePass._uploadLights',
+      message:
+        `[DDGI] packDDGIProbeLights: scene has ${packable.length} active packable lights but the DDGI probe ` +
+        `shader supports at most ${MAX_DDGI_PROBE_LIGHTS}. Lights beyond this cap are ignored ` +
+        `for probe-update GI. Reduce your light count or raise MAX_DDGI_PROBE_LIGHTS.`,
+      details: {
+        activePackableLightCount: packable.length,
+        maxProbeLights: MAX_DDGI_PROBE_LIGHTS,
+        ignoredLightCount: packable.length - MAX_DDGI_PROBE_LIGHTS,
+      },
+    });
   }
   udata[0] = Math.min(packable.length, MAX_DDGI_PROBE_LIGHTS);
 
@@ -99,4 +119,15 @@ export function packDDGIProbeLights(
     }
   });
   return data.buffer;
+}
+
+function emitProbeLightWarning(
+  onWarning: DDGIProbeLightWarningSink | undefined,
+  warning: EngineWarning,
+): void {
+  if (onWarning) {
+    onWarning(warning);
+    return;
+  }
+  console.warn(warning.message);
 }

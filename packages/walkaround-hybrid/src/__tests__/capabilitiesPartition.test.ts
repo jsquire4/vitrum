@@ -215,6 +215,30 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
+  it('routes DDGI constructor warnings through the engine warning surface', () => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: unknown[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      ddgiMaxMaterials: 0,
+      onWarning: (warning) => warnings.push(warning),
+    });
+    try {
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.ddgi-invalid-max-materials',
+          backend: 'walkaround-hybrid',
+          phase: 'construction',
+          method: 'ProbeUpdatePass.constructor',
+          details: expect.objectContaining({ requested: 0, clampedTo: 1 }),
+        }),
+      ]);
+      expect(warnSpy.mock.calls.flat().join('\n')).toContain('maxMaterials=0');
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('keeps learned/research paths out of experimentalFeatures until explicitly enabled', () => {
     const engine = new HybridEngine(makeOpts());
     try {
