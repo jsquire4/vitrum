@@ -20,6 +20,7 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import type { EngineWarning } from '@vitrum/core';
 import type { InferenceGraph } from '../../neural/InferenceGraph.js';
 import type { ModelWeights } from '../../neural/weights.js';
 import { NEURAL_PACK_WGSL } from '../../shaders/neuralPack.wgsl.js';
@@ -71,10 +72,16 @@ export class NeuralDenoiser implements Denoiser {
   } | null = null;
 
   private _lastFallbackReason: string | null = null;
+  private readonly _onWarning: ((warning: EngineWarning) => void) | null;
 
-  constructor(options?: { inferenceGraph?: InferenceGraph; modelWeights?: ModelWeights }) {
+  constructor(options?: {
+    inferenceGraph?: InferenceGraph;
+    modelWeights?: ModelWeights;
+    onWarning?: (warning: EngineWarning) => void;
+  }) {
     this._inferenceGraph = options?.inferenceGraph;
     this._modelWeights = options?.modelWeights;
+    this._onWarning = options?.onWarning ?? null;
     this.disabled = this._inferenceGraph === undefined;
   }
 
@@ -186,11 +193,21 @@ export class NeuralDenoiser implements Denoiser {
         `${ctx.width}x${ctx.height}; recreate engine to resize neural denoiser`;
       if (!this._loggedSizeMismatch) {
         this._loggedSizeMismatch = true;
-        console.warn(
-          `[NeuralDenoiser] size changed from ${this._graphW}x${this._graphH} ` +
-          `to ${ctx.width}x${ctx.height}; falling back to hdrColorTexture. ` +
-          `No model weights were retained for in-place graph reinitialization.`,
-        );
+        this._warnFallback({
+          code: 'walkaround-hybrid.neural-size-mismatch-fallback',
+          message:
+            `[NeuralDenoiser] size changed from ${this._graphW}x${this._graphH} ` +
+            `to ${ctx.width}x${ctx.height}; falling back to hdrColorTexture. ` +
+            `No model weights were retained for in-place graph reinitialization.`,
+          details: {
+            previousWidth: this._graphW,
+            previousHeight: this._graphH,
+            width: ctx.width,
+            height: ctx.height,
+            fallback: 'hdrColorTexture',
+            missing: 'retained model weights',
+          },
+        });
       }
       return ctx.resources.common.hdrColorTexture;
     }
@@ -254,7 +271,17 @@ export class NeuralDenoiser implements Denoiser {
       this._lastFallbackReason = reason;
       if (!this._loggedDispatchFailure) {
         this._loggedDispatchFailure = true;
-        console.warn(`[NeuralDenoiser] ${reason}; falling back to hdrColorTexture.`);
+        this._warnFallback({
+          code: 'walkaround-hybrid.neural-dispatch-failed',
+          message: `[NeuralDenoiser] ${reason}; falling back to hdrColorTexture.`,
+          details: {
+            reason,
+            width: ctx.width,
+            height: ctx.height,
+            fallback: 'hdrColorTexture',
+          },
+          raw: err,
+        });
       }
       return ctx.resources.common.hdrColorTexture;
     }
@@ -364,7 +391,18 @@ export class NeuralDenoiser implements Denoiser {
         this._graphReinitReason = null;
         if (!this._loggedGraphReinitFailure) {
           this._loggedGraphReinitFailure = true;
-          console.warn(`[NeuralDenoiser] ${failureReason}; falling back to hdrColorTexture.`);
+          this._warnFallback({
+            code: 'walkaround-hybrid.neural-resize-reinit-failed',
+            message: `[NeuralDenoiser] ${failureReason}; falling back to hdrColorTexture.`,
+            method: 'resize',
+            details: {
+              reason: failureReason,
+              width: w,
+              height: h,
+              fallback: 'hdrColorTexture',
+            },
+            raw: err,
+          });
         }
       })
       .finally(() => {
@@ -424,6 +462,33 @@ export class NeuralDenoiser implements Denoiser {
       width:  w,
       height: h,
     };
+  }
+
+  private _warnFallback(warning: {
+    readonly code: string;
+    readonly message: string;
+    readonly method?: string;
+    readonly details?: Readonly<Record<string, unknown>>;
+    readonly raw?: unknown;
+  }): void {
+    const routed: EngineWarning = {
+      code: warning.code,
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: warning.method ?? 'renderFrame',
+      message: warning.message,
+      ...(warning.details !== undefined ? { details: warning.details } : {}),
+      ...(warning.raw !== undefined ? { raw: warning.raw } : {}),
+    };
+    if (this._onWarning) {
+      try {
+        this._onWarning(routed);
+      } catch {
+        // Host warning callbacks must not break denoiser fallback.
+      }
+      return;
+    }
+    console.warn(routed.message);
   }
 }
 

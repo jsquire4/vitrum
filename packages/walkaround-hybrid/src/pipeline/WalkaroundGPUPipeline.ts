@@ -536,6 +536,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  trainer + the @group(4) NRC resources; host-owns-cadence train per frame. */
   private _nrc: NrcSubsystem | null = null;
   private readonly _onError: ((error: EngineError) => void) | null;
+  private readonly _onWarning: ((warning: EngineWarning) => void) | null;
   private _lastNrcTrainingErrorMessage: string | null = null;
   /** Bundled layout config passed to every `buildPassLayout` call so the four
    *  call sites can't drift. */
@@ -905,6 +906,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     this._width  = width;
     this._height = height;
     this._onError = diagnostics.onError ?? null;
+    this._onWarning = diagnostics.onWarning ?? null;
     this._ddgi = new OptionalSubsystemBindingState(device);
     const ppgDiagnostics: {
       onError?: (error: EngineError) => void;
@@ -1218,6 +1220,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       ...(options?.neuralWeights !== undefined
         ? { neuralWeights: options.neuralWeights }
         : {}),
+      ...(this._onWarning !== null ? { onWarning: this._onWarning } : {}),
       // exactOptionalPropertyTypes-safe: only forward `oidn` when supplied.
       ...(options?.oidn !== undefined ? { oidn: options.oidn } : {}),
     });

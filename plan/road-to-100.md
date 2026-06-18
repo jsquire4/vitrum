@@ -223,6 +223,10 @@
 > `walkaround-hybrid.mesh-area-emitter-missing-mesh` through BVH construction,
 > emitter refresh, and DDGI sync warning sinks with source/fallback details,
 > instead of console-only helper warnings.
+> Same-day neural diagnostic follow-up: neural denoiser size-mismatch,
+> inference-dispatch, and graph-resize fallback paths now emit structured
+> `walkaround-hybrid.neural-*` warnings through the engine `onWarning` surface,
+> preserving direct `console.warn` only for standalone/no-sink use.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel

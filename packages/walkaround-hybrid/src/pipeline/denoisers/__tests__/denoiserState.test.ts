@@ -1,12 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { EngineWarning } from '@vitrum/core';
 import type { InferenceGraph } from '../../../neural/InferenceGraph.js';
 import { AtrousDenoiser } from '../atrous.js';
 import { AtrousVarianceDenoiser } from '../atrousVariance.js';
 import { BmfrDenoiser } from '../bmfr.js';
-import type { DenoiserState } from '../index.js';
+import { DenoiserRegistry } from '../index.js';
+import type { DenoiserDispatchContext, DenoiserState } from '../index.js';
 import { NeuralDenoiser } from '../neural.js';
 import { NoneDenoiser } from '../none.js';
 import { OIDNFinalDenoiser } from '../oidnFinal.js';
+import { registerBuiltinDenoisers } from '../registerBuiltinDenoisers.js';
 import { SVGFRealDenoiser } from '../svgfReal.js';
 import { shouldResetDenoiserHistory } from '../historyReset.js';
 
@@ -45,6 +48,8 @@ describe('Denoiser.state', () => {
     const denoiser = new NeuralDenoiser({ inferenceGraph: fakeGraph() });
     const seam = denoiser as unknown as {
       _device: GPUDevice;
+      _graphW: number;
+      _graphH: number;
       _packPipeline: GPUComputePipeline;
       _unpackPipeline: GPUComputePipeline;
       _packParamsBuf: GPUBuffer;
@@ -58,6 +63,8 @@ describe('Denoiser.state', () => {
       _lastFallbackReason: string | null;
     };
     seam._device = {} as GPUDevice;
+    seam._graphW = 64;
+    seam._graphH = 64;
     seam._packPipeline = {} as GPUComputePipeline;
     seam._unpackPipeline = {} as GPUComputePipeline;
     seam._packParamsBuf = {} as GPUBuffer;
@@ -79,6 +86,88 @@ describe('Denoiser.state', () => {
       status: 'fallback',
       reason: 'size changed from 64x64 to 128x64',
     } satisfies DenoiserState);
+  });
+
+  it('routes neural size-mismatch fallback through structured warnings', () => {
+    const warnings: EngineWarning[] = [];
+    const denoiser = new NeuralDenoiser({
+      inferenceGraph: fakeGraph(),
+      onWarning: (warning) => warnings.push(warning),
+    });
+    const hdrColorTexture = {} as GPUTexture;
+    const seam = denoiser as unknown as {
+      _device: GPUDevice;
+      _graphW: number;
+      _graphH: number;
+      _packPipeline: GPUComputePipeline;
+      _unpackPipeline: GPUComputePipeline;
+      _packParamsBuf: GPUBuffer;
+      _unpackParamsBuf: GPUBuffer;
+      _tensorBuffers: {
+        noisyBuf: GPUBuffer; albedoBuf: GPUBuffer;
+        normalsBuf: GPUBuffer; outputBuf: GPUBuffer;
+        outputTex: GPUTexture; width: number; height: number;
+      } | null;
+    };
+    seam._device = {} as GPUDevice;
+    seam._graphW = 64;
+    seam._graphH = 64;
+    seam._packPipeline = {} as GPUComputePipeline;
+    seam._unpackPipeline = {} as GPUComputePipeline;
+    seam._packParamsBuf = {} as GPUBuffer;
+    seam._unpackParamsBuf = {} as GPUBuffer;
+    seam._tensorBuffers = {
+      noisyBuf: {} as GPUBuffer,
+      albedoBuf: {} as GPUBuffer,
+      normalsBuf: {} as GPUBuffer,
+      outputBuf: {} as GPUBuffer,
+      outputTex: {} as GPUTexture,
+      width: 64,
+      height: 64,
+    };
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = denoiser.dispatch({
+        width: 128,
+        height: 64,
+        resources: { common: { hdrColorTexture } },
+      } as unknown as DenoiserDispatchContext);
+
+      expect(result).toBe(hdrColorTexture);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        code: 'walkaround-hybrid.neural-size-mismatch-fallback',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'renderFrame',
+        details: {
+          previousWidth: 64,
+          previousHeight: 64,
+          width: 128,
+          height: 64,
+          fallback: 'hdrColorTexture',
+          missing: 'retained model weights',
+        },
+      });
+      expect(warnSpy).not.toHaveBeenCalled();
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('forwards the host warning sink into the registered neural denoiser', () => {
+    const onWarning = vi.fn();
+    const registry = new DenoiserRegistry();
+    registerBuiltinDenoisers(registry, {
+      neuralInferenceGraph: fakeGraph(),
+      onWarning,
+    });
+
+    const neural = registry.lookup('neural') as unknown as {
+      _onWarning: ((warning: EngineWarning) => void) | null;
+    };
+    expect(neural._onWarning).toBe(onWarning);
   });
 
   it('reports OIDN disabled, warmup, fallback, in-flight, ready, and failed states', () => {

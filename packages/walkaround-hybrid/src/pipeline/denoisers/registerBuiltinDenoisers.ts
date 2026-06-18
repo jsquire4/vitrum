@@ -22,6 +22,7 @@ import { NoneDenoiser } from './none.js';
 import { OIDNFinalDenoiser } from './oidnFinal.js';
 import type { OIDNFinalDenoiserOptions } from './oidnFinal.js';
 import { SVGFRealDenoiser } from './svgfReal.js';
+import type { EngineWarning } from '@vitrum/core';
 import type { InferenceGraph } from '../../neural/InferenceGraph.js';
 import type { ModelWeights } from '../../neural/weights.js';
 
@@ -48,6 +49,8 @@ interface RegisterBuiltinDenoisersOptions {
   readonly neuralInferenceGraph?: InferenceGraph;
   /** W10 — host-provided weights retained for in-place graph reinitialize on resize. */
   readonly neuralWeights?: ModelWeights;
+  /** Structured warning sink forwarded from `HybridEngine.onWarning`. */
+  readonly onWarning?: (warning: EngineWarning) => void;
 }
 
 export function registerBuiltinDenoisers(
@@ -65,6 +68,7 @@ export function registerBuiltinDenoisers(
       ? new NeuralDenoiser({
         inferenceGraph: options.neuralInferenceGraph,
         ...(options.neuralWeights !== undefined ? { modelWeights: options.neuralWeights } : {}),
+        ...(options.onWarning !== undefined ? { onWarning: options.onWarning } : {}),
       })
       : new NeuralDenoiser(),
   );
