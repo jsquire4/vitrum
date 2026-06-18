@@ -292,6 +292,31 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
     session.dispose();
   });
 
+  it('does not clamp anisotropyRotation to a non-negative angle by default', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, anisotropy: 0.75, anisotropyRotation: -0.25 } }
+          : pr,
+      ),
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.2, 0.2, -1.1]),
+      parameters: [{ path: 'materials.panel.anisotropyRotation', kind: 'scalar' }],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.25, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.currentValues()[0]![0]).toBeLessThan(0);
+    const result = await session.step();
+    expect(result.gradient[0]![0]).toBeGreaterThan(0);
+    expect(session.currentValues()[0]![0]).toBeLessThan(-0.25);
+    expect(fake.scene.primitives[0]!.material.anisotropyRotation).toBeCloseTo(session.currentValues()[0]![0]!, 6);
+    session.dispose();
+  });
+
   it('optimizes attenuationColor through finite differences', async () => {
     const fake = makeFakeEngine();
     fake.scene = {
