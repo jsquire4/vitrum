@@ -48,5 +48,5 @@ This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl
   per `HARDWARE-VALIDATION-NEEDS.md` but stay `experimental` because promotion additionally
   requires a perf field + a strict committed-baseline hash on a real GPU.
 
-See also `plan/gap-closure-acceptance-matrix.md` and `items_to_fix.md` §H for
-pending fixes that will upgrade these rows.
+See also `plan/road-to-100.md`, `plan/fidelity-promotion-playbook.md`, and
+`items_to_fix.md` §H for current promotion blockers and historical fix context.

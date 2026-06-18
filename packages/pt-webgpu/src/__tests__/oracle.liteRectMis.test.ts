@@ -1,6 +1,6 @@
 /**
  * PTWG-LITE-01 — independent CPU oracle for the lite-tier rect/disc area-light
- * paired MIS (plan/road-to-100-gap-ledger-2026-06-11.md §PTWG-LITE-01).
+ * paired MIS (plan/road-to-100.md proof bundle §PTWG-LITE-01).
  *
  * THE HISTORICAL FAILURE STRUCTURE (kept as a regression proof):
  *   - kernelLite.wgsl.ts rect/disc NEE sampled a point on the light

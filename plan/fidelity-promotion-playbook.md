@@ -44,7 +44,8 @@ Consequence — **two orthogonal kinds of evidence**:
 red light bleed red?). Those are **correctness claims** — lavapipe-validatable
 NOW. A row's promotion is **only perf-gated** when the claim itself is about
 throughput/interactivity (e.g. caustic-strategy "validated quality **and perf**"
-per `plan/archive/gap-closure-acceptance-matrix.md:24`). The per-row table (§2)
+per the legacy acceptance rule retained in `plan/roadmap.md` §6.1 and the
+per-row table below). The per-row table (§2)
 marks which is which.
 
 ### A known harness gap (do not skip)
@@ -137,8 +138,8 @@ For each row:
    - Append a dated line to the matrix's revision history and to a new
      `plan/fidelity-signoff-<date>.md` (mirror the `PR/WG-signoff-2026-05-26.md`
      convention) capturing scenario id, seed, resolution, hash pair, perf, PASS.
-     The acceptance-artifact contract is `roadmap §10.3` +
-     `plan/archive/gap-closure-acceptance-matrix.md:40-49`.
+     The acceptance-artifact contract is the §6.1 promotion process in
+     `plan/roadmap.md` plus the benchmark-runner artifact guidance.
 
 ---
 
@@ -157,7 +158,7 @@ Source rows: `plan/renderer-fidelity-matrix.md:19-31`. "Implemented?" was
 | 6 | SSS / translucent panels | pt-webgpu | ✅ derived `isTranslucent` gate (mech: `wgslContract.test.ts`) | ✅ (mixed-panel "SSS only where flagged" is a pixel claim) | No | `rfe07-11-sss-mixed-panels` (2027 / 1280×720 / 512) | Capture adapter (§1.0); baseline PNG committed |
 | 7 | Multi-emitter direct lighting | pt-webgpu | ✅ bounded emitter arrays (mech: `scenePack.test.ts`, `wgslContract.test.ts`) | ✅ (≈2× floor irradiance is a pixel claim; cf. `m5-multi-light-cornell`) | No | `rfe09-bridge-global-cmf` (31415 / 1024×1024 / 256) or `m5-multi-light-cornell` (6121) | Capture adapter (§1.0); no emitter-count-only baseline committed yet |
 | 8 | Material-fields parity (cornell) | pt-webgpu | ✅ (pt-webgl already `supported`); pt-webgpu side WG-0 baseline committed | ✅ | No | `ptwgpu-parity-material-fields` (777 / 1280×720 / 512) | **Closest to done** — baseline `baseline/ptwgpu-parity-material-fields.png` committed; strict-hash re-capture on full-tier adapter is the only step |
-| 9 | Caustic strategies | pt-webgpu | ✅ strategy plumbing (mech: `factoryCapabilities.test.ts`); full tier only | ✅ correctness; ⚠️ **also a perf/quality claim** | **YES** (quality **and perf** per `gap-closure-acceptance-matrix.md:24`) | `rfe05-caustic-strategy` (27182 / 1280×720 / 1024), 3 variants `none / manifold-nee / photon-map` | Real-GPU perf number required; PSNR relaxed to 26 |
+| 9 | Caustic strategies | pt-webgpu | ✅ strategy plumbing (mech: `factoryCapabilities.test.ts`); full tier only | ✅ correctness; ⚠️ **also a perf/quality claim** | **YES** (quality **and perf** per the Road §6.1 promotion process) | `rfe05-caustic-strategy` (27182 / 1280×720 / 1024), 3 variants `none / manifold-nee / photon-map` | Real-GPU perf number required; PSNR relaxed to 26 |
 | 10 | SVGF-real denoiser | pt-webgpu | ❌ **`unsupported` — intentional regime mismatch, NOT promotable** (wiring removed; mech: `unsupportedDenoiserDegrade.test.ts` asserts warn + degrade-to-no-denoise) | n/a | n/a | n/a | pt-webgpu is a CONVERGED progressive tracer; SVGF is a real-time 1-spp spatiotemporal filter. The converged denoiser is **`oidn-final`**. SVGF stays in `shared-denoisers` for the realtime walkaround stack only. Do not "promote" — nothing to capture. |
 | 10b | SVGF-real denoiser | **pt-webgl** | ❌ **`unsupported` — same regime mismatch** (converged tracer; only `oidn-final` is wired in `ptEngineWebGL2.ts`) | n/a | n/a | n/a | Same as #10: SVGF-real is real-time-only and intentionally unsupported on this converged backend. Use `oidn-final`. Not a code gap to fill. |
 | 11 | BDPT (eye↔light) | pt-webgpu | ✅ GPU light-subpath shipped per roadmap §0.5 (`bdptExtendLightSubpath` @compute); CPU fill + kernel eval (mech: `bdptPlumbing.test.ts`) | ✅ converged A/B is a pixel claim | No (correctness); perf is a separate throughput win (roadmap §6.2) | Cornell-box BDPT-on scene at fixed seed (cf. `HARDWARE-VALIDATION-NEEDS.md V1`) | Capture adapter (§1.0); no dedicated BDPT gap-closure scenario in presets — author one |
@@ -301,4 +302,4 @@ VITRUM_PTWEBGL_FIDELITY_STRICT=1 ...              # pt-webgl fidelity rows
 | `tools/benchmark-runner/scenario-presets.mjs` | Canonical per-scenario seed/res/spp |
 | `tools/benchmark-runner/gapClosurePtWebgpuMap.mjs` | pt-webgpu scenario → capture URL/options |
 | `HARDWARE-VALIDATION-NEEDS.md` | A/B procedure, baseline commit `bbd32c8`, V1–V8 GPU items |
-| `plan/archive/gap-closure-acceptance-matrix.md` | Per-RFE acceptance criteria (incl. caustics perf gate) |
+| `plan/road-to-100.md` | Current Road status and proof-gate ownership |

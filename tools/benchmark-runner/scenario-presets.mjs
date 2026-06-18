@@ -1,6 +1,7 @@
 /**
  * Deterministic metadata for gap-closure scenarios (host capture pages may read query params).
- * Mirrors plan/gap-closure-acceptance-matrix.md.
+ * Mirrors the active fidelity-promotion scenario table in
+ * plan/fidelity-promotion-playbook.md.
  */
 export const GAP_CLOSURE_SCENARIOS = [
   {

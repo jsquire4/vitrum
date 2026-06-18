@@ -1,6 +1,6 @@
 /**
  * PTWG-BDPT-01 — independent CPU oracle for the BDPT eye↔light connection
- * radiometry (plan/road-to-100-gap-ledger-2026-06-11.md §PTWG-BDPT-01).
+ * radiometry (plan/road-to-100.md proof bundle §PTWG-BDPT-01).
  *
  * WHAT THIS ORACLE IS
  * -------------------

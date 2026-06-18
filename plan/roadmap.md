@@ -316,7 +316,8 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 
 **Rows (initial matrix):** hero-λ, spectral Beer–Lambert, thin-film TMM, Cauchy dispersion, layered transmission MIS, SSS/translucent, multi-emitter, caustic strategies, BDPT, material-fields parity (pt-webgpu), SVGF-real (pt-webgpu).
 
-**Owner docs:** `plan/archive/gap-closure-acceptance-matrix.md`, `HARDWARE-VALIDATION-NEEDS.md`.
+**Owner docs:** `plan/renderer-fidelity-matrix.md`,
+`plan/fidelity-promotion-playbook.md`, and `HARDWARE-VALIDATION-NEEDS.md`.
 
 ### 6.2 P1 — pt-webgpu throughput
 

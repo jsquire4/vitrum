@@ -1,6 +1,6 @@
 /**
  * HYB-DDGI-01 — independent CPU oracle for DDGI visibility-moment poisoning by
- * sky-miss rays (plan/road-to-100-gap-ledger-2026-06-11.md §HYB-DDGI-01).
+ * sky-miss rays (plan/road-to-100.md proof bundle §HYB-DDGI-01).
  *
  * THE SUSPECTED MECHANISM (verified by code read):
  *   - Probe miss rays store hitDistance = BVH_INTERSECT_INFINITY
