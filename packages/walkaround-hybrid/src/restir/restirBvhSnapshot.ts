@@ -39,6 +39,8 @@ export interface RestirBvhSnapshot {
   readonly normals: ArrayBuffer;
   /** Per-vertex authored/generated tangent.xyzw stream. Zero means derive TBN from UVs. */
   readonly tangents: ArrayBuffer;
+  /** Per-vertex COLOR_0 rgba stream. Missing authored colors are white-filled upstream. */
+  readonly vertexColors: ArrayBuffer;
   readonly triMaterialIds: ArrayBuffer;
   readonly materials: readonly unknown[];
   /**
@@ -107,6 +109,7 @@ export function makeRestirBvhSnapshot(
     buffers.bvhIndex.cpuData,
     buffers.emitterNormals.buffer as ArrayBuffer,
     buffers.bvhTangents.cpuData,
+    buffers.bvhColors.cpuData,
     buffers.triangleMaterialIds.cpuData,
   );
   const tlasContentVersion = tlas != null
@@ -127,6 +130,7 @@ export function makeRestirBvhSnapshot(
     bvhIndex: buffers.bvhIndex.cpuData,
     normals: buffers.emitterNormals.buffer as ArrayBuffer,
     tangents: buffers.bvhTangents.cpuData,
+    vertexColors: buffers.bvhColors.cpuData,
     triMaterialIds: buffers.triangleMaterialIds.cpuData,
     materials: buffers.buildMaterials,
     coreMaterials: buffers.coreMaterials,

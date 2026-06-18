@@ -22,9 +22,10 @@
  *     d. The equirect UV math matches environmentSample.wgsl:
  *        atan2(lookupDir.z, lookupDir.x) + acos(clamp(lookupDir.y, -1.0, 1.0)).
  *
- *  5. Bind-group layout: dispatchProbeUpdateRaysPass builds bg2 with 7
- *     entries (bindings 0–6), including binding 6 (ddgiEnvMap). There is no
- *     sampler binding because the shader uses textureLoad.
+ *  5. Bind-group layout: dispatchProbeUpdateRaysPass builds bg1 with the
+ *     DDGI-local vertex-color stream and bg2 with 7 entries (bindings 0–6),
+ *     including binding 6 (ddgiEnvMap). There is no sampler binding because
+ *     the shader uses textureLoad.
  *
  *  6. DDGI.setEnvironment() forwarding: calling DDGI.setEnvironment() reaches
  *     ProbeUpdatePass.setEnvironment() (ProbeUpdatePass is the DDGI API owner).
@@ -236,10 +237,10 @@ describe('Wave 4 — WGSL structural assertions for HDRI probe-ray miss path', (
   });
 });
 
-// ── 5. Bind-group layout: bg2 has 7 entries ──────────────────────────────────
+// ── 5. Bind-group layout: bg1 carries vertex colors; bg2 has 7 entries ───────
 
-describe('Wave 4 — dispatchProbeUpdateRaysPass bg2 has 7 entries (bindings 0–6)', () => {
-  it('bg2 createBindGroup call includes binding 6 and no stripped sampler entry', () => {
+describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => {
+  it('bg1 carries vertex colors and bg2 includes env binding without stripped sampler entry', () => {
     const bindGroupEntryLists: unknown[][] = [];
     const mockDevice = {
       createBindGroup: vi.fn((desc: { entries: unknown[] }) => {
@@ -251,6 +252,7 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass bg2 has 7 entries (bindings 0�
 
     const mockTex = { createView: vi.fn(() => ({})) } as unknown as GPUTexture;
     const mockView = {} as GPUTextureView;
+    const mockVertexColorView = {} as GPUTextureView;
     const mockSampler = {} as GPUSampler;
     const mockBuf = { size: 16 } as unknown as GPUBuffer;
     const mockPipeline = {
@@ -286,6 +288,8 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass bg2 has 7 entries (bindings 0�
       materialTextureAtlasMetaView: mockView,
       bvhTangentTexture: mockTex,
       bvhTangentTextureView: mockView,
+      bvhVertexColorTexture: mockTex,
+      bvhVertexColorTextureView: mockVertexColorView,
       gridParamsBuf:     mockBuf,
       frameParamsBuf:    mockBuf,
       blendParamsBuf:    mockBuf,
@@ -309,6 +313,11 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass bg2 has 7 entries (bindings 0�
     } as unknown as GPUCommandEncoder;
 
     dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex);
+
+    const bg1Entries = bindGroupEntryLists[1] as Array<{ binding: number; resource: unknown }>;
+    expect(bg1Entries).toBeDefined();
+    expect(bg1Entries.map((e) => e.binding).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(bg1Entries.find((e) => e.binding === 6)?.resource).toBe(mockVertexColorView);
 
     // bg2 is the 3rd createBindGroup call (index 2).
     // Trust-audit F3 (2026-06-10): 7 entries (0-6) — NO sampler entry at 7.

@@ -60,6 +60,11 @@
 > degradations now surface as source-pathed `GltfImportDiagnostic` rows instead of only
 > free-form warning strings, and glTF-origin texture decode/readiness diagnostics now point
 > at their original `materials[i]...Texture` slots instead of only scene material slots.
+> Same-day DDGI vertex-alpha follow-up: probe alpha visibility now carries the
+> shared-BVH `COLOR_0` rgba stream into a DDGI-local vertex-color texture, keys
+> probe bind-group reuse on that view, and multiplies vertex alpha into
+> `opacity * baseColorMap.a * alphaMap.r` coverage just like the main material
+> atlas path.
 > pt-webgpu extension-lobe CPU reference tests now pin clearcoat, sheen,
 > iridescence zero-default, and normalized sampled-PDF behavior; this closes the
 > lobe-specific unit-proof tail but does **not** close GPU material-furnace /
@@ -1588,8 +1593,8 @@ and higher-confidence reference captures.
 | Category | Fields | Walkaround work |
 |----------|--------|-----------------|
 | Scalars consumed | baseColor, roughness, metallic, emissive*, transmission, ior, attenuation*, thickness, envMapIntensity, shadingModel, extensions | `shadingModel` verified `approximate`; mesh-area Le override, DDGI material-emissive direct probe hits, and HDRI envMapIntensity scaling closed; remaining scalar work belongs to atlas/lobe parity rows |
-| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend camera composition code-closed via transparent OIT with direct sun plus analytic point/spot and four-sample fixed-stratified finite-emitter lighting, plus alpha-aware direct shadow transmittance; DDGI probe direct sun/point/area-emitter visibility now samples readable baseColor/alpha-map coverage for blend/mask transmittance; shade/ReSTIR-DI/ReSTIR-GI/NRC/GRIS shadow visibility now evaluates readable atlas alpha coverage as binary/transmittance blocker filtering. ReSTIR-DI/GI primary and reconnection vertices now use the opaque-only first-hit predicate so fractional blend surfaces do not enter reservoirs under a different stochastic contract than shade. Transparent ReSTIR direct-light reservoir participation and GI transport remain intentionally approximate/unsupported until a true layered-transport model lands. |
-| Maps (17+) | all `*Map` | 3D atlas + decode pipeline |
+| Alpha | alphaMode, alphaCutoff, opacity, alphaMap | Scalar + alpha-map cutout code-closed in 3C/3D; fractional blend camera composition code-closed via transparent OIT with direct sun plus analytic point/spot and four-sample fixed-stratified finite-emitter lighting, plus alpha-aware direct shadow transmittance; DDGI probe direct sun/point/area-emitter visibility now samples readable baseColor/alpha-map coverage plus `COLOR_0.a` vertex alpha for blend/mask transmittance; shade/ReSTIR-DI/ReSTIR-GI/NRC/GRIS shadow visibility now evaluates readable atlas alpha coverage as binary/transmittance blocker filtering. ReSTIR-DI/GI primary and reconnection vertices now use the opaque-only first-hit predicate so fractional blend surfaces do not enter reservoirs under a different stochastic contract than shade. Transparent ReSTIR direct-light reservoir participation and GI transport remain intentionally approximate/unsupported until a true layered-transport model lands. |
+| Maps (17+) | supported/readable material maps listed in 3D | 3D atlas + decode pipeline; unsupported volume/spectral/layered/displacement families remain explicit below |
 | Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate after shade-owned, ReSTIR-DI, GI suffix, and receiver-lobe GI target consumption; native promotion still needs material-furnace/reference A/B where applicable |
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
 | Displacement | displacement* | Permanent unsupported all backends; diagnostics cover setScene, analytic authored materials, and walkaround material-only mutation paths |

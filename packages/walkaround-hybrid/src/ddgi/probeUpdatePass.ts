@@ -48,6 +48,7 @@ import {
   type MaterialTextureAtlasPayload,
 } from '../pipeline/materialTextureAtlas.js';
 import { uploadTangentTexture } from '../pipeline/bvhTangentTexture.js';
+import { uploadVertexColorTexture } from '../pipeline/bvhVertexColorTexture.js';
 import {
   packProbeUpdateBlendParams,
   packProbeUpdateFrameParams,
@@ -141,6 +142,7 @@ export class ProbeUpdatePass {
   private _lastTlasVersion = -1;
   private _lastMaterialAtlasPayload: MaterialTextureAtlasPayload | null = null;
   private _lastTangentSource: ArrayBuffer | null = null;
+  private _lastVertexColorSource: ArrayBuffer | null = null;
   private _frameIndex = 0;
   private _maxProbes = 0;
   private _lights: DDGILight[] = [];
@@ -548,6 +550,7 @@ export class ProbeUpdatePass {
     const placeholderMaterialAtlas =
       uploadMaterialTextureAtlas(device, DDGI_PLACEHOLDER_MATERIAL_ATLAS);
     const placeholderTangents = uploadTangentTexture(device, new Float32Array(4), 1);
+    const placeholderVertexColors = uploadVertexColorTexture(device, new Float32Array([1, 1, 1, 1]), 1);
 
     this._gpu = {
       device,
@@ -582,6 +585,8 @@ export class ProbeUpdatePass {
       materialTextureAtlasMetaView: placeholderMaterialAtlas.baseColorMetaTextureView,
       bvhTangentTexture: placeholderTangents.texture,
       bvhTangentTextureView: placeholderTangents.texture.createView(),
+      bvhVertexColorTexture: placeholderVertexColors.texture,
+      bvhVertexColorTextureView: placeholderVertexColors.texture.createView(),
       linearSampler,
       // Wave 4 — env map: placeholder initially; real view + sampler wired via
       // setEnvironment() (called from the engine before runFrame).
@@ -640,6 +645,7 @@ export class ProbeUpdatePass {
         } else {
           rebuildProbeBvhFromRestir(device, this._gpu, snap);
           this._syncTangentTexture(device, snap.tangents);
+          this._syncVertexColorTexture(device, snap.vertexColors);
         }
         this._lastBvhVersion = snap.contentVersion;
         this._lastBlasVersion = snap.blasContentVersion;
@@ -656,6 +662,7 @@ export class ProbeUpdatePass {
       this._uploadTraceParams(device, { bvhMode: 'merged', tlasNodeCount: 0 });
       this._syncMaterialTextureAtlas(device, DDGI_PLACEHOLDER_MATERIAL_ATLAS);
       this._syncTangentTexture(device, null);
+      this._syncVertexColorTexture(device, null);
     }
 
     // Reallocate ray results buffer if probe count changed.
@@ -894,6 +901,21 @@ export class ProbeUpdatePass {
     this._lastTangentSource = tangents;
   }
 
+  private _syncVertexColorTexture(device: GPUDevice, colors: ArrayBuffer | null): void {
+    const gpu = this._gpu;
+    if (gpu == null) return;
+    if (colors == null && this._lastVertexColorSource == null) return;
+    const data = colors != null && colors.byteLength >= 16
+      ? new Float32Array(colors)
+      : new Float32Array([1, 1, 1, 1]);
+    const vertexCount = Math.max(1, Math.floor(data.length / 4));
+    const next = uploadVertexColorTexture(device, data, vertexCount);
+    gpu.bvhVertexColorTexture.destroy();
+    gpu.bvhVertexColorTexture = next.texture;
+    gpu.bvhVertexColorTextureView = next.texture.createView();
+    this._lastVertexColorSource = colors;
+  }
+
   /** H18 Stage 2 — upload the packed emitter-tri array (or keep a dummy if count==0). */
   private _uploadEmitterTris(device: GPUDevice): void {
     const gpu = this._gpu!;
@@ -1098,6 +1120,7 @@ export class ProbeUpdatePass {
     g.materialTextureAtlas.destroy();
     g.materialTextureAtlasMeta.destroy();
     g.bvhTangentTexture.destroy();
+    g.bvhVertexColorTexture.destroy();
     g.gridParamsBuf.destroy();
     g.frameParamsBuf.destroy();
     g.blendParamsBuf.destroy();
@@ -1113,6 +1136,7 @@ export class ProbeUpdatePass {
     this._gpu = null;
     this._lastMaterialAtlasPayload = null;
     this._lastTangentSource = null;
+    this._lastVertexColorSource = null;
     this._atlasCache.dispose();
   }
 }

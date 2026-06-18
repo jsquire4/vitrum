@@ -269,6 +269,9 @@ struct DdgiTraceParams {
 // DDGI-local copy of the authored/generated per-vertex tangent.xyzw stream.
 // Zero tangents intentionally mean "derive the frame from UVs".
 @group(1) @binding(5) var ddgiBvhTangent: texture_2d<f32>;
+// DDGI-local copy of the per-vertex COLOR_0 rgba stream. Missing authored
+// colors are white-filled upstream, matching the main material atlas path.
+@group(1) @binding(6) var ddgiBvhVertexColor: texture_2d<f32>;
 
 @group(2) @binding(0) var<storage, read_write> rayResults:   array<ProbeRay>;
 @group(2) @binding(1) var<storage, read>       activeProbes: array<u32>;
@@ -356,6 +359,33 @@ fn ddgiWrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
 
 fn ddgiPackedUvFromVec4(v: vec4f) -> vec2f {
   return unpack2x16unorm(bitcast<u32>(v.w));
+}
+
+fn ddgiBvhVertexColorTexel(vertexIndex: u32) -> vec4f {
+  let dims = textureDimensions(ddgiBvhVertexColor);
+  let width = u32(dims.x);
+  let height = u32(dims.y);
+  if (width == 0u || height == 0u) {
+    return vec4f(1.0);
+  }
+  let y = vertexIndex / width;
+  if (y >= height) {
+    return vec4f(1.0);
+  }
+  return textureLoad(ddgiBvhVertexColor, vec2i(i32(vertexIndex % width), i32(y)), 0);
+}
+
+fn ddgiSampleVertexColorForHit(hit: IntersectionResult) -> vec4f {
+  let ca = ddgiBvhVertexColorTexel(hit.indices.x);
+  let cb = ddgiBvhVertexColorTexel(hit.indices.y);
+  let cc = ddgiBvhVertexColorTexel(hit.indices.z);
+  return clamp(
+    hit.barycoord.x * ca +
+    hit.barycoord.y * cb +
+    hit.barycoord.z * cc,
+    vec4f(0.0),
+    vec4f(1.0)
+  );
 }
 
 struct DdgiHitMaterialUvs {
@@ -1149,9 +1179,10 @@ fn ddgiMaterialAlphaCoverageForHit(hit: IntersectionResult) -> DdgiAlphaCoverage
   let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);
   let alphaTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);
   let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
+  let vertexColorAlpha = ddgiSampleVertexColorForHit(hit).a;
   let opacity = clamp(coverageMeta.y, 0.0, 1.0);
   out.cutoff = clamp(coverageMeta.z, 0.0, 1.0);
-  out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
+  out.coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
   return out;
 }
 

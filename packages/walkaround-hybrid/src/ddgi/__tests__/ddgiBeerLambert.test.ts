@@ -91,11 +91,14 @@ describe('DDGI probe-ray Beer-Lambert glass transmittance (B5)', () => {
     expect(wgsl).toContain('const DDGI_MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;');
     expect(wgsl).toContain('const DDGI_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;');
     expect(wgsl).toContain('fn ddgiMaterialAlphaCoverageForHit(hit: IntersectionResult) -> DdgiAlphaCoverage');
+    expect(wgsl).toContain('@group(1) @binding(6) var ddgiBvhVertexColor: texture_2d<f32>;');
+    expect(wgsl).toContain('fn ddgiSampleVertexColorForHit(hit: IntersectionResult) -> vec4f');
     expect(wgsl).toContain('fn ddgiSampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32) -> f32');
     expect(wgsl).toContain('fn ddgiSampleThicknessMapFactorForHit(hit: IntersectionResult) -> vec2f');
     expect(wgsl).toContain('let baseColorTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);');
     expect(wgsl).toContain('let alphaTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);');
-    expect(wgsl).toContain('out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
+    expect(wgsl).toContain('let vertexColorAlpha = ddgiSampleVertexColorForHit(hit).a;');
+    expect(wgsl).toContain('out.coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
     expect(wgsl).toContain('fn ddgiTraceShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> f32');
     expect(wgsl).toContain('tau = tau * ddgiAlphaShadowTransmittanceForHit(hit);');
     expect(wgsl).toContain('fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult');
