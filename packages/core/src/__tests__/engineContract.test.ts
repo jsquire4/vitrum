@@ -204,10 +204,10 @@ describe('backend promise ledger', () => {
     expect(wa.primitiveCastShadow).toBe('native');
     expect(wa.emitterCastShadow).toBe('native');
     // pt-webgl2: material-lane shadow-ray gate (native); emitter flag honored
-    // for analytic/mesh-area NEE and BDPT emitter-endpoint connections, with
-    // the forward emissive-hit residual still approximate.
+    // for analytic/mesh-area NEE, BDPT emitter-endpoint connections, and the
+    // mesh-area forward-emissive MIS side.
     expect(gl2.primitiveCastShadow).toBe('native');
-    expect(gl2.emitterCastShadow).toBe('approximate');
+    expect(gl2.emitterCastShadow).toBe('native');
     // pt-webgpu: every any-hit occlusion traversal skips the flag (native);
     // emitter flag honored by default-kernel NEE + BSDF-MIS connections only.
     expect(gpu.primitiveCastShadow).toBe('native');

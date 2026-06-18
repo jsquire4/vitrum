@@ -45,12 +45,15 @@ const MATERIAL_STRIDE = MATERIAL_PIXELS * 4;
 type PackedMaterialSpec = MaterialSpec & {
   readonly castShadow?: boolean;
   readonly vertexColors?: boolean;
+  readonly meshEmitterCastShadowDisabled?: boolean;
 };
 
 /** TRANSLUCENT_BIT — flag (s14.a) bit set for intrinsically scattering media. */
 const TRANSLUCENT_BIT = 1 << 4;
 /** UNLIT_BIT — flag (s14.a) bit set for terminal base-color unlit shading. */
 const UNLIT_BIT = 1 << 5;
+/** MESH_EMITTER_CAST_SHADOW_DISABLED_BIT — folded mesh-area emitter skips forward BSDF emission. */
+const MESH_EMITTER_CAST_SHADOW_DISABLED_BIT = 1 << 6;
 
 // Dispersion: Abbe → strength, evaluated at the Fraunhofer C/F lines.
 const FRAUNHOFER_C_NM = 656.3;
@@ -449,6 +452,7 @@ function packScalarSlots(
     let flags = Number(transparent);
     if (sssMedium.active) flags |= TRANSLUCENT_BIT;
     if (m.shadingModel === 'unlit') flags |= UNLIT_BIT;
+    if (m.meshEmitterCastShadowDisabled === true) flags |= MESH_EMITTER_CAST_SHADOW_DISABLED_BIT;
     data[index++] = flags;
   }
 

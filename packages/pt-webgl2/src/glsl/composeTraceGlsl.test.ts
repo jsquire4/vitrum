@@ -176,6 +176,9 @@ describe('composeTraceGlsl', () => {
     // Mesh-area emitters use the same s5.g shadow-disable lane as analytic lights.
     expect(src).toContain('t.castShadowDisabled = s5.g;');
     expect(src).toContain('rec.castShadowDisabled = tri.castShadowDisabled;');
+    expect(src).toContain('m.meshEmitterCastShadowDisabled = bool( packedFlags & 0x40u );');
+    expect(src).toContain('bool skipForwardMeshEmission = material.meshEmitterCastShadowDisabled &&');
+    expect(src).toContain('if ( ! skipForwardMeshEmission ) {');
     expect(src).toContain(
       '( lightRec.castShadowDisabled > 0.5 || ! attenuateHit( state, lightRay, lightRec.dist - 1e-3, attenuatedColor ) )',
     );
@@ -291,9 +294,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-	it('D10.4: RENDER_MAIN_SECTIONS join length pin 31777', () => {
+	it('D10.4: RENDER_MAIN_SECTIONS join length pin 31971', () => {
 		const assembled = RENDER_MAIN_SECTIONS.join('');
-		expect(assembled).toHaveLength(31777);
+		expect(assembled).toHaveLength(31971);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');

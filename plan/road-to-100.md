@@ -152,9 +152,14 @@
 > **2026-06-18 pt-webgpu BDPT shadow follow-up:** BDPT bounce-0 emitter vertices
 > now mirror authored `castShadow:false` into the light-subpath payload, and
 > eye↔light connection visibility skips the occlusion ray for that emitter
-> endpoint. The broader `emitterCastShadow` row remains approximate until
+> endpoint. The pt-webgpu `emitterCastShadow` row remains approximate until
 > MNEE/SPPM caustic/source-treatment parity is source-closed or explicitly
 > demoted.
+> **2026-06-18 pt-webgl2 emitter shadow follow-up:** folded mesh-area emitter
+> materials now carry a dedicated shadow-disabled flag into the GLSL material
+> payload, and the ordinary forward emissive-hit MIS estimator skips those
+> emitters while preserving camera/specular-visible emission. The pt-webgl2
+> `emitterCastShadow` promise row is now native.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped single-bounce RGB direct-light/unlit-primary slice; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive
@@ -1435,7 +1440,7 @@ and higher-confidence reference captures.
 | Volume/spectral | spectral*, scattering*, thinFilm, front/back layer | Permanent unsupported + planner routes to PT |
 | Displacement | displacement* | Permanent unsupported all backends; diagnostics cover setScene, analytic authored materials, and walkaround material-only mutation paths |
 
-**pt-webgl2 ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, and `scatteringCoefficientRGB`; `frontLayer` and `backLayer` are native field-consumption rows after face-selected transmission/roughness plus nested normal-map/normal-scale packing and shader consumption. `emitterCastShadow` remains approximate in the shadow matrix.
+**pt-webgl2 ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, and `scatteringCoefficientRGB`; `frontLayer` and `backLayer` are native field-consumption rows after face-selected transmission/roughness plus nested normal-map/normal-scale packing and shader consumption. `emitterCastShadow` is native in the shadow matrix after folded mesh-area emitter shadow flags reached the forward emissive-hit MIS estimator.
 
 **pt-webgpu ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `sheenColorMap`, `sheenRoughnessMap`, `iridescenceMap`, `iridescenceThicknessMap`, `specularColorMap`, `specularIntensityMap`, `specularIntensity`, and `specularColor`; `frontLayer` and `backLayer` are native in the full tier after face-selected layer-normal descriptor/shader support, while the lite tier still emits structured compatibility warnings. `emitterCastShadow` remains approximate in the shadow matrix.
 

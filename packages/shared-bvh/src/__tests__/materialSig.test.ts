@@ -72,6 +72,15 @@ describe('materialSig — Beer-Lambert fields (H33)', () => {
     const explicit: MaterialSpec = { ...BASE, attenuationColor: [1, 1, 1] };
     expect(materialSig(implicit)).toBe(materialSig(explicit));
   });
+
+  it('includes the folded mesh-emitter shadow flag in the material signature', () => {
+    const caster: MaterialSpec = { ...BASE, emissive: [1, 1, 1], emissiveIntensity: 2 };
+    const shadowless = {
+      ...caster,
+      meshEmitterCastShadowDisabled: true,
+    } as MaterialSpec & { meshEmitterCastShadowDisabled: true };
+    expect(materialSig(caster)).not.toBe(materialSig(shadowless));
+  });
 });
 
 describe('mergeWorldSpaceFromCore material slots', () => {

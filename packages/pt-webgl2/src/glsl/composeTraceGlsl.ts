@@ -1092,17 +1092,21 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							//     sample → weight 1 (full emission), no double-count.
 							//   • else: balance/power-heuristic split with the NEE estimate.
 							// When uMeshLightCount==0 this reduces to the raw add (byte-identical).
-							if ( uMeshLightCount != 0u && uTotalEmissiveArea > 0.0 &&
-								! state.firstRay && ! incomingWasSpecular &&
-								surf.emission != vec3( 0.0 ) && hitType != NO_HIT ) {
-								float cosLight = dot( surf.faceNormal, ray.direction );
-								float neePdf = meshAreaLightForwardPdf(
-									surfaceHit.dist * surfaceHit.dist, cosLight, uTotalEmissiveArea
-								) / lightsDenom;
-								float emisMisWeight = misHeuristic( incomingBsdfPdf, neePdf );
-								pc_fragColor.rgb += ( surf.emission * throughputRgb * emisMisWeight );
-							} else {
-								pc_fragColor.rgb += ( surf.emission * throughputRgb );
+							bool skipForwardMeshEmission = material.meshEmitterCastShadowDisabled &&
+								! state.firstRay && ! incomingWasSpecular;
+							if ( ! skipForwardMeshEmission ) {
+								if ( uMeshLightCount != 0u && uTotalEmissiveArea > 0.0 &&
+									! state.firstRay && ! incomingWasSpecular &&
+									surf.emission != vec3( 0.0 ) && hitType != NO_HIT ) {
+									float cosLight = dot( surf.faceNormal, ray.direction );
+									float neePdf = meshAreaLightForwardPdf(
+										surfaceHit.dist * surfaceHit.dist, cosLight, uTotalEmissiveArea
+									) / lightsDenom;
+									float emisMisWeight = misHeuristic( incomingBsdfPdf, neePdf );
+									pc_fragColor.rgb += ( surf.emission * throughputRgb * emisMisWeight );
+								} else {
+									pc_fragColor.rgb += ( surf.emission * throughputRgb );
+								}
 							}
 
 							// skip the sample if our PDF or ray is impossible

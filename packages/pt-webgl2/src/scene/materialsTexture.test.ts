@@ -140,6 +140,21 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     expect(d[texel(1, 14, 1)]).toBe(0);
   });
 
+  it('packs folded mesh-area emitter shadow-disable in s14.a bit 6', () => {
+    const ordinary: MaterialSpec = { baseColor: [0.8, 0.8, 0.8], roughness: 1.0, metallic: 0.0 };
+    const foldedShadowless = {
+      baseColor: [0, 0, 0],
+      roughness: 1.0,
+      metallic: 0.0,
+      emissive: [1, 1, 1],
+      emissiveIntensity: 2,
+      meshEmitterCastShadowDisabled: true,
+    } as MaterialSpec & { meshEmitterCastShadowDisabled: true };
+    const d = packMaterialsTexture([ordinary, foldedShadowless]).data;
+    expect(d[texel(0, 14, 3)]).toBe(0);
+    expect(d[texel(1, 14, 3)]).toBe(64);
+  });
+
   it('packs the vertex-color enable flag in s14.b for materials used by colored primitives', () => {
     const plain: MaterialSpec = { baseColor: [1, 1, 1], roughness: 1.0, metallic: 0.0 };
     const colored: MaterialSpec = { baseColor: [0.8, 0.8, 0.8], roughness: 0.5, metallic: 0.0 };

@@ -77,6 +77,7 @@ export const material_struct = /* glsl */ `
 		bool flatShading;
 		bool transparent;
 		bool unlit;
+		bool meshEmitterCastShadowDisabled;
 		bool fogVolume;
 		uint flags;
 		float sssSigmaT;
@@ -328,6 +329,7 @@ export const material_struct = /* glsl */ `
 		uint packedFlags = uint( round( s14.a ) );
 		m.transparent = bool( packedFlags & 1u );
 		m.unlit = bool( packedFlags & 0x20u );
+		m.meshEmitterCastShadowDisabled = bool( packedFlags & 0x40u );
 		m.flags = packedFlags;
 		m.sssSigmaT = s15.r;
 		m.sssAnisotropyG = s15.g;

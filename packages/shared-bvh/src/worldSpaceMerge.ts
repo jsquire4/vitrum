@@ -350,8 +350,9 @@ function determinant4(m: ArrayLike<number>): number {
  * Structural material signature — the core `MaterialSpec` counterpart to
  * `legacy/bvhCommon.ts:snapshotPreBuildMaterials`'s `matSig`. Hashes only the fields
  * the GI/PT consumers read (baseColor, emissive, emissiveIntensity, roughness,
- * metallic, transmission, ior, Beer-Lambert attenuation fields, and base/normal
- * map handle identity), with the SAME `toFixed(4)` quantisation, so two primitives
+ * metallic, transmission, ior, Beer-Lambert attenuation fields, base/normal
+ * map handle identity, and pt-webgl2's folded mesh-emitter shadow flag), with
+ * the SAME `toFixed(4)` quantisation, so two primitives
  * carrying structurally-equal materials collapse to one LUT slot — exactly as the
  * THREE value-dedup does for React/R3F material churn. Map identity uses the opaque
  * `TextureRef.handle` (the core analogue of THREE's `texture.uuid`).
@@ -389,7 +390,10 @@ export function materialSig(m: MaterialSpec): string {
       ? 'Inf'
       : adRaw.toFixed(4);
   const thS = (m.thickness ?? 0).toFixed(4);
-  return `${colS}|${emS}|${ei}|${r}|${mt}|${tr}|${ior}|${mapU}|${nmU}|${acS}|${adS}|${thS}`;
+  const meshEmitterShadow = (m as MaterialSpec & {
+    meshEmitterCastShadowDisabled?: boolean;
+  }).meshEmitterCastShadowDisabled === true ? '1' : '0';
+  return `${colS}|${emS}|${ei}|${r}|${mt}|${tr}|${ior}|${mapU}|${nmU}|${acS}|${adS}|${thS}|${meshEmitterShadow}`;
 }
 
 /**

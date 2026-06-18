@@ -27,22 +27,41 @@
 
 import type { MaterialSpec, Scene, ScenePrimitive, SceneNodeId, Vec3 } from '@vitrum/core';
 
+type FoldedMeshAreaEmitterMaterial = MaterialSpec & {
+  readonly meshEmitterCastShadowDisabled?: boolean;
+};
+
 /**
  * Return a scene whose primitives carry the emissive their `mesh-area` emitters
  * describe. If the scene has no `mesh-area` emitters the input is returned
  * unchanged (referential identity preserved — no needless reallocation).
  */
 export function foldMeshAreaEmittersIntoMaterials(scene: Scene): Scene {
-  const radianceByMesh = new Map<SceneNodeId, { color: Vec3; intensity: number }>();
+  const radianceByMesh = new Map<SceneNodeId, {
+    color: Vec3;
+    intensity: number;
+    castShadowDisabled: boolean;
+  }>();
   for (const e of scene.emitters) {
-    if (e.kind === 'mesh-area') radianceByMesh.set(e.meshId, { color: e.color, intensity: e.intensity });
+    if (e.kind === 'mesh-area') {
+      radianceByMesh.set(e.meshId, {
+        color: e.color,
+        intensity: e.intensity,
+        castShadowDisabled: e.castShadow === false,
+      });
+    }
   }
   if (radianceByMesh.size === 0) return scene;
 
   const primitives = scene.primitives.map((prim): ScenePrimitive => {
     const r = radianceByMesh.get(prim.id);
     if (r == null) return prim;
-    const material: MaterialSpec = { ...prim.material, emissive: r.color, emissiveIntensity: r.intensity };
+    const material: FoldedMeshAreaEmitterMaterial = {
+      ...prim.material,
+      emissive: r.color,
+      emissiveIntensity: r.intensity,
+      ...(r.castShadowDisabled ? { meshEmitterCastShadowDisabled: true } : {}),
+    };
     return { ...prim, material };
   });
 

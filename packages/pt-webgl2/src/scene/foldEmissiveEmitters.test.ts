@@ -66,4 +66,27 @@ describe('foldMeshAreaEmittersIntoMaterials', () => {
     expect(lightMat.emissive).toBeUndefined();
     expect(scene.primitives[0]!.material).toBe(lightMat);
   });
+
+  it('carries mesh-area emitter castShadow:false as a folded material flag', () => {
+    const scene: Scene = {
+      primitives: [quad('light', { baseColor: [0, 0, 0], roughness: 1, metallic: 0 })],
+      emitters: [{ ...meshAreaEmitter('light', [1, 1, 1], 3), castShadow: false }],
+      environment: { kind: 'none' },
+    };
+
+    const folded = foldMeshAreaEmittersIntoMaterials(scene);
+    const light = folded.primitives[0]!.material as MaterialSpec & {
+      meshEmitterCastShadowDisabled?: boolean;
+    };
+
+    expect(light.emissive).toEqual([1, 1, 1]);
+    expect(light.emissiveIntensity).toBe(3);
+    expect(light.meshEmitterCastShadowDisabled).toBe(true);
+    expect(
+      (scene.primitives[0]!.material as {
+        meshEmitterCastShadowDisabled?: boolean;
+      }).meshEmitterCastShadowDisabled,
+    )
+      .toBeUndefined();
+  });
 });
