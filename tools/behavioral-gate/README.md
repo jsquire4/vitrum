@@ -55,17 +55,19 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
 ```
 
-The committed dzn status set includes four passing narrow lanes
-(`gltf-material-sweep`, `mutation`, `bdpt`, `restirPtReuse`) plus the broader `--filter gltf`
-full-suite lane. The broad glTF status confirms full-tier execution with zero
-GPU errors for all selected glTF lanes; real-asset comparisons use the explicit
-`dzn-full` golden variant under
+The committed dzn status set includes six passing focused artifacts
+(`gltf-material-sweep`, `mutation`, `bdpt`, `restirPtReuse`, `caustic`,
+`photon`) plus the broader `--filter gltf` full-suite lane. The broad glTF
+status confirms full-tier execution with zero GPU errors for all selected glTF
+lanes; real-asset comparisons use the explicit `dzn-full` golden variant under
 `tools/reference-renders/gltf-real-behavioral-dzn-full/`. The BDPT lane is a
 full-tier boot/render proof for `pt/bdpt` and `pt/spectral+bdpt`; material
 furnace and multi-vertex promotion remain separate radiometric proof work. The
 ReSTIR-PT lane is a full-tier boot/render proof for off-default
 `pt/restirPtReuse`; equal-spp variance and specialty radiometric promotion remain
-separate proof work.
+separate proof work. The caustic/photon lanes prove full-tier boot/render health
+for `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon`;
+caustic radiometric convergence remains a separate A/B proof.
 
 ## What it covers
 

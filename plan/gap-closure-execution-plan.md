@@ -377,6 +377,10 @@ replacement for V28-B recaptures.
   `pt/restirPtReuse` through
   `behavioral-gate:dzn -- --filter restirPtReuse --require-full-tier`; equal-spp
   variance reduction and specialty/radiometric promotion remain.
+- SPPM/MNEE caustic A/B. Full-tier dzn boot/render proof now covers
+  `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` through
+  the focused `caustic` and `photon` dzn status artifacts; caustic radiometric
+  convergence remains.
 - pt-webgpu full-tier material-furnace/reference-render sweeps. WSL lavapipe is
   adapter-limited for this lane (`maxStorageBuffersPerShaderStage=8`; full tier
   requires 34); use `behavioral-gate:dzn`, browser, or another real/full-tier
@@ -466,6 +470,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | NRC quality/default tier | walkaround NRC | Quality/convergence A/B after warm-up gate; decide default/off/experimental. |
 | Neural denoiser quality | shared/walkaround | Production checkpoint plus quality A/B; otherwise keep opt-in. |
 | BDPT / ReSTIR-PT material and radiometric proof | pt-webgpu/pt-webgl2 | Safe-default BDPT, SPPM, and ReSTIR-PT committed snapshots are checked by `npm run radiometric-ab:proof-check`; focused dzn full-tier behavioral status now proves `pt/bdpt`, `pt/spectral+bdpt`, and off-default `pt/restirPtReuse` boot/render finite non-black with zero GPU errors. Remaining work is specialty material furnace, equal-spp ReSTIR-PT variance proof, and multi-vertex BDPT promotion evidence. |
+| SPPM / MNEE caustic radiometric proof | pt-webgpu | Focused dzn full-tier behavioral status now proves `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` boot/render finite non-black with zero GPU errors. Remaining work is caustic radiometric convergence / forward-traced oracle A/B. |
 | pt-webgpu full-tier material furnace | pt-webgpu | Clearcoat/sheen/iridescence/aniso/specular map reference renders. Synthetic glTF material-sweep WSL/lavapipe golden is metadata-checked; full-tier material-lobe capture remains. |
 | pt-webgl2 material furnace | pt-webgl2 | Thickness/SSS/procedural-sky/emissive panels against references. |
 | Rich-material GI | walkaround | A/B showing receiver-lobe material target improves or preserves correctness. |

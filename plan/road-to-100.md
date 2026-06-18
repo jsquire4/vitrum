@@ -176,6 +176,12 @@
 > off-default `pt/restirPtReuse` also boots/renders finite non-black full-tier on
 > the dzn adapter with zero GPU errors; equal-spp variance and specialty
 > radiometric promotion remain separate proof work.
+> **2026-06-18 caustic/SPPM dzn follow-up:** focused dzn status artifacts for
+> `--filter caustic` and `--filter photon` prove `pt/caustic-manifold`,
+> `pt/caustic-photon`, and `pt/spectral+photon` boot/render finite non-black
+> full-tier with zero GPU errors. This closes a specialty-path execution proof
+> slice; caustic radiometric convergence / forward-traced oracle A/B remains the
+> A4 proof tail.
 > The remaining proof/implementation tail is explicit
 > multi-vertex BDPT: `controls.byMaxLightBounces` still shows the finding starting
 > at `maxLightBounces:2` (+13.21% global luminance) and reaching +17.08% at

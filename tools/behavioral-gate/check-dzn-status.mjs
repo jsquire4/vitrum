@@ -66,6 +66,34 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter caustic --require-full-tier",
+    filter: "caustic",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 2,
+    failures: 0,
+    configs: [
+      { label: "pt/caustic-manifold", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/caustic-photon", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-photon-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter photon --require-full-tier",
+    filter: "photon",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 2,
+    failures: 0,
+    configs: [
+      { label: "pt/caustic-photon", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/spectral+photon", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-status.json",
     command: "npm run behavioral-gate:dzn -- --filter gltf --require-full-tier",
     filter: "gltf",
@@ -170,4 +198,4 @@ for (const expected of EXPECTED) {
   }
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (5 committed dzn status artifacts)");
+console.log("[behavioral-gate-dzn-status-check] PASS (7 committed dzn status artifacts)");
