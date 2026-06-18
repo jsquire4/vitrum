@@ -93,9 +93,10 @@ For each row:
    Do **not** trust any capture until the probe passes.
 
 2. **Mechanical gate (already green; re-run to pin).**
-   `npm run typecheck && npm test` and, for fork rows, `npm run fork-shader-smoke`
-   (`plan/renderer-fidelity-matrix.md:35`). The matrix's "Mechanical evidence"
-   column names the exact test file per row — that test must be green.
+   `npm run typecheck && npm test`; use `npm run shader-gate` for WGSL pass
+   graph coverage and `npm run shader-gate:glsl` for native pt-webgl2 GLSL
+   coverage. The matrix's "Mechanical evidence" column names the exact test
+   file per row — that test must be green.
 
 3. **Capture at the row's fixed scenario.** Use the scenario's
    seed/resolution/bounces/SPP from `scenario-presets.mjs` (the canonical values
@@ -157,12 +158,12 @@ Source rows: `plan/renderer-fidelity-matrix.md:19-31`. "Implemented?" was
 | 5 | Layered front/back + transmission MIS | pt-webgpu | ✅ `activeLayerWeightRgb` + η² PDF (matrix mech: `wgslContract.test.ts`); WG-4 landed | ✅ | No | `rfe03-layered-front-back` (1337 / 1280×720 / 512) | Capture adapter (§1.0); baseline PNG already committed (`baseline/rfe03-layered-front-back.png`) |
 | 6 | SSS / translucent panels | pt-webgpu | ✅ derived `isTranslucent` gate (mech: `wgslContract.test.ts`) | ✅ (mixed-panel "SSS only where flagged" is a pixel claim) | No | `rfe07-11-sss-mixed-panels` (2027 / 1280×720 / 512) | Capture adapter (§1.0); baseline PNG committed |
 | 7 | Multi-emitter direct lighting | pt-webgpu | ✅ bounded emitter arrays (mech: `scenePack.test.ts`, `wgslContract.test.ts`) | ✅ (≈2× floor irradiance is a pixel claim; cf. `m5-multi-light-cornell`) | No | `rfe09-bridge-global-cmf` (31415 / 1024×1024 / 256) or `m5-multi-light-cornell` (6121) | Capture adapter (§1.0); no emitter-count-only baseline committed yet |
-| 8 | Material-fields parity (cornell) | pt-webgpu | ✅ (pt-webgl already `supported`); pt-webgpu side WG-0 baseline committed | ✅ | No | `ptwgpu-parity-material-fields` (777 / 1280×720 / 512) | **Closest to done** — baseline `baseline/ptwgpu-parity-material-fields.png` committed; strict-hash re-capture on full-tier adapter is the only step |
+| 8 | Material-fields parity (cornell) | pt-webgpu | ✅ (pt-webgl2 is tracked in the fidelity matrix separately); pt-webgpu side WG-0 baseline committed | ✅ | No | `ptwgpu-parity-material-fields` (777 / 1280×720 / 512) | **Closest to done** — baseline `baseline/ptwgpu-parity-material-fields.png` committed; strict-hash re-capture on full-tier adapter is the only step |
 | 9 | Caustic strategies | pt-webgpu | ✅ strategy plumbing (mech: `factoryCapabilities.test.ts`); full tier only | ✅ correctness; ⚠️ **also a perf/quality claim** | **YES** (quality **and perf** per the Road §6.1 promotion process) | `rfe05-caustic-strategy` (27182 / 1280×720 / 1024), 3 variants `none / manifold-nee / photon-map` | Real-GPU perf number required; PSNR relaxed to 26 |
 | 10 | SVGF-real denoiser | pt-webgpu | ❌ **`unsupported` — intentional regime mismatch, NOT promotable** (wiring removed; mech: `unsupportedDenoiserDegrade.test.ts` asserts warn + degrade-to-no-denoise) | n/a | n/a | n/a | pt-webgpu is a CONVERGED progressive tracer; SVGF is a real-time 1-spp spatiotemporal filter. The converged denoiser is **`oidn-final`**. SVGF stays in `shared-denoisers` for the realtime walkaround stack only. Do not "promote" — nothing to capture. |
-| 10b | SVGF-real denoiser | **pt-webgl** | ❌ **`unsupported` — same regime mismatch** (converged tracer; only `oidn-final` is wired in `ptEngineWebGL2.ts`) | n/a | n/a | n/a | Same as #10: SVGF-real is real-time-only and intentionally unsupported on this converged backend. Use `oidn-final`. Not a code gap to fill. |
+| 10b | SVGF-real denoiser | **pt-webgl2** | ❌ **`unsupported` — same regime mismatch** (converged tracer; only `oidn-final` is wired in `ptEngineWebGL2.ts`) | n/a | n/a | n/a | Same as #10: SVGF-real is real-time-only and intentionally unsupported on this converged backend. Use `oidn-final`. Not a code gap to fill. |
 | 11 | BDPT (eye↔light) | pt-webgpu | ✅ GPU light-subpath shipped per roadmap §0.5 (`bdptExtendLightSubpath` @compute); CPU fill + kernel eval (mech: `bdptPlumbing.test.ts`) | ✅ converged A/B is a pixel claim | No (correctness); perf is a separate throughput win (roadmap §6.2) | Cornell-box BDPT-on scene at fixed seed (cf. `HARDWARE-VALIDATION-NEEDS.md V1`) | Capture adapter (§1.0); no dedicated BDPT gap-closure scenario in presets — author one |
-| 11b | BDPT (eye↔light) | pt-webgl | ✅ fork path (mech: `forkUniformBridge.test.ts`) | ⚠️ pt-webgl is **WebGL2** — runs on lavapipe's GL surface poorly; native lavapipe is a **WebGPU** device. Use Windows Chrome (transport C). | No | same Cornell BDPT scene, `backend: pt-webgl` | pt-webgl needs a **GL** capture path; lavapipe-WebGPU does not help WebGL2 rows |
+| 11b | BDPT (eye↔light) | pt-webgl2 | ✅ native WebGL2 path (mech: `bdptDriver.test.ts`, `composeTraceGlsl.test.ts`) | ⚠️ pt-webgl2 is **WebGL2** — native lavapipe here is a **WebGPU** device, so this row still needs a browser GL capture path. | No | same Cornell BDPT scene, `backend: pt-webgl2` | pt-webgl2 needs a real-browser GL capture; lavapipe-WebGPU does not cover WebGL2 rows |
 
 **Lavapipe-NOW rows (correctness, no perf gate):** #1, #2, #3, #4, #5, #6, #7,
 #8, #11(pt-webgpu) — i.e. **every pt-webgpu hero-material/spectral/layered/
@@ -172,12 +173,12 @@ rasteriser answers correctly.
 
 **Additionally need real-GPU (transport C):**
 - #9 caustic strategies — the acceptance criterion explicitly includes **perf**.
-- Any pt-webgl-backed row (#8 is pt-webgpu; #11b, and pt-webgl spectral/caustics
-  fidelity via `benchmark:pt-webgl-fidelity`) — pt-webgl is **WebGL2**, and the
+- Any pt-webgl2/WebGL2 row (#11b plus pt-webgl2 spectral/caustic fidelity rows)
+  — pt-webgl2 is **WebGL2**, and the
   native lavapipe device is **WebGPU**; WebGL2 capture still needs a real browser.
 
 **Not promotable at all (intentional regime mismatch):** #10 and #10b SVGF-real
-are `unsupported` on **both** converged backends (pt-webgpu and pt-webgl) by
+are `unsupported` on **both** converged backends (pt-webgpu and pt-webgl2) by
 design — SVGF is a real-time 1-spp spatiotemporal filter, and a converged
 progressive tracer's denoiser is **`oidn-final`**. This is not a code gap to fill;
 the real SVGF impl stays in `shared-denoisers` for the realtime walkaround stack.
@@ -202,14 +203,9 @@ the real SVGF impl stays in `shared-denoisers` for the realtime walkaround stack
 
 4. **#1 hero-λ, #2 spectral Beer–Lambert, #4 Cauchy dispersion** — all share the
    `rfe08-13-spectral-payload` preset + the `vitrum.ptWebgpu.spectralHeroWavelength`
-   extension. The pt-webgpu side is verified-real. **Dependency:** the concurrent
-   **pt-webgl real Jakob-Hanika** work (roadmap §0.5 item 2 — replace the
-   `jakob-hanika-placeholder`). The pt-webgpu rows do **not** block on it (they use
-   hero-λ + packed μ, not the fork's RGB→spectrum upsampling), but if the
-   sibling agent is mid-flight in `shared-samplers/jakobHanika.ts` /
-   `pt-webgl/forkUniformBridge.ts`, do **not** re-capture pt-webgl spectral until
-   that lands — capture the **pt-webgpu** spectral rows first, which are
-   independent.
+   extension. The pt-webgpu side is verified-real and independent from pt-webgl2
+   browser-capture promotion tails — capture the **pt-webgpu** spectral rows
+   first.
 
 ### Tier 3 — lavapipe correctness, but author a scenario first
 
@@ -229,18 +225,19 @@ queue" below.)
 8. **#9 caustic strategies** — perf-gated (`none / manifold-nee / photon-map`
    ms/sample on the RTX 4090 via `VITRUM_USE_WIN_CHROME=1`). Cannot finish on
    lavapipe.
-9. **All pt-webgl-backed rows** (#11b, pt-webgl spectral/caustic fidelity via
-   `benchmark:pt-webgl-fidelity`) — WebGL2 path; needs real-browser GL capture.
+9. **All pt-webgl2/WebGL2 rows** (#11b plus pt-webgl2 spectral/caustic fidelity)
+   — WebGL2 path; needs real-browser GL capture.
 
 ### Not in the promotion queue — real code work (roadmap §0.5, north-star fidelity)
 
-- **#10 / #10b SVGF-real (pt-webgpu AND pt-webgl)** — `unsupported` by **design**,
+- **#10 / #10b SVGF-real (pt-webgpu AND pt-webgl2)** — `unsupported` by **design**,
   not a missing-feature gap. Both are converged progressive tracers; SVGF is a
   real-time 1-spp spatiotemporal filter and the wrong regime. The converged
   denoiser is **`oidn-final`**. Do **not** implement or "promote" — the real SVGF
   impl stays in `shared-denoisers` for the realtime walkaround stack only.
-- **pt-webgl Jakob-Hanika placeholder → real** (roadmap §0.5 item 2) — concurrent
-  work; gates the *pt-webgl* spectral fidelity numbers (not the pt-webgpu rows).
+- **pt-webgl2 spectral fidelity** — current source consumes the spectral payloads
+  called out in the renderer matrix; the remaining blocker is browser/adapter A/B
+  capture, not retired fork placeholder work.
 - **BMFR denoiser** — SHIPPED (roadmap §0.5 item 1): real Koskela-2019 blockwise
   Householder-QR regression in `shared-denoisers` (`wgsl/bmfr.wgsl.ts`,
   `bmfrRegression.ts`) + `BmfrDenoiser` in walkaround. Not a fidelity-matrix row.
@@ -249,13 +246,12 @@ queue" below.)
 
 ```
 lavapipe env (tools/gpu-env, DONE) ─┬─► Tier 1 (#8, #5, #6, #3)         [promote now]
-                                    ├─► Tier 2 (#1, #2, #4)             [pt-webgpu independent of pt-webgl spectral]
+                                    ├─► Tier 2 (#1, #2, #4)             [pt-webgpu independent of WebGL2 capture]
                                     └─► Tier 3 (#7, #11-ptwgpu)         [author scenario, then capture]
 
 native lavapipe PNG adapter (NOT WIRED, FINDINGS.md:138) ──► unblocks all of the above for hands-free WSL capture
-real GPU / Win-Chrome (transport C) ──► Tier 4 (#9 perf, all pt-webgl rows)
+real GPU / Win-Chrome (transport C) ──► Tier 4 (#9 perf, all pt-webgl2/WebGL2 rows)
 SVGF-real (#10 / #10b) ──► NOT in queue: unsupported by design on both converged backends (oidn-final is the converged denoiser)
-pt-webgl Jakob-Hanika real (CODE, concurrent) ──► pt-webgl spectral fidelity numbers
 ```
 
 ---
@@ -269,7 +265,8 @@ tools/gpu-env/run-gpu-validation.sh smoke        # WGSL compile + compute readba
 
 # 1. Mechanical gate (per-row test named in the matrix's "Mechanical evidence" col)
 npm run typecheck && npm test
-npm run fork-shader-smoke                         # fork (pt-webgl) rows only
+npm run shader-gate                               # WebGPU/WGSL pass graph
+npm run shader-gate:glsl                          # pt-webgl2 GLSL programs
 
 # 2. Correctness capture + diff for one row (transport A lavapipe, once adapter wired; else C)
 VITRUM_GPU_CAPTURE=1 \
@@ -280,12 +277,14 @@ VITRUM_GAP_SCENARIOS=rfe14-thinfilm-angle-shift \
 # 3. Perf number (PERF-GATED rows only — REAL GPU, Windows Chrome on the dGPU)
 VITRUM_USE_WIN_CHROME=1 ... node tools/benchmark-runner/run-gpu-host-windows.mjs
 
-# 4. pt-webgl fidelity PSNR artifact (WebGL2 rows; real browser)
-npm run benchmark:pt-webgl-fidelity --workspace @vitrum/benchmark-runner
+# 4. pt-webgl2 fidelity artifact (WebGL2 rows; real browser)
+# Use the browser capture adapter for the relevant pt-webgl2 scenario; the
+# retired fork-specific fidelity benchmark script no longer exists.
 
 # 5. Strict gate ON once baselines stable
 VITRUM_STRICT_GAP_CLOSURE=1 ...                   # gap-closure rows
-VITRUM_PTWEBGL_FIDELITY_STRICT=1 ...              # pt-webgl fidelity rows
+# WebGL2 browser rows should use their lane-specific proof/check command once
+# a committed browser capture lane exists.
 ```
 
 ---
