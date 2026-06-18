@@ -101,16 +101,57 @@ const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
   'displacementBias',
 ] as const satisfies readonly (keyof MaterialSpec)[];
 
-function collectUnsupportedDisplacementFields(scene: Scene): string[] {
+interface UnsupportedMaterialFieldUse {
+  readonly primitiveId: string;
+  readonly fields: readonly string[];
+}
+
+function collectPrimitiveMaterialFieldUses(
+  scene: Scene,
+  unsupportedFields: readonly (keyof MaterialSpec)[],
+): UnsupportedMaterialFieldUse[] {
+  const uses: UnsupportedMaterialFieldUse[] = [];
   const fields = new Set<string>();
   for (const primitive of scene.primitives) {
     const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
     if (material == null) continue;
-    for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
+    fields.clear();
+    for (const field of unsupportedFields) {
       if (material[field] != null) fields.add(field);
     }
+    if (fields.size > 0) {
+      uses.push({ primitiveId: primitive.id, fields: Array.from(fields).sort() });
+    }
+  }
+  return uses;
+}
+
+function collectFieldUnion(uses: readonly UnsupportedMaterialFieldUse[]): string[] {
+  const fields = new Set<string>();
+  for (const use of uses) {
+    for (const field of use.fields) fields.add(field);
   }
   return Array.from(fields).sort();
+}
+
+function collectUnsupportedDisplacementFieldUses(scene: Scene): UnsupportedMaterialFieldUse[] {
+  return collectPrimitiveMaterialFieldUses(scene, UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS);
+}
+
+function collectUnsupportedMaterialFieldUses(scene: Scene): UnsupportedMaterialFieldUse[] {
+  const uses: UnsupportedMaterialFieldUse[] = [];
+  for (const primitive of scene.primitives) {
+    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
+    if (material == null) continue;
+    const fields = new Set<string>();
+    for (const field of UNSUPPORTED_MATERIAL_FIELDS) {
+      if (material[field] != null) fields.add(field);
+    }
+    if (fields.size > 0) {
+      uses.push({ primitiveId: primitive.id, fields: Array.from(fields).sort() });
+    }
+  }
+  return uses;
 }
 
 // CAP-01 — the remaining material fields this backend silently drops, derived
@@ -123,18 +164,6 @@ const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SP
     !(UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS as readonly string[]).includes(field) &&
     field !== 'extensions',
 );
-
-function collectUnsupportedMaterialFields(scene: Scene): string[] {
-  const fields = new Set<string>();
-  for (const primitive of scene.primitives) {
-    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
-    if (material == null) continue;
-    for (const field of UNSUPPORTED_MATERIAL_FIELDS) {
-      if (material[field] != null) fields.add(field);
-    }
-  }
-  return Array.from(fields).sort();
-}
 
 const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_MAX_BOUNCES = 32;
@@ -392,7 +421,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   setScene(scene: Scene): void {
     this.#guardLive('setScene');
-    const unsupportedDisplacementFields = collectUnsupportedDisplacementFields(scene);
+    const unsupportedDisplacementUses = collectUnsupportedDisplacementFieldUses(scene);
+    const unsupportedDisplacementFields = collectFieldUnion(unsupportedDisplacementUses);
     if (unsupportedDisplacementFields.length > 0) {
       this.#warn({
         code: 'pt-webgl2.unsupported-displacement-material',
@@ -402,12 +432,17 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         message:
           `[vitrum/pt-webgl2] setScene: displacement material fields are supplied ` +
           `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
-        details: { fields: unsupportedDisplacementFields },
+        details: {
+          fields: unsupportedDisplacementFields,
+          primitiveIds: unsupportedDisplacementUses.map((use) => use.primitiveId),
+          primitiveFields: unsupportedDisplacementUses,
+        },
       });
     }
     // CAP-01 — warn on remaining unsupported material fields (matrix-driven).
     // Once per setScene, mirroring the displacement warning above.
-    const unsupportedMaterialFields = collectUnsupportedMaterialFields(scene);
+    const unsupportedMaterialUses = collectUnsupportedMaterialFieldUses(scene);
+    const unsupportedMaterialFields = collectFieldUnion(unsupportedMaterialUses);
     if (unsupportedMaterialFields.length > 0) {
       this.#warn({
         code: 'pt-webgl2.unsupported-material-fields',
@@ -417,7 +452,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         message:
           `[vitrum/pt-webgl2] setScene: material fields are supplied ` +
           `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
-        details: { fields: unsupportedMaterialFields },
+        details: {
+          fields: unsupportedMaterialFields,
+          primitiveIds: unsupportedMaterialUses.map((use) => use.primitiveId),
+          primitiveFields: unsupportedMaterialUses,
+        },
       });
     }
     // SHADOW-01 — receiveShadow is @reserved on all shipping backends (a

@@ -322,7 +322,16 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         Array.isArray(w.details?.fields) &&
         w.details.fields.includes('displacementMap') &&
         w.details.fields.includes('displacementScale') &&
-        w.details.fields.includes('displacementBias'),
+        w.details.fields.includes('displacementBias') &&
+        Array.isArray(w.details?.primitiveIds) &&
+        w.details.primitiveIds.includes('tri') &&
+        Array.isArray(w.details?.primitiveFields) &&
+        w.details.primitiveFields.some((entry) =>
+          entry.primitiveId === 'tri' &&
+          entry.fields.includes('displacementMap') &&
+          entry.fields.includes('displacementScale') &&
+          entry.fields.includes('displacementBias')
+        ),
       )).toBe(true);
     } finally {
       warn.mockRestore();

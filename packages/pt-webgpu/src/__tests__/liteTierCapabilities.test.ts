@@ -389,7 +389,16 @@ describe('H12: lite-tier capabilities truth', () => {
       Array.isArray(w.details?.fields) &&
       w.details.fields.includes('displacementMap') &&
       w.details.fields.includes('displacementScale') &&
-      w.details.fields.includes('displacementBias'),
+      w.details.fields.includes('displacementBias') &&
+      Array.isArray(w.details?.primitiveIds) &&
+      w.details.primitiveIds.includes('m') &&
+      Array.isArray(w.details?.primitiveFields) &&
+      w.details.primitiveFields.some((entry) =>
+        entry.primitiveId === 'm' &&
+        entry.fields.includes('displacementMap') &&
+        entry.fields.includes('displacementScale') &&
+        entry.fields.includes('displacementBias')
+      ),
     )).toBe(true);
     engine.dispose();
     warn.mockRestore();
@@ -484,7 +493,16 @@ describe('H12: lite-tier capabilities truth', () => {
       Array.isArray(w.details?.fields) &&
       w.details.fields.includes('thicknessMap') &&
       !w.details.fields.includes('thickness') &&
-      !w.details.fields.includes('displacementMap'),
+      !w.details.fields.includes('displacementMap') &&
+      Array.isArray(w.details?.primitiveIds) &&
+      w.details.primitiveIds.includes('m') &&
+      Array.isArray(w.details?.primitiveFields) &&
+      w.details.primitiveFields.some((entry) =>
+        entry.primitiveId === 'm' &&
+        entry.fields.includes('thicknessMap') &&
+        !entry.fields.includes('thickness') &&
+        !entry.fields.includes('displacementMap')
+      ),
     )).toBe(true);
     // Consumed fields must NOT appear in the warning.
     expect(structured.some((w) =>
@@ -559,6 +577,25 @@ describe('H12: lite-tier capabilities truth', () => {
             'frontLayer.normalScale',
             'backLayer.normalMap',
             'backLayer.normalScale',
+          ]),
+          primitiveIds: ['m'],
+          primitiveFields: expect.arrayContaining([
+            expect.objectContaining({
+              primitiveId: 'm',
+              fields: expect.arrayContaining([
+                'baseColorMap',
+                'normalMap',
+                'normalScale',
+                'alphaMode',
+                'opacity',
+                'envMapIntensity',
+                'anisotropy',
+                'frontLayer.normalMap',
+                'frontLayer.normalScale',
+                'backLayer.normalMap',
+                'backLayer.normalScale',
+              ]),
+            }),
           ]),
         }),
       }),

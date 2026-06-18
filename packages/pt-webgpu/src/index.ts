@@ -116,16 +116,41 @@ const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
   'displacementBias',
 ] as const satisfies readonly (keyof MaterialSpec)[];
 
-function collectUnsupportedDisplacementFields(scene: Scene): string[] {
+interface UnsupportedMaterialFieldUse {
+  readonly primitiveId: string;
+  readonly fields: readonly string[];
+}
+
+function collectPrimitiveMaterialFieldUses(
+  scene: Scene,
+  unsupportedFields: readonly (keyof MaterialSpec)[],
+): UnsupportedMaterialFieldUse[] {
+  const uses: UnsupportedMaterialFieldUse[] = [];
   const fields = new Set<string>();
   for (const primitive of scene.primitives) {
     const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
     if (material == null) continue;
-    for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
+    fields.clear();
+    for (const field of unsupportedFields) {
       if (material[field] != null) fields.add(field);
     }
+    if (fields.size > 0) {
+      uses.push({ primitiveId: primitive.id, fields: Array.from(fields).sort() });
+    }
+  }
+  return uses;
+}
+
+function collectFieldUnion(uses: readonly UnsupportedMaterialFieldUse[]): string[] {
+  const fields = new Set<string>();
+  for (const use of uses) {
+    for (const field of use.fields) fields.add(field);
   }
   return Array.from(fields).sort();
+}
+
+function collectUnsupportedDisplacementFieldUses(scene: Scene): UnsupportedMaterialFieldUse[] {
+  return collectPrimitiveMaterialFieldUses(scene, UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS);
 }
 
 function collectUnsupportedLayerNormalFields(
@@ -135,6 +160,32 @@ function collectUnsupportedLayerNormalFields(
 ): void {
   if (layer?.normalMap != null) fields.add(`${prefix}.normalMap`);
   if (layer?.normalScale != null) fields.add(`${prefix}.normalScale`);
+}
+
+function collectUnsupportedMaterialFieldUses(
+  scene: Scene,
+  traceTier: PtWebgpuTraceTier,
+): UnsupportedMaterialFieldUse[] {
+  const unsupportedFields = traceTier === 'lite'
+    ? PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS
+    : UNSUPPORTED_MATERIAL_FIELDS;
+  const uses: UnsupportedMaterialFieldUse[] = [];
+  for (const primitive of scene.primitives) {
+    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
+    if (material == null) continue;
+    const fields = new Set<string>();
+    for (const field of unsupportedFields) {
+      if (material[field] != null) fields.add(field);
+    }
+    if (traceTier === 'lite') {
+      collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
+      collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
+    }
+    if (fields.size > 0) {
+      uses.push({ primitiveId: primitive.id, fields: Array.from(fields).sort() });
+    }
+  }
+  return uses;
 }
 
 // CAP-01 — the remaining material fields this backend silently drops, derived
@@ -203,25 +254,6 @@ const PT_WEBGPU_LITE_MATERIALS = Object.freeze({
     ),
   ),
 });
-
-function collectUnsupportedMaterialFields(scene: Scene, traceTier: PtWebgpuTraceTier): string[] {
-  const unsupportedFields = traceTier === 'lite'
-    ? PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS
-    : UNSUPPORTED_MATERIAL_FIELDS;
-  const fields = new Set<string>();
-  for (const primitive of scene.primitives) {
-    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
-    if (material == null) continue;
-    for (const field of unsupportedFields) {
-      if (material[field] != null) fields.add(field);
-    }
-    if (traceTier === 'lite') {
-      collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
-      collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
-    }
-  }
-  return Array.from(fields).sort();
-}
 
 function collectVertexColorPrimitiveIds(scene: Scene): string[] {
   const ids: string[] = [];
@@ -1227,7 +1259,8 @@ class PTEngineWebGPU implements Engine {
    * per-array index remap; see class header on the add/remove design choice).
    */
   #repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void {
-    const unsupportedDisplacementFields = collectUnsupportedDisplacementFields(scene);
+    const unsupportedDisplacementUses = collectUnsupportedDisplacementFieldUses(scene);
+    const unsupportedDisplacementFields = collectFieldUnion(unsupportedDisplacementUses);
     if (unsupportedDisplacementFields.length > 0) {
       this.#warn({
         code: 'pt-webgpu.unsupported-displacement-material',
@@ -1237,14 +1270,19 @@ class PTEngineWebGPU implements Engine {
         message:
           `[vitrum/pt-webgpu] setScene: displacement material fields are supplied ` +
           `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
-        details: { fields: unsupportedDisplacementFields },
+        details: {
+          fields: unsupportedDisplacementFields,
+          primitiveIds: unsupportedDisplacementUses.map((use) => use.primitiveId),
+          primitiveFields: unsupportedDisplacementUses,
+        },
       });
     }
     // CAP-01 — warn on the remaining silently-dropped material fields (matrix-
     // driven: every 'unsupported' row in the ledger's pt-webgpu material support
     // matrix except displacement, which has its own warning above). Once per
     // setScene/repack, mirroring the displacement warning.
-    const unsupportedMaterialFields = collectUnsupportedMaterialFields(scene, this.#traceTier);
+    const unsupportedMaterialUses = collectUnsupportedMaterialFieldUses(scene, this.#traceTier);
+    const unsupportedMaterialFields = collectFieldUnion(unsupportedMaterialUses);
     if (unsupportedMaterialFields.length > 0) {
       this.#warn({
         code: 'pt-webgpu.unsupported-material-fields',
@@ -1254,7 +1292,11 @@ class PTEngineWebGPU implements Engine {
         message:
           `[vitrum/pt-webgpu] setScene: material fields are supplied ` +
           `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
-        details: { fields: unsupportedMaterialFields },
+        details: {
+          fields: unsupportedMaterialFields,
+          primitiveIds: unsupportedMaterialUses.map((use) => use.primitiveId),
+          primitiveFields: unsupportedMaterialUses,
+        },
       });
     }
     // SHADOW-01 — `receiveShadow` is @reserved on all shipping backends (a
