@@ -565,6 +565,29 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     for (const warning of built.structuredWarnings) {
       this.#warn(warning);
     }
+    if (
+      this.#bdpt &&
+      built.textures.lightCount === 0 &&
+      (built.textures.meshLightCount > 0 || built.textures.envMap != null || built.textures.envTotalSum > 0)
+    ) {
+      this.#warn({
+        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
+        backend: 'pt-webgl2',
+        phase: 'setScene',
+        method: 'setScene',
+        message:
+          '[vitrum/pt-webgl2] bdpt:true currently builds light subpaths only from analytic ' +
+          'Scene.emitters. This scene has mesh-area and/or environment lighting but no ' +
+          'analytic light records, so BDPT connections fall back to the unidirectional ' +
+          'mesh/environment NEE and BSDF paths for those sources.',
+        details: {
+          analyticLightCount: built.textures.lightCount,
+          meshLightCount: built.textures.meshLightCount,
+          hasEnvironmentMap: built.textures.envMap != null,
+          envTotalSum: built.textures.envTotalSum,
+        },
+      });
+    }
     this.#sceneTextures?.destroy();
     this.#sceneTextures = built.textures;
     this.#geoPack = built.merged;

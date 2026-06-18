@@ -40,6 +40,22 @@ function sceneWithAnalyticLight(): Scene {
     environment: { kind: 'none' },
   };
 }
+function sceneWithMeshAreaLight(): Scene {
+  const panel: MeshPrimitive = {
+    kind: 'mesh',
+    id: 'panel',
+    positions: new Float32Array([-1, 3, -1, 1, 3, -1, 1, 3, 1, -1, 3, 1]),
+    normals: new Float32Array([0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0]),
+    uvs: new Float32Array(8),
+    indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    material: GREY,
+  };
+  return {
+    primitives: [mesh('floor', 0), panel],
+    emitters: [{ kind: 'mesh-area', id: 'm', meshId: 'panel', color: [1, 1, 1], intensity: 5 }],
+    environment: { kind: 'none' },
+  };
+}
 function frame(): FrameInput {
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
   const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
@@ -208,5 +224,35 @@ describe('A5 BDPT host driver', () => {
     // The eye pass still sets the subpath flag to 0.
     const passFlags = log.filter((e) => e.op === 'uBdptLightSubpathPass').map((e) => e.v);
     expect(passFlags).toEqual([0]);
+  });
+
+  it('warns when bdpt:true has only mesh-area light sources', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const engine = await createPTEngine_WebGL2({
+        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        bdpt: true,
+        onWarning: (w) => structured.push(w),
+      });
+
+      engine.setScene(sceneWithMeshAreaLight());
+
+      expect(warn.mock.calls.some((c) =>
+        String(c[0]).includes('BDPT connections fall back to the unidirectional'),
+      )).toBe(true);
+      expect(structured).toContainEqual(expect.objectContaining({
+        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
+        phase: 'setScene',
+        method: 'setScene',
+        details: expect.objectContaining({
+          analyticLightCount: 0,
+          meshLightCount: 2,
+          hasEnvironmentMap: false,
+        }),
+      }));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
