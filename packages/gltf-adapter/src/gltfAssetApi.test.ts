@@ -1956,6 +1956,11 @@ describe('decodeSceneTextures', () => {
       entry.materialField === 'roughnessMap'
     );
     expect(specularEntry).toMatchObject({
+      path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+      textureIndex: 0,
+      imageIndex: 0,
+      samplerIndex: 0,
+      colorSpace: 'srgb',
       width: 2,
       height: 1,
       originalWidth: 4,
@@ -1964,6 +1969,11 @@ describe('decodeSceneTextures', () => {
       maxTextureSize: 2,
     });
     expect(roughnessEntry).toMatchObject({
+      path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+      textureIndex: 0,
+      imageIndex: 0,
+      samplerIndex: 0,
+      colorSpace: 'linear',
       width: 2,
       height: 1,
       originalWidth: 4,
