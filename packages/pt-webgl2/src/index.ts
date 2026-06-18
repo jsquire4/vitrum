@@ -42,6 +42,7 @@ import {
   tryFastPathEmitterMutation,
   tryFastPathGeometryMutation,
   tryFastPathMaterialMutation,
+  tryFastPathPrimitiveListMutation,
   type WebGl2MutationSwap,
 } from './scene/mutateSceneTextures.js';
 import { invertMat4, makeRotationYMat4 } from './mat4.js';
@@ -626,11 +627,21 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (this.#scene.primitives.some((p) => String(p.id) === String(primitive.id))) {
       throw new Error(`addPrimitive: primitive "${primitive.id}" already exists in current scene`);
     }
-    this.#warnPrimitiveListFallback('addPrimitive', String(primitive.id));
-    this.setScene({
+    const nextScene = {
       ...this.#scene,
       primitives: [...this.#scene.primitives, primitive],
+    };
+    const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, nextScene, {
+      method: 'addPrimitive',
+      changedPrimitive: primitive,
     });
+    if (fast != null) {
+      this.#warnPrimitiveListFallback('addPrimitive', String(primitive.id), 'primitive-list-geometry-refresh');
+      this.#commitMutationSwap(nextScene, fast);
+      return;
+    }
+    this.#warnPrimitiveListFallback('addPrimitive', String(primitive.id), 'primitive-list-scene-repack');
+    this.setScene(nextScene);
   }
 
   removePrimitive(id: ScenePrimitive['id']): void {
@@ -647,11 +658,20 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (!matched) {
       throw new Error(`removePrimitive: primitive "${id}" not found in current scene`);
     }
-    this.#warnPrimitiveListFallback('removePrimitive', String(id));
-    this.setScene({
+    const nextScene = {
       ...this.#scene,
       primitives,
+    };
+    const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, nextScene, {
+      method: 'removePrimitive',
     });
+    if (fast != null) {
+      this.#warnPrimitiveListFallback('removePrimitive', String(id), 'primitive-list-geometry-refresh');
+      this.#commitMutationSwap(nextScene, fast);
+      return;
+    }
+    this.#warnPrimitiveListFallback('removePrimitive', String(id), 'primitive-list-scene-repack');
+    this.setScene(nextScene);
   }
 
   updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
@@ -923,10 +943,15 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   // ── internals ──────────────────────────────────────────────────────────────
 
-  #warnPrimitiveListFallback(method: 'addPrimitive' | 'removePrimitive', primitiveId: string): void {
-    const key = `${method}:${primitiveId}`;
+  #warnPrimitiveListFallback(
+    method: 'addPrimitive' | 'removePrimitive',
+    primitiveId: string,
+    fallbackReason: 'primitive-list-geometry-refresh' | 'primitive-list-scene-repack',
+  ): void {
+    const key = `${method}:${primitiveId}:${fallbackReason}`;
     if (this.#fallbackMutationWarnings.has(key)) return;
     this.#fallbackMutationWarnings.add(key);
+    const refreshed = fallbackReason === 'primitive-list-geometry-refresh';
     this.#warn({
       code: 'pt-webgl2.primitive-list-fallback-rebuild',
       backend: 'pt-webgl2',
@@ -934,12 +959,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       method,
       message:
         `[vitrum/pt-webgl2] ${method}("${primitiveId}") rebuilds the backend ` +
-        'scene-texture/BVH pack. This is supported, but it is not a targeted ' +
+        (refreshed ? 'geometry/material/BVH texture pack' : 'scene-texture/BVH pack') +
+        '. This is supported, but it is not a targeted ' +
         'native geometry patch.',
       details: {
         primitiveId,
         operation: method,
-        fallbackReason: 'primitive-list-scene-repack',
+        fallbackReason,
         nativePatchMissing: 'targeted-primitive-list-splice',
       },
     });

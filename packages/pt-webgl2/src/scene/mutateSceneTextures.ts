@@ -94,6 +94,10 @@ function canRefreshGeometryTextures(patch: Partial<ScenePrimitive>): boolean {
   return sawGeometryField;
 }
 
+function materialHasTextureMaps(material: MaterialSpec): boolean {
+  return Object.keys(material as unknown as Record<string, unknown>).some((field) => TEXTURE_MAP_FIELDS.has(field));
+}
+
 function materialWithCastShadow(primitive: Extract<ScenePrimitive, { material: MaterialSpec }>): MaterialSpec {
   return {
     ...primitive.material,
@@ -301,6 +305,7 @@ export function tryFastPathGeometryMutation(
       totalEmissiveArea: built.totalEmissiveArea,
       totalEmissivePower: built.totalEmissivePower,
       triangleCount: built.triangleCount,
+      vertexColorMaterialIds: built.vertexColorMaterialIds,
     }),
     geoPack: built.merged,
     deleteOldTextures: [
@@ -309,6 +314,76 @@ export function tryFastPathGeometryMutation(
       current.bvhPosition,
       current.bvhIndex,
       current.materialIndex,
+      current.attributesArray,
+      current.meshLights,
+    ],
+    structuredWarnings,
+  };
+}
+
+export function tryFastPathPrimitiveListMutation(
+  gl: WebGL2RenderingContext,
+  current: UploadedSceneTextures | null,
+  nextScene: Scene,
+  opts: {
+    readonly method: 'addPrimitive' | 'removePrimitive';
+    readonly changedPrimitive?: ScenePrimitive;
+  },
+): WebGl2MutationSwap | null {
+  if (current == null) return null;
+  const changed = opts.changedPrimitive;
+  if (changed != null) {
+    if (!isMeshLikePrimitive(changed)) return null;
+    if (materialHasTextureMaps(changed.material)) return null;
+  }
+
+  const built = buildSceneGeometryTextures(gl, nextScene, {
+    warningPhase: 'mutation',
+    warningMethod: opts.method,
+  });
+  const structuredWarnings: EngineWarning[] = [...built.structuredWarnings];
+  for (const warning of built.warnings) {
+    structuredWarnings.push({
+      code: 'pt-webgl2.scene-upload-warning',
+      backend: 'pt-webgl2',
+      phase: 'mutation',
+      method: opts.method,
+      message: `[vitrum/pt-webgl2] ${warning}`,
+      details: { warning, operation: 'primitive-list-texture-refresh' },
+    });
+  }
+
+  const materialsData = packMaterialsTexture(
+    built.merged.materials,
+    current.materialLayerMap ?? undefined,
+    { vertexColorMaterialIds: built.vertexColorMaterialIds },
+  );
+  const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials');
+
+  return {
+    textures: withTextureReplacementsForGl(gl, current, {
+      bvhBounds: built.bvh.bounds,
+      bvhContents: built.bvh.contents,
+      bvhPosition: built.bvh.position,
+      bvhIndex: built.bvh.index,
+      materialIndex: built.bvh.materialIndex,
+      materials,
+      attributesArray: built.attributesArray,
+      meshLights: built.meshLights,
+      meshLightCount: built.meshLightCount,
+      totalEmissiveArea: built.totalEmissiveArea,
+      totalEmissivePower: built.totalEmissivePower,
+      triangleCount: built.triangleCount,
+      vertexColorMaterialIds: built.vertexColorMaterialIds,
+    }),
+    geoPack: built.merged,
+    deleteOldTextures: [
+      current.bvhBounds,
+      current.bvhContents,
+      current.bvhPosition,
+      current.bvhIndex,
+      current.materialIndex,
+      current.materials,
       current.attributesArray,
       current.meshLights,
     ],

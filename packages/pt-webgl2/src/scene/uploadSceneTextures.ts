@@ -51,6 +51,7 @@ export interface SceneGeometryTexturesBuild {
   readonly totalEmissivePower: number;
   readonly triangleCount: number;
   readonly merged: WorldSpaceMergeResult;
+  readonly vertexColorMaterialIds: ReadonlySet<number>;
   readonly warnings: readonly string[];
   readonly structuredWarnings: readonly EngineWarning[];
 }
@@ -116,6 +117,7 @@ export function buildSceneGeometryTextures(
     geometry.attrData.layers,
     'vertex attributes',
   );
+  const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, geometry.merged);
   return {
     bvh,
     attributesArray,
@@ -125,6 +127,7 @@ export function buildSceneGeometryTextures(
     totalEmissivePower: meshLightsData.totalEmissivePower,
     triangleCount: geometry.merged.triangleCount,
     merged: geometry.merged,
+    vertexColorMaterialIds,
     warnings: meshLightsData.warnings,
     structuredWarnings,
   };
@@ -432,7 +435,7 @@ function mergeColorsFromCore(
   return out;
 }
 
-function collectVertexColorMaterialIds(
+export function collectVertexColorMaterialIds(
   scene: Scene,
   merged: WorldSpaceMergeResult,
 ): ReadonlySet<number> {

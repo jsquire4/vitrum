@@ -717,40 +717,66 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
   it('warns once when primitive add/remove use the scene-texture/BVH rebuild fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
     try {
       const e = await createPTEngine_WebGL2({
-        ...opts(),
+        device: gl,
         onWarning: (w) => structured.push(w),
       });
       e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
 
       e.addPrimitive?.(tri('extra', 2));
+      const afterAddUploads = createTexture.mock.calls.length;
       e.removePrimitive?.('extra');
+      const afterRemoveUploads = createTexture.mock.calls.length;
       // A second add of the same id is the same fallback signature and should not
       // spam animation/streaming hosts that repeatedly rebuild the same slot.
       e.addPrimitive?.(tri('extra', 2));
+      const afterSecondAddUploads = createTexture.mock.calls.length;
+      e.removePrimitive?.('extra');
+      e.addPrimitive?.({
+        ...tri('extra', 2),
+        material: {
+          ...GREY,
+          baseColorMap: { handle: { id: 'base-map' } },
+        },
+      } as never);
 
       const listWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild');
-      expect(listWarnings).toHaveLength(2);
-      expect(listWarnings.map((w) => w.method)).toEqual(['addPrimitive', 'removePrimitive']);
+      expect(listWarnings).toHaveLength(3);
+      expect(listWarnings.map((w) => w.method)).toEqual(['addPrimitive', 'removePrimitive', 'addPrimitive']);
       expect(listWarnings.map((w) => w.details)).toEqual([
+        {
+          primitiveId: 'extra',
+          operation: 'addPrimitive',
+          fallbackReason: 'primitive-list-geometry-refresh',
+          nativePatchMissing: 'targeted-primitive-list-splice',
+        },
+        {
+          primitiveId: 'extra',
+          operation: 'removePrimitive',
+          fallbackReason: 'primitive-list-geometry-refresh',
+          nativePatchMissing: 'targeted-primitive-list-splice',
+        },
         {
           primitiveId: 'extra',
           operation: 'addPrimitive',
           fallbackReason: 'primitive-list-scene-repack',
           nativePatchMissing: 'targeted-primitive-list-splice',
         },
-        {
-          primitiveId: 'extra',
-          operation: 'removePrimitive',
-          fallbackReason: 'primitive-list-scene-repack',
-          nativePatchMissing: 'targeted-primitive-list-splice',
-        },
       ]);
+      expect(afterAddUploads - initialTextureUploads).toBe(7);
+      expect(afterRemoveUploads - afterAddUploads).toBe(7);
+      expect(afterSecondAddUploads - afterRemoveUploads).toBe(7);
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('primitive-list-fallback-rebuild') ||
+        m.includes('geometry/material/BVH texture pack') ||
         m.includes('scene-texture/BVH pack'),
-      )).toHaveLength(2);
+      )).toHaveLength(3);
     } finally {
       warn.mockRestore();
     }
@@ -994,7 +1020,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(e.getScene?.()?.primitives).toEqual([]);
       expect(e.renderFrame(frame(16)).kind).toBe('rendered');
       expect(warn.mock.calls.flat().map(String).filter((m) =>
-        m.includes('scene-texture/BVH pack'),
+        m.includes('geometry/material/BVH texture pack'),
       )).toHaveLength(3);
     } finally {
       warn.mockRestore();
