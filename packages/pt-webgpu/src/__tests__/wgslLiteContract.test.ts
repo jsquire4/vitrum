@@ -107,8 +107,12 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-15 (SHADOW-01 lite directional): lite directional NEE
     // decodes the signed cameraPos.w mirror so first-directional castShadow:false
     // skips the visibility ray without adding a storage-buffer binding.
-    expect(digest).toBe('427d912e3dd8ce489f665b20eab80e0d8b58611aa5484a69a8daf0910ba78118');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(154022);
+    // Re-pinned 2026-06-18: H55 oracle wave fixed concentricDiscSample's
+    // Shirley-Chiu signed-denominator bug. Disc-area sampling was previously
+    // mirrored into the wrong quadrant for two square quadrants; render-changing
+    // for lite-tier disc-area lights, now pinned by oracle.concentricDiscSample.
+    expect(digest).toBe('13357933d405efd9227ea2788c70366a66337f52bc91f7b071f652a40c49a81c');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(154047);
   });
 });
 

@@ -278,8 +278,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-18: material texture descriptor constants now emit from
     // host layout exports, and extension/special-map samplers use symbolic slots
     // instead of baked vec4 offsets.
-    expect(digest).toBe('266c164dd0a77b7a9b9bba30d8abd1ae6329be4f032561217e5a50155babf220');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(387611);
+    // Re-pinned 2026-06-18: H55 oracle wave fixed concentricDiscSample's
+    // Shirley-Chiu signed-denominator bug. Disc-area sampling was previously
+    // mirrored into the wrong quadrant for two square quadrants; render-changing
+    // for full-tier disc-area lights, now pinned by oracle.concentricDiscSample.
+    expect(digest).toBe('3f1927a1bb946f324898a33b02229e81842ba03b6eeea0a2daf8d9f5c83c6b13');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(387636);
   });
 });
 

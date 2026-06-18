@@ -581,6 +581,10 @@ buckets that the A–D framing was missing:**
   `pdfSrc`-independence and final `W = w_sum / pHat` without `M` normalization.
   `materialTextures.test.ts` now adds CPU coverage for shader-side wrap modes,
   KHR/THREE UV transforms, and post-wrap UV-fit scaling.
+  `oracle.concentricDiscSample.test.ts` now independently pins the Shirley-Chiu
+  concentric-disc map's quadrant anchors, unit-disc bound, radial area law, and
+  signed WGSL divisions; this fixed the full/lite/adjoint disc-area two-quadrant
+  sign bug that the old SHA/string pins could not see.
   `pt-webgl2`'s `uploadGapGuard.test.ts` now pins the environment upload path:
   `environment:'none'` drives both `envMapInfo.totalSum` and
   `environmentIntensity` to zero, while a raw HDRI scene drives them positive.

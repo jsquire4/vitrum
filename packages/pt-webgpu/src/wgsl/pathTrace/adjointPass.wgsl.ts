@@ -653,14 +653,17 @@ fn sampleAdjointAnisotropyTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> A
 fn adjointConcentricDiscSample(xi: vec2f) -> vec2f {
   let a = xi.x;
   let b = xi.y;
+  if (a == 0.0 && b == 0.0) {
+    return vec2f(0.0);
+  }
   var cr: f32;
   var cphi: f32;
   if (abs(a) >= abs(b)) {
     cr = a;
-    cphi = (PI / 4.0) * (b / max(abs(a), 1e-9));
+    cphi = (PI / 4.0) * (b / a);
   } else {
     cr = b;
-    cphi = (PI / 2.0) - (PI / 4.0) * (a / max(abs(b), 1e-9));
+    cphi = (PI / 2.0) - (PI / 4.0) * (a / b);
   }
   return vec2f(cr * cos(cphi), cr * sin(cphi));
 }
