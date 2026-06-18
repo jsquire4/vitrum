@@ -98,6 +98,55 @@ async function withCreateImageBitmapStub<T>(
   }
 }
 
+async function withOffscreenCanvasReadbackStub<T>(
+  pixels: Uint8ClampedArray,
+  fn: (ctx: {
+    drawImage: ReturnType<typeof vi.fn>;
+    getImageData: ReturnType<typeof vi.fn<[], { data: Uint8ClampedArray }>>;
+  }) => Promise<T>,
+): Promise<T> {
+  const host = globalThis as typeof globalThis & { OffscreenCanvas?: unknown };
+  const hadOffscreenCanvas = Object.prototype.hasOwnProperty.call(host, 'OffscreenCanvas');
+  const previousOffscreenCanvas = host.OffscreenCanvas;
+  const ctx = {
+    drawImage: vi.fn(),
+    getImageData: vi.fn(() => ({ data: pixels })),
+  };
+  class OffscreenCanvasStub {
+    width: number;
+    height: number;
+
+    constructor(width: number, height: number) {
+      this.width = width;
+      this.height = height;
+    }
+
+    getContext(type: string): unknown {
+      return type === '2d' ? ctx : null;
+    }
+  }
+
+  Object.defineProperty(host, 'OffscreenCanvas', {
+    configurable: true,
+    writable: true,
+    value: OffscreenCanvasStub,
+  });
+
+  try {
+    return await fn(ctx);
+  } finally {
+    if (hadOffscreenCanvas) {
+      Object.defineProperty(host, 'OffscreenCanvas', {
+        configurable: true,
+        writable: true,
+        value: previousOffscreenCanvas,
+      });
+    } else {
+      delete (host as { OffscreenCanvas?: unknown }).OffscreenCanvas;
+    }
+  }
+}
+
 function response(data: ArrayBuffer, contentType = 'application/octet-stream'): GltfAssetFetchResponse {
   return {
     ok: true,
@@ -1023,6 +1072,85 @@ describe('loadGltfAsset', () => {
           imageMimeType: 'image/png',
         }),
       ]);
+    });
+  });
+
+  it('loadGltfAndDecodeTextures uses browser image and canvas readback when no pixel decoder is supplied', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const rgba = new Uint8ClampedArray(4 * 4 * 4);
+    rgba.set([128, 64, 255, 128], 0);
+    rgba.fill(255, 4);
+
+    await withCreateImageBitmapStub(async (createImageBitmap) => {
+      await withOffscreenCanvasReadbackStub(rgba, async (ctx) => {
+        const result = await loadGltfAndDecodeTextures(gltf, { buffers });
+
+        expect(createImageBitmap).toHaveBeenCalledTimes(1);
+        expect(ctx.drawImage).toHaveBeenCalledTimes(1);
+        expect(ctx.getImageData).toHaveBeenCalledWith(0, 0, 4, 4);
+        expect(result.decodedTextureCount).toBe(1);
+        expect(result.unchangedTextureCount).toBe(0);
+        expect(result.textureDecodeDiagnostics).toEqual([]);
+        expect(result.textureDecodeReport).toMatchObject({
+          mapCount: 1,
+          uniqueHandleCount: 1,
+          rawImageCount: 0,
+          opaqueHandleCount: 0,
+          cpuReadableCount: 1,
+        });
+
+        const primitive = result.scene.primitives[0] as MeshPrimitive;
+        const ref = primitive.material.baseColorMap as TextureRef;
+        const handle = ref.handle as {
+          width: number;
+          height: number;
+          data: Float32Array;
+          __vitrum_hint__: { colorSpace: string };
+        };
+        expect(handle.width).toBe(4);
+        expect(handle.height).toBe(4);
+        expect(handle.__vitrum_hint__.colorSpace).toBe('linear');
+        expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
+        expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
+        expect(handle.data[2]).toBeCloseTo(1);
+        expect(handle.data[3]).toBeCloseTo(128 / 255);
+        expect(result.textureDecodeReport.entries).toEqual([
+          expect.objectContaining({
+            materialField: 'baseColorMap',
+            handleKind: 'pixel-data',
+            handleColorSpace: 'linear',
+            width: 4,
+            height: 4,
+            textureIndex: 0,
+            imageIndex: 0,
+          }),
+        ]);
+      });
+    });
+  });
+
+  it('keeps raw images with a structured diagnostic when browser pixel readback is unavailable', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+
+    await withCreateImageBitmapStub(async (createImageBitmap) => {
+      const result = await loadGltfAndDecodeTextures(gltf, { buffers });
+
+      expect(createImageBitmap).toHaveBeenCalledTimes(1);
+      expect(result.decodedTextureCount).toBe(0);
+      expect(result.unchangedTextureCount).toBe(1);
+      expect(result.textureDecodeDiagnostics).toEqual([
+        expect.objectContaining({
+          code: 'platform-image-readback-unavailable',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+          materialField: 'baseColorMap',
+          handleKind: 'raw-image',
+        }),
+      ]);
+      expect(result.textureDecodeReport).toMatchObject({
+        mapCount: 1,
+        rawImageCount: 1,
+        cpuReadableCount: 0,
+      });
     });
   });
 

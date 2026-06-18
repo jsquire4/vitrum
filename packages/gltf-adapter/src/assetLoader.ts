@@ -199,7 +199,7 @@ export async function loadGltfAndDecodeTextures(
 function loadOptionsForTextureDecode(
   options: LoadGltfAndDecodeTexturesOptions,
 ): LoadGltfAssetOptions {
-  if (options.decodePixels === undefined || options.decodeImage !== undefined) {
+  if (options.decodeImage !== undefined) {
     return options;
   }
 

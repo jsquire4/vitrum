@@ -359,7 +359,7 @@ depends on the environment:
 
 | Environment | `opts.decodeImage` | Handle shape | Works with |
 |-------------|-------------------|-------------|-----------|
-| Browser | absent | `ImageBitmap` | pt-webgpu external-image upload; CPU-atlas backends require `decodeSceneTextures()`/`decodePixels` or a host CPU-readable handle |
+| Browser | absent | `ImageBitmap` for `loadGltfAsset()`; platform canvas-readback pixels for `loadGltfAndDecodeTextures()` / engine `decodeTextures` | pt-webgpu external-image upload, or CPU-atlas payloads when the decoded path can use browser image + canvas APIs |
 | Node / Worker | absent | `{ kind: 'raw-image', mimeType, data: Uint8Array }` | Needs custom backend upload |
 | Any | provided | Return value of callback | Whatever the callback returns |
 
@@ -373,17 +373,19 @@ The default TextureRef bridge passes bytes/opaque handles as-is. **The backend i
 - `baseColorMap`, `emissiveMap` → **sRGB** (backends must use `sRGB` texture format or gamma-decode in shader).
 - `normalMap`, `roughnessMap` (ORM), `aoMap`, `lightMap`, `bumpMap`, `anisotropyMap` → **linear** (must NOT sRGB-decode).
 
-`decodeSceneTextures(target: 'cpu-linear')` is the opt-in exception: when a
-host supplies `decodePixels`, raw image handles are converted to linear
-`Float32Array` RGBA payloads using this same color/data policy before backend
-upload.
+`decodeSceneTextures(target: 'cpu-linear')` is the opt-in exception: raw image
+handles are converted to linear `Float32Array` RGBA payloads using this same
+color/data policy before backend upload. In browser hosts the default path uses
+`createImageBitmap` plus canvas/OffscreenCanvas readback when available; Node,
+workers without canvas readback, compressed texture sources, and custom formats
+still supply `decodePixels`.
 
 `decodeSceneTextures(target: 'webgpu')` also resolves raw image handles through
-`decodePixels`, but preserves the backend upload color space: sRGB material maps
-stay sRGB-valued so WebGPU sRGB texture formats can perform the hardware decode,
-while linear/data maps stay linear. This is the predictable pre-upload path for
-Node/worker glTF loads that would otherwise leave `{ kind: 'raw-image' }`
-handles opaque to pt-webgpu.
+the same platform/custom pixel path, but preserves the backend upload color
+space: sRGB material maps stay sRGB-valued so WebGPU sRGB texture formats can
+perform the hardware decode, while linear/data maps stay linear. This is the
+predictable pre-upload path for glTF loads that would otherwise leave
+`{ kind: 'raw-image' }` handles opaque to pt-webgpu.
 
 ### Sampler metadata
 
@@ -397,10 +399,11 @@ handles opaque to pt-webgpu.
 `usesMipmaps` when the asset authored a mipmapped minification mode. It also
 separates the material role's color space (`colorSpace`) from the decoded handle
 hint (`handleColorSpace`) when known, so hosts can tell a CPU-linear bake from a
-WebGPU-ready sRGB-preserved payload. Browser default `ImageBitmap` handles are
-reported through `imageBitmapCount` / `imageBitmapRefs`; they are ready for
-pt-webgpu external-image upload but remain opaque to CPU atlas builders until the
-host supplies decoded pixels. Current backends already consume per-map
+WebGPU-ready sRGB-preserved payload. Browser default `ImageBitmap` handles from
+ordinary `loadGltfAsset()` are reported through `imageBitmapCount` /
+`imageBitmapRefs`; decoded loads report CPU-readable `pixel-data` handles when
+browser readback or a custom decoder succeeds, and preserve a structured
+diagnostic when readback is unavailable. Current backends already consume per-map
 UV, transform, and wrap metadata where their material map rows are supported;
 per-texture filter/mipmap enforcement remains backend policy and is reported
 through `analyzeGltfAsset()` / `evaluateGltfBackendCompatibility()` as

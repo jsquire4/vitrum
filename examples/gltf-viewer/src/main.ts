@@ -416,7 +416,7 @@ async function decodeBrowserImagePixels(
     : document.createElement('canvas');
   canvas2d.width = width;
   canvas2d.height = height;
-  const ctx = canvas2d.getContext('2d');
+  const ctx = canvas2d.getContext('2d') as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
   if (ctx == null) throw new Error('[gltf-viewer example] 2D canvas unavailable for texture decode.');
   ctx.drawImage(bitmap, 0, 0);
   const pixels = ctx.getImageData(0, 0, width, height).data;
