@@ -295,7 +295,8 @@ function buildCornellScene(opts = {}) {
   if (opts.analytic) {
     primitives.push({
       kind: "analytic", id: "analytic-sphere",
-      shape: { kind: "sphere", radius: 0.3 },
+      shape: "sphere",
+      params: new Float32Array([0, 0, 0, 0.3]),
       transform: new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0.2,-0.5,0.2,1]),
       material: { baseColor: [0.9,0.5,0.1], roughness: 0.2, metallic: 0.8 },
     });

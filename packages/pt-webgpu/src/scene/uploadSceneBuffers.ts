@@ -668,7 +668,25 @@ export function buildPackedScene(
         tlas: true,
         resolveMaterialId: (id) => meshMaterialIds.get(id) ?? 0,
       });
-  warnings.push(...geo.warnings);
+  const analyticIds = new Set(
+    scene.primitives
+      .filter((primitive) => primitive.kind === 'analytic')
+      .map((primitive) => primitive.id),
+  );
+  warnings.push(
+    ...geo.warnings.filter((warning) => {
+      if (analyticIds.size === 0) return true;
+      for (const id of analyticIds) {
+        if (
+          warning ===
+          `Primitive "${id}" (analytic) skipped; scenePack supports mesh, skinned-mesh, and instanced-mesh only.`
+        ) {
+          return false;
+        }
+      }
+      return true;
+    }),
+  );
   const texCollection = collectMaterialTextures(materialSpecs);
   const emitArrays = packEmitterArrays(scene);
   const environment = environmentParams(scene);

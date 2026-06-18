@@ -108,6 +108,7 @@ describe('buildPackedScene core packing', () => {
     expect(packed.analyticCount).toBe(1);
     expect(packed.analyticHeaders.length).toBe(4);
     expect(packed.analyticParams.length).toBe(8);
+    expect(packed.warnings.some((warning) => warning.includes('a-sphere') && warning.includes('skipped'))).toBe(false);
   });
 
   it('builds and uploads TLAS metadata buffers', () => {

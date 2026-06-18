@@ -39,6 +39,63 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-default-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter default --require-full-tier",
+    filter: "default",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 2,
+    failures: 0,
+    configs: [
+      { label: "pt/default", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "wh/default", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter spectral --require-full-tier",
+    filter: "spectral",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 3,
+    failures: 0,
+    configs: [
+      { label: "pt/spectral", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/spectral+photon", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/spectral+bdpt", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-skinned-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter skinned --require-full-tier",
+    filter: "skinned",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 3,
+    failures: 0,
+    configs: [
+      { label: "pt/skinned-mesh", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/gltf-skinned-animation", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "wh/skinned-mesh", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-analytic-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter analytic --require-full-tier",
+    filter: "analytic",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label: "pt/analytic-sphere", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
     command: "npm run behavioral-gate:dzn -- --filter bdpt --require-full-tier",
     filter: "bdpt",
@@ -278,4 +335,4 @@ for (const expected of EXPECTED) {
   }
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (12 committed dzn status artifacts)");
+console.log("[behavioral-gate-dzn-status-check] PASS (16 committed dzn status artifacts)");
