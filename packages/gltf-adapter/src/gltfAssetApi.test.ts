@@ -5,6 +5,7 @@
 // compatibility ranking against the core promise ledger.
 
 import { describe, expect, it, vi } from 'vitest';
+import { PNG } from 'pngjs';
 import {
   analyzeGltfAsset,
   decodeSceneTextures,
@@ -565,9 +566,10 @@ function makeInlineAnimatedInstancedGltf(): { gltf: GltfJson; buffers: Map<numbe
   };
 }
 
-function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer>; png: Uint8Array } {
+function makeInlineTexturedGltf(
+  imageBytes: Uint8Array<ArrayBuffer> = new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+): { gltf: GltfJson; buffers: Map<number, ArrayBuffer>; png: Uint8Array<ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
-  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
   const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
   total.set(new Uint8Array(positions), 0);
   total.set(imageBytes, positions.byteLength);
@@ -596,6 +598,23 @@ function makeInlineTexturedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
     buffers: new Map([[0, total.buffer]]),
     png: imageBytes,
   };
+}
+
+function makePngBytes(
+  width: number,
+  height: number,
+  rgba: readonly number[],
+): Uint8Array<ArrayBuffer> {
+  const encoded = PNG.sync.write({
+    width,
+    height,
+    data: Uint8Array.from(rgba),
+  });
+  const buffer = encoded.buffer.slice(
+    encoded.byteOffset,
+    encoded.byteOffset + encoded.byteLength,
+  ) as ArrayBuffer;
+  return new Uint8Array(buffer);
 }
 
 function makeInlineNormalMappedGltf(
@@ -1127,6 +1146,66 @@ describe('loadGltfAsset', () => {
         ]);
       });
     });
+  });
+
+  it('loadGltfAndDecodeTextures decodes embedded PNG bytes in Node without a host pixel decoder', async () => {
+    const png = makePngBytes(2, 1, [
+      128, 64, 255, 128,
+      255, 0, 0, 255,
+    ]);
+    const { gltf, buffers } = makeInlineTexturedGltf(png);
+
+    const result = await loadGltfAndDecodeTextures(gltf, { buffers });
+
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.decodedTextureCount).toBe(1);
+    expect(result.unchangedTextureCount).toBe(0);
+    expect(result.textureDecodeWarnings).toEqual([]);
+    expect(result.textureDecodeReport).toMatchObject({
+      mapCount: 1,
+      uniqueHandleCount: 1,
+      rawImageCount: 0,
+      opaqueHandleCount: 0,
+      cpuReadableCount: 1,
+    });
+
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    const ref = primitive.material.baseColorMap as TextureRef;
+    const handle = ref.handle as {
+      width: number;
+      height: number;
+      data: Float32Array;
+      __vitrum_hint__: { channels: number; dataType: string; colorSpace: string };
+    };
+    expect(handle.width).toBe(2);
+    expect(handle.height).toBe(1);
+    expect(handle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
+    expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
+    expect(handle.data[2]).toBeCloseTo(1);
+    expect(handle.data[3]).toBeCloseTo(128 / 255);
+    expect(handle.data[4]).toBeCloseTo(1);
+    expect(handle.data[5]).toBeCloseTo(0);
+    expect(handle.data[6]).toBeCloseTo(0);
+    expect(handle.data[7]).toBeCloseTo(1);
+    expect(result.textureDecodeReport.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        handleKind: 'pixel-data',
+        handleColorSpace: 'linear',
+        width: 2,
+        height: 1,
+        isPowerOfTwo: true,
+        textureIndex: 0,
+        imageIndex: 0,
+        imageMimeType: 'image/png',
+        backendReadiness: {
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ready',
+        },
+      }),
+    ]);
   });
 
   it('keeps raw images with a structured diagnostic when browser pixel readback is unavailable', async () => {

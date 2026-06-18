@@ -530,8 +530,12 @@ async function decodeTextureRef(
     return ref;
   }
   let decodePixels = context.options.decodePixels;
-  if (decodePixels == null && canDecodeRawImagePixelsWithPlatform()) {
-    decodePixels = decodeRawImagePixelsWithPlatform;
+  if (decodePixels == null) {
+    if (canDecodeRawPngPixelsWithNode(ref.handle as RawImageHandle)) {
+      decodePixels = decodeRawPngPixelsWithNode;
+    } else if (canDecodeRawImagePixelsWithPlatform()) {
+      decodePixels = decodeRawImagePixelsWithPlatform;
+    }
   }
   if (decodePixels == null) {
     context.diagnostic({
@@ -646,6 +650,83 @@ const decodeRawImagePixelsWithPlatform: DecodeGltfTexturePixelsFn = async (handl
 
 function canDecodeRawImagePixelsWithPlatform(): boolean {
   return typeof globalThis.createImageBitmap === 'function' && typeof globalThis.Blob === 'function';
+}
+
+function canDecodeRawPngPixelsWithNode(handle: RawImageHandle): boolean {
+  return isNodeLikeHost() && isPngRawImageHandle(handle);
+}
+
+function isNodeLikeHost(): boolean {
+  const host = globalThis as typeof globalThis & {
+    process?: { versions?: { node?: unknown } };
+  };
+  return typeof host.process?.versions?.node === 'string';
+}
+
+function isPngRawImageHandle(handle: RawImageHandle): boolean {
+  const data = handle.data;
+  return data.length >= 8 &&
+    data[0] === 0x89 &&
+    data[1] === 0x50 &&
+    data[2] === 0x4e &&
+    data[3] === 0x47 &&
+    data[4] === 0x0d &&
+    data[5] === 0x0a &&
+    data[6] === 0x1a &&
+    data[7] === 0x0a;
+}
+
+const decodeRawPngPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, context) => {
+  try {
+    const { PNG } = await importPngJs();
+    const bytes = handle.data;
+    const decoded = PNG.sync.read(nodeBufferFromUint8Array(bytes));
+    return {
+      width: decoded.width,
+      height: decoded.height,
+      data: decoded.data,
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: context.colorSpace,
+    };
+  } catch (err) {
+    throw new PlatformTextureDecodeError(
+      'platform-image-decode-failed',
+      `[vitrum/gltf-adapter] ${context.path} could not be decoded as PNG through the built-in Node decoder: ` +
+        `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
+    );
+  }
+};
+
+interface PngJsSyncReader {
+  read(data: unknown): {
+    readonly width: number;
+    readonly height: number;
+    readonly data: Uint8Array;
+  };
+}
+
+interface PngJsModule {
+  readonly PNG: {
+    readonly sync: PngJsSyncReader;
+  };
+}
+
+async function importPngJs(): Promise<PngJsModule> {
+  const specifier = 'pngjs';
+  return await import(specifier) as PngJsModule;
+}
+
+function nodeBufferFromUint8Array(bytes: Uint8Array): unknown {
+  const host = globalThis as typeof globalThis & {
+    Buffer?: {
+      from(buffer: ArrayBufferLike, byteOffset?: number, length?: number): unknown;
+    };
+  };
+  if (host.Buffer == null) {
+    throw new Error('Node Buffer is unavailable');
+  }
+  return host.Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 }
 
 async function createBitmapFromRawImage(handle: RawImageHandle, path: string): Promise<unknown> {

@@ -2,7 +2,7 @@
   "name": "@vitrum/gltf-adapter",
   "version": "0.0.0",
   "private": true,
-  "description": "glTF 2.0 → @vitrum/core Scene adapter. Zero runtime dependencies; browser + Node compatible.",
+  "description": "glTF 2.0 → @vitrum/core Scene adapter with browser and Node texture decode paths.",
   "keywords": ["gltf", "glb", "path-tracing", "vitrum"],
   "author": "jsquire4",
   "license": "MIT",
@@ -19,7 +19,8 @@
     "directory": "packages/gltf-adapter"
   },
   "dependencies": {
-    "@vitrum/core": "*"
+    "@vitrum/core": "*",
+    "pngjs": "^7.0.0"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
