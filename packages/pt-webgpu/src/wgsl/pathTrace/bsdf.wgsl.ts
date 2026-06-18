@@ -251,11 +251,9 @@ fn clearcoatPdf(clearcoat: f32, clearcoatRoughness: f32, normal: vec3f, wo: vec3
 // Ref: glTF KHR_materials_sheen §3; Estevez & Kulla, "Production Friendly
 //      Microfacet Sheen BRDF," SIGGRAPH 2017.
 // The Charlie NDF: D_c(h; α) = (2 + 1/α) * sin(θ_h)^(1/α) / (2π).
-// The sheen lobe is EVALUATION-ONLY (no dedicated sampler — the cosine-hemisphere
-// sampler covers it indirectly).  The brdfDirectionalPdf for the sheen term returns
-// a cosine-hemisphere approximation; v1 documents this as an accepted bias that
-// keeps the sampler simple.  The sheen contribution is typically small enough
-// (grazing-only velvet-like highlight) that the variance impact is negligible.
+// The sampled path uses a matching Charlie half-vector sampler below:
+//   sin(theta_h) = u^(1 / (1/alpha + 2)),
+// which is the inverse CDF for p_h(h)=D_c(h)*cos(theta_h).
 // When sheen == 0 the function returns vec3(0) — zero-default invariant.
 fn charlieD(nDotH: f32, alpha: f32) -> f32 {
   let invAlpha = 1.0 / max(alpha, 1e-4);
@@ -270,11 +268,6 @@ fn sheenVisibility(nDotL: f32, nDotV: f32) -> f32 {
 
 // evalSheenLobe returns the BRDF kernel (WITHOUT nDotL) matching the convention
 // of evaluateBrdf (caller multiplies by nDotL once for the full NEE contribution).
-// Evaluation-only: no dedicated sampler (cosine-hemisphere covers it indirectly).
-// The PDF bookkeeping for the sheen lobe uses a cosine-hemisphere approximation
-// (see brdfDirectionalPdfFull below).  This is documented as an accepted v1 bias;
-// the sheen lobe is a small grazing-angle velvet highlight whose variance impact
-// from the mismatched PDF is negligible.
 fn evalSheenLobe(
   sheen: f32,
   sheenRoughness: f32,
@@ -294,6 +287,24 @@ fn evalSheenLobe(
   let vis = sheenVisibility(nDotL, nDotV);
   // BRDF kernel (no nDotL) — caller multiplies by nDotL together with the base lobe.
   return sheen * sheenColor * d * vis;
+}
+
+fn charlieSheenPdf(
+  sheen: f32,
+  sheenRoughness: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> f32 {
+  if (sheen < 1e-4) { return 0.0; }
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return 0.0; }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 1e-6);
+  let alpha = max(sheenRoughness * sheenRoughness, 1e-3);
+  return (charlieD(nDotH, alpha) * nDotH) / max(4.0 * vDotH, 1e-6);
 }
 
 // ── Item 7 — Anisotropic GGX (Heitz 2018 VNDF generalisation) ────────────────
@@ -606,8 +617,7 @@ fn evaluateBrdfFull(
 
 // brdfDirectionalPdfFull: the pdf for the full lobe mixture used in MIS.
 // The base pdf comes from brdfDirectionalPdf; the clearcoat and sheen terms add
-// their (weighted) pdfs.  The sheen PDF uses a cosine-hemisphere approximation
-// (v1 documented bias — see evalSheenLobe).
+// their (weighted) pdfs. The sheen PDF mirrors the Charlie half-vector sampler.
 // When all extension scalars are 0 the result is identical to brdfDirectionalPdf.
 fn brdfDirectionalPdfFullWithClearcoatNormal(
   baseColor: vec3f,
@@ -674,9 +684,8 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
   }
   // Clearcoat PDF: VNDF GGX at clearcoat roughness, weighted by clearcoat scalar.
   let ccPdf = clearcoat * clearcoatPdf(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi);
-  // Sheen PDF approximation: cosine-hemisphere (v1 accepted bias — see evalSheenLobe).
-  let nDotL = max(dot(normal, wi), 0.0);
-  let sheenPdf = sheen * nDotL * INV_PI;
+  // Sheen PDF: Charlie half-vector sampler matching evalSheenLobe.
+  let sheenPdf = sheen * charlieSheenPdf(sheen, sheenRoughness, normal, wo, wi);
   // Iridescence does NOT add a new sampling lobe (it modifies F0 of the existing
   // specular lobe, which the base brdfDirectionalPdf already accounts for).
   // These parameters are present for API symmetry with evaluateBrdfFull.
@@ -905,6 +914,44 @@ fn cosineHemisphereSample(rng: ptr<function, u32>, n: vec3f) -> BsdfSample {
   result.wi = safe_normalize(local.x * t + local.y * b + local.z * n);
   result.pdf = cosTheta * INV_PI;
   result.value = vec3f(INV_PI);
+  return result;
+}
+
+fn charlieSheenSample(
+  rng: ptr<function, u32>,
+  wo: vec3f,
+  n: vec3f,
+  t: vec3f,
+  b: vec3f,
+  sheenRoughness: f32,
+) -> BsdfSample {
+  let u1 = rand_f32(rng);
+  let u2 = rand_f32(rng);
+  let alpha = max(sheenRoughness * sheenRoughness, 1e-3);
+  let invAlpha = 1.0 / max(alpha, 1e-4);
+  let sinThetaH = pow(u1, 1.0 / (invAlpha + 2.0));
+  let cosThetaH = sqrt(max(0.0, 1.0 - sinThetaH * sinThetaH));
+  let phi = 2.0 * PI * u2;
+  let hWorld = safe_normalize(
+    sinThetaH * cos(phi) * t +
+    sinThetaH * sin(phi) * b +
+    cosThetaH * n
+  );
+  let wi = safe_normalize(reflect(-wo, hWorld));
+
+  var result: BsdfSample;
+  result.wi = wi;
+  let nDotL = max(dot(n, wi), 0.0);
+  let nDotV = max(dot(n, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) {
+    result.pdf = 0.0;
+    result.value = vec3f(0.0);
+  } else {
+    result.pdf = charlieSheenPdf(1.0, sheenRoughness, n, wo, wi);
+    let h = safe_normalize(wi + wo);
+    let nDotH = max(dot(n, h), 0.0);
+    result.value = vec3f(charlieD(nDotH, alpha) * sheenVisibility(nDotL, nDotV));
+  }
   return result;
 }
 
@@ -1171,7 +1218,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
       result.throughputMul = ccBrdf * nDotCc / max(ccDensity, 1e-8);
     } else {
       result.newRayOrigin = hitPos + normal * 1e-3;
-      let bs = cosineHemisphereSample(rng, normal);
+      let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);
       result.sampledDir = bs.wi;
       result.newRayDir = bs.wi;
       result.sampleAllowsAreaMis = true;
@@ -1255,7 +1302,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
     result.throughputMul = ccBrdf * nDotCc / max(ccDensity, 1e-8);
   } else {
     result.newRayOrigin = hitPos + normal * 1e-3;
-    let bs = cosineHemisphereSample(rng, normal);
+    let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);
     result.sampledDir = bs.wi;
     result.newRayDir = bs.wi;
     result.sampleAllowsAreaMis = true;

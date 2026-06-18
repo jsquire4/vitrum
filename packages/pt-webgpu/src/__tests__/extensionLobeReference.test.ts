@@ -3,9 +3,6 @@
  *
  * These CPU mirrors pin the math behind the clearcoat / sheen / iridescence
  * rows that are otherwise easy to overstate with string-contract tests alone.
- * The shader still documents sheen's dedicated PDF as a cosine approximation;
- * this file intentionally locks that posture until a true Charlie-lobe sampler
- * replaces it.
  */
 import { describe, expect, it } from 'vitest';
 
@@ -134,14 +131,39 @@ function evalSheenLobe(
   return scale(sheenColor, sheen * charlieD(nDotH, alpha) * sheenVisibility(nDotL, nDotV));
 }
 
+function charlieSheenPdf(
+  sheen: number,
+  sheenRoughness: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+): number {
+  if (sheen < 1e-4) return 0;
+  const nDotL = Math.max(dot(normal, wi), 0);
+  const nDotV = Math.max(dot(normal, wo), 0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return 0;
+  const h = normalize(add(wi, wo));
+  const nDotH = Math.max(dot(normal, h), 0);
+  const vDotH = Math.max(dot(wo, h), 1e-6);
+  const alpha = Math.max(sheenRoughness * sheenRoughness, 1e-3);
+  return (charlieD(nDotH, alpha) * nDotH) / Math.max(4 * vDotH, 1e-6);
+}
+
+function charlieSampleNdotH(u: number, sheenRoughness: number): number {
+  const alpha = Math.max(sheenRoughness * sheenRoughness, 1e-3);
+  const invAlpha = 1 / Math.max(alpha, 1e-4);
+  const sinThetaH = Math.pow(u, 1 / (invAlpha + 2));
+  return Math.sqrt(Math.max(0, 1 - sinThetaH * sinThetaH));
+}
+
 function sampledFullPdf(
   basePdf: number,
   clearcoat: number,
   clearcoatDensity: number,
   sheen: number,
-  nDotL: number,
+  sheenDensity: number,
 ): number {
-  const raw = basePdf + clearcoat * clearcoatDensity + sheen * nDotL * INV_PI;
+  const raw = basePdf + clearcoat * clearcoatDensity + sheen * sheenDensity;
   const lobeWeightSum = Math.max(1 + Math.max(clearcoat, 0) + Math.max(sheen, 0), 1);
   return raw / lobeWeightSum;
 }
@@ -180,17 +202,17 @@ describe('pt-webgpu extension lobe CPU references', () => {
   });
 
   it('normalizes the sampled full PDF by the same base/clearcoat/sheen lobe weights as the source sampler', () => {
-    const nDotL = Math.max(dot(normal, wi), 0);
     const basePdf = 0.19;
     const cc = 0.6;
     const sheen = 0.35;
     const ccDensity = clearcoatPdf(cc, 0.42, normal, wo, wi);
-    const raw = basePdf + cc * ccDensity + sheen * nDotL * INV_PI;
-    const sampled = sampledFullPdf(basePdf, cc, ccDensity, sheen, nDotL);
+    const sheenDensity = charlieSheenPdf(1, 0.7, normal, wo, wi);
+    const raw = basePdf + cc * ccDensity + sheen * sheenDensity;
+    const sampled = sampledFullPdf(basePdf, cc, ccDensity, sheen, sheenDensity);
 
     expect(sampled).toBeCloseTo(raw / (1 + cc + sheen), 12);
     expect(sampled).toBeLessThan(raw);
-    expect(sampledFullPdf(basePdf, 0, ccDensity, 0, nDotL)).toBeCloseTo(basePdf, 12);
+    expect(sampledFullPdf(basePdf, 0, ccDensity, 0, sheenDensity)).toBeCloseTo(basePdf, 12);
   });
 
   it('keeps iridescence as an F0 modifier with an exact zero-default path', () => {
@@ -204,10 +226,26 @@ describe('pt-webgpu extension lobe CPU references', () => {
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('return mix(baseF0, iridF, iridescence);');
   });
 
-  it('locks sheen PDF as explicitly approximate until a true Charlie-lobe sampler exists', () => {
-    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('The sheen PDF uses a cosine-hemisphere approximation');
-    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('v1 accepted bias');
-    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('let sheenPdf = sheen * nDotL * INV_PI;');
+  it('uses a Charlie half-vector sampler and matching sheen PDF', () => {
+    const u = 0.37;
+    const roughness = 0.7;
+    const alpha = Math.max(roughness * roughness, 1e-3);
+    const invAlpha = 1 / Math.max(alpha, 1e-4);
+    const nDotH = charlieSampleNdotH(u, roughness);
+    const sinThetaH = Math.sqrt(Math.max(0, 1 - nDotH * nDotH));
+    expect(Math.pow(sinThetaH, invAlpha + 2)).toBeCloseTo(u, 12);
+
+    const h = normalize(add(wi, wo));
+    const expectedPdf = charlieD(Math.max(dot(normal, h), 0), alpha) *
+      Math.max(dot(normal, h), 0) /
+      Math.max(4 * Math.max(dot(wo, h), 1e-6), 1e-6);
+    expect(charlieSheenPdf(1, roughness, normal, wo, wi)).toBeCloseTo(expectedPdf, 12);
+
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('fn charlieSheenPdf(');
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('fn charlieSheenSample(');
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('let sheenPdf = sheen * charlieSheenPdf(');
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);');
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).not.toContain('let sheenPdf = sheen * nDotL * INV_PI;');
   });
 
   it('uses component-wise lobe math rather than collapsing colored lobes to luminance', () => {

@@ -282,8 +282,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Shirley-Chiu signed-denominator bug. Disc-area sampling was previously
     // mirrored into the wrong quadrant for two square quadrants; render-changing
     // for full-tier disc-area lights, now pinned by oracle.concentricDiscSample.
-    expect(digest).toBe('3f1927a1bb946f324898a33b02229e81842ba03b6eeea0a2daf8d9f5c83c6b13');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(387636);
+    // Re-pinned 2026-06-18: pt-webgpu sheen source sampling switched from the
+    // documented cosine approximation to a matching Charlie half-vector sampler
+    // and PDF.
+    expect(digest).toBe('b675b6c42e1303b51503e77460879120f41df8d6108e7f7bab4c8eb6addf183e');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(388630);
   });
 });
 
