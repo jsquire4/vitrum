@@ -589,6 +589,10 @@ buckets that the A–D framing was missing:**
   `activeLayerWeightRgb` pass-through, spectral luminance-collapse, and
   negative-luminance clamp behavior, replacing the old material-layer
   string-only proof with executable oracle coverage.
+  `oracle.environmentRotation.test.ts` now independently pins the HDRI
+  `rotationY` helper behavior: zero-rotation identity, +/-90 degree lookup
+  convention, inverse relationship, direction-length preservation, and
+  full/lite call-site linkage.
   `pt-webgl2`'s `uploadGapGuard.test.ts` now pins the environment upload path:
   `environment:'none'` drives both `envMapInfo.totalSum` and
   `environmentIntensity` to zero, while a raw HDRI scene drives them positive.
