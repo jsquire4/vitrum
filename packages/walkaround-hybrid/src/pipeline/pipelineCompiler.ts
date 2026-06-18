@@ -27,6 +27,7 @@
  * dispatch.
  */
 
+import type { EngineWarning } from '@vitrum/core';
 import { composeWgsl } from './wgslComposer.js';
 import {
   ATROUS_MODULE,
@@ -144,6 +145,7 @@ export async function compilePipelines(
   swapChainFormat: GPUTextureFormat,
   opts?: {
     verbose?: boolean;
+    onWarning?: (warning: EngineWarning) => void;
     ppgEnabled?: boolean;
     regirEnabled?: boolean;
     restirPtReuse?: boolean;
@@ -222,7 +224,9 @@ export async function compilePipelines(
     }
     const warns = info.messages.filter(m => m.type === 'warning');
     if (warns.length > 0) {
-      console.warn(`[ReSTIR] Shader warnings in '${label}':`, warns.map(w => w.message));
+      emitShaderCompilationWarnings(label, warns, {
+        ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
+      });
     }
   }
 
@@ -471,6 +475,12 @@ export async function compilePipelines(
       console.error('[ReSTIR] PPG shader compile errors in \'ppg-update\':', errs.map(e => `line ${e.lineNum}: ${e.message}`));
       throw new Error(`[ReSTIR] PPG shader compile error in 'ppg-update': ${errs[0]!.message}`);
     }
+    const warns = info.messages.filter((m) => m.type === 'warning');
+    if (warns.length > 0) {
+      emitShaderCompilationWarnings('ppg-update', warns, {
+        ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
+      });
+    }
     pipelineDraft['ppgUpdatePipeline'] = await device.createComputePipelineAsync({
       label: 'ppg-update', layout: 'auto',
       compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateMain' },
@@ -496,6 +506,12 @@ export async function compilePipelines(
         errs.map((e) => `line ${e.lineNum}: ${e.message}`));
       throw new Error(`[ReSTIR] ReGIR shader compile error in 'regir-build': ${errs[0]!.message}`);
     }
+    const warns = info.messages.filter((m) => m.type === 'warning');
+    if (warns.length > 0) {
+      emitShaderCompilationWarnings('regir-build', warns, {
+        ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
+      });
+    }
     const regirBuildLayout = device.createPipelineLayout({
       bindGroupLayouts: [getRegirBuildBindGroupLayout(device, bglCache)],
     });
@@ -514,4 +530,40 @@ export async function compilePipelines(
 
   // All pipelines accumulated into pipelineDraft — assert completeness.
   return pipelineDraft as CompiledPipelines;
+}
+
+export function emitShaderCompilationWarnings(
+  label: string,
+  warnings: readonly GPUCompilationMessage[],
+  options: {
+    readonly onWarning?: (warning: EngineWarning) => void;
+  } = {},
+): void {
+  const warning: EngineWarning = {
+    code: 'walkaround-hybrid.shader-compilation-warning',
+    backend: 'walkaround-hybrid',
+    phase: 'construction',
+    method: 'initialize',
+    message: `[ReSTIR] Shader warnings in '${label}': ${warnings.map((w) => w.message).join('; ')}`,
+    details: {
+      shaderLabel: label,
+      warnings: warnings.map((w) => ({
+        type: w.type,
+        message: w.message,
+        lineNum: w.lineNum,
+        linePos: w.linePos,
+        offset: w.offset,
+        length: w.length,
+      })),
+    },
+  };
+  if (options.onWarning !== undefined) {
+    try {
+      options.onWarning(warning);
+    } catch {
+      // Host warning callbacks must not break pipeline initialization.
+    }
+    return;
+  }
+  console.warn(`[ReSTIR] Shader warnings in '${label}':`, warnings.map((w) => w.message));
 }

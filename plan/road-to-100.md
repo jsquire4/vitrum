@@ -231,6 +231,11 @@
 > 16-light probe cap now emits structured
 > `walkaround-hybrid.rc-light-cap-exceeded` warnings through engine-owned RC,
 > preserving direct `console.warn` only for standalone helper use.
+> Same-day shader-compiler diagnostic follow-up: walkaround pipeline WGSL
+> compilation warnings, including optional PPG/ReGIR shader warnings, now emit
+> structured `walkaround-hybrid.shader-compilation-warning` host warnings with
+> shader label and source-location details, preserving console fallback only
+> for standalone compiler use.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel

@@ -1148,6 +1148,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // ── Compile shaders (denoiser-agnostic) ───────────────────────────────
     const compiled = await compilePipelines(d, this._bglCache, swapChainFormat, {
       verbose: options?.verbose ?? false,
+      ...(this._onWarning !== null ? { onWarning: this._onWarning } : {}),
       ppgEnabled: options?.ppgEnabled ?? false,
       ...(options?.ppgMaxDTreeNodesPerCell !== undefined
         ? { ppgMaxDTreeNodesPerCell: options.ppgMaxDTreeNodesPerCell }
