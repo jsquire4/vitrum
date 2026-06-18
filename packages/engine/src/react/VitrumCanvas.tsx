@@ -264,7 +264,20 @@ function composeAbortSignal(
     const abortSignalCtor = globalThis.AbortSignal as
       | (typeof AbortSignal & { any?: (signals: AbortSignal[]) => AbortSignal })
       | undefined;
-    return abortSignalCtor?.any?.([external, internal]) ?? external;
+    const nativeAny = abortSignalCtor?.any;
+    if (nativeAny != null) return nativeAny([external, internal]);
+
+    const AbortControllerCtor = globalThis.AbortController;
+    if (AbortControllerCtor == null) return external;
+    const composite = new AbortControllerCtor();
+    const abort = (): void => composite.abort();
+    if (external.aborted || internal.aborted) {
+      abort();
+    } else {
+      external.addEventListener('abort', abort, { once: true });
+      internal.addEventListener('abort', abort, { once: true });
+    }
+    return composite.signal;
   }
   return external ?? internal;
 }

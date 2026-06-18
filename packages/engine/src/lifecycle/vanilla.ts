@@ -478,10 +478,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   // RAF tick can acquire a fresh GPUTextureView per frame and pass it as
   // FrameInput.swapChainView. WebGL hosts return { context: null } and the
   // tick omits the swap-chain fields.
-  // NOTE: After auto-recreate the same canvas context is reused (createEngine
-  // re-configures it); re-reading detectWebGPUSwapChain after recreate would
-  // yield the same context object, so we capture it once here.
-  const { context: webgpuContext, format: webgpuFormat } = detectWebGPUSwapChain(opts.canvas);
+  let webgpuSwapChain = detectWebGPUSwapChain(opts.canvas);
 
   // ── Pause-on-hidden ──────────────────────────────────────────────────────
   const pauseOnHidden = opts.pauseOnHidden ?? true;
@@ -621,6 +618,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       trackEngineScene(engine);
       attachSceneController(engine);
       lastSceneControllerFrameMs = null;
+      webgpuSwapChain = detectWebGPUSwapChain(opts.canvas);
     } catch (createErr) {
       reportError(createErr, {
         phase: 'attach:auto-recreate',
@@ -684,7 +682,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     const view = asMat4(new Float32Array(opts.camera.matrixWorldInverse.elements));
     const proj = asMat4(new Float32Array(opts.camera.projectionMatrix.elements));
     // A2 — acquire the per-frame swap-chain view for WebGPU backends.
-    const swapChainView = acquireSwapChainView(webgpuContext, (err) => {
+    const swapChainView = acquireSwapChainView(webgpuSwapChain.context, (err) => {
       reportError(err, { phase: 'attach:swapchain', recoverable: true });
     });
     const quality = resolveQualityOption(opts.quality);
@@ -701,7 +699,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       ...(swapChainView != null
         ? {
             swapChainView,
-            ...(webgpuFormat != null ? { swapChainFormat: webgpuFormat } : {}),
+            ...(webgpuSwapChain.format != null ? { swapChainFormat: webgpuSwapChain.format } : {}),
           }
         : {}),
     });

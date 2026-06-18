@@ -398,4 +398,56 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
 
     root.unmount();
   });
+
+  it('aborts glTF loading on unmount when AbortSignal.any is unavailable', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+
+    const gltfModule = await import('../src/gltf.js');
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const externalAbort = new AbortController();
+    const originalAny = Object.getOwnPropertyDescriptor(globalThis.AbortSignal, 'any');
+    let capturedSignal: AbortSignal | undefined;
+
+    Object.defineProperty(globalThis.AbortSignal, 'any', {
+      value: undefined,
+      configurable: true,
+    });
+
+    try {
+      vi.spyOn(gltfModule, 'loadGltfWithEngine').mockImplementation((_input, options) => {
+        capturedSignal = options?.signal;
+        return new Promise(() => {}) as ReturnType<typeof gltfModule.loadGltfWithEngine>;
+      });
+
+      const container = happyWindow.document.createElement('div') as unknown as Element;
+      happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
+
+      const root = createRoot(container);
+      root.render(React.createElement(VitrumCanvas, {
+        gltf,
+        gltfOptions: {
+          buffers,
+          signal: externalAbort.signal,
+        },
+        camera: CAMERA,
+      }));
+
+      await vi.waitFor(() => expect(capturedSignal).toBeDefined());
+      expect(capturedSignal?.aborted).toBe(false);
+
+      root.unmount();
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      expect(externalAbort.signal.aborted).toBe(false);
+      expect(capturedSignal?.aborted).toBe(true);
+    } finally {
+      if (originalAny != null) {
+        Object.defineProperty(globalThis.AbortSignal, 'any', originalAny);
+      } else {
+        Reflect.deleteProperty(globalThis.AbortSignal, 'any');
+      }
+    }
+  });
 });

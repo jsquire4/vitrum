@@ -177,4 +177,60 @@ describe('attachVitrum auto-recreate scene tracking', () => {
 
     handle.dispose();
   });
+
+  it('refreshes WebGPU swapchain plumbing after auto-recreate changes backend class', async () => {
+    let rafCallback: FrameRequestCallback | undefined;
+    Object.defineProperty(globalThis, 'requestAnimationFrame', {
+      value: vi.fn((cb: FrameRequestCallback) => {
+        rafCallback = cb;
+        return 1;
+      }),
+      configurable: true,
+    });
+
+    const swapChainView = { tag: 'view-after-recreate' } as unknown as GPUTextureView;
+    const webgpuContext = {
+      getConfiguration: vi.fn(() => ({ format: 'rgba8unorm' as GPUTextureFormat })),
+      getCurrentTexture: vi.fn(() => ({
+        createView: vi.fn(() => swapChainView),
+      })),
+    } as unknown as GPUCanvasContext;
+    let exposeWebGpuContext = false;
+    const canvas = makeCanvas();
+    vi.mocked(canvas.getContext).mockImplementation((kind: string) =>
+      kind === 'webgpu' && exposeWebGpuContext ? webgpuContext : null,
+    );
+
+    const first = makeEngine('pt-webgl2');
+    const second = makeEngine('walkaround-hybrid');
+    createEngineMock
+      .mockResolvedValueOnce(first.engine)
+      .mockResolvedValueOnce(second.engine);
+
+    const handle = await attachVitrum({
+      canvas,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+    });
+
+    exposeWebGpuContext = true;
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    } as EngineError);
+
+    await vi.waitFor(() => expect(handle.backendId).toBe('walkaround-hybrid'));
+
+    rafCallback?.(123);
+
+    expect(second.engine.renderFrame).toHaveBeenCalledTimes(1);
+    expect(second.engine.renderFrame).toHaveBeenCalledWith(expect.objectContaining({
+      swapChainView,
+      swapChainFormat: 'rgba8unorm',
+    }));
+
+    handle.dispose();
+  });
 });
