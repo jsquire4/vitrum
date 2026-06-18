@@ -168,7 +168,10 @@
 > `lvi=0`, the emitter endpoint already covered by per-bounce NEE. `bdpt:true` now
 > defaults to endpoint-only light-subpath depth (`maxLightBounces:1`), so the default
 > A/B agrees exactly with `bdpt:false` and `results-bdpt.json` records
-> `"verdict":"PASS"`. The remaining proof/implementation tail is explicit
+> `"verdict":"PASS"`. **2026-06-18 dzn follow-up:** `behavioral-gate:dzn -- --filter bdpt --require-full-tier`
+> now has a committed status artifact proving `pt/bdpt` and `pt/spectral+bdpt`
+> boot/render finite non-black on the dzn full-tier adapter with zero GPU errors.
+> The remaining proof/implementation tail is explicit
 > multi-vertex BDPT: `controls.byMaxLightBounces` still shows the finding starting
 > at `maxLightBounces:2` (+13.21% global luminance) and reaching +17.08% at
 > `maxLightBounces:3`; requesting that mode now emits

@@ -55,11 +55,14 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
 ```
 
-The committed dzn status set includes two passing narrow lanes
-(`gltf-material-sweep`, `mutation`) plus the broader `--filter gltf` full-suite
-lane. The broad glTF status confirms full-tier execution with zero GPU errors
-for all selected glTF lanes; real-asset comparisons use the explicit `dzn-full`
-golden variant under `tools/reference-renders/gltf-real-behavioral-dzn-full/`.
+The committed dzn status set includes three passing narrow lanes
+(`gltf-material-sweep`, `mutation`, `bdpt`) plus the broader `--filter gltf`
+full-suite lane. The broad glTF status confirms full-tier execution with zero
+GPU errors for all selected glTF lanes; real-asset comparisons use the explicit
+`dzn-full` golden variant under
+`tools/reference-renders/gltf-real-behavioral-dzn-full/`. The BDPT lane is a
+full-tier boot/render proof for `pt/bdpt` and `pt/spectral+bdpt`; material
+furnace and multi-vertex promotion remain separate radiometric proof work.
 
 ## What it covers
 

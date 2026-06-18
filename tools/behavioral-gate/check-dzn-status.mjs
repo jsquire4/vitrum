@@ -39,6 +39,20 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter bdpt --require-full-tier",
+    filter: "bdpt",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 2,
+    failures: 0,
+    configs: [
+      { label: "pt/bdpt", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/spectral+bdpt", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-status.json",
     command: "npm run behavioral-gate:dzn -- --filter gltf --require-full-tier",
     filter: "gltf",
@@ -97,6 +111,9 @@ for (const expected of EXPECTED) {
     if (config.tier !== expectedConfig.tier) fail(`${expected.path}: ${expectedConfig.label} tier mismatch`);
     if (config.gpuErrors !== 0) fail(`${expected.path}: ${expectedConfig.label} gpuErrors must be 0`);
     if (config.nan !== false) fail(`${expected.path}: ${expectedConfig.label} nan must be false`);
+    if (expectedConfig.minLuminance != null && !(config.luminance >= expectedConfig.minLuminance)) {
+      fail(`${expected.path}: ${expectedConfig.label} luminance below bound`);
+    }
 
     if (expectedConfig.goldenStatus != null) {
       if (config.goldenStatus !== expectedConfig.goldenStatus) {
@@ -140,4 +157,4 @@ for (const expected of EXPECTED) {
   }
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (3 committed dzn status artifacts)");
+console.log("[behavioral-gate-dzn-status-check] PASS (4 committed dzn status artifacts)");
