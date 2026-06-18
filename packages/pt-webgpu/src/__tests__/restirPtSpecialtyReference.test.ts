@@ -74,8 +74,8 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
       caseCount: 3,
       maxAbsoluteError: 0,
       maxRelativeError: 0,
-      luminanceChecksum: 3.182546428591,
-      pdfChecksum: 3.447061984901,
+      luminanceChecksum: 3.40007609048,
+      pdfChecksum: 3.224578288215,
     });
 
     for (const c of fixture.cases) {

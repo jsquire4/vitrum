@@ -159,8 +159,8 @@ fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, u32>) -> RptAlphaTra
 // Full-tier suffix material decode for the reconnection vertex and its onward
 // hits. This mirrors the main shade prologue's hit-local material stack: maps,
 // normal/bump perturbation, layer tint, thin-film reflect tint, spectral albedo,
-// and KHR_materials_specular. The remaining ReSTIR-PT source-lobe sampler/PDF
-// gap is separate: this helper makes the suffix Lo material domain truthful.
+// and KHR_materials_specular. The visible-vertex source-lobe sampler/PDF lives
+// below in rptSampleSourceReconnectionDirection / rptSourceDirectionalPdfFull.
 fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLambda: f32) -> RptSuffixMaterial {
   let matId = hitMaterialId(hit);
   let mat = decodeMaterial(matId);
@@ -653,6 +653,7 @@ fn rptSampleSourceReconnectionDirection(
   clearcoat: f32,
   clearcoatRoughness: f32,
   sheen: f32,
+  sheenRoughness: f32,
   anisotropy: f32,
 ) -> vec3f {
   let lobeWeightSum = rptSourceLobeWeightSum(clearcoat, sheen);
@@ -681,7 +682,7 @@ fn rptSampleSourceReconnectionDirection(
     let bs = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);
     return bs.wi;
   }
-  let bs = cosineHemisphereSample(rng, normal);
+  let bs = charlieSheenSample(rng, wo, normal, tanT, tanB, sheenRoughness);
   return bs.wi;
 }
 
@@ -856,8 +857,9 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   //   p_src = (p_base + clearcoat*p_clearcoat + sheen*p_sheen) /
   //           (1 + clearcoat + sheen)
   // where p_base preserves the base specular/diffuse split, p_clearcoat is a
-  // clearcoat-roughness VNDF reflection, and p_sheen uses the same cosine proxy
-  // as brdfDirectionalPdfFull. This keeps the reservoir source density honest.
+  // clearcoat-roughness VNDF reflection, and p_sheen is the Charlie half-vector
+  // sheen sampler used by brdfDirectionalPdfFull. This keeps the reservoir source
+  // density honest.
   let wiRecon = rptSampleSourceReconnectionDirection(
     &rng,
     woV,
@@ -871,6 +873,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     clearcoatV,
     clearcoatRoughnessV,
     sheenV,
+    sheenRoughnessV,
     anisotropyV,
   );
   let nDotRecon = dot(nv, wiRecon);

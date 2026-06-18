@@ -280,10 +280,12 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     for (const line of [
       'fn rptSourceLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {',
       'fn rptSampleSourceReconnectionDirection(',
+      'sheenRoughness: f32,',
       'let xiSource = rand_f32(rng) * lobeWeightSum;',
       'if (xiSource < 1.0 + max(clearcoat, 0.0)) {',
       'buildOnb(clearcoatNormal, &ccTanT, &ccTanB);',
       'let bs = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
+      'let bs = charlieSheenSample(rng, wo, normal, tanT, tanB, sheenRoughness);',
       'return brdfDirectionalPdfFullSampledWithClearcoatNormal(',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);

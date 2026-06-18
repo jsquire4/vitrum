@@ -284,6 +284,24 @@ function sheenBrdf(material, normal, wo, wi) {
 /**
  * @param {Record<string, any>} material
  * @param {Vec3} normal
+ * @param {Vec3} wo
+ * @param {Vec3} wi
+ */
+function sheenPdf(material, normal, wo, wi) {
+  if (material.sheen <= 1e-4) return 0;
+  const nDotL = Math.max(dot(normal, wi), 0);
+  const nDotV = Math.max(dot(normal, wo), 0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) return 0;
+  const h = normalize(add(wi, wo));
+  const nDotH = Math.max(dot(normal, h), 0);
+  const vDotH = Math.max(dot(wo, h), 1e-6);
+  const alpha = Math.max(material.sheenRoughness * material.sheenRoughness, 1e-3);
+  return (charlieD(nDotH, alpha) * nDotH) / Math.max(4 * vDotH, 1e-6);
+}
+
+/**
+ * @param {Record<string, any>} material
+ * @param {Vec3} normal
  * @param {Vec3} clearcoatNormal
  * @param {Vec3} wo
  * @param {Vec3} wi
@@ -303,10 +321,9 @@ function evaluateSpecialtyBrdf(material, normal, clearcoatNormal, wo, wi) {
  * @param {Vec3} wi
  */
 function sourcePdfFull(material, normal, clearcoatNormal, wo, wi) {
-  const nDotL = Math.max(dot(normal, wi), 0);
   const base = baseBrdfAndPdf(material, normal, wo, wi).pdf;
   const clearcoat = clearcoatBrdfAndPdf(material, clearcoatNormal, wo, wi).pdf;
-  const sheen = nDotL * INV_PI;
+  const sheen = sheenPdf(material, normal, wo, wi);
   const lobeWeightSum = Math.max(1 + Math.max(material.clearcoat, 0) + Math.max(material.sheen, 0), 1e-4);
   return (base + material.clearcoat * clearcoat + material.sheen * sheen) / lobeWeightSum;
 }
