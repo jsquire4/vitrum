@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import type {
+  EngineWarning,
   MaterialSpec,
   MeshPrimitive,
   Scene,
@@ -254,6 +255,48 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
       Array.from(expected!, (v) => expect.closeTo(v, 6)),
     );
     expect(posed.tangents![1]).toBeGreaterThan(0);
+  });
+
+  it('routes empty-bones rest-pose fallback through structured warnings when provided', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const prim: SkinnedMeshPrimitive = {
+        ...twoBoneSkinnedPrim('empty-bones'),
+        bones: new Float32Array(0),
+        boneInverses: new Float32Array(0),
+      };
+      const scene: Scene = {
+        primitives: [prim],
+        emitters: [],
+        environment: { kind: 'none' },
+      };
+      const warnings: EngineWarning[] = [];
+
+      const posed = solveSkinPrimitives(scene, {
+        onWarning: (warning) => warnings.push(warning),
+        warningPhase: 'setScene',
+        warningMethod: 'setScene',
+      });
+
+      expect(posed).toBe(scene);
+      expect(posed.primitives[0]).toBe(prim);
+      expect(warn).not.toHaveBeenCalled();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!).toMatchObject({
+        code: 'pt-webgl2.skinned-mesh-empty-bones',
+        backend: 'pt-webgl2',
+        phase: 'setScene',
+        method: 'setScene',
+        details: {
+          primitiveId: 'empty-bones',
+          primitiveKind: 'skinned-mesh',
+          fallback: 'rest-pose',
+        },
+      });
+      expect(warnings[0]!.message).toContain('rendering rest pose');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('updatePrimitive with new bones re-solves skinning', async () => {

@@ -30,8 +30,14 @@
 //   carries `morphTargets` / `morphWeights` / `morphTargetNormals`.  No gap here
 //   — morph application is part of the solver's pre-LBS step.
 
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import type { EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
 import { solveSkin } from '@vitrum/core';
+
+export interface SolveSkinPrimitivesWarningOptions {
+  readonly onWarning?: (warning: EngineWarning) => void;
+  readonly warningPhase?: EngineWarning['phase'];
+  readonly warningMethod?: string;
+}
 
 /**
  * Replace each `skinned-mesh` primitive's rest-pose `positions`, `normals`, and
@@ -42,7 +48,7 @@ import { solveSkin } from '@vitrum/core';
  * code that filters by kind continues to work; only the geometry arrays are
  * substituted.
  */
-export function solveSkinPrimitives(scene: Scene): Scene {
+export function solveSkinPrimitives(scene: Scene, warningOptions: SolveSkinPrimitivesWarningOptions = {}): Scene {
   let anyResolved = false;
 
   const primitives = scene.primitives.map((prim): ScenePrimitive => {
@@ -52,10 +58,7 @@ export function solveSkinPrimitives(scene: Scene): Scene {
     // warning so the scene at least renders (as a static rest-pose mesh) rather
     // than crashing the solver.
     if (prim.bones.length === 0) {
-      console.warn(
-        `[vitrum/pt-webgl2] solveSkinPrimitives: primitive "${String(prim.id)}" is skinned-mesh ` +
-          'but has an empty bones array — rendering rest pose.',
-      );
+      emitEmptyBonesWarning(prim.id, warningOptions);
       return prim;
     }
 
@@ -74,4 +77,31 @@ export function solveSkinPrimitives(scene: Scene): Scene {
 
   if (!anyResolved) return scene;
   return { ...scene, primitives };
+}
+
+function emitEmptyBonesWarning(
+  primitiveId: ScenePrimitive['id'],
+  warningOptions: SolveSkinPrimitivesWarningOptions,
+): void {
+  const message =
+    `[vitrum/pt-webgl2] solveSkinPrimitives: primitive "${String(primitiveId)}" is skinned-mesh ` +
+    'but has an empty bones array — rendering rest pose.';
+  const warning: EngineWarning = {
+    code: 'pt-webgl2.skinned-mesh-empty-bones',
+    message,
+    backend: 'pt-webgl2',
+    phase: warningOptions.warningPhase ?? 'setScene',
+    method: warningOptions.warningMethod ?? 'solveSkinPrimitives',
+    details: {
+      primitiveId: String(primitiveId),
+      primitiveKind: 'skinned-mesh',
+      fallback: 'rest-pose',
+    },
+  };
+
+  if (warningOptions.onWarning) {
+    warningOptions.onWarning(warning);
+    return;
+  }
+  console.warn(message);
 }

@@ -78,7 +78,7 @@ export function buildSceneTextures(
   //      When a host later calls updatePrimitive(id, { bones: newBones })
   //      the full setScene rebuild re-runs this pass — no separate incremental
   //      path required (pt-webgl2 updatePrimitive always rebuilds wholesale).
-  const skinnedScene = solveSkinPrimitives(ptScene);
+  const skinnedScene = solveSkinPrimitives(ptScene, warningOptions);
 
   // (2) merged world-space tri stream + single-root BVH (stride 4 = the form the
   //     BVH texture adapter and attribute array both index).

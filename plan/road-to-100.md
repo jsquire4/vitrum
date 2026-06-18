@@ -184,6 +184,10 @@
 > unsupported-material/displacement warnings now retain the aggregate `fields`
 > list while also reporting exact `primitiveIds` plus per-primitive
 > `primitiveFields`, matching the mutation-path diagnostic specificity.
+> Same-day pt-webgl2 skinning-warning follow-up: empty-bones skinned meshes
+> still render in rest pose, but scene ingestion now routes that fallback through
+> structured `pt-webgl2.skinned-mesh-empty-bones` warnings with the primitive id
+> and `fallback:"rest-pose"` instead of being console-only.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel
