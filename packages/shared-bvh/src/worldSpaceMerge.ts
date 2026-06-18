@@ -228,13 +228,16 @@ function constantVertexRgbMultiplier(primitive: MeshLikePrimitive): readonly [nu
   const g = colors[1] ?? 1;
   const b = colors[2] ?? 1;
   const eps = 1e-6;
-  for (let i = 1; i < vertexCount; i += 1) {
+  for (let i = 0; i < vertexCount; i += 1) {
     const o = i * stride;
     if (
       Math.abs((colors[o] ?? 1) - r) > eps ||
       Math.abs((colors[o + 1] ?? 1) - g) > eps ||
       Math.abs((colors[o + 2] ?? 1) - b) > eps
     ) {
+      return null;
+    }
+    if (stride === 4 && Math.abs((colors[o + 3] ?? 1) - 1) > eps) {
       return null;
     }
   }

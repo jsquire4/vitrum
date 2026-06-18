@@ -300,6 +300,38 @@ describe('packSceneFromCore (SP-*)', () => {
     ]);
   });
 
+  it('does not bake constant COLOR_0 alpha into RGB-only material slots', () => {
+    const baseMaterial = { baseColor: [0.2, 0.3, 0.4] as [number, number, number], roughness: 0.5, metallic: 0 };
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'constant-alpha-tint',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        colors: new Float32Array([
+          0.5, 0.25, 1, 0.5,
+          0.5, 0.25, 1, 0.5,
+          0.5, 0.25, 1, 0.5,
+        ]),
+        material: baseMaterial,
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const merged = mergeWorldSpaceFromCore(scene, {
+      positionStride: 4,
+      bakeConstantVertexColorIntoMaterial: true,
+    });
+
+    expect(merged.materials[0]?.baseColor).toEqual([0.2, 0.3, 0.4]);
+    expect(Array.from(merged.colors.slice(0, 12))).toEqual([
+      0.5, 0.25, 1, 0.5,
+      0.5, 0.25, 1, 0.5,
+      0.5, 0.25, 1, 0.5,
+    ]);
+  });
+
   it('SP-1: two static boxes build TLAS and nearest instance matches oracle', () => {
     const scene: Scene = {
       primitives: [

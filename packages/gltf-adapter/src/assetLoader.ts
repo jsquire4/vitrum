@@ -116,7 +116,7 @@ export async function loadGltfAsset(
   const featureReport = analyzeGltfAsset(parsed.gltf, {
     ...(options.textureSourceExtensions ? { textureSourceExtensions: options.textureSourceExtensions } : {}),
   });
-  const backendCompatibility = rankGltfBackends(featureReport, options.backendPolicy ?? 'fidelity');
+  const staticBackendCompatibility = rankGltfBackends(featureReport, options.backendPolicy ?? 'fidelity');
   const sceneIndex = options.sceneIndex ?? parsed.gltf.scene ?? 0;
   const sceneOptions: GltfToSceneOptions = {
     buffers,
@@ -131,6 +131,10 @@ export async function loadGltfAsset(
   };
   const sceneResult = await gltfToScene(parsed.gltf, sceneOptions);
   const textureDecodeReport = buildTextureDecodeReport(sceneResult.scene);
+  const backendCompatibility = reconcileBackendCompatibilityAfterSceneImport(
+    staticBackendCompatibility,
+    sceneResult.scene,
+  );
 
   return {
     ...sceneResult,
@@ -225,6 +229,65 @@ const TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES = new Set([
   'EXT_texture_webp',
   'MSFT_texture_dds',
 ]);
+
+function reconcileBackendCompatibilityAfterSceneImport(
+  compatibility: readonly GltfBackendCompatibility[],
+  scene: Scene,
+): readonly GltfBackendCompatibility[] {
+  const liteVertexColorsBakeable = sceneHasOnlyPtWebgpuLiteBakeableVertexColors(scene);
+
+  return compatibility.map((candidate) => {
+    if (candidate.profileId !== 'pt-webgpu-lite' || !liteVertexColorsBakeable) {
+      return candidate;
+    }
+    const issues = candidate.issues.filter((issue) =>
+      !(issue.category === 'primitive' && issue.name === 'vertexColors')
+    );
+    return issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues);
+  });
+}
+
+function sceneHasOnlyPtWebgpuLiteBakeableVertexColors(scene: Scene): boolean {
+  for (const primitive of scene.primitives) {
+    const colors = (primitive as { readonly colors?: Float32Array }).colors;
+    if (colors != null && colors.length > 0 && !ptWebgpuLiteCanBakeVertexColors(primitive)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function ptWebgpuLiteCanBakeVertexColors(primitive: ScenePrimitive): boolean {
+  const colors = (primitive as { readonly colors?: Float32Array }).colors;
+  const positions = (primitive as { readonly positions?: Float32Array }).positions;
+  if (colors == null || colors.length === 0) return true;
+  if (positions == null || positions.length === 0) return false;
+  const vertexCount = Math.floor(positions.length / 3);
+  const stride = colors.length >= vertexCount * 4
+    ? 4
+    : colors.length >= vertexCount * 3
+      ? 3
+      : 0;
+  if (vertexCount === 0 || stride === 0) return false;
+  const r = colors[0] ?? 1;
+  const g = colors[1] ?? 1;
+  const b = colors[2] ?? 1;
+  const eps = 1e-6;
+  for (let i = 0; i < vertexCount; i += 1) {
+    const o = i * stride;
+    if (
+      Math.abs((colors[o] ?? 1) - r) > eps ||
+      Math.abs((colors[o + 1] ?? 1) - g) > eps ||
+      Math.abs((colors[o + 2] ?? 1) - b) > eps
+    ) {
+      return false;
+    }
+    if (stride === 4 && Math.abs((colors[o + 3] ?? 1) - 1) > eps) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function reconcileBackendCompatibilityAfterTextureDecode(
   compatibility: readonly GltfBackendCompatibility[],

@@ -397,9 +397,12 @@ function addMorphTargetTexcoord(
   buffers.set(uvBuffer, uvDelta);
 }
 
-function makeInlineVertexColorGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+function makeInlineVertexColorGltf(
+  colorsValues = [1, 0, 0, 0, 1, 0, 0, 0, 1],
+  colorType: 'VEC3' | 'VEC4' = 'VEC3',
+): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
-  const colors = f32Buffer([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  const colors = f32Buffer(colorsValues);
   const total = new Uint8Array(positions.byteLength + colors.byteLength);
   total.set(new Uint8Array(positions), 0);
   total.set(new Uint8Array(colors), positions.byteLength);
@@ -412,7 +415,7 @@ function makeInlineVertexColorGltf(): { gltf: GltfJson; buffers: Map<number, Arr
       meshes: [{ primitives: [{ attributes: { POSITION: 0, COLOR_0: 1 } }] }],
       accessors: [
         { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
-        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: colorType },
       ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
@@ -2647,8 +2650,53 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects direct pt-webgpu-lite strict loads before constructing unsupported COLOR_0 scenes', async () => {
+  it('allows direct pt-webgpu-lite strict loads for primitive-constant RGB COLOR_0 scenes', async () => {
+    const { gltf, buffers } = makeInlineVertexColorGltf([
+      0.5, 0.25, 1,
+      0.5, 0.25, 1,
+      0.5, 0.25, 1,
+    ]);
+    const engine = { backendId: 'pt-webgpu' as const, setScene: vi.fn() };
+    const createEngine = vi.fn(async () => engine);
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    });
+
+    const liteCompatibility = result.asset.backendCompatibility.find((entry) =>
+      entry.profileId === 'pt-webgpu-lite'
+    );
+    expect(liteCompatibility?.issues.some((issue) => issue.name === 'vertexColors')).toBe(false);
+    expect(result.profileId).toBe('pt-webgpu-lite');
+    expect(result.engine).toBe(engine);
+    expect(createEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects direct pt-webgpu-lite strict loads before constructing nonconstant COLOR_0 scenes', async () => {
     const { gltf, buffers } = makeInlineVertexColorGltf();
+    const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'Selected backend "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: primitive:vertexColors=unsupported',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects direct pt-webgpu-lite strict loads for constant COLOR_0 with alpha below one', async () => {
+    const { gltf, buffers } = makeInlineVertexColorGltf([
+      0.5, 0.25, 1, 0.5,
+      0.5, 0.25, 1, 0.5,
+      0.5, 0.25, 1, 0.5,
+    ], 'VEC4');
     const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
 
     await expect(loadGltfForEngine(gltf, {
