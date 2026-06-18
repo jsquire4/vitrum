@@ -125,6 +125,7 @@ async function assertRuntimeTruthfulnessGuards() {
   const packageReadme = await readText("packages/walkaround-hybrid/README.md");
   const trainingReadme = await readText("tools/neural-denoiser-training/README.md");
   const weights = await readText("packages/walkaround-hybrid/src/neural/weights.ts");
+  const hardwareNeeds = await readText("HARDWARE-VALIDATION-NEEDS.md");
 
   const requiredFragments = [
     [config, "opts.denoiser === 'neural' && !opts.neuralWeights", "neural weights construction guard"],
@@ -151,10 +152,22 @@ async function assertRuntimeTruthfulnessGuards() {
     [trainingReadme, "It does NOT produce useful denoiser weights", "training README smoke caveat"],
     [weights, "Repo-only research checkpoints", "weights.ts research checkpoint disclosure"],
     [weights, "does not ship production neural weights", "weights.ts production-weight disclosure"],
+    [hardwareNeeds, "default-tier quality/convergence A/B before any default-on decision", "NRC hardware-validation default-tier caveat"],
+    [hardwareNeeds, "biased-cache QUALITY A/B", "NRC hardware-validation quality A/B tail"],
+    [hardwareNeeds, "not mean-preserving", "NRC hardware-validation biased-cache caveat"],
   ];
 
   for (const [text, fragment, label] of requiredFragments) {
     if (!text.includes(fragment)) fail(`missing ${label}: ${fragment}`);
+  }
+
+  const forbiddenFragments = [
+    "biased-cache quality/perf A/B PASSED in WAVE8",
+    "Remaining: the product decision to flip the default on",
+    "GPU-confirm pending per #1",
+  ];
+  for (const fragment of forbiddenFragments) {
+    if (hardwareNeeds.includes(fragment)) fail(`stale NRC hardware-validation claim remains: ${fragment}`);
   }
 }
 
