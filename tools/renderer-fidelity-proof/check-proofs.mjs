@@ -5,6 +5,7 @@
 
 const MATRIX_PATH = "plan/renderer-fidelity-matrix.md";
 const PLAYBOOK_PATH = "plan/fidelity-promotion-playbook.md";
+const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
 
 const PT_WEBGPU_SUPPORTED_ROWS = [
   {
@@ -166,6 +167,18 @@ function assertPtWebgpuSupported(row, feature) {
   }
 }
 
+/** @param {string} matrix */
+function featureRows(matrix) {
+  return matrix
+    .split("\n")
+    .filter((line) => {
+      if (!line.startsWith("| ")) return false;
+      if (line.startsWith("| Feature |")) return false;
+      if (line.startsWith("|---------")) return false;
+      return line.split(" | ").length >= 6;
+    });
+}
+
 /**
  * @param {{ path: string, labels: string[] }} status
  * @param {string} feature
@@ -189,6 +202,7 @@ async function assertDznStatus(status, feature) {
 
 const matrix = await readText(MATRIX_PATH);
 const playbook = await readText(PLAYBOOK_PATH);
+const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
 
 for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
   const row = findMatrixRow(matrix, proof.feature);
@@ -200,6 +214,25 @@ for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
   if (proof.dznStatus) await assertDznStatus(proof.dznStatus, proof.feature);
 }
 
+if (ptWebgl2BrowserStatus.backend !== "pt-webgl2") {
+  fail(`${PT_WEBGL2_BROWSER_STATUS_PATH} backend mismatch`);
+}
+if (ptWebgl2BrowserStatus.verdict === "HOST-BLOCKED") {
+  for (const row of featureRows(matrix)) {
+    const columns = row.split(" | ");
+    const feature = columns[0].slice(2);
+    const ptWebgl2Grade = columns[1];
+    if (ptWebgl2Grade === "supported") {
+      fail(
+        `${feature}: pt-webgl2 must not be marked supported while ` +
+        `${PT_WEBGL2_BROWSER_STATUS_PATH} is HOST-BLOCKED`,
+      );
+    }
+  }
+} else if (ptWebgl2BrowserStatus.verdict !== "PASS") {
+  fail(`${PT_WEBGL2_BROWSER_STATUS_PATH} verdict must be PASS or HOST-BLOCKED`);
+}
+
 for (const staleNeedle of PLAYBOOK_FORBIDDEN_STALE_NEEDLES) {
   if (playbook.includes(staleNeedle)) {
     fail(`fidelity promotion playbook still contains stale blocker: ${staleNeedle}`);
@@ -207,5 +240,5 @@ for (const staleNeedle of PLAYBOOK_FORBIDDEN_STALE_NEEDLES) {
 }
 
 console.log(
-  `[renderer-fidelity-proof-check] PASS (${PT_WEBGPU_SUPPORTED_ROWS.length} pt-webgpu supported rows verified)`,
+  `[renderer-fidelity-proof-check] PASS (${PT_WEBGPU_SUPPORTED_ROWS.length} pt-webgpu supported rows verified; pt-webgl2 browser-promotion guard checked)`,
 );
