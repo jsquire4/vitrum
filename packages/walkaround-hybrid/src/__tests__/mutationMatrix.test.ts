@@ -610,6 +610,45 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning when an atlas-backed map uses an unsupported texCoord', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    const baseColorMap = {
+      handle: baseColorMapHandle(128),
+      texCoord: 2,
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 7,
+      },
+    } as TextureRef;
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap,
+        },
+      });
+
+      const warning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.unsupported-material-texture-texcoord',
+      );
+      expect(warning?.method).toBe('updatePrimitive');
+      expect(warning?.details).toMatchObject({
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+        texCoord: 2,
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 7,
+        fallback: 'map ignored',
+      });
+      expect(warning?.message).toContain('texCoord 2');
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) rebuilds material texture atlas when atlas-backed maps change', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

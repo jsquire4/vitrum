@@ -88,7 +88,11 @@ describe('DDGI probe-ray Beer-Lambert glass transmittance (B5)', () => {
     expect(wgsl).toContain('const DDGI_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;');
     expect(wgsl).toContain('const DDGI_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;');
     expect(wgsl).toContain('const DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;');
+    expect(wgsl).toContain('const DDGI_MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;');
+    expect(wgsl).toContain('const DDGI_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;');
     expect(wgsl).toContain('fn ddgiMaterialAlphaCoverageForHit(hit: IntersectionResult) -> DdgiAlphaCoverage');
+    expect(wgsl).toContain('fn ddgiSampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32) -> f32');
+    expect(wgsl).toContain('fn ddgiSampleThicknessMapFactorForHit(hit: IntersectionResult) -> vec2f');
     expect(wgsl).toContain('let baseColorTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);');
     expect(wgsl).toContain('let alphaTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);');
     expect(wgsl).toContain('out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
@@ -100,6 +104,9 @@ describe('DDGI probe-ray Beer-Lambert glass transmittance (B5)', () => {
     expect(wgsl).toContain('let hit = ddgiTraceFirstHitAlphaMaskTextured(ray);');
     expect(wgsl).toContain('let alphaT = ddgiAlphaShadowTransmittanceForHit(sHit);');
     expect(wgsl).toContain('visibility = visibility * alphaT;');
+    expect(wgsl).toContain('let thicknessMap = ddgiSampleThicknessMapFactorForHit(sHit);');
+    expect(wgsl).toContain('let glassTransmission = ddgiSampleTransmissionMapForHit(sHit, sMat.transmission);');
+    expect(wgsl).toContain('visibility = visibility * glassTransmission * beerAtten;');
     expect(wgsl).toContain('let shadowT = ddgiTraceShadowTransmittance(shadowOrig, lightDir, dist - normalBias_p, false);');
     expect(wgsl).toContain('shadowT = ddgiTraceShadowTransmittance(hitPos + n * normalBias, wi, dist - normalBias, false);');
     expect(wgsl).not.toContain('let sHit = bvhTraceFirstHit(sRay);\\n\\t      if (sHit.didHit && sHit.dist < dist - normalBias) { continue; }');

@@ -94,7 +94,7 @@ describe('B2 — WGSL structural pins: specular complement', () => {
 
   it('1g. mat.roughness and mat.metalness are accessed in the shader', () => {
     const src = wgsl();
-    expect(src).toContain('ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, smoothNormal, probeNormal)');
+    expect(src).toContain('ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, mat.transmission, mat.attenuationColor, smoothNormal, probeNormal)');
     expect(src).toContain('mat.roughness');
     expect(src).toContain('mat.metalness');
   });
@@ -109,6 +109,20 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_METALLIC');
     expect(src).toContain('hitWorldPos, probeNormal, probeMat.albedo,');
     expect(src).toContain('let directRadiance = direct * probeMat.albedo * (1.0 / PI);');
+  });
+
+  it('1h2. readable transmission and thickness maps modulate DDGI glass response', () => {
+    const src = wgsl();
+    expect(src).toContain('const DDGI_MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;');
+    expect(src).toContain('fn ddgiSampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32) -> f32');
+    expect(src).toContain('fn ddgiApplyThicknessMapToBeerTint(hit: IntersectionResult, beerTint: vec3f) -> vec3f');
+    expect(src).toContain('transmission: f32,');
+    expect(src).toContain('beerTint: vec3f,');
+    expect(src).toContain('out.transmission = ddgiSampleTransmissionMapForHit(hit, scalarTransmission);');
+    expect(src).toContain('out.beerTint = ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint);');
+    expect(src).toContain('let transmitted = sampleSkyColor(dir) * probeMat.beerTint;');
+    expect(src).toContain('radiance = mix(radiance, transmitted, probeMat.transmission * frameParams.glassMixScale);');
   });
 
   it('1i. readable normal and bump maps perturb DDGI probe-hit bounce normals', () => {

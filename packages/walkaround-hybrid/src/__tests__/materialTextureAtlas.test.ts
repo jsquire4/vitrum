@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { MaterialSpec } from '@vitrum/core';
+import type { MaterialSpec, TextureRef } from '@vitrum/core';
 import { packMaterialTextureAtlas } from '../pipeline/materialTextureAtlas.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
@@ -137,6 +137,46 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.readableBaseColorLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[0]).toBe(0);
     expect(atlas.baseColorMetaData[1]).toBe(16);
+  });
+
+  it('reports unsupported texCoord values and disables the atlas metadata', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+    };
+    const baseColorMap = {
+      handle,
+      texCoord: 2,
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 1,
+      },
+    } as TextureRef;
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap,
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableBaseColorLayerCount).toBe(0);
+    expect(atlas.baseColorMetaData[0]).toBe(-1);
+    expect(atlas.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'unsupported-material-texture-texcoord',
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+        texCoord: 2,
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 1,
+      }),
+    ]);
+    expect(atlas.diagnostics[0]?.message).toContain('texCoord 2');
   });
 
   it('packs roughnessMap and metallicMap as linear scalar atlas slots', () => {

@@ -994,12 +994,9 @@ function pathReplayMaterialIssue(
 function materialIssueForEmissive(
   material: MaterialSpec,
 ): { message: string; details: Record<string, string | number | readonly string[]> } | null {
-  if (material.shadingModel === 'unlit') {
-    return { message: 'unlit materials use the baseColor primary-hit path, not emissive adjoints', details: { reason: 'unlit' } };
-  }
   const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
-  const maps = listPathReplayEmissiveUnsupportedMaps(material);
+  const maps = listPathReplayPrimaryEmissionUnsupportedMaps(material);
   if (maps.length > 0) {
     return { message: `transport/visibility maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
   }
@@ -1024,7 +1021,10 @@ function materialIssueForBrdf(
 function materialIssueForAoMapIntensity(
   material: MaterialSpec,
 ): { message: string; details: Record<string, string | number | readonly string[]> } | null {
-  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: false });
+  const common = materialIssueCommon(material, {
+    allowIridescence: material.shadingModel === 'unlit',
+    allowAnisotropy: material.shadingModel === 'unlit',
+  });
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
@@ -1038,7 +1038,7 @@ function materialIssueForLightMapIntensity(
 ): { message: string; details: Record<string, string | number | readonly string[]> } | null {
   const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
-  const maps = listPathReplayEmissiveUnsupportedMaps(material);
+  const maps = listPathReplayPrimaryEmissionUnsupportedMaps(material);
   if (maps.length > 0) {
     return { message: `transport/visibility maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
   }
@@ -1189,12 +1189,9 @@ function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string
   return out;
 }
 
-function listPathReplayEmissiveUnsupportedMaps(m: MaterialSpec): readonly string[] {
+function listPathReplayPrimaryEmissionUnsupportedMaps(m: MaterialSpec): readonly string[] {
   const out: string[] = [];
   if (m.alphaMap != null) out.push('alphaMap');
-  if (m.normalMap != null) out.push('normalMap');
-  if (m.bumpMap != null) out.push('bumpMap');
-  if (m.clearcoatNormalMap != null) out.push('clearcoatNormalMap');
   if (m.displacementMap != null) out.push('displacementMap');
   if (m.transmissionMap != null) out.push('transmissionMap');
   if (m.thicknessMap != null) out.push('thicknessMap');

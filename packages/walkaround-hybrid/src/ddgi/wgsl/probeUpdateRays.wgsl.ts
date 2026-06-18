@@ -120,9 +120,9 @@ const PI: f32              = 3.14159265359;
 //
 // Pre-W2-C5 this file declared a local DDGIMaterial struct with a
 // different field order (no attenuationDistance / thickness). The
-// canonical struct carries both, which lets future revisions of
-// traceSunVisibility apply full Beer-Lambert tint (today still uses
-// the simplified attenColor * transmission blend below).
+// canonical struct carries both, and DDGI now applies Beer-Lambert glass
+// visibility plus atlas-backed transmission/thickness modulation when readable
+// maps are present.
 // -----------------------------------------------------------------
 
 // -----------------------------------------------------------------
@@ -295,6 +295,7 @@ const DDGI_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
 const DDGI_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
 const DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
 const DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
+const DDGI_MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;
 const DDGI_MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;
 const DDGI_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET: u32 = 17u;
 const DDGI_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;
@@ -313,6 +314,7 @@ const DDGI_MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: u32 = 41u;
 const DDGI_MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: u32 = 42u;
 const DDGI_MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: u32 = 44u;
 const DDGI_MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
+const DDGI_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;
 const DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
 const DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 
@@ -601,6 +603,48 @@ fn ddgiSampleMaterialScalarMap(
   return clamp(ddgiMaterialMapChannel(texel, channel), 0.0, 1.0);
 }
 
+fn ddgiSampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32) -> f32 {
+  let uvs = ddgiHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return scalarTransmission;
+  }
+  let texel = ddgiSampleMaterialAtlasRawAtOffset(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (texel.x < 0.0) {
+    return scalarTransmission;
+  }
+  return clamp(scalarTransmission * texel.r, 0.0, 1.0);
+}
+
+fn ddgiSampleThicknessMapFactorForHit(hit: IntersectionResult) -> vec2f {
+  let uvs = ddgiHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return vec2f(1.0, 0.0);
+  }
+  let texel = ddgiSampleMaterialAtlasRawAtOffset(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (texel.x < 0.0) {
+    return vec2f(1.0, 0.0);
+  }
+  return vec2f(clamp(texel.g, 0.0, 1.0), 1.0);
+}
+
+fn ddgiApplyThicknessMapToBeerTint(hit: IntersectionResult, beerTint: vec3f) -> vec3f {
+  let thickness = ddgiSampleThicknessMapFactorForHit(hit);
+  if (thickness.y < 0.5) {
+    return beerTint;
+  }
+  return pow(max(beerTint, vec3f(1e-6)), vec3f(thickness.x));
+}
+
 fn ddgiSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   var color = vec3f(1.0);
   var intensity = 1.0;
@@ -710,6 +754,8 @@ struct DdgiProbeHitMaterial {
   sheenRoughness: f32,
   anisotropy: vec2f,
   iridescence: vec4f,
+  transmission: f32,
+  beerTint: vec3f,
 }
 
 fn ddgiSampleProbeHitMaterial(
@@ -717,6 +763,8 @@ fn ddgiSampleProbeHitMaterial(
   scalarBaseColor: vec3f,
   scalarRoughness: f32,
   scalarMetalness: f32,
+  scalarTransmission: f32,
+  scalarBeerTint: vec3f,
   frameNormal: vec3f,
   shadingNormal: vec3f,
 ) -> DdgiProbeHitMaterial {
@@ -731,6 +779,8 @@ fn ddgiSampleProbeHitMaterial(
   out.sheenRoughness = 0.0;
   out.anisotropy = vec2f(0.0);
   out.iridescence = vec4f(0.0, 1.0, 0.0, 0.0);
+  out.transmission = scalarTransmission;
+  out.beerTint = scalarBeerTint;
   out.clearcoatNormal = ddgiApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
 
   let uvs = ddgiHitMaterialUvs(hit);
@@ -769,6 +819,8 @@ fn ddgiSampleProbeHitMaterial(
   out.sheenRoughness = ddgiSampleSheenRoughness(hit.indices.w, uvs.uv0, uvs.uv1);
   out.anisotropy = ddgiSampleAnisotropyControls(hit.indices.w, uvs.uv0, uvs.uv1);
   out.iridescence = ddgiSampleIridescenceControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.transmission = ddgiSampleTransmissionMapForHit(hit, scalarTransmission);
+  out.beerTint = ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint);
   return out;
 }
 
@@ -1354,9 +1406,14 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
     exitRay.direction = sunDir;
     let exitHit  = bvhTraceFirstHit(exitRay);
     let distToExit = select(sMat.thickness, exitHit.dist, exitHit.didHit && exitHit.dist < 1e15);
-    let pathLen  = clamp(distToExit, 0.0, max(sMat.thickness, 1e-4));
+    let thicknessMap = ddgiSampleThicknessMapFactorForHit(sHit);
+    let scalarThicknessLimit = max(sMat.thickness, 1e-4);
+    let mappedThicknessLimit = max(sMat.thickness * thicknessMap.x, 0.0);
+    let pathLenLimit = select(scalarThicknessLimit, mappedThicknessLimit, thicknessMap.y > 0.5);
+    let pathLen  = clamp(distToExit, 0.0, pathLenLimit);
     let beerAtten = exp(-sMat.attenuationColor * (pathLen / max(1e-4, sMat.attenuationDistance)));
-    visibility = visibility * sMat.transmission * beerAtten;
+    let glassTransmission = ddgiSampleTransmissionMapForHit(sHit, sMat.transmission);
+    visibility = visibility * glassTransmission * beerAtten;
     let hitPos = entryPos;
     // M14: step past the slab by 1% of probe spacing so the offset is
     // proportional to scene scale (replacing the Cornell-specific 0.5 units).
@@ -1687,7 +1744,7 @@ fn probeUpdateRays(
         ) * hit.side;
         let normalMapped = ddgiApplyNormalMapForHit(hit, smoothNormal);
         let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);
-        let probeMat = ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, smoothNormal, probeNormal);
+        let probeMat = ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, mat.transmission, mat.attenuationColor, smoothNormal, probeNormal);
 
         // Direct lighting: analytic sun/fixture lights.
         let direct_analytic = evalDirectLighting(hitWorldPos, probeNormal);
@@ -1878,8 +1935,8 @@ fn probeUpdateRays(
 
         if ((mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u) {
           // Glass: add transmitted environment contribution.
-          let transmitted = sampleSkyColor(dir) * mat.attenuationColor;
-          radiance = mix(radiance, transmitted, mat.transmission * frameParams.glassMixScale);
+          let transmitted = sampleSkyColor(dir) * probeMat.beerTint;
+          radiance = mix(radiance, transmitted, probeMat.transmission * frameParams.glassMixScale);
         }
 
         // H18 — direct probe hits on plain emissive materials carry their

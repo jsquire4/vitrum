@@ -28,10 +28,11 @@ export type AtlasMapField =
 export type AtlasColorSpace = 'srgb' | 'linear';
 
 export interface MaterialTextureAtlasDiagnostic {
-  readonly code: 'unreadable-material-texture-map';
+  readonly code: 'unreadable-material-texture-map' | 'unsupported-material-texture-texcoord';
   readonly materialIndex: number;
   readonly field: AtlasMapField;
   readonly colorSpace: AtlasColorSpace;
+  readonly texCoord?: number;
   readonly sourcePath?: string;
   readonly textureIndex?: number;
   readonly imageIndex?: number;
@@ -353,6 +354,31 @@ export function packMaterialTextureAtlas(
   ): void => {
     const ref = asTextureRef(material[field]);
     if (ref?.handle == null) return;
+    const texCoord = ref.texCoord ?? 0;
+    if (texCoord !== 0 && texCoord !== 1) {
+      const source = textureRefSourceMetadata(ref);
+      diagnostics.push({
+        code: 'unsupported-material-texture-texcoord',
+        materialIndex,
+        field,
+        colorSpace,
+        texCoord,
+        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
+        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
+        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
+        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
+        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
+        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
+        ...(source?.textureSourceExtension !== undefined
+          ? { textureSourceExtension: source.textureSourceExtension }
+          : {}),
+        message:
+          `${field} texture uses unsupported texCoord ${texCoord} ` +
+          `(walkaround material atlas supports UV sets 0 and 1 only)` +
+          `${source?.path !== undefined ? ` at ${source.path}` : ''}; the map is ignored.`,
+      });
+      return;
+    }
     let perHandle = readable.get(ref.handle);
     const existing = perHandle?.[colorSpace];
     if (existing != null) {

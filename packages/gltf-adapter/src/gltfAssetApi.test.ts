@@ -189,19 +189,30 @@ function makeExternalTexturedGltf(): GltfJson {
 }
 
 function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
-  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const vertexData = f32Buffer([
+    0, 0, 0, 1, 0, 0, 0, 1, 0,
+    0, 0, 1, 0, 0, 1, 0, 0, 1,
+  ]);
+  const positionByteLength = 9 * 4;
+  const normalByteLength = 9 * 4;
   return {
     gltf: {
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 } }] }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
-      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength }],
-      buffers: [{ byteLength: positions.byteLength }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 } }] }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positionByteLength },
+        { buffer: 0, byteOffset: positionByteLength, byteLength: normalByteLength },
+      ],
+      buffers: [{ byteLength: vertexData.byteLength }],
     },
-    buffers: new Map([[0, positions]]),
+    buffers: new Map([[0, vertexData]]),
   };
 }
 
@@ -572,16 +583,18 @@ function makeInlineTexturedGltf(
   imageBytes: Uint8Array<ArrayBuffer> = new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
 ): { gltf: GltfJson; buffers: Map<number, ArrayBuffer>; png: Uint8Array<ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
-  const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
+  const normals = f32Buffer([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+  const total = new Uint8Array(positions.byteLength + normals.byteLength + imageBytes.byteLength);
   total.set(new Uint8Array(positions), 0);
-  total.set(imageBytes, positions.byteLength);
+  total.set(new Uint8Array(normals), positions.byteLength);
+  total.set(imageBytes, positions.byteLength + normals.byteLength);
   return {
     gltf: {
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
       nodes: [{ mesh: 0 }],
-      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 0 }] }],
       materials: [{
         pbrMetallicRoughness: {
           baseColorFactor: [1, 1, 1, 1],
@@ -589,11 +602,15 @@ function makeInlineTexturedGltf(
         },
       }],
       textures: [{ source: 0 }],
-      images: [{ bufferView: 1, mimeType: 'image/png' }],
-      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      images: [{ bufferView: 2, mimeType: 'image/png' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' },
+      ],
       bufferViews: [
         { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
-        { buffer: 0, byteOffset: positions.byteLength, byteLength: imageBytes.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: normals.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength + normals.byteLength, byteLength: imageBytes.byteLength },
       ],
       buffers: [{ byteLength: total.byteLength }],
     },
@@ -2919,6 +2936,38 @@ describe('loadGltfForEngine', () => {
       createEngine: createRejectedEngine,
     })).rejects.toThrow(
       'import:generated-tangents=approximate at meshes[0].primitives[0].attributes.TANGENT',
+    );
+
+    expect(createRejectedEngine).not.toHaveBeenCalled();
+  });
+
+  it('allows generated flat normals in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    delete gltf.meshes![0]!.primitives[0]!.attributes.NORMAL;
+
+    const createAcceptedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const accepted = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine: createAcceptedEngine,
+    });
+    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'generated-flat-normals',
+        path: 'meshes[0].primitives[0].attributes.NORMAL',
+      }),
+    ]));
+    expect(createAcceptedEngine).toHaveBeenCalledTimes(1);
+
+    const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine: createRejectedEngine,
+    })).rejects.toThrow(
+      'import:generated-flat-normals=approximate at meshes[0].primitives[0].attributes.NORMAL',
     );
 
     expect(createRejectedEngine).not.toHaveBeenCalled();

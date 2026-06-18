@@ -972,24 +972,31 @@ export class HybridEngine implements Engine {
   ): void {
     for (const diagnostic of diagnostics) {
       const sourcePath = diagnostic.sourcePath;
-      const key = `${method}:${diagnostic.materialIndex}:${diagnostic.field}:${diagnostic.colorSpace}:${sourcePath ?? ''}`;
+      const key = `${method}:${diagnostic.code}:${diagnostic.materialIndex}:${diagnostic.field}:${diagnostic.colorSpace}:${sourcePath ?? ''}:${diagnostic.texCoord ?? ''}`;
       if (this._warnedMaterialTextureAtlasDiagnostics.has(key)) continue;
       this._warnedMaterialTextureAtlasDiagnostics.add(key);
+      const unsupportedTexCoord = diagnostic.code === 'unsupported-material-texture-texcoord';
       this._warn({
-        code: 'walkaround-hybrid.unreadable-material-texture-map',
+        code: unsupportedTexCoord
+          ? 'walkaround-hybrid.unsupported-material-texture-texcoord'
+          : 'walkaround-hybrid.unreadable-material-texture-map',
         backend: 'walkaround-hybrid',
         phase: method,
         method,
-        message:
-          `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
-          `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
-          `has a texture handle that is not CPU-readable; ` +
-          `the map is ignored by the material atlas. Provide a raw {width,height,data} ` +
-          `or DataTexture-shaped handle before setScene/updatePrimitive for native map sampling.`,
+        message: unsupportedTexCoord
+          ? `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
+            `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
+            `uses texCoord ${diagnostic.texCoord}; the material atlas only supports UV sets 0 and 1, so the map is ignored.`
+          : `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
+            `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
+            `has a texture handle that is not CPU-readable; ` +
+            `the map is ignored by the material atlas. Provide a raw {width,height,data} ` +
+            `or DataTexture-shaped handle before setScene/updatePrimitive for native map sampling.`,
         details: {
           materialIndex: diagnostic.materialIndex,
           field: diagnostic.field,
           colorSpace: diagnostic.colorSpace,
+          ...(diagnostic.texCoord !== undefined ? { texCoord: diagnostic.texCoord } : {}),
           ...(sourcePath !== undefined ? { sourcePath } : {}),
           ...(diagnostic.textureIndex !== undefined ? { textureIndex: diagnostic.textureIndex } : {}),
           ...(diagnostic.imageIndex !== undefined ? { imageIndex: diagnostic.imageIndex } : {}),
