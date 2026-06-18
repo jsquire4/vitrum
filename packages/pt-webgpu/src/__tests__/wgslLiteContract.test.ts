@@ -49,8 +49,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // full and lite tiers). The lite-tier render is unchanged — caustic is not in the lite path.
     // Re-pinned 2026-06-10: B12 — lite-tier light/env texture packing. New texture bindings (12-14):
     // liteEnvTex (RGBA32F env radiance+pdf), liteEnvCdfTex (RGBA32F env CDF), liteLightTex
-    // (RGBA32F point/spot/rect-area packed data). NEE loops added in kernelLite.wgsl.ts for
+    // (RGBA32F directional/point/spot/rect-area packed data). NEE loops added in kernelLite.wgsl.ts for
     // point/spot/rect-area + env importance sampling in connectLite.wgsl.ts.
+    // Re-pinned 2026-06-18: liteLightTex now also prepends directional records,
+    // so lite loops N-directional emitters instead of the old first-directional
+    // UBO mirror.
     // RENDER-CHANGING for lite scenes with those lights; A/B pending V28-B.
     // Re-pinned R7b 2026-06-10: anisotropic GGX (Item 7) + envMapIntensity escape-half
     // (Item 8) + lightMap camera-only gate (Item 9). bsdf.wgsl.ts gained aniso GGX
@@ -72,9 +75,8 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // connectLite.wgsl.ts liteRotateY* replaced with canonical names. SEMANTICALLY EQUIVALENT.
     // Re-pinned 2026-06-11 (SHADOW-01): primitive castShadow any-hit gate in the
     // shared intersectionCore (traceMeshBvh !closest skip via triShadowCastDisabled)
-    // + emitter castShadowDisabled gates in the lite NEE loops (point extra.z /
-    // spot spExtra.z / rect texel-0 .w). Lite directional NEE decodes the
-    // sign-encoded cameraPos.w mirror for the first directional flag.
+    // + emitter castShadowDisabled gates in the lite NEE loops (directional
+    // angularDiameter sign bit / point extra.z / spot spExtra.z / rect texel-0 .w).
     // Default (flag-less) scenes are behaviorally identical (all lanes pack 0.0).
     // Re-pinned 2026-06-15 (PTWG-LITE-01): lite rect/disc analytic records now
     // use paired MIS. kernelLite applies the light-sampled power heuristic and
@@ -105,14 +107,17 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-15: shared scalar material payload gained KHR volume
     // thickness and lite Beer-Lambert fallback clamps to it when authored.
     // Re-pinned 2026-06-15 (SHADOW-01 lite directional): lite directional NEE
-    // decodes the signed cameraPos.w mirror so first-directional castShadow:false
-    // skips the visibility ray without adding a storage-buffer binding.
+    // decoded the signed cameraPos.w mirror so first-directional castShadow:false
+    // skipped the visibility ray without adding a storage-buffer binding.
+    // Re-pinned 2026-06-18: lite directionals now prepend the same 2-vec4 records
+    // used by the full tier into liteLightTex and loop params.directionalLightCount,
+    // closing the former first-directional truncation gap.
     // Re-pinned 2026-06-18: H55 oracle wave fixed concentricDiscSample's
     // Shirley-Chiu signed-denominator bug. Disc-area sampling was previously
     // mirrored into the wrong quadrant for two square quadrants; render-changing
     // for lite-tier disc-area lights, now pinned by oracle.concentricDiscSample.
-    expect(digest).toBe('13357933d405efd9227ea2788c70366a66337f52bc91f7b071f652a40c49a81c');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(154047);
+    expect(digest).toBe('c3e4f2f1a0bfe48f727ad630b8688ca3200737e7b747f69367afa50c8edfda9a');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(156422);
   });
 });
 
@@ -159,9 +164,13 @@ describe('pt-webgpu lite WGSL contract', () => {
 
   it('keeps mesh BVH trace and directional direct lighting', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn traceMeshBvh');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('params.lightDir.w');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dirShadowDisabled = params.cameraPos.w < 0.0;');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dBase = liteDirBase + di * 2u;');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dDirAD = textureLoad(liteLightTex, vec2i(i32(dBase), 0), 0);');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dIrrMean = textureLoad(liteLightTex, vec2i(i32(dBase + 1u), 0), 0);');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dirShadowDisabled = angDiamRaw < 0.0;');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY))');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('directLi = throughput * brdf * nDotL * dirIrrOut;');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn sampleSky');
   });
 

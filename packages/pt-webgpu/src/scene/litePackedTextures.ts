@@ -16,11 +16,13 @@
  *                                              pixel index (y * W + x).  CDF[0] = 0 is
  *                                              implicit; only CDF[1..W*H] are stored.
  *   @group(0) @binding(14)  liteLightTex    — RGBA32F  liteLightTexWidth × 1
- *                                              Contiguous point / spot / rect-area
- *                                              light records packed in vec4 rows.
+ *                                              Contiguous directional / point /
+ *                                              spot / rect-area light records
+ *                                              packed in vec4 rows.
  *
  * Layout of liteLightTex (row 0, consecutive texels):
- *   [0, pointLightCount*POINT_VEC4S):          point light records  (3 vec4 each)
+ *   [0, directionalLightCount*2):              directional records  (2 vec4 each)
+ *   [dirOff, dirOff + pointLightCount*3):       point light records  (3 vec4 each)
  *   [pointOff, pointOff + spotLightCount*4):   spot light records   (4 vec4 each)
  *   [spotOff,  spotOff  + rectLightCount*4):   rect-area records    (4 vec4 each)
  *
@@ -85,32 +87,39 @@ export interface LiteEnvCdfData {
 // ---------------------------------------------------------------------------
 
 /**
- * Pack the point / spot / rect-area light arrays (already in full-tier float
+ * Pack the directional / point / spot / rect-area light arrays (already in full-tier float
  * layout from `emitterPacking.ts`) into a single RGBA32F data texture.  The
- * data is written contiguously: point records first, then spot, then rect-area.
+ * data is written contiguously: directional records first, then point, then spot,
+ * then rect-area.
  * Counts are read from the UBO at runtime (`params.pointLightCount` etc.) so no
  * header texel is needed.
  *
  * Returns a 1-row RGBA32F texture of width = total vec4 texels required (≥ 1).
  */
 export function packLiteLightTexture(
+  directionalLightsData: Float32Array,
   pointLightsData: Float32Array,
   spotLightsData:  Float32Array,
   rectAreaLightsData: Float32Array,
 ): LiteLightTexData {
   // Each array is already packed as float32 in vec4 rows.
-  // Total vec4 rows = pointCount*3 + spotCount*4 + rectCount*4.
+  // Total vec4 rows = directionalCount*2 + pointCount*3 + spotCount*4 + rectCount*4.
   // array.length / 4 gives the number of vec4 rows.
+  const directionalVec4s = (directionalLightsData.length / 4) | 0;
   const pointVec4s = (pointLightsData.length / 4) | 0;
   const spotVec4s  = (spotLightsData.length  / 4) | 0;
   const rectVec4s  = (rectAreaLightsData.length / 4) | 0;
-  const totalVec4s = pointVec4s + spotVec4s + rectVec4s;
+  const totalVec4s = directionalVec4s + pointVec4s + spotVec4s + rectVec4s;
 
   const width = Math.max(LITE_LIGHT_TEX_MIN_WIDTH, totalVec4s);
   const data  = new Float32Array(width * 4);
 
-  // Point lights (stride 3 × vec4f = 12 floats per light)
   let off = 0;
+  // Directional lights (stride 2 × vec4f = 8 floats per light)
+  for (let i = 0; i < directionalLightsData.length; i++) {
+    data[off++] = directionalLightsData[i]!;
+  }
+  // Point lights (stride 3 × vec4f = 12 floats per light)
   for (let i = 0; i < pointLightsData.length; i++) {
     data[off++] = pointLightsData[i]!;
   }

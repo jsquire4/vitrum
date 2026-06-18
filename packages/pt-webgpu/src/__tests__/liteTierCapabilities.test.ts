@@ -818,8 +818,8 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  // Item 19 — lite tier warns when scene has ≥2 directional emitters (first-only rendering).
-  it('lite tier: setScene warns when scene contains ≥2 directional emitters (item 19)', async () => {
+  // Item 19 closure — lite tier now packs every directional emitter into liteLightTex.
+  it('lite tier: setScene does NOT warn when scene contains multiple directional emitters', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const engine = await createPTEngine_WebGPU({
@@ -846,23 +846,11 @@ describe('H12: lite-tier capabilities truth', () => {
     try {
       engine.setScene(scene);
     } catch {
-      /* GPU stubs may throw after the warn — expected */
+      /* GPU stubs may throw after setScene — expected */
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) => c.includes('directional') && c.includes('2'))).toBe(true);
-    expect(calls.some((c) => c.includes('lite') || c.includes('Lite'))).toBe(true);
-    expect(structured).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.lite-multiple-directional-emitters',
-        details: expect.objectContaining({
-          count: 2,
-          ignored: 1,
-          keptEmitterId: 'd1',
-          ignoredEmitterIds: ['d2'],
-          requiredTier: 'full',
-        }),
-      }),
-    ]));
+    expect(calls.some((c) => c.includes('first directional') || (c.includes('directional') && c.includes('only')))).toBe(false);
+    expect(structured.some((w) => w.code === 'pt-webgpu.lite-multiple-directional-emitters')).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });

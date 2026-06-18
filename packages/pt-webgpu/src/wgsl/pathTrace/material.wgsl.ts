@@ -147,11 +147,12 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_BINDINGS_BASE_WGSL = frameParamsGroup0B
  * Binding 13 — liteEnvCdfTex  : RGBA32F envWidth×envHeight, .r = normalised CDF
  *                                value for pixel (y*W+x) — used for importance
  *                                sampling.  cdf[0]=0 is implicit.
- * Binding 14 — liteLightTex   : RGBA32F liteLightTexWidth×1, packed point/spot/
- *                                rect-area light records (same float layout as the
- *                                full-tier pointLights/spotLights/rectAreaLights
- *                                storage buffers; loaded via integer texel index).
- */
+* Binding 14 — liteLightTex   : RGBA32F liteLightTexWidth×1, packed directional/
+*                                point/spot/rect-area light records (same float
+*                                layout as the full-tier directionalLights /
+*                                pointLights / spotLights / rectAreaLights storage
+*                                buffers; loaded via integer texel index).
+*/
 const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_EXTRA_BINDINGS_WGSL = /* wgsl */ `
 @group(0) @binding(12) var liteEnvTex:    texture_2d<f32>;
 @group(0) @binding(13) var liteEnvCdfTex: texture_2d<f32>;

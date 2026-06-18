@@ -118,7 +118,7 @@ fn sampleEnvironmentImportance(rng: ptr<function, u32>) -> BsdfSample {
 }
 
 fn liteRectLightBase() -> u32 {
-  return params.pointLightCount * 3u + params.spotLightCount * 4u;
+  return params.directionalLightCount * 2u + params.pointLightCount * 3u + params.spotLightCount * 4u;
 }
 
 // Intersect the BSDF-sampled ray against a packed lite rect/disc record.

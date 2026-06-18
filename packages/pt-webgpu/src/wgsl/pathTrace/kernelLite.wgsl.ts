@@ -141,20 +141,21 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
     let fresnel = fresnelSchlick(cosThetaO, f0);
 
     // B12 — lite-tier NEE: directional + env/sky + point + spot + rect-area.
-    // Point/spot/rect data is loaded from liteLightTex (binding 14) via textureLoad.
-    // Counts come from the UBO (params.pointLightCount / spotLightCount / rectAreaLightCount).
+    // Directional/point/spot/rect data is loaded from liteLightTex (binding 14) via textureLoad.
+    // Counts come from the UBO (params.directionalLightCount / pointLightCount /
+    // spotLightCount / rectAreaLightCount).
     // liteLightTex layout (1-row, consecutive vec4 texels):
-    //   [0, pointLightCount*3):                   point records  (3 texels/light)
-    //   [pointLightCount*3, +spotLightCount*4):    spot records   (4 texels/light)
-    //   [that offset, +rectAreaLightCount*4):      rect records   (4 texels/light)
-    let litePtBase = 0u;
-    let liteSpBase = params.pointLightCount * 3u;
+    //   [0, directionalLightCount*2):              directional records (2 texels/light)
+    //   [dirOff, dirOff + pointLightCount*3):      point records  (3 texels/light)
+    //   [pointOff, pointOff + spotLightCount*4):   spot records   (4 texels/light)
+    //   [spotOff,  spotOff  + rectAreaLightCount*4): rect records (4 texels/light)
+    let liteDirBase = 0u;
+    let litePtBase = params.directionalLightCount * 2u;
+    let liteSpBase = litePtBase + params.pointLightCount * 3u;
     let liteRcBase = liteSpBase + params.spotLightCount * 4u;
 
     var lightCount = 0u;
-    if (params.lightDir.w > 1e-6) {
-      lightCount = lightCount + 1u;
-    }
+    lightCount = lightCount + params.directionalLightCount;
     lightCount = lightCount + params.pointLightCount;
     lightCount = lightCount + params.spotLightCount;
     lightCount = lightCount + params.rectAreaLightCount;
@@ -165,22 +166,41 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       let picked = u32(min(floor(rand_f32(&rng) * f32(lightCount)), f32(lightCount - 1u)));
       var current = 0u;
       var directLi = vec3f(0.0);
-      if (params.lightDir.w > 1e-6) {
+      for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
         if (current == picked) {
-          let lightDir = safe_normalize(params.lightDir.xyz);
-          let shadowRay = Ray(hitPos + normal * 1e-3, lightDir);
-          // SHADOW-01 — lite has no group(1) directional storage binding, so
-          // the first directional's castShadow:false flag is sign-encoded into
-          // the existing cameraPos.w angular-diameter mirror.
-          let dirShadowDisabled = params.cameraPos.w < 0.0;
-          if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
-            let nDotL = max(0.0, dot(normal, lightDir));
-            let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, lightDir,
-              mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
-              mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
-              mat.specularColor, mat.specularIntensity,
-              0.0, 0.0);
-            directLi = throughput * brdf * nDotL * params.lightDir.w;
+          let dBase = liteDirBase + di * 2u;
+          let dDirAD = textureLoad(liteLightTex, vec2i(i32(dBase), 0), 0);
+          let dIrrMean = textureLoad(liteLightTex, vec2i(i32(dBase + 1u), 0), 0);
+          if (dIrrMean.w > 1e-6) {
+            var lightDir = safe_normalize(dDirAD.xyz);
+            // SHADOW-01 — emitter castShadow:false is sign-encoded into the
+            // angularDiameter lane (packed = -1 - angularDiameter).
+            let angDiamRaw = dDirAD.w;
+            let dirShadowDisabled = angDiamRaw < 0.0;
+            let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);
+            if (angDiam > 0.0) {
+              let cosHalfAngle = cos(angDiam * 0.5);
+              let xi1 = rand_f32(&rng);
+              let xi2 = rand_f32(&rng);
+              let cosTheta = mix(cosHalfAngle, 1.0, xi1);
+              let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+              let phi = 6.28318530718 * xi2;
+              let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(lightDir.x) > 0.9);
+              let basisY = normalize(cross(lightDir, tangentX));
+              let basisX = cross(basisY, lightDir);
+              lightDir = normalize(sinTheta * cos(phi) * basisX + sinTheta * sin(phi) * basisY + cosTheta * lightDir);
+            }
+            let shadowRay = Ray(hitPos + normal * 1e-3, lightDir);
+            if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
+              let nDotL = max(0.0, dot(normal, lightDir));
+              let brdf = evaluateBrdfFull(baseColor, roughness, metallic, normal, wo, lightDir,
+                mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
+                mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
+                mat.specularColor, mat.specularIntensity,
+                0.0, 0.0);
+              let dirIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
+              directLi = throughput * brdf * nDotL * dirIrrOut;
+            }
           }
         }
         current = current + 1u;

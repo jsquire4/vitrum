@@ -60,7 +60,7 @@ export const PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 8;
  *   • 3 sampled textures (new, drawn from a separate ≥16 budget):
  *     – liteEnvTex (binding 12): W×H RGBA32F env radiance + pdf.
  *     – liteEnvCdfTex (binding 13): W×H RGBA32F env marginal/conditional CDF.
- *     – liteLightTex (binding 14): 1×N RGBA32F point/spot/rect-area packed data.
+ *     – liteLightTex (binding 14): 1×N RGBA32F directional/point/spot/rect-area packed data.
  * The storage-buffer constants below (IN_USE, HDRI_NEEDED, AREA_LIGHT_NEEDED)
  * remain intact so the cliff arithmetic is machine-checkable and any future
  * storage-buffer consumption trips the pin.

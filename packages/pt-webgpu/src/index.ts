@@ -756,8 +756,9 @@ class PTEngineWebGPU implements Engine {
       // B12 resolution: light data and HDRI env packed as sampled texture_2d<f32>
       // (bindings 12-14 in group-0, type = 'texture' not 'buffer' — counted from
       // maxSampledTexturesPerShaderStage ≥ 16, NOT the storage-buffer budget).
-      //   • liteLightTex (binding 14): 1×N RGBA32F, point (3 vec4/light) + spot
-      //     (4 vec4/light) + rect/disc-area (4 vec4/light) packed contiguously.
+      //   • liteLightTex (binding 14): 1×N RGBA32F, directional (2 vec4/light)
+      //     + point (3 vec4/light) + spot (4 vec4/light) + rect/disc-area
+      //     (4 vec4/light) packed contiguously.
       //   • liteEnvTex (binding 12): W×H RGBA32F, .rgb = HDR radiance, .a = pdf/sr.
       //   • liteEnvCdfTex (binding 13): W×H RGBA32F, .r = marginal/conditional CDF
       //     value at pixel i+1 (2D layout to avoid 8192-width limit).
@@ -823,8 +824,8 @@ class PTEngineWebGPU implements Engine {
               materials: PT_WEBGPU_LITE_MATERIALS,
               // SHADOW-01 — same rows as the full tier: primitive castShadow is
               // enforced in the SHARED traceMeshBvh any-hit path; the lite NEE
-              // loops gate point/spot/rect emitter flags (directional rides the
-              // UBO mirror and carries no flag — already 'approximate').
+              // loops gate directional/point/spot/rect emitter flags through
+              // the lite light texture records.
               shadows: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.shadows,
               denoisers: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers,
               mutations: {
@@ -1171,32 +1172,8 @@ class PTEngineWebGPU implements Engine {
           },
         });
       }
-      // B12 — HDRI environments are now supported via texture packing; no warn needed.
-      // Item 19 — lite tier only packs the FIRST directional emitter into the
-      // liteLightTex (packLiteLightTexture uses a single directional slot at index 0).
-      // Multiple directionals are silently truncated to 1; warn so the host is aware.
-      const directionalEmitters = scene.emitters.filter((e) => e.kind === 'directional');
-      if (directionalEmitters.length >= 2) {
-        const keptEmitterId = directionalEmitters[0]?.id;
-        const ignoredEmitterIds = directionalEmitters.slice(1).map((e) => e.id);
-        this.#warn({
-          code: 'pt-webgpu.lite-multiple-directional-emitters',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/pt-webgpu] Lite tier: scene contains ${directionalEmitters.length} directional emitter(s) — ` +
-            `lite tier renders only the first directional; the remaining ${directionalEmitters.length - 1} will be silently ignored. ` +
-            'Use the full tier for multi-directional lighting.',
-          details: {
-            count: directionalEmitters.length,
-            ignored: directionalEmitters.length - 1,
-            keptEmitterId,
-            ignoredEmitterIds,
-            requiredTier: 'full',
-          },
-        });
-      }
+      // B12 follow-up — HDRI environments and all directional emitters are now
+      // supported via texture packing; no first-directional truncation warning.
       const vertexColorPrimitiveIds = collectVertexColorPrimitiveIds(scene);
       if (vertexColorPrimitiveIds.length > 0) {
         this.#warn({
@@ -1377,6 +1354,7 @@ class PTEngineWebGPU implements Engine {
   #syncLiteTextures(sceneBuffers: UploadedSceneBuffers | null): void {
     if (this.#traceTier !== 'lite' || sceneBuffers == null) return;
     const lightTex = packLiteLightTexture(
+      sceneBuffers.directionalLightsData,
       sceneBuffers.pointLightsData,
       sceneBuffers.spotLightsData,
       sceneBuffers.rectAreaLightsData,
@@ -2431,7 +2409,7 @@ export const createPTEngine_WebGPU: EngineFactory<
       method: 'createPTEngine_WebGPU',
       message:
         '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged mesh-like BVH, directional/point/spot/rect-area/disc-area emitters, HDRI and procedural-sky environments. ' +
-        'Disabled on lite: analytic shapes, TLAS, mesh-area emitters, caustics, BDPT, multi-directional lights, and motion/variance aux buffers. ' +
+        'Disabled on lite: analytic shapes, TLAS, mesh-area emitters, caustics, BDPT, and motion/variance aux buffers. ' +
         `On a discrete GPU host, request a device with maxStorageBuffersPerShaderStage >= ${PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE} and maxStorageTexturesPerShaderStage >= 5, or pass traceTier: "full" after verifying limits.`,
       details: { traceTier },
     });

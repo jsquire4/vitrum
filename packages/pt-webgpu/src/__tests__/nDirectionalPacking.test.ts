@@ -19,8 +19,10 @@ import {
   DIRECTIONAL_LIGHT_FLOAT_STRIDE,
   MESH_AREA_LIGHT_TRI_CAP,
 } from '../scene/emitterPacking.js';
+import { packLiteLightTexture } from '../scene/litePackedTextures.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -123,6 +125,25 @@ describe('2-directional packing', () => {
     const packed = packEmitterArrays(directionalScene(2));
     expect(packed.directionalLightCount).toBe(2);
     expect(packed.directionalLightsData.length).toBe(2 * DIRECTIONAL_LIGHT_FLOAT_STRIDE);
+  });
+
+  it('lite light texture preserves both directional records before other lights', () => {
+    const packed = packEmitterArrays(directionalScene(2));
+    const lite = packLiteLightTexture(
+      packed.directionalLightsData,
+      packed.pointLightsData,
+      packed.spotLightsData,
+      packed.rectAreaLightsData,
+    );
+    expect(lite.width).toBe(4); // 2 directionals * 2 vec4 records
+    expect(Array.from(lite.data.slice(0, 16))).toEqual(Array.from(packed.directionalLightsData));
+  });
+
+  it('lite shader loops directionalLightCount records from liteLightTex', () => {
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('lightCount = lightCount + params.directionalLightCount;');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u)');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let litePtBase = params.directionalLightCount * 2u;');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('lite tier renders only the first directional');
   });
 
   it('each directional record occupies its own 8-float stride slot', () => {
