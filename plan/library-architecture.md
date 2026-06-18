@@ -137,7 +137,7 @@ Subsequent sprints land their deliverables in vitrum packages, not the host app'
 | 10c | Vanilla BDPT | native PT backends |
 | 11 | PPG — **SHIPPED** (W9) | `@vitrum/walkaround-hybrid` (`src/ppg/`; opt-in via `HybridEngineOptions.ppgEnabled`) |
 | 12 | Hero spectral | `@vitrum/pt-webgl2` AND/OR `@vitrum/pt-webgpu` |
-| 13 | Custom WebGPU neural denoiser — **SHIPPED** | `@vitrum/walkaround-hybrid` (`src/neural/InferenceGraph.ts`; opt-in via `denoiser: 'neural'` + `neuralWeights`) |
+| 13 | Custom WebGPU neural denoiser — **SHIPPED as opt-in host-weight path** | `@vitrum/walkaround-hybrid` (`src/neural/InferenceGraph.ts`; opt-in via `denoiser: 'neural'` + `neuralWeights`; no production checkpoint is bundled) |
 | 6.5 | ReSTIR BDPT in walkaround | `@vitrum/walkaround-hybrid` extension or `@vitrum/walkaround-restir-bdpt` |
 
 The host application's renderer subdirectory eventually empties as its files move to vitrum packages. Same for the PT pipeline files. The host's role narrows to "domain composition + UI + scene assembly."
