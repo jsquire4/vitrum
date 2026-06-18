@@ -112,7 +112,11 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     const src = wgsl();
     expect(src).toContain('const DDGI_MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;');
     expect(src).toContain('const DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;');
+    expect(src).toContain('@group(1) @binding(5) var ddgiBvhTangent: texture_2d<f32>;');
+    expect(src).toContain('fn ddgiBvhTangentTexel(vertexIndex: u32) -> vec4f');
+    expect(src).toContain('fn ddgiPreferAuthoredTangentFrameForHit(');
     expect(src).toContain('fn ddgiMaterialTangentFrameForHit(');
+    expect(src).toContain('return ddgiPreferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);');
     expect(src).toContain('fn ddgiApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f');
     expect(src).toContain('fn ddgiApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f');
     expect(src).toContain('let normalMapped = ddgiApplyNormalMapForHit(hit, smoothNormal);');

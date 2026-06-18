@@ -266,6 +266,9 @@ struct DdgiTraceParams {
 // sourceTriIndex points back to a material-atlas triangle.
 @group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<f32>;
 @group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;
+// DDGI-local copy of the authored/generated per-vertex tangent.xyzw stream.
+// Zero tangents intentionally mean "derive the frame from UVs".
+@group(1) @binding(5) var ddgiBvhTangent: texture_2d<f32>;
 
 @group(2) @binding(0) var<storage, read_write> rayResults:   array<ProbeRay>;
 @group(2) @binding(1) var<storage, read>       activeProbes: array<u32>;
@@ -373,6 +376,76 @@ fn ddgiFallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
   return b * inverseSqrt(len2);
 }
 
+fn ddgiBvhTangentTexel(vertexIndex: u32) -> vec4f {
+  let dims = textureDimensions(ddgiBvhTangent);
+  let width = max(dims.x, 1u);
+  let height = max(dims.y, 1u);
+  let y = vertexIndex / width;
+  if (y >= height) {
+    return vec4f(0.0);
+  }
+  return textureLoad(ddgiBvhTangent, vec2i(i32(vertexIndex % width), i32(y)), 0);
+}
+
+fn ddgiTransformDirectionCols(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f, v: vec3f) -> vec3f {
+  return l2w0.xyz * v.x + l2w1.xyz * v.y + l2w2.xyz * v.z;
+}
+
+fn ddgiTangentHandednessForLocalToWorld(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f) -> f32 {
+  let det = dot(l2w0.xyz, cross(l2w1.xyz, l2w2.xyz));
+  return select(-1.0, 1.0, det >= 0.0);
+}
+
+fn ddgiPreferAuthoredTangentFrameForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  fallbackTangent: vec3f,
+  fallbackBitangent: vec3f,
+) -> DdgiMaterialTangentFrame {
+  var tangent = fallbackTangent;
+  var bitangent = fallbackBitangent;
+
+  let ta = ddgiBvhTangentTexel(hit.indices.x);
+  let tb = ddgiBvhTangentTexel(hit.indices.y);
+  let tc = ddgiBvhTangentTexel(hit.indices.z);
+  var authoredTangent =
+    hit.barycoord.x * ta.xyz +
+    hit.barycoord.y * tb.xyz +
+    hit.barycoord.z * tc.xyz;
+  var authoredHandedness =
+    hit.barycoord.x * ta.w +
+    hit.barycoord.y * tb.w +
+    hit.barycoord.z * tc.w;
+
+  if (length(authoredTangent) > 1e-8 && abs(authoredHandedness) > 0.5) {
+    let isTlas = ddgiTrace.bvhMode == 1u;
+    let tBase = hit.instanceIndex * 4u;
+    let tOk = isTlas && tBase + 2u < arrayLength(&tlasInstanceLocalToWorld);
+    if (tOk) {
+      authoredTangent = ddgiTransformDirectionCols(
+        tlasInstanceLocalToWorld[tBase],
+        tlasInstanceLocalToWorld[tBase + 1u],
+        tlasInstanceLocalToWorld[tBase + 2u],
+        authoredTangent,
+      );
+      authoredHandedness = authoredHandedness * ddgiTangentHandednessForLocalToWorld(
+        tlasInstanceLocalToWorld[tBase],
+        tlasInstanceLocalToWorld[tBase + 1u],
+        tlasInstanceLocalToWorld[tBase + 2u],
+      );
+    }
+
+    authoredTangent = authoredTangent - frameNormal * dot(frameNormal, authoredTangent);
+    let tLen2 = dot(authoredTangent, authoredTangent);
+    if (tLen2 > 1e-8) {
+      tangent = authoredTangent * inverseSqrt(tLen2);
+      bitangent = cross(frameNormal, tangent) * select(-1.0, 1.0, authoredHandedness >= 0.0);
+    }
+  }
+
+  return DdgiMaterialTangentFrame(tangent, bitangent);
+}
+
 fn ddgiMaterialTangentFrameForHit(
   hit: IntersectionResult,
   frameNormal: vec3f,
@@ -430,7 +503,7 @@ fn ddgiMaterialTangentFrameForHit(
     bitangent = bitangent * inverseSqrt(bLen2);
   }
 
-  return DdgiMaterialTangentFrame(tangent, bitangent);
+  return ddgiPreferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
 }
 
 fn ddgiSampleMaterialAtlasRawAtOffsetDelta(

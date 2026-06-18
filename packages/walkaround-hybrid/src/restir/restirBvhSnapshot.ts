@@ -37,6 +37,8 @@ export interface RestirBvhSnapshot {
   /** Stride-4 triangle index buffer (ReSTIR `bvhIndex`). */
   readonly bvhIndex: ArrayBuffer;
   readonly normals: ArrayBuffer;
+  /** Per-vertex authored/generated tangent.xyzw stream. Zero means derive TBN from UVs. */
+  readonly tangents: ArrayBuffer;
   readonly triMaterialIds: ArrayBuffer;
   readonly materials: readonly unknown[];
   /**
@@ -104,6 +106,7 @@ export function makeRestirBvhSnapshot(
     buffers.bvhPositions.cpuData,
     buffers.bvhIndex.cpuData,
     buffers.emitterNormals.buffer as ArrayBuffer,
+    buffers.bvhTangents.cpuData,
     buffers.triangleMaterialIds.cpuData,
   );
   const tlasContentVersion = tlas != null
@@ -123,6 +126,7 @@ export function makeRestirBvhSnapshot(
     positions: buffers.bvhPositions.cpuData,
     bvhIndex: buffers.bvhIndex.cpuData,
     normals: buffers.emitterNormals.buffer as ArrayBuffer,
+    tangents: buffers.bvhTangents.cpuData,
     triMaterialIds: buffers.triangleMaterialIds.cpuData,
     materials: buffers.buildMaterials,
     coreMaterials: buffers.coreMaterials,

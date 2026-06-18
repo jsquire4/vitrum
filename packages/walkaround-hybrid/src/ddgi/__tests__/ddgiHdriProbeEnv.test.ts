@@ -284,6 +284,8 @@ describe('Wave 4 â€” dispatchProbeUpdateRaysPass bg2 has 7 entries (bindings 0â€
       materialTextureAtlasView: mockView,
       materialTextureAtlasMeta: mockTex,
       materialTextureAtlasMetaView: mockView,
+      bvhTangentTexture: mockTex,
+      bvhTangentTextureView: mockView,
       gridParamsBuf:     mockBuf,
       frameParamsBuf:    mockBuf,
       blendParamsBuf:    mockBuf,

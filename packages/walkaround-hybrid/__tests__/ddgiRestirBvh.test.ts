@@ -116,6 +116,23 @@ describe('makeRestirBvhSnapshot (PR-5.1)', () => {
     expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
   });
 
+  it('carries authored tangents and bumps BLAS version when tangent payload changes', () => {
+    const tangentsA = new Float32Array([1, 0, 0, 1]);
+    const tangentsB = new Float32Array([0, 1, 0, -1]);
+    const snapA = makeRestirBvhSnapshot(minimalSceneBVH({
+      bvhTangents: { cpuData: tangentsA.buffer, byteLength: tangentsA.byteLength, count: 1 },
+    }));
+    const snapB = makeRestirBvhSnapshot(minimalSceneBVH({
+      bvhTangents: { cpuData: tangentsB.buffer, byteLength: tangentsB.byteLength, count: 1 },
+    }));
+
+    expect(snapA.tangents).toBe(tangentsA.buffer);
+    expect(Array.from(new Float32Array(snapA.tangents))).toEqual([1, 0, 0, 1]);
+    expect(snapA.blasContentVersion).not.toBe(snapB.blasContentVersion);
+    expect(snapA.tlasContentVersion).toBe(snapB.tlasContentVersion);
+    expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
+  });
+
   it('splits blas vs tlas content versions on transform-only TLAS refit', () => {
     const w2lA = new Float32Array(16);
     w2lA[12] = 0;

@@ -12,7 +12,7 @@ import type { ProbeUpdateBvhGpuBuffers } from './probeUpdateBvhBuffers.js';
  * references that appear in each bind group.
  *
  * Layout:
- *  - raysGroup0 / raysGroup1: stable (keyed on bvhBuf + materialsBuf + material atlas views)
+ *  - raysGroup0 / raysGroup1: stable (keyed on bvhBuf + materialsBuf + material/tangent atlas views)
  *  - raysGroup2:              per-frame (keyed on irrReadTex + rayResultsBuf + envMapView)
  *  - blendIrrGroup0/1:        stable/per-frame (keyed on rayResultsBuf / irrRead+irrWriteTex)
  *  - blendVisGroup0/1:        stable/per-frame
@@ -22,12 +22,13 @@ export interface DispatchBindGroupCache {
   // Rays pass — group 0: BVH buffers (11 entries). Epoch key = bvhBuf.
   raysG0Key: GPUBuffer | null;
   raysG0: GPUBindGroup | null;
-  // Rays pass — group 1: materials + lights + emitters + material atlas.
-  // Key = materialsBuf + emitterTrisBuf + atlas views.
+  // Rays pass — group 1: materials + lights + emitters + material atlas + tangent stream.
+  // Key = materialsBuf + emitterTrisBuf + atlas/tangent views.
   raysG1Key0: GPUBuffer | null;
   raysG1Key1: GPUBuffer | null;
   raysG1KeyAtlas: GPUTextureView | null;
   raysG1KeyAtlasMeta: GPUTextureView | null;
+  raysG1KeyTangent: GPUTextureView | null;
   raysG1: GPUBindGroup | null;
   // Rays pass — group 2: per-frame (changes every atlas swap).
   // Key = irrReadTex + rayResultsBuf + activeProbesBuf + envMapView.
@@ -91,6 +92,9 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
   /** Per-triangle material-map metadata texture paired with {@link materialTextureAtlas}. */
   materialTextureAtlasMeta: GPUTexture;
   materialTextureAtlasMetaView: GPUTextureView;
+  /** DDGI-local per-vertex authored/generated tangent.xyzw texture for probe-hit normal/bump TBN. */
+  bvhTangentTexture: GPUTexture;
+  bvhTangentTextureView: GPUTextureView;
   gridParamsBuf: GPUBuffer;
   frameParamsBuf: GPUBuffer;
   blendParamsBuf: GPUBuffer;

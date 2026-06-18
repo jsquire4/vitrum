@@ -944,8 +944,11 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   Lambertian-only. Later same-day RC tangent follow-up: RC receives the main
   walkaround authored/generated tangent.xyzw texture as probe binding 19 and
   prefers it for `normalMap`/`bumpMap` tangent frames before falling back to
-  UV-gradient derivation. DDGI authored tangent preference, DDGI clearcoat-normal /
-  extension-lobe probe response, and RC clearcoat/sheen/anisotropy/iridescence
+  UV-gradient derivation. Later same-day DDGI tangent follow-up: DDGI snapshots now
+  carry `bvhTangents.cpuData`, upload a DDGI-local authored/generated tangent.xyzw
+  texture, and prefer it for ordinary probe-hit `normalMap`/`bumpMap` tangent
+  frames before falling back to UV-gradient derivation. DDGI clearcoat-normal /
+  extension-lobe probe response and RC clearcoat/sheen/anisotropy/iridescence
   probe response remain real approximation tails. 2026-06-16 ReGIR follow-up:
   the grid-build WRS target now uses the chosen packed light-tree leaf
   importance (`treeInput.powers`, AABB, and cone term) for `qHat`, so mapped

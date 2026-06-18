@@ -15,7 +15,7 @@ import { DDGI_BORDER_UBO } from './probeUpdateUbos.js';
 function makeBgCache(): DispatchBindGroupCache {
   return {
     raysG0Key: null, raysG0: null,
-    raysG1Key0: null, raysG1Key1: null, raysG1KeyAtlas: null, raysG1KeyAtlasMeta: null, raysG1: null,
+    raysG1Key0: null, raysG1Key1: null, raysG1KeyAtlas: null, raysG1KeyAtlasMeta: null, raysG1KeyTangent: null, raysG1: null,
     raysG2KeyTex: null, raysG2KeyBuf: null, raysG2KeyProbes: null, raysG2KeyEnv: null,
     raysG2IrrView: null, raysG2: null,
     blendIrrG0Key: null, blendIrrG0KeyProbes: null, blendIrrG0: null,
@@ -106,13 +106,14 @@ export function dispatchProbeUpdateRaysPass(
     c.raysG0Key = gpu.bvhBuf;
   }
 
-  // Group 1: materials + lights + emitters + material-map atlas. Invalidated on
-  // material/emitter upload or atlas replacement.
+  // Group 1: materials + lights + emitters + material-map atlas + authored tangent stream.
+  // Invalidated on material/emitter upload or atlas/tangent replacement.
   if (
     c.raysG1Key0 !== gpu.materialsBuf ||
     c.raysG1Key1 !== gpu.emitterTrisBuf ||
     c.raysG1KeyAtlas !== gpu.materialTextureAtlasView ||
-    c.raysG1KeyAtlasMeta !== gpu.materialTextureAtlasMetaView
+    c.raysG1KeyAtlasMeta !== gpu.materialTextureAtlasMetaView ||
+    c.raysG1KeyTangent !== gpu.bvhTangentTextureView
   ) {
     c.raysG1 = gpu.device.createBindGroup({
       layout: gpu.raysPipeline.getBindGroupLayout(1),
@@ -123,12 +124,14 @@ export function dispatchProbeUpdateRaysPass(
         { binding: 2, resource: { buffer: gpu.emitterTrisBuf } },
         { binding: 3, resource: gpu.materialTextureAtlasView },
         { binding: 4, resource: gpu.materialTextureAtlasMetaView },
+        { binding: 5, resource: gpu.bvhTangentTextureView },
       ],
     });
     c.raysG1Key0 = gpu.materialsBuf;
     c.raysG1Key1 = gpu.emitterTrisBuf;
     c.raysG1KeyAtlas = gpu.materialTextureAtlasView;
     c.raysG1KeyAtlasMeta = gpu.materialTextureAtlasMetaView;
+    c.raysG1KeyTangent = gpu.bvhTangentTextureView;
   }
 
   // Group 2: per-frame resources. Changes every atlas swap (irrReadTex ping-pongs),
