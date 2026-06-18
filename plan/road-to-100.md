@@ -346,8 +346,8 @@ or silently drop user data — exactly the rot that has made the maturity pictur
 > D7 (SVGF allocation), D8 (fork lint), D9 (traceTier dedup), D3 (contract + ingestion),
 > and C1 (OIDN clear-error/capabilities) are closed in HEAD. D1 is no longer a single
 > "delete all names" task: source verification found stale names, public/test helpers, and
-> one real pt-webgl2 residue. Remaining: D6 (bind-group churn — perf, deferred), D3
-> per-backend BSDF consumption (B-bucket fidelity), the still-open D1 policy cleanups
+> one real pt-webgl2 residue. D6 bind-group churn is now closed in HEAD; remaining:
+> D3 per-backend BSDF consumption (B-bucket fidelity), the still-open D1 policy cleanups
 > called out below, and **three new lead-verified rows added 2026-06-13 from the maturity
 > audit: D10 (pt-webgpu full-tier storage-buffer limit constant undercounts 31→33),
 > D11 (pt-webgl2 declared-but-never-uploaded `u_volumeDensity`/`materialLodDepth`),

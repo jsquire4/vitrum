@@ -8,7 +8,7 @@
  *  H24-A — materialResolver warns on unknown primitive id
  *  H24-B — DDGI.state() reports 'failed' on bad GPU init; _ready never flips on failed init
  *  H24-C — always-rebuild gate: merged path always calls rebuildProbeBvhFromScene
- *  H14-E/H25-H28 — Road/items ledger does not re-open already-closed HDRI/PPG/NRC/ReLU defects
+ *  H14-E/H25-H28/D6 — Road/items ledger does not re-open already-closed HDRI/PPG/NRC/ReLU/cache defects
  *  H42  — renderer-fidelity matrix tracks pt-webgl2 and retired fork gates
  *  H46  — HybridEngine warns on inherited options that walkaround cannot honour
  *  H47/H29 — PPG spatial-cell and dTree-node caps thread to PPGCoordinator.initialize
@@ -69,11 +69,11 @@ function zeroEmitterScene(): Scene {
 }
 
 // ---------------------------------------------------------------------------
-// H14-E/H25-H28 — ledger reconciliation guard
+// H14-E/H25-H28/D6 — ledger reconciliation guard
 // ---------------------------------------------------------------------------
 
-describe('H14-E/H25-H28 — Road/items ledger reconciliation guard', () => {
-  it('keeps stale open HDRI/PPG/NRC/ReLU prose out of the active ledgers', () => {
+describe('H14-E/H25-H28/D6 — Road/items ledger reconciliation guard', () => {
+  it('keeps stale open HDRI/PPG/NRC/ReLU/cache prose out of the active ledgers', () => {
     const items = readFileSync(new URL('../../../items_to_fix.md', import.meta.url), 'utf8');
     const road = readFileSync(new URL('../../../plan/road-to-100.md', import.meta.url), 'utf8');
     const combined = `${items}\n${road}`;
@@ -85,10 +85,13 @@ describe('H14-E/H25-H28 — Road/items ledger reconciliation guard', () => {
     expect(road).toContain('| H25 | ✅ CLOSED');
     expect(road).toContain('| H26-H27 | ✅ CLOSED');
     expect(road).toContain('| H28 | ✅ CLOSED');
+    expect(road).toContain('D6 bind-group churn is now closed in HEAD');
+    expect(road).toContain('**D6 — Per-frame bind-group churn** ✅ CLOSED');
 
     expect(combined).not.toContain('H14-E (HDRI sun-off pt-webgpu)');
     expect(combined).not.toContain('HDRI sun-off pt-webgpu');
     expect(combined).not.toContain('pt-webgpu cross-backend halves of H6/H52');
+    expect(combined).not.toContain('Remaining: D6 (bind-group churn');
     expect(combined).not.toContain('H25 ◻');
     expect(combined).not.toContain('H26 ◻');
     expect(combined).not.toContain('H27 ◻');
