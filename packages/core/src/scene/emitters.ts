@@ -41,7 +41,8 @@ export interface DirectionalEmitter extends EmitterBase {
    *    - `@vitrum/pt-webgpu` — native: packed into the directional-light vec4 and
    *      consumed by the kernel for cone-sampled soft directional shadows
    *      (emitterPacking.ts `packDirectionalLights`, kernel.wgsl.ts).
-   *    - `@vitrum/pt-webgl2` — not consumed (hardwired to 0).
+   *    - `@vitrum/pt-webgl2` — native: packed into the lights texture and
+   *      consumed by the GLSL light sampler as a finite directional cone.
    *    - `@vitrum/walkaround-hybrid` — approximate: consumed by the visible
    *      direct-sun, transparent-OIT, and stained-glass caustic cone samples;
    *      DDGI/RC probe-cache sun transport remains directional and emits a
