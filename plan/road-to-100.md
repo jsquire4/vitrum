@@ -601,6 +601,11 @@ buckets that the A–D framing was missing:**
   `pt-webgl2`'s `uploadGapGuard.test.ts` now pins the environment upload path:
   `environment:'none'` drives both `envMapInfo.totalSum` and
   `environmentIntensity` to zero, while a raw HDRI scene drives them positive.
+  `adjointEmitterGradientOracle.test.ts` now independently pins pt-webgpu
+  path-replay emitter `color` / `intensity` gradients against finite
+  differences of the direct-light radiance law across directional, point, spot,
+  finite-area, and mapped mesh-area quotient cases, replacing that lane's old
+  string-only proof with executable behavior coverage.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
