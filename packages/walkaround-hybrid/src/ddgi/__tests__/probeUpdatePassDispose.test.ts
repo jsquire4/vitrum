@@ -11,6 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { EngineWarning } from '@vitrum/core';
 import { installWebGPUPolyfills } from '../../../__tests__/helpers/webgpuPolyfills.js';
 
 // Install GPUBufferUsage / GPUTextureUsage globals so init() doesn't throw in
@@ -130,6 +131,7 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
   });
 
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -251,6 +253,7 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
 
 describe('ProbeUpdatePass — _initAttempted guard prevents repeated init() on WebGPU failure', () => {
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -292,6 +295,75 @@ describe('ProbeUpdatePass — _initAttempted guard prevents repeated init() on W
       await pass.runFrame(rendererNoGpu, 0, 1);
     }
     expect(initSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes hard WebGPU-unavailable init failure through structured warnings', async () => {
+    vi.mocked(detectGpu).mockResolvedValue({
+      isWebGPU: false,
+      adapterKind: 'unknown',
+      adapterVendor: '',
+      adapterArchitecture: '',
+    });
+    vi.stubGlobal('navigator', {});
+    const warnings: EngineWarning[] = [];
+
+    const bvh = new SceneBvh();
+    const grid = new ProbeGrid();
+    const pass = new ProbeUpdatePass(bvh, grid, {
+      onWarning: (warning) => warnings.push(warning),
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await pass.runFrame({}, 0, 1);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'walkaround-hybrid.ddgi-webgpu-unavailable',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'ProbeUpdatePass.init',
+      details: { fallback: 'disable-ddgi-probe-update' },
+    }));
+  });
+
+  it('routes navigator.gpu requestAdapter failures through structured warnings', async () => {
+    vi.mocked(detectGpu).mockResolvedValue({
+      isWebGPU: false,
+      adapterKind: 'unknown',
+      adapterVendor: '',
+      adapterArchitecture: '',
+    });
+    const thrown = new Error('adapter boom');
+    vi.stubGlobal('navigator', {
+      gpu: {
+        requestAdapter: vi.fn(async () => {
+          throw thrown;
+        }),
+      },
+    });
+    const warnings: EngineWarning[] = [];
+
+    const bvh = new SceneBvh();
+    const grid = new ProbeGrid();
+    const pass = new ProbeUpdatePass(bvh, grid, {
+      onWarning: (warning) => warnings.push(warning),
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await pass.runFrame({}, 0, 1);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'walkaround-hybrid.ddgi-request-adapter-failed',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'ProbeUpdatePass.init',
+      details: { source: 'navigator.gpu', fallback: 'disable-ddgi-probe-update' },
+      raw: thrown,
+    }));
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'walkaround-hybrid.ddgi-webgpu-unavailable',
+    }));
   });
 
   it('init() is attempted again after an explicit dispose() resets state', async () => {

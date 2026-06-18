@@ -196,6 +196,10 @@
 > disabled fallback, and missing-core-scene BVH skips now route through DDGI's
 > structured warning sink (`walkaround-hybrid.ddgi-*`) while standalone DDGI
 > keeps console fallback and existing non-fatal `onError` reports.
+> Same-day DDGI WebGPU-acquisition follow-up: `ProbeUpdatePass` now routes
+> `navigator.gpu.requestAdapter` failures and no-WebGPU probe-update init
+> failures through structured `walkaround-hybrid.ddgi-*` warnings when an
+> `onWarning` sink is present, preserving console fallback for standalone tests.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel

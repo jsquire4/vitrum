@@ -448,10 +448,25 @@ export class ProbeUpdatePass {
           return await adapter.requestDevice();
         }
       } catch (e) {
-        console.warn('[DDGI] navigator.gpu.requestAdapter failed:', e);
+        this._warn({
+          code: 'walkaround-hybrid.ddgi-request-adapter-failed',
+          backend: 'walkaround-hybrid',
+          phase: 'renderFrame',
+          method: 'ProbeUpdatePass.init',
+          message: `[DDGI] navigator.gpu.requestAdapter failed: ${String(e)}`,
+          details: { source: 'navigator.gpu', fallback: 'disable-ddgi-probe-update' },
+          raw: e,
+        });
       }
     }
-    console.warn('[DDGI] WebGPU not available (no renderer backend and no navigator.gpu).');
+    this._warn({
+      code: 'walkaround-hybrid.ddgi-webgpu-unavailable',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'ProbeUpdatePass.init',
+      message: '[DDGI] WebGPU not available (no renderer backend and no navigator.gpu).',
+      details: { fallback: 'disable-ddgi-probe-update' },
+    });
     return null;
   }
 
