@@ -3692,6 +3692,13 @@ describe('loadGltfForEngine', () => {
       };
     };
     const decodePixelsMock = vi.fn(decodePixels);
+    const preDecodeAsset = await loadGltfAsset(gltf, {
+      buffers,
+      textureSourceExtensions: ['EXT_texture_webp'],
+    });
+    const preDecodePtWebgl2 = preDecodeAsset.backendCompatibility.find((entry) =>
+      entry.backend === 'pt-webgl2' && entry.profileId === 'pt-webgl2'
+    );
 
     const result = await loadGltfForEngine(gltf, {
       buffers,
@@ -3731,11 +3738,19 @@ describe('loadGltfForEngine', () => {
         },
       }),
     ]);
-    expect(result.asset.backendCompatibility.find((entry) =>
+    const postDecodePtWebgl2 = result.asset.backendCompatibility.find((entry) =>
       entry.backend === 'pt-webgl2' && entry.profileId === 'pt-webgl2'
-    )).toMatchObject({
-      requiresHookCount: 0,
+    );
+    expect(preDecodePtWebgl2).toMatchObject({
+      requiresHookCount: 1,
     });
+    expect(postDecodePtWebgl2).toMatchObject({
+      requiresHookCount: 0,
+      nativeCount: preDecodePtWebgl2?.nativeCount,
+      approximateCount: preDecodePtWebgl2?.approximateCount,
+      unsupportedCount: preDecodePtWebgl2?.unsupportedCount,
+    });
+    expect(postDecodePtWebgl2?.nativeCount).toBeGreaterThan(0);
   });
 
   it('accepts selected WebP texture-source extensions through the built-in Node decode bridge', async () => {

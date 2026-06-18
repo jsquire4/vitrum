@@ -273,7 +273,6 @@ function compatibilityWithIssues(
 ): GltfBackendCompatibility {
   let unsupportedCount = 0;
   let approximateCount = 0;
-  let nativeCount = 0;
   let requiresHookCount = 0;
 
   for (const issue of issues) {
@@ -285,8 +284,6 @@ function compatibilityWithIssues(
       issue.support === 'fallback-rebuild'
     ) {
       approximateCount += 1;
-    } else if (issue.support === 'native') {
-      nativeCount += 1;
     } else if (issue.support === 'requires-hook') {
       requiresHookCount += 1;
     }
@@ -296,7 +293,7 @@ function compatibilityWithIssues(
     ...candidate,
     unsupportedCount,
     approximateCount,
-    nativeCount,
+    nativeCount: candidate.nativeCount,
     requiresHookCount,
     issues,
     isCompatible: unsupportedCount === 0,
