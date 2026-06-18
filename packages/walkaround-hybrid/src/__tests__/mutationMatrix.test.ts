@@ -7,6 +7,7 @@ import {
   type SceneEmitter,
   type ScenePrimitive,
   type SkinnedMeshPrimitive,
+  type TextureRef,
 } from '@vitrum/core';
 import { HybridEngine, type HybridEngineOptions } from '../HybridEngine.js';
 import {
@@ -108,6 +109,8 @@ function baseColorMapHandle(r: number): { width: number; height: number; data: U
     __vitrum_hint__: { channels: 4, dataType: 'uint8' },
   };
 }
+
+const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
 
 const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
   displacementMap: { handle: { id: 'height' } },
@@ -562,13 +565,25 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
 
   it('updatePrimitive(material) emits a structured warning when an atlas-backed map is unreadable', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    const baseColorMap = {
+      handle: { id: 'gpu-only-texture' },
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 7,
+        imageIndex: 8,
+        samplerIndex: 9,
+        imageUri: 'albedo.webp',
+        imageMimeType: 'image/webp',
+        textureSourceExtension: 'EXT_texture_webp',
+      },
+    } as TextureRef;
     try {
       engine.updatePrimitive('mesh-a', {
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.5,
           metallic: 0,
-          baseColorMap: { handle: { id: 'gpu-only-texture' } },
+          baseColorMap,
         },
       });
 
@@ -580,8 +595,16 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         materialIndex: 0,
         field: 'baseColorMap',
         colorSpace: 'srgb',
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 7,
+        imageIndex: 8,
+        samplerIndex: 9,
+        imageUri: 'albedo.webp',
+        imageMimeType: 'image/webp',
+        textureSourceExtension: 'EXT_texture_webp',
         fallback: 'map ignored',
       });
+      expect(warning?.message).toContain('materials[0].pbrMetallicRoughness.baseColorTexture');
     } finally {
       engine.dispose();
     }

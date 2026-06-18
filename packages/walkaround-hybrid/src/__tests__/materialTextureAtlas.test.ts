@@ -4,6 +4,8 @@ import { packMaterialTextureAtlas } from '../pipeline/materialTextureAtlas.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
 
+const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
+
 function srgbToLinear(v: number): number {
   const c = Math.max(0, Math.min(1, v));
   return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
@@ -37,11 +39,23 @@ describe('walkaround materialTextureAtlas', () => {
   });
 
   it('reports unreadable atlas-backed map handles as diagnostics and disables metadata', () => {
+    const baseColorMap = {
+      handle: { id: 'gpu-only-texture' },
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 2,
+        imageIndex: 3,
+        samplerIndex: 4,
+        imageUri: 'albedo.webp',
+        imageMimeType: 'image/webp',
+        textureSourceExtension: 'EXT_texture_webp',
+      },
+    };
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
       roughness: 1,
       metallic: 0,
-      baseColorMap: { handle: { id: 'gpu-only-texture' } },
+      baseColorMap,
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
@@ -54,8 +68,16 @@ describe('walkaround materialTextureAtlas', () => {
         materialIndex: 0,
         field: 'baseColorMap',
         colorSpace: 'srgb',
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 2,
+        imageIndex: 3,
+        samplerIndex: 4,
+        imageUri: 'albedo.webp',
+        imageMimeType: 'image/webp',
+        textureSourceExtension: 'EXT_texture_webp',
       }),
     ]);
+    expect(atlas.diagnostics[0]?.message).toContain('materials[0].pbrMetallicRoughness.baseColorTexture');
   });
 
   it('packs per-triangle wrap and KHR_texture_transform metadata', () => {

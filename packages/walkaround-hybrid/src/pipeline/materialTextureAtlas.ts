@@ -32,6 +32,13 @@ export interface MaterialTextureAtlasDiagnostic {
   readonly materialIndex: number;
   readonly field: AtlasMapField;
   readonly colorSpace: AtlasColorSpace;
+  readonly sourcePath?: string;
+  readonly textureIndex?: number;
+  readonly imageIndex?: number;
+  readonly samplerIndex?: number;
+  readonly imageUri?: string;
+  readonly imageMimeType?: string;
+  readonly textureSourceExtension?: string;
   readonly message: string;
 }
 
@@ -114,6 +121,16 @@ interface TextureHandleHint {
   readonly colorSpace?: 'srgb' | 'linear';
 }
 
+interface TextureRefSourceMetadata {
+  readonly path?: string;
+  readonly textureIndex?: number;
+  readonly imageIndex?: number;
+  readonly samplerIndex?: number;
+  readonly imageUri?: string;
+  readonly imageMimeType?: string;
+  readonly textureSourceExtension?: string;
+}
+
 const TEX_BINDING = 0x04;
 const COPY_DST = 0x02;
 
@@ -135,6 +152,27 @@ function asTextureRef(value: unknown): TextureRef | null {
   if (value == null || typeof value !== 'object') return null;
   if ('handle' in value) return value as TextureRef;
   return { handle: value };
+}
+
+function textureRefSourceMetadata(ref: TextureRef): TextureRefSourceMetadata | undefined {
+  for (const symbol of Object.getOwnPropertySymbols(ref)) {
+    if (symbol.description !== 'vitrum.gltf.textureRefSource') continue;
+    const value = (ref as unknown as Record<symbol, unknown>)[symbol];
+    if (value == null || typeof value !== 'object') return undefined;
+    const record = value as Record<string, unknown>;
+    return {
+      ...(typeof record.path === 'string' ? { path: record.path } : {}),
+      ...(typeof record.textureIndex === 'number' ? { textureIndex: record.textureIndex } : {}),
+      ...(typeof record.imageIndex === 'number' ? { imageIndex: record.imageIndex } : {}),
+      ...(typeof record.samplerIndex === 'number' ? { samplerIndex: record.samplerIndex } : {}),
+      ...(typeof record.imageUri === 'string' ? { imageUri: record.imageUri } : {}),
+      ...(typeof record.imageMimeType === 'string' ? { imageMimeType: record.imageMimeType } : {}),
+      ...(typeof record.textureSourceExtension === 'string'
+        ? { textureSourceExtension: record.textureSourceExtension }
+        : {}),
+    };
+  }
+  return undefined;
 }
 
 function readHandlePixels(handle: unknown): RawPixels | null {
@@ -323,14 +361,25 @@ export function packMaterialTextureAtlas(
     }
     const pixels = readHandlePixels(ref.handle);
     if (pixels == null) {
+      const source = textureRefSourceMetadata(ref);
       diagnostics.push({
         code: 'unreadable-material-texture-map',
         materialIndex,
         field,
         colorSpace,
+        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
+        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
+        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
+        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
+        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
+        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
+        ...(source?.textureSourceExtension !== undefined
+          ? { textureSourceExtension: source.textureSourceExtension }
+          : {}),
         message:
           `${field} texture handle is not CPU-readable ` +
-          '(expected raw {width,height,data} or DataTexture-shaped image); the map is ignored.',
+          `(expected raw {width,height,data} or DataTexture-shaped image)` +
+          `${source?.path !== undefined ? ` at ${source.path}` : ''}; the map is ignored.`,
       });
       return;
     }

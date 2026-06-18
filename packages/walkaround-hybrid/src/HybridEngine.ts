@@ -971,7 +971,8 @@ export class HybridEngine implements Engine {
     method: 'setScene' | 'updatePrimitive',
   ): void {
     for (const diagnostic of diagnostics) {
-      const key = `${method}:${diagnostic.materialIndex}:${diagnostic.field}:${diagnostic.colorSpace}`;
+      const sourcePath = diagnostic.sourcePath;
+      const key = `${method}:${diagnostic.materialIndex}:${diagnostic.field}:${diagnostic.colorSpace}:${sourcePath ?? ''}`;
       if (this._warnedMaterialTextureAtlasDiagnostics.has(key)) continue;
       this._warnedMaterialTextureAtlasDiagnostics.add(key);
       this._warn({
@@ -981,13 +982,23 @@ export class HybridEngine implements Engine {
         method,
         message:
           `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
-          `${diagnostic.materialIndex} has a texture handle that is not CPU-readable; ` +
+          `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
+          `has a texture handle that is not CPU-readable; ` +
           `the map is ignored by the material atlas. Provide a raw {width,height,data} ` +
           `or DataTexture-shaped handle before setScene/updatePrimitive for native map sampling.`,
         details: {
           materialIndex: diagnostic.materialIndex,
           field: diagnostic.field,
           colorSpace: diagnostic.colorSpace,
+          ...(sourcePath !== undefined ? { sourcePath } : {}),
+          ...(diagnostic.textureIndex !== undefined ? { textureIndex: diagnostic.textureIndex } : {}),
+          ...(diagnostic.imageIndex !== undefined ? { imageIndex: diagnostic.imageIndex } : {}),
+          ...(diagnostic.samplerIndex !== undefined ? { samplerIndex: diagnostic.samplerIndex } : {}),
+          ...(diagnostic.imageUri !== undefined ? { imageUri: diagnostic.imageUri } : {}),
+          ...(diagnostic.imageMimeType !== undefined ? { imageMimeType: diagnostic.imageMimeType } : {}),
+          ...(diagnostic.textureSourceExtension !== undefined
+            ? { textureSourceExtension: diagnostic.textureSourceExtension }
+            : {}),
           fallback: 'map ignored',
         },
       });
