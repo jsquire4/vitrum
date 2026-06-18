@@ -127,6 +127,7 @@ const EXPECTATION_TABLE = {
   "pt/mutation-emitter": { expected: "ok" },
   "pt/mutation-transform": { expected: "ok" },
   "pt/mutation-topology": { expected: "ok" },
+  "pt/mutation-instanced-count": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -192,6 +193,7 @@ const PT_CONFIGS = [
   { label: "pt/mutation-emitter", eng: {},                                      scene: { mutation: "emitter" } },
   { label: "pt/mutation-transform", eng: {},                                    scene: { mutation: "transform" } },
   { label: "pt/mutation-topology", eng: {},                                     scene: { mutation: "topology" } },
+  { label: "pt/mutation-instanced-count", eng: {},                              scene: { mutation: "instanced-count" } },
 ];
 
 const WH_CONFIGS = [
@@ -413,6 +415,39 @@ function buildMutationTopologyScene() {
         roughness: 1.0,
         metallic: 0.0,
       },
+    }],
+    emitters: [],
+    environment: { kind: "none" },
+  };
+}
+
+function instanceMatrix(x, scale = 0.55) {
+  return asMat4(new Float32Array([
+    scale, 0, 0, 0,
+    0, scale, 0, 0,
+    0, 0, 1, 0,
+    x, 0, 0, 1,
+  ]));
+}
+
+function buildMutationInstancedCountScene() {
+  return {
+    primitives: [{
+      kind: "instanced-mesh",
+      id: "mutation-instanced-count-primitive",
+      positions: GLTF_QUAD.positions,
+      normals: GLTF_QUAD.normals,
+      indices: new Uint32Array(GLTF_QUAD.indices),
+      material: {
+        shadingModel: "unlit",
+        baseColor: [0.95, 0.1, 0.08],
+        roughness: 1.0,
+        metallic: 0.0,
+      },
+      instances: [
+        instanceMatrix(-0.45),
+        instanceMatrix(0.45),
+      ],
     }],
     emitters: [],
     environment: { kind: "none" },
@@ -1249,6 +1284,7 @@ async function buildGateScene(opts = {}) {
   if (opts.mutation === "emitter") return buildMutationEmitterScene();
   if (opts.mutation === "transform") return buildMutationTransformScene();
   if (opts.mutation === "topology") return buildMutationTopologyScene();
+  if (opts.mutation === "instanced-count") return buildMutationInstancedCountScene();
   return buildCornellScene(opts);
 }
 
@@ -1654,6 +1690,7 @@ const MUTATION_DELTA_THRESHOLDS = {
   emitter: { meanAbs: 2.0, maxAbs: 8 },
   transform: { meanAbs: 2.0, maxAbs: 8 },
   topology: { meanAbs: 2.0, maxAbs: 8 },
+  "instanced-count": { meanAbs: 2.0, maxAbs: 8 },
 };
 
 /**
@@ -1773,6 +1810,12 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
           positions: GLTF_QUAD.positions,
           normals: GLTF_QUAD.normals,
           indices: new Uint32Array(GLTF_QUAD.indices),
+        });
+      } else if (sceneOpts.mutation === "instanced-count") {
+        engine.updatePrimitive("mutation-instanced-count-primitive", {
+          instances: [
+            instanceMatrix(-0.45),
+          ],
         });
       } else {
         throw new Error(`unknown mutation gate kind: ${sceneOpts.mutation}`);

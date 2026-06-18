@@ -412,13 +412,13 @@ replacement for V28-B recaptures.
   readiness, including browser Draco/meshopt decoder-hook telemetry, but WSL
   canvas readback stalls before PNGs can be captured).
 - Mutation matrix on real GPU/browser harness: pt-webgpu material/environment/
-  emitter/transform/topology mutation lanes now pass on the default WSL runtime and dzn full tier
+  emitter/transform/topology/instanced-count mutation lanes now pass on the default WSL runtime and dzn full tier
   (`behavioral-gate:dzn -- --filter mutation --require-full-tier`) after fixing
   the primitive-less full-tier BVH/TLAS placeholder buffers. The dzn mutation
   status artifact is committed at
   `tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json` and checked by
-  `npm run behavioral-gate:dzn-status-check`. Broader instanced-count/resource,
-  denoiser-history, and walkaround GI propagation lanes remain.
+  `npm run behavioral-gate:dzn-status-check`. Broader resource, denoiser-history,
+  and walkaround GI propagation lanes remain.
 
 ## How To Use This Plan
 
