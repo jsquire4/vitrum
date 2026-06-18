@@ -426,13 +426,12 @@ fn lo_sunNEE(
   // lo_sg_caustic so the two terms have consistent directional sampling.
   let sunBase = ubo.sunDirection;
   let sunAngularRadius = max(ubo.sunAngular.x, 0.0);
-  let hx = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453);
-  let hy = fract(sin(f32(gid.x) * 93.989  + f32(gid.y) * 67.345) * 24634.6345);
+  let xi = pixelHash2(gid, 0x53474341u);
   let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
   let tan = safe_normalize(cross(upRef, sunBase));
   let bit = cross(sunBase, tan);
-  let r2  = sunAngularRadius * sqrt(hx);
-  let phi = 6.2831853 * hy;
+  let r2  = sunAngularRadius * sqrt(xi.x);
+  let phi = 6.2831853 * xi.y;
   let toSun = safe_normalize(sunBase + tan * (r2 * cos(phi)) + bit * (r2 * sin(phi)));
 
   let nDotSun = dot(normal, toSun);

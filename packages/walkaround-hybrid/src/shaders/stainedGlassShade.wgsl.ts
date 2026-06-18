@@ -77,9 +77,7 @@ fn lo_sg_caustic(
   // function of its (x, y) position only).
   let sunBase = ubo.sunDirection;
   let sunAngularRadius = max(ubo.sunAngular.x, 0.0);
-  let hx = fract(sin(f32(gid.x) * 12.9898 + f32(gid.y) * 78.233) * 43758.5453);
-  let hy = fract(sin(f32(gid.x) * 93.989  + f32(gid.y) * 67.345) * 24634.6345);
-  let xi = vec2f(hx, hy);
+  let xi = pixelHash2(gid, 0x53474341u);
   let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
   let tan = safe_normalize(cross(upRef, sunBase));
   let bit = cross(sunBase, tan);

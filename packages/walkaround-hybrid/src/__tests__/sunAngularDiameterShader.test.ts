@@ -9,8 +9,10 @@ describe('walkaround directional angularDiameter shader plumbing', () => {
     expect(WALKAROUND_UBO_WGSL).toContain('sunAngular:');
     expect(WALKAROUND_UBO_WGSL).toContain('x = direct sun cone radius in radians');
     expect(SHADING_TERMS_WGSL).toContain('let sunAngularRadius = max(ubo.sunAngular.x, 0.0);');
-    expect(SHADING_TERMS_WGSL).toContain('let r2  = sunAngularRadius * sqrt(hx);');
+    expect(SHADING_TERMS_WGSL).toContain('let xi = pixelHash2(gid, 0x53474341u);');
+    expect(SHADING_TERMS_WGSL).toContain('let r2  = sunAngularRadius * sqrt(xi.x);');
     expect(STAINED_GLASS_SHADE_WGSL).toContain('let sunAngularRadius = max(ubo.sunAngular.x, 0.0);');
+    expect(STAINED_GLASS_SHADE_WGSL).toContain('let xi = pixelHash2(gid, 0x53474341u);');
     expect(STAINED_GLASS_SHADE_WGSL).toContain('let r2 = sunAngularRadius * sqrt(xi.x);');
     expect(SHADING_TERMS_WGSL).not.toContain('SUN_ANGULAR_RADIUS');
     expect(STAINED_GLASS_SHADE_WGSL).not.toContain('SUN_ANGULAR_RADIUS');

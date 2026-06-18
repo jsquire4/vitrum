@@ -29,9 +29,8 @@ export const SURFACE_TEXTURES_WGSL = /* wgsl */ `
 // multiplies into the per-cell baseColor it decoded from bvhIndex.
 
 fn _hash21(p: vec2f) -> f32 {
-  // Quick deterministic 2D-to-1D hash, range ~[0,1).
-  let h = sin(dot(p, vec2f(127.1, 311.7))) * 43758.5453;
-  return fract(h);
+  // Deterministic 2D-to-1D cell hash, range ~[0,1).
+  return floatCellHash(p, 0x53544631u);
 }
 
 fn _vnoise(p: vec2f) -> f32 {

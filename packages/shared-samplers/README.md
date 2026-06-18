@@ -14,8 +14,8 @@ Sampling utilities for path tracers and walkaround engines: QMC sequences, light
 **Hoisted WGSL primitives (also exported from package index):**
 - `PCG_WGSL`, `PCG_HASH_TO_F32_WGSL`, `BSDF_PRIMITIVES_WGSL`, `LUMINANCE_WGSL` — canonical declarations; consumers should import via `wgslModules.ts` `requires` rather than inlining duplicates.
 
-**Still duplicated in some consumer packages (open follow-up):**
-- Per-pixel pixel-hash — some walkaround shaders still inline the legacy `fract(sin(dot(...)))` form; prefer `PCG_WGSL` from this package when touching those files.
+**Consumer dedup status:**
+- Per-pixel/cell pixel-hash — walkaround deterministic shade/transparent/noise call sites now route through shared helpers; render-sensitive direct-sun jitter keeps its legacy-compatible sequence inside the helper, while cell/world hashes use `PCG_HASH_TO_F32_WGSL`. GTAO keeps its established local jitter sequence because the T1 dzn/lavapipe smoke is calibrated to that low-res AO pattern.
 
 **Also exported from the package index:**
 `buildLightTree`, `mixturePdf`, `evaluateHG`, `sampleEquiAngular`, BDPT helpers (`bdptConnectionMIS_full`, vertex/MIS types; `_partial` variants deleted), Jakob–Hanika spectral upsampling (`rgbToSpectralCoefficients`), Cauchy IOR formula (`cauchyIOR`) — all are exported from the package index and available to consumers. Unit tests pin their numerical contracts.

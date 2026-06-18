@@ -377,14 +377,13 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);
   let areaDirect = oitLayerAreaEmitterNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);
   let sunBase = safe_normalize(ubo.sunDirection);
-  let sunHx = fract(sin(dot(hitPos.xy, vec2f(12.9898, 78.233)) + f32(hit.indices.w) * 0.37) * 43758.5453);
-  let sunHy = fract(sin(dot(hitPos.yz, vec2f(93.989, 67.345)) + f32(hit.indices.w) * 0.73) * 24634.6345);
+  let sunXi = worldHash2(hitPos, hit.indices.w ^ 0x4f495431u);
   let sunUpRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
   let sunTan = safe_normalize(cross(sunUpRef, sunBase));
   let sunBit = cross(sunBase, sunTan);
   let sunAngularRadius = max(ubo.sunAngular.x, 0.0);
-  let sunR = sunAngularRadius * sqrt(sunHx);
-  let sunPhi = 6.2831853 * sunHy;
+  let sunR = sunAngularRadius * sqrt(sunXi.x);
+  let sunPhi = 6.2831853 * sunXi.y;
   let toSun = safe_normalize(sunBase + sunTan * (sunR * cos(sunPhi)) + sunBit * (sunR * sin(sunPhi)));
   let sunBrdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
     payload.albedo,

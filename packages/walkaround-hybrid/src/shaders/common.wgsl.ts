@@ -6,10 +6,9 @@
  * sibling modules under `shaders/`. This file is now a THIN AGGREGATE:
  *
  *   - `COMMON_WGSL` is the in-order concatenation of the eleven module
- *     strings, so it stays BYTE-IDENTICAL to the pre-split string. Tests and
- *     downstream consumers that import `COMMON_WGSL` directly (the bit-
- *     identical wgslCompose gate, the sprint16 / sprint9 / welfordVariance
- *     `.toContain` assertions) are unaffected.
+ *     strings. At the W1 split it stayed byte-identical to the pre-split
+ *     string; later canonical-helper landings may intentionally change the
+ *     bytes while preserving the same dependency order.
  *   - `COMMON_MODULE` no longer carries its own source; instead it `requires`
  *     the eleven focused modules in the original source order. `composeWgsl`
  *     emits each dependency exactly once, in declared order, then appends
@@ -22,8 +21,8 @@
  * which the shared-primitives module defines after them). WGSL resolves
  * module-scope functions regardless of declaration order, so the original
  * order compiles. Declaring honest `requires` would make the topo-sort hoist
- * those later modules earlier and CHANGE the byte order — breaking the byte-
- * identical guarantee. `common` therefore owns the canonical ordering by
+ * those later modules earlier and CHANGE the byte order — breaking the ordering
+ * guarantee. `common` therefore owns the canonical ordering by
  * listing the modules explicitly, and the focused modules are leaf entries.
  *
  * The focused modules (in aggregate order):
@@ -69,10 +68,9 @@ const COMMON_MODULE_ORDER: readonly WgslModule[] = [
 ];
 
 /**
- * Byte-identical to the pre-split `COMMON_WGSL` string. Built by
- * concatenating the focused module sources in `COMMON_MODULE_ORDER`. Kept as
- * an explicit `+` chain (rather than `.map().join('')`) so the order is
- * auditable inline and matches the original single-string layout exactly.
+ * Built by concatenating the focused module sources in `COMMON_MODULE_ORDER`.
+ * Kept as an explicit `+` chain (rather than `.map().join('')`) so the order
+ * is auditable inline and matches the original single-string layout.
  */
 export const COMMON_WGSL = /* wgsl */
   WALKAROUND_UBO_WGSL +
@@ -93,7 +91,7 @@ export const COMMON_WGSL = /* wgsl */
  *  T9-stepA: `common` is now a thin aggregate. Its source is empty and it
  *  `requires` the eleven focused modules in `COMMON_MODULE_ORDER`. The
  *  composer emits the deps (each once, in this order) then appends the empty
- *  root source — reproducing the original `COMMON_WGSL` bytes exactly. */
+ *  root source, preserving the aggregate dependency order. */
 export const COMMON_MODULE: WgslModule = {
   name: 'common',
   source: '',

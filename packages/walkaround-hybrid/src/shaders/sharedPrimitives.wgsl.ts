@@ -1,8 +1,9 @@
 /**
  * Shared low-level WGSL primitives injected from `@vitrum/shared-samplers`:
- * the PCG random number generator (`rand_f32` etc.), the BSDF primitives
- * (`fresnelSchlick`, cosine-hemisphere sampling, …), and the canonical
- * Rec.709 `luminance` helper — plus the local `safe_normalize` guard.
+ * the PCG random number generator (`rand_f32` etc.), stateless PCG hash helpers
+ * for deterministic jitter/noise, the BSDF primitives (`fresnelSchlick`,
+ * cosine-hemisphere sampling, …), and the canonical Rec.709 `luminance` helper
+ * — plus the local `safe_normalize` guard.
  *
  * Split out of common.wgsl.ts (T9-stepA).
  *
@@ -12,12 +13,13 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
-import { BSDF_PRIMITIVES_WGSL, LUMINANCE_WGSL, PCG_WGSL } from '@vitrum/shared-samplers';
+import { BSDF_PRIMITIVES_WGSL, LUMINANCE_WGSL, PCG_HASH_TO_F32_WGSL, PCG_WGSL } from '@vitrum/shared-samplers';
 
 export const SHARED_PRIMITIVES_WGSL = /* wgsl */ `// ============================================================
 // Shared WGSL primitives
 // ============================================================
 ${PCG_WGSL}
+${PCG_HASH_TO_F32_WGSL}
 ${BSDF_PRIMITIVES_WGSL}
 
 // ============================================================
@@ -29,6 +31,34 @@ fn safe_normalize(v: vec3f) -> vec3f {
   let len = length(v);
   if (len < 1e-8) { return vec3f(0.0, 1.0, 0.0); }
   return v / len;
+}
+
+fn vitrumPcgSeed2(a: u32, b: u32, salt: u32) -> u32 {
+  return (a * 1664525u) ^ (b * 1013904223u) ^ (salt * 22695477u);
+}
+
+fn vitrumPcgSeed3(a: u32, b: u32, c: u32, salt: u32) -> u32 {
+  return vitrumPcgSeed2(a ^ (c * 747796405u), b ^ (c * 277803737u), salt);
+}
+
+fn pcgHash2FromSeed(seed: u32) -> vec2f {
+  return vec2f(pcgHashToF32(seed), pcgHashToF32(seed ^ 0x9E3779B9u));
+}
+
+fn pixelHash2(px: vec2u, salt: u32) -> vec2f {
+  _ = salt;
+  return vec2f(
+    fract(sin(f32(px.x) * 12.9898 + f32(px.y) * 78.233) * 43758.5453),
+    fract(sin(f32(px.x) * 93.989  + f32(px.y) * 67.345) * 24634.6345),
+  );
+}
+
+fn floatCellHash(p: vec2f, salt: u32) -> f32 {
+  return pcgHashToF32(vitrumPcgSeed2(bitcast<u32>(p.x), bitcast<u32>(p.y), salt));
+}
+
+fn worldHash2(p: vec3f, salt: u32) -> vec2f {
+  return pcgHash2FromSeed(vitrumPcgSeed3(bitcast<u32>(p.x), bitcast<u32>(p.y), bitcast<u32>(p.z), salt));
 }
 
 `;
