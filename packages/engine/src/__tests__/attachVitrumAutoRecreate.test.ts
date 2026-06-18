@@ -15,6 +15,11 @@ const sceneB: Scene = {
   emitters: [],
   environment: { kind: 'none' },
 };
+const sceneC: Scene = {
+  primitives: [],
+  emitters: [],
+  environment: { kind: 'none' },
+};
 
 const identityElements = new Float32Array([
   1, 0, 0, 0,
@@ -42,7 +47,7 @@ function makeCamera() {
   };
 }
 
-function makeEngine(backendId = 'pt-webgl2') {
+function makeEngine(backendId = 'pt-webgl2', retainedScene: Scene | null = null) {
   const errorCallbacks: Array<(err: EngineError) => void> = [];
   const setScene = vi.fn();
   const engine = {
@@ -55,6 +60,7 @@ function makeEngine(backendId = 'pt-webgl2') {
     pause: vi.fn(),
     resume: vi.fn(),
     dispose: vi.fn(),
+    getScene: vi.fn(() => retainedScene),
     onError: vi.fn((cb: (err: EngineError) => void) => {
       errorCallbacks.push(cb);
       return vi.fn();
@@ -115,6 +121,32 @@ describe('attachVitrum auto-recreate scene tracking', () => {
 
     await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
     expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneB);
+
+    handle.dispose();
+  });
+
+  it('recreates with the backend-retained live scene when fast paths bypass lifecycle setScene tracking', async () => {
+    const first = makeEngine('pt-webgl2', sceneC);
+    const second = makeEngine();
+    createEngineMock
+      .mockResolvedValueOnce(first.engine)
+      .mockResolvedValueOnce(second.engine);
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+    });
+
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    } as EngineError);
+
+    await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
+    expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneC);
 
     handle.dispose();
   });

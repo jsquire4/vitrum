@@ -591,6 +591,21 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       // Best-effort; proceed without GI state.
     }
 
+    // Snapshot the backend-retained scene immediately before teardown. The
+    // lifecycle tracks explicit handle.engine.setScene(...) calls, but whole-
+    // primitive/controller fast paths can mutate the backend scene through
+    // add/remove/update routes without passing through that wrapper.
+    try {
+      const liveScene = typeof engine.getScene === 'function' ? engine.getScene() : null;
+      if (liveScene != null) currentScene = liveScene;
+    } catch (err) {
+      reportError(err, {
+        phase: 'attach:auto-recreate',
+        backend: engine.backendId,
+        recoverable: true,
+      });
+    }
+
     // 3. Dispose the broken engine.
     unsubFrame?.();
     unsubProgress?.();
