@@ -39,6 +39,7 @@ import {
   ADJOINT_FIELD_ANISOTROPY_ROTATION,
   ADJOINT_FIELD_AO_MAP_INTENSITY,
   ADJOINT_FIELD_LIGHT_MAP_INTENSITY,
+  ADJOINT_FIELD_ENV_MAP_INTENSITY,
   ADJOINT_FIELD_EMITTER_COLOR,
   ADJOINT_FIELD_EMITTER_INTENSITY,
   ADJOINT_EMITTER_TARGET_DIRECTIONAL,
@@ -190,6 +191,9 @@ export class AdjointPass {
           break;
         case 'lightMapIntensity':
           fieldCode = ADJOINT_FIELD_LIGHT_MAP_INTENSITY;
+          break;
+        case 'envMapIntensity':
+          fieldCode = ADJOINT_FIELD_ENV_MAP_INTENSITY;
           break;
         case 'emissive':
           fieldCode = ADJOINT_FIELD_EMISSIVE;

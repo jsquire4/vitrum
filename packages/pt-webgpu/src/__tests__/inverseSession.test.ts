@@ -1880,7 +1880,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps scalar normal/env map controls on finite-difference until path replay mirrors those terms', () => {
+  it('keeps scalar normal map controls on finite-difference until path replay mirrors those terms', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1893,20 +1893,18 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
                 normalScale: 0.8,
                 bumpScale: 0.7,
                 clearcoatNormalScale: 0.6,
-                envMapIntensity: 0.3,
               },
             }
           : pr,
       ),
     };
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(4) };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [
         { path: 'materials.panel.normalScale', kind: 'scalar' },
         { path: 'materials.panel.bumpScale', kind: 'scalar' },
         { path: 'materials.panel.clearcoatNormalScale', kind: 'scalar' },
-        { path: 'materials.panel.envMapIntensity', kind: 'scalar' },
       ],
       method: 'path-replay',
     });
@@ -1916,7 +1914,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       [expect.closeTo(0.8, 6)],
       [expect.closeTo(0.7, 6)],
       [expect.closeTo(0.6, 6)],
-      [expect.closeTo(0.3, 6)],
     ]);
     for (const field of [
       'normalScale',
@@ -1929,10 +1926,39 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         details: expect.objectContaining({ field, finiteDifferenceReason: 'normal' }),
       }));
     }
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-environment',
-      path: 'materials.panel.envMapIntensity',
-      details: expect.objectContaining({ field: 'envMapIntensity', finiteDifferenceReason: 'environment' }),
+    }));
+    session.dispose();
+  });
+
+  it('keeps envMapIntensity on scoped path-replay for direct HDRI environment NEE', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, envMapIntensity: 0.3 } }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.envMapIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()).toEqual([[expect.closeTo(0.3, 6)]]);
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-environment',
+    }));
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-lighting',
     }));
     session.dispose();
   });

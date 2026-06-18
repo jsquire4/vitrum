@@ -85,6 +85,7 @@ export const ADJOINT_FIELD_EMITTER_INTENSITY = 17;
 export const ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE = 18;
 export const ADJOINT_FIELD_AO_MAP_INTENSITY = 19;
 export const ADJOINT_FIELD_LIGHT_MAP_INTENSITY = 20;
+export const ADJOINT_FIELD_ENV_MAP_INTENSITY = 21;
 
 export const ADJOINT_EMITTER_TARGET_DIRECTIONAL = 1;
 export const ADJOINT_EMITTER_TARGET_POINT = 2;
@@ -288,6 +289,12 @@ fn sampleAdjointEnvironmentImportance(rng: ptr<function, u32>) -> AdjointEnviron
   result.value = texel.rgb * max(params.environmentParams.x, 0.0);
   result.pdf = max(texel.w, 1e-8);
   return result;
+}
+
+fn adjointMaterialEnvMapIntensity(matId: u32) -> f32 {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 4u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  return max(materialTexDescriptors[base + 4u].w, 0.0);
 }
 
 // ── emissive texture replay subset (mirror of material.wgsl sampleEmissiveTexture) ──
@@ -1102,6 +1109,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gIridescenceThicknessRange = vec2f(0.0);
     var gAnisotropy = 0.0;
     var gAnisotropyRotation = 0.0;
+    var gEnvMapIntensity = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -1443,7 +1451,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let wi = envSample.wi;
       let nDotL = max(0.0, dot(n, wi));
       if (nDotL > 0.0 && !anyHit(pos + n * 1e-3, wi, 1e30)) {
-        let Li = envSample.value / max(envSample.pdf, 1e-8);
+        let envLiPerUnitIntensity = envSample.value / max(envSample.pdf, 1e-8);
+        let envMapIntensity = adjointMaterialEnvMapIntensity(matId);
+        let Li = envLiPerUnitIntensity * envMapIntensity;
         let lg = directLightAdjoint(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1468,6 +1478,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         gIridescenceThicknessRange = gIridescenceThicknessRange + lg.iridescenceThicknessRangeGrad;
         gAnisotropy = gAnisotropy + lg.anisotropyGrad;
         gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
+        if (!isUnlit) {
+          let brdfValue = directLightBrdfValue(
+            effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+            effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+            effectiveAnisotropy, effectiveAnisotropyRotation,
+          );
+          gEnvMapIntensity = gEnvMapIntensity + dot(dLoss_dR, brdfValue * (nDotL * envLiPerUnitIntensity));
+        }
       }
     }
 
@@ -1510,6 +1528,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           dContribution_dEmissiveIntensity(vec3f(1.0), lightMapRadiancePerUnitIntensity),
         );
         adjointScatter(gradOffset, gLightMapIntensity * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_ENV_MAP_INTENSITY}u) {
+        adjointScatter(gradOffset, gEnvMapIntensity * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT}u) {
         adjointScatter(gradOffset, gClearcoat * clearcoatFactor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT_ROUGHNESS}u) {

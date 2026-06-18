@@ -246,6 +246,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'iridescenceThicknessRange',
   'anisotropy',
   'anisotropyRotation',
+  'envMapIntensity',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
 const ADJOINT_MAPPED_EMISSION_EPS = 1e-8;
@@ -262,7 +263,6 @@ const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
 ]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
 const PATH_REPLAY_NORMAL_ONLY_FIELDS = new Set(['normalScale', 'bumpScale', 'clearcoatNormalScale']);
-const PATH_REPLAY_ENVIRONMENT_ONLY_FIELDS = new Set(['envMapIntensity']);
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -710,8 +710,7 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
   readonly code:
     | 'path-replay-unsupported-transport'
     | 'path-replay-unsupported-visibility'
-    | 'path-replay-unsupported-normal'
-    | 'path-replay-unsupported-environment';
+    | 'path-replay-unsupported-normal';
   readonly message: string;
   readonly details: Record<string, string | readonly string[]>;
 } | null {
@@ -748,18 +747,6 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
         field,
         finiteDifferenceReason: 'normal',
         affectedTerms: ['normal-map-frame', 'bump-gradient', 'clearcoat-normal-frame'],
-      },
-    };
-  }
-  if (PATH_REPLAY_ENVIRONMENT_ONLY_FIELDS.has(field)) {
-    return {
-      code: 'path-replay-unsupported-environment',
-      message:
-        'which changes per-material environment lighting scale that the scoped path-replay adjoint does not differentiate yet',
-      details: {
-        field,
-        finiteDifferenceReason: 'environment',
-        affectedTerms: ['environment-lighting-scale', 'env-map-sampling'],
       },
     };
   }
