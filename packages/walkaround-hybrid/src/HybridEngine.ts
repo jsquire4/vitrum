@@ -114,6 +114,7 @@ import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBu
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import {
+  categorizeUnconsumedMaterialFields,
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectUnconsumedMaterialFields,
@@ -904,6 +905,7 @@ export class HybridEngine implements Engine {
     const key = sortedFields.join(',');
     if (this._warnedMaterialFields.has(key)) return;
     this._warnedMaterialFields.add(key);
+    const categories = categorizeUnconsumedMaterialFields(sortedFields);
     this._warn({
       code: 'walkaround-hybrid.unconsumed-material-fields',
       backend: 'walkaround-hybrid',
@@ -913,7 +915,7 @@ export class HybridEngine implements Engine {
         `[vitrum/walkaround-hybrid] ${method}: the following material fields are ` +
         `supplied but not consumed by this backend: ${sortedFields.join(', ')}. ` +
         `See consumedMaterialFields.ts for the full allowlist.`,
-      details: { fields: sortedFields },
+      details: { fields: sortedFields, categories },
     });
   }
 

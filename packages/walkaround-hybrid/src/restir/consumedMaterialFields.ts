@@ -236,6 +236,52 @@ export function collectUnconsumedMaterialFieldsForMaterial(
   return Array.from(supplied).sort();
 }
 
+export type UnconsumedMaterialFieldCategory =
+  | 'geometry'
+  | 'spectral'
+  | 'volume'
+  | 'layered'
+  | 'unknown';
+
+const UNCONSUMED_MATERIAL_FIELD_CATEGORIES: Readonly<Record<string, UnconsumedMaterialFieldCategory>> = {
+  displacementMap: 'geometry',
+  displacementScale: 'geometry',
+  displacementBias: 'geometry',
+  spectralAttenuation: 'spectral',
+  dispersionAbbeNumber: 'spectral',
+  scatteringCoefficient: 'volume',
+  scatteringCoefficientRGB: 'volume',
+  scatteringAnisotropy: 'volume',
+  frontLayer: 'layered',
+  backLayer: 'layered',
+  thinFilmStack: 'layered',
+};
+
+/** Group unconsumed material keys into stable semantic buckets for diagnostics. */
+export function categorizeUnconsumedMaterialFields(
+  fields: readonly string[],
+): Partial<Record<UnconsumedMaterialFieldCategory, readonly string[]>> {
+  const grouped: Record<UnconsumedMaterialFieldCategory, string[]> = {
+    geometry: [],
+    spectral: [],
+    volume: [],
+    layered: [],
+    unknown: [],
+  };
+  for (const field of fields) {
+    const category = UNCONSUMED_MATERIAL_FIELD_CATEGORIES[field] ?? 'unknown';
+    grouped[category].push(field);
+  }
+
+  const out: Partial<Record<UnconsumedMaterialFieldCategory, readonly string[]>> = {};
+  for (const category of ['geometry', 'spectral', 'volume', 'layered', 'unknown'] as const) {
+    if (grouped[category].length > 0) {
+      out[category] = grouped[category].sort();
+    }
+  }
+  return out;
+}
+
 /**
  * Scan every material-bearing primitive's material in `scene`
  * and return the union of fields that are present in the scene but NOT in

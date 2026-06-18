@@ -19,6 +19,7 @@ import type { MockInstance } from 'vitest';
 import type { EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 import {
+  categorizeUnconsumedMaterialFields,
   CONSUMED_MATERIAL_FIELDS,
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
@@ -220,6 +221,19 @@ describe('collectUnconsumedMaterialFields', () => {
     })).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
   });
 
+  it('categorizes unconsumed fields for structured warning consumers', () => {
+    expect(categorizeUnconsumedMaterialFields([
+      'unknownFutureField',
+      ...WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS,
+    ])).toEqual({
+      geometry: ['displacementBias', 'displacementMap', 'displacementScale'],
+      spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
+      volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
+      layered: ['backLayer', 'frontLayer', 'thinFilmStack'],
+      unknown: ['unknownFutureField'],
+    });
+  });
+
   it('unions across multiple primitives and deduplicates', () => {
     const prims: ReadonlyArray<PrimLike> = [
       { kind: 'mesh', material: { baseColor: [1, 0, 0], frontLayer: { transmission: [1, 1, 1] } } },
@@ -406,7 +420,13 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       expect(materialWarn).not.toContain('envMapIntensity');
       expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
-        JSON.stringify(w.details?.fields) === JSON.stringify(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS),
+        JSON.stringify(w.details?.fields) === JSON.stringify(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS) &&
+        JSON.stringify(w.details?.categories) === JSON.stringify({
+          geometry: ['displacementBias', 'displacementMap', 'displacementScale'],
+          spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
+          volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
+          layered: ['backLayer', 'frontLayer', 'thinFilmStack'],
+        }),
       )).toBe(true);
     } finally {
       engine.dispose();
