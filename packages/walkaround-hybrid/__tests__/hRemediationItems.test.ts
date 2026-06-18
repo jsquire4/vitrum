@@ -8,7 +8,7 @@
  *  H24-A — materialResolver warns on unknown primitive id
  *  H24-B — DDGI.state() reports 'failed' on bad GPU init; _ready never flips on failed init
  *  H24-C — always-rebuild gate: merged path always calls rebuildProbeBvhFromScene
- *  H25-H28 — Road/items ledger does not re-open already-closed PPG/NRC/ReLU defects
+ *  H14-E/H25-H28 — Road/items ledger does not re-open already-closed HDRI/PPG/NRC/ReLU defects
  *  H42  — renderer-fidelity matrix tracks pt-webgl2 and retired fork gates
  *  H46  — HybridEngine warns on inherited options that walkaround cannot honour
  *  H47/H29 — PPG spatial-cell and dTree-node caps thread to PPGCoordinator.initialize
@@ -69,15 +69,16 @@ function zeroEmitterScene(): Scene {
 }
 
 // ---------------------------------------------------------------------------
-// H25-H28 — ledger reconciliation guard
+// H14-E/H25-H28 — ledger reconciliation guard
 // ---------------------------------------------------------------------------
 
-describe('H25-H28 — Road/items ledger reconciliation guard', () => {
-  it('keeps stale open PPG/NRC/ReLU prose out of the active ledgers', () => {
+describe('H14-E/H25-H28 — Road/items ledger reconciliation guard', () => {
+  it('keeps stale open HDRI/PPG/NRC/ReLU prose out of the active ledgers', () => {
     const items = readFileSync(new URL('../../../items_to_fix.md', import.meta.url), 'utf8');
     const road = readFileSync(new URL('../../../plan/road-to-100.md', import.meta.url), 'utf8');
     const combined = `${items}\n${road}`;
 
+    expect(items).toContain('H14-E (dedicated `environmentHdriIntensity`');
     expect(items).toContain('**H25 ✅ CLOSED');
     expect(items).toContain('**H26/H27 ✅ CLOSED');
     expect(items).toContain('**H28 ✅ CLOSED');
@@ -85,6 +86,8 @@ describe('H25-H28 — Road/items ledger reconciliation guard', () => {
     expect(road).toContain('| H26-H27 | ✅ CLOSED');
     expect(road).toContain('| H28 | ✅ CLOSED');
 
+    expect(combined).not.toContain('H14-E (HDRI sun-off pt-webgpu)');
+    expect(combined).not.toContain('HDRI sun-off pt-webgpu');
     expect(combined).not.toContain('H25 ◻');
     expect(combined).not.toContain('H26 ◻');
     expect(combined).not.toContain('H27 ◻');
