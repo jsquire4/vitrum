@@ -16,8 +16,9 @@
  *
  * Scope (Phase 1, matching the differentiable set): single bounce, brute-force
  * intersection (Phase-1 inverse scenes are small — Cornell-scale), directional
- * delta/soft-sun directional + point + spot + stochastic area-measure rect/disc/mesh-area direct lights.
- * Environment, indirect, and BRDF/transmissive/
+ * delta/soft-sun directional + point + spot + stochastic area-measure rect/disc/mesh-area direct lights,
+ * plus stochastic environment-map NEE in the same direct-light domain.
+ * Indirect and BRDF/transmissive/
  * layered/volume/spectral mapped material terms remain deliberate
  * finite-difference fallbacks until their source terms are mirrored here and
  * GPU-validated. Mapped terms replayed here are scoped to the camera-direct
@@ -91,8 +92,8 @@ export const ADJOINT_EMITTER_TARGET_SPOT = 3;
 export const ADJOINT_EMITTER_TARGET_RECT = 4;
 export const ADJOINT_EMITTER_TARGET_MESH = 5;
 
-/** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4). */
-export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16;
+/** AdjointParams UBO size in bytes (mat4 + vec4 + 3×uvec4 + env uvec4 + env vec4). */
+export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16 + 16 + 16;
 
 const ADJOINT_MATERIAL_TEX_UV_EMISSIVE =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
@@ -151,6 +152,11 @@ struct AdjointParams {
   spotLightCount: u32,
   meshAreaLightCount: u32,
   _pad1: u32,
+  environmentMapWidth: u32,
+  environmentMapHeight: u32,
+  hasEnvironmentMap: u32,
+  _pad2: u32,
+  environmentParams: vec4f,
 }
 
 @group(0) @binding(0) var<uniform>             params:        AdjointParams;
@@ -196,6 +202,10 @@ struct AdjointParams {
 @group(0) @binding(17) var                      materialTexSampler: sampler;
 @group(0) @binding(18) var<storage, read>       meshVertexColors: array<vec4f>;
 @group(0) @binding(19) var                      materialTexturesLinear: texture_2d_array<f32>;
+// Environment-map replay subset: rgba = radiance.rgb + solid-angle pdf, plus
+// normalized CDF. Mirrors scene/uploadSceneBuffers.ts environment packing.
+@group(0) @binding(20) var<storage, read>       environmentMapTexels: array<vec4f>;
+@group(0) @binding(21) var<storage, read>       environmentMapCdf: array<f32>;
 
 // ── BRDF primitives ──────────────────────────────────────────────────────────
 const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
@@ -217,6 +227,11 @@ fn safe_normalize(v: vec3f) -> vec3f {
   if (l < 1e-8) { return vec3f(0.0); }
   return v / l;
 }
+fn rotateYPos(v: vec3f, a: f32) -> vec3f {
+  let c = cos(a);
+  let s = sin(a);
+  return vec3f(c * v.x + s * v.z, v.y, -s * v.x + c * v.z);
+}
 fn ggxD(nDotH: f32, alpha: f32) -> f32 {
   let a2 = alpha * alpha;
   let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
@@ -232,6 +247,47 @@ fn fresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   let m2 = m * m;
   let m5 = m2 * m2 * m;
   return f0 + (vec3f(1.0) - f0) * m5;
+}
+struct AdjointEnvironmentSample {
+  wi: vec3f,
+  value: vec3f,
+  pdf: f32,
+}
+
+fn sampleAdjointEnvironmentImportance(rng: ptr<function, u32>) -> AdjointEnvironmentSample {
+  var result: AdjointEnvironmentSample;
+  result.wi = vec3f(0.0, 1.0, 0.0);
+  result.value = vec3f(0.0);
+  result.pdf = 0.0;
+  if (params.hasEnvironmentMap == 0u || params.environmentMapWidth == 0u || params.environmentMapHeight == 0u) {
+    return result;
+  }
+  let count = params.environmentMapWidth * params.environmentMapHeight;
+  if (count == 0u || arrayLength(&environmentMapCdf) < count + 1u || arrayLength(&environmentMapTexels) < count) {
+    return result;
+  }
+  let xi = rand_f32(rng);
+  var lo = 0u;
+  var hi = count;
+  loop {
+    if (lo + 1u >= hi) { break; }
+    let mid = (lo + hi) >> 1u;
+    if (environmentMapCdf[mid] <= xi) { lo = mid; } else { hi = mid; }
+  }
+  let idx = min(lo, count - 1u);
+  let x = idx % params.environmentMapWidth;
+  let y = idx / params.environmentMapWidth;
+  let u = (f32(x) + 0.5) / f32(params.environmentMapWidth);
+  let v = (f32(y) + 0.5) / f32(params.environmentMapHeight);
+  let phi = (u - 0.5) * (2.0 * PI);
+  let theta = v * PI;
+  let sinTheta = sin(theta);
+  let mapDir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
+  let texel = environmentMapTexels[idx];
+  result.wi = safe_normalize(rotateYPos(mapDir, params.environmentParams.y));
+  result.value = texel.rgb * max(params.environmentParams.x, 0.0);
+  result.pdf = max(texel.w, 1e-8);
+  return result;
 }
 
 // ── emissive texture replay subset (mirror of material.wgsl sampleEmissiveTexture) ──
@@ -1373,6 +1429,45 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           mr.rgb,
           invReplaySamples,
         );
+      }
+    }
+
+    // Environment NEE: stochastic CDF replay of the same equirect/procedural-sky
+    // environment map the forward direct-light branch samples. Like the finite
+    // area-light adjoint above, this estimates the source expectation directly
+    // (radiance / pdf) instead of replaying the forward one-of-N light-selection
+    // and MIS weights. Environment BSDF-escape / indirect paths remain outside the
+    // scoped single-bounce adjoint regime and are guarded by the render-regime gate.
+    let envSample = sampleAdjointEnvironmentImportance(&rng);
+    if (envSample.pdf > 0.0) {
+      let wi = envSample.wi;
+      let nDotL = max(0.0, dot(n, wi));
+      if (nDotL > 0.0 && !anyHit(pos + n * 1e-3, wi, 1e30)) {
+        let Li = envSample.value / max(envSample.pdf, 1e-8);
+        let lg = directLightAdjoint(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveIridescence,
+          iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
+          iridescenceThicknessMin, iridescenceThicknessMax, iridescenceThicknessSample,
+          effectiveAnisotropy, effectiveAnisotropyRotation,
+          nDotL, Li,
+        );
+        gBaseColor = gBaseColor + lg.baseColor;
+        gRough = gRough + lg.roughness;
+        gSpecularColor = gSpecularColor + lg.specularColor;
+        gSpecularIntensity = gSpecularIntensity + lg.specularIntensity;
+        gMetallic = gMetallic + lg.metallicGrad;
+        gClearcoat = gClearcoat + lg.clearcoat;
+        gClearcoatRoughness = gClearcoatRoughness + lg.clearcoatRoughness;
+        gSheen = gSheen + lg.sheen;
+        gSheenRoughness = gSheenRoughness + lg.sheenRoughness;
+        gSheenColor = gSheenColor + lg.sheenColor;
+        gIridescence = gIridescence + lg.iridescenceGrad;
+        gIridescenceIor = gIridescenceIor + lg.iridescenceIorGrad;
+        gIridescenceThicknessRange = gIridescenceThicknessRange + lg.iridescenceThicknessRangeGrad;
+        gAnisotropy = gAnisotropy + lg.anisotropyGrad;
+        gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       }
     }
 

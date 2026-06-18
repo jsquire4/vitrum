@@ -7,7 +7,7 @@
  *     on mapAsync rejection (H14-D leak-guard accounting with adjointCreated /
  *     adjointDestroyed counters — these counters may be consumed by telemetry
  *     and tests; the semantics are preserved verbatim).
- *   - UBO packing (invViewProj + cameraPos + direct-light counts).
+ *   - UBO packing (invViewProj + cameraPos + direct-light counts + env map replay params).
  *   - Dispatch + copyBufferToBuffer readback.
  *
  * The engine holds one lazy instance (`#adjointPass`) and delegates the
@@ -105,7 +105,8 @@ export class AdjointPass {
     const { width, height, channels, params, gradientLength, dLoss_dRendered } = req;
     const sampleCount = Math.max(1, Math.floor(req.samples));
 
-    // AdjointParams UBO: invViewProj(mat4) + cameraPos(vec4) + 3×uvec4 of counts.
+    // AdjointParams UBO: invViewProj(mat4) + cameraPos(vec4) + 3×uvec4 of counts
+    // plus an env-map uvec4 and env scalar vec4.
     const vp = multiplyMat4(last.projMatrix, last.viewMatrix);
     const invVp = invertMat4(asMat4(vp));
     if (invVp == null) {
@@ -130,6 +131,11 @@ export class AdjointPass {
     uboU[28] = sb.directionalLightCount >>> 0;
     uboU[29] = sb.spotLightCount >>> 0;
     uboU[30] = sb.meshAreaLightCount >>> 0;
+    uboU[32] = sb.environmentMapWidth >>> 0;
+    uboU[33] = sb.environmentMapHeight >>> 0;
+    uboU[34] = sb.hasEnvironmentMap ? 1 : 0;
+    uboF[36] = sb.environmentHdriIntensity;
+    uboF[37] = sb.environmentHdriRotationY;
 
     // adjointParamDescs: two vec4u records per param:
     //   material record 0: {matId, fieldCode, gradOffset, fieldPayloadBits}
@@ -292,6 +298,8 @@ export class AdjointPass {
         { binding: 17, resource: sb.materialTextureSampler },
         { binding: 18, resource: { buffer: sb.colorsBuffer } },
         { binding: 19, resource: sb.materialLinearTextureView },
+        { binding: 20, resource: { buffer: sb.environmentMapTexelsBuffer } },
+        { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
       ],
     });
 

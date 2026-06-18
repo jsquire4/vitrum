@@ -755,11 +755,11 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
     return {
       code: 'path-replay-unsupported-environment',
       message:
-        'which changes environment lighting that the scoped path-replay adjoint does not mirror yet',
+        'which changes per-material environment lighting scale that the scoped path-replay adjoint does not differentiate yet',
       details: {
         field,
         finiteDifferenceReason: 'environment',
-        affectedTerms: ['environment-lighting', 'env-map-sampling'],
+        affectedTerms: ['environment-lighting-scale', 'env-map-sampling'],
       },
     };
   }
@@ -1254,25 +1254,6 @@ function pathReplayTargetRequiresLighting(field: string, material: MaterialSpec)
 function pathReplayLightingIssue(
   scene: Scene,
 ): { message: string; details: Record<string, string | number | readonly string[]> } | null {
-  const environmentKind = scene.environment?.kind ?? 'none';
-  const environmentIntensity =
-    scene.environment != null && 'intensity' in scene.environment
-      ? scene.environment.intensity
-      : undefined;
-  const environmentContributes =
-    environmentKind !== 'none' &&
-    (typeof environmentIntensity !== 'number' ||
-      !Number.isFinite(environmentIntensity) ||
-      Math.abs(environmentIntensity) > 1e-12);
-  if (environmentContributes) {
-    return {
-      message: `environment kind "${environmentKind}" is not replayed by the adjoint direct-light pass`,
-      details: {
-        environmentKind,
-        ...(typeof environmentIntensity === 'number' ? { environmentIntensity } : {}),
-      },
-    };
-  }
   const unsupported = (scene.emitters as unknown as ReadonlyArray<{
     readonly id: string;
     readonly kind: string;

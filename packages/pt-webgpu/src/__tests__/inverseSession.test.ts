@@ -2012,7 +2012,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('degrades to finite-difference when scene lighting is outside the adjoint pass scope', () => {
+  it('keeps material path-replay when a contributing HDRI environment is the direct-light source', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2024,10 +2024,9 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-lighting',
-      details: expect.objectContaining({ environmentKind: 'hdri' }),
     }));
     session.dispose();
   });

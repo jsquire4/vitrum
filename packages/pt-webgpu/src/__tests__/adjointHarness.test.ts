@@ -167,6 +167,11 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let su = sqrt(r1)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('let center = (a + b + c) * (1.0 / 3.0)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('mr.w <= 0.5 && anyHit');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(20) var<storage, read>       environmentMapTexels: array<vec4f>');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(21) var<storage, read>       environmentMapCdf: array<f32>');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointEnvironmentImportance');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let envSample = sampleAdjointEnvironmentImportance(&rng)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let Li = envSample.value / max(envSample.pdf, 1e-8)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let descKind = d.w & 255u');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('targetSlot >= d.x + descCount');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_MESH}u`);
@@ -267,8 +272,8 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * attenuation)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * softness * attenuation)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * areaFactor)');
-    // The UBO is mat4 + vec4 + 3×uvec4 = 128 bytes; the field codes are stable.
-    expect(ADJOINT_PARAMS_UBO_BYTES).toBe(128);
+    // The UBO is mat4 + vec4 + 3×uvec4 + env uvec4 + env vec4 = 160 bytes; field codes are stable.
+    expect(ADJOINT_PARAMS_UBO_BYTES).toBe(160);
     expect(ADJOINT_FIELD_BASECOLOR).toBe(0);
     expect(ADJOINT_FIELD_ROUGHNESS).toBe(1);
     expect(ADJOINT_FIELD_EMISSIVE).toBe(2);
