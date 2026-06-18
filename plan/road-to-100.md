@@ -585,6 +585,10 @@ buckets that the A–D framing was missing:**
   concentric-disc map's quadrant anchors, unit-disc bound, radial area law, and
   signed WGSL divisions; this fixed the full/lite/adjoint disc-area two-quadrant
   sign bug that the old SHA/string pins could not see.
+  `spectralTransportInvariant.test.ts` now independently pins
+  `activeLayerWeightRgb` pass-through, spectral luminance-collapse, and
+  negative-luminance clamp behavior, replacing the old material-layer
+  string-only proof with executable oracle coverage.
   `pt-webgl2`'s `uploadGapGuard.test.ts` now pins the environment upload path:
   `environment:'none'` drives both `envMapInfo.totalSum` and
   `environmentIntensity` to zero, while a raw HDRI scene drives them positive.

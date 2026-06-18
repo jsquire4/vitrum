@@ -37,6 +37,7 @@ import {
   CIE_LAMBDA_MIN,
   CIE_LAMBDA_STEP,
 } from '@vitrum/shared-samplers';
+import { PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
 
 // ── Mirrors of the WGSL spectral helpers (material.wgsl.ts) ──────────────────
 
@@ -82,6 +83,39 @@ function spectralEmissionAtHero(rgb: readonly [number, number, number], lambdaNm
   const wSum = Math.max(wR + wG + wB, 1e-6);
   const chroma = (rgb[0] * wR + rgb[1] * wG + rgb[2] * wB) / wSum;
   return chroma * heroSampleD65Normalised(lambdaNm);
+}
+
+/** activeLayerWeightRgb — independent CPU oracle for the WGSL layer weight helper. */
+function activeLayerWeightRgb(
+  layerRgb: readonly [number, number, number],
+  lambdaNm: number,
+  spectralEnabled: boolean,
+): [number, number, number] {
+  if (!spectralEnabled) {
+    return [layerRgb[0], layerRgb[1], layerRgb[2]];
+  }
+  const lum = Math.max(0.2126 * layerRgb[0] + 0.7152 * layerRgb[1] + 0.0722 * layerRgb[2], 0);
+  const [r, g, b] = wavelengthToRGB(lambdaNm, lum, 1.0);
+  return [r, g, b];
+}
+
+function extractFunctionBody(src: string, name: string): string {
+  const start = src.indexOf(`fn ${name}`);
+  expect(start, `${name} exists`).toBeGreaterThanOrEqual(0);
+  const open = src.indexOf('{', start);
+  expect(open, `${name} body opens`).toBeGreaterThanOrEqual(0);
+  let depth = 0;
+  for (let i = open; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return src.slice(open + 1, i);
+      }
+    }
+  }
+  throw new Error(`${name} body did not close`);
 }
 
 /** evalJakobHanikaSpectrum — WGSL mirror (== evaluateSpectrum in shared-samplers). */
@@ -251,5 +285,40 @@ describe('A3 — spectral transport invariant harness (CPU mirror)', () => {
     }
     lum /= count;
     expect(lum).toBeCloseTo(grey, 1); // recovers ~0.5 within round-trip tolerance
+  });
+
+  it('activeLayerWeightRgb passes RGB through when spectral is disabled', () => {
+    expect(activeLayerWeightRgb([0.8, 0.3, 0.1], 540, false)).toEqual([0.8, 0.3, 0.1]);
+  });
+
+  it('activeLayerWeightRgb collapses spectral layer throughput to Rec.709 luminance', () => {
+    const lambdaNm = 540;
+    const red: [number, number, number] = [1, 0, 0];
+    const sameLumGreen: [number, number, number] = [0, 0.2126 / 0.7152, 0];
+
+    const redWeight = activeLayerWeightRgb(red, lambdaNm, true);
+    const greenWeight = activeLayerWeightRgb(sameLumGreen, lambdaNm, true);
+    for (let i = 0; i < 3; i += 1) {
+      expect(redWeight[i]!).toBeCloseTo(greenWeight[i]!, 12);
+    }
+
+    const maxPassThroughDelta = Math.max(
+      Math.abs(redWeight[0] - red[0]),
+      Math.abs(redWeight[1] - red[1]),
+      Math.abs(redWeight[2] - red[2]),
+    );
+    expect(maxPassThroughDelta).toBeGreaterThan(0.05);
+  });
+
+  it('activeLayerWeightRgb clamps negative spectral layer luminance to black', () => {
+    expect(activeLayerWeightRgb([-1, -0.5, -0.25], 540, true)).toEqual([0, 0, 0]);
+  });
+
+  it('production WGSL keeps the active-layer helper on the oracle semantics', () => {
+    const body = extractFunctionBody(PT_WEBGPU_PATH_TRACE_MATERIAL_FUNCS_WGSL, 'activeLayerWeightRgb');
+    expect(body).toContain('if (!spectralEnabled)');
+    expect(body).toContain('return layerRgb;');
+    expect(body).toContain('let lum = max(luminance(layerRgb), 0.0);');
+    expect(body).toContain('return heroWavelengthToRgb(heroLambda, lum, 1.0);');
   });
 });
