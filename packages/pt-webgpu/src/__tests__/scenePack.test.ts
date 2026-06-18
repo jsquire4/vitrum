@@ -243,6 +243,37 @@ describe('buildPackedScene core packing', () => {
     ]);
   });
 
+  it('bakes primitive-constant COLOR_0 RGB into lite merged material baseColor', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'constant-colored',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          colors: new Float32Array([
+            0.5, 0.25, 1,
+            0.5, 0.25, 1,
+            0.5, 0.25, 1,
+          ]),
+          material: { baseColor: [0.8, 0.4, 0.2], roughness: 0.4, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(scene, { geometryMode: 'merged' });
+    expect(packed.materials[0]).toBeCloseTo(0.4);
+    expect(packed.materials[1]).toBeCloseTo(0.1);
+    expect(packed.materials[2]).toBeCloseTo(0.2);
+    expect(Array.from(packed.colors.slice(0, 12))).toEqual([
+      0.5, 0.25, 1, 1,
+      0.5, 0.25, 1, 1,
+      0.5, 0.25, 1, 1,
+    ]);
+  });
+
   it('packs lite merged geometry by baking instanced meshes into root-zero BLAS geometry', () => {
     const scene: Scene = {
       primitives: [{

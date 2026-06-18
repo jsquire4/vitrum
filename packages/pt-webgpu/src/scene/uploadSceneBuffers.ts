@@ -665,20 +665,19 @@ export function buildPackedScene(
         const merged = mergeWorldSpaceFromCore(scene, {
           positionStride: 4,
           splitMaterialsByCastShadow: true,
+          bakeConstantVertexColorIntoMaterial: true,
         });
         for (const material of merged.materials) {
           const withShadow = material as MaterialSpec & { readonly castShadow?: boolean };
           materials.push(...packMergedMaterial(withShadow));
           materialSpecs.push(withShadow);
         }
-        const colors = new Float32Array(merged.positions.length);
-        colors.fill(1);
         return {
           positions: merged.positions,
           normals: merged.normals,
           uvs: packMergedUvs(scene, merged),
           tangents: new Float32Array(merged.positions.length),
-          colors,
+          colors: merged.colors,
           indices: padTriangleIndicesToVec4(merged.indices),
           triMaterialIds: merged.triMaterialId,
           bvhNodes: merged.bvhNodes,

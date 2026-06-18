@@ -663,7 +663,7 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: setScene warns when authored COLOR_0 vertex colors would be dropped', async () => {
+  it('lite tier: setScene warns when non-constant COLOR_0 vertex colors would be dropped', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const engine = await createPTEngine_WebGPU({
@@ -695,9 +695,47 @@ describe('H12: lite-tier capabilities truth', () => {
         code: 'pt-webgpu.lite-unsupported-vertex-colors',
         details: expect.objectContaining({
           primitiveIds: ['colored'],
+          bakedWhen: 'constant-rgb-alpha-one',
+          requiredTier: 'full',
         }),
       }),
     ]));
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('lite tier: setScene does not warn for constant RGB COLOR_0 that can bake into baseColor', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'constant-colored',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          colors: new Float32Array([
+            0.5, 0.25, 1,
+            0.5, 0.25, 1,
+            0.5, 0.25, 1,
+          ]),
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw — expected */
+    }
+    expect(structured.some((w) => w.code === 'pt-webgpu.lite-unsupported-vertex-colors')).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });

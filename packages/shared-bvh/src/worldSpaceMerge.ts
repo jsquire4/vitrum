@@ -180,6 +180,15 @@ export interface WorldSpaceMergeOptions {
    * remain distinct when one primitive disables shadow casting.
    */
   readonly splitMaterialsByCastShadow?: boolean;
+
+  /**
+   * Fold a primitive-wide constant vertex RGB multiplier into its material
+   * `baseColor` while preserving arbitrary/non-uniform vertex colors in the
+   * merged color stream. Compatibility-tier renderers can use this to render
+   * the common "one COLOR_0 tint for the whole primitive" case without adding a
+   * per-vertex color binding.
+   */
+  readonly bakeConstantVertexColorIntoMaterial?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -204,6 +213,55 @@ function isMeshLike(primitive: ScenePrimitive): primitive is MeshLikePrimitive {
  *  filter ("any visible mesh with a position attribute"). */
 export const DEFAULT_MERGE_FILTER = (primitive: ScenePrimitive): boolean =>
   isMeshLike(primitive);
+
+function constantVertexRgbMultiplier(primitive: MeshLikePrimitive): readonly [number, number, number] | null {
+  const colors = primitive.colors;
+  if (colors == null || colors.length === 0) return null;
+  const vertexCount = Math.floor(primitive.positions.length / 3);
+  const stride = colors.length >= vertexCount * 4
+    ? 4
+    : colors.length >= vertexCount * 3
+      ? 3
+      : 0;
+  if (vertexCount === 0 || stride === 0) return null;
+  const r = colors[0] ?? 1;
+  const g = colors[1] ?? 1;
+  const b = colors[2] ?? 1;
+  const eps = 1e-6;
+  for (let i = 1; i < vertexCount; i += 1) {
+    const o = i * stride;
+    if (
+      Math.abs((colors[o] ?? 1) - r) > eps ||
+      Math.abs((colors[o + 1] ?? 1) - g) > eps ||
+      Math.abs((colors[o + 2] ?? 1) - b) > eps
+    ) {
+      return null;
+    }
+  }
+  return [r, g, b];
+}
+
+function bakeConstantVertexColorIntoMaterial(
+  material: MaterialSpec,
+  primitive: MeshLikePrimitive,
+): MaterialSpec {
+  const multiplier = constantVertexRgbMultiplier(primitive);
+  if (multiplier == null) return material;
+  const base = material.baseColor;
+  const baked: [number, number, number] = [
+    (base[0] ?? 0) * multiplier[0],
+    (base[1] ?? 0) * multiplier[1],
+    (base[2] ?? 0) * multiplier[2],
+  ];
+  if (
+    Math.abs(baked[0] - (base[0] ?? 0)) <= 1e-6 &&
+    Math.abs(baked[1] - (base[1] ?? 0)) <= 1e-6 &&
+    Math.abs(baked[2] - (base[2] ?? 0)) <= 1e-6
+  ) {
+    return material;
+  }
+  return { ...material, baseColor: baked };
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // World transforms — bit-for-bit mirrors of THREE / StaticGeometryGenerator
@@ -480,7 +538,9 @@ export function mergeWorldSpaceFromCore(
   const sigToSlot = new Map<string, number>();
 
   const resolveMaterialSlot = (primitive: MeshLikePrimitive): number => {
-    const mat = primitive.material;
+    const mat = opts.bakeConstantVertexColorIntoMaterial
+      ? bakeConstantVertexColorIntoMaterial(primitive.material, primitive)
+      : primitive.material;
     const castShadow = primitive.castShadow ?? true;
     const sig = opts.splitMaterialsByCastShadow
       ? `${materialSig(mat)}|castShadow=${castShadow ? 1 : 0}`

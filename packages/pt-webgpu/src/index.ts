@@ -255,11 +255,43 @@ const PT_WEBGPU_LITE_MATERIALS = Object.freeze({
   ),
 });
 
-function collectVertexColorPrimitiveIds(scene: Scene): string[] {
+function liteCanBakeVertexColors(primitive: ScenePrimitive): boolean {
+  const colors = (primitive as { readonly colors?: Float32Array }).colors;
+  const positions = (primitive as { readonly positions?: Float32Array }).positions;
+  if (colors == null || colors.length === 0) return true;
+  if (positions == null || positions.length === 0) return false;
+  const vertexCount = Math.floor(positions.length / 3);
+  const stride = colors.length >= vertexCount * 4
+    ? 4
+    : colors.length >= vertexCount * 3
+      ? 3
+      : 0;
+  if (vertexCount === 0 || stride === 0) return false;
+  const r = colors[0] ?? 1;
+  const g = colors[1] ?? 1;
+  const b = colors[2] ?? 1;
+  const eps = 1e-6;
+  for (let i = 0; i < vertexCount; i += 1) {
+    const o = i * stride;
+    if (
+      Math.abs((colors[o] ?? 1) - r) > eps ||
+      Math.abs((colors[o + 1] ?? 1) - g) > eps ||
+      Math.abs((colors[o + 2] ?? 1) - b) > eps
+    ) {
+      return false;
+    }
+    if (stride === 4 && Math.abs((colors[o + 3] ?? 1) - 1) > eps) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function collectLiteUnsupportedVertexColorPrimitiveIds(scene: Scene): string[] {
   const ids: string[] = [];
   for (const primitive of scene.primitives) {
     const colors = (primitive as { readonly colors?: Float32Array }).colors;
-    if (colors != null && colors.length > 0) ids.push(primitive.id);
+    if (colors != null && colors.length > 0 && !liteCanBakeVertexColors(primitive)) ids.push(primitive.id);
   }
   return ids.sort();
 }
@@ -1176,7 +1208,7 @@ class PTEngineWebGPU implements Engine {
       }
       // B12 follow-up — HDRI environments and all directional emitters are now
       // supported via texture packing; no first-directional truncation warning.
-      const vertexColorPrimitiveIds = collectVertexColorPrimitiveIds(scene);
+      const vertexColorPrimitiveIds = collectLiteUnsupportedVertexColorPrimitiveIds(scene);
       if (vertexColorPrimitiveIds.length > 0) {
         this.#warn({
           code: 'pt-webgpu.lite-unsupported-vertex-colors',
@@ -1185,9 +1217,13 @@ class PTEngineWebGPU implements Engine {
           method: 'setScene',
           message:
             `[vitrum/pt-webgpu] Lite tier: scene contains ${vertexColorPrimitiveIds.length} primitive(s) with ` +
-            'vertex colors (COLOR_0), but the lite shader layout omits the full-tier vertex-color binding. ' +
-            'Use the full tier to preserve authored vertex colors.',
-          details: { primitiveIds: vertexColorPrimitiveIds },
+            'non-constant or alpha-bearing vertex colors (COLOR_0). Constant RGB vertex colors are baked into ' +
+            'the lite material base color, but arbitrary COLOR_0 still needs the full-tier vertex-color binding.',
+          details: {
+            primitiveIds: vertexColorPrimitiveIds,
+            bakedWhen: 'constant-rgb-alpha-one',
+            requiredTier: 'full',
+          },
         });
       }
     }
