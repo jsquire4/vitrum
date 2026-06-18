@@ -117,6 +117,9 @@ export interface InverseEngineHooks {
 export interface InversePathReplayRenderContext {
   readonly bounces?: number;
   readonly spectral?: boolean;
+  readonly bdpt?: boolean;
+  readonly restirPtReuse?: boolean;
+  readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
 }
 
 /** One optimized parameter, located for the engine's adjoint scatter. */
@@ -619,6 +622,24 @@ function pathReplayRenderRegimeIssue(
     return {
       message: `forward baseline used ${context.bounces} bounces while the adjoint pass is single-bounce direct-light only`,
       details: { bounces: context.bounces, supportedBounces: 1 },
+    };
+  }
+  if (context.bdpt === true) {
+    return {
+      message: 'forward baseline used BDPT contributions that the scoped path-replay adjoint does not mirror',
+      details: { bdpt: true, unsupportedFeature: 'bdpt' },
+    };
+  }
+  if (context.restirPtReuse === true) {
+    return {
+      message: 'forward baseline used ReSTIR-PT reuse contributions that the scoped path-replay adjoint does not mirror',
+      details: { restirPtReuse: true, unsupportedFeature: 'restir-pt-reuse' },
+    };
+  }
+  if (context.causticStrategy != null && context.causticStrategy !== 'none') {
+    return {
+      message: `forward baseline used caustic strategy "${context.causticStrategy}" that the scoped path-replay adjoint does not mirror`,
+      details: { causticStrategy: context.causticStrategy, unsupportedFeature: 'caustic-strategy' },
     };
   }
   return null;

@@ -2037,6 +2037,9 @@ class PTEngineWebGPU implements Engine {
       getPathReplayRenderContext: () => ({
         bounces: this.#activeBounces,
         spectral: this.#spectralEnabled,
+        bdpt: this.#bdpt && this.#traceTier === 'full',
+        restirPtReuse: this.#restirPtReuse,
+        causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
       }),
       computeAdjointGradient: (req) => this.#computeAdjointGradient(req),
     };

@@ -760,6 +760,41 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  for (const [label, context, detail] of [
+    ['BDPT', { bounces: 1, spectral: false, bdpt: true }, { bdpt: true, unsupportedFeature: 'bdpt' }],
+    [
+      'ReSTIR-PT reuse',
+      { bounces: 1, spectral: false, restirPtReuse: true },
+      { restirPtReuse: true, unsupportedFeature: 'restir-pt-reuse' },
+    ],
+    [
+      'MNEE caustics',
+      { bounces: 1, spectral: false, causticStrategy: 'manifold-nee' as const },
+      { causticStrategy: 'manifold-nee', unsupportedFeature: 'caustic-strategy' },
+    ],
+    [
+      'SPPM caustics',
+      { bounces: 1, spectral: false, causticStrategy: 'photon-map' as const },
+      { causticStrategy: 'photon-map', unsupportedFeature: 'caustic-strategy' },
+    ],
+  ] as const) {
+    it(`degrades path-replay when the forward baseline used ${label}`, () => {
+      const fake = makeFakeEngine();
+      const hooks: InverseEngineHooks = {
+        ...fake.hooks,
+        getPathReplayRenderContext: () => context,
+        computeAdjointGradient: async () => new Float32Array(3),
+      };
+      const session = new PtWebgpuInverseSession(hooks, eligibleOpts());
+      expect(session.method).toBe('finite-difference');
+      expect(session.diagnostics).toContainEqual(expect.objectContaining({
+        code: 'path-replay-unsupported-render-regime',
+        details: expect.objectContaining(detail),
+      }));
+      session.dispose();
+    });
+  }
+
   it('keeps path-replay for map-free unlit baseColor without requiring scene lights', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -1995,26 +2030,28 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
   });
 
   it.each([
-    ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility'],
-    ['opacity', { opacity: 0.75 }, 'path-replay-unsupported-visibility'],
-    ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport'],
-    ['anisotropy', { anisotropy: 0.25 }, 'path-replay-unsupported-material'],
-    ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }, 'path-replay-unsupported-normal'],
-    ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility'],
-    ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport'],
-    ['displacement map', { displacementMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-material'],
-    ['clearcoat normal map', { clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }, 'path-replay-unsupported-normal'],
-    ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }, 'path-replay-unsupported-transport'],
-    ['thin-film stack', { thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 180 }] } }, 'path-replay-unsupported-transport'],
+    ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility', 'visibility'],
+    ['opacity', { opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
+    ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport', 'transport'],
+    ['anisotropy', { anisotropy: 0.25 }, 'path-replay-unsupported-material', undefined],
+    ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }, 'path-replay-unsupported-normal', 'normal'],
+    ['bump map', { bumpMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 0.5, 1]) } } }, 'path-replay-unsupported-normal', 'normal'],
+    ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
+    ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
+    ['thickness map', { thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
+    ['displacement map', { displacementMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-material', 'geometry'],
+    ['clearcoat normal map', { clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }, 'path-replay-unsupported-normal', 'normal'],
+    ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }, 'path-replay-unsupported-transport', 'transport'],
+    ['thin-film stack', { thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 180 }] } }, 'path-replay-unsupported-transport', 'transport'],
     ['spectral attenuation', {
       spectralAttenuation: {
         wavelengthStart: 380,
         wavelengthEnd: 700,
         values: new Float32Array([0.1, 0.2, 0.3]),
       },
-    }, 'path-replay-unsupported-transport'],
-    ['volume scattering', { scatteringCoefficientRGB: [0.1, 0.2, 0.3] as [number, number, number] }, 'path-replay-unsupported-transport'],
-  ])('degrades to finite-difference for path-replay material with %s', (_label, patch, expectedCode) => {
+    }, 'path-replay-unsupported-transport', 'transport'],
+    ['volume scattering', { scatteringCoefficientRGB: [0.1, 0.2, 0.3] as [number, number, number] }, 'path-replay-unsupported-transport', 'transport'],
+  ])('degrades to finite-difference for path-replay material with %s', (_label, patch, expectedCode, expectedReason) => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2034,6 +2071,9 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
       code: expectedCode,
       path: 'materials.panel.baseColor',
+      ...(expectedReason != null
+        ? { details: expect.objectContaining({ finiteDifferenceReason: expectedReason }) }
+        : {}),
     }));
     session.dispose();
   });
