@@ -272,8 +272,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-18: BDPT bounce-0 emitter vertices mirror
     // castShadow:false into row 4.x so eye↔light connections can skip the
     // occlusion ray for that emitter endpoint.
-    expect(digest).toBe('51b97b8124d986c59a5e0d59e37f0a5a08c92838f5cc9e8b0128ed30c4c566a0');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(385746);
+    // Re-pinned 2026-06-18: point-light MNEE caustics decode pointLights
+    // extra.z castShadowDisabled and skip only light-leg visibility for
+    // castShadow:false point emitters.
+    expect(digest).toBe('bc93e7150d7aea523faf322ce6bb41507c8a44cea71828e9c3750044d42ca293');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(386117);
   });
 });
 

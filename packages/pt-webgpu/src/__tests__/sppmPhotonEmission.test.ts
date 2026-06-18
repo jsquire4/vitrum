@@ -26,6 +26,18 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('sradW.rgb * solidAngle * softness * lightSelectInvPdf');
   });
 
+  it('does not claim faithful castShadow:false source treatment for photon-map emitters', () => {
+    // Unlike direct NEE or MNEE's light-leg visibility, SPPM launches forward
+    // photon paths from sources. Matching no-shadow emitter semantics needs a
+    // defined photon-visibility model, not a local lane check. This pin keeps
+    // the promise ledger's remaining pt-webgpu emitterCastShadow approximation
+    // honest until that model exists.
+    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('castShadowDisabled');
+    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('pointLights[pointBase + 2u].z');
+    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('rectAreaLights[rectBase].w > 0.5');
+    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('meshAreaLights[meshBase + 3u].w > 0.5');
+  });
+
   it('uses the packed N-directional RGB records instead of the legacy scalar lightDir lane', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('var availableLightCount = params.directionalLightCount;');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('for (var dirIdx = 0u; dirIdx < params.directionalLightCount; dirIdx = dirIdx + 1u)');

@@ -470,6 +470,7 @@ fn pointLightReflectionCaustic(
     let lbase = li * POINT_LIGHT_VEC4_STRIDE;
     let lightPos = pointLights[lbase].xyz;
     let lightI = pointLights[lbase + 1u].rgb;
+    let pointShadowDisabled = pointLights[lbase + 2u].z > 0.5;
     if (max(lightI.r, max(lightI.g, lightI.b)) <= 1e-6) { continue; }
     var found = false;
     for (var s = 0u; s < 16u; s = s + 1u) {
@@ -540,26 +541,28 @@ fn pointLightReflectionCaustic(
       // REAL (non-mirror) occluder. v1: a single reflector, so stepping past its
       // own facets is correct; a SECOND distinct mirror between v and the light is
       // a Phase-I.1 multi-reflector follow-up.
-      let toLight = lightPos - v;
-      let distB = length(toLight);
-      let dirB = toLight / max(distB, 1e-8);
-      var legBOrigin = v + dirB * 1e-3;
-      var legBRemaining = distB - 1e-3;
-      var legBBlocked = false;
-      for (var stepB = 0u; stepB < 4u; stepB = stepB + 1u) {
-        let segRay = Ray(legBOrigin, dirB);
-        let segHit = traceClosest(segRay, 1e-4, max(legBRemaining - 1e-3, 1e-4));
-        if (!segHit.didHit) { break; } // clear to the light
-        let segMat = decodeMaterial(hitMaterialId(segHit));
-        let isMirror = segMat.roughness <= REFLECT_ROUGH_MAX && segMat.metallic >= REFLECT_METAL_MIN;
-        if (!isMirror) { legBBlocked = true; break; } // a real occluder shadows the connection
-        // Mirror self-facet: advance just past it and keep testing toward the light.
-        let advance = segHit.dist + 1e-3;
-        legBOrigin = legBOrigin + dirB * advance;
-        legBRemaining = legBRemaining - advance;
-        if (legBRemaining <= 1e-3) { break; }
+      if (!pointShadowDisabled) {
+        let toLight = lightPos - v;
+        let distB = length(toLight);
+        let dirB = toLight / max(distB, 1e-8);
+        var legBOrigin = v + dirB * 1e-3;
+        var legBRemaining = distB - 1e-3;
+        var legBBlocked = false;
+        for (var stepB = 0u; stepB < 4u; stepB = stepB + 1u) {
+          let segRay = Ray(legBOrigin, dirB);
+          let segHit = traceClosest(segRay, 1e-4, max(legBRemaining - 1e-3, 1e-4));
+          if (!segHit.didHit) { break; } // clear to the light
+          let segMat = decodeMaterial(hitMaterialId(segHit));
+          let isMirror = segMat.roughness <= REFLECT_ROUGH_MAX && segMat.metallic >= REFLECT_METAL_MIN;
+          if (!isMirror) { legBBlocked = true; break; } // a real occluder shadows the connection
+          // Mirror self-facet: advance just past it and keep testing toward the light.
+          let advance = segHit.dist + 1e-3;
+          legBOrigin = legBOrigin + dirB * advance;
+          legBRemaining = legBRemaining - advance;
+          if (legBRemaining <= 1e-3) { break; }
+        }
+        if (legBBlocked) { continue; }
       }
-      if (legBBlocked) { continue; }
       // DELTA connection: throughput · f_r · E (E already carries cosθ_recv).
       let fr = evaluateBrdfFull(
         baseColor, roughness, metallic, normal, wo, wi,
@@ -684,6 +687,7 @@ fn pointLightRefractionCaustic(
     let lbase = li * POINT_LIGHT_VEC4_STRIDE;
     let lightPos = pointLights[lbase].xyz;
     let lightI = pointLights[lbase + 1u].rgb;
+    let pointShadowDisabled = pointLights[lbase + 2u].z > 0.5;
     if (max(lightI.r, max(lightI.g, lightI.b)) <= 1e-6) { continue; }
     var found = false;
     for (var s = 0u; s < 16u; s = s + 1u) {
@@ -802,10 +806,12 @@ fn pointLightRefractionCaustic(
       let distA = length(v - hitPos);
       if (causticTransmissiveLegBlocked(hitPos + normal * 1e-3, wi, distA - 2e-3)) { continue; }
       // leg B: v → light unobstructed, stepping through interface facets.
-      let toLight = lightPos - v;
-      let distB = length(toLight);
-      let dirB = toLight / max(distB, 1e-8);
-      if (causticTransmissiveLegBlocked(v + dirB * 1e-3, dirB, distB - 2e-3)) { continue; }
+      if (!pointShadowDisabled) {
+        let toLight = lightPos - v;
+        let distB = length(toLight);
+        let dirB = toLight / max(distB, 1e-8);
+        if (causticTransmissiveLegBlocked(v + dirB * 1e-3, dirB, distB - 2e-3)) { continue; }
+      }
       // DELTA connection: throughput · f_r · E. No MIS / no pdf division (a
       // point-light specular refraction caustic is unreachable by any other
       // technique, exactly like the reflection case).
@@ -922,6 +928,7 @@ fn pointLightGlassSlabCaustic(
     let lbase = li * POINT_LIGHT_VEC4_STRIDE;
     let lightPos = pointLights[lbase].xyz;
     let lightI = pointLights[lbase + 1u].rgb;
+    let pointShadowDisabled = pointLights[lbase + 2u].z > 0.5;
     if (max(lightI.r, max(lightI.g, lightI.b)) <= 1e-6) { continue; }
     var found = false;
     for (var s = 0u; s < 16u; s = s + 1u) {
@@ -1019,10 +1026,12 @@ fn pointLightGlassSlabCaustic(
       if (causticTransmissiveLegBlocked(hitPos + normal * 1e-3, wi, distA - 2e-3)) { continue; }
       // leg B: v1 → light unobstructed (the v1→v2 leg is interior to the glass — the
       // connection itself — so only the two EXTERNAL legs need visibility).
-      let toLight = lightPos - v1;
-      let distB = length(toLight);
-      let dirB = toLight / max(distB, 1e-8);
-      if (causticTransmissiveLegBlocked(v1 + dirB * 1e-3, dirB, distB - 2e-3)) { continue; }
+      if (!pointShadowDisabled) {
+        let toLight = lightPos - v1;
+        let distB = length(toLight);
+        let dirB = toLight / max(distB, 1e-8);
+        if (causticTransmissiveLegBlocked(v1 + dirB * 1e-3, dirB, distB - 2e-3)) { continue; }
+      }
       // DELTA connection: throughput · f_r · E. No MIS / no pdf division (a point-light
       // 2-vertex specular caustic is unreachable by any other technique).
       let fr = evaluateBrdfFull(

@@ -120,6 +120,27 @@ describe('MNEE glass-slab caustic — kernel wiring (Phase I.1 sibling)', () => 
       'if (causticSegmentCrossesTransmissive(lightPos + lvDir * 1e-3, lvDir, lvDist - 2e-3)) { continue; }',
     );
   });
+
+  it('honors point-light castShadow:false on MNEE light-leg visibility only', () => {
+    // SHADOW-01 follow-up: point-light MNEE had pointLights[lbase+2].z packed
+    // by emitterPacking.ts, but the three point-light caustic paths still always
+    // visibility-tested the light-side leg. Keep receiver/interface validity
+    // checks intact; skip only the leg from the specular vertex back to the
+    // point emitter when the emitter opted out of shadows.
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
+      'let pointShadowDisabled = pointLights[lbase + 2u].z > 0.5;',
+    );
+    expect(
+      (PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL.match(/let pointShadowDisabled = pointLights\[lbase \+ 2u\]\.z > 0\.5;/g) ?? [])
+        .length,
+    ).toBe(3);
+    expect(
+      (PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL.match(/if \(!pointShadowDisabled\) \{/g) ?? []).length,
+    ).toBe(3);
+    expect(PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL).toContain(
+      'if (causticSegmentCrossesTransmissive(lightPos + lvDir * 1e-3, lvDir, lvDist - 2e-3)) { continue; }',
+    );
+  });
 });
 
 describe('MNEE glass-slab caustic — trace-kernel composition', () => {

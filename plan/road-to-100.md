@@ -153,8 +153,14 @@
 > now mirror authored `castShadow:false` into the light-subpath payload, and
 > eye↔light connection visibility skips the occlusion ray for that emitter
 > endpoint. The pt-webgpu `emitterCastShadow` row remains approximate until
-> MNEE/SPPM caustic/source-treatment parity is source-closed or explicitly
-> demoted.
+> SPPM photon-map no-shadow source-treatment parity is source-closed or
+> explicitly demoted.
+> **2026-06-18 pt-webgpu MNEE shadow follow-up:** point-light MNEE reflection,
+> refraction, and glass-slab caustics now decode the packed point-light
+> `castShadow:false` lane and skip only the point-emitter light-leg visibility
+> test, matching the finite-area MNEE behavior while preserving receiver/interface
+> validity checks. The remaining pt-webgpu `emitterCastShadow` approximation is
+> now specifically the SPPM photon-map no-shadow source-treatment tail.
 > **2026-06-18 pt-webgl2 emitter shadow follow-up:** folded mesh-area emitter
 > materials now carry a dedicated shadow-disabled flag into the GLSL material
 > payload, and the ordinary forward emissive-hit MIS estimator skips those

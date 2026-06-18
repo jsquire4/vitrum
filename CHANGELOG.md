@@ -435,12 +435,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (pt-webgpu ReSTIR-PT emitter shadows, 2026-06-15)
 
-- **`@vitrum/pt-webgpu` ReSTIR-PT suffix direct-lighting `castShadow:false` parity:** the ReSTIR-PT producer now consumes packed point, spot, rect/disc, and mesh-area emitter shadow-disable lanes before firing suffix direct-lighting visibility rays. The ledger remains `approximate` because the flag-less directional UBO mirror, BDPT light subpath, and MNEE/SPPM caustic legs still shadow-test.
+- **`@vitrum/pt-webgpu` ReSTIR-PT / MNEE `castShadow:false` parity:** the ReSTIR-PT producer consumes packed point, spot, rect/disc, and mesh-area emitter shadow-disable lanes before firing suffix direct-lighting visibility rays. Follow-up closure now mirrors emitter shadow flags through BDPT bounce-0 endpoints and all point/finite-area MNEE light-leg visibility checks. The ledger remains `approximate` only for the off-default SPPM photon-map no-shadow source-treatment model.
 
 ### Fixed (pt-webgl2 mesh-area emitter shadows, 2026-06-15)
 
-- **`@vitrum/pt-webgl2` mesh-area `castShadow:false` NEE path:** mesh-area triangle-light slots now pack the emitter shadow-disable flag in `uMeshLights` s5.g, `sampleMeshAreaLight()` carries it through `LightRecord`, and the mesh-area next-event-estimation branch skips attenuation/occlusion for those lights just like analytic emitters. The promise ledger remains `approximate` for the separate forward emissive-hit residual.
-- **`@vitrum/pt-webgl2` BDPT emitter shadow metadata:** the BDPT light-subpath texture now has a fourth metadata row carrying emitter-endpoint `castShadowDisabled`, and BDPT direct connections to that endpoint skip visibility when the source light has `castShadow:false`. The ledger remains `approximate` only for the separate forward emissive-hit residual.
+- **`@vitrum/pt-webgl2` mesh-area `castShadow:false` NEE path:** mesh-area triangle-light slots now pack the emitter shadow-disable flag in `uMeshLights` s5.g, `sampleMeshAreaLight()` carries it through `LightRecord`, and the mesh-area next-event-estimation branch skips attenuation/occlusion for those lights just like analytic emitters. Follow-up closure added a folded mesh-emitter material flag so ordinary forward emissive-hit MIS skips shadow-disabled emitters while camera/specular-visible emission remains visible; the pt-webgl2 promise row is now native.
+- **`@vitrum/pt-webgl2` BDPT emitter shadow metadata:** the BDPT light-subpath texture now has a fourth metadata row carrying emitter-endpoint `castShadowDisabled`, and BDPT direct connections to that endpoint skip visibility when the source light has `castShadow:false`.
 
 ### Added (walkaround bump maps, 2026-06-15)
 
