@@ -204,6 +204,10 @@
 > rejection now emits structured
 > `walkaround-hybrid.import-gi-state-grid-mismatch` warnings with snapshot/current
 > layout details before returning `false`, instead of being console-only.
+> Same-day DDGI sun-dedup follow-up: when a host `opts.lights` sun is overridden
+> by a scene `directional` emitter, DDGI light sync now emits structured
+> `walkaround-hybrid.ddgi-host-sun-overridden` with the drop reason while still
+> keeping exactly one scene-authored DDGI sun.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import type { EngineWarning, Scene } from '@vitrum/core';
 import type { DDGI } from '../ddgi/DDGI.js';
 import type { WalkaroundGPUPipeline } from '../pipeline/WalkaroundGPUPipeline.js';
 import { syncDdgiFromCoreScene } from '../HybridEngineDdgiSync.js';
@@ -31,6 +31,58 @@ function sceneWithPointAndSpot(): Scene {
 }
 
 describe('syncDdgiFromCoreScene', () => {
+  it('routes host-sun override through structured warnings and keeps one DDGI sun', () => {
+    const scene: Scene = {
+      primitives: [],
+      emitters: [{
+        kind: 'directional',
+        id: 'scene-sun',
+        direction: [0, -1, 0],
+        color: [1, 1, 1],
+        intensity: 2,
+      }],
+      environment: { kind: 'none' },
+    };
+    const ddgi = {
+      setSunIntensityMultiplier: vi.fn(),
+      setLights: vi.fn(),
+      setEmitterTris: vi.fn(),
+    } as unknown as DDGI;
+    const pipeline = {
+      updateAnalyticLights: vi.fn(),
+    } as unknown as WalkaroundGPUPipeline;
+    const warnings: EngineWarning[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    syncDdgiFromCoreScene({
+      ddgi,
+      pipeline,
+      ctorLights: [{ kind: 'sun', on: true, color: { r: 10, g: 10, b: 10 }, intensity: 99 }],
+      primaryLightIntensity: 1,
+      onWarning: (warning) => warnings.push(warning),
+    }, scene);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatchObject({
+      code: 'walkaround-hybrid.ddgi-host-sun-overridden',
+      backend: 'walkaround-hybrid',
+      phase: 'setScene',
+      method: 'syncDdgiFromCoreScene',
+      details: {
+        fallback: 'drop-host-sun',
+        sourceOfTruth: 'scene-directional-emitter',
+      },
+    });
+    const merged = vi.mocked(ddgi.setLights).mock.calls[0]?.[0] ?? [];
+    expect(merged.filter((light) => light.kind === 'sun')).toHaveLength(1);
+    expect(merged[0]?.kind).toBe('sun');
+    if (merged[0]?.kind === 'sun') {
+      expect(merged[0].intensity).toBeCloseTo(2);
+    }
+    warnSpy.mockRestore();
+  });
+
   it('refreshes the analytic point/spot light upload path with the exact scene', () => {
     const scene = sceneWithPointAndSpot();
     const ddgi = {

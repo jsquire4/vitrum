@@ -27,7 +27,7 @@
  * H41/H18/B3 comment annotations: preserved at each call-site.
  */
 
-import type { Scene } from '@vitrum/core';
+import type { EngineWarning, Scene } from '@vitrum/core';
 import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
@@ -65,6 +65,8 @@ export interface SyncDdgiFromCoreSceneDeps {
   primaryLightDir?: readonly [number, number, number];
   /** TLAS primitive bindings from the active shared-BVH pack, when available. */
   tlasPrimitiveBindings?: readonly PrimitiveTlasBinding[];
+  /** Structured warning sink for light-sync fallbacks. */
+  onWarning?: (warning: EngineWarning) => void;
   /**
    * When true, only call `ddgi.setLights` if the scene contributes at least
    * one emitter (lifecycle init path). When false (default), always merge and
@@ -101,7 +103,11 @@ export function syncDdgiFromCoreScene(
     // De-dup the sun: if the scene contributes a directional→sun AND the host
     // passed an `opts.lights` sun, drop the host sun (scene wins) so DDGI
     // doesn't double-count the sun. See `mergeDDGILightsDedupSun`.
-    const mergedLights = mergeDDGILightsDedupSun(deps.ctorLights, ddgiSceneLights);
+    const mergedLights = mergeDDGILightsDedupSun(
+      deps.ctorLights,
+      ddgiSceneLights,
+      deps.onWarning != null ? { onWarning: deps.onWarning } : {},
+    );
     deps.ddgi.setLights(
       deps.primaryLightDir != null
         ? orientDdgiSunLights(mergedLights, deps.primaryLightDir)

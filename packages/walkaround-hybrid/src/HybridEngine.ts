@@ -1691,6 +1691,7 @@ export class HybridEngine implements Engine {
       ctorLights: this._ctorLights,
       primaryLightIntensity: this._primaryLightIntensity,
       primaryLightDir: this._primaryLightDir,
+      onWarning: (warning) => this._warn(warning),
       ...(this._bvhBuffers?.bvhMode === 'tlas'
         ? { tlasPrimitiveBindings: this._bvhBuffers.primitiveTlasBindings }
         : {}),
@@ -2703,6 +2704,7 @@ export class HybridEngine implements Engine {
       rollbackBvh:            ()    => { self._bvhBuffers = null; },
       setState:               (s)   => { self._state = s; },
       reportError:            (e)   => { self._emitError(e); },
+      reportWarning:          (w)   => { self._warn(w); },
       teardownPipeline:       ()    => { self._teardownPipeline(); },
       disposeDdgi:            ()    => { self._ddgi.dispose(); },
 

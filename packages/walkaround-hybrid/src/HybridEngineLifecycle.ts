@@ -51,7 +51,7 @@ import type { ModelWeights } from './neural/weights.js';
 import type { DDGI } from './ddgi/DDGI.js';
 import type { DDGILight } from './ddgi/types.js';
 import { syncDdgiFromCoreScene } from './HybridEngineDdgiSync.js';
-import type { EngineError, Scene } from '@vitrum/core';
+import type { EngineError, EngineWarning, Scene } from '@vitrum/core';
 
 /**
  * Opaque back-reference into the engine. The coordinator only touches
@@ -146,6 +146,8 @@ export interface PipelineInitHost {
   setState(state: 'initializing' | 'ready' | 'error' | 'disposed'): void;
   /** Route async lifecycle failures through the engine's programmatic error channel. */
   reportError(error: EngineError): void;
+  /** Route async lifecycle warnings through the engine's programmatic warning channel. */
+  reportWarning(warning: EngineWarning): void;
   /** Engine's synchronous teardown — releases pipeline + BVH + traversal
    *  scene currently held on the engine. Called from the deferred
    *  teardown path inside the coordinator's finally block. */
@@ -537,6 +539,7 @@ export class PipelineInitCoordinator {
           pipeline,
           ctorLights: host.ctorLights,
           primaryLightIntensity: host.primaryLightIntensity,
+          onWarning: (warning) => host.reportWarning(warning),
           setLightsConditional: true,
           ...(bvhPublished.bvhMode === 'tlas'
             ? { tlasPrimitiveBindings: bvhPublished.primitiveTlasBindings }
@@ -641,6 +644,7 @@ function errorMessage(err: unknown): string {
 export function mergeDDGILightsDedupSun(
   ctorLights: readonly DDGILight[],
   sceneLights: readonly DDGILight[],
+  options: { readonly onWarning?: (warning: EngineWarning) => void } = {},
 ): DDGILight[] {
   const sceneHasSun = sceneLights.some((l) => l.kind === 'sun');
   if (!sceneHasSun) {
@@ -656,7 +660,7 @@ export function mergeDDGILightsDedupSun(
     keptCtor.push(l);
   }
   if (droppedHostSun) {
-    warnHostSunOverriddenOnce();
+    warnHostSunOverriddenOnce(options.onWarning);
   }
   return [...keptCtor, ...sceneLights];
 }
@@ -665,15 +669,33 @@ export function mergeDDGILightsDedupSun(
  *  of the scene-derived directional. Module-level latch so a per-frame
  *  re-sync can't spam the console. */
 let _warnedHostSunOverridden = false;
-function warnHostSunOverriddenOnce(): void {
+function warnHostSunOverriddenOnce(onWarning: ((warning: EngineWarning) => void) | undefined): void {
   if (_warnedHostSunOverridden) return;
   _warnedHostSunOverridden = true;
-  console.warn(
-    '[HybridEngine] Both a host-supplied `opts.lights` sun and a scene ' +
+  const warning: EngineWarning = {
+    code: 'walkaround-hybrid.ddgi-host-sun-overridden',
+    backend: 'walkaround-hybrid',
+    phase: 'setScene',
+    method: 'syncDdgiFromCoreScene',
+    message:
+      '[HybridEngine] Both a host-supplied `opts.lights` sun and a scene ' +
       '`directional` emitter were present. The scene directional is the ' +
       'physical source of truth and takes precedence; the host-supplied sun ' +
       'was dropped to avoid double-counting it in DDGI. Remove the `sun` from ' +
       '`opts.lights` (or the `directional` emitter from the scene) to silence ' +
       'this warning.',
-  );
+    details: {
+      fallback: 'drop-host-sun',
+      sourceOfTruth: 'scene-directional-emitter',
+    },
+  };
+  if (onWarning) {
+    try {
+      onWarning(warning);
+    } catch {
+      // Host warning callbacks must not break DDGI light sync.
+    }
+    return;
+  }
+  console.warn(warning.message);
 }
