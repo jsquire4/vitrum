@@ -1,8 +1,8 @@
 # Hardware (GPU) Validation Needs — vitrum
 
-**Audience:** an agent/engineer on a machine with a **real hardware WebGPU adapter** (Chrome 120+ on a discrete GPU, or any host where `chrome://gpu` shows hardware-backed WebGPU). The dev box this was authored on is **WSL2 with SwiftShader only**, which cannot validate any of the items below.
+**Audience:** an agent/engineer on a machine with a **real browser-backed hardware WebGPU/WebGL2 adapter** (Chrome 120+ on a discrete GPU, or any host where `chrome://gpu` shows hardware-backed WebGPU). This file was originally authored when the WSL2 dev box only exposed SwiftShader to browser captures. The current WSL setup can validate many native WebGPU lanes through lavapipe and dzn/RTX-4090 smoke/proof artifacts, but browser WebGL2 rows, real-browser WebGPU timing, cross-vendor coverage, and production learned-system quality still require the validation lanes below.
 
-This file lists every change from the 2026-05-28 complexity-remediation sweep (and its follow-ups) whose **correctness is already pinned by unit tests + code audits** but whose **visual / GPU-runtime confirmation could not be run in WSL**. Each item has: what changed, why it needs a GPU, the test scene, the expected delta, acceptance criteria, and the exact commands.
+This file lists changes from the 2026-05-28 complexity-remediation sweep (and its follow-ups) whose **correctness is already pinned by unit tests + code audits** but whose **visual / GPU-runtime confirmation** needs either a stronger adapter than browser SwiftShader, a real browser/WebGL2 path, or broader cross-host evidence. Each item has: what changed, why it needs a GPU, the test scene, the expected delta, acceptance criteria, and the exact commands.
 
 ---
 

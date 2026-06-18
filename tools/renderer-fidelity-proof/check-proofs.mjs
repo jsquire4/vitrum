@@ -7,6 +7,7 @@ const MATRIX_PATH = "plan/renderer-fidelity-matrix.md";
 const PLAYBOOK_PATH = "plan/fidelity-promotion-playbook.md";
 const README_PATH = "README.md";
 const ARCHITECTURE_PATH = "plan/library-architecture.md";
+const HARDWARE_VALIDATION_PATH = "HARDWARE-VALIDATION-NEEDS.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
 
 const PT_WEBGPU_SUPPORTED_ROWS = [
@@ -206,6 +207,7 @@ const matrix = await readText(MATRIX_PATH);
 const playbook = await readText(PLAYBOOK_PATH);
 const readme = await readText(README_PATH);
 const architecture = await readText(ARCHITECTURE_PATH);
+const hardwareValidation = await readText(HARDWARE_VALIDATION_PATH);
 const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
 
 for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
@@ -254,6 +256,10 @@ if (architecture.includes("experimental backend, evolving toward Phase 7 goals")
 }
 if (!architecture.includes("peer WebGPU PT backend; row-level fidelity tiers")) {
   fail("library architecture must describe pt-webgpu with row-level fidelity tiers");
+}
+if (hardwareValidation.includes("WSL2 with SwiftShader only") ||
+    hardwareValidation.includes("cannot validate any of the items below")) {
+  fail("hardware validation doc still contains the stale SwiftShader-only all-blocked premise");
 }
 
 console.log(
