@@ -1568,6 +1568,30 @@ describe('texture info mapping', () => {
         textureIndex: 0,
         imageIndex: 99,
       }),
+      expect.objectContaining({
+        code: 'material-texture-unresolved',
+        path: 'materials[0].normalTexture',
+        materialIndex: 0,
+        textureIndex: 0,
+      }),
+    ]));
+  });
+
+  it('surfaces material texture infos that reference missing texture indices', async () => {
+    const { gltf, buffers } = makeUv1NormalMappedTriangleGltf({ normalTexCoord: 0, includeUv0: true });
+    gltf.materials![0]!.normalTexture = { index: 99 };
+
+    const { diagnostics, scene, warnings } = await gltfToScene(gltf, { buffers });
+
+    expect((scene.primitives[0] as MeshPrimitive).material.normalMap).toBeUndefined();
+    expect(warnings.some((warning) => warning.includes('missing texture index 99'))).toBe(true);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'material-texture-not-found',
+        path: 'materials[0].normalTexture.index',
+        materialIndex: 0,
+        textureIndex: 99,
+      }),
     ]));
   });
 

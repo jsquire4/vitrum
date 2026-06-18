@@ -2584,6 +2584,24 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('rejects missing material texture indices in reject-degraded mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineNormalMappedGltf();
+    gltf.materials![0]!.normalTexture = { index: 99 };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine,
+    })).rejects.toThrow(
+      'import:material-texture-not-found=approximate at materials[0].normalTexture.index',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('rejects ignored high-UV material texture diagnostics in reject-degraded mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineNormalMappedGltf({ texCoord: 2 });
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
