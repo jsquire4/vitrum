@@ -138,14 +138,18 @@ describe('composeTraceGlsl', () => {
     expect(connectionDef).toBeGreaterThanOrEqual(0);
     expect(connectionDef).toBeLessThan(main);
     expect(subpathDef).toBeLessThan(main);
-    expect(bdptSrc).toContain(
-      'bool bdptIsVisible( vec3 eyePos, vec3 lightPos, RenderState state, bool skipOcclusion )',
-    );
-    expect(bdptSrc).toContain('if ( skipOcclusion ) return true;');
+    expect(bdptSrc).toContain('bool bdptVisibilityAttenuation(');
+    expect(bdptSrc).toContain('out vec3 attenColor');
+    expect(bdptSrc).toContain('attenColor = vec3( 1.0 );');
+    expect(bdptSrc).toContain('bool occluded = attenuateHit( state, shadowRay, len - RAY_OFFSET, attenColor );');
     expect(bdptSrc).toContain('vec4 lv3 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 3 ), 0 );');
     expect(bdptSrc).toContain('vec4 lv4 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 4 ), 0 );');
     expect(bdptSrc).toContain('bool  lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lightMatId < 0.0 && lv4.x > 0.5;');
-    expect(bdptSrc).toContain('bdptIsVisible( eyePos, lightPos, eyeState, lightEmitterCastShadowDisabled )');
+    expect(bdptSrc).toContain('vec3 bdptVisibilityColor;');
+    expect(bdptSrc).toContain('bdptVisibilityAttenuation(');
+    expect(bdptSrc).toContain('lightEmitterCastShadowDisabled,');
+    expect(bdptSrc).toContain('bdptVisibilityColor');
+    expect(bdptSrc).toContain('vec3 contribution = bdptVisibilityColor * lightThroughput * lightBsdfCosTheta * gTerm * eyeBsdfCosTheta * misW;');
     expect(bdptSrc).toContain('ScatterRecord scatterRec = bsdfSample( woAtPrev, prevSurf, 550.0 );');
     expect(bdptSrc).toContain('lightBsdfPdfToEye = bsdfResult( lightWoPrev, -connDir, lightSurf, eyeState.wavelength, lightBsdfCosTheta );');
     expect(bdptSrc).toContain('gBdptVertex4 = bdptSurfacePayload( scatterHit );');

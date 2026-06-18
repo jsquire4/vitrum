@@ -63,7 +63,14 @@ export const bdpt_connection = /* glsl */`
 	}
 
 	// ── Visibility test ──────────────────────────────────────────────────────
-	bool bdptIsVisible( vec3 eyePos, vec3 lightPos, RenderState state, bool skipOcclusion ) {
+	bool bdptVisibilityAttenuation(
+		vec3 eyePos,
+		vec3 lightPos,
+		RenderState state,
+		bool skipOcclusion,
+		out vec3 attenColor
+	) {
+		attenColor = vec3( 1.0 );
 		if ( skipOcclusion ) return true;
 		vec3 dir  = lightPos - eyePos;
 		float len = length( dir );
@@ -71,7 +78,6 @@ export const bdpt_connection = /* glsl */`
 		Ray shadowRay;
 		shadowRay.origin    = eyePos;
 		shadowRay.direction = dir / len;
-		vec3 attenColor;
 		bool occluded = attenuateHit( state, shadowRay, len - RAY_OFFSET, attenColor );
 		return ! occluded;
 	}
@@ -236,7 +242,16 @@ export const bdpt_connection = /* glsl */`
 
 		float gTerm = bdptGeometricTerm( eyePos, eyeNormal, lightPos, lightNormal );
 		if ( gTerm <= 0.0 ) return vec3( 0.0 );
-		if ( ! bdptIsVisible( eyePos, lightPos, eyeState, lightEmitterCastShadowDisabled ) ) return vec3( 0.0 );
+		vec3 bdptVisibilityColor;
+		if (
+			! bdptVisibilityAttenuation(
+				eyePos,
+				lightPos,
+				eyeState,
+				lightEmitterCastShadowDisabled,
+				bdptVisibilityColor
+			)
+		) return vec3( 0.0 );
 
 		// eye BSDF x cos(theta) toward the light. bsdfResult writes BSDF*cos to
 		// eyeBsdfColor and returns the directional PDF separately.
@@ -308,7 +323,7 @@ export const bdpt_connection = /* glsl */`
 		);
 		if ( misW <= 0.0 ) return vec3( 0.0 );
 
-		vec3 contribution = lightThroughput * lightBsdfCosTheta * gTerm * eyeBsdfCosTheta * misW;
+		vec3 contribution = bdptVisibilityColor * lightThroughput * lightBsdfCosTheta * gTerm * eyeBsdfCosTheta * misW;
 		contribution *= eyeThroughput;
 		if ( any( isnan( contribution ) ) || any( isinf( contribution ) ) ) {
 			return vec3( 0.0 );
