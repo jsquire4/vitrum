@@ -704,8 +704,9 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(fallbackWarnings[0]?.details).toEqual({
         primitiveId: 'tri',
         fields: ['colors'],
-        fallbackReason: 'geometry-bvh-texture-rebuild',
-        nativePatchMissing: 'targeted-geometry-bvh-refit',
+        fallbackReason: 'primitive-scene-texture-repack',
+        nativePatchMissing: 'targeted-primitive-layout-or-analytic-update',
+        fullUploadFields: ['colors'],
       });
       expect(createTexture.mock.calls.length - initialTextureUploads).toBe(8);
     } finally {

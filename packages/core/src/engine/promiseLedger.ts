@@ -822,10 +822,11 @@ const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
  *  texture without rebuilding the merged BVH.
  *  Geometry/TLAS content edits still fallback-rebuild: transform/positions/
  *  animation patches rebuild the WebGL2 BVH/attribute geometry textures, while
- *  preserving unrelated material/light/environment/atlas textures; topology
- *  add/remove still repacks the full scene. Resize is native: it reallocates
- *  render targets and resets accumulation without scene/BVH work. Lighting is
- *  unsupported. */
+ *  preserving unrelated material/light/environment/atlas textures. Primitive
+ *  layout changes that alter material-slot/color or analytic fallback shape still
+ *  use a full scene-texture repack, and topology add/remove repacks the full
+ *  scene. Resize is native: it reallocates render targets and resets accumulation
+ *  without scene/BVH work. Lighting is unsupported. */
 const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
   transform: 'fallback-rebuild',
   positions: 'fallback-rebuild',

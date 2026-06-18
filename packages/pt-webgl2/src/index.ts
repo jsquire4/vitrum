@@ -88,6 +88,12 @@ const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([
   'morphWeights',
 ]);
 
+const FULL_SCENE_REPACK_PATCH_FIELDS = new Set([
+  'colors',
+  'shape',
+  'params',
+]);
+
 const ANIMATION_REBUILD_PATCH_FIELDS = new Set([
   'bones',
   'boneInverses',
@@ -103,6 +109,7 @@ function primitiveFallbackReason(fields: readonly string[]): {
   readonly fallbackReason: string;
   readonly nativePatchMissing: string;
   readonly animationFields?: readonly string[];
+  readonly fullUploadFields?: readonly string[];
 } | null {
   const animationFields = fields.filter((field) => ANIMATION_REBUILD_PATCH_FIELDS.has(field));
   if (animationFields.length > 0) {
@@ -113,6 +120,14 @@ function primitiveFallbackReason(fields: readonly string[]): {
     };
   }
   if (fields.some((field) => GEOMETRY_REBUILD_PATCH_FIELDS.has(field))) {
+    const fullUploadFields = fields.filter((field) => FULL_SCENE_REPACK_PATCH_FIELDS.has(field));
+    if (fullUploadFields.length > 0) {
+      return {
+        fallbackReason: 'primitive-scene-texture-repack',
+        nativePatchMissing: 'targeted-primitive-layout-or-analytic-update',
+        fullUploadFields,
+      };
+    }
     return {
       fallbackReason: 'geometry-bvh-texture-rebuild',
       nativePatchMissing: 'targeted-geometry-bvh-refit',
@@ -927,6 +942,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       details.nativePatchMissing = patchFallback.nativePatchMissing;
       if (patchFallback.animationFields !== undefined) {
         details.animationFields = patchFallback.animationFields;
+      }
+      if (patchFallback.fullUploadFields !== undefined) {
+        details.fullUploadFields = patchFallback.fullUploadFields;
       }
     }
     this.#warn({
