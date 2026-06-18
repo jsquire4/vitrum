@@ -182,6 +182,12 @@
 > full-tier with zero GPU errors. This closes a specialty-path execution proof
 > slice; caustic radiometric convergence / forward-traced oracle A/B remains the
 > A4 proof tail.
+> **2026-06-18 emitter/environment dzn follow-up:** focused dzn status artifacts
+> for `--filter light`, `--filter directional`, `--filter hdri`, and
+> `--filter procedural-sky` prove pt-webgpu point/disc/spot/directional,
+> HDRI/procedural-sky, lite point/HDRI, and walkaround directional-sun/HDRI lanes
+> boot/render finite non-black with zero GPU errors. This is execution proof, not
+> a replacement for reference-quality radiometric sweeps.
 > The remaining proof/implementation tail is explicit
 > multi-vertex BDPT: `controls.byMaxLightBounces` still shows the finding starting
 > at `maxLightBounces:2` (+13.21% global luminance) and reaching +17.08% at

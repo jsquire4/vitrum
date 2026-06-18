@@ -381,6 +381,10 @@ replacement for V28-B recaptures.
   `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` through
   the focused `caustic` and `photon` dzn status artifacts; caustic radiometric
   convergence remains.
+- Analytic emitter/environment render proof. Focused dzn status artifacts now
+  cover pt-webgpu point/disc/spot/directional emitters, pt-webgpu HDRI and
+  procedural-sky environments, the matching lite point/HDRI rows, and walkaround
+  directional-sun/HDRI rows. Reference-quality radiometric sweeps remain.
 - pt-webgpu full-tier material-furnace/reference-render sweeps. WSL lavapipe is
   adapter-limited for this lane (`maxStorageBuffersPerShaderStage=8`; full tier
   requires 34); use `behavioral-gate:dzn`, browser, or another real/full-tier
@@ -471,6 +475,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | Neural denoiser quality | shared/walkaround | Production checkpoint plus quality A/B; otherwise keep opt-in. |
 | BDPT / ReSTIR-PT material and radiometric proof | pt-webgpu/pt-webgl2 | Safe-default BDPT, SPPM, and ReSTIR-PT committed snapshots are checked by `npm run radiometric-ab:proof-check`; focused dzn full-tier behavioral status now proves `pt/bdpt`, `pt/spectral+bdpt`, and off-default `pt/restirPtReuse` boot/render finite non-black with zero GPU errors. Remaining work is specialty material furnace, equal-spp ReSTIR-PT variance proof, and multi-vertex BDPT promotion evidence. |
 | SPPM / MNEE caustic radiometric proof | pt-webgpu | Focused dzn full-tier behavioral status now proves `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` boot/render finite non-black with zero GPU errors. Remaining work is caustic radiometric convergence / forward-traced oracle A/B. |
+| Analytic emitter/environment proof | pt-webgpu/walkaround | Focused dzn status now proves point/disc/spot/directional, HDRI, and procedural-sky lanes boot/render finite non-black with zero GPU errors on their selected full/lite/walkaround rows. Remaining work is reference-quality radiometric sweep coverage. |
 | pt-webgpu full-tier material furnace | pt-webgpu | Clearcoat/sheen/iridescence/aniso/specular map reference renders. Synthetic glTF material-sweep WSL/lavapipe golden is metadata-checked; full-tier material-lobe capture remains. |
 | pt-webgl2 material furnace | pt-webgl2 | Thickness/SSS/procedural-sky/emissive panels against references. |
 | Rich-material GI | walkaround | A/B showing receiver-lobe material target improves or preserves correctness. |

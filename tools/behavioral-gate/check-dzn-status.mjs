@@ -94,6 +94,64 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter light --require-full-tier",
+    filter: "light",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 4,
+    failures: 0,
+    configs: [
+      { label: "pt/point-light", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/disc-light", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/spot-light", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/lite+point-light", verdict: "PASS", rawStatus: "OK", tier: "lite", minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-directional-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter directional --require-full-tier",
+    filter: "directional",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 2,
+    failures: 0,
+    configs: [
+      { label: "pt/directional-2", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "wh/directional-sun", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-hdri-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter hdri --require-full-tier",
+    filter: "hdri",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 3,
+    failures: 0,
+    configs: [
+      { label: "pt/hdri-env", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+      { label: "pt/lite+hdri", verdict: "PASS", rawStatus: "OK", tier: "lite", minLuminance: 0.005 },
+      { label: "wh/hdri-env", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-procedural-sky-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter procedural-sky --require-full-tier",
+    filter: "procedural-sky",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label: "pt/procedural-sky", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-status.json",
     command: "npm run behavioral-gate:dzn -- --filter gltf --require-full-tier",
     filter: "gltf",
@@ -198,4 +256,4 @@ for (const expected of EXPECTED) {
   }
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (7 committed dzn status artifacts)");
+console.log("[behavioral-gate-dzn-status-check] PASS (11 committed dzn status artifacts)");
