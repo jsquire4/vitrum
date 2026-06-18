@@ -786,6 +786,52 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('tessellates analytic addPrimitive through the primitive-list texture refresh path', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const sphere: AnalyticPrimitive = {
+        kind: 'analytic',
+        id: 'sphere-added',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 1]),
+        material: GREY,
+      };
+
+      e.addPrimitive?.(sphere);
+
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(7);
+      const added = e.getScene?.()?.primitives.find((p) => p.id === 'sphere-added');
+      expect(added?.kind).toBe('mesh');
+      if (added?.kind !== 'mesh') {
+        throw new Error('expected analytic addPrimitive to commit the generated mesh fallback');
+      }
+      expect(added.indices?.length).toBeGreaterThan(0);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.primitive-list-fallback-rebuild' &&
+        w.details?.fallbackReason === 'primitive-list-texture-refresh',
+      )).toBe(true);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.scene-upload-warning' &&
+        w.method === 'addPrimitive' &&
+        String(w.details?.warning).includes('tessellated to a generated MeshPrimitive fallback') &&
+        w.details?.operation === 'primitive-list-texture-refresh',
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('updateEmitter and updateEnvironment patch scene textures without rebuilding BVH geometry', async () => {
     const e = await createPTEngine_WebGL2(opts());
     e.setScene(sceneWithEmitter());

@@ -1014,7 +1014,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     }
     this.#sceneTextures = swap.textures;
     if (swap.geoPack != null) this.#geoPack = swap.geoPack;
-    this.#scene = scene;
+    this.#scene = swap.scene ?? scene;
     for (const tex of swap.deleteOldTextures) {
       if (tex != null) this.#gl.deleteTexture(tex);
     }

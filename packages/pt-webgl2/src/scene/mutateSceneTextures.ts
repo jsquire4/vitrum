@@ -8,6 +8,7 @@ import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
 import {
   buildSceneGeometryTextures,
+  expandAnalyticPrimitiveFallbacks,
   uploadRgba32f,
   uploadRgba32fRect,
 } from './uploadSceneTextures.js';
@@ -60,6 +61,7 @@ const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
 export interface WebGl2MutationSwap {
   readonly textures: UploadedSceneTextures;
   readonly geoPack?: WorldSpaceMergeResult;
+  readonly scene?: Scene;
   readonly deleteOldTextures: readonly (WebGLTexture | null)[];
   readonly structuredWarnings?: readonly EngineWarning[];
 }
@@ -327,14 +329,16 @@ export function tryFastPathPrimitiveListMutation(
   },
 ): WebGl2MutationSwap | null {
   if (current == null) return null;
-  if (nextScene.primitives.some((primitive) => !isMeshLikePrimitive(primitive))) return null;
+  const analyticExpansion = expandAnalyticPrimitiveFallbacks(nextScene);
+  const mutationScene = analyticExpansion.scene;
+  if (mutationScene.primitives.some((primitive) => !isMeshLikePrimitive(primitive))) return null;
 
-  const built = buildSceneGeometryTextures(gl, nextScene, {
+  const built = buildSceneGeometryTextures(gl, mutationScene, {
     warningPhase: 'mutation',
     warningMethod: opts.method,
   });
   const structuredWarnings: EngineWarning[] = [...built.structuredWarnings];
-  for (const warning of built.warnings) {
+  for (const warning of [...analyticExpansion.warnings, ...built.warnings]) {
     structuredWarnings.push({
       code: 'pt-webgl2.scene-upload-warning',
       backend: 'pt-webgl2',
@@ -377,6 +381,7 @@ export function tryFastPathPrimitiveListMutation(
       vertexColorMaterialIds: built.vertexColorMaterialIds,
     }),
     geoPack: built.merged,
+    scene: mutationScene,
     deleteOldTextures: [
       current.bvhBounds,
       current.bvhContents,

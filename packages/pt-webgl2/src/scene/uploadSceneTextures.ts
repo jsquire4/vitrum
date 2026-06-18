@@ -268,7 +268,7 @@ export function buildSceneTextures(
   };
 }
 
-function expandAnalyticPrimitiveFallbacks(scene: Scene): { readonly scene: Scene; readonly warnings: string[] } {
+export function expandAnalyticPrimitiveFallbacks(scene: Scene): { readonly scene: Scene; readonly warnings: string[] } {
   let changed = false;
   const warnings: string[] = [];
   const primitives = scene.primitives.map((primitive): ScenePrimitive => {
