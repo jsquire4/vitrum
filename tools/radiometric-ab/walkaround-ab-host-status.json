@@ -1,20 +1,25 @@
 {
-  "generatedAt": "2026-06-17T06:30:37.790Z",
+  "generatedAt": "2026-06-18T05:45:47.407Z",
   "harness": "walkaround-ab",
-  "verdict": "HOST-BLOCKED",
+  "verdict": "PASS-PARTIAL",
   "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/walkaround-ab.mjs",
-  "icd": "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
-  "exitStatus": 1,
+  "timeoutMs": 180000,
+  "icd": null,
+  "exitStatus": 0,
   "signal": null,
-  "reason": {
-    "code": "deno-wgpu-hal-gles-index-oob",
-    "location": "wgpu-hal-28.0.0/src/gles/command.rs:771:21",
-    "message": "Deno native WebGPU panicked before the walkaround radiometric A/B harness could produce a verdict."
+  "resultFile": "tools/radiometric-ab/walkaround-ab-results.json",
+  "caseVerdicts": {
+    "a8": "NEGLIGIBLE",
+    "sun": "PASS-PARTIAL",
+    "glass": "PASS",
+    "glossy": "PASS"
   },
-  "preservedResultFile": "tools/radiometric-ab/walkaround-ab-results.json",
+  "reason": {
+    "code": "walkaround-ab-partial-proof",
+    "message": "The native WebGPU harness ran to completion, but at least one case is only a partial/weak proof."
+  },
   "nextSteps": [
-    "Run the same harness in the browser/real-adapter validation lane.",
-    "Re-run this wrapper after the Deno native WebGPU panic is fixed or the host path changes.",
-    "Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this blocked native-Deno run."
+    "Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this partial proof alone.",
+    "Use higher-SPP, HDR, browser/real-adapter, or case-specific reference captures before promotion."
   ]
 }

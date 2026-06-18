@@ -200,17 +200,16 @@ pre-tonemap `resolvedTexture` through `engine.captureFrame({ colorSpace:"linear"
 luminance statistics are therefore linear-HDR float32 values rather than display-encoded
 8-bit swap-chain samples.
 
-**Current WSL validation caveat:** `npm run radiometric-ab:walkaround` now runs
-through a Node wrapper that preserves normal harness output, but writes
-`walkaround-ab-host-status.json` and exits non-zero when the native-Deno host
-times out or the known native-Deno WebGPU host panic occurs. Deno 2.8.1 currently panics in the WSL lavapipe
-walkaround path before the harness can produce a verdict:
-`wgpu-hal-28.0.0/src/gles/command.rs:771:21: index out of bounds`. This reproduces in the
-older `walkaround-sun-control.mjs` swap-chain-readback script too, so it is a validation-host
-runtime blocker rather than a regression caused by linear capture. Rerun this harness on the
-browser/real-adapter lane before promoting the walkaround rows. Slow native-Deno
-hosts can raise the default 180-second wrapper budget with
-`VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
+**Current WSL validation status (2026-06-18):** `npm run radiometric-ab:walkaround`
+now completes on the current native WSL WebGPU host and writes
+`walkaround-ab-host-status.json` with `verdict:"PASS-PARTIAL"`. The host is no
+longer classified as blocked for this lane. The partial verdict is intentional:
+the SUN case proves nonzero direct sun plus shadow correctness, but its analytic
+floor ratio is outside the full promotion band at 16 spp, so the status keeps a
+do-not-promote warning. If a future host times out or hits the known native-Deno
+WebGPU panic, the wrapper still records `HOST-BLOCKED` rather than a renderer
+PASS/FAIL verdict. Slow native-Deno hosts can raise the default 180-second
+wrapper budget with `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
 
 ### Legacy 8-bit baseline (2026-06-10)
 

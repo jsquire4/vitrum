@@ -8,13 +8,14 @@
  * machine-readable instead of leaving future runs as an unclassified crash.
  */
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
 const statusPath = resolve(scriptDir, 'walkaround-ab-host-status.json');
+const resultPath = resolve(scriptDir, 'walkaround-ab-results.json');
 const DEFAULT_TIMEOUT_MS = 180_000;
 
 function parseTimeoutMs(raw) {
@@ -79,6 +80,55 @@ if (result.error) {
   throw result.error;
 }
 if (result.status === 0) {
+  let walkaroundResults = null;
+  try {
+    walkaroundResults = JSON.parse(readFileSync(resultPath, 'utf8'));
+  } catch {
+    // The Deno harness is expected to write this file before exiting 0; keep
+    // the success status truthful even if a future harness changes that shape.
+  }
+  const caseVerdicts = walkaroundResults == null
+    ? {}
+    : Object.fromEntries(Object.entries(walkaroundResults).map(([key, value]) => [
+      key,
+      value?.verdict ?? 'UNKNOWN',
+    ]));
+  const partial = Object.values(caseVerdicts).some((verdict) =>
+    verdict === 'PASS-PARTIAL' ||
+    verdict === 'PASS-WEAK' ||
+    verdict === 'SMALL' ||
+    verdict === 'MODERATE' ||
+    verdict === 'SIGNIFICANT'
+  );
+  const status = {
+    generatedAt: new Date().toISOString(),
+    harness: 'walkaround-ab',
+    verdict: partial ? 'PASS-PARTIAL' : 'PASS',
+    command: `deno ${denoArgs.join(' ')}`,
+    timeoutMs,
+    icd: process.env.VK_ICD_FILENAMES ?? null,
+    exitStatus: result.status,
+    signal: result.signal,
+    resultFile: 'tools/radiometric-ab/walkaround-ab-results.json',
+    caseVerdicts,
+    reason: partial
+      ? {
+        code: 'walkaround-ab-partial-proof',
+        message:
+          'The native WebGPU harness ran to completion, but at least one case is only a partial/weak proof.',
+      }
+      : {
+        code: 'walkaround-ab-complete',
+        message: 'The native WebGPU harness ran to completion and all checked cases met their full proof thresholds.',
+      },
+    nextSteps: partial
+      ? [
+        'Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this partial proof alone.',
+        'Use higher-SPP, HDR, browser/real-adapter, or case-specific reference captures before promotion.',
+      ]
+      : [],
+  };
+  writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
   process.exit(0);
 }
 

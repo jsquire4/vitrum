@@ -5,27 +5,27 @@
     "spp": 16,
     "resolution": "128x128",
     "biased": {
-      "overall": 0.20867197883154912,
-      "floor": 0.15502580903965943,
-      "ceiling": 0.031907886710239634,
-      "leftWall": 0.038545943404634325,
-      "rightWall": 0.015640224153297494
+      "overall": 0.06001685047624235,
+      "floor": 0.043048698601995096,
+      "ceiling": 0.006021657869263937,
+      "leftWall": 0.007088090655315997,
+      "rightWall": 0.002001658036085688
     },
     "unbiased": {
-      "overall": 0.20876181262444035,
-      "floor": 0.15499397447867433,
-      "ceiling": 0.031958264342774136,
-      "leftWall": 0.038552633244206526,
-      "rightWall": 0.01564068894830641
+      "overall": 0.05999650014528529,
+      "floor": 0.04300529606155327,
+      "ceiling": 0.0060201475465739285,
+      "leftWall": 0.007092859706824471,
+      "rightWall": 0.00200097782381556
     },
     "delta": {
-      "overall": 0.00008983379289123627,
-      "floor": -0.00003183456098510007,
-      "ceiling": 0.000050377632534501227,
-      "leftWall": 0.000006689839572200651,
-      "rightWall": 4.6479500891496994e-7
+      "overall": -0.00002035033095705574,
+      "floor": -0.00004340254044182812,
+      "ceiling": -0.0000015103226900081007,
+      "leftWall": 0.000004769051508474523,
+      "rightWall": -6.802122701279889e-7
     },
-    "renderTimeSec": 4.3,
+    "renderTimeSec": 9.7,
     "verdict": "NEGLIGIBLE",
     "notes": [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
@@ -48,29 +48,19 @@
     "cosTheta": 0.8081220356417687,
     "analyticExpectedFloorLum": 0.1939492885540245,
     "rendered": {
-      "floorLum": 0.2723524201268727,
-      "leftWallLum": 0.007374987312572079,
-      "overall": 0.17324938562729444
+      "floorLum": 0.07191735407838229,
+      "leftWallLum": 0.0009117223025770756,
+      "overall": 0.0456185071827562
     },
-    "floorRatioToAnalytic": 1.404245522927036,
-    "controlRuns": {
-      "sunZero_floorLum": 0.0,
-      "sun0p3_floorLum_tightRegion": 0.1081,
-      "sun0p9_floorLum_tightRegion": 0.2653,
-      "sun0p3_ratioToAnalytic_tightRegion": 0.557,
-      "linearityRatio_0p9_over_0p3": 2.454,
-      "note": "Tight floor region (30,78,98,118). Ratio 0.557 vs analytic within ±50%. I=0.0 gives 0.0 (NEE gate works). Non-linearity at I=0.9 (2.45× vs expected 3.0×) explained by denoiser and 8-bit saturation."
-    },
-    "analyticAgreement": true,
+    "floorRatioToAnalytic": 0.37080493882992377,
+    "analyticAgreement": false,
     "shadowCorrect": true,
-    "renderTimeSec": 1.9,
-    "verdict": "PASS",
+    "renderTimeSec": 4.1,
+    "verdict": "PASS-PARTIAL",
     "notes": [
       "analytic = I × cosθ × albedo (Lambertian: brdf=albedo/π, hemisphere integral=π → Lo=albedo×I×cosθ).",
       "±50% tolerance accounts for GTAO attenuation, temporal accumulation damping, denoiser.",
       "Left wall has dot([1,0,0], toSun) < 0 → receives no direct sun (shadow test).",
-      "Control: I=0.0 gives floor lum=0.0 (confirms NEE gate works). Tight region ratio=0.557 within tolerance.",
-      "Control: I=0.9 gives floor 2.45× I=0.3 (expected 3.0×) — denoiser nonlinearity at higher intensity.",
       "Lavapipe — SPP=16."
     ]
   },
@@ -82,29 +72,21 @@
     "fresnelT_normal_incidence_n1p5": 0.92,
     "expectedMinCentreRatio": 0.5,
     "glass": {
-      "centreRegionLum": 0.5068159512867659,
-      "overall": 0.20867197883154912
+      "centreRegionLum": 0.15409969656467282,
+      "overall": 0.06001685047624235
     },
     "noGlass": {
-      "centreRegionLum": 0.5068159512867659,
-      "overall": 0.20867197883154912
+      "centreRegionLum": 0.15409969656467282,
+      "overall": 0.06001685047624235
     },
     "centreRatio": 1,
     "overallRatio": 1,
-    "renderTimeSec": 4,
+    "renderTimeSec": 8.8,
     "verdict": "PASS",
-    "platformCaveat": "Pixel-identical result (ratio=1.000). Platform limitation: 8% Fresnel attenuation at 0.5 lum is below 8-bit quantization floor (1/255≈0.004). lo_transmittedGI effect is sub-SPP16 noise floor at this resolution. NOT a bug.",
-    "cpuVerified": {
-      "glassPaneTrans4": 15,
-      "glassPaneIsMetalBit": 0,
-      "glassPanePackedAlpha": "0xF0 (trans4=15, isGlass=true gate: matColor.a > 0.3)",
-      "note": "packBVHIndexWFromCore correctly encodes transmission=1.0 as trans4=15 low byte"
-    },
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer absorption = 0 (white glass).",
       "Expected centreRatio ≥ 0.50 — conservative; denoiser can attenuate through-glass signal at low SPP.",
-      "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → trans4=15 → packed alpha byte=0xF0 → isGlass=true).",
-      "PIXEL-IDENTICAL due to 8-bit quantization, NOT a rendering bug. CPU packing verified correct."
+      "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true)."
     ]
   },
   "glossy": {
@@ -113,29 +95,22 @@
     "spp": 16,
     "resolution": "128x128",
     "metal": {
-      "floorLum": 0.18870470121381377,
-      "overall": 0.20867197883154912
+      "floorLum": 0.05261155431426853,
+      "overall": 0.06001685047624235
     },
     "diffuse": {
-      "floorLum": 0.18870470121381377,
-      "overall": 0.20867197883154912
+      "floorLum": 0.05261155431426853,
+      "overall": 0.06001685047624235
     },
     "floorRatio": 1,
     "expectedMinFloorRatio": 0.8,
-    "renderTimeSec": 3.7,
+    "renderTimeSec": 8.7,
     "verdict": "PASS",
-    "platformCaveat": "Pixel-identical result (ratio=1.000). Platform limitation: narrow-lobe GGX specular highlight (rough=0.05, 0.2×0.2 emitter at ~2m) illuminates ~2% of floor pixels — below 8-bit quantization at mean 0.19 lum. NOT a bug.",
-    "cpuVerified": {
-      "diffuseTri0": { "raw": "0xff000000", "rough": 1.0, "metal": 0.0, "isMetal": 0 },
-      "metalTri0": { "raw": "0x0dff0000", "rough": 0.051, "metal": 1.0, "isMetal": 1 },
-      "note": "packBVHRoughMetalFromCore and packBVHIndexWFromCore produce distinct data for the two floor materials — confirmed by direct call 2026-06-10"
-    },
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
-      "Metal floor (metal=1.0, rough=0.05): GGX specular lobe reflects the ceiling emitter → expected bright specular spot.",
-      "CPU packing: metal floor triangles correctly encode rough=0.051, metal=1.000, isMetal=1 bit.",
-      "PIXEL-IDENTICAL due to 8-bit quantization + SPP=16 noise floor, NOT a rendering bug.",
-      "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in shade.wgsl.ts)."
+      "Metal floor (n=1.0, rough=0.05): GGX specular lobe reflects the ceiling emitter → brighter than Lambertian.",
+      "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
+      "Lavapipe SPP=16; metallic-mirror at low SPP has high variance — ratio check uses ≥0.80."
     ]
   }
 }

@@ -1218,8 +1218,11 @@ and walkaround host-status JSON machine-checkable without a new GPU recapture.
 frame counts, PASS verdicts, per-harness relative-error and variance thresholds,
 SPPM checkpoints, the explicit BDPT multi-vertex research-mode finding recorded
 in `results-bdpt.json`, specialty-lobe `requiresGpuRecapture:false`, and the
-walkaround `HOST-BLOCKED`/do-not-promote marker. This is still snapshot/status
-evidence; full-adapter V28-B recaptures remain the promotion queue.
+walkaround host-status/result marker. **2026-06-18 update:** the native WSL
+walkaround A/B host now runs to completion and records `PASS-PARTIAL` rather
+than `HOST-BLOCKED`; the proof checker requires the do-not-promote warning while
+the SUN analytic lane remains partial. This is still snapshot/status evidence;
+full-adapter V28-B recaptures remain the promotion queue.
 
 ✅ **READ-ONLY PROOF BUNDLE ADDED (2026-06-17):** `npm run proof-check` runs the
 glTF material, real-asset, topology, radiometric snapshot/status, and ReSTIR-PT
@@ -1382,11 +1385,12 @@ fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the
 pre-existing `wh/default` config returns a renderer verdict; the npm wrapper now
 classifies that as `HOST-BLOCKED` and writes
 `tools/behavioral-gate/behavioral-gate-host-status.json` instead of letting the
-gap look like a renderer failure. The same classification exists for
-`npm run radiometric-ab:walkaround` via
-`tools/radiometric-ab/walkaround-ab-host-status.json`. Walkaround glTF
-render-gate promotion still requires a browser/adapter harness that can run the
-walkaround path without this native-Deno host panic.
+gap look like a renderer failure. The radiometric walkaround lane is no longer
+host-blocked on this WSL setup: `npm run radiometric-ab:walkaround` now records
+`PASS-PARTIAL` in `tools/radiometric-ab/walkaround-ab-host-status.json`, with a
+do-not-promote warning because the low-spp SUN analytic case remains partial.
+Walkaround glTF render-gate promotion still requires a browser/adapter harness
+and higher-confidence reference captures.
 
 ---
 

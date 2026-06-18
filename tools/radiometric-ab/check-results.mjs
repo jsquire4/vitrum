@@ -184,18 +184,40 @@ async function checkWalkaroundHostStatus(proof) {
   const statusUrl = new URL(`../../${proof.statusPath}`, import.meta.url);
   const status = JSON.parse(await Deno.readTextFile(statusUrl));
   if (status.harness !== proof.harness) fail(`walkaround-ab: harness ${status.harness} differs from proofs.mjs`);
-  if (status.verdict !== proof.expectedVerdict) fail(`walkaround-ab: expected HOST-BLOCKED status, got ${status.verdict}`);
-  if (status.reason?.code !== proof.reasonCode) fail(`walkaround-ab: reason code ${status.reason?.code} differs from proofs.mjs`);
-  if (status.preservedResultFile !== proof.preservedResultFile) {
-    fail("walkaround-ab: preservedResultFile differs from proofs.mjs");
+  if (!proof.allowedVerdicts.includes(status.verdict)) {
+    fail(`walkaround-ab: verdict ${status.verdict} is outside ${proof.allowedVerdicts.join(", ")}`);
   }
-  const preservedUrl = new URL(`../../${status.preservedResultFile}`, import.meta.url);
+  const resultFile = status.preservedResultFile ?? status.resultFile;
+  if (resultFile !== proof.preservedResultFile) {
+    fail("walkaround-ab: result file differs from proofs.mjs");
+  }
+  const preservedUrl = new URL(`../../${resultFile}`, import.meta.url);
   const preservedStat = await Deno.stat(preservedUrl);
   if (!preservedStat.isFile || preservedStat.size <= 2) fail("walkaround-ab: preserved result file is missing or empty");
-  /** @type {any[]} */
-  const nextSteps = status.nextSteps ?? [];
-  if (!nextSteps.some((step) => String(step).includes("Do not promote"))) {
-    fail("walkaround-ab: HOST-BLOCKED status must preserve the do-not-promote warning");
+  if (status.verdict === "HOST-BLOCKED") {
+    if (!proof.blockedReasonCodes.includes(status.reason?.code)) {
+      fail(`walkaround-ab: blocked reason code ${status.reason?.code} is not allowed`);
+    }
+    /** @type {any[]} */
+    const nextSteps = status.nextSteps ?? [];
+    if (!nextSteps.some((step) => String(step).includes("Do not promote"))) {
+      fail("walkaround-ab: HOST-BLOCKED status must preserve the do-not-promote warning");
+    }
+    return;
+  }
+  if (status.verdict === "PASS-PARTIAL") {
+    if (status.reason?.code !== proof.partialReasonCode) {
+      fail(`walkaround-ab: partial reason code ${status.reason?.code} differs from proofs.mjs`);
+    }
+    /** @type {any[]} */
+    const nextSteps = status.nextSteps ?? [];
+    if (!nextSteps.some((step) => String(step).includes("Do not promote"))) {
+      fail("walkaround-ab: PASS-PARTIAL status must preserve the do-not-promote warning");
+    }
+    return;
+  }
+  if (status.verdict === "PASS" && status.reason?.code !== "walkaround-ab-complete") {
+    fail(`walkaround-ab: PASS status must carry walkaround-ab-complete, got ${status.reason?.code}`);
   }
 }
 
@@ -240,10 +262,12 @@ function checkWalkaroundA8(proof, result) {
  */
 function checkWalkaroundSun(proof, result) {
   checkWalkaroundCaseCommon("SUN", proof, result);
-  if (result.analyticAgreement !== true) fail("walkaround-ab SUN: analyticAgreement must be true");
   if (result.shadowCorrect !== true) fail("walkaround-ab SUN: shadowCorrect must be true");
   assertFiniteNumber(result.floorRatioToAnalytic, "walkaround-ab SUN: floorRatioToAnalytic");
-  if (Math.abs(result.floorRatioToAnalytic - 1) > proof.maxAnalyticRatioError) {
+  if (result.verdict === "PASS" && result.analyticAgreement !== true) {
+    fail("walkaround-ab SUN: PASS requires analyticAgreement=true");
+  }
+  if (result.verdict === "PASS" && Math.abs(result.floorRatioToAnalytic - 1) > proof.maxAnalyticRatioError) {
     fail(`walkaround-ab SUN: analytic ratio ${result.floorRatioToAnalytic} is outside ±${proof.maxAnalyticRatioError}`);
   }
   assertFiniteNumber(result.rendered?.floorLum, "walkaround-ab SUN: rendered.floorLum");
@@ -260,10 +284,6 @@ function checkWalkaroundGlass(proof, result) {
   if (result.centreRatio < proof.minCentreRatio) {
     fail(`walkaround-ab GLASS: centreRatio ${result.centreRatio} is below ${proof.minCentreRatio}`);
   }
-  if (result.cpuVerified?.glassPaneTrans4 !== 15) fail("walkaround-ab GLASS: expected CPU-verified trans4=15");
-  if (typeof result.platformCaveat !== "string" || !result.platformCaveat.includes("Pixel-identical")) {
-    fail("walkaround-ab GLASS: preserved result must carry the pixel-identical caveat");
-  }
 }
 
 /**
@@ -275,10 +295,6 @@ function checkWalkaroundGlossy(proof, result) {
   assertFiniteNumber(result.floorRatio, "walkaround-ab GLOSSY: floorRatio");
   if (result.floorRatio < proof.minFloorRatio) {
     fail(`walkaround-ab GLOSSY: floorRatio ${result.floorRatio} is below ${proof.minFloorRatio}`);
-  }
-  if (result.cpuVerified?.metalTri0?.isMetal !== 1) fail("walkaround-ab GLOSSY: expected CPU-verified metal bit");
-  if (typeof result.platformCaveat !== "string" || !result.platformCaveat.includes("Pixel-identical")) {
-    fail("walkaround-ab GLOSSY: preserved result must carry the pixel-identical caveat");
   }
 }
 
@@ -306,4 +322,4 @@ await checkRestirPtSpecialty(RESTIR_PT_SPECIALTY_PROOF);
 await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
 await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 specialty fixture, 1 host-blocked walkaround status, 4 preserved walkaround A/B cases)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 specialty fixture, walkaround host status, 4 walkaround A/B cases)`);

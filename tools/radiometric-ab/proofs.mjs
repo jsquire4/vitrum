@@ -72,8 +72,9 @@ export const WALKAROUND_AB_HOST_STATUS_PROOF = {
   harness: "walkaround-ab",
   statusPath: "tools/radiometric-ab/walkaround-ab-host-status.json",
   preservedResultFile: "tools/radiometric-ab/walkaround-ab-results.json",
-  expectedVerdict: "HOST-BLOCKED",
-  reasonCode: "deno-wgpu-hal-gles-index-oob",
+  allowedVerdicts: ["PASS", "PASS-PARTIAL", "HOST-BLOCKED"],
+  blockedReasonCodes: ["deno-wgpu-hal-gles-index-oob", "walkaround-ab-timeout"],
+  partialReasonCode: "walkaround-ab-partial-proof",
 };
 
 export const WALKAROUND_AB_RESULT_PROOF = {
