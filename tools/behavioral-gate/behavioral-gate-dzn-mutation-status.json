@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-18T02:48:57.098Z",
+  "generatedAt": "2026-06-18T02:57:58.397Z",
   "harness": "behavioral-gate:dzn",
   "verdict": "PASS",
   "command": "npm run behavioral-gate:dzn -- --filter mutation --require-full-tier",
@@ -10,7 +10,7 @@
   "exitStatus": 0,
   "signal": null,
   "summary": {
-    "totalConfigs": 6,
+    "totalConfigs": 8,
     "failures": 0,
     "knownResiduals": 0
   },
@@ -140,6 +140,48 @@
       "maxAbs": null,
       "thresholds": null,
       "rawLine": "PASS | pt/mutation-instanced-count  | OK | tier=full lum=0.0750 gpuErrs=0 nan=false | mutation=instanced-count meanAbs=15.869 maxAbs=230"
+    },
+    {
+      "verdict": "PASS",
+      "label": "pt/mutation-add-primitive",
+      "rawStatus": "OK",
+      "tier": "full",
+      "luminance": 0.1098,
+      "gpuErrors": 0,
+      "nan": false,
+      "mutation": "mutation=add-primitive meanAbs=12.375 maxAbs=232",
+      "mutationKind": "add-primitive",
+      "mutationMeanAbs": 12.375,
+      "mutationMaxAbs": 232,
+      "golden": null,
+      "goldenStatus": null,
+      "goldenVariant": null,
+      "rmse": null,
+      "meanAbs": null,
+      "maxAbs": null,
+      "thresholds": null,
+      "rawLine": "PASS | pt/mutation-add-primitive    | OK | tier=full lum=0.1098 gpuErrs=0 nan=false | mutation=add-primitive meanAbs=12.375 maxAbs=232"
+    },
+    {
+      "verdict": "PASS",
+      "label": "pt/mutation-remove-primitive",
+      "rawStatus": "OK",
+      "tier": "full",
+      "luminance": 0.0642,
+      "gpuErrors": 0,
+      "nan": false,
+      "mutation": "mutation=remove-primitive meanAbs=12.375 maxAbs=232",
+      "mutationKind": "remove-primitive",
+      "mutationMeanAbs": 12.375,
+      "mutationMaxAbs": 232,
+      "golden": null,
+      "goldenStatus": null,
+      "goldenVariant": null,
+      "rmse": null,
+      "meanAbs": null,
+      "maxAbs": null,
+      "thresholds": null,
+      "rawLine": "PASS | pt/mutation-remove-primitive | OK | tier=full lum=0.0642 gpuErrs=0 nan=false | mutation=remove-primitive meanAbs=12.375 maxAbs=232"
     }
   ]
 }

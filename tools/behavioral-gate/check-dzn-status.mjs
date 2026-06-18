@@ -30,7 +30,7 @@ const EXPECTED = [
     filter: "mutation",
     verdict: "PASS",
     exitStatus: 0,
-    totalConfigs: 6,
+    totalConfigs: 8,
     failures: 0,
     configs: [
       { label: "pt/mutation-material", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "material", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
@@ -39,6 +39,8 @@ const EXPECTED = [
       { label: "pt/mutation-transform", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "transform", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
       { label: "pt/mutation-topology", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "topology", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
       { label: "pt/mutation-instanced-count", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "instanced-count", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "pt/mutation-add-primitive", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "add-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "pt/mutation-remove-primitive", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "remove-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
     ],
   },
   {

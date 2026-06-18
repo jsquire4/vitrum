@@ -128,6 +128,8 @@ const EXPECTATION_TABLE = {
   "pt/mutation-transform": { expected: "ok" },
   "pt/mutation-topology": { expected: "ok" },
   "pt/mutation-instanced-count": { expected: "ok" },
+  "pt/mutation-add-primitive": { expected: "ok" },
+  "pt/mutation-remove-primitive": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -194,6 +196,8 @@ const PT_CONFIGS = [
   { label: "pt/mutation-transform", eng: {},                                    scene: { mutation: "transform" } },
   { label: "pt/mutation-topology", eng: {},                                     scene: { mutation: "topology" } },
   { label: "pt/mutation-instanced-count", eng: {},                              scene: { mutation: "instanced-count" } },
+  { label: "pt/mutation-add-primitive", eng: {},                                scene: { mutation: "add-primitive" } },
+  { label: "pt/mutation-remove-primitive", eng: {},                             scene: { mutation: "remove-primitive" } },
 ];
 
 const WH_CONFIGS = [
@@ -449,6 +453,50 @@ function buildMutationInstancedCountScene() {
         instanceMatrix(0.45),
       ],
     }],
+    emitters: [],
+    environment: { kind: "none" },
+  };
+}
+
+function makeMutationQuadPrimitive(id, centerX, baseColor = [0.95, 0.1, 0.08]) {
+  const halfW = 0.30;
+  const halfH = 0.42;
+  return {
+    kind: "mesh",
+    id,
+    positions: new Float32Array([
+      centerX - halfW, -halfH, 0,
+      centerX + halfW, -halfH, 0,
+      centerX + halfW,  halfH, 0,
+      centerX - halfW,  halfH, 0,
+    ]),
+    normals: GLTF_QUAD.normals,
+    indices: new Uint32Array(GLTF_QUAD.indices),
+    material: {
+      shadingModel: "unlit",
+      baseColor,
+      roughness: 1.0,
+      metallic: 0.0,
+    },
+  };
+}
+
+function buildMutationAddPrimitiveScene() {
+  return {
+    primitives: [
+      makeMutationQuadPrimitive("mutation-add-base", -0.42, [0.95, 0.1, 0.08]),
+    ],
+    emitters: [],
+    environment: { kind: "none" },
+  };
+}
+
+function buildMutationRemovePrimitiveScene() {
+  return {
+    primitives: [
+      makeMutationQuadPrimitive("mutation-remove-survivor", -0.42, [0.95, 0.1, 0.08]),
+      makeMutationQuadPrimitive("mutation-remove-target", 0.42, [0.05, 0.08, 1.0]),
+    ],
     emitters: [],
     environment: { kind: "none" },
   };
@@ -1285,6 +1333,8 @@ async function buildGateScene(opts = {}) {
   if (opts.mutation === "transform") return buildMutationTransformScene();
   if (opts.mutation === "topology") return buildMutationTopologyScene();
   if (opts.mutation === "instanced-count") return buildMutationInstancedCountScene();
+  if (opts.mutation === "add-primitive") return buildMutationAddPrimitiveScene();
+  if (opts.mutation === "remove-primitive") return buildMutationRemovePrimitiveScene();
   return buildCornellScene(opts);
 }
 
@@ -1691,6 +1741,8 @@ const MUTATION_DELTA_THRESHOLDS = {
   transform: { meanAbs: 2.0, maxAbs: 8 },
   topology: { meanAbs: 2.0, maxAbs: 8 },
   "instanced-count": { meanAbs: 2.0, maxAbs: 8 },
+  "add-primitive": { meanAbs: 2.0, maxAbs: 8 },
+  "remove-primitive": { meanAbs: 2.0, maxAbs: 8 },
 };
 
 /**
@@ -1817,6 +1869,14 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
             instanceMatrix(-0.45),
           ],
         });
+      } else if (sceneOpts.mutation === "add-primitive") {
+        engine.addPrimitive(makeMutationQuadPrimitive(
+          "mutation-added-primitive",
+          0.42,
+          [0.05, 0.08, 1.0],
+        ));
+      } else if (sceneOpts.mutation === "remove-primitive") {
+        engine.removePrimitive("mutation-remove-target");
       } else {
         throw new Error(`unknown mutation gate kind: ${sceneOpts.mutation}`);
       }
