@@ -5,6 +5,7 @@ import {
   buildLightTreeInputForScene,
   defaultDirectionalAngularDiameter,
   meshAreaEmitterAdjointRangeForScene,
+  sortMeshAreaTrianglesForNeeCapForTests,
 } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
@@ -127,6 +128,30 @@ describe('buildPackedScene emitter + environment packing', () => {
     expectVec3Close(tree.centroids[1]!, [1 / 3, 2 / 3, 0]);
     expect(tree.powers[0]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
     expect(tree.powers[1]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
+  });
+
+  it('ranks mesh-area cap candidates by emitted power, not area alone', () => {
+    const ranked = sortMeshAreaTrianglesForNeeCapForTests([
+      {
+        triA: [0, 0, 0],
+        triB: [10, 0, 0],
+        triC: [0, 10, 0],
+        radiance: [0.01, 0.01, 0.01],
+        power: luminance(0.01, 0.01, 0.01) * 50,
+        castShadowDisabled: false,
+      },
+      {
+        triA: [0, 0, 0],
+        triB: [1, 0, 0],
+        triC: [0, 1, 0],
+        radiance: [100, 100, 100],
+        power: luminance(100, 100, 100) * 0.5,
+        castShadowDisabled: false,
+      },
+    ]);
+
+    expect(ranked[0]?.radiance).toEqual([100, 100, 100]);
+    expect(ranked[1]?.radiance).toEqual([0.01, 0.01, 0.01]);
   });
 
   it('reports a stable adjoint range for uncapped explicit mesh-area emitters', () => {

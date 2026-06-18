@@ -90,6 +90,8 @@ type PackedMeshAreaTriangle = {
   readonly triB: Vec3;
   readonly triC: Vec3;
   readonly radiance: Vec3;
+  /** Emitted-power proxy used by the NEE cap and light tree: luminance(Le) · area. */
+  readonly power: number;
   /** SHADOW-01 — true ⟺ source mesh-area emitter set castShadow:false.
    *  Packed as 1.0 into the radiance vec4's .w lane (0.0 default). */
   readonly castShadowDisabled: boolean;
@@ -106,13 +108,26 @@ type PackedMeshAreaTriangle = {
  *   - A 1M-triangle emissive mesh = 64 MB buffer + slow tree build per setScene.
  *   - Dropped triangles still emit via the BSDF/forward path (energy not lost,
  *     only NEE efficiency for the dropped fraction).
- *   - Selection: LARGEST-AREA-FIRST — drops the lowest-contribution triangles,
- *     biasing NEE variance minimally (small triangles contribute little power).
- *     Energy-proportional is equivalent but requires per-emitter irradiance
- *     sorting; area is the simpler and correct proxy for same-radiance emitters.
+ *   - Selection: HIGHEST-EMITTED-POWER-FIRST — drops the lowest-contribution
+ *     triangles by luminance(Le)·area. This matters for CPU-readable emissive
+ *     maps because UV-local texel sub-triangles can be small but bright.
  *   - Warn ONCE per emitter that exceeds the cap.
  */
 export const MESH_AREA_LIGHT_TRI_CAP = 65536;
+
+export function sortMeshAreaTrianglesForNeeCapForTests(
+  triangles: readonly PackedMeshAreaTriangle[],
+): readonly PackedMeshAreaTriangle[] {
+  return Array.from(triangles).sort((a, b) => {
+    const byPower = b.power - a.power;
+    if (Math.abs(byPower) > 1e-12) return byPower;
+    const byArea =
+      meshTriangleArea(b.triA, b.triB, b.triC) -
+      meshTriangleArea(a.triA, a.triB, a.triC);
+    if (Math.abs(byArea) > 1e-12) return byArea;
+    return 0;
+  });
+}
 
 export interface PackedEmitterArrays {
   readonly warnings: string[];
@@ -508,7 +523,8 @@ function packMeshAreaTriangles(
         tuv1C: readonly [number, number],
         radianceOverride?: readonly [number, number, number],
       ): void => {
-        if (meshTriangleArea(triA, triB, triC) < 1e-12) return;
+        const area = meshTriangleArea(triA, triB, triC);
+        if (area < 1e-12) return;
         const triangleRadiance = radianceOverride ?? (mappedRadianceMaterial == null
           ? radiance
           : estimateMaterialSpecEmissiveLeOverTriangle(
@@ -532,6 +548,7 @@ function packMeshAreaTriangles(
           triB,
           triC,
           radiance: [triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]],
+          power: luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) * area,
           castShadowDisabled,
         });
       };
@@ -854,23 +871,18 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   }
 
   // Mesh-area NEE cap: cap the total triangle count to MESH_AREA_LIGHT_TRI_CAP.
-  // Strategy: LARGEST-AREA-FIRST (keeps the highest-contribution triangles for NEE;
-  // dropped triangles still emit via the BSDF/forward path — energy is not lost,
-  // only NEE efficiency for the dropped fraction).
+  // Strategy: HIGHEST-EMITTED-POWER-FIRST (keeps the largest luminance(Le)·area
+  // contributors for NEE; dropped triangles still emit via the BSDF/forward path
+  // — energy is not lost, only NEE efficiency for the dropped fraction).
   let cappedTriangles = meshAreaTriangles;
   if (meshAreaTriangles.length > MESH_AREA_LIGHT_TRI_CAP) {
     warnings.push(
       `@vitrum/pt-webgpu: mesh-area NEE triangle count (${meshAreaTriangles.length}) exceeds cap ` +
-        `(${MESH_AREA_LIGHT_TRI_CAP}); keeping the ${MESH_AREA_LIGHT_TRI_CAP} largest-area triangles. ` +
+        `(${MESH_AREA_LIGHT_TRI_CAP}); keeping the ${MESH_AREA_LIGHT_TRI_CAP} highest-emitted-power triangles. ` +
         `Dropped triangles still emit via the BSDF/forward path (no energy loss, NEE-only efficiency reduction).`,
     );
-    // Sort descending by triangle area; keep the first MESH_AREA_LIGHT_TRI_CAP.
-    const withArea = meshAreaTriangles.map((tri) => ({
-      tri,
-      area: meshTriangleArea(tri.triA, tri.triB, tri.triC),
-    }));
-    withArea.sort((a, b) => b.area - a.area);
-    cappedTriangles = withArea.slice(0, MESH_AREA_LIGHT_TRI_CAP).map((e) => e.tri);
+    cappedTriangles = sortMeshAreaTrianglesForNeeCapForTests(meshAreaTriangles)
+      .slice(0, MESH_AREA_LIGHT_TRI_CAP);
   }
 
   const meshAreaLights: number[] = [];
