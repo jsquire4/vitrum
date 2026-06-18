@@ -64,6 +64,25 @@ function transformedUvReference(
   ];
 }
 
+function parseMaterialTexUvConstants(wgsl: string): Map<string, number> {
+  const constants = new Map<string, number>();
+  const re = /const\s+(MATERIAL_TEX_UV_[A-Z0-9_]+)\s*=\s*(\d+)u;/g;
+  let match: RegExpExecArray | null = re.exec(wgsl);
+  while (match != null) {
+    constants.set(match[1]!, Number(match[2]));
+    match = re.exec(wgsl);
+  }
+  return constants;
+}
+
+function expectedMainUvMetaOffset(slot: number): number {
+  return MATERIAL_TEX_UV_META_VEC4_OFFSET + slot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
+}
+
+function expectedExtensionUvMetaOffset(slot: number): number {
+  return MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + slot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
+}
+
 describe('collectMaterialTextures (P2 host)', () => {
   it('dedups shared texture handles + indexes per material', () => {
     const tex = { id: 'A' };
@@ -693,6 +712,38 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     );
   });
 
+  it('WGSL material UV metadata constants are derived from the host descriptor layout', () => {
+    const constants = parseMaterialTexUvConstants(PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL);
+    const expected: Readonly<Record<string, number>> = {
+      MATERIAL_TEX_UV_BASE_COLOR: expectedMainUvMetaOffset(0),
+      MATERIAL_TEX_UV_EMISSIVE: expectedMainUvMetaOffset(1),
+      MATERIAL_TEX_UV_NORMAL: expectedMainUvMetaOffset(2),
+      MATERIAL_TEX_UV_ROUGHNESS: expectedMainUvMetaOffset(3),
+      MATERIAL_TEX_UV_METALLIC: expectedMainUvMetaOffset(4),
+      MATERIAL_TEX_UV_AO: expectedMainUvMetaOffset(5),
+      MATERIAL_TEX_UV_LIGHT: expectedMainUvMetaOffset(6),
+      MATERIAL_TEX_UV_BUMP: expectedMainUvMetaOffset(7),
+      MATERIAL_TEX_UV_ANISOTROPY: expectedMainUvMetaOffset(8),
+      MATERIAL_TEX_UV_ALPHA: expectedMainUvMetaOffset(9),
+      MATERIAL_TEX_UV_TRANSMISSION: expectedMainUvMetaOffset(10),
+      MATERIAL_TEX_UV_CLEARCOAT: expectedExtensionUvMetaOffset(0),
+      MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS: expectedExtensionUvMetaOffset(1),
+      MATERIAL_TEX_UV_SHEEN_COLOR: expectedExtensionUvMetaOffset(2),
+      MATERIAL_TEX_UV_SHEEN_ROUGHNESS: expectedExtensionUvMetaOffset(3),
+      MATERIAL_TEX_UV_IRIDESCENCE: expectedExtensionUvMetaOffset(4),
+      MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS: expectedExtensionUvMetaOffset(5),
+      MATERIAL_TEX_UV_SPECULAR_COLOR: expectedExtensionUvMetaOffset(6),
+      MATERIAL_TEX_UV_SPECULAR_INTENSITY: expectedExtensionUvMetaOffset(7),
+      MATERIAL_TEX_UV_CLEARCOAT_NORMAL: MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET,
+      MATERIAL_TEX_UV_THICKNESS: MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET,
+      MATERIAL_TEX_UV_FRONT_LAYER_NORMAL: MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET,
+      MATERIAL_TEX_UV_BACK_LAYER_NORMAL:
+        MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
+    };
+
+    expect(Object.fromEntries(constants)).toEqual(expected);
+  });
+
   it('group-3 WGSL declares the P2 texture bindings + the sampler fn', () => {
     const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
     expect(wgsl).toContain('@group(3) @binding(1) var<storage, read> meshUvs');
@@ -722,11 +773,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('materialTexDescriptors[base + 16u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 41u].x');
     expect(wgsl).toContain('materialTexDescriptors[base + 42u].w');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 69u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_THICKNESS = 73u;');
     expect(wgsl).toContain('const MATERIAL_TEX_LAYER_NORMAL = 75u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_FRONT_LAYER_NORMAL = 78u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_BACK_LAYER_NORMAL = 80u;');
     expect(wgsl).toContain('let clearcoatNormalIdx = i32(materialTexDescriptors[base + 67u].x);');
     expect(wgsl).toContain('let clearcoatNormalScale = materialTexDescriptors[base + 67u].y;');
     expect(wgsl).toContain('let thicknessIdx = i32(materialTexDescriptors[base + 71u].x);');
@@ -755,16 +802,6 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
 
   it('group-3 WGSL samples every consumed map with its own UV metadata slot', () => {
     const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_BASE_COLOR = 19u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_ROUGHNESS = 25u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_METALLIC = 27u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_TRANSMISSION = 39u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT = 51u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_SPECULAR_INTENSITY = 65u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_CLEARCOAT_NORMAL = 69u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_THICKNESS = 73u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_FRONT_LAYER_NORMAL = 78u;');
-    expect(wgsl).toContain('const MATERIAL_TEX_UV_BACK_LAYER_NORMAL = 80u;');
     expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
     expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTextures));');
     expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTexturesLinear));');
