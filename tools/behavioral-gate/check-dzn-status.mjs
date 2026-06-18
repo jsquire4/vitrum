@@ -53,6 +53,19 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-restirptreuse-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter restirPtReuse --require-full-tier",
+    filter: "restirPtReuse",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label: "pt/restirPtReuse", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-status.json",
     command: "npm run behavioral-gate:dzn -- --filter gltf --require-full-tier",
     filter: "gltf",
@@ -157,4 +170,4 @@ for (const expected of EXPECTED) {
   }
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (4 committed dzn status artifacts)");
+console.log("[behavioral-gate-dzn-status-check] PASS (5 committed dzn status artifacts)");

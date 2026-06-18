@@ -171,6 +171,11 @@
 > `"verdict":"PASS"`. **2026-06-18 dzn follow-up:** `behavioral-gate:dzn -- --filter bdpt --require-full-tier`
 > now has a committed status artifact proving `pt/bdpt` and `pt/spectral+bdpt`
 > boot/render finite non-black on the dzn full-tier adapter with zero GPU errors.
+> A second dzn status artifact for
+> `behavioral-gate:dzn -- --filter restirPtReuse --require-full-tier` proves
+> off-default `pt/restirPtReuse` also boots/renders finite non-black full-tier on
+> the dzn adapter with zero GPU errors; equal-spp variance and specialty
+> radiometric promotion remain separate proof work.
 > The remaining proof/implementation tail is explicit
 > multi-vertex BDPT: `controls.byMaxLightBounces` still shows the finding starting
 > at `maxLightBounces:2` (+13.21% global luminance) and reaching +17.08% at
