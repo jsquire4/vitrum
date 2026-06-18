@@ -53,6 +53,19 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-lite-tier-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter lite-tier --require-full-tier",
+    filter: "lite-tier",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label: "pt/lite-tier", verdict: "PASS", rawStatus: "OK", tier: "lite", minLuminance: 0.005 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
     command: "npm run behavioral-gate:dzn -- --filter spectral --require-full-tier",
     filter: "spectral",
@@ -263,9 +276,15 @@ function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+const coveredLabels = new Set();
+
 for (const expected of EXPECTED) {
   const url = new URL(`../../${expected.path}`, import.meta.url);
   const status = JSON.parse(await Deno.readTextFile(url));
+
+  for (const config of status.configs ?? []) {
+    coveredLabels.add(config.label);
+  }
 
   if (status.harness !== "behavioral-gate:dzn") fail(`${expected.path}: harness mismatch`);
   if (status.verdict !== expected.verdict) fail(`${expected.path}: verdict must be ${expected.verdict}, got ${status.verdict}`);
@@ -335,4 +354,15 @@ for (const expected of EXPECTED) {
   }
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (16 committed dzn status artifacts)");
+const gateSource = await Deno.readTextFile(new URL("./gate.mjs", import.meta.url));
+const gateLabels = [...gateSource.matchAll(/label:\s*"([^"]+)"/g)]
+  .map((match) => match[1])
+  .filter((label) => label.includes("/") && !label.startsWith("__self-test/"));
+const missingLabels = [...new Set(gateLabels)]
+  .filter((label) => !coveredLabels.has(label))
+  .sort();
+if (missingLabels.length > 0) {
+  fail(`missing committed dzn status coverage for ${missingLabels.join(", ")}`);
+}
+
+console.log("[behavioral-gate-dzn-status-check] PASS (17 committed dzn status artifacts; all real gate labels covered)");

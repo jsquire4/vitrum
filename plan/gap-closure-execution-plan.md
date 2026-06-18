@@ -369,13 +369,15 @@ replacement for V28-B recaptures.
 - PPG favorable-scene A/B.
 - NRC quality/convergence A/B.
 - Neural denoiser quality A/B once production weights exist.
-- Baseline/spectral/skinned/analytic dzn execution proof. Focused dzn status
-  artifacts now cover `pt/default`, `wh/default`, `pt/spectral`,
-  `pt/spectral+photon`, `pt/spectral+bdpt`, `pt/skinned-mesh`,
+- Baseline/lite/spectral/skinned/analytic dzn execution proof. Focused dzn
+  status artifacts now cover `pt/default`, `wh/default`, `pt/lite-tier`,
+  `pt/spectral`, `pt/spectral+photon`, `pt/spectral+bdpt`, `pt/skinned-mesh`,
   `pt/gltf-skinned-animation`, `wh/skinned-mesh`, and `pt/analytic-sphere` with
-  finite non-black output and zero GPU errors. The analytic lane also fixed a
-  stale behavioral fixture that used an object-shaped sphere instead of the core
-  `AnalyticPrimitive` contract. Remaining work is reference/radiometric
+  finite non-black output and zero GPU errors. The status checker now derives
+  the real behavioral-gate label inventory from `gate.mjs` and fails if any
+  non-self-test lane lacks committed dzn status coverage. The analytic lane also
+  fixed a stale behavioral fixture that used an object-shaped sphere instead of
+  the core `AnalyticPrimitive` contract. Remaining work is reference/radiometric
   promotion, not boot/render validity.
 - BDPT material/radiometric A/B. Full-tier dzn boot/render proof now covers
   `pt/bdpt` and `pt/spectral+bdpt` through
@@ -488,7 +490,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | Neural denoiser quality | shared/walkaround | Production checkpoint plus quality A/B; otherwise keep opt-in. |
 | BDPT / ReSTIR-PT material and radiometric proof | pt-webgpu/pt-webgl2 | Safe-default BDPT, SPPM, and ReSTIR-PT committed snapshots are checked by `npm run radiometric-ab:proof-check`; focused dzn full-tier behavioral status now proves `pt/bdpt`, `pt/spectral+bdpt`, and off-default `pt/restirPtReuse` boot/render finite non-black with zero GPU errors. Remaining work is specialty material furnace, equal-spp ReSTIR-PT variance proof, and multi-vertex BDPT promotion evidence. |
 | SPPM / MNEE caustic radiometric proof | pt-webgpu | Focused dzn full-tier behavioral status now proves `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` boot/render finite non-black with zero GPU errors. Remaining work is caustic radiometric convergence / forward-traced oracle A/B. |
-| Baseline/spectral/skinned/analytic execution | pt-webgpu/walkaround | Focused dzn status now proves default pt/walkaround, spectral combos, skinned/glTF-skinned animation, and full-tier analytic sphere lanes boot/render finite non-black with zero GPU errors. Remaining work is reference-quality or radiometric promotion where applicable. |
+| Baseline/lite/spectral/skinned/analytic execution | pt-webgpu/walkaround | Focused dzn status now proves default pt/walkaround, explicit pt-webgpu lite fallback, spectral combos, skinned/glTF-skinned animation, and full-tier analytic sphere lanes boot/render finite non-black with zero GPU errors. The dzn status checker now fails if any real behavioral-gate label lacks committed coverage. Remaining work is reference-quality or radiometric promotion where applicable. |
 | Analytic emitter/environment proof | pt-webgpu/walkaround | Focused dzn status now proves point/disc/spot/directional, HDRI, and procedural-sky lanes boot/render finite non-black with zero GPU errors on their selected full/lite/walkaround rows. Remaining work is reference-quality radiometric sweep coverage. |
 | Walkaround behavioral matrix | walkaround | `behavioral-gate:dzn -- --filter wh/ --require-full-tier` now passes all ten walkaround rows with zero GPU errors after fixing RC material atlas/meta sample types. Remaining work is A/B quality proof, not boot/render validity. |
 | pt-webgpu full-tier material furnace | pt-webgpu | Clearcoat/sheen/iridescence/aniso/specular map reference renders. Synthetic glTF material-sweep WSL/lavapipe golden is metadata-checked; full-tier material-lobe capture remains. |

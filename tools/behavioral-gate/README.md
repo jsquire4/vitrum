@@ -55,15 +55,17 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
 ```
 
-The committed dzn status set includes fifteen passing focused artifacts
-(`gltf-material-sweep`, `mutation`, `default`, `spectral`, `skinned`,
-`analytic`, `bdpt`, `restirPtReuse`, `caustic`, `photon`, `light`,
+The committed dzn status set includes sixteen passing focused artifacts
+(`gltf-material-sweep`, `mutation`, `default`, `lite-tier`, `spectral`,
+`skinned`, `analytic`, `bdpt`, `restirPtReuse`, `caustic`, `photon`, `light`,
 `directional`, `hdri`, `procedural-sky`, `wh/`) plus the broader `--filter gltf`
-full-suite lane. The broad glTF status confirms full-tier execution with zero
-GPU errors for all selected glTF lanes; real-asset comparisons use the explicit
-`dzn-full` golden variant under
-`tools/reference-renders/gltf-real-behavioral-dzn-full/`. The default, spectral,
-skinned, and analytic lanes prove baseline pt/walkaround, spectral combos,
+full-suite lane. Together they cover every real behavioral-gate label; the only
+uncovered label is the synthetic `__self-test/always-black` failure-injection row.
+The broad glTF status confirms full-tier execution with zero GPU errors for all
+selected glTF lanes; real-asset comparisons use the explicit `dzn-full` golden
+variant under `tools/reference-renders/gltf-real-behavioral-dzn-full/`. The
+default, lite-tier, spectral, skinned, and analytic lanes prove baseline
+pt/walkaround, explicit pt-webgpu lite fallback, spectral combos,
 skinned/glTF-skinned animation, and full-tier analytic sphere boot/render health.
 The BDPT lane is a full-tier boot/render proof for `pt/bdpt` and
 `pt/spectral+bdpt`; material furnace and multi-vertex promotion remain separate

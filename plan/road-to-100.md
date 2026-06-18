@@ -194,16 +194,20 @@
 > closed an RC validation bug: `rc_materialTextureAtlas` / `rc_materialMapMeta`
 > are `rgba32float` textures read with `textureLoad`, so their bind-group layout
 > entries must be `unfilterable-float`, not filterable `float`.
-> **2026-06-18 baseline/spectral/skinned/analytic dzn follow-up:** focused dzn
-> status artifacts for `--filter default`, `--filter spectral`, `--filter skinned`,
-> and `--filter analytic` now prove baseline pt/walkaround rows, pt spectral
+> **2026-06-18 baseline/lite/spectral/skinned/analytic dzn follow-up:** focused
+> dzn status artifacts for `--filter default`, `--filter lite-tier`,
+> `--filter spectral`, `--filter skinned`, and `--filter analytic` now prove
+> baseline pt/walkaround rows, explicit pt-webgpu lite fallback, pt spectral
 > combinations, pt/walkaround skinned rows, glTF skinned animation, and full-tier
 > pt-webgpu analytic sphere execution all boot/render finite non-black with zero
-> GPU errors. This also closed a validation-harness truthfulness issue: the
-> analytic fixture now uses the core `AnalyticPrimitive` contract
-> (`shape:'sphere'`, `params:[cx,cy,cz,radius]`), and pt-webgpu suppresses the
-> shared-bvh triangle-stream "skipped" warning for analytic primitives that it
-> actually consumes through full-tier analytic buffers.
+> GPU errors. The committed dzn status checker now derives the behavioral-gate
+> label inventory from `gate.mjs` and fails if any real gate label lacks status
+> coverage; only the synthetic `__self-test/always-black` row is excluded. This
+> also closed a validation-harness truthfulness issue: the analytic fixture now
+> uses the core `AnalyticPrimitive` contract (`shape:'sphere'`,
+> `params:[cx,cy,cz,radius]`), and pt-webgpu suppresses the shared-bvh
+> triangle-stream "skipped" warning for analytic primitives that it actually
+> consumes through full-tier analytic buffers.
 > The remaining proof/implementation tail is explicit
 > multi-vertex BDPT: `controls.byMaxLightBounces` still shows the finding starting
 > at `maxLightBounces:2` (+13.21% global luminance) and reaching +17.08% at
