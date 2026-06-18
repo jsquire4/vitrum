@@ -579,7 +579,13 @@ class PTEngineWebGPU implements Engine {
     this.#restirPtMClamp =
       typeof rptOpts.mClamp === 'number' && rptOpts.mClamp >= 1 ? Math.floor(rptOpts.mClamp) : 20;
     this.#restirPtWCap = typeof rptOpts.wCap === 'number' && rptOpts.wCap > 0 ? rptOpts.wCap : 10;
-    this.#gpu = new GpuResources(opts.device, traceTier, this.#bdpt, this.#restirPtReuse);
+    this.#gpu = new GpuResources(
+      opts.device,
+      traceTier,
+      this.#bdpt,
+      this.#restirPtReuse,
+      (warning) => this.#warn(warning),
+    );
     if (opts.denoiser === 'oidn-final') {
       const modelUrl = opts.oidn?.modelUrl;
       const eps = opts.oidn?.executionProviders?.filter(

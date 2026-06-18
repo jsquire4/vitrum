@@ -184,6 +184,11 @@
 > unsupported-material/displacement warnings now retain the aggregate `fields`
 > list while also reporting exact `primitiveIds` plus per-primitive
 > `primitiveFields`, matching the mutation-path diagnostic specificity.
+> Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
+> downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
+> pixel stats) now route through the engine's structured `onWarning` channel
+> when engine-owned, while preserving direct `console.warn` fallback for
+> standalone resource tests.
 > Same-day mapped-emitter adjoint follow-up: explicit uncapped mesh-area emitter
 > `color` / `intensity` path replay now stays analytic when the source material
 > has a readable `emissiveMap` and the authored color/intensity denominators are

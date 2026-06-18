@@ -5,10 +5,13 @@
  *         returns null when restirPtReuse is off (or before the first frame).
  * H14-D: readOidnInputsFromTextures destroys all created buffers even when
  *         mapAsync rejects (device-loss / OOM simulation).
- * H14-F: buffer-ceiling console.warns fire at most once per engine instance
- *         regardless of how many frames hit the ceiling.
+ * H14-F: buffer-ceiling warnings fire at most once per engine instance
+ *         regardless of how many frames hit the ceiling. Direct GpuResources
+ *         use preserves console.warn; engine-owned use can route structured
+ *         EngineWarning payloads.
  */
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import type { EngineWarning } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { readOidnInputsFromTextures } from '../denoise/rgba16fReadback.js';
 import { GpuResources } from '../gpuResources.js';
@@ -217,6 +220,48 @@ describe('H14-F: buffer-ceiling warns fire at most once per engine instance', ()
 
     const rptWarns = warns.filter((w) => w.includes('ReSTIR-PT reservoir'));
     expect(rptWarns.length).toBe(1);
+
+    warnSpy.mockRestore();
+  });
+
+  it('routes buffer ceilings through a structured warning sink when provided', () => {
+    const structured: EngineWarning[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const device = {
+      createBuffer: vi.fn(() => ({ destroy: vi.fn() })),
+      createTexture: vi.fn(() => ({ createView: vi.fn(() => ({})), destroy: vi.fn() })),
+      createCommandEncoder: vi.fn(() => ({ clearBuffer: vi.fn(), finish: vi.fn(() => ({})) })),
+      queue: { submit: vi.fn() },
+    } as unknown as GPUDevice;
+
+    const gpu = new GpuResources(
+      device,
+      'full',
+      /* bdpt */ true,
+      /* restirPtReuse */ false,
+      (warning) => structured.push(warning),
+    );
+
+    for (let i = 0; i < 5; i++) {
+      gpu.ensureBdptEyeStack(10000, 10000, 8, /* bdptActive */ true);
+    }
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(structured).toEqual([
+      expect.objectContaining({
+        code: 'pt-webgpu.bdpt-eye-stack-ceiling',
+        backend: 'pt-webgpu',
+        phase: 'renderFrame',
+        method: 'renderFrame',
+        details: expect.objectContaining({
+          width: 10000,
+          height: 10000,
+          maxDepth: 8,
+          fallback: 'skip-bdpt-connections',
+        }),
+      }),
+    ]);
 
     warnSpy.mockRestore();
   });

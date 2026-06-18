@@ -22,6 +22,7 @@
  * cached here because their lifetime is tied to the accum views + pipeline.
  */
 
+import type { EngineWarning } from '@vitrum/core';
 import type { PtWebgpuTraceTier } from './traceTier.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import type { LiteLightTexData, LiteEnvTexData, LiteEnvCdfData } from './scene/litePackedTextures.js';
@@ -279,6 +280,7 @@ export class GpuResources {
   readonly #device: GPUDevice;
   readonly #traceTier: PtWebgpuTraceTier;
   readonly #bdpt: boolean;
+  readonly #onWarning: ((warning: EngineWarning) => void) | undefined;
   /**
    * Compile-time opt-in for the ReSTIR-PT reservoir/reuse pre-passes (the hero-
    * stack temporal reconnection-reuse path). OFF by default and full-tier only.
@@ -457,10 +459,10 @@ export class GpuResources {
   static readonly BDPT_EYE_STACK_MAX_BYTES = 384 * 1024 * 1024; // 384 MiB
 
   /**
-   * H14-F — once-gate set for per-frame buffer-ceiling console.warns. A warn
-   * fires at most once per key (e.g. 'bdptEyeStack', 'restirPtReservoir') for
-   * the lifetime of this GpuResources instance. Keys are added on the first
-   * warn; subsequent frames that hit the same ceiling are silently suppressed.
+   * H14-F — once-gate set for per-frame buffer-ceiling warnings. A warning fires
+   * at most once per key (e.g. 'bdptEyeStack', 'restirPtReservoir') for the
+   * lifetime of this GpuResources instance. Keys are added on the first warning;
+   * subsequent frames that hit the same ceiling are silently suppressed.
    */
   readonly #ceilingWarnedKeys = new Set<string>();
 
@@ -469,13 +471,25 @@ export class GpuResources {
     traceTier: PtWebgpuTraceTier,
     bdpt: boolean,
     restirPtReuse = false,
+    onWarning?: (warning: EngineWarning) => void,
   ) {
     this.#device = device;
     this.#traceTier = traceTier;
     this.#bdpt = bdpt;
+    this.#onWarning = onWarning;
     // Reuse is full-tier only: the per-pass layouts bind the full-tier scene
     // groups (analytics/TLAS/lights). On the lite tier the flag is inert.
     this.#restirPtReuse = restirPtReuse && traceTier === 'full';
+  }
+
+  #emitResourceCeilingWarning(key: string, warning: EngineWarning): void {
+    if (this.#ceilingWarnedKeys.has(key)) return;
+    this.#ceilingWarnedKeys.add(key);
+    if (this.#onWarning != null) {
+      this.#onWarning(warning);
+      return;
+    }
+    console.warn(warning.message);
   }
 
   /** Whether ReSTIR-PT reuse is active for this engine (compile-time + full-tier). */
@@ -865,17 +879,27 @@ export class GpuResources {
 
     if (bdptActive && targetBytes > GpuResources.BDPT_EYE_STACK_MAX_BYTES) {
       // H14-F: once-gate — warn only on the first frame that hits the ceiling.
-      if (!this.#ceilingWarnedKeys.has('bdptEyeStack')) {
-        this.#ceilingWarnedKeys.add('bdptEyeStack');
-        const mib = (targetBytes / (1024 * 1024)).toFixed(1);
-        console.warn(
+      const mib = (targetBytes / (1024 * 1024)).toFixed(1);
+      this.#emitResourceCeilingWarning('bdptEyeStack', {
+        code: 'pt-webgpu.bdpt-eye-stack-ceiling',
+        backend: 'pt-webgpu',
+        phase: 'renderFrame',
+        method: 'renderFrame',
+        message:
           `[vitrum/pt-webgpu] BDPT eye-stack scratch would be ${mib} MiB ` +
-            `(${width}×${height} × depth ${maxDepth} × 32 B), exceeding the ` +
-            `${(GpuResources.BDPT_EYE_STACK_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
-            'Skipping BDPT connections this frame — lower resolutionFactor, cap bounces, or tile. ' +
-            '(This warning fires once per engine instance.)',
-        );
-      }
+          `(${width}×${height} × depth ${maxDepth} × 32 B), exceeding the ` +
+          `${(GpuResources.BDPT_EYE_STACK_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
+          'Skipping BDPT connections this frame — lower resolutionFactor, cap bounces, or tile. ' +
+          '(This warning fires once per engine instance.)',
+        details: {
+          width,
+          height,
+          maxDepth,
+          targetBytes,
+          ceilingBytes: GpuResources.BDPT_EYE_STACK_MAX_BYTES,
+          fallback: 'skip-bdpt-connections',
+        },
+      });
       if (this.bdptEyeStackBuffer == null) {
         this.bdptEyeStackBuffer = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.bdpt.eyeStack.placeholder',
@@ -923,17 +947,26 @@ export class GpuResources {
     const resultBytes = px * 16;
     if (reservoirBytes > GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES) {
       // H14-F: once-gate — warn only on the first frame that hits the ceiling.
-      if (!this.#ceilingWarnedKeys.has('restirPtReservoir')) {
-        this.#ceilingWarnedKeys.add('restirPtReservoir');
-        const mib = (reservoirBytes / (1024 * 1024)).toFixed(1);
-        console.warn(
+      const mib = (reservoirBytes / (1024 * 1024)).toFixed(1);
+      this.#emitResourceCeilingWarning('restirPtReservoir', {
+        code: 'pt-webgpu.restir-pt-reservoir-ceiling',
+        backend: 'pt-webgpu',
+        phase: 'renderFrame',
+        method: 'renderFrame',
+        message:
           `[vitrum/pt-webgpu] ReSTIR-PT reservoir buffer would be ${mib} MiB ` +
-            `(${width}×${height} × 144 B), exceeding the ` +
-            `${(GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
-            'Skipping ReSTIR-PT reuse this frame — lower resolutionFactor or tile. ' +
-            '(This warning fires once per engine instance.)',
-        );
-      }
+          `(${width}×${height} × ${GpuResources.RESERVOIR_PT_HERO_BYTES} B), exceeding the ` +
+          `${(GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES / (1024 * 1024)).toFixed(0)} MiB ceiling. ` +
+          'Skipping ReSTIR-PT reuse this frame — lower resolutionFactor or tile. ' +
+          '(This warning fires once per engine instance.)',
+        details: {
+          width,
+          height,
+          targetBytes: reservoirBytes,
+          ceilingBytes: GpuResources.RESTIR_PT_RESERVOIR_MAX_BYTES,
+          fallback: 'skip-restir-pt-reuse',
+        },
+      });
       return false;
     }
     const ready =
@@ -1615,17 +1648,26 @@ export class GpuResources {
     const deviceMaxBinding = this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
     const sppmCeiling = Math.min(SPPM_PHOTON_CELLS_MAX_BYTES, deviceMaxBuffer, deviceMaxBinding);
     if (SPPM_PHOTON_CELLS_BYTES > sppmCeiling) {
-      if (!this.#ceilingWarnedKeys.has('sppmPhotonCells')) {
-        this.#ceilingWarnedKeys.add('sppmPhotonCells');
-        const mib = (SPPM_PHOTON_CELLS_BYTES / (1024 * 1024)).toFixed(1);
-        console.warn(
+      const mib = (SPPM_PHOTON_CELLS_BYTES / (1024 * 1024)).toFixed(1);
+      this.#emitResourceCeilingWarning('sppmPhotonCells', {
+        code: 'pt-webgpu.sppm-photon-cells-ceiling',
+        backend: 'pt-webgpu',
+        phase: 'renderFrame',
+        method: 'renderFrame',
+        message:
           `[vitrum/pt-webgpu] SPPM photon-cells buffer would be ${mib} MiB, ` +
-            `exceeding the ${(sppmCeiling / (1024 * 1024)).toFixed(0)} MiB ceiling ` +
-            '(min of the static SPPM ceiling and device.limits.maxBufferSize). ' +
-            "Falling back to 'manifold-nee' caustic strategy. " +
-            '(This warning fires once per engine instance.)',
-        );
-      }
+          `exceeding the ${(sppmCeiling / (1024 * 1024)).toFixed(0)} MiB ceiling ` +
+          '(min of the static SPPM ceiling and device.limits.maxBufferSize). ' +
+          "Falling back to 'manifold-nee' caustic strategy. " +
+          '(This warning fires once per engine instance.)',
+        details: {
+          targetBytes: SPPM_PHOTON_CELLS_BYTES,
+          ceilingBytes: sppmCeiling,
+          deviceMaxBuffer,
+          deviceMaxBinding,
+          fallback: 'manifold-nee',
+        },
+      });
       return false;
     }
     // Destroy any placeholder buffers before allocating the real ones.
@@ -1846,16 +1888,27 @@ export class GpuResources {
     const deviceMaxBuffer  = this.#device.limits?.maxBufferSize ?? 256 * 1024 * 1024;
     const deviceMaxBinding = this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
     if (targetBytes > Math.min(deviceMaxBuffer, deviceMaxBinding)) {
-      if (!this.#ceilingWarnedKeys.has('sppmPixelStats')) {
-        this.#ceilingWarnedKeys.add('sppmPixelStats');
-        const mib = (targetBytes / (1024 * 1024)).toFixed(1);
-        console.warn(
+      const mib = (targetBytes / (1024 * 1024)).toFixed(1);
+      this.#emitResourceCeilingWarning('sppmPixelStats', {
+        code: 'pt-webgpu.sppm-pixel-stats-ceiling',
+        backend: 'pt-webgpu',
+        phase: 'renderFrame',
+        method: 'renderFrame',
+        message:
           `[vitrum/pt-webgpu] SPPM per-pixel stats buffer would be ${mib} MiB ` +
-            `(${width}×${height} × 32 B), exceeding the device limit. ` +
-            'SPPM progressive stats disabled — caustic quality will be reduced. ' +
-            '(This warning fires once per engine instance.)',
-        );
-      }
+          `(${width}×${height} × ${SPPM_PIXEL_STATS_BYTES_PER_PIXEL} B), exceeding the device limit. ` +
+          'SPPM progressive stats disabled — caustic quality will be reduced. ' +
+          '(This warning fires once per engine instance.)',
+        details: {
+          width,
+          height,
+          targetBytes,
+          ceilingBytes: Math.min(deviceMaxBuffer, deviceMaxBinding),
+          deviceMaxBuffer,
+          deviceMaxBinding,
+          fallback: 'disable-sppm-progressive-stats',
+        },
+      });
       this.#ensureSppmPixelStatsPlaceholder();
       return false;
     }
