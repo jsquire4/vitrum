@@ -316,15 +316,44 @@ const RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
 const RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;
 const RC_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET: u32 = 17u;
 const RC_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;
+const RC_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: u32 = 22u;
+const RC_MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;
 const RC_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;
 const RC_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;
+const RC_MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET: u32 = 28u;
+const RC_MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET: u32 = 30u;
+const RC_MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: u32 = 32u;
+const RC_MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;
+const RC_MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: u32 = 36u;
+const RC_MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET: u32 = 38u;
+const RC_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET: u32 = 39u;
+const RC_MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: u32 = 41u;
+const RC_MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: u32 = 42u;
+const RC_MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: u32 = 44u;
+const RC_MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
 const RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
 const RC_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
+const RC_PI: f32 = 3.14159265;
+const RC_INV_PI: f32 = 0.31830988618;
 
 fn rcMaterialMetaCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(rc_materialMapMeta);
   let w = max(dims.x, 1u);
   return vec2i(i32(texel % w), i32(texel / w));
+}
+
+fn rcMaterialMetaAvailable(triIndex: u32, metaOffset: u32) -> bool {
+  let dims = textureDimensions(rc_materialMapMeta);
+  let texel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
+  return texel < dims.x * dims.y;
+}
+
+fn rcMaterialMetaLoadOrZero(triIndex: u32, metaOffset: u32) -> vec4f {
+  let texel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
+  if (!rcMaterialMetaAvailable(triIndex, metaOffset)) {
+    return vec4f(0.0);
+  }
+  return textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(texel), 0);
 }
 
 fn rcWrapMaterialUv1(v: f32, mode: u32) -> f32 {
@@ -486,12 +515,10 @@ fn rcSampleMaterialScalarMap(
 }
 
 fn rcSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
-  let metaDims = textureDimensions(rc_materialMapMeta);
-  let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET;
   var color = vec3f(1.0);
   var intensity = 1.0;
-  if (metaTexel < metaDims.x * metaDims.y) {
-    let spec = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
+  if (rcMaterialMetaAvailable(triIndex, RC_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET)) {
+    let spec = rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET);
     color = clamp(spec.rgb, vec3f(0.0), vec3f(1.0));
     intensity = clamp(spec.a, 0.0, 1.0);
   }
@@ -505,6 +532,84 @@ fn rcSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
     intensity = clamp(intensity * intensityMap.a, 0.0, 1.0);
   }
   return vec4f(color, intensity);
+}
+
+fn rcSampleClearcoatControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f {
+  let cc = rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET);
+  var factor = clamp(cc.x, 0.0, 1.0);
+  var roughness = clamp(cc.y, 0.0, 1.0);
+
+  let clearcoatMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET, uv0, uv1);
+  if (clearcoatMap.x >= 0.0) {
+    factor = clamp(factor * clearcoatMap.r, 0.0, 1.0);
+  }
+  let roughnessMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET, uv0, uv1);
+  if (roughnessMap.x >= 0.0) {
+    roughness = clamp(roughness * roughnessMap.g, 0.0, 1.0);
+  }
+  return vec2f(factor, roughness);
+}
+
+fn rcSampleSheenControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let scalars = rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET);
+  let colorMeta = rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET);
+  var sheenColor = clamp(colorMeta.rgb, vec3f(0.0), vec3f(1.0));
+  var sheen = clamp(scalars.z, 0.0, 1.0);
+
+  let colorMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET, uv0, uv1);
+  if (colorMap.x >= 0.0) {
+    sheenColor = clamp(sheenColor * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+  }
+  return vec4f(sheenColor, sheen);
+}
+
+fn rcSampleSheenRoughness(triIndex: u32, uv0: vec2f, uv1: vec2f) -> f32 {
+  let scalars = rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET);
+  var roughness = clamp(scalars.w, 0.0, 1.0);
+  let roughnessMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET, uv0, uv1);
+  if (roughnessMap.x >= 0.0) {
+    roughness = clamp(roughness * roughnessMap.a, 0.0, 1.0);
+  }
+  return roughness;
+}
+
+fn rcSampleAnisotropyControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f {
+  let scalars = rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET);
+  var strength = clamp(scalars.x, 0.0, 1.0);
+  var rotation = scalars.y;
+
+  let anisoMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET, uv0, uv1);
+  if (anisoMap.x >= 0.0) {
+    strength = clamp(strength * anisoMap.b, 0.0, 1.0);
+    let direction = anisoMap.rg * 2.0 - vec2f(1.0);
+    if (dot(direction, direction) > 1e-6) {
+      rotation += atan2(direction.y, direction.x);
+    }
+  }
+  return vec2f(strength, rotation);
+}
+
+fn rcSampleIridescenceControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let scalars = rcMaterialMetaLoadOrZero(triIndex, RC_MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET);
+  var factor = clamp(scalars.x, 0.0, 1.0);
+  let ior = max(1.0, scalars.y);
+  var thicknessMin = max(0.0, scalars.z);
+  var thicknessMax = max(0.0, scalars.w);
+
+  let iridescenceMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET, uv0, uv1);
+  if (iridescenceMap.x >= 0.0) {
+    factor = clamp(factor * iridescenceMap.r, 0.0, 1.0);
+  }
+  let thicknessMap = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET, uv0, uv1);
+  if (thicknessMap.x >= 0.0) {
+    let thickness = mix(thicknessMin, thicknessMax, clamp(thicknessMap.g, 0.0, 1.0));
+    thicknessMin = thickness;
+    thicknessMax = thickness;
+    if (thickness <= 0.0) {
+      factor = 0.0;
+    }
+  }
+  return vec4f(factor, ior, thicknessMin, thicknessMax);
 }
 
 fn rcSmoothNormalForHit(hit: IntersectionResult, fallbackNormal: vec3f) -> vec3f {
@@ -670,30 +775,36 @@ fn rcMaterialTangentFrameForHit(
   return rcPreferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
 }
 
-fn rcApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
+fn rcApplyNormalMapAtOffsetForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  fallbackNormal: vec3f,
+  normalMapOffset: u32,
+  normalScaleOffset: u32,
+) -> vec3f {
   let triIndex = hit.indices.w;
-  let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET;
+  let metaTexel = triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + normalMapOffset;
   let metaDims = textureDimensions(rc_materialMapMeta);
   if (metaTexel + 1u >= metaDims.x * metaDims.y) {
-    return baseNormal;
+    return fallbackNormal;
   }
   let meta0 = textureLoad(rc_materialMapMeta, rcMaterialMetaCoord(metaTexel), 0);
   if (i32(meta0.x) < 0) {
-    return baseNormal;
+    return fallbackNormal;
   }
 
   let uvs = rcHitMaterialUvs(hit);
   if (uvs.valid == 0u) {
-    return baseNormal;
+    return fallbackNormal;
   }
-  let texelColor = rcSampleMaterialAtlasRawAtOffset(triIndex, RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET, uvs.uv0, uvs.uv1);
+  let texelColor = rcSampleMaterialAtlasRawAtOffset(triIndex, normalMapOffset, uvs.uv0, uvs.uv1);
   if (texelColor.x < 0.0) {
-    return baseNormal;
+    return fallbackNormal;
   }
 
   let scaleMeta = textureLoad(
     rc_materialMapMeta,
-    rcMaterialMetaCoord(triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + RC_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET),
+    rcMaterialMetaCoord(triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + normalScaleOffset),
     0,
   );
   let normalScale = max(scaleMeta.x, 0.0);
@@ -703,9 +814,29 @@ fn rcApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
     texelColor.b * 2.0 - 1.0,
   ));
 
-  let frame = rcMaterialTangentFrameForHit(hit, baseNormal, RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET);
-  let perturbed = normalize(frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + baseNormal * tangentSample.z);
-  return select(-perturbed, perturbed, dot(perturbed, baseNormal) >= 0.0);
+  let frame = rcMaterialTangentFrameForHit(hit, frameNormal, normalMapOffset);
+  let perturbed = normalize(frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + frameNormal * tangentSample.z);
+  return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
+}
+
+fn rcApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
+  return rcApplyNormalMapAtOffsetForHit(
+    hit,
+    baseNormal,
+    baseNormal,
+    RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
+    RC_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET,
+  );
+}
+
+fn rcApplyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
+  return rcApplyNormalMapAtOffsetForHit(
+    hit,
+    frameNormal,
+    fallbackNormal,
+    RC_MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET,
+    RC_MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET,
+  );
 }
 
 fn rcApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
@@ -777,6 +908,14 @@ struct RCProbeHitMaterial {
   roughness: f32,
   metalness: f32,
   specular: vec4f,
+  clearcoat: vec2f,
+  clearcoatNormal: vec3f,
+  sheen: vec4f,
+  sheenRoughness: f32,
+  anisotropy: vec2f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
+  iridescence: vec4f,
 }
 
 fn rcSampleProbeHitMaterial(
@@ -784,12 +923,24 @@ fn rcSampleProbeHitMaterial(
   scalarBaseColor: vec3f,
   scalarRoughness: f32,
   scalarMetalness: f32,
+  frameNormal: vec3f,
+  shadingNormal: vec3f,
 ) -> RCProbeHitMaterial {
   var out: RCProbeHitMaterial;
   out.albedo = scalarBaseColor;
   out.roughness = scalarRoughness;
   out.metalness = scalarMetalness;
   out.specular = vec4f(1.0);
+  out.clearcoat = vec2f(0.0);
+  out.clearcoatNormal = shadingNormal;
+  out.sheen = vec4f(0.0);
+  out.sheenRoughness = 0.0;
+  out.anisotropy = vec2f(0.0);
+  let defaultAnisotropyFrame = rcMaterialTangentFrameForHit(hit, shadingNormal, RC_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);
+  out.anisotropyTangent = defaultAnisotropyFrame.tangent;
+  out.anisotropyBitangent = defaultAnisotropyFrame.bitangent;
+  out.iridescence = vec4f(0.0, 1.0, 0.0, 0.0);
+  out.clearcoatNormal = rcApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
 
   let uvs = rcHitMaterialUvs(hit);
   if (uvs.valid == 0u) {
@@ -822,10 +973,18 @@ fn rcSampleProbeHitMaterial(
     scalarMetalness,
   );
   out.specular = rcSampleSpecularControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.clearcoat = rcSampleClearcoatControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.sheen = rcSampleSheenControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.sheenRoughness = rcSampleSheenRoughness(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.anisotropy = rcSampleAnisotropyControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  let anisotropyFrame = rcMaterialTangentFrameForHit(hit, shadingNormal, RC_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);
+  out.anisotropyTangent = anisotropyFrame.tangent;
+  out.anisotropyBitangent = anisotropyFrame.bitangent;
+  out.iridescence = rcSampleIridescenceControls(hit.indices.w, uvs.uv0, uvs.uv1);
   return out;
 }
 
-fn rcProbeMaterialF0(mat: RCProbeHitMaterial) -> vec3f {
+fn rcBaseMaterialF0(mat: RCProbeHitMaterial) -> vec3f {
   let dielectricF0 = vec3f(0.04) * mat.specular.rgb * mat.specular.a;
   return mix(dielectricF0, mat.albedo, clamp(mat.metalness, 0.0, 1.0));
 }
@@ -833,6 +992,110 @@ fn rcProbeMaterialF0(mat: RCProbeHitMaterial) -> vec3f {
 fn rcFresnelSchlick(cosTheta: f32, f0: vec3f) -> vec3f {
   let f = pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
   return f0 + (vec3f(1.0) - f0) * f;
+}
+
+fn rcIridescenceModifiedF0(baseF0: vec3f, iridescence: vec4f, vDotH: f32) -> vec3f {
+  let factor = clamp(iridescence.x, 0.0, 1.0);
+  if (factor <= 1e-4) {
+    return baseF0;
+  }
+  let thickness = max(0.0, (iridescence.z + iridescence.w) * 0.5);
+  let iorShift = clamp(iridescence.y - 1.0, 0.0, 2.0) * 0.12;
+  let phase = thickness * 0.012 + (1.0 - clamp(vDotH, 0.0, 1.0)) * RC_PI;
+  let filmTint = clamp(
+    0.5 + 0.5 * cos(vec3f(phase, phase + 2.0943951, phase + 4.1887902)) + vec3f(iorShift),
+    vec3f(0.0),
+    vec3f(1.0),
+  );
+  let filmF0 = mix(vec3f(0.04), filmTint, clamp(thickness / 1200.0, 0.0, 1.0));
+  return clamp(mix(baseF0, filmF0, factor), vec3f(0.0), vec3f(1.0));
+}
+
+fn rcDistributionGGX(nDotH: f32, rough: f32) -> f32 {
+  let a = rough * rough;
+  let a2 = a * a;
+  let d = nDotH * nDotH * (a2 - 1.0) + 1.0;
+  return a2 / max(RC_PI * d * d, 1e-6);
+}
+
+fn rcGeometrySchlickGGX(nDotV: f32, rough: f32) -> f32 {
+  let r = rough + 1.0;
+  let k = r * r * 0.125;
+  return nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
+}
+
+fn rcGeometrySmith(nDotV: f32, nDotL: f32, rough: f32) -> f32 {
+  return rcGeometrySchlickGGX(nDotV, rough) * rcGeometrySchlickGGX(nDotL, rough);
+}
+
+fn rcRotateTangentFrame(t: vec3f, b: vec3f, rotation: f32) -> mat2x3f {
+  let c = cos(rotation);
+  let s = sin(rotation);
+  let rt = safe_normalize(t * c + b * s);
+  let rb = safe_normalize(-t * s + b * c);
+  return mat2x3f(rt, rb);
+}
+
+fn rcAnisotropyAxes(rough: f32, anisotropy: f32) -> vec2f {
+  let a = max(0.01, rough * rough);
+  let aspect = sqrt(max(0.1, 1.0 - 0.9 * clamp(anisotropy, 0.0, 1.0)));
+  return vec2f(max(0.001, a / aspect), max(0.001, a * aspect));
+}
+
+fn rcDistributionGGXAnisotropic(n: vec3f, t: vec3f, b: vec3f, h: vec3f, ax: f32, ay: f32) -> f32 {
+  let nDotH = max(0.0, dot(n, h));
+  if (nDotH <= 1e-6) { return 0.0; }
+  let tx = dot(t, h) / ax;
+  let by = dot(b, h) / ay;
+  let d = tx * tx + by * by + nDotH * nDotH;
+  return 1.0 / max(RC_PI * ax * ay * d * d, 1e-6);
+}
+
+fn rcSmithG1Anisotropic(n: vec3f, t: vec3f, b: vec3f, v: vec3f, ax: f32, ay: f32) -> f32 {
+  let nDotV = max(0.0, dot(n, v));
+  if (nDotV <= 1e-6) { return 0.0; }
+  let tx = dot(t, v) * ax;
+  let by = dot(b, v) * ay;
+  let lambda = (-1.0 + sqrt(1.0 + (tx * tx + by * by) / max(nDotV * nDotV, 1e-6))) * 0.5;
+  return 1.0 / (1.0 + lambda);
+}
+
+fn rcEvalClearcoatLobe(clearcoat: vec2f, clearcoatNormal: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+  let cc = clamp(clearcoat.x, 0.0, 1.0);
+  if (cc <= 1e-4) { return vec3f(0.0); }
+  let h = safe_normalize(wo + wi);
+  let nDotL = max(0.0, dot(clearcoatNormal, wi));
+  let nDotV = max(1e-4, dot(clearcoatNormal, wo));
+  let nDotH = max(0.0, dot(clearcoatNormal, h));
+  let vDotH = max(0.0, dot(wo, h));
+  if (nDotL <= 1e-6 || nDotV <= 1e-6) { return vec3f(0.0); }
+  let rough = clamp(clearcoat.y, 0.01, 1.0);
+  let D = rcDistributionGGX(nDotH, rough);
+  let G = rcGeometrySmith(nDotV, nDotL, rough);
+  let F = rcFresnelSchlick(vDotH, vec3f(0.04));
+  return cc * (D * G * F) / max(4.0 * nDotV * nDotL, 1e-6) * nDotL;
+}
+
+fn rcCharlieD(nDotH: f32, alpha: f32) -> f32 {
+  let invAlpha = 1.0 / max(alpha, 1e-4);
+  let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));
+  return (2.0 + invAlpha) * pow(sinThetaH, invAlpha) / (2.0 * RC_PI);
+}
+
+fn rcSheenVisibility(nDotL: f32, nDotV: f32) -> f32 {
+  return 1.0 / max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-6);
+}
+
+fn rcEvalSheenLobe(sheen: vec4f, sheenRoughness: f32, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
+  let sh = clamp(sheen.a, 0.0, 1.0);
+  if (sh <= 1e-4) { return vec3f(0.0); }
+  let nDotL = max(0.0, dot(n, wi));
+  let nDotV = max(0.0, dot(n, wo));
+  if (nDotL <= 1e-6 || nDotV <= 1e-6) { return vec3f(0.0); }
+  let h = safe_normalize(wo + wi);
+  let nDotH = max(0.0, dot(n, h));
+  let alpha = max(clamp(sheenRoughness, 0.0, 1.0) * clamp(sheenRoughness, 0.0, 1.0), 1e-3);
+  return sh * clamp(sheen.rgb, vec3f(0.0), vec3f(1.0)) * rcCharlieD(nDotH, alpha) * rcSheenVisibility(nDotL, nDotV) * nDotL;
 }
 
 fn rcEvaluateProbeDirectResponse(mat: RCProbeHitMaterial, n: vec3f, wo: vec3f, wi: vec3f) -> vec3f {
@@ -847,17 +1110,26 @@ fn rcEvaluateProbeDirectResponse(mat: RCProbeHitMaterial, n: vec3f, wo: vec3f, w
   let nDotH = max(0.0, dot(n, h));
   let vDotH = max(0.0, dot(v, h));
   let rough = clamp(mat.roughness, 0.04, 1.0);
-  let alpha = rough * rough;
-  let alpha2 = alpha * alpha;
-  let denom = max(3.14159265 * pow(nDotH * nDotH * (alpha2 - 1.0) + 1.0, 2.0), 1e-6);
-  let D = alpha2 / denom;
-  let k = pow(rough + 1.0, 2.0) * 0.125;
-  let Gv = nDotV / max(nDotV * (1.0 - k) + k, 1e-6);
-  let Gl = nDotL / max(nDotL * (1.0 - k) + k, 1e-6);
-  let F = rcFresnelSchlick(vDotH, rcProbeMaterialF0(mat));
-  let spec = (D * Gv * Gl) * F / max(4.0 * max(nDotV, 1e-6) * nDotL, 1e-6);
-  let diffuse = mat.albedo * (1.0 - clamp(mat.metalness, 0.0, 1.0)) * 0.31831;
-  return (diffuse + spec) * nDotL;
+  var D: f32;
+  var G: f32;
+  let aniso = clamp(mat.anisotropy.x, 0.0, 1.0);
+  if (aniso > 1e-4) {
+    let frame = rcRotateTangentFrame(mat.anisotropyTangent, mat.anisotropyBitangent, mat.anisotropy.y);
+    let axes = rcAnisotropyAxes(rough, aniso);
+    D = rcDistributionGGXAnisotropic(n, frame[0], frame[1], h, axes.x, axes.y);
+    G = rcSmithG1Anisotropic(n, frame[0], frame[1], v, axes.x, axes.y) *
+        rcSmithG1Anisotropic(n, frame[0], frame[1], l, axes.x, axes.y);
+  } else {
+    D = rcDistributionGGX(nDotH, rough);
+    G = rcGeometrySmith(nDotV, nDotL, rough);
+  }
+  let F0 = rcIridescenceModifiedF0(rcBaseMaterialF0(mat), mat.iridescence, vDotH);
+  let F = rcFresnelSchlick(vDotH, F0);
+  let spec = (D * G) * F / max(4.0 * max(nDotV, 1e-6) * nDotL, 1e-6);
+  let diffuse = mat.albedo * (1.0 - clamp(mat.metalness, 0.0, 1.0)) * RC_INV_PI;
+  return (diffuse + spec) * nDotL
+       + rcEvalClearcoatLobe(mat.clearcoat, mat.clearcoatNormal, v, l)
+       + rcEvalSheenLobe(mat.sheen, mat.sheenRoughness, n, v, l);
 }
 
 struct RCAlphaCoverage {
@@ -1070,7 +1342,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     let n = rcApplyBumpMapForHit(hit, normalMapped);
     let wo = -ray.direction;
 
-    let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness);
+    let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, smoothNormal, n);
     let matColor    = probeMat.albedo;
     let matAtten    = mat.attenuationColor;
     let matEmissive = mat.emissive;
@@ -1115,7 +1387,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
         let secondSmoothNormal = rcSmoothNormalForHit(secondHit, secondHit.normal);
         let secondNormalMapped = rcApplyNormalMapForHit(secondHit, secondSmoothNormal);
         let secondNormal = rcApplyBumpMapForHit(secondHit, secondNormalMapped);
-        let secondProbeMat = rcSampleProbeHitMaterial(secondHit, secondMat.baseColor, secondMat.roughness, secondMat.metalness);
+        let secondProbeMat = rcSampleProbeHitMaterial(secondHit, secondMat.baseColor, secondMat.roughness, secondMat.metalness, secondSmoothNormal, secondNormal);
         let secondColor = secondProbeMat.albedo;
         var sunVis2 = vec3f(1.0);
         if (u.sunCastShadowDisabled == 0u) {

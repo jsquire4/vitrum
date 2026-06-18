@@ -297,6 +297,22 @@ const DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
 const DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
 const DDGI_MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;
 const DDGI_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET: u32 = 17u;
+const DDGI_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;
+const DDGI_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: u32 = 22u;
+const DDGI_MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;
+const DDGI_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;
+const DDGI_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;
+const DDGI_MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET: u32 = 28u;
+const DDGI_MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET: u32 = 30u;
+const DDGI_MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: u32 = 32u;
+const DDGI_MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;
+const DDGI_MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: u32 = 36u;
+const DDGI_MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET: u32 = 38u;
+const DDGI_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET: u32 = 39u;
+const DDGI_MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: u32 = 41u;
+const DDGI_MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: u32 = 42u;
+const DDGI_MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: u32 = 44u;
+const DDGI_MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
 const DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
 const DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 
@@ -304,6 +320,20 @@ fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(ddgiMaterialMapMeta);
   let w = max(dims.x, 1u);
   return vec2i(i32(texel % w), i32(texel / w));
+}
+
+fn ddgiMaterialMetaAvailable(triIndex: u32, metaOffset: u32) -> bool {
+  let dims = textureDimensions(ddgiMaterialMapMeta);
+  let texel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
+  return texel < dims.x * dims.y;
+}
+
+fn ddgiMaterialMetaLoadOrZero(triIndex: u32, metaOffset: u32) -> vec4f {
+  let texel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
+  if (!ddgiMaterialMetaAvailable(triIndex, metaOffset)) {
+    return vec4f(0.0);
+  }
+  return textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(texel), 0);
 }
 
 fn ddgiWrapMaterialUv1(v: f32, mode: u32) -> f32 {
@@ -571,10 +601,115 @@ fn ddgiSampleMaterialScalarMap(
   return clamp(ddgiMaterialMapChannel(texel, channel), 0.0, 1.0);
 }
 
+fn ddgiSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  var color = vec3f(1.0);
+  var intensity = 1.0;
+  if (ddgiMaterialMetaAvailable(triIndex, DDGI_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET)) {
+    let spec = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_SPECULAR_TEXEL_OFFSET);
+    color = clamp(spec.rgb, vec3f(0.0), vec3f(1.0));
+    intensity = clamp(spec.a, 0.0, 1.0);
+  }
+
+  let colorMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET, uv0, uv1);
+  if (colorMap.x >= 0.0) {
+    color = clamp(color * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+  }
+  let intensityMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET, uv0, uv1);
+  if (intensityMap.x >= 0.0) {
+    intensity = clamp(intensity * intensityMap.a, 0.0, 1.0);
+  }
+  return vec4f(color, intensity);
+}
+
+fn ddgiSampleClearcoatControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f {
+  let cc = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET);
+  var factor = clamp(cc.x, 0.0, 1.0);
+  var roughness = clamp(cc.y, 0.0, 1.0);
+
+  let clearcoatMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET, uv0, uv1);
+  if (clearcoatMap.x >= 0.0) {
+    factor = clamp(factor * clearcoatMap.r, 0.0, 1.0);
+  }
+  let roughnessMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET, uv0, uv1);
+  if (roughnessMap.x >= 0.0) {
+    roughness = clamp(roughness * roughnessMap.g, 0.0, 1.0);
+  }
+  return vec2f(factor, roughness);
+}
+
+fn ddgiSampleSheenControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let scalars = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET);
+  let colorMeta = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET);
+  var sheenColor = clamp(colorMeta.rgb, vec3f(0.0), vec3f(1.0));
+  var sheen = clamp(scalars.z, 0.0, 1.0);
+
+  let colorMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET, uv0, uv1);
+  if (colorMap.x >= 0.0) {
+    sheenColor = clamp(sheenColor * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+  }
+  return vec4f(sheenColor, sheen);
+}
+
+fn ddgiSampleSheenRoughness(triIndex: u32, uv0: vec2f, uv1: vec2f) -> f32 {
+  let scalars = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET);
+  var roughness = clamp(scalars.w, 0.0, 1.0);
+  let roughnessMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET, uv0, uv1);
+  if (roughnessMap.x >= 0.0) {
+    roughness = clamp(roughness * roughnessMap.a, 0.0, 1.0);
+  }
+  return roughness;
+}
+
+fn ddgiSampleAnisotropyControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f {
+  let scalars = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET);
+  var strength = clamp(scalars.x, 0.0, 1.0);
+  var rotation = scalars.y;
+
+  let anisoMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET, uv0, uv1);
+  if (anisoMap.x >= 0.0) {
+    strength = clamp(strength * anisoMap.b, 0.0, 1.0);
+    let direction = anisoMap.rg * 2.0 - vec2f(1.0);
+    if (dot(direction, direction) > 1e-6) {
+      rotation += atan2(direction.y, direction.x);
+    }
+  }
+  return vec2f(strength, rotation);
+}
+
+fn ddgiSampleIridescenceControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  let scalars = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET);
+  var factor = clamp(scalars.x, 0.0, 1.0);
+  let ior = max(1.0, scalars.y);
+  var thicknessMin = max(0.0, scalars.z);
+  var thicknessMax = max(0.0, scalars.w);
+
+  let iridescenceMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET, uv0, uv1);
+  if (iridescenceMap.x >= 0.0) {
+    factor = clamp(factor * iridescenceMap.r, 0.0, 1.0);
+  }
+  let thicknessMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET, uv0, uv1);
+  if (thicknessMap.x >= 0.0) {
+    let thickness = mix(thicknessMin, thicknessMax, clamp(thicknessMap.g, 0.0, 1.0));
+    thicknessMin = thickness;
+    thicknessMax = thickness;
+    if (thickness <= 0.0) {
+      factor = 0.0;
+    }
+  }
+  return vec4f(factor, ior, thicknessMin, thicknessMax);
+}
+
 struct DdgiProbeHitMaterial {
   albedo: vec3f,
   roughness: f32,
   metalness: f32,
+  specular: vec4f,
+  clearcoat: vec2f,
+  clearcoatNormal: vec3f,
+  sheen: vec4f,
+  sheenRoughness: f32,
+  anisotropy: vec2f,
+  iridescence: vec4f,
 }
 
 fn ddgiSampleProbeHitMaterial(
@@ -582,11 +717,21 @@ fn ddgiSampleProbeHitMaterial(
   scalarBaseColor: vec3f,
   scalarRoughness: f32,
   scalarMetalness: f32,
+  frameNormal: vec3f,
+  shadingNormal: vec3f,
 ) -> DdgiProbeHitMaterial {
   var out: DdgiProbeHitMaterial;
   out.albedo = scalarBaseColor;
   out.roughness = scalarRoughness;
   out.metalness = scalarMetalness;
+  out.specular = vec4f(1.0);
+  out.clearcoat = vec2f(0.0);
+  out.clearcoatNormal = shadingNormal;
+  out.sheen = vec4f(0.0);
+  out.sheenRoughness = 0.0;
+  out.anisotropy = vec2f(0.0);
+  out.iridescence = vec4f(0.0, 1.0, 0.0, 0.0);
+  out.clearcoatNormal = ddgiApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
 
   let uvs = ddgiHitMaterialUvs(hit);
   if (uvs.valid == 0u) {
@@ -618,7 +763,66 @@ fn ddgiSampleProbeHitMaterial(
     uvs.uv1,
     scalarMetalness,
   );
+  out.specular = ddgiSampleSpecularControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.clearcoat = ddgiSampleClearcoatControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.sheen = ddgiSampleSheenControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.sheenRoughness = ddgiSampleSheenRoughness(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.anisotropy = ddgiSampleAnisotropyControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  out.iridescence = ddgiSampleIridescenceControls(hit.indices.w, uvs.uv0, uvs.uv1);
   return out;
+}
+
+fn ddgiProbeMaterialF0(mat: DdgiProbeHitMaterial) -> vec3f {
+  let dielectricF0 = vec3f(0.04) * mat.specular.rgb * mat.specular.a;
+  return mix(dielectricF0, mat.albedo, clamp(mat.metalness, 0.0, 1.0));
+}
+
+fn ddgiIridescenceModifiedF0(baseF0: vec3f, iridescence: vec4f, vDotH: f32) -> vec3f {
+  let factor = clamp(iridescence.x, 0.0, 1.0);
+  if (factor <= 1e-4) {
+    return baseF0;
+  }
+  let thickness = max(0.0, (iridescence.z + iridescence.w) * 0.5);
+  let iorShift = clamp(iridescence.y - 1.0, 0.0, 2.0) * 0.12;
+  let phase = thickness * 0.012 + (1.0 - clamp(vDotH, 0.0, 1.0)) * PI;
+  let filmTint = clamp(
+    0.5 + 0.5 * cos(vec3f(phase, phase + 2.0943951, phase + 4.1887902)) + vec3f(iorShift),
+    vec3f(0.0),
+    vec3f(1.0),
+  );
+  let filmF0 = mix(vec3f(0.04), filmTint, clamp(thickness / 1200.0, 0.0, 1.0));
+  return clamp(mix(baseF0, filmF0, factor), vec3f(0.0), vec3f(1.0));
+}
+
+fn ddgiProbeSpecularTint(mat: DdgiProbeHitMaterial, vDotH: f32) -> vec3f {
+  return ddgiIridescenceModifiedF0(ddgiProbeMaterialF0(mat), mat.iridescence, vDotH);
+}
+
+fn ddgiProbeBaseSpecularWeight(mat: DdgiProbeHitMaterial) -> f32 {
+  let roughFade = max(0.0, 1.0 - mat.roughness * mat.roughness);
+  let metallic = clamp(mat.metalness, 0.0, 1.0) * roughFade;
+  let dielectric = max(mat.specular.r, max(mat.specular.g, mat.specular.b)) *
+    mat.specular.a * 0.04 * (1.0 - clamp(mat.metalness, 0.0, 1.0)) * roughFade;
+  let anisotropy = clamp(mat.anisotropy.x, 0.0, 1.0) * max(metallic, dielectric);
+  let iridescence = clamp(mat.iridescence.x, 0.0, 1.0) * roughFade;
+  return clamp(max(max(metallic, dielectric), max(anisotropy, iridescence)), 0.0, 1.0);
+}
+
+fn ddgiProbeClearcoatWeight(mat: DdgiProbeHitMaterial) -> f32 {
+  return clamp(mat.clearcoat.x, 0.0, 1.0) * max(0.0, 1.0 - mat.clearcoat.y * mat.clearcoat.y);
+}
+
+fn ddgiProbeSheenWeight(mat: DdgiProbeHitMaterial) -> f32 {
+  let colorPower = max(mat.sheen.r, max(mat.sheen.g, mat.sheen.b));
+  return clamp(mat.sheen.a, 0.0, 1.0) * colorPower * max(0.0, 1.0 - mat.sheenRoughness * mat.sheenRoughness);
+}
+
+fn ddgiProbeExtensionSpecularWeight(mat: DdgiProbeHitMaterial) -> f32 {
+  return clamp(
+    max(ddgiProbeBaseSpecularWeight(mat), max(ddgiProbeClearcoatWeight(mat), ddgiProbeSheenWeight(mat))),
+    0.0,
+    1.0,
+  );
 }
 
 fn ddgiApplyNormalMapAtOffsetForHit(
@@ -678,6 +882,16 @@ fn ddgiApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f
     baseNormal,
     DDGI_MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
     DDGI_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET,
+  );
+}
+
+fn ddgiApplyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
+  return ddgiApplyNormalMapAtOffsetForHit(
+    hit,
+    frameNormal,
+    fallbackNormal,
+    DDGI_MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET,
+    DDGI_MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET,
   );
 }
 
@@ -1458,7 +1672,6 @@ fn probeUpdateRays(
         out.isGlass       = (mat.flags & MATERIAL_FLAG_IS_GLASS);
       } else {
         let hitWorldPos = probeOrigin + dir * hit.dist;
-        let probeMat = ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness);
 
         // Smooth normal from barycentric blend.
         let i0 = hit.indices.x;
@@ -1474,6 +1687,7 @@ fn probeUpdateRays(
         ) * hit.side;
         let normalMapped = ddgiApplyNormalMapForHit(hit, smoothNormal);
         let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);
+        let probeMat = ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, smoothNormal, probeNormal);
 
         // Direct lighting: analytic sun/fixture lights.
         let direct_analytic = evalDirectLighting(hitWorldPos, probeNormal);
@@ -1569,8 +1783,8 @@ fn probeUpdateRays(
         // EMA otherwise converges into the infinite-bounce diffuse equilibrium.
         let indirectGated = select(vec3f(0.0), indirect, frameParams.indirectFeedback != 0u);
 
-        // B2 — Glossy-aware probe bounce: specular complement via reflected
-        // previous-frame field (2026-06-10, R8-B).
+        // B2 / 3E — Glossy + extension-aware probe bounce: specular/clearcoat/
+        // sheen complement via reflected previous-frame SH field.
         //
         // DDGI probes are an irradiance cache — they cannot store a full 5D
         // radiance field. The honest one-bounce specular complement uses the same
@@ -1594,13 +1808,11 @@ fn probeUpdateRays(
         // improvement applies to the important multi-bounce indirect term where
         // the DDGI atlas is the only source of radiance.
         //
-        //   specularWeight = metalness · (1 - roughness²)
-        //     = 1 for a perfect mirror metal (metalness=1, roughness=0)
-        //     = 0 for a dielectric OR a rough metal (roughness→1)
-        //     ranges continuously between these extremes.
-        //   roughness² is α² (GGX alpha-squared), so the specular weight
-        //   vanishes quadratically with roughness — consistent with how GGX
-        //   broadens from a mirror at α=0 to diffuse-equivalent at α=1.
+        //   extensionSpecularWeight is bounded [0,1] and includes metallic F0,
+        //   KHR_specular dielectric F0, anisotropy/iridescence visibility,
+        //   clearcoat factor/roughness, and sheen colour/roughness. This is
+        //   still a probe-cache approximation: lobes steer/tint the reflected
+        //   SH lookup rather than evaluating a full directional radiance BRDF.
         //
         // Gate: the reflected atlas lookup requires the previous-frame atlas to
         // be populated (indirectFeedback != 0). When direct-only probes are
@@ -1609,18 +1821,22 @@ fn probeUpdateRays(
         // Lambertian-direct-only formula, preserving byte-identity with the
         // pre-B2 path when indirectFeedback = 0.
         //
-        // probeMat carries atlas-sampled roughness/metalness when readable maps
-        // are present, falling back to MaterialEntry scalar slots 3/7 from the
-        // canonical 64-byte struct. No new bind layout is required because DDGI
-        // already binds the material atlas for alpha/emissive probe paths.
+        // probeMat carries atlas-sampled roughness/metalness/specular/
+        // clearcoat/sheens/anisotropy/iridescence controls when readable maps
+        // are present, falling back to MaterialEntry scalar slots and zeroed
+        // extension lobes. No new bind layout is required because DDGI already
+        // binds the material atlas and tangent texture for probe-hit maps.
         //
         // Cite: Karis (2013) "Real Shading in Unreal Engine 4" §4.4 (split-sum
         // approximation); McGuire et al. (2017) "Real-Time Global Illumination
         // using Precomputed Light Field Probes" (irradiance-cache specular via
         // reflected direction lookup).
-        let specularWeight = probeMat.metalness * max(0.0, 1.0 - probeMat.roughness * probeMat.roughness);
+        let baseSpecularWeight = ddgiProbeBaseSpecularWeight(probeMat);
+        let clearcoatWeight = ddgiProbeClearcoatWeight(probeMat);
+        let sheenWeight = ddgiProbeSheenWeight(probeMat);
+        let extensionSpecularWeight = ddgiProbeExtensionSpecularWeight(probeMat);
         var indirectRadiance: vec3f;
-        if (specularWeight > 1e-4 && frameParams.indirectFeedback != 0u) {
+        if (extensionSpecularWeight > 1e-4 && frameParams.indirectFeedback != 0u) {
           // Reflected probe-ray direction: mirror dir about the hit normal.
           // dir points FROM the probe TO the hit surface — so -dir is the
           // incoming direction at the surface. reflect(-dir, n) gives the
@@ -1632,16 +1848,25 @@ fn probeUpdateRays(
             gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
             fix, fiy, reflDir,
           );
-          // Specular indirect: atlas irradiance at reflected direction, tinted
-          // by metallic baseColor (Fresnel ≈ F0 = baseColor for conductors).
-          // Divide by PI for the same irradiance→radiance conversion the
-          // Lambertian indirect uses (atlas stores cosine-weighted mean E/PI;
-          // ddgiSampleSHProbe returns E — see comment above).
-          let specularIndirectLo = probeMat.albedo * (specularIrr * (1.0 / PI));
+          let clearcoatReflDir = safe_normalize(dir - 2.0 * dot(dir, probeMat.clearcoatNormal) * probeMat.clearcoatNormal);
+          let clearcoatIrr = ddgiSampleSHProbe(
+            irradiancePrev, irradianceSamp,
+            gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
+            fix, fiy, clearcoatReflDir,
+          );
+          let f0Tint = ddgiProbeSpecularTint(probeMat, max(0.0, dot(-dir, probeNormal)));
+          let baseSpecularLo = f0Tint * (specularIrr * (1.0 / PI));
+          let clearcoatLo = vec3f(0.04) * (clearcoatIrr * (1.0 / PI));
+          let sheenLo = clamp(probeMat.sheen.rgb, vec3f(0.0), vec3f(1.0)) * (specularIrr * (1.0 / PI));
+          let lobeWeightSum = max(baseSpecularWeight + clearcoatWeight + sheenWeight, 1e-6);
+          let specularIndirectLo =
+            (baseSpecularLo * baseSpecularWeight +
+             clearcoatLo * clearcoatWeight +
+             sheenLo * sheenWeight) / lobeWeightSum;
           // Lambertian indirect for the blend reference.
           let lambertianIndirectLo = indirectGated * probeMat.albedo * (1.0 / PI);
           // Blend indirect contribution: lerp from Lambertian to specular.
-          indirectRadiance = mix(lambertianIndirectLo, specularIndirectLo, specularWeight);
+          indirectRadiance = mix(lambertianIndirectLo, specularIndirectLo, extensionSpecularWeight);
         } else {
           // Rough/dielectric or no feedback: pure Lambertian indirect.
           indirectRadiance = indirectGated * probeMat.albedo * (1.0 / PI);

@@ -59,9 +59,12 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('dir - 2.0 * dot(dir, probeNormal) * probeNormal');
   });
 
-  it('1b. specularWeight formula is present', () => {
+  it('1b. extension-aware specular weight formula is present', () => {
     const src = wgsl();
-    expect(src).toContain('probeMat.metalness * max(0.0, 1.0 - probeMat.roughness * probeMat.roughness)');
+    expect(src).toContain('fn ddgiProbeBaseSpecularWeight(mat: DdgiProbeHitMaterial) -> f32');
+    expect(src).toContain('let roughFade = max(0.0, 1.0 - mat.roughness * mat.roughness);');
+    expect(src).toContain('let metallic = clamp(mat.metalness, 0.0, 1.0) * roughFade;');
+    expect(src).toContain('fn ddgiProbeExtensionSpecularWeight(mat: DdgiProbeHitMaterial) -> f32');
   });
 
   it('1c. specular branch calls ddgiSampleSHProbe at the reflected direction', () => {
@@ -72,28 +75,28 @@ describe('B2 — WGSL structural pins: specular complement', () => {
 
   it('1d. mix blend from Lambertian to specular is present', () => {
     const src = wgsl();
-    expect(src).toContain('mix(lambertianIndirectLo, specularIndirectLo, specularWeight)');
+    expect(src).toContain('mix(lambertianIndirectLo, specularIndirectLo, extensionSpecularWeight)');
   });
 
-  it('1e. Lambertian path is retained for rough/dielectric (specularWeight threshold guard)', () => {
+  it('1e. Lambertian path is retained for rough/dielectric (extensionSpecularWeight threshold guard)', () => {
     const src = wgsl();
     // The else-branch writes the Lambertian indirect.
     expect(src).toContain('indirectGated * probeMat.albedo * (1.0 / PI)');
     // The guard condition exists so rough surfaces stay Lambertian.
-    expect(src).toContain('specularWeight > 1e-4');
+    expect(src).toContain('extensionSpecularWeight > 1e-4');
   });
 
   it('1f. specular path is gated behind indirectFeedback', () => {
     const src = wgsl();
     // Both conditions must be present in the specular branch guard.
-    expect(src).toContain('specularWeight > 1e-4 && frameParams.indirectFeedback != 0u');
+    expect(src).toContain('extensionSpecularWeight > 1e-4 && frameParams.indirectFeedback != 0u');
   });
 
   it('1g. mat.roughness and mat.metalness are accessed in the shader', () => {
     const src = wgsl();
-    expect(src).toContain('ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness)');
-    expect(src).toContain('probeMat.roughness');
-    expect(src).toContain('probeMat.metalness');
+    expect(src).toContain('ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, smoothNormal, probeNormal)');
+    expect(src).toContain('mat.roughness');
+    expect(src).toContain('mat.metalness');
   });
 
   it('1h. readable PBR maps modulate DDGI probe-hit bounce material response', () => {
@@ -132,6 +135,38 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('@group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;');
     expect(src).toContain('fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3f');
     expect(src).toContain('let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);');
+  });
+
+  it('1k. readable extension maps modulate DDGI probe-hit specular response', () => {
+    const src = wgsl();
+    expect(src).toContain('const DDGI_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: u32 = 22u;');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: u32 = 36u;');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET: u32 = 39u;');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: u32 = 42u;');
+    expect(src).toContain('fn ddgiSampleSpecularControls(');
+    expect(src).toContain('fn ddgiSampleClearcoatControls(');
+    expect(src).toContain('fn ddgiSampleSheenControls(');
+    expect(src).toContain('fn ddgiSampleAnisotropyControls(');
+    expect(src).toContain('fn ddgiSampleIridescenceControls(');
+    expect(src).toContain('fn ddgiApplyClearcoatNormalMapForHit(');
+    expect(src).toContain('specular: vec4f,');
+    expect(src).toContain('clearcoat: vec2f,');
+    expect(src).toContain('clearcoatNormal: vec3f,');
+    expect(src).toContain('sheen: vec4f,');
+    expect(src).toContain('anisotropy: vec2f,');
+    expect(src).toContain('iridescence: vec4f,');
+    expect(src).toContain('out.specular = ddgiSampleSpecularControls(hit.indices.w, uvs.uv0, uvs.uv1);');
+    expect(src).toContain('out.clearcoat = ddgiSampleClearcoatControls(hit.indices.w, uvs.uv0, uvs.uv1);');
+    expect(src).toContain('out.clearcoatNormal = ddgiApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);');
+    expect(src).toContain('out.sheen = ddgiSampleSheenControls(hit.indices.w, uvs.uv0, uvs.uv1);');
+    expect(src).toContain('out.anisotropy = ddgiSampleAnisotropyControls(hit.indices.w, uvs.uv0, uvs.uv1);');
+    expect(src).toContain('out.iridescence = ddgiSampleIridescenceControls(hit.indices.w, uvs.uv0, uvs.uv1);');
+    expect(src).toContain('let clearcoatReflDir = safe_normalize(dir - 2.0 * dot(dir, probeMat.clearcoatNormal) * probeMat.clearcoatNormal);');
+    expect(src).toContain('let extensionSpecularWeight = ddgiProbeExtensionSpecularWeight(probeMat);');
+    expect(src).toContain('let f0Tint = ddgiProbeSpecularTint(probeMat, max(0.0, dot(-dir, probeNormal)));');
+    expect(src).toContain('indirectRadiance = mix(lambertianIndirectLo, specularIndirectLo, extensionSpecularWeight);');
   });
 });
 
@@ -242,7 +277,7 @@ describe('B2 — WGSL gate: specular complement is disabled when indirectFeedbac
     // In that regime the atlas is not fed multi-bounce data, so a reflected
     // atlas lookup would return stale/zero data — correctly skipped.
     const src = wgsl();
-    expect(src).toContain('specularWeight > 1e-4 && frameParams.indirectFeedback != 0u');
+    expect(src).toContain('extensionSpecularWeight > 1e-4 && frameParams.indirectFeedback != 0u');
   });
 });
 
