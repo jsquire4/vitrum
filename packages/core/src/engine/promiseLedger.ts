@@ -825,10 +825,10 @@ const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
  *  preserving unrelated material/light/environment/atlas textures. Primitive
  *  layout changes that alter material-slot/color or analytic fallback shape still
  *  use a full scene-texture repack. Topology add/remove rebuilds the WebGL2
- *  geometry/material/BVH texture pack when the list edit can reuse the existing
- *  texture atlas; new texture-map or analytic primitive additions fall back to a
- *  full scene upload. Resize is native: it reallocates render targets and resets
- *  accumulation without scene/BVH work. Lighting is unsupported. */
+ *  geometry/material/atlas/BVH texture pack for mesh-like list edits; analytic
+ *  primitive additions fall back to a full scene upload so the analytic
+ *  tessellation pass still runs. Resize is native: it reallocates render targets
+ *  and resets accumulation without scene/BVH work. Lighting is unsupported. */
 const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
   transform: 'fallback-rebuild',
   positions: 'fallback-rebuild',

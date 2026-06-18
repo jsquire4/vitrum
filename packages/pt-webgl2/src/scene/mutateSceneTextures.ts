@@ -11,6 +11,7 @@ import {
   uploadRgba32f,
   uploadRgba32fRect,
 } from './uploadSceneTextures.js';
+import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
 
 export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'baseColorMap',
@@ -92,10 +93,6 @@ function canRefreshGeometryTextures(patch: Partial<ScenePrimitive>): boolean {
     sawGeometryField = true;
   }
   return sawGeometryField;
-}
-
-function materialHasTextureMaps(material: MaterialSpec): boolean {
-  return Object.keys(material as unknown as Record<string, unknown>).some((field) => TEXTURE_MAP_FIELDS.has(field));
 }
 
 function materialWithCastShadow(primitive: Extract<ScenePrimitive, { material: MaterialSpec }>): MaterialSpec {
@@ -327,15 +324,10 @@ export function tryFastPathPrimitiveListMutation(
   nextScene: Scene,
   opts: {
     readonly method: 'addPrimitive' | 'removePrimitive';
-    readonly changedPrimitive?: ScenePrimitive;
   },
 ): WebGl2MutationSwap | null {
   if (current == null) return null;
-  const changed = opts.changedPrimitive;
-  if (changed != null) {
-    if (!isMeshLikePrimitive(changed)) return null;
-    if (materialHasTextureMaps(changed.material)) return null;
-  }
+  if (nextScene.primitives.some((primitive) => !isMeshLikePrimitive(primitive))) return null;
 
   const built = buildSceneGeometryTextures(gl, nextScene, {
     warningPhase: 'mutation',
@@ -353,9 +345,15 @@ export function tryFastPathPrimitiveListMutation(
     });
   }
 
+  const atlas = packTextureAtlas(built.merged.materials, {
+    onWarning: (warning) => structuredWarnings.push(warning),
+    warningPhase: 'mutation',
+    warningMethod: opts.method,
+  });
+  const textures2DArray = atlas != null ? uploadTextureAtlas(gl, atlas) : null;
   const materialsData = packMaterialsTexture(
     built.merged.materials,
-    current.materialLayerMap ?? undefined,
+    atlas?.layerOfByColorSpace,
     { vertexColorMaterialIds: built.vertexColorMaterialIds },
   );
   const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials');
@@ -370,6 +368,8 @@ export function tryFastPathPrimitiveListMutation(
       materials,
       attributesArray: built.attributesArray,
       meshLights: built.meshLights,
+      textures2DArray,
+      materialLayerMap: atlas?.layerOfByColorSpace ?? null,
       meshLightCount: built.meshLightCount,
       totalEmissiveArea: built.totalEmissiveArea,
       totalEmissivePower: built.totalEmissivePower,
@@ -386,6 +386,7 @@ export function tryFastPathPrimitiveListMutation(
       current.materials,
       current.attributesArray,
       current.meshLights,
+      current.textures2DArray,
     ],
     structuredWarnings,
   };

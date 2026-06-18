@@ -633,10 +633,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
     const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, nextScene, {
       method: 'addPrimitive',
-      changedPrimitive: primitive,
     });
     if (fast != null) {
-      this.#warnPrimitiveListFallback('addPrimitive', String(primitive.id), 'primitive-list-geometry-refresh');
+      this.#warnPrimitiveListFallback('addPrimitive', String(primitive.id), 'primitive-list-texture-refresh');
       this.#commitMutationSwap(nextScene, fast);
       return;
     }
@@ -666,7 +665,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       method: 'removePrimitive',
     });
     if (fast != null) {
-      this.#warnPrimitiveListFallback('removePrimitive', String(id), 'primitive-list-geometry-refresh');
+      this.#warnPrimitiveListFallback('removePrimitive', String(id), 'primitive-list-texture-refresh');
       this.#commitMutationSwap(nextScene, fast);
       return;
     }
@@ -946,12 +945,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #warnPrimitiveListFallback(
     method: 'addPrimitive' | 'removePrimitive',
     primitiveId: string,
-    fallbackReason: 'primitive-list-geometry-refresh' | 'primitive-list-scene-repack',
+    fallbackReason: 'primitive-list-texture-refresh' | 'primitive-list-scene-repack',
   ): void {
     const key = `${method}:${primitiveId}:${fallbackReason}`;
     if (this.#fallbackMutationWarnings.has(key)) return;
     this.#fallbackMutationWarnings.add(key);
-    const refreshed = fallbackReason === 'primitive-list-geometry-refresh';
+    const refreshed = fallbackReason === 'primitive-list-texture-refresh';
     this.#warn({
       code: 'pt-webgl2.primitive-list-fallback-rebuild',
       backend: 'pt-webgl2',
@@ -959,7 +958,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       method,
       message:
         `[vitrum/pt-webgl2] ${method}("${primitiveId}") rebuilds the backend ` +
-        (refreshed ? 'geometry/material/BVH texture pack' : 'scene-texture/BVH pack') +
+        (refreshed ? 'geometry/material/atlas/BVH texture pack' : 'scene-texture/BVH pack') +
         '. This is supported, but it is not a targeted ' +
         'native geometry patch.',
       details: {
