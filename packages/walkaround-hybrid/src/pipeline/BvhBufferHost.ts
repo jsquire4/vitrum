@@ -282,11 +282,13 @@ export class BvhBufferHost {
   materialAtlasBindings(): {
     materialTextureAtlasView: GPUTextureView;
     materialMapMetaTextureView: GPUTextureView;
+    bvhTangentTextureView: GPUTextureView;
   } | null {
     if (this._materialTextureAtlas == null) return null;
     return {
       materialTextureAtlasView: this._materialTextureAtlas.atlasTextureView,
       materialMapMetaTextureView: this._materialTextureAtlas.baseColorMetaTextureView,
+      bvhTangentTextureView: this._resourceCache.textureView(this._bvhTangentTexture!.texture),
     };
   }
 

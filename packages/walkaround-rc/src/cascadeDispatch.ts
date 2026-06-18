@@ -71,6 +71,8 @@ interface DispatchHandles {
   /** Owned placeholder material atlas textures when caller provided none. */
   placeholderMaterialAtlasTexture?: GPUTexture;
   placeholderMaterialMetaTexture?: GPUTexture;
+  /** Owned 1x1 zero tangent texture when caller provided none. */
+  placeholderTangentTexture?: GPUTexture;
 }
 
 interface DispatchBindingSignature {
@@ -89,6 +91,7 @@ interface DispatchBindingSignature {
   readonly envSampler: GPUSampler | null;
   readonly materialTextureAtlasView: GPUTextureView | null;
   readonly materialMapMetaTextureView: GPUTextureView | null;
+  readonly bvhTangentTextureView: GPUTextureView | null;
   readonly tlasNodesBuf: GPUBuffer | null;
   readonly tlasInstanceIndicesBuf: GPUBuffer | null;
   readonly tlasBlasRootsBuf: GPUBuffer | null;
@@ -151,6 +154,10 @@ export interface RCDispatchOptsRaw {
    *  scalar `EmitterTri.Le` path for every emitter sample. */
   materialTextureAtlasView?: GPUTextureView | null;
   materialMapMetaTextureView?: GPUTextureView | null;
+  /** Authored/generated tangent.xyzw texture matching the main walkaround
+   *  scene binding. When omitted, mapped normal/bump paths fall back to a
+   *  derived UV-gradient tangent frame. */
+  bvhTangentTextureView?: GPUTextureView | null;
 
   frameSeed:          number;
   /** Möller–Trumbore coplanarity threshold. Default 1e-5. */
@@ -340,6 +347,7 @@ function bindingSignature(opts: RCDispatchOptsRaw): DispatchBindingSignature {
     envSampler: opts.envSampler ?? null,
     materialTextureAtlasView: opts.materialTextureAtlasView ?? null,
     materialMapMetaTextureView: opts.materialMapMetaTextureView ?? null,
+    bvhTangentTextureView: opts.bvhTangentTextureView ?? null,
     tlasNodesBuf: opts.tlasNodesBuf ?? null,
     tlasInstanceIndicesBuf: opts.tlasInstanceIndicesBuf ?? null,
     tlasBlasRootsBuf: opts.tlasBlasRootsBuf ?? null,
@@ -370,6 +378,7 @@ function sameBindingSignature(
     a.envSampler === b.envSampler &&
     a.materialTextureAtlasView === b.materialTextureAtlasView &&
     a.materialMapMetaTextureView === b.materialMapMetaTextureView &&
+    a.bvhTangentTextureView === b.bvhTangentTextureView &&
     a.tlasNodesBuf === b.tlasNodesBuf &&
     a.tlasInstanceIndicesBuf === b.tlasInstanceIndicesBuf &&
     a.tlasBlasRootsBuf === b.tlasBlasRootsBuf &&
@@ -541,6 +550,7 @@ export class RCDispatcher {
         { binding: 16, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } }, // rc_materialTextureAtlas
         { binding: 17, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },       // rc_materialMapMeta
         { binding: 18, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_geom_normal
+        { binding: 19, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },       // rc_geom_tangent
       ],
     });
   }
@@ -578,6 +588,7 @@ export class RCDispatcher {
       this._handles.placeholderEnvTexture?.destroy();
       this._handles.placeholderMaterialAtlasTexture?.destroy();
       this._handles.placeholderMaterialMetaTexture?.destroy();
+      this._handles.placeholderTangentTexture?.destroy();
       this._handles = null;
     }
     this._bindingSignature = null;
@@ -690,6 +701,34 @@ export class RCDispatcher {
     };
   }
 
+  private _resolveTangentTextureBindingRaw(
+    device: GPUDevice,
+    opts: RCDispatchOptsRaw,
+  ): {
+    bvhTangentTextureView: GPUTextureView;
+    placeholderTangentTexture?: GPUTexture;
+  } {
+    if (opts.bvhTangentTextureView) {
+      return { bvhTangentTextureView: opts.bvhTangentTextureView };
+    }
+    const tangentTexture = device.createTexture({
+      label: 'rc-bvh-tangent-placeholder',
+      size: { width: 1, height: 1 },
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: tangentTexture },
+      new Float32Array([0, 0, 0, 0]),
+      { bytesPerRow: 16 },
+      { width: 1, height: 1 },
+    );
+    return {
+      bvhTangentTextureView: tangentTexture.createView({ label: 'rc-bvh-tangent-placeholder-view' }),
+      placeholderTangentTexture: tangentTexture,
+    };
+  }
+
   /**
    * Build all pipelines and bind groups (one-time setup).
    * Called lazily on first `dispatchFrameRaw()`.
@@ -726,10 +765,14 @@ export class RCDispatcher {
       placeholderMaterialAtlasTexture,
       placeholderMaterialMetaTexture,
     } = this._resolveMaterialAtlasBindingRaw(device, opts);
+    const {
+      bvhTangentTextureView,
+      placeholderTangentTexture,
+    } = this._resolveTangentTextureBindingRaw(device, opts);
 
     const { castPasses, castBindGroups } = this._buildCastPasses(
       device, opts, castBGL, castPipelineLayout, bvhBindings, envTextureView, envSampler,
-      materialTextureAtlasView, materialMapMetaTextureView,
+      materialTextureAtlasView, materialMapMetaTextureView, bvhTangentTextureView,
     );
     const { mergePasses, mergeBindGroups } = this._buildMergePasses(
       device, opts, mergeBGL, mergePipelineLayout,
@@ -745,6 +788,7 @@ export class RCDispatcher {
       ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
       ...(placeholderMaterialAtlasTexture ? { placeholderMaterialAtlasTexture } : {}),
       ...(placeholderMaterialMetaTexture ? { placeholderMaterialMetaTexture } : {}),
+      ...(placeholderTangentTexture ? { placeholderTangentTexture } : {}),
     };
   }
 
@@ -799,6 +843,7 @@ export class RCDispatcher {
     envSampler: GPUSampler,
     materialTextureAtlasView: GPUTextureView,
     materialMapMetaTextureView: GPUTextureView,
+    bvhTangentTextureView: GPUTextureView,
   ): { castPasses: CastPassHandles[]; castBindGroups: GPUBindGroup[] } {
     const {
       bvhBuf, idxBuf, posBuf, normBuf, matBuf, triMatBuf,
@@ -881,6 +926,7 @@ export class RCDispatcher {
           { binding: 16, resource: materialTextureAtlasView },
           { binding: 17, resource: materialMapMetaTextureView },
           { binding: 18, resource: { buffer: normBuf } },
+          { binding: 19, resource: bvhTangentTextureView },
         ],
       });
 

@@ -33,5 +33,9 @@ describe('RCDispatcher bind group layout', () => {
       sampleType: 'unfilterable-float',
       viewDimension: '2d',
     });
+    expect(textureEntry(19)).toMatchObject({
+      sampleType: 'unfilterable-float',
+      viewDimension: '2d',
+    });
   });
 });

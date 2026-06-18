@@ -304,6 +304,7 @@ struct RCLightBuffer {
 @group(0) @binding(16) var                      rc_materialTextureAtlas: texture_2d_array<f32>;
 @group(0) @binding(17) var                      rc_materialMapMeta:      texture_2d<f32>;
 @group(0) @binding(18) var<storage, read>       rc_geom_normal:           array<vec4f>;
+@group(0) @binding(19) var                      rc_geom_tangent:          texture_2d<f32>;
 
 const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
 const RC_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
@@ -526,6 +527,79 @@ struct RCMaterialTangentFrame {
   bitangent: vec3f,
 }
 
+fn rcBvhTangentTexel(vertexIndex: u32) -> vec4f {
+  let dims = textureDimensions(rc_geom_tangent);
+  let width = u32(dims.x);
+  let height = u32(dims.y);
+  if (width == 0u || height == 0u) {
+    return vec4f(0.0);
+  }
+  let y = vertexIndex / width;
+  if (y >= height) {
+    return vec4f(0.0);
+  }
+  return textureLoad(rc_geom_tangent, vec2i(i32(vertexIndex % width), i32(y)), 0);
+}
+
+fn rcTransformDirectionCols(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f, v: vec3f) -> vec3f {
+  return l2w0.xyz * v.x + l2w1.xyz * v.y + l2w2.xyz * v.z;
+}
+
+fn rcTangentHandednessForLocalToWorld(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f) -> f32 {
+  let det = dot(l2w0.xyz, cross(l2w1.xyz, l2w2.xyz));
+  return select(-1.0, 1.0, det >= 0.0);
+}
+
+fn rcPreferAuthoredTangentFrameForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  fallbackTangent: vec3f,
+  fallbackBitangent: vec3f,
+) -> RCMaterialTangentFrame {
+  var tangent = fallbackTangent;
+  var bitangent = fallbackBitangent;
+
+  let ta = rcBvhTangentTexel(hit.indices.x);
+  let tb = rcBvhTangentTexel(hit.indices.y);
+  let tc = rcBvhTangentTexel(hit.indices.z);
+  var authoredTangent =
+    hit.barycoord.x * ta.xyz +
+    hit.barycoord.y * tb.xyz +
+    hit.barycoord.z * tc.xyz;
+  var authoredHandedness =
+    hit.barycoord.x * ta.w +
+    hit.barycoord.y * tb.w +
+    hit.barycoord.z * tc.w;
+
+  if (length(authoredTangent) > 1e-8 && abs(authoredHandedness) > 0.5) {
+    let isTlas = rc_u_arr[0].bvhMode == 1u;
+    let tBase = hit.instanceIndex * 4u;
+    let tOk = isTlas && tBase + 2u < arrayLength(&rc_tlas_l2w);
+    if (tOk) {
+      authoredTangent = rcTransformDirectionCols(
+        rc_tlas_l2w[tBase],
+        rc_tlas_l2w[tBase + 1u],
+        rc_tlas_l2w[tBase + 2u],
+        authoredTangent,
+      );
+      authoredHandedness = authoredHandedness * rcTangentHandednessForLocalToWorld(
+        rc_tlas_l2w[tBase],
+        rc_tlas_l2w[tBase + 1u],
+        rc_tlas_l2w[tBase + 2u],
+      );
+    }
+
+    authoredTangent = authoredTangent - frameNormal * dot(frameNormal, authoredTangent);
+    let tLen2 = dot(authoredTangent, authoredTangent);
+    if (tLen2 > 1e-8) {
+      tangent = authoredTangent * inverseSqrt(tLen2);
+      bitangent = normalize(cross(frameNormal, tangent)) * select(-1.0, 1.0, authoredHandedness >= 0.0);
+    }
+  }
+
+  return RCMaterialTangentFrame(tangent, bitangent);
+}
+
 fn rcFallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
   let b = cross(n, t);
   let len2 = dot(b, b);
@@ -593,7 +667,7 @@ fn rcMaterialTangentFrameForHit(
     bitangent = bitangent * inverseSqrt(bLen2);
   }
 
-  return RCMaterialTangentFrame(tangent, bitangent);
+  return rcPreferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);
 }
 
 fn rcApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {

@@ -127,8 +127,11 @@ describe('RC light-eval WGSL contract', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSmoothNormalForHit(hit: IntersectionResult, fallbackNormal: vec3f) -> vec3f');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcMaterialTangentFrameForHit(');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcBvhTangentTexel(vertexIndex: u32) -> vec4f');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcPreferAuthoredTangentFrameForHit(');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f');
+    expect(PROBE_RAY_CAST_WGSL).toContain('return rcPreferAuthoredTangentFrameForHit(hit, frameNormal, tangent, bitangent);');
     expect(probeKernel).toContain('let geoNormal = hit.normal;');
     expect(probeKernel).toContain('let smoothNormal = rcSmoothNormalForHit(hit, geoNormal);');
     expect(probeKernel).toContain('let normalMapped = rcApplyNormalMapForHit(hit, smoothNormal);');
@@ -141,6 +144,7 @@ describe('RC light-eval WGSL contract', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(16) var                      rc_materialTextureAtlas: texture_2d_array<f32>;');
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(17) var                      rc_materialMapMeta:      texture_2d<f32>;');
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(18) var<storage, read>       rc_geom_normal:           array<vec4f>;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(19) var                      rc_geom_tangent:          texture_2d<f32>;');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSampleEmitterLeAtBary(e: EmitterTri, localBary: vec3f, scalarEmission: vec3f) -> vec3f');
     expect(PROBE_RAY_CAST_WGSL).toContain('let encodedSourceTri = i32(round(e._padA));');
     expect(PROBE_RAY_CAST_WGSL).toContain('let texCoord = (wrapPacked >> 4u) & 0x3u;');
