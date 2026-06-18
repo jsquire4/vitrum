@@ -105,7 +105,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     const result = await loadGltfWithProgressiveEngine(gltf, options);
 
     expect(result.backend).toBe('pt-webgpu');
-    expect(result.profileId).toBe('pt-webgpu-lite');
+    expect(result.profileId).toBe('pt-webgpu');
     expect(result.engine).toBe(handle);
     expect(result.attached).toBe(true);
     expect(result.textureDecodeReport).toBe(result.asset.textureDecodeReport);
@@ -166,21 +166,30 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     expect(textureHandle.data).toBeInstanceOf(Float32Array);
   });
 
-  it('applies strict runtime pt-webgpu tier checks before creating a progressive engine', async () => {
+  it('validates progressive glTF against the full pt-webgpu profile instead of a standalone lite probe', async () => {
     const { gltf, buffers } = makeInlineTexturedTriangleGltf();
     delete gltf.cameras;
+    const handle = {
+      coordinator: {},
+      realtime: {},
+      converged: {},
+      dispose: vi.fn(),
+    };
+    createProgressiveEngineMock.mockResolvedValueOnce(handle);
 
-    await expect(loadGltfWithProgressiveEngine(gltf, {
+    const result = await loadGltfWithProgressiveEngine(gltf, {
       buffers,
       compatibilityMode: 'reject-unsupported',
       engineOptions: {
         canvas: {} as HTMLCanvasElement,
         seedFromRealtime: false,
       },
-    })).rejects.toThrow(/pt-webgpu.*lite.*reject-unsupported.*baseColorMap=unsupported/);
+    });
 
-    expect(probeAdapterProfileMock).toHaveBeenCalledTimes(1);
-    expect(createProgressiveEngineMock).not.toHaveBeenCalled();
+    expect(result.profileId).toBe('pt-webgpu');
+    expect(result.engine).toBe(handle);
+    expect(probeAdapterProfileMock).not.toHaveBeenCalled();
+    expect(createProgressiveEngineMock).toHaveBeenCalledTimes(1);
   });
 
   it('reports the full runtime profile for full-tier progressive loads', async () => {

@@ -69,7 +69,7 @@ export type GltfCreateProgressiveEngineOptions =
 
 export type LoadGltfWithProgressiveEngineOptions = Omit<
   LoadGltfForEngineOptions,
-  'engine' | 'createEngine' | 'engineOptions' | 'attachScene' | 'backend'
+  'engine' | 'createEngine' | 'engineOptions' | 'attachScene' | 'backend' | 'runtimeProfile'
 > & {
   readonly engineOptions: GltfCreateProgressiveEngineOptions;
 };
@@ -152,14 +152,9 @@ export async function loadGltfWithProgressiveEngine(
   const loaded = await loadGltfForEngine(input, {
     ...adapterOptions,
     backend: 'pt-webgpu',
+    runtimeProfile: 'pt-webgpu',
     attachScene: false,
   });
-  const runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
-    'pt-webgpu',
-    adapterOptions.compatibilityMode ?? 'best-effort',
-    loaded.asset,
-    adapterOptions,
-  );
   const engine = await createProgressiveEngine({
     ...engineOptions,
     scene: loaded.asset.scene,
@@ -169,7 +164,7 @@ export async function loadGltfWithProgressiveEngine(
   return {
     asset: loaded.asset,
     backend: 'pt-webgpu',
-    profileId: runtimeProfileId ?? loaded.profileId,
+    profileId: loaded.profileId,
     engine,
     controller: loaded.controller,
     attached: true,
