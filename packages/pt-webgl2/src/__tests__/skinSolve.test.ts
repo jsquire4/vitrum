@@ -301,6 +301,7 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
 
   it('updatePrimitive with new bones re-solves skinning', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
     // Initial pose: bone 0 = identity (v1 at bone0 = rest pos X=0).
     try {
       const prim = twoBoneSkinnedPrim('sk3');
@@ -310,7 +311,10 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
         environment: { kind: 'none' },
       };
 
-      const e = await createPTEngine_WebGL2(opts());
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (warning) => structured.push(warning),
+      });
       e.setScene(scene);
 
       const before = e._debugGeoPack!.positions[1 * 4 + 0]!; // v1 solved X after initial pose
@@ -331,6 +335,14 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('updatePrimitive("sk3") fields [bones]'),
       )).toHaveLength(1);
+      const fallbackWarning = structured.find((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
+      expect(fallbackWarning?.details).toEqual({
+        primitiveId: 'sk3',
+        fields: ['bones'],
+        fallbackReason: 'animation-geometry-rebuild',
+        nativePatchMissing: 'targeted-skinned-or-morph-geometry-update',
+        animationFields: ['bones'],
+      });
 
       e.dispose();
     } finally {

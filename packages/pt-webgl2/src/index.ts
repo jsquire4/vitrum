@@ -69,6 +69,57 @@ function materialTextureMapPatchFields(patch: Partial<ScenePrimitive>): string[]
   return materialPatchFields(patch).filter((field) => TEXTURE_MAP_FIELDS.has(field));
 }
 
+const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([
+  'transform',
+  'positions',
+  'normals',
+  'indices',
+  'uvs',
+  'uv1',
+  'tangents',
+  'colors',
+  'instances',
+  'shape',
+  'params',
+  'morphTargets',
+  'morphTargetNormals',
+  'morphTargetTangents',
+  'morphWeights',
+]);
+
+const ANIMATION_REBUILD_PATCH_FIELDS = new Set([
+  'bones',
+  'boneInverses',
+  'skinIndices',
+  'skinWeights',
+  'morphTargets',
+  'morphTargetNormals',
+  'morphTargetTangents',
+  'morphWeights',
+]);
+
+function primitiveFallbackReason(fields: readonly string[]): {
+  readonly fallbackReason: string;
+  readonly nativePatchMissing: string;
+  readonly animationFields?: readonly string[];
+} | null {
+  const animationFields = fields.filter((field) => ANIMATION_REBUILD_PATCH_FIELDS.has(field));
+  if (animationFields.length > 0) {
+    return {
+      fallbackReason: 'animation-geometry-rebuild',
+      nativePatchMissing: 'targeted-skinned-or-morph-geometry-update',
+      animationFields,
+    };
+  }
+  if (fields.some((field) => GEOMETRY_REBUILD_PATCH_FIELDS.has(field))) {
+    return {
+      fallbackReason: 'geometry-bvh-texture-rebuild',
+      nativePatchMissing: 'targeted-geometry-bvh-refit',
+    };
+  }
+  return null;
+}
+
 // A5 — light-subpath ping-pong width (one column per light bounce). MUST match the
 // `BDPT_MAX_LIGHT_BOUNCES=3` layout the GLSL light-subpath/connection kernels assume
 // (bdpt_light_subpath.glsl.js header; the connection sweep caps the merged path at
@@ -840,6 +891,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     const fields = primitivePatchFields(patch);
     const materialFields = materialPatchFields(patch);
     const materialTextureFields = materialTextureMapPatchFields(patch);
+    const patchFallback = primitiveFallbackReason(fields);
     const signature = fields.length > 0 ? fields.join(',') : '<none>';
     const key = `updatePrimitive:${id}:${signature}`;
     if (this.#fallbackMutationWarnings.has(key)) return;
@@ -849,6 +901,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (materialTextureFields.length > 0) {
       details.materialTextureFields = materialTextureFields;
       details.fallbackReason = 'texture-map-material-patch';
+      details.nativePatchMissing = 'targeted-material-atlas-texture-update';
+    } else if (patchFallback != null) {
+      details.fallbackReason = patchFallback.fallbackReason;
+      details.nativePatchMissing = patchFallback.nativePatchMissing;
+      if (patchFallback.animationFields !== undefined) {
+        details.animationFields = patchFallback.animationFields;
+      }
     }
     this.#warn({
       code: 'pt-webgl2.primitive-mutation-fallback-rebuild',

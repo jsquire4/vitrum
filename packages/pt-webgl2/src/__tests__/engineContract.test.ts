@@ -609,7 +609,12 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(fallbackWarnings).toHaveLength(1);
       expect(fallbackWarnings[0]?.phase).toBe('mutation');
       expect(fallbackWarnings[0]?.method).toBe('updatePrimitive');
-      expect(fallbackWarnings[0]?.details).toEqual({ primitiveId: 'tri', fields: ['transform'] });
+      expect(fallbackWarnings[0]?.details).toEqual({
+        primitiveId: 'tri',
+        fields: ['transform'],
+        fallbackReason: 'geometry-bvh-texture-rebuild',
+        nativePatchMissing: 'targeted-geometry-bvh-refit',
+      });
       const scene = e.getScene?.();
       const prim = scene?.primitives[0];
       expect(prim?.kind).toBe('mesh');
@@ -650,6 +655,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         materialFields: ['baseColorMap', 'roughness'],
         materialTextureFields: ['baseColorMap'],
         fallbackReason: 'texture-map-material-patch',
+        nativePatchMissing: 'targeted-material-atlas-texture-update',
       });
     } finally {
       warn.mockRestore();
