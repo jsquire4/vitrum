@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PNG } from 'pngjs';
 import * as jpeg from 'jpeg-js';
+import * as webp from 'webp-wasm';
 import {
   analyzeGltfAsset,
   decodeSceneTextures,
@@ -632,6 +633,20 @@ function makeJpegBytes(
     encoded.byteOffset,
     encoded.byteOffset + encoded.byteLength,
   ) as ArrayBuffer;
+  return new Uint8Array(buffer);
+}
+
+async function makeWebpBytes(
+  width: number,
+  height: number,
+  rgba: readonly number[],
+): Promise<Uint8Array<ArrayBuffer>> {
+  const encoded = await webp.encode({
+    width,
+    height,
+    data: Uint8ClampedArray.from(rgba),
+  }, { quality: 100, lossless: 1, exact: 1 });
+  const buffer = encoded.buffer.slice(encoded.byteOffset, encoded.byteOffset + encoded.byteLength) as ArrayBuffer;
   return new Uint8Array(buffer);
 }
 
@@ -1271,6 +1286,60 @@ describe('loadGltfAsset', () => {
         textureIndex: 0,
         imageIndex: 0,
         imageMimeType: 'image/jpeg',
+        backendReadiness: {
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ready',
+        },
+      }),
+    ]);
+  });
+
+  it('loadGltfAndDecodeTextures decodes embedded WebP bytes in Node without a host pixel decoder', async () => {
+    const webpBytes = await makeWebpBytes(2, 2, [
+      32, 160, 224, 255,
+      32, 160, 224, 255,
+      32, 160, 224, 255,
+      32, 160, 224, 255,
+    ]);
+    const { gltf, buffers } = makeInlineTexturedGltf(webpBytes);
+    gltf.images![0] = {
+      ...gltf.images![0]!,
+      mimeType: 'image/webp',
+    };
+
+    const result = await loadGltfAndDecodeTextures(gltf, { buffers });
+
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.decodedTextureCount).toBe(1);
+    expect(result.unchangedTextureCount).toBe(0);
+    expect(result.textureDecodeWarnings).toEqual([]);
+
+    const primitive = result.scene.primitives[0] as MeshPrimitive;
+    const ref = primitive.material.baseColorMap as TextureRef;
+    const handle = ref.handle as {
+      width: number;
+      height: number;
+      data: Float32Array;
+      __vitrum_hint__: { channels: number; dataType: string; colorSpace: string };
+    };
+    expect(handle.width).toBe(2);
+    expect(handle.height).toBe(2);
+    expect(handle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(32 / 255), 0);
+    expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(160 / 255), 0);
+    expect(handle.data[2]).toBeCloseTo(srgbToLinearForTest(224 / 255), 0);
+    expect(handle.data[3]).toBeCloseTo(1);
+    expect(result.textureDecodeReport.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        handleKind: 'pixel-data',
+        handleColorSpace: 'linear',
+        width: 2,
+        height: 2,
+        textureIndex: 0,
+        imageIndex: 0,
+        imageMimeType: 'image/webp',
         backendReadiness: {
           ptWebgl2: 'ready',
           ptWebgpu: 'ready',
@@ -3566,6 +3635,76 @@ describe('loadGltfForEngine', () => {
         materialField: 'baseColorMap',
         textureIndex: 0,
         imageIndex: 0,
+        textureSourceExtension: 'EXT_texture_webp',
+        handleKind: 'pixel-data',
+        backendReadiness: {
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ready',
+        },
+      }),
+    ]);
+    expect(result.asset.backendCompatibility.find((entry) =>
+      entry.backend === 'pt-webgl2' && entry.profileId === 'pt-webgl2'
+    )).toMatchObject({
+      requiresHookCount: 0,
+    });
+  });
+
+  it('accepts selected WebP texture-source extensions through the built-in Node decode bridge', async () => {
+    const webpBytes = await makeWebpBytes(2, 2, [
+      224, 96, 32, 255,
+      224, 96, 32, 255,
+      224, 96, 32, 255,
+      224, 96, 32, 255,
+    ]);
+    const { gltf, buffers } = makeInlineTexturedGltf(webpBytes);
+    gltf.extensionsUsed = ['EXT_texture_webp'];
+    gltf.images![0] = {
+      ...gltf.images![0]!,
+      mimeType: 'image/webp',
+    };
+    gltf.textures![0] = {
+      ...gltf.textures![0]!,
+      extensions: { EXT_texture_webp: { source: 0 } },
+    };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      textureSourceExtensions: ['EXT_texture_webp'],
+      decodeTextures: true,
+      createEngine,
+    });
+
+    expect(result).toMatchObject({
+      backend: 'pt-webgl2',
+      attached: true,
+      decodedTextureCount: 1,
+      unchangedTextureCount: 0,
+      textureDecodeDiagnostics: [],
+      textureDecodeWarnings: [],
+    });
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    const primitive = result.asset.scene.primitives[0] as MeshPrimitive;
+    const ref = primitive.material.baseColorMap as TextureRef;
+    const handle = ref.handle as {
+      data: Float32Array;
+      __vitrum_hint__: { channels: number; dataType: string; colorSpace: string };
+    };
+    expect(handle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(224 / 255), 0);
+    expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(96 / 255), 0);
+    expect(handle.data[2]).toBeCloseTo(srgbToLinearForTest(32 / 255), 0);
+    expect(handle.data[3]).toBeCloseTo(1);
+    expect(result.textureDecodeReport.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        imageIndex: 0,
+        imageMimeType: 'image/webp',
         textureSourceExtension: 'EXT_texture_webp',
         handleKind: 'pixel-data',
         backendReadiness: {

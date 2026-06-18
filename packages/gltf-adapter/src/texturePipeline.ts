@@ -535,6 +535,8 @@ async function decodeTextureRef(
       decodePixels = decodeRawPngPixelsWithNode;
     } else if (canDecodeRawJpegPixelsWithNode(ref.handle as RawImageHandle)) {
       decodePixels = decodeRawJpegPixelsWithNode;
+    } else if (canDecodeRawWebpPixelsWithNode(ref.handle as RawImageHandle)) {
+      decodePixels = decodeRawWebpPixelsWithNode;
     } else if (canDecodeRawImagePixelsWithPlatform()) {
       decodePixels = decodeRawImagePixelsWithPlatform;
     }
@@ -662,6 +664,10 @@ function canDecodeRawJpegPixelsWithNode(handle: RawImageHandle): boolean {
   return isNodeLikeHost() && isJpegRawImageHandle(handle);
 }
 
+function canDecodeRawWebpPixelsWithNode(handle: RawImageHandle): boolean {
+  return isNodeLikeHost() && isWebpRawImageHandle(handle);
+}
+
 function isNodeLikeHost(): boolean {
   const host = globalThis as typeof globalThis & {
     process?: { versions?: { node?: unknown } };
@@ -687,6 +693,21 @@ function isJpegRawImageHandle(handle: RawImageHandle): boolean {
   const mimeType = handle.mimeType.toLowerCase();
   return (mimeType === 'image/jpeg' || mimeType === 'image/jpg') ||
     (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff);
+}
+
+function isWebpRawImageHandle(handle: RawImageHandle): boolean {
+  const data = handle.data;
+  const mimeType = handle.mimeType.toLowerCase();
+  return mimeType === 'image/webp' ||
+    (data.length >= 12 &&
+      data[0] === 0x52 &&
+      data[1] === 0x49 &&
+      data[2] === 0x46 &&
+      data[3] === 0x46 &&
+      data[8] === 0x57 &&
+      data[9] === 0x45 &&
+      data[10] === 0x42 &&
+      data[11] === 0x50);
 }
 
 const decodeRawPngPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, context) => {
@@ -728,6 +749,28 @@ const decodeRawJpegPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, co
     throw new PlatformTextureDecodeError(
       'platform-image-decode-failed',
       `[vitrum/gltf-adapter] ${context.path} could not be decoded as JPEG through the built-in Node decoder: ` +
+        `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
+    );
+  }
+};
+
+const decodeRawWebpPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, context) => {
+  try {
+    const webp = await importWebpWasm();
+    const decode = webpDecodeFn(webp);
+    const decoded = await decode(arrayBufferFromUint8Array(handle.data));
+    return {
+      width: decoded.width,
+      height: decoded.height,
+      data: decoded.data,
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: context.colorSpace,
+    };
+  } catch (err) {
+    throw new PlatformTextureDecodeError(
+      'platform-image-decode-failed',
+      `[vitrum/gltf-adapter] ${context.path} could not be decoded as WebP through the built-in Node decoder: ` +
         `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
     );
   }
@@ -783,6 +826,35 @@ function jpegDecodeFn(module: JpegJsModule): JpegJsDecodeFn {
   return decode;
 }
 
+interface WebpWasmDecodedImage {
+  readonly width: number;
+  readonly height: number;
+  readonly data: Uint8Array | Uint8ClampedArray;
+}
+
+type WebpWasmDecodeFn = (data: unknown) => Promise<WebpWasmDecodedImage> | WebpWasmDecodedImage;
+
+interface WebpWasmModule {
+  readonly decode?: WebpWasmDecodeFn;
+  readonly default?: {
+    readonly decode?: WebpWasmDecodeFn;
+  };
+}
+
+async function importWebpWasm(): Promise<WebpWasmModule> {
+  const specifier = 'webp-wasm';
+  return await import(specifier) as WebpWasmModule;
+}
+
+function webpDecodeFn(module: WebpWasmModule): WebpWasmDecodeFn {
+  const owner = module.decode !== undefined ? module : module.default;
+  const decode = owner?.decode;
+  if (typeof decode !== 'function') {
+    throw new Error('webp-wasm decode export is unavailable');
+  }
+  return (data) => decode.call(owner, data);
+}
+
 function nodeBufferFromUint8Array(bytes: Uint8Array): unknown {
   const host = globalThis as typeof globalThis & {
     Buffer?: {
@@ -793,6 +865,10 @@ function nodeBufferFromUint8Array(bytes: Uint8Array): unknown {
     throw new Error('Node Buffer is unavailable');
   }
   return host.Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+function arrayBufferFromUint8Array(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
 async function createBitmapFromRawImage(handle: RawImageHandle, path: string): Promise<unknown> {

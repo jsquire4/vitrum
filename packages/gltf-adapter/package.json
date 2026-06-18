@@ -21,7 +21,8 @@
   "dependencies": {
     "@vitrum/core": "*",
     "jpeg-js": "^0.4.4",
-    "pngjs": "^7.0.0"
+    "pngjs": "^7.0.0",
+    "webp-wasm": "^1.0.6"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
