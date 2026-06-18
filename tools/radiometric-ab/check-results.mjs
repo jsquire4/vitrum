@@ -246,12 +246,25 @@ function checkWalkaroundCaseCommon(label, proof, result) {
 function checkWalkaroundA8(proof, result) {
   checkWalkaroundCaseCommon("A8", proof, result);
   assertFiniteNumber(result.delta?.overall, "walkaround-ab A8: delta.overall");
+  assertFiniteNumber(result.biased?.overall, "walkaround-ab A8: biased.overall");
   if (Math.abs(result.delta.overall) > proof.maxAbsOverallDelta) {
     fail(`walkaround-ab A8: |overall delta| ${Math.abs(result.delta.overall)} exceeds ${proof.maxAbsOverallDelta}`);
+  }
+  const relativeOverallDelta = Math.abs(result.delta.overall) / Math.max(Math.abs(result.biased.overall), 1e-8);
+  if (relativeOverallDelta > proof.maxRelativeOverallDelta) {
+    fail(
+      `walkaround-ab A8: relative overall delta ${relativeOverallDelta} exceeds ${proof.maxRelativeOverallDelta}`,
+    );
   }
   for (const group of ["biased", "unbiased"]) {
     for (const key of ["overall", "floor", "ceiling", "leftWall", "rightWall"]) {
       assertFiniteNumber(result[group]?.[key], `walkaround-ab A8: ${group}.${key}`);
+    }
+  }
+  for (const key of ["floor", "ceiling", "leftWall", "rightWall"]) {
+    assertFiniteNumber(result.delta?.[key], `walkaround-ab A8: delta.${key}`);
+    if (Math.abs(result.delta[key]) > proof.maxAbsRegionDelta) {
+      fail(`walkaround-ab A8: |delta.${key}| ${Math.abs(result.delta[key])} exceeds ${proof.maxAbsRegionDelta}`);
     }
   }
 }

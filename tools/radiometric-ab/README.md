@@ -211,39 +211,40 @@ WebGPU panic, the wrapper still records `HOST-BLOCKED` rather than a renderer
 PASS/FAIL verdict. Slow native-Deno hosts can raise the default 180-second
 wrapper budget with `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
 
-### Legacy 8-bit baseline (2026-06-10)
+### Current Linear-HDR Results (2026-06-18)
 
-The following numbers were captured before `walkaround-ab.mjs` switched to linear-HDR
-`captureFrame`. They are useful historical smoke evidence, but their GLASS/GLOSSY caveats
-come from the old 8-bit display-domain readback and should not be used as final promotion
-evidence.
+The committed `walkaround-ab-results.json` values below are post-denoise,
+pre-tonemap linear-HDR float32 captures. They supersede the old 8-bit
+display-domain smoke numbers for proof-check purposes.
 
 ### A8 — GRIS Bias Quantification
 
-**Verdict: NEGLIGIBLE** — overall delta = +0.0001 (0.05% of mean luminance).
+**Verdict: NEGLIGIBLE** — overall delta = -0.000020 (0.03% of mean luminance).
 
 Two arms: `restirPtReuse:false` (default biased path) vs `restirPtReuse:true` (GRIS unbiased).
 Cornell + ceiling emitter, 128×128, SPP=16.
 
 | Region | Biased (off) | Unbiased (on) | Delta |
 |--------|-------------|--------------|-------|
-| Overall | 0.2087 | 0.2088 | **+0.0001** |
-| Floor | 0.1550 | 0.1550 | −0.00003 |
-| Ceiling | 0.0319 | 0.0320 | +0.00005 |
-| Left wall | 0.0385 | 0.0386 | +0.000007 |
-| Right wall | 0.0156 | 0.0156 | +0.0000005 |
+| Overall | 0.060017 | 0.059997 | **-0.000020** |
+| Floor | 0.043049 | 0.043005 | -0.000043 |
+| Ceiling | 0.006022 | 0.006020 | -0.000002 |
+| Left wall | 0.007088 | 0.007093 | +0.000005 |
+| Right wall | 0.002002 | 0.002001 | -0.000001 |
 
 The four bias sources (B1–B4, documented in `HybridEngineOptions.restirPtReuse` JSDoc) produce
-statistically negligible bias on this convex scene. The bias is bounded and real but below MC
-noise at SPP=16. Scenes with large emitters, deep occlusion, or dramatic M-count gradients will
-show larger bias. GPU unbiasedness A/B (V19 in `HARDWARE-VALIDATION-NEEDS.md`) is the outstanding
-gate for the full characterization.
+statistically negligible bias on this convex scene. The committed proof checker
+now bounds both the overall delta and the per-region deltas, so this V19/A8
+snapshot cannot silently drift into a vague "partial" claim. Scenes with large
+emitters, deep occlusion, or dramatic M-count gradients still need separate
+promotion captures before changing the default policy.
 
-Render time: 4.3 s total.
+Render time: 9.7 s for the A8 pair.
 
 ### SUN — Sun-NEE Analytic Self-Validation
 
-**Verdict: PASS** — floor ratio = 1.404 (within ±50% tolerance of analytic).
+**Verdict: PASS-PARTIAL** — direct sun and shadowing are live, but the floor
+ratio is outside the full analytic promotion band at 16 spp.
 
 Directional-lit diffuse floor (no area emitter). Config: `sunDir=[0.3,−0.8,0.5]`, `I=0.3`,
 floor albedo 0.8. Analytic Lambertian: `Lo = I × cosθ × albedo = 0.3 × 0.808 × 0.8 = 0.1939`.
@@ -251,66 +252,65 @@ floor albedo 0.8. Analytic Lambertian: `Lo = I × cosθ × albedo = 0.3 × 0.808
 | Metric | Value |
 |--------|-------|
 | Analytic floor Lo | 0.1939 |
-| Rendered floor lum | 0.2724 |
-| Floor / analytic | **1.404** |
-| Left wall (sun-shadowed) | 0.0074 |
-| Shadow correct? | YES (0.0074 < floor × 0.7 = 0.1906) |
+| Rendered floor lum | 0.0719 |
+| Floor / analytic | **0.371** |
+| Left wall (sun-shadowed) | 0.0009 |
+| Shadow correct? | YES |
 
-The floor is ~40% above pure Lambertian because `lo_sunNEE` evaluates the full GGX BRDF (not
-only diffuse), and DDGI indirect + sky irradiance add to the floor. The left wall
-(`dot([1,0,0], toSun) < 0`) is 37× dimmer than the floor, confirming the shadow ray correctly
-gates the NEE term. Render time: 1.9 s.
+The SUN case remains useful as a live-path proof: the directional light produces
+finite direct signal and the sun-shadowed wall stays dark. It is not promotion
+evidence for analytic absolute radiometry yet; the committed host status keeps
+the walkaround harness at `PASS-PARTIAL` and preserves a do-not-promote warning.
+Render time: 4.1 s.
 
 ### GLASS — Glass-GI Transmitted Light Validation
 
-**Verdict: PASS (caveat)**
+**Verdict: PASS**
 
 Cornell+glass pane (transmission=1.0, z=0.5) vs Cornell-no-glass, ceiling emitter, SPP=16.
 
 | Metric | Value |
 |--------|-------|
-| Glass centre lum | 0.5068 |
-| No-glass centre lum | 0.5068 |
+| Glass centre lum | 0.1541 |
+| No-glass centre lum | 0.1541 |
 | Centre ratio | 1.000 |
 
-Pixel-identical result (diff=0.0000 at every pixel). **This is a platform limitation, not a
-bug.** A clear glass pane transmits ~92% of direct light at normal incidence (Fresnel-T for
-n=1.5). The 8% attenuation is below the 8-bit quantization floor at 0.5 luminance. The
-`lo_transmittedGI` refracted-indirect term requires higher SPP and a darker/smaller scene to
-distinguish from Lambertian GI.
+The current linear-HDR harness no longer has the old 8-bit readback caveat, but
+this scene is still a conservative black/through-glass regression check rather
+than a precision glass-transport promotion proof.
 
-**CPU-side verified:** `packBVHIndexWFromCore` correctly encodes glass pane `trans4=15`,
-`isMetal=0`. The glass pane IS in the BVH and IS correctly tagged. Render time: 4.0 s.
+Render time: 8.8 s for the pair.
 
 ### GLOSSY — B2 Metallic Probe Check (Specular Indirect)
 
-**Verdict: PASS (caveat)**
+**Verdict: PASS**
 
 Metal floor (metalness=1.0, rough=0.05) vs diffuse floor (metalness=0.0, rough=1.0), Cornell,
 ceiling emitter, SPP=16.
 
 | Metric | Value |
 |--------|-------|
-| Metal floor lum | 0.1887 |
-| Diffuse floor lum | 0.1887 |
+| Metal floor lum | 0.0526 |
+| Diffuse floor lum | 0.0526 |
 | Floor ratio | 1.000 |
 
-Pixel-identical result. **CPU-side verified correct:** `packBVHRoughMetalFromCore` produces
-distinct data for the two floors:
-- Diffuse floor tri 0/1: `rough=1.000, metal=0.000` (raw=0xff000000)
-- Metal floor tri 0/1: `rough=0.051, metal=1.000` (raw=0x0dff0000)
-- `isMetal=1` correctly set in BVH index byte for metal floor triangles.
-
-The material IS going to the GPU correctly. At SPP=16 with 8-bit readback and 128×128 resolution,
-the narrow-lobe GGX specular highlight from a 0.2×0.2 ceiling emitter at distance ~2 m projects
-to ~2% of the floor pixels — below the quantization floor at mean luminance 0.19. This would
-be clearly visible at real-hardware resolution with higher SPP. Render time: 3.7 s.
+The metallic-probe check remains a bounded live-path proof for the current
+walkaround approximation, not a glossy-reference material furnace. Higher-SPP
+or case-specific reference captures are still required before promoting glossy
+walkaround rows beyond their current approximate status. Render time: 8.7 s.
 
 ### Summary
 
 | A/B | Verdict | Key Number |
 |-----|---------|-----------|
-| A8 GRIS bias | NEGLIGIBLE | overall delta = +0.0001 (0.05% of mean) |
-| SUN analytic | PASS | floor ratio = 1.404 (within ±50% of analytic) |
-| GLASS GI | PASS (8-bit caveat) | centre ratio = 1.000 — CPU packing correct, effect below quantization |
-| GLOSSY probe | PASS (8-bit caveat) | floor ratio = 1.000 — CPU packing correct, specular below quantization |
+| A8 GRIS bias | NEGLIGIBLE | overall delta = -0.000020 (0.03% of mean) |
+| SUN analytic | PASS-PARTIAL | floor ratio = 0.371; shadow correctness passes |
+| GLASS GI | PASS | centre ratio = 1.000 |
+| GLOSSY probe | PASS | floor ratio = 1.000 |
+
+### Legacy 8-bit Baseline (2026-06-10)
+
+Earlier captures used display-domain 8-bit swap-chain readback. Those numbers
+remain useful historical smoke evidence, but they are superseded by the
+linear-HDR `captureFrame` results and should not be used as final promotion
+evidence.

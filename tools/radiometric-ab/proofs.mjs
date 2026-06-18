@@ -86,6 +86,8 @@ export const WALKAROUND_AB_RESULT_PROOF = {
       id: "A8",
       allowedVerdicts: ["NEGLIGIBLE", "SMALL"],
       maxAbsOverallDelta: 0.03,
+      maxAbsRegionDelta: 0.03,
+      maxRelativeOverallDelta: 0.05,
     },
     sun: {
       id: "SUN",
