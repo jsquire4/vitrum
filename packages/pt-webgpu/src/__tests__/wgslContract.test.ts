@@ -275,8 +275,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-18: point-light MNEE caustics decode pointLights
     // extra.z castShadowDisabled and skip only light-leg visibility for
     // castShadow:false point emitters.
-    expect(digest).toBe('bc93e7150d7aea523faf322ce6bb41507c8a44cea71828e9c3750044d42ca293');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(386117);
+    // Re-pinned 2026-06-18: material texture descriptor constants now emit from
+    // host layout exports, and extension/special-map samplers use symbolic slots
+    // instead of baked vec4 offsets.
+    expect(digest).toBe('266c164dd0a77b7a9b9bba30d8abd1ae6329be4f032561217e5a50155babf220');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(387611);
   });
 });
 

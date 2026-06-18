@@ -75,6 +75,17 @@ function parseMaterialTexUvConstants(wgsl: string): Map<string, number> {
   return constants;
 }
 
+function parseMaterialTexConstants(wgsl: string): Map<string, number> {
+  const constants = new Map<string, number>();
+  const re = /const\s+(MATERIAL_TEX(?:_[A-Z0-9]+)+)\s*=\s*(\d+)u;/g;
+  let match: RegExpExecArray | null = re.exec(wgsl);
+  while (match != null) {
+    constants.set(match[1]!, Number(match[2]));
+    match = re.exec(wgsl);
+  }
+  return constants;
+}
+
 function expectedMainUvMetaOffset(slot: number): number {
   return MATERIAL_TEX_UV_META_VEC4_OFFSET + slot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
 }
@@ -712,6 +723,27 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     );
   });
 
+  it('WGSL material descriptor block constants are derived from the host descriptor layout', () => {
+    const constants = parseMaterialTexConstants(PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL);
+    const expected: Readonly<Record<string, number>> = {
+      MATERIAL_TEX_VEC4_STRIDE,
+      MATERIAL_TEX_EXTENSION_INDEX: MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET,
+      MATERIAL_TEX_EXTENSION_UV_FIT: MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET,
+      MATERIAL_TEX_EXTENSION_WRAP: MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET,
+      MATERIAL_TEX_CLEARCOAT_NORMAL: MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET,
+      MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP: MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET,
+      MATERIAL_TEX_THICKNESS: MATERIAL_TEX_THICKNESS_VEC4_OFFSET,
+      MATERIAL_TEX_THICKNESS_WRAP: MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET,
+      MATERIAL_TEX_LAYER_NORMAL: MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET,
+      MATERIAL_TEX_LAYER_NORMAL_UV_FIT: MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET,
+      MATERIAL_TEX_LAYER_NORMAL_WRAP: MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET,
+    };
+
+    expect(
+      Object.fromEntries(Object.keys(expected).map((name) => [name, constants.get(name)])),
+    ).toEqual(expected);
+  });
+
   it('WGSL material UV metadata constants are derived from the host descriptor layout', () => {
     const constants = parseMaterialTexUvConstants(PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL);
     const expected: Readonly<Record<string, number>> = {
@@ -771,13 +803,21 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('materialTexDescriptors[base + 12u].xy');
     expect(wgsl).toContain('materialTexDescriptors[base + 13u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 16u].zw');
-    expect(wgsl).toContain('materialTexDescriptors[base + 41u].x');
-    expect(wgsl).toContain('materialTexDescriptors[base + 42u].w');
-    expect(wgsl).toContain('const MATERIAL_TEX_LAYER_NORMAL = 75u;');
-    expect(wgsl).toContain('let clearcoatNormalIdx = i32(materialTexDescriptors[base + 67u].x);');
-    expect(wgsl).toContain('let clearcoatNormalScale = materialTexDescriptors[base + 67u].y;');
-    expect(wgsl).toContain('let thicknessIdx = i32(materialTexDescriptors[base + 71u].x);');
-    expect(wgsl).toContain('materialTexDescriptors[base + 71u].yz');
+    expect(wgsl).toContain('materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].x');
+    expect(wgsl).toContain('materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].w');
+    expect(wgsl).toContain(
+      `const MATERIAL_TEX_LAYER_NORMAL = ${MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET}u;`,
+    );
+    expect(wgsl).toContain(
+      'let clearcoatNormalIdx = i32(materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].x);',
+    );
+    expect(wgsl).toContain(
+      'let clearcoatNormalScale = materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].y;',
+    );
+    expect(wgsl).toContain(
+      'let thicknessIdx = i32(materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].x);',
+    );
+    expect(wgsl).toContain('materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].yz');
   });
 
   it('normal maps consume authored tangents with handedness before falling back to derived tangents', () => {
