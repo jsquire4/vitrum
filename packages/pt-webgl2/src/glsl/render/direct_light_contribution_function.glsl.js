@@ -121,11 +121,9 @@ export const direct_light_contribution_function = /*glsl*/`
 			float envPdf = sampleEquirectProbability( rand2( 7 ), envColor, envDirection );
 			envDirection = invEnvRotation3x3 * envDirection;
 
-			// this env sampling is not set up for transmissive sampling and yields overly bright
-			// results so we ignore the sample in this case.
-			// TODO: this should be improved but how? The env samples could traverse a few layers?
 			bool isSampleBelowSurface = ! surf.volumeParticle && dot( surf.faceNormal, envDirection ) < 0.0;
-			if ( isSampleBelowSurface ) {
+			bool envSampleNeedsTransmission = isSampleBelowSurface && surf.transmission > 0.001;
+			if ( isSampleBelowSurface && ! envSampleNeedsTransmission ) {
 
 				envPdf = 0.0;
 

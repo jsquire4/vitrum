@@ -293,6 +293,13 @@ describe('composeTraceGlsl', () => {
     );
   });
 
+  it('allows environment NEE samples through transmissive surfaces', () => {
+    expect(src).not.toContain('TODO: this should be improved but how?');
+    expect(src).toContain('bool envSampleNeedsTransmission = isSampleBelowSurface && surf.transmission > 0.001;');
+    expect(src).toContain('if ( isSampleBelowSurface && ! envSampleNeedsTransmission ) {');
+    expect(src).toContain('float envMaterialPdf = bsdfResult( worldWo, envDirection, surf, state.wavelength, sampleColor );');
+  });
+
   it('item 20: iesProfiles uniform is absent from the composed shader (IES removed)', () => {
     // IES profiles are not in the @vitrum/core contract and were always null.
     // The uniform, the struct field, and getPhotometricAttenuation are all deleted.
