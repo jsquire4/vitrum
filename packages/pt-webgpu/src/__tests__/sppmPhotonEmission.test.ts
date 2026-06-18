@@ -26,21 +26,24 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('sradW.rgb * solidAngle * softness * lightSelectInvPdf');
   });
 
-  it('does not claim faithful castShadow:false source treatment for photon-map emitters', () => {
-    // Unlike direct NEE or MNEE's light-leg visibility, SPPM launches forward
-    // photon paths from sources. Matching no-shadow emitter semantics needs a
-    // defined photon-visibility model, not a local lane check. This pin keeps
-    // the promise ledger's remaining pt-webgpu emitterCastShadow approximation
-    // honest until that model exists.
-    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('castShadowDisabled');
-    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('pointLights[pointBase + 2u].z');
-    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('rectAreaLights[rectBase].w > 0.5');
-    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('meshAreaLights[meshBase + 3u].w > 0.5');
+  it('excludes castShadow:false emitters from photon source selection', () => {
+    // SPPM launches forward photon paths from light sources. For no-shadow
+    // emitters, parity with the rest of pt-webgpu means keeping direct/camera
+    // visibility but not seeding caustic/shadow transport photons.
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('fn sppmDirectionalCastsShadow(dirIdx: u32) -> bool');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('return directionalLights[dBase].w >= 0.0;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('return pointLights[pointBase + 2u].z <= 0.5;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('return spotLights[spotBase + 3u].z <= 0.5;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('return rectAreaLights[rectBase].w <= 0.5;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('return meshAreaLights[meshBase + 3u].w <= 0.5;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('if (!sppmPointCastsShadow(pointIdx)) { continue; }');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('if (!sppmMeshAreaCastsShadow(meshIdx)) { continue; }');
   });
 
   it('uses the packed N-directional RGB records instead of the legacy scalar lightDir lane', () => {
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('var availableLightCount = params.directionalLightCount;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('var availableLightCount = 0u;');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('for (var dirIdx = 0u; dirIdx < params.directionalLightCount; dirIdx = dirIdx + 1u)');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('if (sppmDirectionalCastsShadow(dirIdx))');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('let dDirAD = directionalLights[dBase]');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('let dIrrMean = directionalLights[dBase + 1u]');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('photonDir    = -towardLightDir;');
@@ -53,8 +56,8 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
   });
 
   it('includes rect/disc, mesh-area, and environment sources in the same flat selection order as NEE', () => {
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('availableLightCount = availableLightCount + params.rectAreaLightCount;');
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('availableLightCount = availableLightCount + params.meshAreaLightCount;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('if (sppmRectAreaCastsShadow(rectIdx))');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('if (sppmMeshAreaCastsShadow(meshIdx))');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('if (hasEnvironmentMap() || params.environmentSun.w > 1e-6) {');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('availableLightCount = availableLightCount + 1u;');
   });

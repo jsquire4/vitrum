@@ -766,13 +766,13 @@ const PT_WEBGL2_SHADOWS: ShadowSupportMatrix = Object.freeze({
  *  visibility plus finite-area rect/disc/mesh leg visibility. BDPT
  *  light-subpath bounce-0 records mirror the same emitter flag into row 4.x and
  *  the eye↔light connection skips the visibility ray for that emitter endpoint.
- *  The remaining off-default SPPM photon-map source-treatment semantics are not
- *  yet native and `PTEngineWebGPU.setScene()` emits a structured warning when
- *  photon-map caustics are combined with castShadow:false emitters →
- *  'approximate'. */
+ *  SPPM photon-map source selection skips castShadow:false emitters and
+ *  renormalizes the photon-source PDF over the remaining shadow-casting sources,
+ *  so no-shadow emitters remain direct/camera/specular-visible without seeding
+ *  caustic/shadow transport → 'native'. */
 const PT_WEBGPU_SHADOWS: ShadowSupportMatrix = Object.freeze({
   primitiveCastShadow: 'native',
-  emitterCastShadow: 'approximate',
+  emitterCastShadow: 'native',
   receiveShadow: 'unsupported',
 });
 

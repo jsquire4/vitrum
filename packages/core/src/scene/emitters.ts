@@ -21,15 +21,12 @@ export interface EmitterBase {
    *  test — light passes through blockers (no glass tint either).
    *  Per-backend status (SHADOW-01, 2026-06-11 — see
    *  `BackendSupportDetails.shadows.emitterCastShadow`):
-   *    - `@vitrum/pt-webgl2` — approximate: honored for every analytic NEE
-   *      light (rect/disc/spot/point/directional via the lights-texture s5.g
-   *      lane); the mesh-area triangle-light NEE strategy and the forward /
-   *      BDPT paths do not consume it.
-   *    - `@vitrum/pt-webgpu` — approximate: honored by the default kernel NEE
-   *      loops (both tiers) + the BSDF-MIS area-light connections for all 6
-   *      emitter kinds; off-default integrators (BDPT, ReSTIR-PT, MNEE/SPPM
-   *      caustics) and in-medium directional NEE still shadow-test. Lite-tier
-   *      directional NEE (UBO mirror) carries no flag.
+   *    - `@vitrum/pt-webgl2` — native: honored for analytic and mesh-area NEE,
+   *      BDPT emitter-endpoint connections, and the forward emissive-hit MIS side.
+   *    - `@vitrum/pt-webgpu` — native: honored by direct NEE, BSDF-MIS area
+   *      connections, ReSTIR-PT suffix lighting, MNEE, BDPT emitter-endpoint
+   *      connections, and SPPM photon-source selection. In SPPM, no-shadow
+   *      emitters do not seed caustic/shadow transport photons.
    *    - `@vitrum/walkaround-hybrid` — native: honored by analytic direct NEE,
    *      ReSTIR-DI/DDGI/RC area-emitter NEE, DDGI/RC point/spot fixture lights,
    *      DDGI/RC directional sun paths, and the main direct-sun shade path. */

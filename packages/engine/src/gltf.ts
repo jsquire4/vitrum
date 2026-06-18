@@ -36,11 +36,19 @@ import type {
 
 export { loadGltfForEngine } from '@vitrum/gltf-adapter';
 export type {
+  DecodeSceneTextureDiagnostic,
+  DecodeSceneTextureDiagnosticCode,
+  GltfBackendTextureStatus,
   GltfAssetResult,
   GltfCompatibilityMode,
   GltfEngineSelection,
   GltfForEngineResult,
   GltfImportDiagnostic,
+  GltfMaterialTextureField,
+  GltfTextureColorSpace,
+  GltfTextureDecodeReport,
+  GltfTextureDecodeReportEntry,
+  GltfTextureHandleKind,
   LoadGltfForEngineOptions,
 } from '@vitrum/gltf-adapter';
 

@@ -380,7 +380,7 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('full tier photon-map warns for castShadow:false emitter source-treatment approximation', async () => {
+  it('full tier photon-map honors castShadow:false emitter source treatment without approximation warning', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const engine = await createPTEngine_WebGPU({
@@ -419,16 +419,10 @@ describe('H12: lite-tier capabilities truth', () => {
     const approx = structured.find((w) =>
       w.code === 'pt-webgpu.sppm-emitter-cast-shadow-approximation'
     );
-    expect(approx).toEqual(expect.objectContaining({
-      backend: 'pt-webgpu',
-      phase: 'setScene',
-      method: 'setScene',
-    }));
-    expect(approx?.details?.emitterIds).toEqual(['ghost-point']);
-    expect(approx?.details?.missing).toBe('sppm-no-shadow-source-treatment');
+    expect(approx).toBeUndefined();
     expect(warn.mock.calls.some((c) =>
       c.join(' ').includes('SPPM photon-map source treatment remains approximate'),
-    )).toBe(true);
+    )).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });

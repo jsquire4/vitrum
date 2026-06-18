@@ -128,13 +128,6 @@ function collectUnsupportedDisplacementFields(scene: Scene): string[] {
   return Array.from(fields).sort();
 }
 
-function collectCastShadowDisabledEmitterIds(scene: Scene): string[] {
-  return scene.emitters
-    .filter((emitter) => emitter.castShadow === false)
-    .map((emitter) => emitter.id)
-    .sort();
-}
-
 function collectUnsupportedLayerNormalFields(
   fields: Set<string>,
   prefix: 'frontLayer' | 'backLayer',
@@ -1260,27 +1253,6 @@ class PTEngineWebGPU implements Engine {
           `consumed by any backend (non-physical for GI); primitives: ${receiveShadowIds.join(', ')}.`,
         details: { primitiveIds: receiveShadowIds },
       });
-    }
-    if (this.#causticStrategy === 'photon-map' && this.#traceTier === 'full') {
-      const noShadowEmitterIds = collectCastShadowDisabledEmitterIds(scene);
-      if (noShadowEmitterIds.length > 0) {
-        this.#warn({
-          code: 'pt-webgpu.sppm-emitter-cast-shadow-approximation',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/pt-webgpu] setScene: causticStrategy:"photon-map" uses forward SPPM photon emission. ` +
-            `Emitter castShadow:false is honored by direct, ReSTIR-PT, BDPT, and MNEE visibility paths, ` +
-            `but SPPM photon-map source treatment remains approximate for emitters: ${noShadowEmitterIds.join(', ')}.`,
-          details: {
-            emitterIds: noShadowEmitterIds,
-            causticStrategy: 'photon-map',
-            missing: 'sppm-no-shadow-source-treatment',
-            fallback: 'forward photons trace ordinary scene visibility',
-          },
-        });
-      }
     }
     const packed = buildPackedScene(scene, {
       cameraVisibleEmitters: this.#cameraVisibleEmitters,

@@ -362,6 +362,9 @@ fn sppmGatherProgressive(
  * seeded from the active directional / point / spot lights and traced through
  * the scene via specular/transmissive bounces until it hits a diffuse surface,
  * then deposited into the SPPM hash grid via `sppmInsertPhoton`.
+ * Emitters with `castShadow:false` are intentionally excluded from photon
+ * source selection: they remain directly/camera/specular visible elsewhere,
+ * but they do not seed caustic/shadow transport.
  *
  * Photon flux is   Φ_photon = Φ_total / N_photons
  * so the estimator   L ≈ Σ(f × Φ_i × kernel / (π r²))
@@ -398,6 +401,31 @@ fn sppmConcentricDiscSample(xi: vec2f) -> vec2f {
   return vec2f(r * cos(phi), r * sin(phi));
 }
 
+fn sppmDirectionalCastsShadow(dirIdx: u32) -> bool {
+  let dBase = dirIdx * 2u;
+  return directionalLights[dBase].w >= 0.0;
+}
+
+fn sppmPointCastsShadow(pointIdx: u32) -> bool {
+  let pointBase = pointIdx * POINT_LIGHT_VEC4_STRIDE;
+  return pointLights[pointBase + 2u].z <= 0.5;
+}
+
+fn sppmSpotCastsShadow(spotIdx: u32) -> bool {
+  let spotBase = spotIdx * SPOT_LIGHT_VEC4_STRIDE;
+  return spotLights[spotBase + 3u].z <= 0.5;
+}
+
+fn sppmRectAreaCastsShadow(rectIdx: u32) -> bool {
+  let rectBase = rectIdx * 4u;
+  return rectAreaLights[rectBase].w <= 0.5;
+}
+
+fn sppmMeshAreaCastsShadow(meshIdx: u32) -> bool {
+  let meshBase = meshIdx * 4u;
+  return meshAreaLights[meshBase + 3u].w <= 0.5;
+}
+
 // SPPM photon-emission pass.  workgroup_size(64,1,1); each lane = one photon.
 @compute @workgroup_size(64, 1, 1)
 fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
@@ -410,11 +438,32 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
   var rng = pcgInit(photonIdx, params.frameSeed, params.frameIndex ^ 0xdeadbeefu);
 
   // ── Select a light source ──────────────────────────────────────────────────
-  var availableLightCount = params.directionalLightCount;
-  availableLightCount = availableLightCount + params.pointLightCount;
-  availableLightCount = availableLightCount + params.spotLightCount;
-  availableLightCount = availableLightCount + params.rectAreaLightCount;
-  availableLightCount = availableLightCount + params.meshAreaLightCount;
+  var availableLightCount = 0u;
+  for (var dirIdx = 0u; dirIdx < params.directionalLightCount; dirIdx = dirIdx + 1u) {
+    if (sppmDirectionalCastsShadow(dirIdx)) {
+      availableLightCount = availableLightCount + 1u;
+    }
+  }
+  for (var pointIdx = 0u; pointIdx < params.pointLightCount; pointIdx = pointIdx + 1u) {
+    if (sppmPointCastsShadow(pointIdx)) {
+      availableLightCount = availableLightCount + 1u;
+    }
+  }
+  for (var spotIdx = 0u; spotIdx < params.spotLightCount; spotIdx = spotIdx + 1u) {
+    if (sppmSpotCastsShadow(spotIdx)) {
+      availableLightCount = availableLightCount + 1u;
+    }
+  }
+  for (var rectIdx = 0u; rectIdx < params.rectAreaLightCount; rectIdx = rectIdx + 1u) {
+    if (sppmRectAreaCastsShadow(rectIdx)) {
+      availableLightCount = availableLightCount + 1u;
+    }
+  }
+  for (var meshIdx = 0u; meshIdx < params.meshAreaLightCount; meshIdx = meshIdx + 1u) {
+    if (sppmMeshAreaCastsShadow(meshIdx)) {
+      availableLightCount = availableLightCount + 1u;
+    }
+  }
   if (hasEnvironmentMap() || params.environmentSun.w > 1e-6) {
     availableLightCount = availableLightCount + 1u;
   }
@@ -434,6 +483,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
 
   // Directional lights (parallel rays from a far plane).
   for (var dirIdx = 0u; dirIdx < params.directionalLightCount; dirIdx = dirIdx + 1u) {
+    if (!sppmDirectionalCastsShadow(dirIdx)) { continue; }
     if (current == pick) {
       let dBase = dirIdx * 2u;
       let dDirAD = directionalLights[dBase];        // .xyz = toward-light dir, .w = angularDiameter
@@ -459,6 +509,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
 
   // Point lights.
   for (var pointIdx = 0u; pointIdx < params.pointLightCount; pointIdx = pointIdx + 1u) {
+    if (!sppmPointCastsShadow(pointIdx)) { continue; }
     if (current == pick) {
       let pointBase = pointIdx * POINT_LIGHT_VEC4_STRIDE;
       photonOrigin = pointLights[pointBase].xyz;
@@ -473,6 +524,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
 
   // Spot lights.
   for (var spotIdx = 0u; spotIdx < params.spotLightCount; spotIdx = spotIdx + 1u) {
+    if (!sppmSpotCastsShadow(spotIdx)) { continue; }
     if (current == pick) {
       let spotBase = spotIdx * SPOT_LIGHT_VEC4_STRIDE;
       let spos     = spotLights[spotBase].xyz;
@@ -503,6 +555,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
   // Rect/disc area lights.  Same 4-vec4 record and area conventions as NEE:
   // rshape.w ~= 0 => rect area 4*|u x v|; rshape.w ~= 1 => disc area PI*r^2.
   for (var rectIdx = 0u; rectIdx < params.rectAreaLightCount; rectIdx = rectIdx + 1u) {
+    if (!sppmRectAreaCastsShadow(rectIdx)) { continue; }
     if (current == pick) {
       let rectBase = rectIdx * 4u;
       let rpos = rectAreaLights[rectBase].xyz;
@@ -540,6 +593,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
 
   // Mesh-area lights.  Same triangle stream and area convention as NEE.
   for (var meshIdx = 0u; meshIdx < params.meshAreaLightCount; meshIdx = meshIdx + 1u) {
+    if (!sppmMeshAreaCastsShadow(meshIdx)) { continue; }
     if (current == pick) {
       let meshBase = meshIdx * 4u;
       let a = meshAreaLights[meshBase].xyz;

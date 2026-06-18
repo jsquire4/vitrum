@@ -208,10 +208,12 @@ describe('backend promise ledger', () => {
     // mesh-area forward-emissive MIS side.
     expect(gl2.primitiveCastShadow).toBe('native');
     expect(gl2.emitterCastShadow).toBe('native');
-    // pt-webgpu: every any-hit occlusion traversal skips the flag (native);
-    // emitter flag honored by default-kernel NEE + BSDF-MIS connections only.
+    // pt-webgpu: every any-hit occlusion traversal skips primitive flags
+    // (native); emitter flags are honored across direct NEE, BSDF-MIS
+    // connections, ReSTIR-PT suffix lighting, MNEE, BDPT endpoint connections,
+    // and SPPM photon-source selection.
     expect(gpu.primitiveCastShadow).toBe('native');
-    expect(gpu.emitterCastShadow).toBe('approximate');
+    expect(gpu.emitterCastShadow).toBe('native');
   });
 
   it('keeps denoiser support rows exhaustive and host-readable', () => {

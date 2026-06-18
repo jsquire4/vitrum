@@ -509,6 +509,79 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(receiveShadow:false) emits the reserved receiveShadow warning', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', { receiveShadow: false });
+
+      const warning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.reserved-receive-shadow',
+      );
+      expect(warning?.method).toBe('updatePrimitive');
+      expect(warning?.details?.primitiveIds).toEqual(['mesh-a']);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(transform + material) rebuilds and warns instead of dropping the material patch', () => {
+    const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      const moved = mat4Translate(4, 0, 0);
+      engine.updatePrimitive('mesh-a', {
+        transform: moved,
+        material: {
+          baseColor: [0.1, 0.7, 0.2],
+          roughness: 0.25,
+          metallic: 0,
+          ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
+        },
+      });
+
+      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      const materialWarning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.unconsumed-material-fields',
+      );
+      expect(materialWarning?.method).toBe('updatePrimitive');
+      expect(materialWarning?.details?.fields).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
+      const patched = storedScene(engine).primitives.find((p) => p.id === 'mesh-a') as Extract<ScenePrimitive, { kind: 'mesh' }>;
+      expect(Array.from(patched.transform ?? [])).toEqual(Array.from(moved));
+      expect(patched.material.baseColor).toEqual([0.1, 0.7, 0.2]);
+      expect((patched.material as unknown as Record<string, unknown>).thinFilmStack).toEqual({ layers: [{ ior: 1.4, thicknessNm: 300 }] });
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(positions + material) rebuilds and warns instead of taking the positions-only fast path', () => {
+    const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      const positions = new Float32Array([0, 0, 0, 1.5, 0, 0, 0, 1, 0]);
+      engine.updatePrimitive('mesh-a', {
+        positions,
+        material: {
+          baseColor: [0.3, 0.2, 0.9],
+          roughness: 0.25,
+          metallic: 0,
+          ...WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL,
+        },
+      });
+
+      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
+      const materialWarning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.unconsumed-material-fields',
+      );
+      expect(materialWarning?.method).toBe('updatePrimitive');
+      expect(materialWarning?.details?.fields).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
+      const patched = storedScene(engine).primitives.find((p) => p.id === 'mesh-a') as Extract<ScenePrimitive, { kind: 'mesh' }>;
+      expect(Array.from(patched.positions)).toEqual(Array.from(positions));
+      expect(patched.material.baseColor).toEqual([0.3, 0.2, 0.9]);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) emits a structured warning for residual alpha blend approximation', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

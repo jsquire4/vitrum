@@ -5,9 +5,9 @@
  *
  * WHAT IS UNDER AUDIT
  * -------------------
- * sppmEmitPhotons picks ONE light uniformly among `availableLightCount` sources
- * (sppmBindings.wgsl.ts:390-393) and normalizes every photon's flux by
- *   lightSelectInvPdf = f32(availableLightCount)            [L394]
+ * sppmEmitPhotons picks ONE shadow-casting photon source uniformly among
+ * `availableLightCount` sources and normalizes every photon's flux by
+ *   lightSelectInvPdf = f32(availableLightCount)
  * Per-source flux (transcribed below, file:line cited):
  *   point: rad·4π·invPdf/N                                   [L433-435]
  *   rect:  Le·area·π·invPdf/N                                [L500-501]
@@ -36,11 +36,14 @@
  * An over-correction (×K²) would read ×K. The test asserts the ratio ≈ 1 and
  * explicitly excludes the ≈1/K and ≈K failure modes.
  *
- * Scene per the P3 workstream spec: 2 point lights + 1 rect + env → K = 4.
+ * Scene per the P3 workstream spec: 2 point lights + 1 rect + env → K = 4
+ * when all sources cast shadows. If a source has castShadow:false, the photon
+ * pass removes it from the source set and renormalizes over the active count.
  */
 import { describe, expect, it } from 'vitest';
 
 type V3 = [number, number, number];
+type SourceId = 'point0' | 'point1' | 'rect' | 'env';
 const PI = Math.PI;
 
 function mulberry32(seed: number): () => number {
@@ -70,7 +73,8 @@ const skyL0: V3 = [0.3, 0.4, 0.5];
 const sceneExtent = 5; // sppmStats.sceneExtent
 const diskArea = PI * sceneExtent * sceneExtent; // L566
 
-const K = 4; // availableLightCount = 2 points + 1 rect + 1 env  [L380-388]
+const ALL_SOURCES = ['point0', 'point1', 'rect', 'env'] as const satisfies readonly SourceId[];
+const K = ALL_SOURCES.length; // availableLightCount = 2 points + 1 rect + 1 env.
 
 // ── reference powers (independent derivations, see header) ───────────────────
 const CH = [0, 1, 2] as const;
@@ -80,7 +84,21 @@ const refPoint: [V3, V3] = [
 ];
 const refRect: V3 = [PI * rectArea * rectLe[0], PI * rectArea * rectLe[1], PI * rectArea * rectLe[2]];
 const refEnv: V3 = [4 * PI * skyL0[0] * diskArea, 4 * PI * skyL0[1] * diskArea, 4 * PI * skyL0[2] * diskArea];
-const refTotal: V3 = CH.map((c) => refPoint[0][c] + refPoint[1][c] + refRect[c] + refEnv[c]) as unknown as V3;
+
+function referenceTotalForSources(sources: readonly SourceId[]): V3 {
+  const total: V3 = [0, 0, 0];
+  for (const source of sources) {
+    for (const c of CH) {
+      if (source === 'point0') total[c] += refPoint[0][c];
+      else if (source === 'point1') total[c] += refPoint[1][c];
+      else if (source === 'rect') total[c] += refRect[c];
+      else total[c] += refEnv[c];
+    }
+  }
+  return total;
+}
+
+const refTotal: V3 = referenceTotalForSources(ALL_SOURCES);
 
 // ── transcribed photon seeding (sppmBindings.wgsl.ts:370-571) ─────────────────
 // invPdfOverride lets the test simulate the OLD missing-invPdf bug (=1) and an
@@ -89,8 +107,10 @@ function emitTotalFlux(
   nPhotons: number,
   seed: number,
   invPdf: number,
+  sources: readonly SourceId[] = ALL_SOURCES,
 ): { total: V3; perClass: [V3, V3, V3] } {
   const rng = mulberry32(seed);
+  const k = sources.length;
   const total: V3 = [0, 0, 0];
   const perClass: [V3, V3, V3] = [
     [0, 0, 0],
@@ -98,21 +118,22 @@ function emitTotalFlux(
     [0, 0, 0],
   ]; // [points, rect, env]
   for (let i = 0; i < nPhotons; i++) {
-    // L390-393: pick = min(floor(rand·K), K−1)
-    const pick = Math.min(Math.floor(rng() * K), K - 1);
+    // pick = min(floor(rand·K_active), K_active−1)
+    const pick = Math.min(Math.floor(rng() * k), k - 1);
+    const source = sources[pick]!;
     let flux: V3;
     let cls: 0 | 1 | 2;
-    if (pick < 2) {
+    if (source === 'point0' || source === 'point1') {
       // Point light [L428-439]: Φ = rad·4π·invPdf/N (direction draw does not
       // affect flux; uniformSphere consumes 2 rands — irrelevant to expectation).
-      const r = pointRad[pick as 0 | 1];
+      const r = pointRad[source === 'point0' ? 0 : 1];
       flux = [
         (r[0] * 4 * PI * invPdf) / nPhotons,
         (r[1] * 4 * PI * invPdf) / nPhotons,
         (r[2] * 4 * PI * invPdf) / nPhotons,
       ];
       cls = 0;
-    } else if (pick === 2) {
+    } else if (source === 'rect') {
       // Rect light [L472-506]: position xi1/xi2 + cosine-hemisphere direction;
       // flux is INDEPENDENT of both: Φ = Le·area·π·invPdf/N  [L500-501]
       rng(); // xi1  [L485]
@@ -183,6 +204,22 @@ describe('SPPM oracle — photon flux energy conservation (lightSelectInvPdf)', 
         expect(ratio, `class ${cls} channel ${c}: ${ratio.toFixed(4)}`).toBeGreaterThan(0.96);
         expect(ratio).toBeLessThan(1.04);
       }
+    }
+  });
+
+  it('renormalizes photon flux over shadow-casting sources when one emitter is disabled', () => {
+    const activeSources = ['point0', 'rect', 'env'] as const satisfies readonly SourceId[];
+    const activeK = activeSources.length;
+    const activeRef = referenceTotalForSources(activeSources);
+    const { total } = emitTotalFlux(N, 20260618, activeK, activeSources);
+    const wrongAllLightPdf = emitTotalFlux(N, 20260618, K, activeSources).total;
+    for (const c of CH) {
+      const ratio = total[c] / activeRef[c];
+      expect(ratio, `channel ${c}: active-source ΣΦ/ΣP = ${ratio.toFixed(4)}`).toBeGreaterThan(0.97);
+      expect(ratio).toBeLessThan(1.03);
+      const wrongRatio = wrongAllLightPdf[c] / activeRef[c];
+      expect(wrongRatio, `channel ${c}: all-light PDF would over-scale to ${wrongRatio.toFixed(4)}`).toBeGreaterThan(4 / 3 - 0.08);
+      expect(wrongRatio).toBeLessThan(4 / 3 + 0.08);
     }
   });
 

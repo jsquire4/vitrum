@@ -163,20 +163,23 @@
 > **2026-06-18 pt-webgpu BDPT shadow follow-up:** BDPT bounce-0 emitter vertices
 > now mirror authored `castShadow:false` into the light-subpath payload, and
 > eye↔light connection visibility skips the occlusion ray for that emitter
-> endpoint. The pt-webgpu `emitterCastShadow` row remains approximate until
-> SPPM photon-map no-shadow source-treatment parity is source-closed or
-> explicitly demoted.
+> endpoint.
 > **2026-06-18 pt-webgpu MNEE shadow follow-up:** point-light MNEE reflection,
 > refraction, and glass-slab caustics now decode the packed point-light
 > `castShadow:false` lane and skip only the point-emitter light-leg visibility
 > test, matching the finite-area MNEE behavior while preserving receiver/interface
-> validity checks. The remaining pt-webgpu `emitterCastShadow` approximation is
-> now specifically the SPPM photon-map no-shadow source-treatment tail.
-> Same-day truthfulness follow-up: `PTEngineWebGPU.setScene()` now emits
-> structured `pt-webgpu.sppm-emitter-cast-shadow-approximation` when hosts combine
-> `causticStrategy:"photon-map"` with `castShadow:false` emitters, so the remaining
-> off-default approximation is visible at construction time instead of only in the
-> promise ledger.
+> validity checks.
+> Same-day SPPM shadow follow-up: `causticStrategy:"photon-map"` now excludes
+> `castShadow:false` emitters from photon-source selection and renormalizes the
+> source PDF over the remaining shadow-casting sources, so no-shadow emitters
+> remain direct/camera/specular-visible without seeding photon-map caustic/shadow
+> transport. The pt-webgpu `emitterCastShadow` promise row is now native.
+> Same-day API/update truthfulness follow-up: `@vitrum/engine/gltf` re-exports
+> the texture decode report/diagnostic types it already forwards at runtime, and
+> walkaround `updatePrimitive()` now warns for `receiveShadow:false` plus routes
+> mixed material+geometry patches through a full rebuild so the material patch
+> is applied and unsupported material fields cannot be hidden by geometry fast
+> paths.
 > Same-day mapped-emitter adjoint follow-up: explicit uncapped mesh-area emitter
 > `color` / `intensity` path replay now stays analytic when the source material
 > has a readable `emissiveMap` and the authored color/intensity denominators are
@@ -1474,7 +1477,7 @@ and higher-confidence reference captures.
 
 **pt-webgl2 ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, and `scatteringCoefficientRGB`; `frontLayer` and `backLayer` are native field-consumption rows after face-selected transmission/roughness plus nested normal-map/normal-scale packing and shader consumption. `emitterCastShadow` is native in the shadow matrix after folded mesh-area emitter shadow flags reached the forward emissive-hit MIS estimator.
 
-**pt-webgpu ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `sheenColorMap`, `sheenRoughnessMap`, `iridescenceMap`, `iridescenceThicknessMap`, `specularColorMap`, `specularIntensityMap`, `specularIntensity`, and `specularColor`; `frontLayer` and `backLayer` are native in the full tier after face-selected layer-normal descriptor/shader support, while the lite tier still emits structured compatibility warnings. `emitterCastShadow` remains approximate in the shadow matrix.
+**pt-webgpu ledger residuals:** unsupported fields are `displacementMap`, `displacementScale`, `displacementBias`, and `extensions`. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, `clearcoatMap`, `clearcoatRoughnessMap`, `clearcoatNormalMap`, `sheenColorMap`, `sheenRoughnessMap`, `iridescenceMap`, `iridescenceThicknessMap`, `specularColorMap`, `specularIntensityMap`, `specularIntensity`, and `specularColor`; `frontLayer` and `backLayer` are native in the full tier after face-selected layer-normal descriptor/shader support, while the lite tier still emits structured compatibility warnings. `emitterCastShadow` is native in the shadow matrix after SPPM photon-source selection reached no-shadow parity.
 
 ---
 

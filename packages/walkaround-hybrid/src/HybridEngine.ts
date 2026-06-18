@@ -117,6 +117,7 @@ import {
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectUnconsumedMaterialFields,
+  collectUnconsumedMaterialFieldsForMaterial,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
@@ -966,6 +967,23 @@ export class HybridEngine implements Engine {
     });
   }
 
+  private _warnReservedReceiveShadowPrimitiveIds(
+    primitiveIds: readonly string[],
+    method: 'setScene' | 'updatePrimitive',
+  ): void {
+    if (primitiveIds.length === 0) return;
+    this._warn({
+      code: 'walkaround-hybrid.reserved-receive-shadow',
+      backend: 'walkaround-hybrid',
+      phase: method,
+      method,
+      message:
+        `[vitrum/walkaround-hybrid] ${method}: receiveShadow:false is reserved and not ` +
+        `consumed by any backend (non-physical for GI); primitives: ${primitiveIds.join(', ')}.`,
+      details: { primitiveIds },
+    });
+  }
+
   private _warnMaterialTextureAtlasDiagnostics(
     diagnostics: readonly MaterialTextureAtlasDiagnostic[],
     method: 'setScene' | 'updatePrimitive',
@@ -1110,26 +1128,13 @@ export class HybridEngine implements Engine {
     this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(emissiveMapTexelPdfApproxIds, 'setScene');
     this._warnDirectionalAngularDiameterPartialSupport(scene, 'setScene');
 
-    // SHADOW-01 — primitive castShadow remains approximate because GI-side
-    // occlusion rays still see castShadow:false geometry. Emitter castShadow is
-    // now honored by direct analytic/area NEE, DDGI fixture/sun probe lights, RC
-    // fixture/sun probe lights, and the main direct-sun shade path, so it no
-    // longer emits a compatibility warning here.
+    // SHADOW-01 — receiveShadow is reserved/unsupported: a "receiver ignores
+    // occlusion" toggle is non-physical for this GI renderer. castShadow rows
+    // have native support and should not warn here.
     const receiveShadowIds = scene.primitives
       .filter((p) => (p as { receiveShadow?: boolean }).receiveShadow === false)
       .map((p) => p.id);
-    if (receiveShadowIds.length > 0) {
-      this._warn({
-        code: 'walkaround-hybrid.reserved-receive-shadow',
-        backend: 'walkaround-hybrid',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          `[vitrum/walkaround-hybrid] setScene: receiveShadow:false is reserved and not ` +
-          `consumed by any backend (non-physical for GI); primitives: ${receiveShadowIds.join(', ')}.`,
-        details: { primitiveIds: receiveShadowIds },
-      });
-    }
+    this._warnReservedReceiveShadowPrimitiveIds(receiveShadowIds, 'setScene');
 
     this._lastScene = scene;
     this._renderScene = sceneWithAnalyticMeshFallback(scene);
@@ -1258,6 +1263,7 @@ export class HybridEngine implements Engine {
     // pt-webgl/pt-webgpu (which absorb the instance-COUNT case) instead of
     // throwing "call setScene()". P5 contract-honesty.
     if (TOPOLOGY_PATCH_WHOLESALE_FIELDS.some((f) => (patch as Record<string, unknown>)[f] !== undefined)) {
+      this._warnPrimitiveUpdatePatchTruthfulness(id, patch);
       this.setScene(applyPrimitivePatchToScene(this._lastScene, id, patch));
       return;
     }
@@ -1283,7 +1289,9 @@ export class HybridEngine implements Engine {
   /**
    * Select the fast/full path for an `updatePrimitive` patch and run it.
    * Returns `null` for an unrecognised patch (no-op). Branch order is
-   * load-bearing — skinned pose beats structural topology beats positions beats transform beats material:
+   * load-bearing — mixed material+geometry patches rebuild so the whole patch is
+   * applied; otherwise skinned pose beats structural topology beats positions beats
+   * transform beats material:
    *  - structural topology fields (`indices` / UVs / tangents / instances /
    *    analytic shape data / kind) → full SAH `topologyRebuild` (Option (a)).
    *  - `positions` with optional same-count `normals` → A3/H19
@@ -1302,15 +1310,52 @@ export class HybridEngine implements Engine {
   ): PrimitiveUpdateResult | null {
     const has = (f: string): boolean => (patch as Record<string, unknown>)[f] !== undefined;
     const ctx = this._buildPrimitiveUpdateContext();
+    this._warnPrimitiveUpdatePatchTruthfulness(id, patch);
+    const hasMaterial = has('material');
     const hasSkinnedPose = SKIN_POSE_PATCH_FIELDS.some((f) => has(f));
+    if (hasMaterial && hasSkinnedPose) return topologyRebuild(id, patch, ctx);
     if (hasSkinnedPose) return skinnedPosePatch(id, patch, ctx);
     const hasStructuralTopology = TOPOLOGY_PATCH_FIELDS.some((f) => f !== 'normals' && has(f));
     if (hasStructuralTopology) return topologyRebuild(id, patch, ctx);
+    if (hasMaterial && (has('positions') || has('normals') || has('transform'))) {
+      return topologyRebuild(id, patch, ctx);
+    }
     if (has('positions')) return positionsRefit(id, patch, ctx);
     if (has('normals')) return topologyRebuild(id, patch, ctx);
     if (has('transform')) return transformRefit(id, patch, ctx);
     if (has('material')) return materialPatch(id, patch, ctx);
     return null;
+  }
+
+  private _warnPrimitiveUpdatePatchTruthfulness(
+    id: string,
+    patch: Partial<ScenePrimitive>,
+  ): void {
+    if ((patch as { receiveShadow?: boolean }).receiveShadow === false) {
+      this._warnReservedReceiveShadowPrimitiveIds([id], 'updatePrimitive');
+    }
+    const material = (patch as unknown as { material?: Record<string, unknown> }).material;
+    if (material == null) return;
+    this._warnUnconsumedMaterialFields(
+      collectUnconsumedMaterialFieldsForMaterial(material),
+      'updatePrimitive',
+    );
+    this._warnApproximateAlphaBlendPrimitiveIds(
+      collectApproximateAlphaBlendPrimitiveIds([{
+        id,
+        kind: patch.kind ?? 'mesh',
+        material,
+      }]),
+      'updatePrimitive',
+    );
+    this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(
+      collectApproximateEmissiveMapTexelPdfPrimitiveIds([{
+        id,
+        kind: patch.kind ?? 'mesh',
+        material,
+      }], this._lastScene?.emitters ?? []),
+      'updatePrimitive',
+    );
   }
 
   /**
