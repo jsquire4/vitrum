@@ -3439,6 +3439,77 @@ describe('loadGltfForEngine', () => {
     ]);
   });
 
+  it('accepts selected texture-source extensions when the texture decode bridge returns CPU pixels', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.extensionsUsed = ['EXT_texture_webp'];
+    gltf.images![0] = {
+      ...gltf.images![0]!,
+      mimeType: 'image/webp',
+    };
+    gltf.textures![0] = {
+      ...gltf.textures![0]!,
+      extensions: { EXT_texture_webp: { source: 0 } },
+    };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    let decodedHandle: unknown;
+    const decodePixels: DecodeGltfTexturePixelsFn = (handle) => {
+      decodedHandle = handle;
+      return {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([255, 128, 0, 255]),
+        channels: 4 as const,
+        dataType: 'uint8' as const,
+        colorSpace: 'srgb' as const,
+      };
+    };
+    const decodePixelsMock = vi.fn(decodePixels);
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      textureSourceExtensions: ['EXT_texture_webp'],
+      decodeTextures: true,
+      decodePixels: decodePixelsMock,
+      createEngine,
+    });
+
+    expect(result).toMatchObject({
+      backend: 'pt-webgl2',
+      attached: true,
+      decodedTextureCount: 1,
+      unchangedTextureCount: 0,
+      textureDecodeDiagnostics: [],
+      textureDecodeWarnings: [],
+    });
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(decodePixelsMock).toHaveBeenCalledTimes(1);
+    expect(decodedHandle).toMatchObject({
+      kind: 'raw-image',
+      mimeType: 'image/webp',
+    });
+    expect(result.textureDecodeReport.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        imageIndex: 0,
+        textureSourceExtension: 'EXT_texture_webp',
+        handleKind: 'pixel-data',
+        backendReadiness: {
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ready',
+        },
+      }),
+    ]);
+    expect(result.asset.backendCompatibility.find((entry) =>
+      entry.backend === 'pt-webgl2' && entry.profileId === 'pt-webgl2'
+    )).toMatchObject({
+      requiresHookCount: 0,
+    });
+  });
+
   it('does not treat an explicitly enabled texture-source extension as a missing host hook', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.extensionsUsed = ['KHR_texture_basisu'];

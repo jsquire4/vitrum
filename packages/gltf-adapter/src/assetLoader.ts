@@ -220,6 +220,11 @@ const preserveRawImageForTextureDecode: DecodeImageFn = (
 
 const SPEC_GLOSS_ALPHA_ISSUE =
   'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha';
+const TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES = new Set([
+  'KHR_texture_basisu',
+  'EXT_texture_webp',
+  'MSFT_texture_dds',
+]);
 
 function reconcileBackendCompatibilityAfterTextureDecode(
   compatibility: readonly GltfBackendCompatibility[],
@@ -232,12 +237,34 @@ function reconcileBackendCompatibilityAfterTextureDecode(
   const bakedRoughnessMap = report.entries.some((entry) =>
     entry.materialField === 'roughnessMap' && entry.handleKind === 'pixel-data'
   );
-  if (!bakedRoughnessMap || bakeUnavailable) return compatibility;
 
   return compatibility.map((candidate) => {
-    const issues = candidate.issues.filter((issue) => issue.name !== SPEC_GLOSS_ALPHA_ISSUE);
+    const issues = candidate.issues.filter((issue) => {
+      if (
+        issue.name === SPEC_GLOSS_ALPHA_ISSUE &&
+        bakedRoughnessMap &&
+        !bakeUnavailable
+      ) {
+        return false;
+      }
+      if (textureSourceHookIssueSatisfiedByDecode(issue, report)) return false;
+      return true;
+    });
     return issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues);
   });
+}
+
+function textureSourceHookIssueSatisfiedByDecode(
+  issue: GltfCompatibilityIssue,
+  report: GltfTextureDecodeReport,
+): boolean {
+  if (issue.support !== 'requires-hook' || !TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES.has(issue.name)) {
+    return false;
+  }
+  const entries = report.entries.filter((entry) => entry.textureSourceExtension === issue.name);
+  return entries.length > 0 && entries.every((entry) =>
+    entry.handleKind === 'pixel-data' || entry.handleKind === 'data-texture'
+  );
 }
 
 function compatibilityWithIssues(
