@@ -867,6 +867,7 @@ fn scatterEmitterRadianceGradient(
   targetKind: u32,
   targetSlot: u32,
   dLoss_dPackedRadiance: vec3f,
+  packedRadiance: vec3f,
   invReplaySamples: f32,
 ) {
   for (var k = 0u; k < params.paramCount; k = k + 1u) {
@@ -887,12 +888,29 @@ fn scatterEmitterRadianceGradient(
     let emitterIntensity = bitcast<f32>(payload.w);
     let gradOffset = d.z;
     if (d.y == ${ADJOINT_FIELD_EMITTER_COLOR}u) {
-      let gColor = dLoss_dPackedRadiance * emitterIntensity;
+      var dPackedRadiance_dColor = vec3f(emitterIntensity);
+      if (
+        targetKind == ${ADJOINT_EMITTER_TARGET_MESH}u &&
+        abs(emitterIntensity) > 1e-8 &&
+        abs(emitterColor.x) > 1e-8 &&
+        abs(emitterColor.y) > 1e-8 &&
+        abs(emitterColor.z) > 1e-8
+      ) {
+        // Mesh-area packed radiance may include source material emissive-map
+        // multipliers. For nonzero authored color, packedRadiance / color is
+        // the exact local d(packedRadiance)/d(color) for each channel.
+        dPackedRadiance_dColor = packedRadiance / emitterColor;
+      }
+      let gColor = dLoss_dPackedRadiance * dPackedRadiance_dColor;
       adjointScatter(gradOffset, gColor.x * invReplaySamples);
       adjointScatter(gradOffset + 1u, gColor.y * invReplaySamples);
       adjointScatter(gradOffset + 2u, gColor.z * invReplaySamples);
     } else {
-      adjointScatter(gradOffset, dot(dLoss_dPackedRadiance, emitterColor) * invReplaySamples);
+      var dPackedRadiance_dIntensity = emitterColor;
+      if (targetKind == ${ADJOINT_EMITTER_TARGET_MESH}u && abs(emitterIntensity) > 1e-8) {
+        dPackedRadiance_dIntensity = packedRadiance / emitterIntensity;
+      }
+      adjointScatter(gradOffset, dot(dLoss_dPackedRadiance, dPackedRadiance_dIntensity) * invReplaySamples);
     }
   }
 }
@@ -1083,6 +1101,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u,
           di,
           dLoss_dR * brdfValue * nDotL,
+          vec3f(0.0),
           invReplaySamples,
         );
       }
@@ -1138,6 +1157,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_POINT}u,
           pi,
           dLoss_dR * brdfValue * (nDotL * attenuation),
+          vec3f(0.0),
           invReplaySamples,
         );
       }
@@ -1199,6 +1219,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_SPOT}u,
           si,
           dLoss_dR * brdfValue * (nDotL * softness * attenuation),
+          vec3f(0.0),
           invReplaySamples,
         );
       }
@@ -1276,6 +1297,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_RECT}u,
           ri,
           dLoss_dR * brdfValue * (nDotL * areaFactor),
+          vec3f(0.0),
           invReplaySamples,
         );
       }
@@ -1346,6 +1368,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_MESH}u,
           mi,
           dLoss_dR * brdfValue * (nDotL * areaFactor),
+          mr.rgb,
           invReplaySamples,
         );
       }

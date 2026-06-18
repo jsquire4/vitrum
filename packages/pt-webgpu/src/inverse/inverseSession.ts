@@ -248,6 +248,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'anisotropyRotation',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
+const ADJOINT_MAPPED_EMISSION_EPS = 1e-8;
 const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'ior',
   'transmission',
@@ -771,7 +772,7 @@ function diagnosePathReplayEmitterSlot(
 
   const emitter = scene.emitters.find((e) => e.id === target.id);
   if (emitter == null) return [];
-  const emitterIssue = pathReplayEmitterTargetIssue(scene, emitter);
+  const emitterIssue = pathReplayEmitterTargetIssue(scene, emitter, target.field);
   if (emitterIssue != null) {
     return [{
       severity: 'info',
@@ -833,6 +834,7 @@ function pathReplayPrimitiveIssue(
 function pathReplayEmitterTargetIssue(
   scene: Scene,
   emitter: SceneEmitter,
+  field: string,
 ): { message: string; details: Record<string, string | number | readonly string[]> } | null {
   switch (emitter.kind) {
     case 'directional': {
@@ -861,7 +863,7 @@ function pathReplayEmitterTargetIssue(
           },
         };
       }
-      const mappedEmissionIssue = meshAreaEmitterMappedEmissionIssue(scene, emitter);
+      const mappedEmissionIssue = meshAreaEmitterMappedEmissionIssue(scene, emitter, field);
       if (mappedEmissionIssue != null) return mappedEmissionIssue;
       return null;
     }
@@ -878,13 +880,45 @@ function pathReplayEmitterTargetIssue(
 function meshAreaEmitterMappedEmissionIssue(
   scene: Scene,
   emitter: Extract<SceneEmitter, { readonly kind: 'mesh-area' }>,
+  field: string,
 ): { message: string; details: Record<string, string | number | readonly string[]> } | null {
   const primitive = scene.primitives.find((p) => p.id === emitter.meshId);
   if (primitive == null || primitive.kind === 'analytic') return null;
   if (primitive.material.emissiveMap == null) return null;
+  if (field === 'intensity') {
+    if (Number.isFinite(emitter.intensity) && Math.abs(emitter.intensity) > ADJOINT_MAPPED_EMISSION_EPS) {
+      return null;
+    }
+    return {
+      message:
+        'mesh-area emitter target uses material emissiveMap radiance with zero/near-zero intensity; packed-radiance chain-rule ratio is undefined',
+      details: {
+        emitterKind: emitter.kind,
+        meshId: emitter.meshId,
+        unsupportedMaterialFields: ['emissiveMap'],
+        finiteDifferenceReason: 'zero-intensity-mapped-emission',
+      },
+    };
+  }
+  if (field === 'color') {
+    const hasZeroChannel = emitter.color.some((v) =>
+      !Number.isFinite(v) || Math.abs(v) <= ADJOINT_MAPPED_EMISSION_EPS,
+    );
+    if (!hasZeroChannel) return null;
+    return {
+      message:
+        'mesh-area emitter target uses material emissiveMap radiance with a zero/near-zero color channel; packed-radiance chain-rule ratio is undefined',
+      details: {
+        emitterKind: emitter.kind,
+        meshId: emitter.meshId,
+        unsupportedMaterialFields: ['emissiveMap'],
+        finiteDifferenceReason: 'zero-color-channel-mapped-emission',
+      },
+    };
+  }
   return {
     message:
-      'mesh-area emitter target uses material emissiveMap radiance; per-texel emitter color/intensity derivatives are not replayed',
+      'mesh-area emitter target uses material emissiveMap radiance outside the scoped emitter color/intensity replay fields',
     details: {
       emitterKind: emitter.kind,
       meshId: emitter.meshId,

@@ -1262,12 +1262,9 @@ function materialAtlasPatchRequiresFullRebuild(
     (prev?.lightMap != null || next?.lightMap != null) &&
     (prev?.lightMapIntensity ?? 1) !== (next?.lightMapIntensity ?? 1);
   const alphaCoverageChanged =
-    (prev?.alphaMap != null || next?.alphaMap != null) &&
-    (
-      alphaModeAtlasIndex(prev?.alphaMode) !== alphaModeAtlasIndex(next?.alphaMode) ||
-      alphaAtlasUnit(prev?.opacity, 1) !== alphaAtlasUnit(next?.opacity, 1) ||
-      alphaAtlasUnit(prev?.alphaCutoff, 0.5) !== alphaAtlasUnit(next?.alphaCutoff, 0.5)
-    );
+    alphaModeAtlasIndex(prev?.alphaMode) !== alphaModeAtlasIndex(next?.alphaMode) ||
+    alphaAtlasUnit(prev?.opacity, 1) !== alphaAtlasUnit(next?.opacity, 1) ||
+    alphaAtlasUnit(prev?.alphaCutoff, 0.5) !== alphaAtlasUnit(next?.alphaCutoff, 0.5);
   const specularChanged =
     colorUnit(prev, 'specularColor', 0, 1) !== colorUnit(next, 'specularColor', 0, 1) ||
     colorUnit(prev, 'specularColor', 1, 1) !== colorUnit(next, 'specularColor', 1, 1) ||

@@ -15,6 +15,7 @@ import type {
   GltfImage,
   GltfJson,
   GltfMaterial,
+  GltfPrimitive,
   GltfTextureInfo,
 } from './gltfTypes.js';
 
@@ -1080,19 +1081,19 @@ function analyzeUnrepresentableMaterialUvSets(
 
   for (const mesh of gltf.meshes ?? []) {
     for (const primitive of mesh.primitives ?? []) {
-      const materialIndex = primitive.material;
-      if (materialIndex === undefined) continue;
-      usedMaterials.add(materialIndex);
-      const uvSets = materialUvSets.get(materialIndex);
-      if (uvSets === undefined) continue;
-      const highUvSets = [...uvSets].filter((uvSet) => uvSet > 1);
-      if (highUvSets.length === 0) continue;
-      const canRemap =
-        highUvSets.length === 1 &&
-        !uvSets.has(1) &&
-        primitive.attributes?.[`TEXCOORD_${highUvSets[0]}`] !== undefined;
-      if (!canRemap) {
-        for (const uvSet of highUvSets) unrepresentable.add(uvSet);
+      for (const materialIndex of primitiveMaterialIndices(primitive)) {
+        usedMaterials.add(materialIndex);
+        const uvSets = materialUvSets.get(materialIndex);
+        if (uvSets === undefined) continue;
+        const highUvSets = [...uvSets].filter((uvSet) => uvSet > 1);
+        if (highUvSets.length === 0) continue;
+        const canRemap =
+          highUvSets.length === 1 &&
+          !uvSets.has(1) &&
+          primitive.attributes?.[`TEXCOORD_${highUvSets[0]}`] !== undefined;
+        if (!canRemap) {
+          for (const uvSet of highUvSets) unrepresentable.add(uvSet);
+        }
       }
     }
   }
@@ -1105,6 +1106,15 @@ function analyzeUnrepresentableMaterialUvSets(
   }
 
   return [...unrepresentable].sort((a, b) => a - b);
+}
+
+function primitiveMaterialIndices(primitive: GltfPrimitive): readonly number[] {
+  const indices = new Set<number>();
+  if (primitive.material !== undefined) indices.add(primitive.material);
+  for (const mapping of primitive.extensions?.KHR_materials_variants?.mappings ?? []) {
+    if (Number.isInteger(mapping.material) && mapping.material >= 0) indices.add(mapping.material);
+  }
+  return [...indices];
 }
 
 function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {

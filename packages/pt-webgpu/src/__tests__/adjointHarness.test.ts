@@ -255,6 +255,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn scatterEmitterRadianceGradient');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y != ${ADJOINT_FIELD_EMITTER_COLOR}u && d.y != ${ADJOINT_FIELD_EMITTER_INTENSITY}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_EMITTER_COLOR}u || d.y == ${ADJOINT_FIELD_EMITTER_INTENSITY}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('packedRadiance / emitterColor');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('packedRadiance / emitterIntensity');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('mr.rgb');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_POINT}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_SPOT}u`);

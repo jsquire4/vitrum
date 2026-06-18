@@ -811,6 +811,52 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) rebuilds material texture atlas when scalar alpha coverage changes without alphaMap', () => {
+    const base = baseScene();
+    const prim = base.primitives[0];
+    if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
+    const seededScene: Scene = {
+      ...base,
+      primitives: [
+        {
+          ...prim,
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+            alphaMode: 'opaque',
+            opacity: 1,
+            alphaCutoff: 0.5,
+          },
+        },
+        ...base.primitives.slice(1),
+      ],
+    };
+    const { engine, pipeline } = seedEngine(seededScene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          alphaMode: 'blend',
+          opacity: 0.5,
+          alphaCutoff: 0.5,
+        },
+      });
+
+      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
+      expect(rebuilt.materialTextureAtlas.baseColorMetaData[40]).toBe(2);
+      expect(rebuilt.materialTextureAtlas.baseColorMetaData[41]).toBeCloseTo(0.5, 5);
+      expect(rebuilt.materialTextureAtlas.baseColorMetaData[42]).toBeCloseTo(0.5, 5);
+      expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(0);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) rebuilds material texture atlas when only envMapIntensity changes', () => {
     const base = baseScene();
     const prim = base.primitives[0];

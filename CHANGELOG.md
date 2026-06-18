@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (implementation truthfulness wave, 2026-06-18)
+
+- **Photon-map caustics now warn on the remaining no-shadow source-treatment approximation:** `@vitrum/pt-webgpu` emits structured `pt-webgpu.sppm-emitter-cast-shadow-approximation` during `setScene()` when `causticStrategy:"photon-map"` is combined with `castShadow:false` emitters. Direct lighting, ReSTIR-PT, BDPT, and MNEE visibility paths honor those emitter flags; this warning surfaces the remaining off-default SPPM photon-emission source-treatment limitation instead of leaving it discoverable only through the promise ledger.
+- **Walkaround scalar alpha material patches now refresh atlas metadata:** `@vitrum/walkaround-hybrid` no longer keeps material-only `updatePrimitive()` patches on the fast slice path when `alphaMode`, `opacity`, or `alphaCutoff` changes without an `alphaMap`. Those scalar coverage values are atlas metadata consumed by transparent OIT and alpha visibility paths, so they now route through the full material-atlas rebuild and cannot leave stale opaque metadata behind.
+- **Mapped mesh-area emitter inverse replay now uses packed-radiance chain-rule ratios:** `@vitrum/pt-webgpu` no longer downgrades explicit mesh-area emitter `color` / `intensity` path-replay sessions solely because the source mesh material has a readable `emissiveMap`. The adjoint pass uses the packed mesh-triangle radiance to recover the local emissive-map multiplier for nonzero authored color/intensity; zero-denominator cases still downgrade to finite difference.
+- **glTF high-UV compatibility reports now include variant-mapped materials:** `@vitrum/gltf-adapter` no longer reports a remappable `TEXCOORD_N` material as unsupported when that material is reachable only through `KHR_materials_variants` on a primitive that actually carries the high UV set.
+
 ### Current package naming note
 
 - The active WebGL2 hero backend is `@vitrum/pt-webgl2`. Historical bullets below that

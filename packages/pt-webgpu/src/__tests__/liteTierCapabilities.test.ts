@@ -380,6 +380,59 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
+  it('full tier photon-map warns for castShadow:false emitter source-treatment approximation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullDeviceForSetScene(),
+      causticStrategy: 'photon-map',
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'receiver',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+        },
+      ],
+      emitters: [
+        {
+          kind: 'point',
+          id: 'ghost-point',
+          color: [1, 1, 1],
+          intensity: 4,
+          position: [0, 2, 1],
+          castShadow: false,
+        },
+      ],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw after the warn — that's expected */
+    }
+    const approx = structured.find((w) =>
+      w.code === 'pt-webgpu.sppm-emitter-cast-shadow-approximation'
+    );
+    expect(approx).toEqual(expect.objectContaining({
+      backend: 'pt-webgpu',
+      phase: 'setScene',
+      method: 'setScene',
+    }));
+    expect(approx?.details?.emitterIds).toEqual(['ghost-point']);
+    expect(approx?.details?.missing).toBe('sppm-no-shadow-source-treatment');
+    expect(warn.mock.calls.some((c) =>
+      c.join(' ').includes('SPPM photon-map source treatment remains approximate'),
+    )).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
   it('lite tier: setScene warns for thicknessMap but not scalar thickness (CAP-01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

@@ -2147,6 +2147,34 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_2')).toBe(false);
   });
 
+  it('does not reject a variant material high UV set that can be remapped on its mapped primitive', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.extensionsUsed = ['KHR_materials_variants'];
+    gltf.extensions = {
+      KHR_materials_variants: {
+        variants: [{ name: 'uv2-variant' }],
+      },
+    };
+    gltf.materials!.push({
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0, texCoord: 2 },
+      },
+    });
+    gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = 1;
+    gltf.meshes![0]!.primitives[0]!.extensions = {
+      KHR_materials_variants: {
+        mappings: [{ material: 1, variants: [0] }],
+      },
+    };
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.uvSets).toEqual([0, 2]);
+    expect(report.materials.unrepresentableUvSets).toEqual([]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_2')).toBe(false);
+  });
+
   it('reports KHR_texture_transform texCoord overrides beyond uv1 at the override source path', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = {

@@ -148,7 +148,11 @@
 > **2026-06-18 walkaround mutation follow-up:** material-only scalar edits now
 > refresh DDGI's `RestirBvhSnapshot` material payload without RC geometry
 > propagation, and roughness/metallic scalar edits invalidate DDGI probe cache
-> because the DDGI glossy probe bounce consumes those fields.
+> because the DDGI glossy probe bounce consumes those fields. Same-day alpha
+> metadata follow-up: scalar `alphaMode` / `opacity` / `alphaCutoff` material
+> patches now rebuild the material texture atlas even without `alphaMap`, so
+> transparent OIT and alpha visibility paths cannot keep stale opaque metadata
+> after a material-only update.
 > **2026-06-18 pt-webgpu BDPT shadow follow-up:** BDPT bounce-0 emitter vertices
 > now mirror authored `castShadow:false` into the light-subpath payload, and
 > eye↔light connection visibility skips the occlusion ray for that emitter
@@ -161,6 +165,21 @@
 > test, matching the finite-area MNEE behavior while preserving receiver/interface
 > validity checks. The remaining pt-webgpu `emitterCastShadow` approximation is
 > now specifically the SPPM photon-map no-shadow source-treatment tail.
+> Same-day truthfulness follow-up: `PTEngineWebGPU.setScene()` now emits
+> structured `pt-webgpu.sppm-emitter-cast-shadow-approximation` when hosts combine
+> `causticStrategy:"photon-map"` with `castShadow:false` emitters, so the remaining
+> off-default approximation is visible at construction time instead of only in the
+> promise ledger.
+> Same-day mapped-emitter adjoint follow-up: explicit uncapped mesh-area emitter
+> `color` / `intensity` path replay now stays analytic when the source material
+> has a readable `emissiveMap` and the authored color/intensity denominators are
+> nonzero; the adjoint shader chains through the packed per-triangle radiance so
+> local emissive-map multipliers are included. Zero-color-channel and zero-intensity
+> edge cases remain finite-difference/contiguous-range downgrades.
+> Same-day glTF report follow-up: high `TEXCOORD_N` remappability analysis now
+> includes `KHR_materials_variants` primitive mappings, so variant-only materials
+> no longer produce stale unsupported UV rows when the mapped primitive can
+> losslessly remap the single high UV set into `uv1`.
 > **2026-06-18 pt-webgl2 emitter shadow follow-up:** folded mesh-area emitter
 > materials now carry a dedicated shadow-disabled flag into the GLSL material
 > payload, and the ordinary forward emissive-hit MIS estimator skips those
@@ -1001,7 +1020,7 @@ deliberately unsupported until a true geometry/BVH displacement path exists.
 | Tangent buffer | ✅ FOURTH SLICE: `shared-bvh/worldSpaceMerge.ts`, `restir/bvhCore.ts`, `pipeline/bvhTangentTexture.ts`, `materialAtlas.wgsl.ts` | TLAS packs forward `packSceneFromCore().tangents`; merged-world packs transform authored/generated tangent directions and flips handedness for mirrored transforms; walkaround uploads the vec4 stream as scene binding 22 (`rgba32float` texture) and the normal/clearcoat-normal TBN path prefers it before falling back to UV-gradient derivation. Ledger rows stay approximate for reservoir/GI/PDF scope, not because tangent data is dropped. |
 | Bind group | ✅ FOURTH SLICE: `bindGroupDescriptors.ts`, `bindGroupBuilders.ts`, `BvhBufferHost.ts` | Scene bindings 20-22 add a shared material-map atlas + metadata + tangent texture as textures, not storage buffers, preserving the storage-buffer budget. |
 | Material index per tri | ✅ FOURTH SLICE: metadata texture keyed by triangle index | Current atlas-backed maps, including `baseColorMap`, normal/ORM/AO/alpha/emissive/transmission, `thicknessMap`, `lightMap`, and extension-lobe maps, use `triangleMaterialIds` at pack time; scalar lanes stay as fallback when no readable map exists. |
-| `materialPatch` fast path | ✅ THIRD SLICE + 2026-06-18 DDGI snapshot follow-up: `HybridEnginePrimitiveUpdates.ts`, `HybridEngine.ts` | Scalar-only material edits keep the slice upload path; atlas-backed map handle/UV/wrap/transform changes route through full rebuild, and atlas metadata scalar edits (`normalScale`, `lightMapIntensity`, `envMapIntensity`, `alphaMode` / `opacity` / `alphaCutoff` when a relevant map exists) also rebuild so metadata cannot go stale. Material-only scalar edits now refresh DDGI's `RestirBvhSnapshot` material payload without RC geometry propagation; radiance/visibility changes plus `roughness`/`metallic` invalidate DDGI probes. A narrower atlas refresh remains an optimization follow-up. |
+| `materialPatch` fast path | ✅ THIRD SLICE + 2026-06-18 DDGI snapshot follow-up: `HybridEnginePrimitiveUpdates.ts`, `HybridEngine.ts` | Scalar-only material edits keep the slice upload path only while they do not affect atlas metadata; atlas-backed map handle/UV/wrap/transform changes route through full rebuild, and atlas metadata scalar edits (`normalScale`, `lightMapIntensity`, `envMapIntensity`, `alphaMode`, `opacity`, `alphaCutoff`) also rebuild so metadata cannot go stale. Material-only scalar edits now refresh DDGI's `RestirBvhSnapshot` material payload without RC geometry propagation; radiance/visibility changes plus `roughness`/`metallic` invalidate DDGI probes. A narrower atlas refresh remains an optimization follow-up. |
 | Ledger | ✅ FOURTH SLICE: `WALKAROUND_MATERIALS`, `CONSUMED_MATERIAL_FIELDS` | `baseColorMap`, `normalMap`, `normalScale`, `roughnessMap`, `metallicMap`, `aoMap`, `aoMapIntensity`, `alphaMap`, `emissiveMap`, `transmissionMap`, `thicknessMap`, `lightMap`, `lightMapIntensity`, specular maps, clearcoat factor/roughness/normal maps, sheen color/roughness maps, anisotropy controls/maps, and iridescence controls/maps promoted to `approximate` with tests; `envMapIntensity` is `native` for HDRI ReSTIR-DI scoring/reuse/resolve. Remaining maps remain unsupported until each has shader consumption or explicit routing. |
 
 **Footguns:**
