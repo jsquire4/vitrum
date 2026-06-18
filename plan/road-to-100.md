@@ -227,6 +227,10 @@
 > inference-dispatch, and graph-resize fallback paths now emit structured
 > `walkaround-hybrid.neural-*` warnings through the engine `onWarning` surface,
 > preserving direct `console.warn` only for standalone/no-sink use.
+> Same-day RC diagnostic follow-up: RC fixture/teaLight list truncation at the
+> 16-light probe cap now emits structured
+> `walkaround-hybrid.rc-light-cap-exceeded` warnings through engine-owned RC,
+> preserving direct `console.warn` only for standalone helper use.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel

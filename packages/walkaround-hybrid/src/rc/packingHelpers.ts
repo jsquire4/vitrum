@@ -15,6 +15,7 @@
  *   RCLightEntryOffset        — byte offsets within one RCLight entry
  */
 
+import type { EngineWarning } from '@vitrum/core';
 import type { DDGILight } from '../ddgi/types.js';
 import { RC_PARAMS_BYTE_SIZE, RCParamsOffset } from './rcParamsLayout.generated.js';
 
@@ -151,12 +152,21 @@ export const RCLightEntryOffset = {
   outerCone: 60,
 } as const;
 
+export interface PackRCLightsOptions {
+  readonly onWarning?: (warning: EngineWarning) => void;
+  readonly phase?: EngineWarning['phase'];
+  readonly method?: string;
+}
+
 /**
  * Pack a `DDGILight[]` into the `RCLightBuffer` wire format.
  * Ignores 'sun' kind (RC uses sunDirection/sunColor in CascadeUniforms).
  * Truncates at 16 entries (matching DDGI's per-probe cap) with a warning.
  */
-export function packRCLights(lights: readonly DDGILight[]): ArrayBuffer {
+export function packRCLights(
+  lights: readonly DDGILight[],
+  options: PackRCLightsOptions = {},
+): ArrayBuffer {
   const HEADER_FLOATS  = 4;
   const LIGHT_FLOATS   = 16;
   const MAX            = 16;
@@ -165,10 +175,30 @@ export function packRCLights(lights: readonly DDGILight[]): ArrayBuffer {
 
   const fixtures = lights.filter((l) => l.on && (l.kind === 'fixture' || l.kind === 'teaLight'));
   if (fixtures.length > MAX) {
-    console.warn(
-      `[RC] packRCLights: scene has ${fixtures.length} active fixtures but RC supports ` +
-      `at most ${MAX}. Extra lights beyond the cap are dropped for probe-ray GI.`,
-    );
+    const warning: EngineWarning = {
+      code: 'walkaround-hybrid.rc-light-cap-exceeded',
+      backend: 'walkaround-hybrid',
+      phase: options.phase ?? 'renderFrame',
+      method: options.method ?? 'renderFrame',
+      message:
+        `[RC] packRCLights: scene has ${fixtures.length} active fixtures but RC supports ` +
+        `at most ${MAX}. Extra lights beyond the cap are dropped for probe-ray GI.`,
+      details: {
+        activeFixtureCount: fixtures.length,
+        maxLights: MAX,
+        droppedLightCount: fixtures.length - MAX,
+        fallback: 'drop-extra-rc-lights',
+      },
+    };
+    if (options.onWarning !== undefined) {
+      try {
+        options.onWarning(warning);
+      } catch {
+        // Host warning callbacks must not prevent RC light packing.
+      }
+    } else {
+      console.warn(warning.message);
+    }
   }
   const active = fixtures.slice(0, MAX);
   ui[0] = active.length;  // count

@@ -720,8 +720,8 @@ export class HybridEngine implements Engine {
       // hosts override via opts.cascadeDims for non-Cornell aspect ratios
       // or scene scales.
       this._rc = opts.cascadeDims !== undefined
-        ? new RCSubsystem(this._device, opts.cascadeDims)
-        : new RCSubsystem(this._device);
+        ? new RCSubsystem(this._device, opts.cascadeDims, { onWarning: (warning) => this._warn(warning) })
+        : new RCSubsystem(this._device, undefined, { onWarning: (warning) => this._warn(warning) });
       // W8 Phase 3 — host-overridable MIS weight (default 0.5 = equal
       // mix with ReSTIR-GI). When rcEnabled is false the weight stays 0
       // and pipeline.setRCInputs(null) routes the bind group to the

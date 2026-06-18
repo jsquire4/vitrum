@@ -28,7 +28,7 @@
  * Plan: `plan/w8-rc-mis-composition.md` (Phase 2 section).
  */
 
-import type { MaterialSpec, Scene } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec, Scene } from '@vitrum/core';
 import {
   RCDispatcher,
   CASCADE_DIMS,
@@ -126,6 +126,7 @@ function sameVec3(
 export class RCSubsystem implements PipelineSubsystem {
   private readonly _device: GPUDevice;
   private readonly _cascadeDims: readonly CascadeDim[];
+  private readonly _onWarning: ((warning: EngineWarning) => void) | null;
   private _dispatcher: RCDispatcher | null = null;
   private _bvhBuffers: RCBVHBuffers | null = null;
   private _cascadeBufs: GPUBuffer[] | null = null;
@@ -165,9 +166,14 @@ export class RCSubsystem implements PipelineSubsystem {
    *  as a cheap JSON.stringify of the filtered (on && fixture/teaLight) entries. */
   private _lightsFingerprint = '';
 
-  constructor(device: GPUDevice, cascadeDims: readonly CascadeDim[] = CASCADE_DIMS) {
+  constructor(
+    device: GPUDevice,
+    cascadeDims: readonly CascadeDim[] | undefined = CASCADE_DIMS,
+    diagnostics: { readonly onWarning?: (warning: EngineWarning) => void } = {},
+  ) {
     this._device = device;
-    this._cascadeDims = validateCascadeDims(cascadeDims, 'RCSubsystem cascadeDims');
+    this._cascadeDims = validateCascadeDims(cascadeDims ?? CASCADE_DIMS, 'RCSubsystem cascadeDims');
+    this._onWarning = diagnostics.onWarning ?? null;
   }
 
   buildRCInputs(rcWeight: number): { cascade0Buffer: GPUBuffer; paramsBytes: ArrayBuffer } | null {
@@ -423,7 +429,12 @@ export class RCSubsystem implements PipelineSubsystem {
     if (fp === this._lightsFingerprint) return;  // no change → skip GPU work
     this._lightsFingerprint = fp;
 
-    const packed = packRCLights(lights);
+    const packed = packRCLights(
+      lights,
+      this._onWarning !== null
+        ? { onWarning: this._onWarning, phase: 'renderFrame', method: 'renderFrame' }
+        : undefined,
+    );
     if (this._lightsGpuBuf != null) {
       this._lightsGpuBuf.destroy();
       this._lightsGpuBuf = null;
