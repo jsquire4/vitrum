@@ -149,6 +149,12 @@
 > refresh DDGI's `RestirBvhSnapshot` material payload without RC geometry
 > propagation, and roughness/metallic scalar edits invalidate DDGI probe cache
 > because the DDGI glossy probe bounce consumes those fields.
+> **2026-06-18 pt-webgpu BDPT shadow follow-up:** BDPT bounce-0 emitter vertices
+> now mirror authored `castShadow:false` into the light-subpath payload, and
+> eye↔light connection visibility skips the occlusion ray for that emitter
+> endpoint. The broader `emitterCastShadow` row remains approximate until
+> MNEE/SPPM caustic/source-treatment parity is source-closed or explicitly
+> demoted.
 > **Implementation distance remaining:** full analytic adjoint replay beyond the
 > current scoped single-bounce RGB direct-light/unlit-primary slice; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive

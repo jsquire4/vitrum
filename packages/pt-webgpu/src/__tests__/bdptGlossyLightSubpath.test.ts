@@ -235,9 +235,36 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(code).toContain('let dDirAD = directionalLights[dBase];');
     expect(code).toContain('let dIrrMean = directionalLights[dBase + 1u];');
     expect(code).toContain('bdptDistantEmitterPosition(lightDir)');
-    expect(code).toContain('bdptFinishBounce0(col, emitPos, lightDir, dIrrMean.rgb, discretePdf, rng);');
+    expect(code).toContain('bdptFinishBounce0(col, emitPos, lightDir, dIrrMean.rgb, discretePdf, dDirAD.w < 0.0, rng);');
     expect(code).not.toContain('params.lightDir.w');
     expect(code).not.toContain('* 50.0');
+  });
+
+  it('mirrors emitter castShadow:false into BDPT bounce-0 connection visibility', () => {
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'fn bdptWriteLvEmitterPayload(col: i32, castShadowDisabled: bool)',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(select(0.0, 1.0, castShadowDisabled), 0.0, 0.0, 0.0);',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'bdptFinishBounce0Isotropic(col, pos, rad, discretePdf, ptExtra.z > 0.5, rng);',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'bdptFinishBounce0(col, spos, spotDir, srad, discretePdf, spExtra.z > 0.5, rng);',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'bdptFinishBounce0Area(col, emitPos, emitNormal, rr, discretePdf, 1.0 / areaS, rbase.w > 0.5, rng);',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'bdptFinishBounce0Area(col, emitPos, emitNormal, mr, discretePdf, 1.0 / areaM, meshAreaLights[mb + 3u].w > 0.5, rng);',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'let lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lvMatId < 0.0 && lv4.x > 0.5;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'if (!lightEmitterCastShadowDisabled && traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {',
+    );
   });
 
   it('records the light-vertex matId + wo-toward-prev so the connection can evaluate the real BSDF', () => {
@@ -526,6 +553,6 @@ describe('A9 — raised bounce cap + isotropic point emitter', () => {
   it('the point emitter is ISOTROPIC (uniform sphere, 1/4π), not cosine-up', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fn bdptFinishBounce0Isotropic(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfDir = 0.25 * INV_PI;');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptFinishBounce0Isotropic(col, pos, rad, discretePdf, rng);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('bdptFinishBounce0Isotropic(col, pos, rad, discretePdf, ptExtra.z > 0.5, rng);');
   });
 });

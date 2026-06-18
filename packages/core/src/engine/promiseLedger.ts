@@ -760,9 +760,11 @@ const PT_WEBGL2_SHADOWS: ShadowSupportMatrix = Object.freeze({
  *  BSDF-MIS area-light connections for all 6 emitter kinds. Lite-tier
  *  directional NEE decodes the signed `cameraPos.w` mirror for the first
  *  directional flag. ReSTIR-PT suffix direct lighting also consumes the packed
- *  point/spot/rect/disc/mesh lanes and the packed N-directional records.
- *  The remaining off-default promotion proof (BDPT light subpath and MNEE/SPPM
- *  caustic legs/source treatment) is still incomplete → 'approximate'. */
+ *  point/spot/rect/disc/mesh lanes and the packed N-directional records; BDPT
+ *  light-subpath bounce-0 records mirror the same emitter flag into row 4.x and
+ *  the eye↔light connection skips the visibility ray for that emitter endpoint.
+ *  The remaining off-default promotion proof (MNEE/SPPM caustic legs/source
+ *  treatment) is still incomplete → 'approximate'. */
 const PT_WEBGPU_SHADOWS: ShadowSupportMatrix = Object.freeze({
   primitiveCastShadow: 'native',
   emitterCastShadow: 'approximate',

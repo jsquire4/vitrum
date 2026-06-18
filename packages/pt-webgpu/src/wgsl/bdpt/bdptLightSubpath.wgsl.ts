@@ -150,6 +150,14 @@ fn bdptClearLvMaterialPayload(col: i32) {
   bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(0.0);
 }
 
+// Bounce-0 emitter vertices do not need the surface-material payload row.
+// Reuse row 4.x to mirror EmitterBase.castShadow:false into BDPT eye↔light
+// connection visibility; surface vertices (matId >= 0) still overwrite row 4
+// with the ordinary hit-local material payload.
+fn bdptWriteLvEmitterPayload(col: i32, castShadowDisabled: bool) {
+  bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(select(0.0, 1.0, castShadowDisabled), 0.0, 0.0, 0.0);
+}
+
 struct BdptSampledMaterial {
   baseColor: vec3f,
   roughness: f32,
@@ -271,6 +279,7 @@ fn bdptFinishBounce0(
   emitNormal: vec3f,
   emitRad: vec3f,
   pdfLight: f32,
+  castShadowDisabled: bool,
   rng: ptr<function, u32>,
 ) {
   let hemi = cosineHemisphereSample(rng, emitNormal);
@@ -283,7 +292,7 @@ fn bdptFinishBounce0(
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfHemi);
   // Emitter vertex → Lambertian/emission profile in the connection (matId < 0).
   bdptWriteLvBsdf(col, BDPT_LV_EMITTER_MATID, emitNormal);
-  bdptClearLvMaterialPayload(col);
+  bdptWriteLvEmitterPayload(col, castShadowDisabled);
 }
 
 fn bdptFinishBounce0Area(
@@ -293,6 +302,7 @@ fn bdptFinishBounce0Area(
   emitRad: vec3f,
   pdfLight: f32,
   pdfArea: f32,
+  castShadowDisabled: bool,
   rng: ptr<function, u32>,
 ) {
   let hemi = cosineHemisphereSample(rng, emitNormal);
@@ -303,7 +313,7 @@ fn bdptFinishBounce0Area(
   bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(emitNormal, pdfPos);
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfHemi);
   bdptWriteLvBsdf(col, BDPT_LV_AREA_EMITTER_MATID, emitNormal);
-  bdptClearLvMaterialPayload(col);
+  bdptWriteLvEmitterPayload(col, castShadowDisabled);
 }
 
 // A9 — ISOTROPIC point-emitter bounce-0 finish. A point light emits uniformly over
@@ -322,6 +332,7 @@ fn bdptFinishBounce0Isotropic(
   emitPos: vec3f,
   emitRad: vec3f,
   pdfLight: f32,
+  castShadowDisabled: bool,
   rng: ptr<function, u32>,
 ) {
   let dir = uniformSphere(vec2f(rand_f32(rng), rand_f32(rng)));
@@ -336,7 +347,7 @@ fn bdptFinishBounce0Isotropic(
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(emitThroughput, pdfDir);
   // Point emitter vertex → emitter profile in the connection (matId < 0).
   bdptWriteLvBsdf(col, BDPT_LV_EMITTER_MATID, dir);
-  bdptClearLvMaterialPayload(col);
+  bdptWriteLvEmitterPayload(col, castShadowDisabled);
 }
 
 fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
@@ -360,7 +371,7 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       let dIrrMean = directionalLights[dBase + 1u];
       let lightDir = safe_normalize(dDirAD.xyz);
       let emitPos = bdptDistantEmitterPosition(lightDir);
-      bdptFinishBounce0(col, emitPos, lightDir, dIrrMean.rgb, discretePdf, rng);
+      bdptFinishBounce0(col, emitPos, lightDir, dIrrMean.rgb, discretePdf, dDirAD.w < 0.0, rng);
       return;
     }
     cur = cur + 1u;
@@ -372,7 +383,8 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       let rad = pointLights[pi * 3u + 1u].rgb;
       // A9 — ISOTROPIC point emitter (uniform sphere, no cosine-up about a
       // fabricated normal). See bdptFinishBounce0Isotropic.
-      bdptFinishBounce0Isotropic(col, pos, rad, discretePdf, rng);
+      let ptExtra = pointLights[pi * 3u + 2u];
+      bdptFinishBounce0Isotropic(col, pos, rad, discretePdf, ptExtra.z > 0.5, rng);
       return;
     }
     cur = cur + 1u;
@@ -385,7 +397,8 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       let saxis = spotLights[sb + 1u];
       let srad = spotLights[sb + 2u].rgb;
       let spotDir = safe_normalize(saxis.xyz);
-      bdptFinishBounce0(col, spos, spotDir, srad, discretePdf, rng);
+      let spExtra = spotLights[sb + 3u];
+      bdptFinishBounce0(col, spos, spotDir, srad, discretePdf, spExtra.z > 0.5, rng);
       return;
     }
     cur = cur + 1u;
@@ -393,7 +406,8 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
   for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
     if (cur == flat) {
       let rb = ri * 4u;
-      let rpos = rectAreaLights[rb].xyz;
+      let rbase = rectAreaLights[rb];
+      let rpos = rbase.xyz;
       let ru = rectAreaLights[rb + 1u].xyz;
       let rv = rectAreaLights[rb + 2u].xyz;
       let rshapeS = rectAreaLights[rb + 3u];
@@ -420,7 +434,7 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
         areaS = max(4.0 * length(cross(ru, rv)), 1e-6);
       }
       let emitNormal = safe_normalize(cross(ru, rv));
-      bdptFinishBounce0Area(col, emitPos, emitNormal, rr, discretePdf, 1.0 / areaS, rng);
+      bdptFinishBounce0Area(col, emitPos, emitNormal, rr, discretePdf, 1.0 / areaS, rbase.w > 0.5, rng);
       return;
     }
     cur = cur + 1u;
@@ -449,7 +463,7 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       }
       let emitNormal = n / nLen;
       let areaM = max(0.5 * nLen, 1e-6);
-      bdptFinishBounce0Area(col, emitPos, emitNormal, mr, discretePdf, 1.0 / areaM, rng);
+      bdptFinishBounce0Area(col, emitPos, emitNormal, mr, discretePdf, 1.0 / areaM, meshAreaLights[mb + 3u].w > 0.5, rng);
       return;
     }
     cur = cur + 1u;
@@ -460,13 +474,13 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, u32>) {
       let pdfLight = discretePdf * envSample.pdf;
       let emitDir = envSample.wi;
       let emitPos = bdptDistantEmitterPosition(emitDir);
-      bdptFinishBounce0(col, emitPos, emitDir, envSample.value, pdfLight, rng);
+      bdptFinishBounce0(col, emitPos, emitDir, envSample.value, pdfLight, false, rng);
       return;
     }
     if (params.environmentSun.w > 1e-6) {
       let sunDir = safe_normalize(params.environmentSun.xyz);
       let emitPos = bdptDistantEmitterPosition(sunDir);
-      bdptFinishBounce0(col, emitPos, sunDir, vec3f(params.environmentSun.w), discretePdf, rng);
+      bdptFinishBounce0(col, emitPos, sunDir, vec3f(params.environmentSun.w), discretePdf, false, rng);
       return;
     }
     bdptWriteInvalid(col);

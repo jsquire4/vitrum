@@ -269,8 +269,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // already covered by per-bounce NEE, avoiding direct-light double-counting.
     // Re-pinned 2026-06-17: bump maps finite-difference in raw UV space by the
     // uploaded source texel size instead of a baked 512-step barycentric nudge.
-    expect(digest).toBe('c6d20b5fe120603b2980d69cd8707063b42b8eac4cb8c74fc762d96f1cf1c16c');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(384801);
+    // Re-pinned 2026-06-18: BDPT bounce-0 emitter vertices mirror
+    // castShadow:false into row 4.x so eye↔light connections can skip the
+    // occlusion ray for that emitter endpoint.
+    expect(digest).toBe('51b97b8124d986c59a5e0d59e37f0a5a08c92838f5cc9e8b0128ed30c4c566a0');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(385746);
   });
 });
 

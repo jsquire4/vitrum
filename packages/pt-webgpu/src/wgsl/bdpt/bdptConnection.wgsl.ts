@@ -325,8 +325,12 @@ fn evaluateBdptConnection(
   if (gTerm <= 0.0) {
     return vec3f(0.0);
   }
+  let lv3 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 3u)];
+  let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];
+  let lvMatId = lv3.w;
+  let lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lvMatId < 0.0 && lv4.x > 0.5;
   let shadowRay = Ray(eyePos + eyeNormal * 1e-3, connDir);
-  if (traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+  if (!lightEmitterCastShadowDisabled && traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
     return vec3f(0.0);
   }
   let eyeBrdf = evaluateBrdfFullWithClearcoatNormal(
@@ -357,9 +361,6 @@ fn evaluateBdptConnection(
   // is 1 and the geometry term owns the emitter cosine. This makes a glossy/metallic light-path
   // vertex's connection consistent with the glossy light-subpath BUILD (else the
   // BSDF mismatch between build and connect biases the estimate).
-  let lv3 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 3u)];
-  let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];
-  let lvMatId = lv3.w;
   let lvWoPrev = lv3.xyz;
   var lightBsdfCosTheta = vec3f(1.0);
   if (lvMatId == -1.0) {
