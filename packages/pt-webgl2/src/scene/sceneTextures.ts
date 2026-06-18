@@ -63,6 +63,7 @@ export interface UploadedSceneTextures {
   readonly meshLights: WebGLTexture | null;
   readonly meshLightCount: number;
   readonly totalEmissiveArea: number;
+  readonly totalEmissivePower: number;
   // environment importance-sampling (optional — null for non-HDRI scenes)
   readonly envMap: WebGLTexture | null;
   readonly envMarginal: WebGLTexture | null;

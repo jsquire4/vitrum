@@ -250,6 +250,7 @@ export interface PTEngineWebGL2Surface {
     lightCount: number;
     meshLightCount: number;
     totalEmissiveArea: number;
+    totalEmissivePower: number;
   } | null;
   /** Latest completed OIDN final-pass CPU result for `denoiser: 'oidn-final'`. */
   getLatestDenoised(): DenoisedFrame | null;
@@ -457,6 +458,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     lightCount: number;
     meshLightCount: number;
     totalEmissiveArea: number;
+    totalEmissivePower: number;
   } | null {
     const t = this.#sceneTextures;
     if (t == null) return null;
@@ -468,6 +470,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       lightCount: t.lightCount,
       meshLightCount: t.meshLightCount,
       totalEmissiveArea: t.totalEmissiveArea,
+      totalEmissivePower: t.totalEmissivePower,
     };
   }
 

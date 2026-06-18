@@ -110,6 +110,7 @@ function fakeCurrent(): UploadedSceneTextures {
     meshLights: tex,
     meshLightCount: 2,
     totalEmissiveArea: 1,
+    totalEmissivePower: 1,
     envMap: null,
     envMarginal: null,
     envConditional: null,

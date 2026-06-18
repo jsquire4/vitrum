@@ -6,31 +6,48 @@ import { packMeshAreaLights } from './meshAreaLights.js';
 // B4 — MIS-consistency math. The forward emissive-hit MIS weight is only unbiased if
 // the NEE solid-angle pdf the forward path RECONSTRUCTS (meshAreaLightForwardPdf in
 // the GLSL) is IDENTICAL to the pdf the NEE SAMPLE produced (sampleMeshAreaLight). The
-// crux of B4's design is that area-proportional triangle selection makes that pdf
-// triangle-INDEPENDENT:
+// crux of B4's current design is emitted-power-proportional triangle selection:
 //
-//   p_select(tri) = area_tri / totalArea           (area-proportional discrete pick)
+//   power_tri = luminance(radiance_tri) · area_tri
+//   p_select(tri) = power_tri / totalPower         (emitted-power discrete pick)
 //   p_area(point | tri) = 1 / area_tri             (uniform on the triangle)
 //   p_solidAngle = p_area · dist² / |cosθ_light|   (area→SA Jacobian)
 //   p_NEE(ω) = p_select · p_solidAngle
-//            = (area_tri/totalArea) · (1/area_tri) · dist²/|cosθ|
-//            = dist² / (totalArea · |cosθ|)         [area_tri CANCELS]
+//            = (power_tri/totalPower) · (1/area_tri) · dist²/|cosθ|
+//            = luminance(radiance_tri)/totalPower · dist²/|cosθ|
 //
 // These pure-TS references mirror the GLSL exactly; the test asserts the cancellation
-// (so a forward hit on ANY triangle yields the same pdf the sampler would have) — the
+// (so a forward hit can recover the same area density from surf.emission) — the
 // property that lets the forward MIS weight be computed without a triangle→index map.
 
 const EPSILON = 1e-6;
 
-/** GLSL sampleMeshAreaLight's returned SA pdf (after the area_tri cancellation). */
-function neeSamplePdf(distSq: number, cosLight: number, totalArea: number): number {
-  return Math.max(distSq / (totalArea * Math.max(Math.abs(cosLight), EPSILON)), EPSILON);
+function luminance(rgb: readonly [number, number, number]): number {
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+}
+
+/** GLSL sampleMeshAreaLight's returned SA pdf after power/area density reduction. */
+function neeSamplePdf(
+  distSq: number,
+  cosLight: number,
+  triPower: number,
+  triArea: number,
+  totalPower: number,
+): number {
+  const areaDensity = Math.max(triPower, 0) / (Math.max(triArea, EPSILON) * totalPower);
+  return Math.max(areaDensity * distSq / Math.max(Math.abs(cosLight), EPSILON), EPSILON);
 }
 
 /** GLSL meshAreaLightForwardPdf — the forward-hit reconstruction. */
-function neeForwardPdf(distSq: number, cosLight: number, totalArea: number): number {
-  if (totalArea <= 0) return 0;
-  return distSq / (totalArea * Math.max(Math.abs(cosLight), EPSILON));
+function neeForwardPdf(
+  distSq: number,
+  cosLight: number,
+  totalPower: number,
+  emission: readonly [number, number, number],
+): number {
+  if (totalPower <= 0) return 0;
+  const areaDensity = Math.max(luminance(emission), 0) / totalPower;
+  return areaDensity * distSq / Math.max(Math.abs(cosLight), EPSILON);
 }
 
 /** Balance/power heuristic (β=2), matching the GLSL misHeuristic. */
@@ -108,25 +125,28 @@ function sceneWithPrimitive(primitive: MeshPrimitive): Scene {
 }
 
 describe('B4 mesh-area NEE/forward MIS consistency', () => {
-  it('forward pdf equals the sample pdf for the same geometry (triangle-independent)', () => {
+  it('forward pdf equals the sample pdf for the same emitted-power density', () => {
     const distSq = 9;
     const cosLight = 0.7;
-    const totalArea = 4;
-    // Same geometry → identical pdf regardless of which triangle was hit/sampled.
-    expect(neeForwardPdf(distSq, cosLight, totalArea)).toBeCloseTo(
-      neeSamplePdf(distSq, cosLight, totalArea),
+    const emission: [number, number, number] = [2, 4, 8];
+    const triArea = 0.25;
+    const triPower = luminance(emission) * triArea;
+    const totalPower = 9;
+    expect(neeForwardPdf(distSq, cosLight, totalPower, emission)).toBeCloseTo(
+      neeSamplePdf(distSq, cosLight, triPower, triArea, totalPower),
       10,
     );
   });
 
-  it('pdf is independent of per-triangle area (the area_tri cancellation)', () => {
-    // Two emissive layouts with the SAME total area but different per-triangle areas
-    // must give the SAME forward pdf for an identical hit point/angle.
+  it('pdf is independent of per-triangle area for equal radiance (the area_tri cancellation)', () => {
+    // Two emitters with the SAME radiance but different triangle areas produce the
+    // same local area density under power-proportional selection.
     const distSq = 4;
     const cosLight = 0.5;
-    const totalArea = 6;
-    const pdfA = neeForwardPdf(distSq, cosLight, totalArea); // hit a big triangle
-    const pdfB = neeForwardPdf(distSq, cosLight, totalArea); // hit a small triangle
+    const emission: [number, number, number] = [3, 3, 3];
+    const totalPower = 12;
+    const pdfA = neeSamplePdf(distSq, cosLight, luminance(emission) * 2, 2, totalPower);
+    const pdfB = neeSamplePdf(distSq, cosLight, luminance(emission) * 0.25, 0.25, totalPower);
     expect(pdfA).toBeCloseTo(pdfB, 12);
   });
 
@@ -149,15 +169,20 @@ describe('B4 mesh-area NEE/forward MIS consistency', () => {
     const lightsDenom = 3;
     const distSq = 9;
     const cosLight = 0.7;
-    const totalArea = 4;
+    const emission: [number, number, number] = [2, 2, 2];
+    const triArea = 0.5;
+    const totalPower = 4;
     const bsdfPdf = 0.5;
-    const neeRaw = neeSamplePdf(distSq, cosLight, totalArea);
+    const neeRaw = neeSamplePdf(distSq, cosLight, luminance(emission) * triArea, triArea, totalPower);
     const wForwardScaled = misHeuristic(bsdfPdf, neeRaw / lightsDenom);
-    const wForwardUnscaledButConsistent = misHeuristic(bsdfPdf, neeForwardPdf(distSq, cosLight, totalArea) / lightsDenom);
+    const wForwardUnscaledButConsistent = misHeuristic(
+      bsdfPdf,
+      neeForwardPdf(distSq, cosLight, totalPower, emission) / lightsDenom,
+    );
     expect(wForwardScaled).toBeCloseTo(wForwardUnscaledButConsistent, 12);
   });
 
-  it('uses the textured implicit-emitter pack total area for forward/sample pdf parity', () => {
+  it('uses the textured implicit-emitter pack total power for forward/sample pdf parity', () => {
     const emissiveMap = {
       handle: {
         width: 2,
@@ -179,15 +204,18 @@ describe('B4 mesh-area NEE/forward MIS consistency', () => {
 
     expect(out.triLightCount).toBe(8);
     expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
+    expect(out.totalEmissivePower).toBeGreaterThan(0);
     expect(out.data![4]).toBeCloseTo(6, 6);
     expect(out.data![5]).toBeCloseTo(0, 6);
     expect(out.warnings).toEqual([]);
 
     const distSq = 7.5;
     const cosLight = 0.42;
-    expect(neeForwardPdf(distSq, cosLight, out.totalEmissiveArea)).toBeCloseTo(
-      neeSamplePdf(distSq, cosLight, out.totalEmissiveArea),
-      12,
+    const firstTriArea = out.data![15]!;
+    const firstTriPower = out.data![16]!;
+    expect(neeForwardPdf(distSq, cosLight, out.totalEmissivePower, [6, 0, 0])).toBeCloseTo(
+      neeSamplePdf(distSq, cosLight, firstTriPower, firstTriArea, out.totalEmissivePower),
+      5,
     );
   });
 });

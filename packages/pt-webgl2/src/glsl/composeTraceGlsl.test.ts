@@ -168,9 +168,13 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('uniform sampler2D uMeshLights;');
     expect(src).toContain('uniform uint uMeshLightCount;');
     expect(src).toContain('uniform float uTotalEmissiveArea;');
+    expect(src).toContain('uniform float uTotalEmissivePower;');
     expect(src).toContain('#define TRI_AREA_LIGHT_TYPE 5');
     expect(src).toContain('LightRecord sampleMeshAreaLight(');
     expect(src).toContain('float meshAreaLightForwardPdf(');
+    expect(src).toContain('cum += max( readMeshTriLight( meshLights, ii ).power, 0.0 );');
+    expect(src).toContain('float areaDensity = max( tri.power, 0.0 ) / ( max( tri.area, EPSILON ) * totalEmissivePower );');
+    expect(src).toContain('float areaDensity = max( luminance( emission ), 0.0 ) / totalEmissivePower;');
     // The forward-emission MIS site and the NEE branch both reference the count gate.
     expect(src).toContain('uMeshLightCount != 0u');
     // Mesh-area emitters use the same s5.g shadow-disable lane as analytic lights.
@@ -294,9 +298,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-	it('D10.4: RENDER_MAIN_SECTIONS join length pin 31971', () => {
-		const assembled = RENDER_MAIN_SECTIONS.join('');
-		expect(assembled).toHaveLength(31971);
+  it('D10.4: RENDER_MAIN_SECTIONS join length pin 31972', () => {
+    const assembled = RENDER_MAIN_SECTIONS.join('');
+    expect(assembled).toHaveLength(31972);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');

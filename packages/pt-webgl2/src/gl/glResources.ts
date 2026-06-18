@@ -50,8 +50,8 @@ import {
 // by this order; reordering entries breaks those tests without a golden re-pin.
 //
 // Non-texture uniforms (lights.count, uMeshLightCount, uTotalEmissiveArea,
-// envMapInfo.totalSum) are uploaded separately after the loop — they are scalar
-// setters, not texture binds.
+// uTotalEmissivePower, envMapInfo.totalSum) are uploaded separately after the
+// loop — they are scalar setters, not texture binds.
 //
 // A5 override: uBdptLightPathTex is included in the table (bound with a dummy
 // here so the sampler unit is registered), then overridden AFTER the loop with
@@ -622,6 +622,7 @@ export class GlResources {
     // B4: mesh-area NEE scalars (count==0 → inert branch, byte-identical to no-mesh-light).
     prog.setUint('uMeshLightCount', scene.meshLightCount);
     prog.setFloat('uTotalEmissiveArea', scene.totalEmissiveArea);
+    prog.setFloat('uTotalEmissivePower', scene.totalEmissivePower);
     // Env-map importance-sampling total sum (0 → correct no-env early-out in GLSL).
     prog.setFloat('envMapInfo.totalSum', scene.envTotalSum);
   }

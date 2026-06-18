@@ -256,6 +256,7 @@ export function tryFastPathMaterialMutation(
             meshLights,
             meshLightCount: meshLightsData.triLightCount,
             totalEmissiveArea: meshLightsData.totalEmissiveArea,
+            totalEmissivePower: meshLightsData.totalEmissivePower,
           }
         : {}),
     }),
@@ -298,6 +299,7 @@ export function tryFastPathGeometryMutation(
       meshLights: built.meshLights,
       meshLightCount: built.meshLightCount,
       totalEmissiveArea: built.totalEmissiveArea,
+      totalEmissivePower: built.totalEmissivePower,
       triangleCount: built.triangleCount,
     }),
     geoPack: built.merged,
@@ -345,6 +347,7 @@ export function tryFastPathEmitterMutation(
       meshLights,
       meshLightCount: meshLightsData.triLightCount,
       totalEmissiveArea: meshLightsData.totalEmissiveArea,
+      totalEmissivePower: meshLightsData.totalEmissivePower,
     }),
     ...(foldedMaterials != null ? { geoPack: foldedMaterials.nextGeoPack } : {}),
     deleteOldTextures: [

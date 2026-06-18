@@ -48,6 +48,7 @@ export interface SceneGeometryTexturesBuild {
   readonly meshLights: WebGLTexture | null;
   readonly meshLightCount: number;
   readonly totalEmissiveArea: number;
+  readonly totalEmissivePower: number;
   readonly triangleCount: number;
   readonly merged: WorldSpaceMergeResult;
   readonly warnings: readonly string[];
@@ -121,6 +122,7 @@ export function buildSceneGeometryTextures(
     meshLights,
     meshLightCount: meshLightsData.triLightCount,
     totalEmissiveArea: meshLightsData.totalEmissiveArea,
+    totalEmissivePower: meshLightsData.totalEmissivePower,
     triangleCount: geometry.merged.triangleCount,
     merged: geometry.merged,
     warnings: meshLightsData.warnings,
@@ -228,6 +230,7 @@ export function buildSceneTextures(
     meshLights,
     meshLightCount: meshLightsData.triLightCount,
     totalEmissiveArea: meshLightsData.totalEmissiveArea,
+    totalEmissivePower: meshLightsData.totalEmissivePower,
     envMap,
     envMarginal,
     envConditional,

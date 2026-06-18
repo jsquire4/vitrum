@@ -74,12 +74,12 @@ export const direct_light_contribution_function = /*glsl*/`
 			neeStrategyU < meshCutoff
 		) {
 
-			// B4 — mesh-area triangle-light NEE. One strategy slot; the chosen point is
-			// area-proportional over emissive triangles so the SA pdf is
-			// triangle-independent (matches meshAreaLightForwardPdf at the forward hit).
-			LightRecord lightRec = sampleMeshAreaLight(
-				uMeshLights, uMeshLightCount, uTotalEmissiveArea, rayOrigin, rand3( 6 )
-			);
+				// B4 — mesh-area triangle-light NEE. One strategy slot; the chosen point is
+				// emitted-power-proportional over emissive triangles / texel cells, so the
+				// forward-hit PDF can recover the same area density from surf.emission.
+				LightRecord lightRec = sampleMeshAreaLight(
+					uMeshLights, uMeshLightCount, uTotalEmissivePower, rayOrigin, rand3( 6 )
+				);
 
 			bool isSampleBelowSurface = ! surf.volumeParticle && dot( surf.faceNormal, lightRec.direction ) < 0.0;
 			if ( isSampleBelowSurface ) lightRec.pdf = 0.0;

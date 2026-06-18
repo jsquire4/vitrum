@@ -181,7 +181,7 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(hdri.get('environmentIntensity')).toBe(2);
   });
 
-  it('B4: mesh-area NEE uniforms are uploaded (count + Σ area) for an emissive mesh', async () => {
+  it('B4: mesh-area NEE uniforms are uploaded (count + Σ area + Σ power) for an emissive mesh', async () => {
     const rec = await renderAndRecord(sceneWithMeshAreaLight());
     expect(rec.has('uMeshLightCount')).toBe(true);
     // The emissive panel is 2 triangles → 2 triangle lights.
@@ -189,6 +189,9 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(rec.has('uTotalEmissiveArea')).toBe(true);
     // Panel spans [-1,1]×[-1,1] (area 4) → two tris of total area 4.
     expect(rec.get('uTotalEmissiveArea')).toBeCloseTo(4, 5);
+    expect(rec.has('uTotalEmissivePower')).toBe(true);
+    // Mesh-area radiance is [5,5,5], luminance 5 over area 4.
+    expect(rec.get('uTotalEmissivePower')).toBeCloseTo(20, 5);
   });
 
   it('B4: mesh-area NEE uniforms are inert (count 0) when no mesh-area emitter', async () => {
@@ -196,6 +199,7 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(rec.has('uMeshLightCount')).toBe(true);
     expect(rec.get('uMeshLightCount')).toBe(0);
     expect(rec.get('uTotalEmissiveArea')).toBe(0);
+    expect(rec.get('uTotalEmissivePower')).toBe(0);
   });
 
   it('D10: every declared non-sampler default shader uniform is uploaded or explicitly classified', async () => {

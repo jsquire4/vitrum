@@ -225,6 +225,7 @@ export const UNIFORM_MANIFEST: readonly UniformManifestEntry[] = [
   { glslName: 'uMeshLights',          glslType: 'sampler2D',        frameKey: 'samplerOrStruct' },
   { glslName: 'uMeshLightCount',      glslType: 'uint',             frameKey: 'samplerOrStruct' },
   { glslName: 'uTotalEmissiveArea',   glslType: 'float',            frameKey: 'samplerOrStruct' },
+  { glslName: 'uTotalEmissivePower',  glslType: 'float',            frameKey: 'samplerOrStruct' },
   // ── background ───────────────────────────────────────────────────────────
   { glslName: 'backgroundBlur',        glslType: 'float',            frameKey: 'backgroundBlur' },
   { glslName: 'backgroundAlpha',       glslType: 'float',            frameKey: 'backgroundAlpha' },
@@ -336,13 +337,15 @@ const UNIFORM_DECLS = /* glsl */ `
 
 					// B4 — mesh-area triangle lights (NEE). uMeshLights packs 6 texels per
 					// emissive triangle (meshAreaLights.ts layout); uMeshLightCount triangles;
-					// uTotalEmissiveArea is Σ triangle areas (the global the forward-hit MIS
-					// weight uses — area-proportional selection makes the NEE solid-angle pdf
-					// triangle-INDEPENDENT). All default to 0 / empty → the mesh-NEE branch and
-					// the forward-emission MIS are inert (byte-identical when no mesh-area light).
+					// uTotalEmissiveArea is retained for debug/legacy accounting; the sampler
+					// uses uTotalEmissivePower = Σ luminance(radiance)·area so mapped texel-cell
+					// lights are selected by emitted power, and forward-hit MIS can recover the
+					// same area density from surf.emission. All default to 0 / empty → the
+					// mesh-NEE branch and forward-emission MIS are inert.
 					uniform sampler2D uMeshLights;
 					uniform uint uMeshLightCount;
 					uniform float uTotalEmissiveArea;
+					uniform float uTotalEmissivePower;
 
 					// background
 					uniform float backgroundBlur;
@@ -1086,8 +1089,8 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							// a mesh-NEE triangle light. The forward hit (BSDF sampling) and the
 							// NEE sample (light sampling) are the two MIS strategies; the forward
 							// hit's weight is misHeuristic(bsdfPdf_incoming, neePdf). neePdf is the
-							// triangle-INDEPENDENT area-proportional pdf (meshAreaLightForwardPdf),
-							// scaled by the 1/lightsDenom strategy-selection probability.
+								// emitted-power pdf (meshAreaLightForwardPdf), scaled by the
+								// 1/lightsDenom strategy-selection probability.
 							//   • primary hit / specular incoming: NEE could not have made this
 							//     sample → weight 1 (full emission), no double-count.
 							//   • else: balance/power-heuristic split with the NEE estimate.
@@ -1095,13 +1098,13 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							bool skipForwardMeshEmission = material.meshEmitterCastShadowDisabled &&
 								! state.firstRay && ! incomingWasSpecular;
 							if ( ! skipForwardMeshEmission ) {
-								if ( uMeshLightCount != 0u && uTotalEmissiveArea > 0.0 &&
-									! state.firstRay && ! incomingWasSpecular &&
-									surf.emission != vec3( 0.0 ) && hitType != NO_HIT ) {
-									float cosLight = dot( surf.faceNormal, ray.direction );
-									float neePdf = meshAreaLightForwardPdf(
-										surfaceHit.dist * surfaceHit.dist, cosLight, uTotalEmissiveArea
-									) / lightsDenom;
+									if ( uMeshLightCount != 0u && uTotalEmissivePower > 0.0 &&
+										! state.firstRay && ! incomingWasSpecular &&
+										surf.emission != vec3( 0.0 ) && hitType != NO_HIT ) {
+										float cosLight = dot( surf.faceNormal, ray.direction );
+										float neePdf = meshAreaLightForwardPdf(
+											surfaceHit.dist * surfaceHit.dist, cosLight, uTotalEmissivePower, surf.emission
+										) / lightsDenom;
 									float emisMisWeight = misHeuristic( incomingBsdfPdf, neePdf );
 									pc_fragColor.rgb += ( surf.emission * throughputRgb * emisMisWeight );
 								} else {

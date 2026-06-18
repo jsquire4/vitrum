@@ -39,7 +39,7 @@
 //   s1 = (radiance.rgb = color*intensity, 0)
 //   s2 = (v1.xyz, 0)
 //   s3 = (v2.xyz, triArea)          — geometric area |(v1-v0)×(v2-v0)|/2
-//   s4 = (0, 0, 0, 0)
+//   s4 = (selectionPower, 0, 0, 0)  — luminance(radiance) * triArea
 //   s5 = (0, castShadowDisabled, 0, 0) — s5.g mirrors analytic light slots
 
 import type { MaterialSpec, Scene, SceneNodeId, TextureRef, Vec3 } from '@vitrum/core';
@@ -66,6 +66,8 @@ export interface MeshAreaLightsData {
   readonly triLightCount: number;
   /** Σ triangle areas — the global the forward-hit MIS weight needs (see header). */
   readonly totalEmissiveArea: number;
+  /** Σ luminance(radiance)·area — energy-weighted selection mass for mesh NEE. */
+  readonly totalEmissivePower: number;
   readonly warnings: readonly string[];
 }
 
@@ -276,7 +278,7 @@ export function packMeshAreaLights(
   const warnings: string[] = [];
   const emitterByMesh = collectMeshAreaSources(scene, warnings);
   if (emitterByMesh.size === 0) {
-    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, warnings };
+    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0, warnings };
   }
 
   const stride = merged.positionStrideFloats;
@@ -292,9 +294,11 @@ export function packMeshAreaLights(
     v2: Vec3;
     rad: Vec3;
     area: number;
+    power: number;
     castShadowDisabled: number;
   }[] = [];
   let totalEmissiveArea = 0;
+  let totalEmissivePower = 0;
   for (const range of merged.meshVertexRanges) {
     const emitter = emitterByMesh.get(range.name);
     if (emitter == null) continue;
@@ -343,15 +347,19 @@ export function packMeshAreaLights(
         if (rad == null || luminanceRgb(rad) < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
           return;
         }
+        const power = luminanceRgb(rad) * triArea;
+        if (power <= 0) return;
         tris.push({
           v0: tv0,
           v1: tv1,
           v2: tv2,
           rad,
           area: triArea,
+          power,
           castShadowDisabled: emitter.castShadowDisabled,
         });
         totalEmissiveArea += triArea;
+        totalEmissivePower += power;
       };
 
       const exactTexelHandled = emitter.implicitMaterial == null
@@ -405,14 +413,14 @@ export function packMeshAreaLights(
   }
 
   if (tris.length === 0) {
-    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, warnings };
+    return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0, warnings };
   }
 
   const pixelCount = tris.length * TRI_LIGHT_PIXELS;
   const dim = Math.ceil(Math.sqrt(pixelCount));
   const data = new Float32Array(dim * dim * 4);
   for (let i = 0; i < tris.length; i += 1) {
-    const { v0, v1, v2, rad, area, castShadowDisabled } = tris[i]!;
+    const { v0, v1, v2, rad, area, power, castShadowDisabled } = tris[i]!;
     const base = i * TRI_LIGHT_PIXELS * 4;
     // s0: v0 / type
     data[base + 0] = v0[0];
@@ -434,9 +442,11 @@ export function packMeshAreaLights(
     data[base + 13] = v2[1];
     data[base + 14] = v2[2];
     data[base + 15] = area;
-    // s5.g: castShadowDisabled (s4 and other s5 channels remain zero).
+    // s4.r: selection power (luminance(radiance) * area) for energy-weighted NEE.
+    data[base + 16] = power;
+    // s5.g: castShadowDisabled (other s4/s5 channels remain zero).
     data[base + 21] = castShadowDisabled;
   }
 
-  return { data, dim, triLightCount: tris.length, totalEmissiveArea, warnings };
+  return { data, dim, triLightCount: tris.length, totalEmissiveArea, totalEmissivePower, warnings };
 }

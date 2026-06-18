@@ -58,6 +58,10 @@ function material(overrides: Partial<MaterialSpec>): MaterialSpec {
   return { baseColor: [0.5, 0.5, 0.5], roughness: 1, metallic: 0, ...overrides };
 }
 
+function luminance(rgb: readonly [number, number, number]): number {
+  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+}
+
 function panelPrimitive(mat: MaterialSpec, castShadow = true): MeshPrimitive {
   return {
     kind: 'mesh',
@@ -109,6 +113,8 @@ describe('packMeshAreaLights (B4)', () => {
     expect(d[5]).toBeCloseTo(0.4 * 10, 5);
     expect(d[6]).toBeCloseTo(0.8 * 10, 5);
     expect(d[15]).toBeCloseTo(0.5, 6); // each tri area = 0.5
+    expect(d[16]).toBeCloseTo(luminance([2, 4, 8]) * 0.5, 6);
+    expect(out.totalEmissivePower).toBeCloseTo(luminance([2, 4, 8]), 6);
   });
 
   it('skips meshes with no matching emitter (only emissive meshes contribute)', () => {
@@ -202,6 +208,9 @@ describe('packMeshAreaLights (B4)', () => {
 
     expect(out.triLightCount).toBe(8);
     expect(out.totalEmissiveArea).toBeCloseTo(1, 6);
+    // This fixture's fake merged UVs are all (0,0), so every sub-triangle samples
+    // the red texel; power is luminance([6,0,0]) over total area 1.
+    expect(out.totalEmissivePower).toBeCloseTo(luminance([6, 0, 0]), 6);
     expect(out.data![4]).toBeCloseTo(6, 6);
     expect(out.data![5]).toBeCloseTo(0, 6);
     expect(out.data![6]).toBeCloseTo(0, 6);
@@ -246,6 +255,7 @@ describe('packMeshAreaLights (B4)', () => {
 
     expect(out.triLightCount).toBe(3);
     expect(out.totalEmissiveArea).toBeCloseTo(0.5, 6);
+    expect(out.totalEmissivePower).toBeGreaterThan(0);
     expect(out.data![4]).toBeCloseTo(2, 6);
     expect(out.data![5]).toBeCloseTo(0, 6);
     expect(out.data![6]).toBeCloseTo(0, 6);
