@@ -89,6 +89,19 @@ describe('RC light-eval WGSL contract', () => {
     expect(sunVisibility).toContain('visibility = visibility * alphaT;');
   });
 
+  it('samples mapped baseColor for RC probe-hit Lambertian material response', () => {
+    const probeMaterial = functionBody(PROBE_RAY_CAST_WGSL, 'rcSampleProbeHitMaterial');
+    const probeKernel = functionBody(PROBE_RAY_CAST_WGSL, 'probeRayCastKernel');
+
+    expect(probeMaterial).toContain('out.albedo = scalarBaseColor * baseColorTexel.rgb;');
+    expect(probeMaterial).toContain('RC_MATERIAL_MAP_SLOT_BASE_COLOR');
+    expect(probeKernel).toContain('let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor);');
+    expect(probeKernel).toContain('let matColor    = probeMat.albedo;');
+    expect(probeKernel).toContain('let directSun = u.sunColor * matColor * nDotL * 0.31831 * sunVis;');
+    expect(probeKernel).toContain('let emitterNEE = rcEmitterNEE(hitPos, n, matColor, u.emitterCount, jSeed, triEps, normalBias);');
+    expect(probeKernel).toContain('let pointSpotLights = evalRCPointSpotLights(hitPos, n, matColor, normalBias, triEps);');
+  });
+
   it('samples mapped material-backed emitter radiance for RC emitter NEE', () => {
     const emitterNee = functionBody(PROBE_RAY_CAST_WGSL, 'rcEmitterNEE');
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(16) var                      rc_materialTextureAtlas: texture_2d_array<f32>;');

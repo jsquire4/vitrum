@@ -61,7 +61,7 @@ describe('B2 — WGSL structural pins: specular complement', () => {
 
   it('1b. specularWeight formula is present', () => {
     const src = wgsl();
-    expect(src).toContain('mat.metalness * max(0.0, 1.0 - mat.roughness * mat.roughness)');
+    expect(src).toContain('probeMat.metalness * max(0.0, 1.0 - probeMat.roughness * probeMat.roughness)');
   });
 
   it('1c. specular branch calls ddgiSampleSHProbe at the reflected direction', () => {
@@ -78,7 +78,7 @@ describe('B2 — WGSL structural pins: specular complement', () => {
   it('1e. Lambertian path is retained for rough/dielectric (specularWeight threshold guard)', () => {
     const src = wgsl();
     // The else-branch writes the Lambertian indirect.
-    expect(src).toContain('indirectGated * mat.baseColor * (1.0 / PI)');
+    expect(src).toContain('indirectGated * probeMat.albedo * (1.0 / PI)');
     // The guard condition exists so rough surfaces stay Lambertian.
     expect(src).toContain('specularWeight > 1e-4');
   });
@@ -91,11 +91,24 @@ describe('B2 — WGSL structural pins: specular complement', () => {
 
   it('1g. mat.roughness and mat.metalness are accessed in the shader', () => {
     const src = wgsl();
-    expect(src).toContain('mat.roughness');
-    expect(src).toContain('mat.metalness');
+    expect(src).toContain('ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness)');
+    expect(src).toContain('probeMat.roughness');
+    expect(src).toContain('probeMat.metalness');
   });
 
-  it('1h. readable emissive maps modulate direct probe-hit surface emission', () => {
+  it('1h. readable PBR maps modulate DDGI probe-hit bounce material response', () => {
+    const src = wgsl();
+    expect(src).toContain('const DDGI_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
+    expect(src).toContain('fn ddgiSampleProbeHitMaterial(');
+    expect(src).toContain('out.albedo = scalarBaseColor * baseColorTexel.rgb;');
+    expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_ROUGHNESS');
+    expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_METALLIC');
+    expect(src).toContain('hitWorldPos, smoothNormal, probeMat.albedo,');
+    expect(src).toContain('let directRadiance = direct * probeMat.albedo * (1.0 / PI);');
+  });
+
+  it('1i. readable emissive maps modulate direct probe-hit surface emission', () => {
     const src = wgsl();
     expect(src).toContain('@group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<f32>;');
     expect(src).toContain('@group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;');

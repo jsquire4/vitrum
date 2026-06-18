@@ -443,6 +443,34 @@ fn rcSampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) ->
   return rcSampleMaterialAtlasRawAtOffset(triIndex, slot * 2u, uv0, uv1);
 }
 
+struct RCProbeHitMaterial {
+  albedo: vec3f,
+}
+
+fn rcSampleProbeHitMaterial(
+  hit: IntersectionResult,
+  scalarBaseColor: vec3f,
+) -> RCProbeHitMaterial {
+  var out: RCProbeHitMaterial;
+  out.albedo = scalarBaseColor;
+
+  let uvs = rcHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return out;
+  }
+
+  let baseColorTexel = rcSampleMaterialAtlasRaw(
+    hit.indices.w,
+    RC_MATERIAL_MAP_SLOT_BASE_COLOR,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (baseColorTexel.x >= 0.0) {
+    out.albedo = scalarBaseColor * baseColorTexel.rgb;
+  }
+  return out;
+}
+
 struct RCAlphaCoverage {
   mode: u32,
   coverage: f32,
@@ -649,7 +677,8 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     let hitPos = ray.origin + ray.direction * hit.dist;
     let n      = hit.normal;
 
-    let matColor    = mat.baseColor;
+    let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor);
+    let matColor    = probeMat.albedo;
     let matAtten    = mat.attenuationColor;
     let matEmissive = mat.emissive;
 

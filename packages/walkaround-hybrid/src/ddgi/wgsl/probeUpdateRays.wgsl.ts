@@ -287,6 +287,8 @@ struct DdgiTraceParams {
 
 const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
 const DDGI_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
+const DDGI_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
+const DDGI_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
 const DDGI_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
 const DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
 const DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
@@ -383,6 +385,78 @@ fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f
 
 fn ddgiSampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   return ddgiSampleMaterialAtlasRawAtOffset(triIndex, slot * 2u, uv0, uv1);
+}
+
+fn ddgiMaterialMapChannel(v: vec4f, channel: u32) -> f32 {
+  if (channel == 1u) { return v.g; }
+  if (channel == 2u) { return v.b; }
+  if (channel == 3u) { return v.a; }
+  return v.r;
+}
+
+fn ddgiSampleMaterialScalarMap(
+  triIndex: u32,
+  slot: u32,
+  channel: u32,
+  uv0: vec2f,
+  uv1: vec2f,
+  fallback: f32,
+) -> f32 {
+  let texel = ddgiSampleMaterialAtlasRaw(triIndex, slot, uv0, uv1);
+  if (texel.x < 0.0) {
+    return fallback;
+  }
+  return clamp(ddgiMaterialMapChannel(texel, channel), 0.0, 1.0);
+}
+
+struct DdgiProbeHitMaterial {
+  albedo: vec3f,
+  roughness: f32,
+  metalness: f32,
+}
+
+fn ddgiSampleProbeHitMaterial(
+  hit: IntersectionResult,
+  scalarBaseColor: vec3f,
+  scalarRoughness: f32,
+  scalarMetalness: f32,
+) -> DdgiProbeHitMaterial {
+  var out: DdgiProbeHitMaterial;
+  out.albedo = scalarBaseColor;
+  out.roughness = scalarRoughness;
+  out.metalness = scalarMetalness;
+
+  let uvs = ddgiHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return out;
+  }
+
+  let baseColorTexel = ddgiSampleMaterialAtlasRaw(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_SLOT_BASE_COLOR,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (baseColorTexel.x >= 0.0) {
+    out.albedo = scalarBaseColor * baseColorTexel.rgb;
+  }
+  out.roughness = ddgiSampleMaterialScalarMap(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_SLOT_ROUGHNESS,
+    1u,
+    uvs.uv0,
+    uvs.uv1,
+    scalarRoughness,
+  );
+  out.metalness = ddgiSampleMaterialScalarMap(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_SLOT_METALLIC,
+    2u,
+    uvs.uv0,
+    uvs.uv1,
+    scalarMetalness,
+  );
+  return out;
 }
 
 fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3f {
@@ -1093,6 +1167,7 @@ fn probeUpdateRays(
         out.isGlass       = (mat.flags & MATERIAL_FLAG_IS_GLASS);
       } else {
         let hitWorldPos = probeOrigin + dir * hit.dist;
+        let probeMat = ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness);
 
         // Smooth normal from barycentric blend.
         let i0 = hit.indices.x;
@@ -1112,7 +1187,7 @@ fn probeUpdateRays(
         // H18 Stage 2 — area-emitter NEE. Guard on emitterTriCount>0 is inside the
         // helper; emitter-less scenes get vec3f(0) at zero cost.
         let direct_emitter = ddgiEmitterNEE(
-          hitWorldPos, smoothNormal, mat.baseColor,
+          hitWorldPos, smoothNormal, probeMat.albedo,
           frameParams.frameIndex ^ (probeIdx * 0x9E3779B9u) ^ rayIdx,
         );
         let direct = direct_analytic + direct_emitter;
@@ -1241,16 +1316,16 @@ fn probeUpdateRays(
         // Lambertian-direct-only formula, preserving byte-identity with the
         // pre-B2 path when indirectFeedback = 0.
         //
-        // MaterialEntry carries mat.roughness (slot 3) and mat.metalness (slot 7)
-        // from the canonical 64-byte struct — no new material threading required.
-        // (DDGI material packing in probeUpdateMaterials.ts already fills these
-        // fields via pbrToMaterialEntryInput → extractPbrScalars.)
+        // probeMat carries atlas-sampled roughness/metalness when readable maps
+        // are present, falling back to MaterialEntry scalar slots 3/7 from the
+        // canonical 64-byte struct. No new bind layout is required because DDGI
+        // already binds the material atlas for alpha/emissive probe paths.
         //
         // Cite: Karis (2013) "Real Shading in Unreal Engine 4" §4.4 (split-sum
         // approximation); McGuire et al. (2017) "Real-Time Global Illumination
         // using Precomputed Light Field Probes" (irradiance-cache specular via
         // reflected direction lookup).
-        let specularWeight = mat.metalness * max(0.0, 1.0 - mat.roughness * mat.roughness);
+        let specularWeight = probeMat.metalness * max(0.0, 1.0 - probeMat.roughness * probeMat.roughness);
         var indirectRadiance: vec3f;
         if (specularWeight > 1e-4 && frameParams.indirectFeedback != 0u) {
           // Reflected probe-ray direction: mirror dir about the hit normal.
@@ -1269,18 +1344,18 @@ fn probeUpdateRays(
           // Divide by PI for the same irradiance→radiance conversion the
           // Lambertian indirect uses (atlas stores cosine-weighted mean E/PI;
           // ddgiSampleSHProbe returns E — see comment above).
-          let specularIndirectLo = mat.baseColor * (specularIrr * (1.0 / PI));
+          let specularIndirectLo = probeMat.albedo * (specularIrr * (1.0 / PI));
           // Lambertian indirect for the blend reference.
-          let lambertianIndirectLo = indirectGated * mat.baseColor * (1.0 / PI);
+          let lambertianIndirectLo = indirectGated * probeMat.albedo * (1.0 / PI);
           // Blend indirect contribution: lerp from Lambertian to specular.
           indirectRadiance = mix(lambertianIndirectLo, specularIndirectLo, specularWeight);
         } else {
           // Rough/dielectric or no feedback: pure Lambertian indirect.
-          indirectRadiance = indirectGated * mat.baseColor * (1.0 / PI);
+          indirectRadiance = indirectGated * probeMat.albedo * (1.0 / PI);
         }
         // Direct: Lambertian (analytic lights use nDotL-weighted eval, kept
         // Lambertian since per-probe direct uses the coarse probe-light model).
-        let directRadiance = direct * mat.baseColor * (1.0 / PI);
+        let directRadiance = direct * probeMat.albedo * (1.0 / PI);
         var radiance = directRadiance + indirectRadiance;
 
         if ((mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u) {
