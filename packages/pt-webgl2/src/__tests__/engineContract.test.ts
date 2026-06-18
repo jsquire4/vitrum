@@ -593,16 +593,24 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
   it('warns once when primitive patches use the scene-texture/BVH rebuild fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
     try {
       const e = await createPTEngine_WebGL2({
-        ...opts(),
+        device: gl,
         onWarning: (w) => structured.push(w),
       });
       e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
+      const beforeMaterials = e._debugGeoPack?.materials;
 
       const moved = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1]);
       const movedAgain = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1]);
       e.updatePrimitive?.('tri', { transform: moved } as never);
+      const firstRefreshUploads = createTexture.mock.calls.length;
       e.updatePrimitive?.('tri', { transform: movedAgain } as never);
 
       const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
@@ -615,6 +623,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         fallbackReason: 'geometry-bvh-texture-rebuild',
         nativePatchMissing: 'targeted-geometry-bvh-refit',
       });
+      expect(firstRefreshUploads - initialTextureUploads).toBe(6);
+      expect(createTexture.mock.calls.length - firstRefreshUploads).toBe(6);
+      expect(e._debugGeoPack?.bvhNodes).not.toBe(beforeBvhNodes);
+      expect(e._debugGeoPack?.materials).toEqual(beforeMaterials);
+      expect(e._debugGeoPack?.positions[0]).toBeCloseTo(2, 6);
       const scene = e.getScene?.();
       const prim = scene?.primitives[0];
       expect(prim?.kind).toBe('mesh');
@@ -657,6 +670,44 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         fallbackReason: 'texture-map-material-patch',
         nativePatchMissing: 'targeted-material-atlas-texture-update',
       });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps vertex-color patches on the full upload path because material slots encode color use', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
+
+      e.updatePrimitive?.('tri', {
+        colors: new Float32Array([
+          1, 0, 0, 1,
+          0, 1, 0, 1,
+          0, 0, 1, 1,
+          1, 1, 1, 1,
+        ]),
+      } as never);
+
+      const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
+      expect(fallbackWarnings).toHaveLength(1);
+      expect(fallbackWarnings[0]?.details).toEqual({
+        primitiveId: 'tri',
+        fields: ['colors'],
+        fallbackReason: 'geometry-bvh-texture-rebuild',
+        nativePatchMissing: 'targeted-geometry-bvh-refit',
+      });
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(8);
     } finally {
       warn.mockRestore();
     }

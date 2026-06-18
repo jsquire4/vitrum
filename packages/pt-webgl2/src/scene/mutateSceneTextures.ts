@@ -7,6 +7,7 @@ import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
 import {
+  buildSceneGeometryTextures,
   uploadRgba32f,
   uploadRgba32fRect,
 } from './uploadSceneTextures.js';
@@ -36,6 +37,25 @@ export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'lightMap',
 ]);
 
+const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
+  'transform',
+  'positions',
+  'normals',
+  'indices',
+  'uvs',
+  'uv1',
+  'tangents',
+  'instances',
+  'bones',
+  'boneInverses',
+  'skinIndices',
+  'skinWeights',
+  'morphTargets',
+  'morphTargetNormals',
+  'morphTargetTangents',
+  'morphWeights',
+]);
+
 export interface WebGl2MutationSwap {
   readonly textures: UploadedSceneTextures;
   readonly geoPack?: WorldSpaceMergeResult;
@@ -62,6 +82,16 @@ function canFastPathMaterialPatch(
     if (TEXTURE_MAP_FIELDS.has(field)) return false;
   }
   return true;
+}
+
+function canRefreshGeometryTextures(patch: Partial<ScenePrimitive>): boolean {
+  let sawGeometryField = false;
+  for (const key of Object.keys(patch)) {
+    if (key === 'id' || key === 'kind') continue;
+    if (!GEOMETRY_TEXTURE_REFRESH_FIELDS.has(key)) return false;
+    sawGeometryField = true;
+  }
+  return sawGeometryField;
 }
 
 function materialWithCastShadow(primitive: Extract<ScenePrimitive, { material: MaterialSpec }>): MaterialSpec {
@@ -231,6 +261,56 @@ export function tryFastPathMaterialMutation(
     }),
     geoPack: nextGeoPack,
     deleteOldTextures: [current.materials, ...(meshLightsData != null ? [current.meshLights] : [])],
+  };
+}
+
+export function tryFastPathGeometryMutation(
+  gl: WebGL2RenderingContext,
+  current: UploadedSceneTextures | null,
+  nextScene: Scene,
+  patch: Partial<ScenePrimitive>,
+): WebGl2MutationSwap | null {
+  if (current == null || !canRefreshGeometryTextures(patch)) return null;
+  const built = buildSceneGeometryTextures(gl, nextScene, {
+    warningPhase: 'mutation',
+    warningMethod: 'updatePrimitive',
+  });
+  const structuredWarnings: EngineWarning[] = [...built.structuredWarnings];
+  for (const warning of built.warnings) {
+    structuredWarnings.push({
+      code: 'pt-webgl2.scene-upload-warning',
+      backend: 'pt-webgl2',
+      phase: 'mutation',
+      method: 'updatePrimitive',
+      message: `[vitrum/pt-webgl2] ${warning}`,
+      details: { warning, operation: 'geometry-texture-refresh' },
+    });
+  }
+
+  return {
+    textures: withTextureReplacementsForGl(gl, current, {
+      bvhBounds: built.bvh.bounds,
+      bvhContents: built.bvh.contents,
+      bvhPosition: built.bvh.position,
+      bvhIndex: built.bvh.index,
+      materialIndex: built.bvh.materialIndex,
+      attributesArray: built.attributesArray,
+      meshLights: built.meshLights,
+      meshLightCount: built.meshLightCount,
+      totalEmissiveArea: built.totalEmissiveArea,
+      triangleCount: built.triangleCount,
+    }),
+    geoPack: built.merged,
+    deleteOldTextures: [
+      current.bvhBounds,
+      current.bvhContents,
+      current.bvhPosition,
+      current.bvhIndex,
+      current.materialIndex,
+      current.attributesArray,
+      current.meshLights,
+    ],
+    structuredWarnings,
   };
 }
 

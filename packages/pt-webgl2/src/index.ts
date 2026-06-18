@@ -40,6 +40,7 @@ import {
   fastPathEnvironmentMutation,
   TEXTURE_MAP_FIELDS,
   tryFastPathEmitterMutation,
+  tryFastPathGeometryMutation,
   tryFastPathMaterialMutation,
   type WebGl2MutationSwap,
 } from './scene/mutateSceneTextures.js';
@@ -628,6 +629,17 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     );
     if (fast != null) {
       this.#commitMutationSwap(nextScene, fast);
+      return;
+    }
+    const geometryFast = tryFastPathGeometryMutation(
+      this.#gl,
+      this.#sceneTextures,
+      nextScene,
+      patch,
+    );
+    if (geometryFast != null) {
+      this.#warnPrimitiveMutationFallback(id, patch);
+      this.#commitMutationSwap(nextScene, geometryFast);
       return;
     }
     this.#warnPrimitiveMutationFallback(id, patch);

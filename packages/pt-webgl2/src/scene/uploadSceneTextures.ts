@@ -42,6 +42,92 @@ export interface SceneTexturesBuild {
   readonly supported: Scene;
 }
 
+export interface SceneGeometryTexturesBuild {
+  readonly bvh: ReturnType<typeof uploadBvhTextures>;
+  readonly attributesArray: WebGLTexture;
+  readonly meshLights: WebGLTexture | null;
+  readonly meshLightCount: number;
+  readonly totalEmissiveArea: number;
+  readonly triangleCount: number;
+  readonly merged: WorldSpaceMergeResult;
+  readonly warnings: readonly string[];
+  readonly structuredWarnings: readonly EngineWarning[];
+}
+
+interface GeometryBuildInputs {
+  readonly skinnedScene: Scene;
+  readonly merged: WorldSpaceMergeResult;
+  readonly attrData: ReturnType<typeof packAttributesArray>;
+}
+
+function buildGeometryInputs(
+  scene: Scene,
+  warningOptions: {
+    readonly onWarning: (warning: EngineWarning) => void;
+    readonly warningPhase: string;
+    readonly warningMethod: string;
+  },
+): GeometryBuildInputs {
+  const ptScene = foldMeshAreaEmittersIntoMaterials(scene);
+  const skinnedScene = solveSkinPrimitives(ptScene, warningOptions);
+  const merged = mergeWorldSpaceFromCore(skinnedScene, {
+    positionStride: 4,
+    splitMaterialsByCastShadow: true,
+  });
+  const mergedUv1 = mergeUv1FromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
+  const mergedTangents = mergeTangentsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
+  const mergedColors = mergeColorsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
+  const attrData = packAttributesArray(
+    {
+      ...merged,
+      ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}),
+      ...(mergedTangents != null ? { tangents: mergedTangents } : {}),
+      ...(mergedColors != null ? { colors: mergedColors } : {}),
+    },
+  );
+  return { skinnedScene, merged, attrData };
+}
+
+export function buildSceneGeometryTextures(
+  gl: WebGL2RenderingContext,
+  scene: Scene,
+  opts?: {
+    readonly warningPhase?: string;
+    readonly warningMethod?: string;
+  },
+): SceneGeometryTexturesBuild {
+  const structuredWarnings: EngineWarning[] = [];
+  const warningOptions = {
+    onWarning: (warning: EngineWarning) => structuredWarnings.push(warning),
+    warningPhase: opts?.warningPhase ?? 'setScene',
+    warningMethod: opts?.warningMethod ?? 'setScene',
+  };
+  const geometry = buildGeometryInputs(scene, warningOptions);
+  const bvhData = packBvhTextureData(geometry.merged);
+  const bvh = uploadBvhTextures(gl, bvhData);
+  const meshLightsData = packMeshAreaLights(scene, geometry.merged);
+  const meshLights =
+    meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights') : null;
+  const attributesArray = uploadRgba32fArray(
+    gl,
+    geometry.attrData.data,
+    geometry.attrData.dim,
+    geometry.attrData.layers,
+    'vertex attributes',
+  );
+  return {
+    bvh,
+    attributesArray,
+    meshLights,
+    meshLightCount: meshLightsData.triLightCount,
+    totalEmissiveArea: meshLightsData.totalEmissiveArea,
+    triangleCount: geometry.merged.triangleCount,
+    merged: geometry.merged,
+    warnings: meshLightsData.warnings,
+    structuredWarnings,
+  };
+}
+
 /**
  * Build the full uploaded scene-texture bundle for `scene`, partitioned to what
  * `caps` declares this backend can ingest. The returned `merged` stream is
@@ -69,23 +155,12 @@ export function buildSceneTextures(
   //      emissive — three-bindings strips it for NEE backends, but the fork
   //      integrator lights area sources by HITTING the emissive surface
   //      (surf.emission). Without this the Cornell light renders black.
-  const ptScene = foldMeshAreaEmittersIntoMaterials(supported);
-
-  // (1c) Skinning pre-pass: replace each skinned-mesh's rest-pose
-  //      positions/normals with CPU-solved posed geometry so the BVH +
-  //      attribute packers see the actual deformed mesh.  Fast-path: if no
-  //      skinned-mesh primitives exist, ptScene is returned unchanged.
-  //      When a host later calls updatePrimitive(id, { bones: newBones })
-  //      the full setScene rebuild re-runs this pass — no separate incremental
-  //      path required (pt-webgl2 updatePrimitive always rebuilds wholesale).
-  const skinnedScene = solveSkinPrimitives(ptScene, warningOptions);
-
-  // (2) merged world-space tri stream + single-root BVH (stride 4 = the form the
-  //     BVH texture adapter and attribute array both index).
-  const merged = mergeWorldSpaceFromCore(skinnedScene, {
-    positionStride: 4,
-    splitMaterialsByCastShadow: true,
-  });
+  // (1c/2/7 CPU side) Skinning pre-pass + merged world-space tri stream +
+  //     attribute payload inputs. The geometry-only mutation path reuses this
+  //     exact helper so setScene and primitive geometry patches cannot drift.
+  const geometry = buildGeometryInputs(supported, warningOptions);
+  const skinnedScene = geometry.skinnedScene;
+  const merged = geometry.merged;
 
   // (3) BVH data textures (+ per-tri materialIndex)
   const bvhData = packBvhTextureData(merged);
@@ -135,17 +210,7 @@ export function buildSceneTextures(
   // ordering that mergeWorldSpaceFromCore used. Falls back to uv0 per vertex when a
   // primitive carries no uv1 (see packAttributesArray).
   // D10.7: uses mergeUv1FromCore from @vitrum/shared-bvh, colocated with worldSpaceMerge.ts.
-  const mergedUv1 = mergeUv1FromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
-  const mergedTangents = mergeTangentsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
-  const mergedColors = mergeColorsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
-  const attrData = packAttributesArray(
-    {
-      ...merged,
-      ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}),
-      ...(mergedTangents != null ? { tangents: mergedTangents } : {}),
-      ...(mergedColors != null ? { colors: mergedColors } : {}),
-    },
-  );
+  const attrData = geometry.attrData;
   const attributesArray = uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers, 'vertex attributes');
 
   // (8) assemble the bundle.
