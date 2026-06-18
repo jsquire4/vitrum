@@ -200,6 +200,10 @@
 > `navigator.gpu.requestAdapter` failures and no-WebGPU probe-update init
 > failures through structured `walkaround-hybrid.ddgi-*` warnings when an
 > `onWarning` sink is present, preserving console fallback for standalone tests.
+> Same-day GI-state import follow-up: `importGIState()` grid-layout mismatch
+> rejection now emits structured
+> `walkaround-hybrid.import-gi-state-grid-mismatch` warnings with snapshot/current
+> layout details before returning `false`, instead of being console-only.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel

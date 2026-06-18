@@ -8,12 +8,14 @@
 import type { DDGI } from './ddgi/DDGI.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
 import type { GIStateSnapshot } from './giStateSnapshot.js';
+import type { EngineWarning } from '@vitrum/core';
 
 /** Minimal dep surface for the GI state helpers. */
 export interface GIStateDeps {
   device: GPUDevice;
   ddgi: DDGI;
   pipeline: WalkaroundGPUPipeline | null;
+  onWarning?: (warning: EngineWarning) => void;
 }
 
 /**
@@ -91,10 +93,27 @@ export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot):
     Math.abs(snapshot.origin[2] - grid.origin.z) > epsilon;
   const spacingMismatch = Math.abs(snapshot.spacing - grid.spacing) > epsilon;
   if (dimsMismatch || originMismatch || spacingMismatch) {
-    console.warn(
-      '[HybridEngine] importGIState: snapshot grid layout does not match the current grid ' +
-      '(dims/origin/spacing mismatch) — restore rejected to avoid garbage GI.',
-    );
+    warnGIState(deps, {
+      code: 'walkaround-hybrid.import-gi-state-grid-mismatch',
+      backend: 'walkaround-hybrid',
+      phase: 'lifecycle',
+      method: 'importGIState',
+      message:
+        '[HybridEngine] importGIState: snapshot grid layout does not match the current grid ' +
+        '(dims/origin/spacing mismatch) — restore rejected to avoid garbage GI.',
+      details: {
+        snapshot: {
+          dims: snapshot.dims,
+          origin: snapshot.origin,
+          spacing: snapshot.spacing,
+        },
+        current: {
+          dims: grid.dims,
+          origin: [grid.origin.x, grid.origin.y, grid.origin.z],
+          spacing: grid.spacing,
+        },
+      },
+    });
     return false;
   }
   const atlasOk = deps.ddgi.importAtlasData(deps.device, snapshot);
@@ -122,4 +141,16 @@ export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot):
     deps.pipeline?.importPPGSTree(snapshot.ppg);
   }
   return true;
+}
+
+function warnGIState(deps: GIStateDeps, warning: EngineWarning): void {
+  if (deps.onWarning) {
+    try {
+      deps.onWarning(warning);
+    } catch {
+      // Host warning callbacks must not break GI-state import.
+    }
+    return;
+  }
+  console.warn(warning.message);
 }

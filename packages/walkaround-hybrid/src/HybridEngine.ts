@@ -1733,7 +1733,12 @@ export class HybridEngine implements Engine {
    * starts cold without error.
    */
   importGIState(snapshot: GIStateSnapshot): boolean {
-    return importGIStateImpl({ device: this._device, ddgi: this._ddgi, pipeline: this._pipeline }, snapshot);
+    return importGIStateImpl({
+      device: this._device,
+      ddgi: this._ddgi,
+      pipeline: this._pipeline,
+      onWarning: (warning) => this._warn(warning),
+    }, snapshot);
   }
 
   /**
