@@ -1924,6 +1924,36 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it.each([
+    ['zero-intensity HDRI', { kind: 'hdri' as const, hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) }, intensity: 0 }],
+    ['zero-intensity procedural sky', {
+      kind: 'procedural-sky' as const,
+      sunDirection: [0, 1, 0] as [number, number, number],
+      turbidity: 2,
+      rayleigh: 1,
+      mieCoefficient: 0.005,
+      mieDirectionalG: 0.8,
+      intensity: 0,
+    }],
+  ])('keeps path-replay for %s because the environment contributes no radiance', (_label, environment) => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      environment,
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-lighting',
+    }));
+    session.dispose();
+  });
+
   it('keeps path-replay for rect-area direct-light scenes', () => {
     const fake = makeFakeEngine();
     fake.scene = {

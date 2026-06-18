@@ -1247,10 +1247,22 @@ function pathReplayLightingIssue(
   scene: Scene,
 ): { message: string; details: Record<string, string | number | readonly string[]> } | null {
   const environmentKind = scene.environment?.kind ?? 'none';
-  if (environmentKind !== 'none') {
+  const environmentIntensity =
+    scene.environment != null && 'intensity' in scene.environment
+      ? scene.environment.intensity
+      : undefined;
+  const environmentContributes =
+    environmentKind !== 'none' &&
+    (typeof environmentIntensity !== 'number' ||
+      !Number.isFinite(environmentIntensity) ||
+      Math.abs(environmentIntensity) > 1e-12);
+  if (environmentContributes) {
     return {
       message: `environment kind "${environmentKind}" is not replayed by the adjoint direct-light pass`,
-      details: { environmentKind },
+      details: {
+        environmentKind,
+        ...(typeof environmentIntensity === 'number' ? { environmentIntensity } : {}),
+      },
     };
   }
   const unsupported = (scene.emitters as unknown as ReadonlyArray<{
