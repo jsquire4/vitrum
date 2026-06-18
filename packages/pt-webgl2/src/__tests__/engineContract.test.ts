@@ -616,6 +616,37 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('surfaces nested material texture-map fields when material patches fallback-rebuild', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+
+      e.updatePrimitive?.('tri', {
+        material: {
+          roughness: 0.45,
+          baseColorMap: { handle: { id: 'base-map' } },
+        },
+      } as never);
+
+      const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
+      expect(fallbackWarnings).toHaveLength(1);
+      expect(fallbackWarnings[0]?.details).toEqual({
+        primitiveId: 'tri',
+        fields: ['material'],
+        materialFields: ['baseColorMap', 'roughness'],
+        materialTextureFields: ['baseColorMap'],
+        fallbackReason: 'texture-map-material-patch',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('warns once when primitive add/remove use the scene-texture/BVH rebuild fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

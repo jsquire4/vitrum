@@ -11,7 +11,7 @@ import {
   uploadRgba32fRect,
 } from './uploadSceneTextures.js';
 
-const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
+export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'baseColorMap',
   'normalMap',
   'roughnessMap',

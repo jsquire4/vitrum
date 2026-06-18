@@ -38,6 +38,7 @@ import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
 import {
   fastPathEnvironmentMutation,
+  TEXTURE_MAP_FIELDS,
   tryFastPathEmitterMutation,
   tryFastPathMaterialMutation,
   type WebGl2MutationSwap,
@@ -57,6 +58,15 @@ function primitivePatchFields(patch: Partial<ScenePrimitive>): string[] {
   return Object.keys(patch)
     .filter((key) => key !== 'id' && key !== 'kind')
     .sort();
+}
+
+function materialPatchFields(patch: Partial<ScenePrimitive>): string[] {
+  if (patch.material == null) return [];
+  return Object.keys(patch.material as unknown as Record<string, unknown>).sort();
+}
+
+function materialTextureMapPatchFields(patch: Partial<ScenePrimitive>): string[] {
+  return materialPatchFields(patch).filter((field) => TEXTURE_MAP_FIELDS.has(field));
 }
 
 // A5 — light-subpath ping-pong width (one column per light bounce). MUST match the
@@ -789,10 +799,18 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   #warnPrimitiveMutationFallback(id: string, patch: Partial<ScenePrimitive>): void {
     const fields = primitivePatchFields(patch);
+    const materialFields = materialPatchFields(patch);
+    const materialTextureFields = materialTextureMapPatchFields(patch);
     const signature = fields.length > 0 ? fields.join(',') : '<none>';
     const key = `updatePrimitive:${id}:${signature}`;
     if (this.#fallbackMutationWarnings.has(key)) return;
     this.#fallbackMutationWarnings.add(key);
+    const details: Record<string, unknown> = { primitiveId: id, fields };
+    if (materialFields.length > 0) details.materialFields = materialFields;
+    if (materialTextureFields.length > 0) {
+      details.materialTextureFields = materialTextureFields;
+      details.fallbackReason = 'texture-map-material-patch';
+    }
     this.#warn({
       code: 'pt-webgl2.primitive-mutation-fallback-rebuild',
       backend: 'pt-webgl2',
@@ -802,7 +820,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         `[vitrum/pt-webgl2] updatePrimitive("${id}") fields [${signature}] ` +
         'are supported by rebuilding the backend scene-texture/BVH pack rather ' +
         'than by a targeted native patch.',
-      details: { primitiveId: id, fields },
+      details,
     });
   }
 
