@@ -6,7 +6,7 @@
  *
  *  1. WGSL structural pins:
  *     a. The reflected-direction computation is present in the generated WGSL
- *        (reflect formula: `dir - 2.0 * dot(dir, smoothNormal) * smoothNormal`).
+ *        (reflect formula over the atlas-perturbed `probeNormal`).
  *     b. The specular weight formula is present
  *        (`mat.metalness * max(0.0, 1.0 - mat.roughness * mat.roughness)`).
  *     c. The reflected atlas lookup is present (ddgiSampleSHProbe called twice —
@@ -56,7 +56,7 @@ describe('B2 — WGSL structural pins: specular complement', () => {
   it('1a. reflected direction formula is present', () => {
     // reflect(dir, n) = dir - 2·(n·dir)·n; the WGSL encodes this explicitly.
     const src = wgsl();
-    expect(src).toContain('dir - 2.0 * dot(dir, smoothNormal) * smoothNormal');
+    expect(src).toContain('dir - 2.0 * dot(dir, probeNormal) * probeNormal');
   });
 
   it('1b. specularWeight formula is present', () => {
@@ -104,11 +104,25 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('out.albedo = scalarBaseColor * baseColorTexel.rgb;');
     expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_ROUGHNESS');
     expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_METALLIC');
-    expect(src).toContain('hitWorldPos, smoothNormal, probeMat.albedo,');
+    expect(src).toContain('hitWorldPos, probeNormal, probeMat.albedo,');
     expect(src).toContain('let directRadiance = direct * probeMat.albedo * (1.0 / PI);');
   });
 
-  it('1i. readable emissive maps modulate direct probe-hit surface emission', () => {
+  it('1i. readable normal and bump maps perturb DDGI probe-hit bounce normals', () => {
+    const src = wgsl();
+    expect(src).toContain('const DDGI_MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;');
+    expect(src).toContain('fn ddgiMaterialTangentFrameForHit(');
+    expect(src).toContain('fn ddgiApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f');
+    expect(src).toContain('fn ddgiApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f');
+    expect(src).toContain('let normalMapped = ddgiApplyNormalMapForHit(hit, smoothNormal);');
+    expect(src).toContain('let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);');
+    expect(src).toContain('let direct_analytic = evalDirectLighting(hitWorldPos, probeNormal);');
+    expect(src).toContain('fix, fiy, probeNormal,');
+    expect(src).toContain('out.hitNormal    = probeNormal;');
+  });
+
+  it('1j. readable emissive maps modulate direct probe-hit surface emission', () => {
     const src = wgsl();
     expect(src).toContain('@group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<f32>;');
     expect(src).toContain('@group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;');

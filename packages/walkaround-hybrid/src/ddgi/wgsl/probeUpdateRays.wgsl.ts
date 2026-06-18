@@ -292,6 +292,10 @@ const DDGI_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
 const DDGI_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
 const DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
 const DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
+const DDGI_MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;
+const DDGI_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET: u32 = 17u;
+const DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
+const DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 
 fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(ddgiMaterialMapMeta);
@@ -354,7 +358,88 @@ fn ddgiHitMaterialUvs(hit: IntersectionResult) -> DdgiHitMaterialUvs {
   return out;
 }
 
-fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+struct DdgiMaterialTangentFrame {
+  tangent: vec3f,
+  bitangent: vec3f,
+}
+
+fn ddgiFallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
+  let b = cross(n, t);
+  let len2 = dot(b, b);
+  if (len2 < 1e-8) {
+    let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.95);
+    return normalize(cross(n, up));
+  }
+  return b * inverseSqrt(len2);
+}
+
+fn ddgiMaterialTangentFrameForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  mapOffset: u32,
+) -> DdgiMaterialTangentFrame {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + mapOffset;
+  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
+  let flags = u32(max(meta0.y, 0.0) + 0.5);
+  let useUv1 = ((flags >> 4u) & 0x3u) == 1u;
+
+  let p0 = bvh_position[hit.indices.x];
+  let p1 = bvh_position[hit.indices.y];
+  let p2 = bvh_position[hit.indices.z];
+  let n0 = bvh_normal[hit.indices.x];
+  let n1 = bvh_normal[hit.indices.y];
+  let n2 = bvh_normal[hit.indices.z];
+  let uv0a = ddgiPackedUvFromVec4(p0);
+  let uv0b = ddgiPackedUvFromVec4(p1);
+  let uv0c = ddgiPackedUvFromVec4(p2);
+  let uv1a = ddgiPackedUvFromVec4(n0);
+  let uv1b = ddgiPackedUvFromVec4(n1);
+  let uv1c = ddgiPackedUvFromVec4(n2);
+  let ta = select(uv0a, uv1a, useUv1);
+  let tb = select(uv0b, uv1b, useUv1);
+  let tc = select(uv0c, uv1c, useUv1);
+
+  let dp1 = p1.xyz - p0.xyz;
+  let dp2 = p2.xyz - p0.xyz;
+  let duv1 = tb - ta;
+  let duv2 = tc - ta;
+  let det = duv1.x * duv2.y - duv1.y * duv2.x;
+  var tangent = dp1;
+  var bitangent = ddgiFallbackBitangentForNormal(frameNormal, tangent);
+  if (abs(det) > 1e-8) {
+    let invDet = 1.0 / det;
+    tangent = (dp1 * duv2.y - dp2 * duv1.y) * invDet;
+    bitangent = (dp2 * duv1.x - dp1 * duv2.x) * invDet;
+  }
+
+  tangent = tangent - frameNormal * dot(frameNormal, tangent);
+  let tLen2 = dot(tangent, tangent);
+  if (tLen2 < 1e-8) {
+    let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(frameNormal.y) > 0.95);
+    tangent = normalize(cross(up, frameNormal));
+  } else {
+    tangent = tangent * inverseSqrt(tLen2);
+  }
+
+  bitangent = bitangent - frameNormal * dot(frameNormal, bitangent) - tangent * dot(tangent, bitangent);
+  let bLen2 = dot(bitangent, bitangent);
+  if (bLen2 < 1e-8) {
+    bitangent = ddgiFallbackBitangentForNormal(frameNormal, tangent);
+  } else {
+    bitangent = bitangent * inverseSqrt(bLen2);
+  }
+
+  return DdgiMaterialTangentFrame(tangent, bitangent);
+}
+
+fn ddgiSampleMaterialAtlasRawAtOffsetDelta(
+  triIndex: u32,
+  metaOffset: u32,
+  uv0: vec2f,
+  uv1: vec2f,
+  transformedDelta: vec2f,
+) -> vec4f {
   let metaDims = textureDimensions(ddgiMaterialMapMeta);
   let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
   if (metaTexel + 1u >= metaDims.x * metaDims.y) {
@@ -373,7 +458,7 @@ fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f
   let transformed = vec2f(
     scaled.x * meta1.z - scaled.y * meta1.w,
     scaled.x * meta1.w + scaled.y * meta1.z,
-  ) + meta0.zw;
+  ) + meta0.zw + transformedDelta;
   let wrapped = ddgiWrapMaterialUv(transformed, wrapPacked);
   let dims = textureDimensions(ddgiMaterialTextureAtlas);
   let texel = vec2i(
@@ -381,6 +466,10 @@ fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f
     i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
   );
   return textureLoad(ddgiMaterialTextureAtlas, texel, layer, 0);
+}
+
+fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+  return ddgiSampleMaterialAtlasRawAtOffsetDelta(triIndex, metaOffset, uv0, uv1, vec2f(0.0));
 }
 
 fn ddgiSampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
@@ -457,6 +546,135 @@ fn ddgiSampleProbeHitMaterial(
     scalarMetalness,
   );
   return out;
+}
+
+fn ddgiApplyNormalMapAtOffsetForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  fallbackNormal: vec3f,
+  normalMapOffset: u32,
+  normalScaleOffset: u32,
+) -> vec3f {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + normalMapOffset;
+  let metaDims = textureDimensions(ddgiMaterialMapMeta);
+  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+    return fallbackNormal;
+  }
+  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
+  if (i32(meta0.x) < 0) {
+    return fallbackNormal;
+  }
+
+  let uvs = ddgiHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return fallbackNormal;
+  }
+
+  let texelColor = ddgiSampleMaterialAtlasRawAtOffset(
+    triIndex,
+    normalMapOffset,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (texelColor.x < 0.0) {
+    return fallbackNormal;
+  }
+
+  let scaleMeta = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaCoord(triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + normalScaleOffset),
+    0,
+  );
+  let normalScale = max(scaleMeta.x, 0.0);
+  let tangentSample = normalize(vec3f(
+    (texelColor.r * 2.0 - 1.0) * normalScale,
+    (texelColor.g * 2.0 - 1.0) * normalScale,
+    texelColor.b * 2.0 - 1.0,
+  ));
+
+  let frame = ddgiMaterialTangentFrameForHit(hit, frameNormal, normalMapOffset);
+  let perturbed = normalize(frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + frameNormal * tangentSample.z);
+  return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
+}
+
+fn ddgiApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
+  return ddgiApplyNormalMapAtOffsetForHit(
+    hit,
+    baseNormal,
+    baseNormal,
+    DDGI_MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
+    DDGI_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET,
+  );
+}
+
+fn ddgiApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
+  let triIndex = hit.indices.w;
+  let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET;
+  let metaDims = textureDimensions(ddgiMaterialMapMeta);
+  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+    return shadingNormal;
+  }
+  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
+  if (i32(meta0.x) < 0) {
+    return shadingNormal;
+  }
+
+  let scaleMeta = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaCoord(triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET),
+    0,
+  );
+  let bumpScale = scaleMeta.x;
+  if (abs(bumpScale) < 1e-8) {
+    return shadingNormal;
+  }
+
+  let uvs = ddgiHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return shadingNormal;
+  }
+  let hC = ddgiSampleMaterialAtlasRawAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (hC.x < 0.0) {
+    return shadingNormal;
+  }
+
+  let atlasDims = textureDimensions(ddgiMaterialTextureAtlas);
+  let atlasTexelStep = vec2f(
+    1.0 / f32(max(atlasDims.x, 1u)),
+    1.0 / f32(max(atlasDims.y, 1u)),
+  );
+  let bumpTexelStep = vec2f(
+    1.0 / max(scaleMeta.y, 1.0),
+    1.0 / max(scaleMeta.z, 1.0),
+  );
+  let texelStep = select(atlasTexelStep, bumpTexelStep, scaleMeta.y > 0.0 && scaleMeta.z > 0.0);
+  let hU = ddgiSampleMaterialAtlasRawAtOffsetDelta(
+    triIndex,
+    DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+    vec2f(texelStep.x, 0.0),
+  ).r;
+  let hV = ddgiSampleMaterialAtlasRawAtOffsetDelta(
+    triIndex,
+    DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+    vec2f(0.0, texelStep.y),
+  ).r;
+  let dhdu = (hU - hC.r) / texelStep.x;
+  let dhdv = (hV - hC.r) / texelStep.y;
+  let frame = ddgiMaterialTangentFrameForHit(hit, shadingNormal, DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET);
+  let perturbed = shadingNormal - bumpScale * (dhdu * frame.tangent + dhdv * frame.bitangent);
+  let plen = length(perturbed);
+  let n = select(shadingNormal, perturbed / plen, plen > 1e-6);
+  return select(-n, n, dot(n, shadingNormal) >= 0.0);
 }
 
 fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3f {
@@ -1181,13 +1399,15 @@ fn probeUpdateRays(
           hit.barycoord.y * n1 +
           hit.barycoord.z * n2
         ) * hit.side;
+        let normalMapped = ddgiApplyNormalMapForHit(hit, smoothNormal);
+        let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);
 
         // Direct lighting: analytic sun/fixture lights.
-        let direct_analytic = evalDirectLighting(hitWorldPos, smoothNormal);
+        let direct_analytic = evalDirectLighting(hitWorldPos, probeNormal);
         // H18 Stage 2 — area-emitter NEE. Guard on emitterTriCount>0 is inside the
         // helper; emitter-less scenes get vec3f(0) at zero cost.
         let direct_emitter = ddgiEmitterNEE(
-          hitWorldPos, smoothNormal, probeMat.albedo,
+          hitWorldPos, probeNormal, probeMat.albedo,
           frameParams.frameIndex ^ (probeIdx * 0x9E3779B9u) ^ rayIdx,
         );
         let direct = direct_analytic + direct_emitter;
@@ -1232,7 +1452,7 @@ fn probeUpdateRays(
         let indirect = ddgiSampleSHProbe(
           irradiancePrev, irradianceSamp,
           gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
-          fix, fiy, smoothNormal,
+          fix, fiy, probeNormal,
         );
 
         // Outgoing radiance from the BOUNCE surface toward the probe.
@@ -1333,7 +1553,7 @@ fn probeUpdateRays(
           // incoming direction at the surface. reflect(-dir, n) gives the
           // outgoing specular direction, which is also the direction we use to
           // query the SH atlas for the radiance arriving from that hemisphere.
-          let reflDir = safe_normalize(dir - 2.0 * dot(dir, smoothNormal) * smoothNormal);
+          let reflDir = safe_normalize(dir - 2.0 * dot(dir, probeNormal) * probeNormal);
           let specularIrr = ddgiSampleSHProbe(
             irradiancePrev, irradianceSamp,
             gridParams.irradianceAtlasW, gridParams.irradianceAtlasH,
@@ -1379,7 +1599,7 @@ fn probeUpdateRays(
 
         out.hitRadiance  = radiance;
         out.hitDistance  = hit.dist;
-        out.hitNormal    = smoothNormal;
+        out.hitNormal    = probeNormal;
         out.hitPosition  = hitWorldPos;
         out.hitMaterialId = matId;
         out.isGlass       = (mat.flags & MATERIAL_FLAG_IS_GLASS);

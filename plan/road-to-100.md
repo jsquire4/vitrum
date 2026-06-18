@@ -934,8 +934,12 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   probe hits sample atlas-backed `baseColorMap`/`roughnessMap`/`metallicMap` for
   bounce albedo and the glossy-probe specular weight, and RC probe-cast direct
   sun/emitter/point/spot terms use atlas-backed `baseColorMap` for their
-  Lambertian albedo. RC rough/metal/specular-lobe probe response remains a real
-  approximation tail. 2026-06-16 ReGIR follow-up:
+  Lambertian albedo. Later 2026-06-18 follow-up: DDGI ordinary probe hits also
+  apply atlas-backed `normalMap`/`bumpMap` through a derived UV tangent frame for
+  probe direct light, area-emitter NEE, SH feedback, glossy reflected bounces, and
+  stored hit normals. DDGI authored tangent preference, DDGI clearcoat-normal /
+  extension-lobe probe response, and RC rough/metal/specular/normal/bump probe
+  response remain real approximation tails. 2026-06-16 ReGIR follow-up:
   the grid-build WRS target now uses the chosen packed light-tree leaf
   importance (`treeInput.powers`, AABB, and cone term) for `qHat`, so mapped
   material-backed micro-emitters no longer fall back to scalar `EmitterTri.Le`
