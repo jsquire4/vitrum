@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { MaterialSpec, TextureRef } from '@vitrum/core';
 import { packMaterialTextureAtlas } from '../pipeline/materialTextureAtlas.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
@@ -78,6 +78,58 @@ describe('walkaround materialTextureAtlas', () => {
       }),
     ]);
     expect(atlas.diagnostics[0]?.message).toContain('materials[0].pbrMetallicRoughness.baseColorTexture');
+  });
+
+  it('reports ambiguous raw texture strides as diagnostics without console output', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const baseColorMap = {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Uint8Array([64, 128, 255]),
+        },
+        [GLTF_TEXTURE_REF_SOURCE]: {
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+          textureIndex: 5,
+          imageIndex: 6,
+        },
+      } as TextureRef;
+      const material: MaterialSpec = {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        baseColorMap,
+      };
+
+      const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(atlas.readableBaseColorLayerCount).toBe(1);
+      expect(atlas.baseColorMetaData[0]).toBe(0);
+      expect(atlas.atlasData[0]).toBeCloseTo(srgbToLinear(64 / 255), 5);
+      expect(atlas.atlasData[1]).toBeCloseTo(srgbToLinear(128 / 255), 5);
+      expect(atlas.atlasData[2]).toBeCloseTo(1, 5);
+      expect(atlas.atlasData[3]).toBeCloseTo(1, 5);
+      expect(atlas.diagnostics).toEqual([
+        expect.objectContaining({
+          code: 'ambiguous-material-texture-stride',
+          materialIndex: 0,
+          field: 'baseColorMap',
+          colorSpace: 'srgb',
+          pixelStride: 3,
+          valueCount: 3,
+          width: 1,
+          height: 1,
+          sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+          textureIndex: 5,
+          imageIndex: 6,
+        }),
+      ]);
+      expect(atlas.diagnostics[0]?.message).toContain('ambiguous pixel stride 3');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('packs per-triangle wrap and KHR_texture_transform metadata', () => {

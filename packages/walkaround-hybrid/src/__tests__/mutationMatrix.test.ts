@@ -722,6 +722,53 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning when an atlas-backed map has ambiguous raw stride', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    const baseColorMap = {
+      handle: {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([64, 128, 255]),
+      },
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 7,
+        imageIndex: 8,
+      },
+    } as TextureRef;
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap,
+        },
+      });
+
+      const warning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.ambiguous-material-texture-stride',
+      );
+      expect(warning?.method).toBe('updatePrimitive');
+      expect(warning?.details).toMatchObject({
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+        pixelStride: 3,
+        valueCount: 3,
+        width: 1,
+        height: 1,
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        textureIndex: 7,
+        imageIndex: 8,
+        fallback: 'heuristic pixel stride',
+      });
+      expect(warning?.message).toContain('ambiguous raw pixel stride 3');
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) rebuilds material texture atlas when atlas-backed maps change', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

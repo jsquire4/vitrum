@@ -990,14 +990,20 @@ export class HybridEngine implements Engine {
   ): void {
     for (const diagnostic of diagnostics) {
       const sourcePath = diagnostic.sourcePath;
-      const key = `${method}:${diagnostic.code}:${diagnostic.materialIndex}:${diagnostic.field}:${diagnostic.colorSpace}:${sourcePath ?? ''}:${diagnostic.texCoord ?? ''}`;
+      const key =
+        `${method}:${diagnostic.code}:${diagnostic.materialIndex}:${diagnostic.field}:` +
+        `${diagnostic.colorSpace}:${sourcePath ?? ''}:${diagnostic.texCoord ?? ''}:` +
+        `${diagnostic.pixelStride ?? ''}:${diagnostic.valueCount ?? ''}`;
       if (this._warnedMaterialTextureAtlasDiagnostics.has(key)) continue;
       this._warnedMaterialTextureAtlasDiagnostics.add(key);
       const unsupportedTexCoord = diagnostic.code === 'unsupported-material-texture-texcoord';
+      const ambiguousStride = diagnostic.code === 'ambiguous-material-texture-stride';
       this._warn({
         code: unsupportedTexCoord
           ? 'walkaround-hybrid.unsupported-material-texture-texcoord'
-          : 'walkaround-hybrid.unreadable-material-texture-map',
+          : ambiguousStride
+            ? 'walkaround-hybrid.ambiguous-material-texture-stride'
+            : 'walkaround-hybrid.unreadable-material-texture-map',
         backend: 'walkaround-hybrid',
         phase: method,
         method,
@@ -1005,6 +1011,13 @@ export class HybridEngine implements Engine {
           ? `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
             `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
             `uses texCoord ${diagnostic.texCoord}; the material atlas only supports UV sets 0 and 1, so the map is ignored.`
+          : ambiguousStride
+            ? `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
+              `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
+              `has ambiguous raw pixel stride ${diagnostic.pixelStride} ` +
+              `(${diagnostic.valueCount} values / ${diagnostic.width}x${diagnostic.height} pixels); ` +
+              `the atlas decoded it heuristically. Attach __vitrum_hint__ = { channels: N } ` +
+              `to make texture ingestion deterministic.`
           : `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
             `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
             `has a texture handle that is not CPU-readable; ` +
@@ -1015,6 +1028,10 @@ export class HybridEngine implements Engine {
           field: diagnostic.field,
           colorSpace: diagnostic.colorSpace,
           ...(diagnostic.texCoord !== undefined ? { texCoord: diagnostic.texCoord } : {}),
+          ...(diagnostic.pixelStride !== undefined ? { pixelStride: diagnostic.pixelStride } : {}),
+          ...(diagnostic.valueCount !== undefined ? { valueCount: diagnostic.valueCount } : {}),
+          ...(diagnostic.width !== undefined ? { width: diagnostic.width } : {}),
+          ...(diagnostic.height !== undefined ? { height: diagnostic.height } : {}),
           ...(sourcePath !== undefined ? { sourcePath } : {}),
           ...(diagnostic.textureIndex !== undefined ? { textureIndex: diagnostic.textureIndex } : {}),
           ...(diagnostic.imageIndex !== undefined ? { imageIndex: diagnostic.imageIndex } : {}),
@@ -1024,7 +1041,7 @@ export class HybridEngine implements Engine {
           ...(diagnostic.textureSourceExtension !== undefined
             ? { textureSourceExtension: diagnostic.textureSourceExtension }
             : {}),
-          fallback: 'map ignored',
+          fallback: ambiguousStride ? 'heuristic pixel stride' : 'map ignored',
         },
       });
     }

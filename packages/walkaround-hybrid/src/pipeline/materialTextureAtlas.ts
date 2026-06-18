@@ -28,11 +28,18 @@ export type AtlasMapField =
 export type AtlasColorSpace = 'srgb' | 'linear';
 
 export interface MaterialTextureAtlasDiagnostic {
-  readonly code: 'unreadable-material-texture-map' | 'unsupported-material-texture-texcoord';
+  readonly code:
+    | 'unreadable-material-texture-map'
+    | 'unsupported-material-texture-texcoord'
+    | 'ambiguous-material-texture-stride';
   readonly materialIndex: number;
   readonly field: AtlasMapField;
   readonly colorSpace: AtlasColorSpace;
   readonly texCoord?: number;
+  readonly pixelStride?: number;
+  readonly valueCount?: number;
+  readonly width?: number;
+  readonly height?: number;
   readonly sourcePath?: string;
   readonly textureIndex?: number;
   readonly imageIndex?: number;
@@ -116,6 +123,16 @@ interface RawPixels {
   readonly sourceColorSpace?: 'srgb' | 'linear';
 }
 
+interface ReadHandlePixelsResult {
+  readonly pixels: RawPixels;
+  readonly ambiguousStride?: {
+    readonly pixelStride: number;
+    readonly valueCount: number;
+    readonly width: number;
+    readonly height: number;
+  };
+}
+
 interface TextureHandleHint {
   readonly channels?: 1 | 2 | 3 | 4;
   readonly dataType?: 'uint8' | 'uint16' | 'float32';
@@ -176,7 +193,7 @@ function textureRefSourceMetadata(ref: TextureRef): TextureRefSourceMetadata | u
   return undefined;
 }
 
-function readHandlePixels(handle: unknown): RawPixels | null {
+function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
   const h = handle as {
     width?: number;
     height?: number;
@@ -206,13 +223,9 @@ function readHandlePixels(handle: unknown): RawPixels | null {
 
   const heuristicStride = Math.max(1, Math.round(src.length / (width * height)));
   const stride = hint?.channels ?? heuristicStride;
-  if (hint == null && stride !== 1 && stride !== 4) {
-    console.warn(
-        `[walkaround-hybrid] material texture handle has ambiguous pixel stride ${stride} ` +
-        `(${src.length} values / ${width}x${height} pixels). Attach ` +
-        '__vitrum_hint__ = { channels: N } to decode it deterministically.',
-    );
-  }
+  const ambiguousStride = hint == null && stride !== 1 && stride !== 4
+    ? { pixelStride: stride, valueCount: src.length, width, height }
+    : undefined;
 
   const isHalf = src instanceof Uint16Array;
   const isFloat = src instanceof Float32Array;
@@ -235,7 +248,10 @@ function readHandlePixels(handle: unknown): RawPixels | null {
     hint?.colorSpace === 'srgb' || hint?.colorSpace === 'linear'
       ? hint.colorSpace
       : undefined;
-  return { width, height, data: out, ...(sourceColorSpace ? { sourceColorSpace } : {}) };
+  return {
+    pixels: { width, height, data: out, ...(sourceColorSpace ? { sourceColorSpace } : {}) },
+    ...(ambiguousStride ? { ambiguousStride } : {}),
+  };
 }
 
 function blitAtlasLayer(
@@ -385,8 +401,8 @@ export function packMaterialTextureAtlas(
       fieldLayers[field].add(existing.layer);
       return;
     }
-    const pixels = readHandlePixels(ref.handle);
-    if (pixels == null) {
+    const read = readHandlePixels(ref.handle);
+    if (read == null) {
       const source = textureRefSourceMetadata(ref);
       diagnostics.push({
         code: 'unreadable-material-texture-map',
@@ -409,6 +425,35 @@ export function packMaterialTextureAtlas(
       });
       return;
     }
+    if (read.ambiguousStride != null) {
+      const source = textureRefSourceMetadata(ref);
+      diagnostics.push({
+        code: 'ambiguous-material-texture-stride',
+        materialIndex,
+        field,
+        colorSpace,
+        pixelStride: read.ambiguousStride.pixelStride,
+        valueCount: read.ambiguousStride.valueCount,
+        width: read.ambiguousStride.width,
+        height: read.ambiguousStride.height,
+        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
+        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
+        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
+        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
+        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
+        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
+        ...(source?.textureSourceExtension !== undefined
+          ? { textureSourceExtension: source.textureSourceExtension }
+          : {}),
+        message:
+          `${field} texture handle has ambiguous pixel stride ${read.ambiguousStride.pixelStride} ` +
+          `(${read.ambiguousStride.valueCount} values / ` +
+          `${read.ambiguousStride.width}x${read.ambiguousStride.height} pixels)` +
+          `${source?.path !== undefined ? ` at ${source.path}` : ''}; ` +
+          'attach __vitrum_hint__ = { channels: N } to decode it deterministically.',
+      });
+    }
+    const pixels = read.pixels;
     const layer = ordered.length;
     ordered.push({ handle: ref.handle, pixels, colorSpace });
     perHandle ??= {};

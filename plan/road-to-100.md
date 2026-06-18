@@ -208,6 +208,11 @@
 > by a scene `directional` emitter, DDGI light sync now emits structured
 > `walkaround-hybrid.ddgi-host-sun-overridden` with the drop reason while still
 > keeping exactly one scene-authored DDGI sun.
+> Same-day walkaround atlas-diagnostic follow-up: ambiguous raw material texture
+> payload strides now surface through `MaterialTextureAtlasDiagnostic` and
+> `walkaround-hybrid.ambiguous-material-texture-stride` host warnings with
+> glTF source provenance and the heuristic pixel-stride fallback, instead of
+> writing directly to `console.warn`.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel
