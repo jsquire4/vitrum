@@ -1036,9 +1036,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     });
     expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-receiver',
+      code: 'path-replay-unsupported-normal',
       path: 'emitters.lamp.intensity',
       details: expect.objectContaining({
+        finiteDifferenceReason: 'normal',
         primitiveId: 'panel',
         unsupportedMaterialFields: expect.arrayContaining(['normalMap']),
       }),

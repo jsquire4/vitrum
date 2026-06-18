@@ -809,7 +809,7 @@ function diagnosePathReplayEmitterSlot(
   if (receiverIssue != null) {
     return [{
       severity: 'info',
-      code: 'path-replay-unsupported-receiver',
+      code: receiverIssue.code ?? 'path-replay-unsupported-receiver',
       path,
       message:
         `[vitrum/pt-webgpu] InverseSession path "${path}" differentiates an emitter through ` +
@@ -936,7 +936,7 @@ function meshAreaEmitterMappedEmissionIssue(
 
 function pathReplayEmitterReceiverSceneIssue(
   scene: Scene,
-): { message: string; details: Record<string, string | boolean | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   for (const primitive of scene.primitives) {
     const primitiveIssue = pathReplayPrimitiveIssue(primitive);
     if (primitiveIssue != null) {
@@ -948,6 +948,7 @@ function pathReplayEmitterReceiverSceneIssue(
     const materialIssue = pathReplayEmitterReceiverMaterialIssue(primitive.material);
     if (materialIssue != null) {
       return {
+        ...(materialIssue.code != null ? { code: materialIssue.code } : {}),
         message: `receiver primitive "${primitive.id}" has material outside the scoped direct-light replay domain (${materialIssue.message})`,
         details: { primitiveId: primitive.id, ...materialIssue.details },
       };
