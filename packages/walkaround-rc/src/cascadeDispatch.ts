@@ -533,8 +533,13 @@ export class RCDispatcher {
         // 16-byte header + up to 16 × 64-byte entries = 1040 bytes; a 1040-byte zero
         // placeholder is bound when the scene has no point/spot fixtures.
         { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_lights
-        { binding: 16, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // rc_materialTextureAtlas
-        { binding: 17, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float', viewDimension: '2d' } },       // rc_materialMapMeta
+        // Material atlas/meta are rgba32float textures read with textureLoad()
+        // in probeRayCast.wgsl. WebGPU classifies rgba32float as
+        // unfilterable-float, so strict adapters reject a filterable `float`
+        // layout even though the shader never samples through a filtering
+        // sampler.
+        { binding: 16, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } }, // rc_materialTextureAtlas
+        { binding: 17, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },       // rc_materialMapMeta
         { binding: 18, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_geom_normal
       ],
     });

@@ -152,6 +152,28 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-wh-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter wh/ --require-full-tier",
+    filter: "wh/",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 10,
+    failures: 0,
+    configs: [
+      { label: "wh/default", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/rcEnabled", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/ppgEnabled", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/gtao-off", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/checkerboard", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/skinned-mesh", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/hdri-env", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/rect-area-emitter", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/directional-sun", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      { label: "wh/glass-gi", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-status.json",
     command: "npm run behavioral-gate:dzn -- --filter gltf --require-full-tier",
     filter: "gltf",
@@ -256,4 +278,4 @@ for (const expected of EXPECTED) {
   }
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (11 committed dzn status artifacts)");
+console.log("[behavioral-gate-dzn-status-check] PASS (12 committed dzn status artifacts)");
