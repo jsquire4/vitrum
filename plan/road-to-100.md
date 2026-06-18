@@ -218,6 +218,11 @@
 > structured `walkaround-hybrid.ppg-import-*` warnings through the engine
 > `onWarning` surface, and async PPG training-readback failures now report
 > deduped non-fatal render errors instead of writing directly to `console.warn`.
+> Same-day mesh-area diagnostic follow-up: mesh-area emitters whose `meshId`
+> matches no scene primitive now report
+> `walkaround-hybrid.mesh-area-emitter-missing-mesh` through BVH construction,
+> emitter refresh, and DDGI sync warning sinks with source/fallback details,
+> instead of console-only helper warnings.
 > Same-day pt-webgpu resource-warning follow-up: `GpuResources` buffer-ceiling
 > downgrades (BDPT eye-stack, ReSTIR-PT reservoirs, SPPM photon cells, and SPPM
 > pixel stats) now route through the engine's structured `onWarning` channel

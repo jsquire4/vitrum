@@ -1511,6 +1511,9 @@ export class HybridEngine implements Engine {
       warnApproximateEmissiveMapTexelPdfPrimitiveIds: (primitiveIds) => {
         this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(primitiveIds, 'updatePrimitive');
       },
+      onWarning: (warning) => {
+        this._warn(warning);
+      },
     };
     if (this._cfg.restirBvhModeOverride !== undefined) {
       return { ...ctx, restirBvhModeOverride: this._cfg.restirBvhModeOverride };
@@ -1677,6 +1680,9 @@ export class HybridEngine implements Engine {
       ...(this._bvhBuffers.bvhMode === 'tlas'
         ? { tlasPrimitiveBindings: this._bvhBuffers.primitiveTlasBindings }
         : {}),
+      onWarning: (warning: EngineWarning) => this._warn(warning),
+      warningPhase: 'mutation' as const,
+      warningMethod: 'updateEmitter',
     };
     const emitterSlice = rebuildEmitterBuffersFromCoreScene(this._renderScene, emitterOptions);
 

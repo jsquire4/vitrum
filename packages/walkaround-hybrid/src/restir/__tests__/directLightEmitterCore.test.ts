@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type {
+  EngineWarning,
   InstancedMeshPrimitive,
   MaterialSpec,
   MeshPrimitive,
@@ -545,6 +546,46 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(ddgiPacked.data[7]).toBe(1);
     expect(ddgiPacked.data[11]).toBe(0);
     expect(ddgiPacked.data[19]).toBe(1);
+  });
+
+  it('routes missing mesh-area DDGI emitter references through structured warnings', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const warnings: EngineWarning[] = [];
+    const scene: Scene = {
+      primitives: [supportTriangle('panel')],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'missing-panel-emitter',
+        meshId: 'missing-panel',
+        color: [1, 1, 1],
+        intensity: 2,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const extra = collectMeshAreaEmitterTrisFromCore(scene, {
+      onWarning: (warning) => warnings.push(warning),
+      warningPhase: 'lifecycle',
+      warningMethod: 'syncDdgiFromCoreScene',
+    });
+
+    expect(extra).toEqual([]);
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        code: 'walkaround-hybrid.mesh-area-emitter-missing-mesh',
+        backend: 'walkaround-hybrid',
+        phase: 'lifecycle',
+        method: 'syncDdgiFromCoreScene',
+        details: {
+          emitterId: 'missing-panel-emitter',
+          meshId: 'missing-panel',
+          source: 'ddgi-probe-emitter-tris',
+          fallback: 'emitter skipped',
+        },
+      }),
+    ]);
+    warnSpy.mockRestore();
   });
 
   it('packs mesh-area source triangle metadata into the DDGI emitter-triangle lanes when TLAS bindings are available', () => {

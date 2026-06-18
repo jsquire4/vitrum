@@ -125,6 +125,9 @@ export function syncDdgiFromCoreScene(
     ...collectRectAreaEmitterTrisFromCore(scene),
     ...collectMeshAreaEmitterTrisFromCore(scene, {
       ...(deps.tlasPrimitiveBindings != null ? { tlasPrimitiveBindings: deps.tlasPrimitiveBindings } : {}),
+      ...(deps.onWarning != null
+        ? { onWarning: deps.onWarning, warningPhase: 'lifecycle', warningMethod: 'syncDdgiFromCoreScene' }
+        : {}),
     }),
   ];
   const packed = packEmitterTrisForDDGI(emitterTris);

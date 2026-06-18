@@ -6,7 +6,7 @@
  * the DDGI probe-NEE kernel and the ReSTIR shade pass.
  */
 
-import type { Mat4, MaterialSpec, Scene, Vec3 } from '@vitrum/core';
+import type { EngineWarning, Mat4, MaterialSpec, Scene, Vec3 } from '@vitrum/core';
 import {
   emissiveMapTriangleSubdivisionLevel,
   estimateMaterialSpecEmissiveLeOverTriangle,
@@ -119,6 +119,9 @@ export function packEmitterTrisForDDGI(tris: readonly ExtraEmitterTri[]): {
 
 export interface CollectMeshAreaEmitterTrisOptions {
   readonly tlasPrimitiveBindings?: readonly PrimitiveTlasBinding[];
+  readonly onWarning?: (warning: EngineWarning) => void;
+  readonly warningPhase?: EngineWarning['phase'];
+  readonly warningMethod?: string;
 }
 
 const DISC_AREA_TRIANGLE_COUNT = 32;
@@ -126,6 +129,21 @@ const TAU = Math.PI * 2;
 
 function emitterLe(color: Vec3, intensity: number): [number, number, number] {
   return [color[0] * intensity, color[1] * intensity, color[2] * intensity];
+}
+
+function warnCollectMeshAreaEmitter(
+  options: CollectMeshAreaEmitterTrisOptions,
+  warning: EngineWarning,
+): void {
+  if (options.onWarning) {
+    try {
+      options.onWarning(warning);
+    } catch {
+      // Host warning callbacks must not break emitter packing.
+    }
+    return;
+  }
+  console.warn(warning.message);
 }
 
 function normalizeVec3(v: Vec3): [number, number, number] | null {
@@ -297,10 +315,22 @@ export function collectMeshAreaEmitterTrisFromCore(
     if (e.kind !== 'mesh-area') continue;
     const prim = primById.get(String(e.meshId));
     if (prim == null) {
-      console.warn(
-        `[collectMeshAreaEmitterTrisFromCore] mesh-area emitter id="${String(e.id)}" ` +
-        `references meshId="${String(e.meshId)}" which is not in scene.primitives — skipped.`,
-      );
+      warnCollectMeshAreaEmitter(options, {
+        code: 'walkaround-hybrid.mesh-area-emitter-missing-mesh',
+        backend: 'walkaround-hybrid',
+        phase: options.warningPhase ?? 'lifecycle',
+        method: options.warningMethod ?? 'syncDdgiFromCoreScene',
+        message:
+          `[vitrum/walkaround-hybrid] mesh-area emitter "${String(e.id)}" ` +
+          `references meshId="${String(e.meshId)}" which matches no scene primitive; ` +
+          `the emitter is skipped for DDGI probe lighting.`,
+        details: {
+          emitterId: String(e.id),
+          meshId: String(e.meshId),
+          source: 'ddgi-probe-emitter-tris',
+          fallback: 'emitter skipped',
+        },
+      });
       continue;
     }
     if (prim.kind !== 'mesh' && prim.kind !== 'skinned-mesh') continue;

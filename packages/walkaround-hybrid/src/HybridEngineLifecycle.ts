@@ -371,6 +371,9 @@ export class PipelineInitCoordinator {
         ...(host.restirBvhModeOverride !== undefined
           ? { bvhMode: host.restirBvhModeOverride }
           : {}),
+        onWarning: (warning: EngineWarning) => host.reportWarning(warning),
+        warningPhase: 'setScene',
+        warningMethod: 'setScene',
       };
       bvh = buildReSTIRSceneBVHForCoreScene(host.lastScene, bvhBuildOpts);
       const bvhMs = performance.now() - bvhStart;

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import type { MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
+import { describe, expect, it, vi } from 'vitest';
+import type { EngineWarning, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { buildReSTIRSceneBVHForCoreScene } from '../bvhCore.js';
+import type { ReSTIRBvhMode } from '../bvhTypes.js';
 
 function material(baseColor: readonly [number, number, number]): MaterialSpec {
   return { baseColor, roughness: 1, metallic: 0 };
@@ -80,4 +81,48 @@ describe('ReSTIR bvhCore material resolver', () => {
     // [source[3], source[4], source[5]] = [0, 3, 4].
     expect([...packed.slice(4, 7)]).toEqual([3, 4, 5]);
   });
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'routes missing mesh-area emitter references through structured warnings in %s mode',
+    (bvhMode) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const warnings: EngineWarning[] = [];
+      const sourceScene: Scene = {
+        primitives: [triangle('panel', 0, material([1, 1, 1]))],
+        emitters: [{
+          kind: 'mesh-area',
+          id: 'missing-emitter',
+          meshId: 'missing-panel',
+          color: [1, 1, 1],
+          intensity: 3,
+        }],
+        environment: { kind: 'none' },
+      };
+
+      const buffers = buildReSTIRSceneBVHForCoreScene(sourceScene, {
+        bvhMode,
+        onWarning: (warning) => warnings.push(warning),
+        warningPhase: 'setScene',
+        warningMethod: 'setScene',
+      });
+
+      expect(buffers.emitterCount).toBeGreaterThanOrEqual(1);
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.mesh-area-emitter-missing-mesh',
+          backend: 'walkaround-hybrid',
+          phase: 'setScene',
+          method: 'setScene',
+          details: {
+            emitterId: 'missing-emitter',
+            meshId: 'missing-panel',
+            source: 'bvh-emissive-override',
+            fallback: 'emitter skipped',
+          },
+        }),
+      ]);
+      warnSpy.mockRestore();
+    },
+  );
 });

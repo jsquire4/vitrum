@@ -7,7 +7,7 @@
  * dependency through a mixed module.
  */
 
-import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import {
   collapseIndicesToStride3,
   mergeUv1FromCore,
@@ -51,6 +51,10 @@ interface CoreBvhBuildOptions {
   primaryLightDir?: Vector3Like;
   primaryLightIntensity?: number;
   proxyMeshNames?: Set<string>;
+  onWarning?: (warning: EngineWarning) => void;
+  warningPhase?: EngineWarning['phase'];
+  warningMethod?: string;
+  suppressMeshAreaMissingReferenceWarnings?: boolean;
 }
 
 function sceneHasCoreMeshes(scene: Scene): boolean {
@@ -84,6 +88,43 @@ function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
   if (m.emissive === undefined) return m;
   if (m.emissiveIntensity === 1) return m;
   return { ...m, emissiveIntensity: 1 };
+}
+
+function warnCoreBvh(options: Pick<CoreBvhBuildOptions, 'onWarning'>, warning: EngineWarning): void {
+  if (options.onWarning) {
+    try {
+      options.onWarning(warning);
+    } catch {
+      // Host warning callbacks must not break BVH construction.
+    }
+    return;
+  }
+  console.warn(warning.message);
+}
+
+function warnMissingMeshAreaEmitterReference(
+  options: CoreBvhBuildOptions,
+  emitterId: unknown,
+  meshId: string,
+  source: 'bvh-emissive-override' | 'emitter-list',
+): void {
+  if (options.suppressMeshAreaMissingReferenceWarnings === true) return;
+  warnCoreBvh(options, {
+    code: 'walkaround-hybrid.mesh-area-emitter-missing-mesh',
+    backend: 'walkaround-hybrid',
+    phase: options.warningPhase ?? 'setScene',
+    method: options.warningMethod ?? 'buildReSTIRSceneBVHForCoreScene',
+    message:
+      `[vitrum/walkaround-hybrid] mesh-area emitter "${String(emitterId)}" ` +
+      `references meshId="${meshId}" which matches no scene primitive; ` +
+      `the emitter color/intensity is ignored for walkaround lighting.`,
+    details: {
+      emitterId: String(emitterId),
+      meshId,
+      source,
+      fallback: 'emitter skipped',
+    },
+  });
 }
 
 function materialResolver(scene: Scene): {
@@ -174,6 +215,7 @@ function makeMergedGeometry(
 function buildMeshAreaLeOverrides(
   scene: Scene,
   mergedMaterials: readonly MaterialSpec[],
+  options: CoreBvhBuildOptions = {},
 ): Map<number, [number, number, number]> {
   const meshAreaEmitters = scene.emitters.filter((e) => e.kind === 'mesh-area');
   if (meshAreaEmitters.length === 0) return new Map();
@@ -216,10 +258,7 @@ function buildMeshAreaLeOverrides(
     const meshId = String(e.meshId);
     const slot = primitiveIdToMaterialSlot.get(meshId);
     if (slot === undefined) {
-      console.warn(
-        `[H23] mesh-area emitter "${e.id}" references meshId="${meshId}" which matches no scene primitive. ` +
-        `Emitter color/intensity will be ignored. Check that the emitter's meshId matches a primitive id.`,
-      );
+      warnMissingMeshAreaEmitterReference(options, e.id, meshId, 'bvh-emissive-override');
       continue;
     }
     const Le: [number, number, number] = [
@@ -309,6 +348,10 @@ function coreEmitterBuffers(
     primaryLightIntensity?: number;
     packSourceTriIndex?: boolean;
     tlasPrimitiveBindings?: readonly PrimitiveTlasBinding[];
+    onWarning?: (warning: EngineWarning) => void;
+    warningPhase?: EngineWarning['phase'];
+    warningMethod?: string;
+    suppressMeshAreaMissingReferenceWarnings?: boolean;
   } = {},
 ): RebuiltEmitterBuffers {
   // This stream is only for ReSTIR light selection. Expanding instanced meshes
@@ -320,7 +363,10 @@ function coreEmitterBuffers(
   // references a primitive, override that material slot's emissive Le with
   // emitter.color * emitter.intensity (overrides material emissive; does NOT
   // double-apply — the merged material Le is replaced, not summed).
-  const meshAreaOverrides = buildMeshAreaLeOverrides(scene, merged.materials);
+  const meshAreaOverrides = buildMeshAreaLeOverrides(scene, merged.materials, {
+    ...options,
+    warningMethod: options.warningMethod ?? 'rebuildEmitterBuffersFromCoreScene',
+  });
   const productionMaterials = merged.materials.map((m, slot) => {
     const leOverride = meshAreaOverrides.get(slot);
     if (leOverride == null) return toProductionEmissiveRadiance(m);
@@ -527,14 +573,18 @@ function buildReSTIRSceneBVHFromCoreMerged(
   const roughMetalBuf = packBVHRoughMetalFromCore(merged.triMaterialId, merged.materials, triCount);
   // H23 — apply mesh-area emitter Le overrides (same as TLAS path) so the emissive
   // glow buffer reflects the emitter Le for mesh-area-referenced primitives.
-  const emissiveMergedMats = buildMeshAreaLeOverrides(scene, merged.materials);
+  const emissiveMergedMats = buildMeshAreaLeOverrides(scene, merged.materials, options);
   const mergedMatsForEmissive = merged.materials.map((m, slot) => {
     const lo = emissiveMergedMats.get(slot);
     if (lo == null) return toProductionEmissiveRadiance(m);
     return { ...m, emissive: [lo[0], lo[1], lo[2]] as const, emissiveIntensity: 1 };
   });
   const emissiveLeBuf = packBVHEmissiveLeFromCore(merged.triMaterialId, mergedMatsForEmissive, triCount);
-  const emitterSlice = coreEmitterBuffers(scene, { ...options, packSourceTriIndex: true });
+  const emitterSlice = coreEmitterBuffers(scene, {
+    ...options,
+    packSourceTriIndex: true,
+    suppressMeshAreaMissingReferenceWarnings: true,
+  });
 
   return {
     bvhMode: 'merged',
@@ -608,6 +658,9 @@ export function rebuildEmitterBuffersFromCoreScene(
     primaryLightIntensity?: number;
     packSourceTriIndex?: boolean;
     tlasPrimitiveBindings?: readonly PrimitiveTlasBinding[];
+    onWarning?: (warning: EngineWarning) => void;
+    warningPhase?: EngineWarning['phase'];
+    warningMethod?: string;
   } = {},
 ): RebuiltEmitterBuffers {
   return coreEmitterBuffers(scene, options);

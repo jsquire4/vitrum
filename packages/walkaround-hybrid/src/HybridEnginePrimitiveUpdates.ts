@@ -34,6 +34,7 @@
  */
 
 import {
+  type EngineWarning,
   solveSkin,
   type Mat4,
   type MaterialSpec,
@@ -399,6 +400,8 @@ export interface PrimitiveUpdateContext {
   readonly warnApproximateAlphaBlendPrimitiveIds?: (primitiveIds: readonly string[]) => void;
   /** Emits backend-honesty warnings for emissive-map texel-PDF approximations. */
   readonly warnApproximateEmissiveMapTexelPdfPrimitiveIds?: (primitiveIds: readonly string[]) => void;
+  /** Structured warning sink for BVH/emitter rebuild compatibility issues. */
+  readonly onWarning?: (warning: EngineWarning) => void;
   /** Optional pack-mode override from engine extensions. */
   readonly restirBvhModeOverride?: ReSTIRBvhMode;
 }
@@ -1008,6 +1011,9 @@ export function topologyRebuild(
     ...(ctx.restirBvhModeOverride !== undefined
       ? { bvhMode: ctx.restirBvhModeOverride }
       : {}),
+    ...(ctx.onWarning !== undefined
+      ? { onWarning: ctx.onWarning, warningPhase: 'mutation' as const, warningMethod: 'updatePrimitive' }
+      : {}),
   };
   let newBuffers: SceneBVHBuffers;
   if (
@@ -1488,6 +1494,9 @@ export function materialPatch(
       packSourceTriIndex: true,
       ...(bvh.bvhMode === 'tlas'
         ? { tlasPrimitiveBindings: bvh.primitiveTlasBindings }
+        : {}),
+      ...(ctx.onWarning !== undefined
+        ? { onWarning: ctx.onWarning, warningPhase: 'mutation' as const, warningMethod: 'updatePrimitive' }
         : {}),
     };
     const emitterSlice = rebuildEmitterBuffersFromCoreScene(updatedRenderScene, emitterOptions);
