@@ -39,6 +39,12 @@ export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'lightMap',
 ]);
 
+const UNSUPPORTED_DISPLACEMENT_FIELDS: ReadonlySet<string> = new Set([
+  'displacementMap',
+  'displacementScale',
+  'displacementBias',
+]);
+
 const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
   'transform',
   'positions',
@@ -85,6 +91,14 @@ function canFastPathMaterialPatch(
     if (TEXTURE_MAP_FIELDS.has(field)) return false;
   }
   return true;
+}
+
+function unsupportedDisplacementPatchFields(patch: Partial<ScenePrimitive>): readonly string[] {
+  if (patch.material == null) return [];
+  const material = patch.material as unknown as Record<string, unknown>;
+  return Object.keys(material)
+    .filter((field) => UNSUPPORTED_DISPLACEMENT_FIELDS.has(field))
+    .sort();
 }
 
 function canRefreshGeometryTextures(patch: Partial<ScenePrimitive>): boolean {
@@ -244,6 +258,24 @@ export function tryFastPathMaterialMutation(
     nextGeoPack = { ...geoPack, materials: nextMaterials };
   }
 
+  const unsupportedDisplacementFields = unsupportedDisplacementPatchFields(patch);
+  const structuredWarnings: EngineWarning[] = unsupportedDisplacementFields.length > 0
+    ? [{
+        code: 'pt-webgl2.unsupported-displacement-material',
+        backend: 'pt-webgl2',
+        phase: 'mutation',
+        method: 'updatePrimitive',
+        message:
+          `[vitrum/pt-webgl2] updatePrimitive("${primitiveId}"): displacement material fields are supplied ` +
+          `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
+        details: {
+          fields: unsupportedDisplacementFields,
+          primitiveIds: [primitiveId],
+          primitiveFields: [{ primitiveId, fields: unsupportedDisplacementFields }],
+        },
+      }]
+    : [];
+
   const meshLightsData = hasMeshAreaLightForPrimitive(nextScene, primitiveId)
     || (current.meshLightCount ?? 0) > 0
     ? packMeshAreaLights(nextScene, nextGeoPack)
@@ -265,6 +297,7 @@ export function tryFastPathMaterialMutation(
     }),
     geoPack: nextGeoPack,
     deleteOldTextures: [current.materials, ...(meshLightsData != null ? [current.meshLights] : [])],
+    ...(structuredWarnings.length > 0 ? { structuredWarnings } : {}),
   };
 }
 

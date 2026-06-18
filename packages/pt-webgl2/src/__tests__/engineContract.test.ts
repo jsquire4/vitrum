@@ -338,6 +338,52 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('warns when scalar displacement fields are supplied through the material mutation fast path', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+
+      e.updatePrimitive?.('tri', {
+        material: {
+          roughness: 0.42,
+          displacementScale: 0.2,
+          displacementBias: -0.1,
+        },
+      } as never);
+
+      const displacementWarnings = structured.filter((w) =>
+        w.code === 'pt-webgl2.unsupported-displacement-material'
+      );
+      expect(displacementWarnings).toHaveLength(1);
+      expect(displacementWarnings[0]).toMatchObject({
+        backend: 'pt-webgl2',
+        phase: 'mutation',
+        method: 'updatePrimitive',
+        details: {
+          fields: ['displacementBias', 'displacementScale'],
+          primitiveIds: ['tri'],
+          primitiveFields: [{
+            primitiveId: 'tri',
+            fields: ['displacementBias', 'displacementScale'],
+          }],
+        },
+      });
+      expect(warn.mock.calls.flat().map(String).some((m) =>
+        m.includes('displacementBias') && m.includes('displacementScale')
+      )).toBe(true);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild'
+      )).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('accepts scalar and mapped anisotropy without unsupported-field warnings (CAP-01)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
