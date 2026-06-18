@@ -123,7 +123,7 @@ describe('H12: lite-tier capabilities truth', () => {
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     expect(engine.capabilities.incrementalPatchSupport).toEqual({
       transform: false,
-      positions: true,
+      positions: false,
       material: true,
       emitter: true,
       topology: false,
@@ -135,6 +135,7 @@ describe('H12: lite-tier capabilities truth', () => {
     const sd = engine.capabilities.supportDetails!;
     expect(sd.primitives['instanced-mesh']).toBe('native');
     expect(sd.mutations.transform).toBe('fallback-rebuild');
+    expect(sd.mutations.positions).toBe('fallback-rebuild');
     expect(sd.mutations.material).toBe('native');
     expect(sd.mutations.topology).toBe('fallback-rebuild');
     expect(sd.materials.baseColor).toBe('native');

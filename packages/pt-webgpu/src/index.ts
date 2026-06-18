@@ -713,7 +713,7 @@ class PTEngineWebGPU implements Engine {
       incrementalPatchSupport: this.#traceTier === 'lite'
         ? {
             transform: false,
-            positions: true,
+            positions: false,
             material: true,
             emitter: true,
             topology: false,
@@ -788,9 +788,9 @@ class PTEngineWebGPU implements Engine {
       // and group-2 (TLAS, BDPT). Mesh-area emitters, analytic primitives, and
       // analytic shapes remain unsupported (no NEE path for those in the lite kernel).
       // Static instanced meshes are native because the lite packer bakes each
-      // instance into its single root-0 BLAS. Transform/topology patches are
-      // accepted through a fallback merged-BLAS repack rather than the full-tier
-      // TLAS-native fast paths.
+      // instance into its single root-0 BLAS. Geometry, transform, and topology
+      // patches are accepted through a fallback merged-BLAS repack rather than
+      // the full-tier BLAS/TLAS-native fast paths.
       // B12 — point/spot/rect/disc-area upgraded to 'native' (texture-packed NEE).
       // B12 — hdri upgraded to 'native' (liteEnvTex + liteEnvCdfTex importance sampling).
       supportDetails:
@@ -832,6 +832,7 @@ class PTEngineWebGPU implements Engine {
               mutations: {
                 ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.mutations,
                 transform: 'fallback-rebuild',
+                positions: 'fallback-rebuild',
                 material: 'native',
                 topology: 'fallback-rebuild',
               },

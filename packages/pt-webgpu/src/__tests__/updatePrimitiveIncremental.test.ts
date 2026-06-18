@@ -296,6 +296,67 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
+  it('lite tier accepts same-count geometry patches via fallback merged-BLAS repack', async () => {
+    installWebGpuConstStubs();
+    const { device, createBuffer } = makeLiteStubDevice();
+    const structured: EngineWarning[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const engine = await createPTEngine_WebGPU({
+        device,
+        traceTier: 'lite',
+        onWarning: (w) => structured.push(w),
+      });
+      expect(engine.capabilities.incrementalPatchSupport?.positions).toBe(false);
+      expect(engine.capabilities.supportDetails?.mutations.positions).toBe('fallback-rebuild');
+      engine.setScene(makeScene());
+      const buffersBefore = createBuffer.mock.calls.length;
+
+      engine.updatePrimitive?.('mesh-a', {
+        positions: new Float32Array([0.1, 0, 0, 1.1, 0, 0, 0.1, 1, 0]),
+      });
+
+      expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgpu.lite-update-primitive-fallback-rebuild' &&
+        w.details?.id === 'mesh-a' &&
+        w.details?.fallbackReason === 'lite-merged-blas-geometry-rebuild',
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('lite tier accepts mesh topology patches via fallback merged-BLAS repack', async () => {
+    installWebGpuConstStubs();
+    const { device, createBuffer } = makeLiteStubDevice();
+    const structured: EngineWarning[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const engine = await createPTEngine_WebGPU({
+        device,
+        traceTier: 'lite',
+        onWarning: (w) => structured.push(w),
+      });
+      engine.setScene(makeScene());
+      const buffersBefore = createBuffer.mock.calls.length;
+
+      engine.updatePrimitive?.('mesh-b', {
+        positions: new Float32Array([0, 0, 2, 1, 0, 2, 0, 1, 2, 1, 1, 2]),
+        indices: new Uint32Array([0, 1, 2, 1, 3, 2]),
+      });
+
+      expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgpu.lite-update-primitive-fallback-rebuild' &&
+        w.details?.id === 'mesh-b' &&
+        w.details?.fallbackReason === 'lite-merged-blas-mesh-topology-rebuild',
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('splices a vertex-count change, reallocating only the 13 geometry buffers', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();

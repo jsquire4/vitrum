@@ -295,18 +295,35 @@ export class SceneMutationRouter {
     // as a geometry-refit rather than an unrecognised bones-only patch.
     const fastPathPatch = resolvedPatch;
 
-    const liteUnsupportedTransformPatch =
+    const liteFallbackGeometryPatch =
+      host.isLiteTier?.() === true &&
+      currentPrimitive != null &&
+      canFastPathGeometryPatch(currentPrimitive, fastPathPatch);
+    const liteFallbackMeshTopologyPatch =
+      host.isLiteTier?.() === true &&
+      currentPrimitive != null &&
+      canFastPathTopologyResizePatch(currentPrimitive, fastPathPatch);
+    const liteFallbackTransformPatch =
       host.isLiteTier?.() === true &&
       currentPrimitive != null &&
       canFastPathTransformPatch(currentPrimitive, fastPathPatch);
-    const liteUnsupportedInstancedTopologyPatch =
+    const liteFallbackInstancedTopologyPatch =
       host.isLiteTier?.() === true &&
       currentPrimitive != null &&
       canFastPathInstancedTopologyPatch(currentPrimitive, fastPathPatch);
-    if (liteUnsupportedTransformPatch || liteUnsupportedInstancedTopologyPatch) {
-      const fallbackReason = liteUnsupportedInstancedTopologyPatch
+    if (
+      liteFallbackGeometryPatch ||
+      liteFallbackMeshTopologyPatch ||
+      liteFallbackTransformPatch ||
+      liteFallbackInstancedTopologyPatch
+    ) {
+      const fallbackReason = liteFallbackInstancedTopologyPatch
         ? 'lite-merged-blas-instanced-topology-rebuild'
-        : 'lite-merged-blas-transform-rebuild';
+        : liteFallbackMeshTopologyPatch
+          ? 'lite-merged-blas-mesh-topology-rebuild'
+          : liteFallbackGeometryPatch
+            ? 'lite-merged-blas-geometry-rebuild'
+            : 'lite-merged-blas-transform-rebuild';
       warnHost(host, {
         code: 'pt-webgpu.lite-update-primitive-fallback-rebuild',
         backend: 'pt-webgpu',
