@@ -417,8 +417,11 @@ replacement for V28-B recaptures.
   the primitive-less full-tier BVH/TLAS placeholder buffers. The dzn mutation
   status artifact is committed at
   `tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json` and checked by
-  `npm run behavioral-gate:dzn-status-check`. Broader cached-bind-group,
-  denoiser-history, and walkaround GI propagation lanes remain.
+  `npm run behavioral-gate:dzn-status-check`. The pt-webgpu cached-bind-group
+  invalidation seam for reallocating mutation fast paths is now source/test
+  pinned in `packages/pt-webgpu/src/__tests__/mutationDesyncs.test.ts`
+  (topology resize and instanced-count changes invalidate before commit/reset).
+  Broader denoiser-history and walkaround GI propagation lanes remain.
 
 ## How To Use This Plan
 

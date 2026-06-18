@@ -6,11 +6,12 @@
  * 2c. Emissive-field material patch triggers emitter re-pack.
  * 2d. directionalAngularDiameter is updated by applyEmitterCountMutation.
  * 2e. clearReservoirBuffers is callable and clears allocated buffers.
+ * 2f. topology/resource fast paths invalidate cached bind groups before reset.
  */
 
 import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
-import { asTextureRef } from '@vitrum/core';
+import { asMat4, asTextureRef } from '@vitrum/core';
 import { canFastPathMaterialPatch } from '../scene/incrementalPatch.js';
 import { hasMeshAreaEmitterForPrimitive } from '../scene/emitterPacking.js';
 import {
@@ -684,5 +685,81 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
     expect(host.setSceneState).toHaveBeenCalledTimes(1);
     expect(host.setScene).not.toHaveBeenCalled();
     expect(host.reset).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SceneMutationRouter — cached bind-group invalidation for reallocating mutations', () => {
+  it('vertex/index-count topology patches invalidate cached bind groups before committing', () => {
+    installGpuConstStubs();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'resizable',
+          positions: new Float32Array([0, 0, 0, 0.35, 0, 0, 0, 0.35, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 0, 0], roughness: 0.5, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { host } = makeHostWithEmissiveScene(scene);
+    const router = new SceneMutationRouter(host);
+
+    router.updatePrimitive('resizable', {
+      positions: new Float32Array([
+        -0.5, -0.5, 0,
+         0.5, -0.5, 0,
+         0.5,  0.5, 0,
+        -0.5,  0.5, 0,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    });
+
+    expect(host.invalidateBindGroups).toHaveBeenCalledTimes(1);
+    expect(host.setSceneState).toHaveBeenCalledTimes(1);
+    expect(host.reset).toHaveBeenCalledTimes(1);
+    expect(host.setScene).not.toHaveBeenCalled();
+  });
+
+  it('instanced-mesh count changes invalidate cached bind groups before committing', () => {
+    installGpuConstStubs();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'instanced-mesh',
+          id: 'instanced',
+          positions: new Float32Array([0, 0, 0, 0.35, 0, 0, 0, 0.35, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 0, 0], roughness: 0.5, metallic: 0 },
+          instances: [
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -0.5, 0, 0, 1])),
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,  0.5, 0, 0, 1])),
+          ],
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { host } = makeHostWithEmissiveScene(scene);
+    const router = new SceneMutationRouter(host);
+
+    router.updatePrimitive('instanced', {
+      instances: [
+        asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -0.5, 0, 0, 1])),
+      ],
+    });
+
+    expect(host.invalidateBindGroups).toHaveBeenCalledTimes(1);
+    expect(host.setSceneState).toHaveBeenCalledTimes(1);
+    expect(host.reset).toHaveBeenCalledTimes(1);
+    expect(host.setScene).not.toHaveBeenCalled();
   });
 });

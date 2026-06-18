@@ -1285,9 +1285,15 @@ exposed and fixed a real primitive-less full-tier validation bug: empty
 `bvhNodes`/`tlasNodes` uploads used 16-byte generic placeholders while the WGSL
 `array<BVHNode>` bindings require a 32-byte minimum stride.
 
-Remaining proof is broader adapter-backed end-to-end promotion: cached bind
-groups, denoiser history, and walkaround GI propagation observed together under
-the WSL GPU/browser harness.
+2026-06-18 source-test follow-up: `pt-webgpu/src/__tests__/mutationDesyncs.test.ts`
+now also pins cached bind-group invalidation for reallocating mutation fast
+paths before commit/reset: vertex/index-count topology patches and
+instanced-mesh count changes both call `invalidateBindGroups()`, update scene
+state, reset accumulation, and avoid falling through to `setScene()`. Remaining
+proof is broader adapter-backed end-to-end promotion for denoiser history and
+walkaround GI propagation under the WSL GPU/browser harness; cached bind-group
+coverage here is specifically the pt-webgpu reallocating-mutation seam, not a
+blanket claim about every future cache.
 
 #### 5D — Documentation sync (part of 100% — prevents false claims)
 
