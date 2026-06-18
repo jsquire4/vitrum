@@ -243,7 +243,9 @@ function isSatisfiedRuntimeCompatibilityIssue(
 ): boolean {
   if (issue.support === 'requires-hook') {
     if (issue.name === 'KHR_draco_mesh_compression') return typeof options.dracoDecode === 'function';
-    if (issue.name === 'EXT_meshopt_compression') return typeof options.meshoptDecode === 'function';
+    if (issue.name === 'EXT_meshopt_compression' || issue.name === 'KHR_meshopt_compression') {
+      return typeof options.meshoptDecode === 'function';
+    }
     if (issue.name === 'KHR_texture_basisu' || issue.name === 'EXT_texture_webp' || issue.name === 'MSFT_texture_dds') {
       return (options.textureSourceExtensions ?? []).includes(issue.name) && typeof options.decodeImage === 'function';
     }

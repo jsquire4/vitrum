@@ -27,6 +27,13 @@ const mocks = vi.hoisted(() => {
     path: 'materials[0].doubleSided',
     message: 'double-sided shading is approximate on this profile.',
   });
+  const khrMeshoptHookIssue = Object.freeze({
+    category: 'extension',
+    name: 'KHR_meshopt_compression',
+    support: 'requires-hook',
+    path: 'bufferViews[0].extensions.KHR_meshopt_compression',
+    message: 'KHR_meshopt_compression requires a host meshopt decoder.',
+  });
   const state = {
     selectedBackend: 'pt-webgpu' as 'pt-webgpu' | 'pt-webgl2' | 'walkaround-hybrid',
     liteIssues: [unsupportedLiteIssue] as readonly object[],
@@ -88,6 +95,7 @@ const mocks = vi.hoisted(() => {
     state,
     unsupportedLiteIssue,
     approximateLiteIssue,
+    khrMeshoptHookIssue,
     makeAsset,
     createEngine: vi.fn(async () => ({
       backendId: 'pt-webgpu',
@@ -279,6 +287,20 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
 
     await expect(
       loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats KHR_meshopt_compression as satisfied by the engine meshoptDecode hook', async () => {
+    mocks.state.liteIssues = [mocks.khrMeshoptHookIssue];
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        compatibilityMode: 'reject-degraded',
+        meshoptDecode: vi.fn(),
+      }),
     ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
 
     expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
