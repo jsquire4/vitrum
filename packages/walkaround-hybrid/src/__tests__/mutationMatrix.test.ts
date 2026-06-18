@@ -1184,6 +1184,23 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updateLighting after dispose is a direct-backend no-op', () => {
+    const { engine, pipeline, ddgi, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+
+    engine.dispose();
+    engine.updateLighting({
+      skyTint: [0.4, 0.5, 0.6],
+      primaryLightIntensity: 4,
+      typoIntensity: 8,
+    } as never);
+
+    expect(warnings).toHaveLength(0);
+    expect(ddgi.setSkyParams).not.toHaveBeenCalled();
+    expect(ddgi.setSunIntensityMultiplier).not.toHaveBeenCalled();
+    expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
+    expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
+  });
+
   it('setSize resizes frame resources only; zero/same-size calls are no-ops and DDGI is preserved', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

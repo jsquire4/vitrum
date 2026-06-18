@@ -1781,6 +1781,7 @@ export class HybridEngine implements Engine {
    * @param opts - Partial lighting overrides. Omitted fields are unchanged.
    */
   updateLighting(opts: Partial<LightingOptions>): void {
+    if (this._state === 'disposed') return;
     // `Engine.updateLighting` is contractually opaque (Record<string, unknown>),
     // so hosts can pass any key without a type error at the core-contract call
     // site. Warn (don't throw) on keys outside LightingOptions so silent drops
