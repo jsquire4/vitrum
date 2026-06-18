@@ -1,13 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import type { FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
+import { describe, expect, it, vi } from 'vitest';
+import type { EngineWarning, FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import { createMockGl } from './mockGl.js';
 
 // A5 — BDPT host-driver loop. Verifies the per-column light-subpath passes are
 // actually ISSUED (the inert-warn failure mode: bdpt:true but no passes). We record
 // the ORDERED sequence of uBdptVertexCol / uBdptLightSubpathPass sets + draw calls
-// so the loop structure (3 subpath columns, then the eye pass) is observable without
-// a GPU. mockGl's name-keyed recorder only keeps last-write, so we use an ordered log.
+// so the loop structure is observable without a GPU. mockGl's name-keyed recorder
+// only keeps last-write, so we use an ordered log.
 
 const GREY: MaterialSpec = { baseColor: [0.6, 0.6, 0.6], roughness: 1, metallic: 0 };
 function mesh(id: string, y: number): MeshPrimitive {
@@ -81,17 +81,18 @@ function orderedGl(log: { op: string; v?: unknown }[]): WebGLRenderingContext {
 }
 
 describe('A5 BDPT host driver', () => {
-  it('issues the light-subpath passes (subpath flag=1 for each of 3 columns, then eye flag=0)', async () => {
+  it('defaults bdpt:true to endpoint-only light-subpath mode, then eye flag=0', async () => {
     const log: { op: string; v?: unknown }[] = [];
     const gl = orderedGl(log) as unknown as WebGL2RenderingContext;
     const engine = await createPTEngine_WebGL2({ device: gl, bdpt: true });
     engine.setScene(sceneWithAnalyticLight());
     engine.renderFrame(frame());
 
-    // The driver must set uBdptLightSubpathPass=1 (the subpath build) for each column
-    // and uBdptVertexCol = 0,1,2 in order, then uBdptLightSubpathPass=0 for the eye.
+    // Safe default matches pt-webgpu: endpoint-only BDPT (one stored light vertex),
+    // then uBdptLightSubpathPass=0 for the eye. Multi-vertex WebGL2 BDPT stays an
+    // explicit research-mode opt-in below.
     const cols = log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v);
-    expect(cols).toEqual([0, 1, 2]); // BDPT_MAX_LIGHT_BOUNCES columns, in order
+    expect(cols).toEqual([0]);
     expect(log.some((e) => e.op === 'resolution' && Array.isArray(e.v) && e.v[0] === 3 && e.v[1] === 5)).toBe(true);
 
     const passFlags = log.filter((e) => e.op === 'uBdptLightSubpathPass').map((e) => e.v);
@@ -103,6 +104,85 @@ describe('A5 BDPT host driver', () => {
     const firstEyeFlagIdx = log.findIndex((e) => e.op === 'uBdptLightSubpathPass' && e.v === 0);
     const lastColIdx = log.map((e) => e.op).lastIndexOf('uBdptVertexCol');
     expect(firstEyeFlagIdx).toBeGreaterThan(lastColIdx); // eye flag set AFTER all columns
+  });
+
+  it('warns and runs the explicit multi-vertex research path when requested', async () => {
+    const log: { op: string; v?: unknown }[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const gl = orderedGl(log) as unknown as WebGL2RenderingContext;
+      const engine = await createPTEngine_WebGL2({
+        device: gl,
+        bdpt: true,
+        bdptOptions: { maxLightBounces: 3 },
+        onWarning: (w) => structured.push(w),
+      });
+      engine.setScene(sceneWithAnalyticLight());
+      engine.renderFrame(frame());
+
+      const cols = log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v);
+      expect(cols).toEqual([0, 1, 2]);
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path'))).toBe(true);
+      expect(structured).toContainEqual(expect.objectContaining({
+        code: 'pt-webgl2.bdpt-multivertex-research-mode',
+        details: { requested: 3, resolved: 3, safeDefault: 1 },
+      }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('validates and warns for WebGL2 BDPT maxLightBounces coercions', async () => {
+    await expect(
+      createPTEngine_WebGL2({
+        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        bdpt: true,
+        bdptOptions: { maxLightBounces: 0 },
+      }),
+    ).rejects.toThrow('bdptOptions.maxLightBounces must be a finite number >= 1');
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const engine = await createPTEngine_WebGL2({
+        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        bdpt: true,
+        bdptOptions: { maxLightBounces: 8.75 },
+        onWarning: (w) => structured.push(w),
+      });
+      expect(warn.mock.calls.some((c) => String(c[0]).includes('clamping to supported WebGL2 BDPT'))).toBe(true);
+      expect(structured).toContainEqual(expect.objectContaining({
+        code: 'pt-webgl2.bdpt-max-light-bounces-clamped',
+        details: { requested: 8.75, clampedTo: 3 },
+      }));
+      expect(structured).toContainEqual(expect.objectContaining({
+        code: 'pt-webgl2.bdpt-multivertex-research-mode',
+        details: { requested: 8.75, resolved: 3, safeDefault: 1 },
+      }));
+      engine.dispose();
+    } finally {
+      warn.mockRestore();
+    }
+
+    const roundWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const roundStructured: EngineWarning[] = [];
+    try {
+      const engine = await createPTEngine_WebGL2({
+        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        bdpt: true,
+        bdptOptions: { maxLightBounces: 2.75 },
+        onWarning: (w) => roundStructured.push(w),
+      });
+      expect(roundWarn.mock.calls.some((c) => String(c[0]).includes('rounding down to integer 2'))).toBe(true);
+      expect(roundStructured).toContainEqual(expect.objectContaining({
+        code: 'pt-webgl2.bdpt-max-light-bounces-rounded',
+        details: { requested: 2.75, roundedTo: 2 },
+      }));
+      engine.dispose();
+    } finally {
+      roundWarn.mockRestore();
+    }
   });
 
   it('does NOT issue any light-subpath pass when bdpt:false (unidirectional invariant)', async () => {

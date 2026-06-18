@@ -25,6 +25,16 @@ export interface PTEngineWebGL2Options extends EngineOptions {
   readonly spectral?: boolean;
   /** Bidirectional path tracing (S3). Default false. */
   readonly bdpt?: boolean;
+  /** BDPT tuning — read only when {@link bdpt} is `true`. */
+  readonly bdptOptions?: {
+    /**
+     * Max stored light-subpath vertices. Default 1 keeps `bdpt:true` endpoint-only
+     * and aligned with the safe default used by pt-webgpu. Values >1 opt into the
+     * current pt-webgl2 multi-vertex research path and emit a construction warning
+     * until radiometric promotion evidence closes.
+     */
+    readonly maxLightBounces?: number;
+  };
   /**
    * Optional texture-fetch LOD by bounce depth. `0` (default) disables the optimization
    * and samples material textures at every bounce, preserving the historical highest-

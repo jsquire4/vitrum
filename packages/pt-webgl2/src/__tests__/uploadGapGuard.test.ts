@@ -246,9 +246,20 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
     expect(rec.get('materialLodDepth')).toBe(2);
   });
 
-  it('A5: BDPT host-driver uniforms are uploaded when bdpt:true', async () => {
+  it('A5: BDPT host-driver uniforms default to endpoint-only when bdpt:true', async () => {
     const rec = await renderAndRecord(sceneWithMeshAreaLight(), { bdpt: true });
-    // The eye pass sets the light-subpath pass flag to 0 and uploads the bounce count.
+    // The eye pass sets the light-subpath pass flag to 0 and uploads the safe
+    // endpoint-only bounce count.
+    expect(rec.has('uBdptLightSubpathPass')).toBe(true);
+    expect(rec.has('uBdptMaxLightBounces')).toBe(true);
+    expect(rec.get('uBdptMaxLightBounces')).toBe(1);
+  });
+
+  it('A5: BDPT host-driver uploads explicit multi-vertex research depth', async () => {
+    const rec = await renderAndRecord(sceneWithMeshAreaLight(), {
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 3 },
+    });
     expect(rec.has('uBdptLightSubpathPass')).toBe(true);
     expect(rec.has('uBdptMaxLightBounces')).toBe(true);
     expect(rec.get('uBdptMaxLightBounces')).toBe(3);

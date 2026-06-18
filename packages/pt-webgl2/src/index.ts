@@ -63,6 +63,7 @@ function primitivePatchFields(patch: Partial<ScenePrimitive>): string[] {
 // `BDPT_MAX_LIGHT_BOUNCES=3` layout the GLSL light-subpath/connection kernels assume
 // (bdpt_light_subpath.glsl.js header; the connection sweep caps the merged path at
 // BDPT_MAX_MERGED=19 with n = c + e + 3, BDPT_MAX_EYE_DEPTH=8).
+const BDPT_SAFE_DEFAULT_LIGHT_BOUNCES = 1;
 const BDPT_MAX_LIGHT_BOUNCES = 3;
 
 // H2 follow-on — scene-global spectral coefficients (the GLSL declares u_jakobCoeffs +
@@ -180,6 +181,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #causticStrategy: EngineCapabilities['causticStrategy'];
   readonly #spectralEnabled: boolean;
   readonly #bdpt: boolean;
+  readonly #bdptMaxLightBounces: number;
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
   readonly #materialLodDepth: number;
@@ -233,6 +235,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     this.#spectralEnabled = opts.spectral ?? false;
     this.#bdpt = opts.bdpt ?? false;
+    this.#bdptMaxLightBounces = resolveBdptMaxLightBounces(opts.bdptOptions?.maxLightBounces);
     // A5 (2026-06-10): the BDPT light-subpath passes are now host-driven (GlResources
     // .#buildBdptLightSubpath builds the ping-pong light-path texture per sample and
     // binds it as uBdptLightPathTex; the eye pass connects to it). The old inert-warn
@@ -866,7 +869,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       backgroundAlpha: this.#backgroundAlpha,
       // A5 — BDPT host-driver inputs (no-op when bdpt:false).
       bdpt: this.#bdpt,
-      bdptMaxLightBounces: BDPT_MAX_LIGHT_BOUNCES,
+      bdptMaxLightBounces: this.#bdptMaxLightBounces,
       // H2 follow-on — global spectral coefficients. Cauchy IOR only when spectral is
       // on (else the no-dispersion fast path → byte-identical); Jakob stays flat.
       iorCauchy: this.#spectralEnabled ? SPECTRAL_IOR_CAUCHY : NO_IOR_CAUCHY,
@@ -962,6 +965,65 @@ export const createPTEngine_WebGL2: EngineFactory<
       `createPTEngine_WebGL2: materialLodDepth must be a finite number >= 0 (got ${opts.materialLodDepth})`,
     );
   }
+  const bdptMaxLightBounces = opts.bdptOptions?.maxLightBounces;
+  if (
+    bdptMaxLightBounces !== undefined &&
+    (!Number.isFinite(bdptMaxLightBounces) || bdptMaxLightBounces < 1)
+  ) {
+    throw new RangeError(
+      `createPTEngine_WebGL2: bdptOptions.maxLightBounces must be a finite number >= 1 (got ${bdptMaxLightBounces})`,
+    );
+  }
+  if (bdptMaxLightBounces !== undefined && bdptMaxLightBounces > BDPT_MAX_LIGHT_BOUNCES) {
+    emitWebgl2Warning(opts, {
+      code: 'pt-webgl2.bdpt-max-light-bounces-clamped',
+      backend: 'pt-webgl2',
+      phase: 'construction',
+      method: 'createPTEngine_WebGL2',
+      message:
+        `[vitrum/pt-webgl2] bdptOptions.maxLightBounces=${bdptMaxLightBounces} requested, ` +
+        `clamping to supported WebGL2 BDPT light-subpath limit ${BDPT_MAX_LIGHT_BOUNCES}.`,
+      details: { requested: bdptMaxLightBounces, clampedTo: BDPT_MAX_LIGHT_BOUNCES },
+    });
+  }
+  if (
+    bdptMaxLightBounces !== undefined &&
+    bdptMaxLightBounces <= BDPT_MAX_LIGHT_BOUNCES &&
+    !Number.isInteger(bdptMaxLightBounces)
+  ) {
+    emitWebgl2Warning(opts, {
+      code: 'pt-webgl2.bdpt-max-light-bounces-rounded',
+      backend: 'pt-webgl2',
+      phase: 'construction',
+      method: 'createPTEngine_WebGL2',
+      message:
+        `[vitrum/pt-webgl2] bdptOptions.maxLightBounces=${bdptMaxLightBounces} requested, ` +
+        `rounding down to integer ${resolveBdptMaxLightBounces(bdptMaxLightBounces)}.`,
+      details: {
+        requested: bdptMaxLightBounces,
+        roundedTo: resolveBdptMaxLightBounces(bdptMaxLightBounces),
+      },
+    });
+  }
+  const resolvedBdptMaxLightBounces = resolveBdptMaxLightBounces(bdptMaxLightBounces);
+  if (opts.bdpt === true && resolvedBdptMaxLightBounces > BDPT_SAFE_DEFAULT_LIGHT_BOUNCES) {
+    emitWebgl2Warning(opts, {
+      code: 'pt-webgl2.bdpt-multivertex-research-mode',
+      backend: 'pt-webgl2',
+      phase: 'construction',
+      method: 'createPTEngine_WebGL2',
+      message:
+        `[vitrum/pt-webgl2] bdptOptions.maxLightBounces=${resolvedBdptMaxLightBounces} enables the ` +
+        'multi-vertex BDPT research path. Current radiometric promotion evidence is endpoint-only, ' +
+        'so this WebGL2 path is explicitly opt-in; omit bdptOptions.maxLightBounces for the ' +
+        'endpoint-only safe default.',
+      details: {
+        requested: bdptMaxLightBounces,
+        resolved: resolvedBdptMaxLightBounces,
+        safeDefault: BDPT_SAFE_DEFAULT_LIGHT_BOUNCES,
+      },
+    });
+  }
   if (
     opts.backgroundBlur !== undefined &&
     (!Number.isFinite(opts.backgroundBlur) || opts.backgroundBlur < 0)
@@ -1018,6 +1080,11 @@ export const createPTEngine_WebGL2: EngineFactory<
   slot.set('ready');
   return engine;
 };
+
+function resolveBdptMaxLightBounces(value: number | undefined): number {
+  if (value === undefined) return BDPT_SAFE_DEFAULT_LIGHT_BOUNCES;
+  return Math.max(1, Math.min(BDPT_MAX_LIGHT_BOUNCES, Math.floor(value)));
+}
 
 export type { PTEngineWebGL2Options } from './options.js';
 export type {
