@@ -5,6 +5,7 @@
 
 const MATRIX_PATH = "plan/renderer-fidelity-matrix.md";
 const PLAYBOOK_PATH = "plan/fidelity-promotion-playbook.md";
+const README_PATH = "README.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
 
 const PT_WEBGPU_SUPPORTED_ROWS = [
@@ -202,6 +203,7 @@ async function assertDznStatus(status, feature) {
 
 const matrix = await readText(MATRIX_PATH);
 const playbook = await readText(PLAYBOOK_PATH);
+const readme = await readText(README_PATH);
 const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
 
 for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
@@ -237,6 +239,13 @@ for (const staleNeedle of PLAYBOOK_FORBIDDEN_STALE_NEEDLES) {
   if (playbook.includes(staleNeedle)) {
     fail(`fidelity promotion playbook still contains stale blocker: ${staleNeedle}`);
   }
+}
+
+if (readme.includes("clearcoat/sheen unsupported")) {
+  fail("README still contains the stale pt-webgl2 clearcoat/sheen unsupported claim");
+}
+if (!readme.includes("pt-webgpu (WebGPU)")) {
+  fail("README capability matrix must include the pt-webgpu backend column");
 }
 
 console.log(

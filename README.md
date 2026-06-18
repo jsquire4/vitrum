@@ -42,17 +42,17 @@ import { VitrumCanvas } from '@vitrum/engine/react';
 
 ## Capability matrix
 
-| Feature                       | walkaround-hybrid (WebGPU)  | pt-webgl2 (WebGL2)         |
-| ----------------------------- | --------------------------- | -------------------------- |
-| **GI quality**                | real-time, single-bounce GI | converged, multi-bounce PT |
-| **Bounce count**              | 1 (DDGI gives multi-bounce) | unlimited                  |
-| **Light types**               | point/spot/dir/area/sky (point+spot: analytic NEE in shade pass + DDGI probe bounce; rect-area: NEE) | point / dir / area / sky   |
-| **Materials**                 | PBR + transmission          | PBR + transmission; spectral hero-λ lit (hero-λ tint over RGB — achromatic-flat reflectance); clearcoat/sheen unsupported |
-| **Caustics**                  | none (DDGI only)            | heuristic approximate (not Newton-solve MNEE)      |
-| **BDPT**                      | not applicable              | implemented + host-driven (A5); no ANGLE/Chromium fallback gate |
-| **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; vertex/index-count via rebuild) | camera ✓ / lights ✓ / mesh ✓ (all patches via rebuild) |
-| **Hardware**                  | WebGPU                      | WebGL2                     |
-| **Convergence**               | re-renders every frame      | accumulates SPP            |
+| Feature                       | walkaround-hybrid (WebGPU)  | pt-webgl2 (WebGL2)         | pt-webgpu (WebGPU) |
+| ----------------------------- | --------------------------- | -------------------------- | ------------------ |
+| **GI quality**                | real-time, single-bounce GI | converged, multi-bounce PT | converged, multi-bounce PT |
+| **Bounce count**              | 1 (DDGI gives multi-bounce) | unlimited                  | unlimited |
+| **Light types**               | point/spot/dir/area/sky (point+spot: analytic NEE in shade pass + DDGI probe bounce; rect-area: NEE) | point / dir / area / sky   | point / spot / dir / area / HDRI |
+| **Materials**                 | PBR + transmission + atlas textures; rich lobes approximate; spectral/thin-film/layered fields unsupported | PBR + transmission + spectral/Disney/layered material fields; WebGL2 runtime A/B promotion pending for some fidelity rows | PBR + transmission + spectral/Disney/layered material fields; full-tier rows tracked in the fidelity matrix |
+| **Caustics**                  | none (DDGI only)            | heuristic approximate (not Newton-solve MNEE)      | manifold NEE / photon-map modes |
+| **BDPT**                      | not applicable              | implemented + host-driven; browser runtime promotion pending | supported safe-default path; multi-vertex research mode remains opt-in |
+| **Animation**                 | camera ✓ / lights limited / mesh ✓ (material + positions + transform; vertex/index-count via rebuild) | camera ✓ / lights ✓ / mesh ✓ (all patches via rebuild) | camera ✓ / lights ✓ / mesh ✓ (targeted BLAS/TLAS paths where available) |
+| **Hardware**                  | WebGPU                      | WebGL2                     | WebGPU |
+| **Convergence**               | re-renders every frame      | accumulates SPP            | accumulates SPP |
 
 See [`plan/archive/animation-support-status.md`](./plan/archive/animation-support-status.md) for the full animation matrix with caveats.
 
@@ -130,7 +130,7 @@ context loss, device-limit errors, NaN pixels) see
 @vitrum/walkaround-hybrid  WebGPU DDGI + ReSTIR DI/GI + SVGF + GTAO + PPG + neural; composes RC
 @vitrum/walkaround-rc      Radiance Cascades subsystem (cascade pyramid + raw GPU dispatch)
 @vitrum/pt-webgl2          Native WebGL2 PT
-@vitrum/pt-webgpu          WebGPU-native PT (experimental backend)
+@vitrum/pt-webgpu          WebGPU-native PT (full/lite tiers; row-level fidelity tracked in the matrix)
 @vitrum/shared-bvh         Software BVH compute (CPU + GPU)
 @vitrum/shared-samplers    Hammersley, light tree, hero-wavelength MIS, spectral helpers
 @vitrum/shared-denoisers   À-trous, SVGF, OIDN bridge
