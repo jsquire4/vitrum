@@ -606,6 +606,11 @@ buckets that the A–D framing was missing:**
   differences of the direct-light radiance law across directional, point, spot,
   finite-area, and mapped mesh-area quotient cases, replacing that lane's old
   string-only proof with executable behavior coverage.
+  `oracle.directionalConeSample.test.ts` now independently pins the shared
+  soft-directional/sun cone sampler used by full-tier forward tracing and the
+  adjoint replay pass: sign-encoded angular-diameter decode, rim/centre
+  endpoints, unit-length directions, alternate-basis handling, and the
+  solid-angle-uniform `cos(theta)` law.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
