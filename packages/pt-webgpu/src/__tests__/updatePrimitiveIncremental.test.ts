@@ -356,26 +356,34 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
   });
 
-  it('lite tier throws instead of accepting transform-only mesh patches', async () => {
+  it('lite tier accepts transform-only mesh patches via fallback merged-BLAS repack', async () => {
     installWebGpuConstStubs();
     const { device, createBuffer } = makeLiteStubDevice();
+    const structured: EngineWarning[] = [];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const engine = await createPTEngine_WebGPU({ device });
+      const engine = await createPTEngine_WebGPU({
+        device,
+        onWarning: (w) => structured.push(w),
+      });
       engine.setScene(makeScene());
       const buffersBefore = createBuffer.mock.calls.length;
 
-      expect(() =>
-        engine.updatePrimitive?.('mesh-b', {
-          transform: asMat4(new Float32Array([
-            1, 0, 0, 0,
-            0, 1, 0, 0,
-            0, 0, 1, 0,
-            2, 0, 0, 1,
-          ])),
-        }),
-      ).toThrow(/unsupported on the lite tier/);
-      expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+      engine.updatePrimitive?.('mesh-b', {
+        transform: asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          2, 0, 0, 1,
+        ])),
+      });
+
+      expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgpu.lite-update-primitive-fallback-rebuild' &&
+        w.details?.id === 'mesh-b' &&
+        w.details?.fallbackReason === 'lite-merged-blas-transform-rebuild',
+      )).toBe(true);
     } finally {
       warn.mockRestore();
     }
@@ -411,28 +419,36 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
   });
 
-  it('lite tier throws instead of accepting instanced topology patches', async () => {
+  it('lite tier accepts instanced topology patches via fallback merged-BLAS repack', async () => {
     installWebGpuConstStubs();
     const { device, createBuffer } = makeLiteStubDevice();
+    const structured: EngineWarning[] = [];
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const engine = await createPTEngine_WebGPU({ device });
+      const engine = await createPTEngine_WebGPU({
+        device,
+        onWarning: (w) => structured.push(w),
+      });
       engine.setScene(makeInstancedScene());
       const buffersBefore = createBuffer.mock.calls.length;
 
-      expect(() =>
-        engine.updatePrimitive?.('instanced-a', {
-          instances: [
-            asMat4(new Float32Array([
-              1, 0, 0, 0,
-              0, 1, 0, 0,
-              0, 0, 1, 0,
-              1, 0, 0, 1,
-            ])),
-          ],
-        }),
-      ).toThrow(/unsupported on the lite tier/);
-      expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+      engine.updatePrimitive?.('instanced-a', {
+        instances: [
+          asMat4(new Float32Array([
+            1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            1, 0, 0, 1,
+          ])),
+        ],
+      });
+
+      expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+      expect(structured.some((w) =>
+        w.code === 'pt-webgpu.lite-update-primitive-fallback-rebuild' &&
+        w.details?.id === 'instanced-a' &&
+        w.details?.fallbackReason === 'lite-merged-blas-instanced-topology-rebuild',
+      )).toBe(true);
     } finally {
       warn.mockRestore();
     }

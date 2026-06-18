@@ -118,7 +118,7 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: reports transform/topology mutation gaps and primitive limits', async () => {
+  it('lite tier: reports transform/topology mutation fallback rebuilds and primitive limits', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     expect(engine.capabilities.incrementalPatchSupport).toEqual({
@@ -134,9 +134,9 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(primitiveKinds.has('instanced-mesh')).toBe(true);
     const sd = engine.capabilities.supportDetails!;
     expect(sd.primitives['instanced-mesh']).toBe('native');
-    expect(sd.mutations.transform).toBe('unsupported');
+    expect(sd.mutations.transform).toBe('fallback-rebuild');
     expect(sd.mutations.material).toBe('native');
-    expect(sd.mutations.topology).toBe('unsupported');
+    expect(sd.mutations.topology).toBe('fallback-rebuild');
     expect(sd.materials.baseColor).toBe('native');
     expect(sd.materials.clearcoat).toBe('native');
     expect(sd.materials.baseColorMap).toBe('unsupported');

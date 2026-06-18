@@ -304,12 +304,21 @@ export class SceneMutationRouter {
       currentPrimitive != null &&
       canFastPathInstancedTopologyPatch(currentPrimitive, fastPathPatch);
     if (liteUnsupportedTransformPatch || liteUnsupportedInstancedTopologyPatch) {
-      throw new Error(
-        '[vitrum/pt-webgpu] updatePrimitive: transform-only and instanced topology ' +
-          'patches are unsupported on the lite tier because the lite shader does not ' +
-          'traverse TLAS instance transforms. Use the full tier, or rebuild/bake the ' +
-          'scene geometry before calling setScene().',
-      );
+      const fallbackReason = liteUnsupportedInstancedTopologyPatch
+        ? 'lite-merged-blas-instanced-topology-rebuild'
+        : 'lite-merged-blas-transform-rebuild';
+      warnHost(host, {
+        code: 'pt-webgpu.lite-update-primitive-fallback-rebuild',
+        backend: 'pt-webgpu',
+        phase: 'mutation',
+        method: 'updatePrimitive',
+        message:
+          `[vitrum/pt-webgpu] updatePrimitive("${id}") is using a fallback scene repack ` +
+          `on the lite tier because the lite shader traverses one baked merged BLAS, not TLAS instance transforms.`,
+        details: { id, fallbackReason },
+      });
+      host.repackScene(nextScene, { warnOnEmpty: false });
+      return;
     }
 
     // The incremental fast paths, in FIRST-ELIGIBLE-WINS order (geometry →
