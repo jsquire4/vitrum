@@ -255,6 +255,10 @@ const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'thickness',
   'attenuationColor',
   'attenuationDistance',
+  'dispersionAbbeNumber',
+  'scatteringCoefficient',
+  'scatteringAnisotropy',
+  'scatteringCoefficientRGB',
 ]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
 const PATH_REPLAY_NORMAL_ONLY_FIELDS = new Set(['normalScale', 'bumpScale', 'clearcoatNormalScale']);
@@ -273,6 +277,7 @@ const MATERIAL_RGB_FIELDS = new Set([
   'attenuationColor',
   'specularColor',
   'sheenColor',
+  'scatteringCoefficientRGB',
 ]);
 const MATERIAL_VEC2_FIELDS = new Set([
   'iridescenceThicknessRange',
@@ -302,6 +307,9 @@ const MATERIAL_SCALAR_FIELDS = new Set([
   'aoMapIntensity',
   'lightMapIntensity',
   'envMapIntensity',
+  'dispersionAbbeNumber',
+  'scatteringCoefficient',
+  'scatteringAnisotropy',
 ]);
 const EMITTER_RGB_FIELDS = new Set(['color']);
 const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
@@ -1419,6 +1427,12 @@ function defaultClampRange(field: string): [number, number] {
       return [1, 2.5];
     case 'attenuationDistance':
       return [1e-6, Infinity];
+    case 'dispersionAbbeNumber':
+      return [0, Infinity];
+    case 'scatteringCoefficient':
+      return [0, Infinity];
+    case 'scatteringAnisotropy':
+      return [-0.95, 0.95];
     case 'iridescenceIor':
       return [1, 3];
     case 'iridescenceThicknessRange':
@@ -1471,6 +1485,10 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'thickness': return [m.thickness ?? 0];
       case 'attenuationColor': return [...(m.attenuationColor ?? [1, 1, 1])];
       case 'attenuationDistance': return [m.attenuationDistance ?? 1];
+      case 'dispersionAbbeNumber': return [m.dispersionAbbeNumber ?? 0];
+      case 'scatteringCoefficient': return [m.scatteringCoefficient ?? 0];
+      case 'scatteringAnisotropy': return [m.scatteringAnisotropy ?? 0];
+      case 'scatteringCoefficientRGB': return [...(m.scatteringCoefficientRGB ?? [0, 0, 0])];
       case 'specularColor': return [...(m.specularColor ?? [1, 1, 1])];
       case 'specularIntensity': return [m.specularIntensity ?? 1];
       case 'clearcoat': return [m.clearcoat ?? 0];
@@ -1517,6 +1535,10 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'thickness': return { thickness: value[0]! };
     case 'attenuationColor': return { attenuationColor: value as unknown as Vec3 };
     case 'attenuationDistance': return { attenuationDistance: value[0]! };
+    case 'dispersionAbbeNumber': return { dispersionAbbeNumber: value[0]! };
+    case 'scatteringCoefficient': return { scatteringCoefficient: value[0]! };
+    case 'scatteringAnisotropy': return { scatteringAnisotropy: value[0]! };
+    case 'scatteringCoefficientRGB': return { scatteringCoefficientRGB: value as unknown as Vec3 };
     case 'specularColor': return { specularColor: value as unknown as Vec3 };
     case 'specularIntensity': return { specularIntensity: value[0]! };
     case 'clearcoat': return { clearcoat: value[0]! };

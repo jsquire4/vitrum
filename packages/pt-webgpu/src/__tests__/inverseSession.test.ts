@@ -82,11 +82,15 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
       const anisotropyRotation = mat.anisotropyRotation ?? 0;
       const normalOrBumpScale = (mat.normalScale ?? 0) + (mat.bumpScale ?? 0) + (mat.clearcoatNormalScale ?? 0);
       const materialMapIntensity = (mat.aoMapIntensity ?? 0) + (mat.lightMapIntensity ?? 0) + (mat.envMapIntensity ?? 0);
+      const dispersionAbbeNumber = mat.dispersionAbbeNumber ?? 0;
+      const scatteringCoefficient = mat.scatteringCoefficient ?? 0;
+      const scatteringAnisotropy = mat.scatteringAnisotropy ?? 0;
+      const scatteringCoefficientRGB = mat.scatteringCoefficientRGB ?? [0, 0, 0];
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
-        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0] + iridescenceThicknessRange[0] / 1000;
-        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1] + iridescenceThicknessRange[1] / 1000;
-        rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2] + anisotropyRotation;
+        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0] + iridescenceThicknessRange[0] / 1000 + dispersionAbbeNumber / 100 + scatteringCoefficient + scatteringCoefficientRGB[0];
+        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1] + iridescenceThicknessRange[1] / 1000 + scatteringAnisotropy + scatteringCoefficientRGB[1];
+        rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2] + anisotropyRotation + scatteringCoefficientRGB[2];
       }
       return { rgb, channels: 3 as const };
     },
@@ -502,6 +506,68 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
     expect(mat.aoMapIntensity).toBeCloseTo(session.currentValues()[3]![0]!, 6);
     expect(mat.lightMapIntensity).toBeCloseTo(session.currentValues()[4]![0]!, 6);
     expect(mat.envMapIntensity).toBeCloseTo(session.currentValues()[5]![0]!, 6);
+    session.dispose();
+  });
+
+  it('optimizes renderer-consumed dispersion and scattering controls through finite differences', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                dispersionAbbeNumber: 45,
+                scatteringCoefficient: 0.8,
+                scatteringAnisotropy: 0.5,
+                scatteringCoefficientRGB: [0.6, 0.7, 0.8],
+              },
+            }
+          : pr,
+      ),
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.2, 0.2, 0.2]),
+      parameters: [
+        { path: 'materials.panel.dispersionAbbeNumber', kind: 'scalar', max: 20 },
+        { path: 'materials.panel.scatteringCoefficient', kind: 'scalar', max: 0.3 },
+        { path: 'materials.panel.scatteringAnisotropy', kind: 'scalar', max: 0.25 },
+        { path: 'materials.panel.scatteringCoefficientRGB', kind: 'rgb', max: 0.25 },
+      ],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(45, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.8, 6)]);
+    expect(session.currentValues()[2]).toEqual([expect.closeTo(0.5, 6)]);
+    expect(session.currentValues()[3]).toEqual([
+      expect.closeTo(0.6, 6),
+      expect.closeTo(0.7, 6),
+      expect.closeTo(0.8, 6),
+    ]);
+
+    const result = await session.step();
+    for (const grad of result.gradient) {
+      for (const component of grad) expect(component).toBeGreaterThan(0);
+    }
+    expect(session.currentValues()[0]![0]).toBeLessThanOrEqual(20.000001);
+    expect(session.currentValues()[1]![0]).toBeLessThanOrEqual(0.300001);
+    expect(session.currentValues()[2]![0]).toBeLessThanOrEqual(0.250001);
+    for (const value of session.currentValues()[3]!) {
+      expect(value).toBeLessThanOrEqual(0.250001);
+    }
+    const mat = fake.scene.primitives[0]!.material;
+    expect(mat.dispersionAbbeNumber).toBeCloseTo(session.currentValues()[0]![0]!, 6);
+    expect(mat.scatteringCoefficient).toBeCloseTo(session.currentValues()[1]![0]!, 6);
+    expect(mat.scatteringAnisotropy).toBeCloseTo(session.currentValues()[2]![0]!, 6);
+    expect(mat.scatteringCoefficientRGB).toEqual([
+      expect.closeTo(session.currentValues()[3]![0]!, 6),
+      expect.closeTo(session.currentValues()[3]![1]!, 6),
+      expect.closeTo(session.currentValues()[3]![2]!, 6),
+    ]);
     session.dispose();
   });
 
@@ -1461,6 +1527,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
                 thickness: 0.75,
                 attenuationColor: [0.8, 0.7, 0.6],
                 attenuationDistance: 1.25,
+                dispersionAbbeNumber: 45,
+                scatteringCoefficient: 0.8,
+                scatteringAnisotropy: 0.5,
+                scatteringCoefficientRGB: [0.6, 0.7, 0.8],
               },
             }
           : pr,
@@ -1475,6 +1545,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         { path: 'materials.panel.ior', kind: 'scalar' },
         { path: 'materials.panel.attenuationDistance', kind: 'scalar' },
         { path: 'materials.panel.attenuationColor', kind: 'rgb' },
+        { path: 'materials.panel.dispersionAbbeNumber', kind: 'scalar' },
+        { path: 'materials.panel.scatteringCoefficient', kind: 'scalar' },
+        { path: 'materials.panel.scatteringAnisotropy', kind: 'scalar' },
+        { path: 'materials.panel.scatteringCoefficientRGB', kind: 'rgb' },
       ],
       method: 'path-replay',
     });
@@ -1488,6 +1562,14 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       expect.closeTo(0.8, 6),
       expect.closeTo(0.7, 6),
       expect.closeTo(0.6, 6),
+    ]);
+    expect(session.currentValues()[5]).toEqual([expect.closeTo(45, 6)]);
+    expect(session.currentValues()[6]).toEqual([expect.closeTo(0.8, 6)]);
+    expect(session.currentValues()[7]).toEqual([expect.closeTo(0.5, 6)]);
+    expect(session.currentValues()[8]).toEqual([
+      expect.closeTo(0.6, 6),
+      expect.closeTo(0.7, 6),
+      expect.closeTo(0.8, 6),
     ]);
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-transport',
@@ -1514,6 +1596,18 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       path: 'materials.panel.attenuationColor',
       details: expect.objectContaining({ field: 'attenuationColor', finiteDifferenceReason: 'transport' }),
     }));
+    for (const field of [
+      'dispersionAbbeNumber',
+      'scatteringCoefficient',
+      'scatteringAnisotropy',
+      'scatteringCoefficientRGB',
+    ]) {
+      expect(session.diagnostics).toContainEqual(expect.objectContaining({
+        code: 'path-replay-unsupported-transport',
+        path: `materials.panel.${field}`,
+        details: expect.objectContaining({ field, finiteDifferenceReason: 'transport' }),
+      }));
+    }
     session.dispose();
   });
 
