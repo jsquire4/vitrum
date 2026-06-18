@@ -306,6 +306,13 @@ const MATERIAL_SCALAR_FIELDS = new Set([
 const EMITTER_RGB_FIELDS = new Set(['color']);
 const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
 
+type PathReplayUnsupportedCode = InverseSessionDiagnostic['code'];
+type PathReplayMaterialIssue = {
+  readonly code?: PathReplayUnsupportedCode;
+  readonly message: string;
+  readonly details: Record<string, string | number | boolean | readonly string[]>;
+};
+
 export class PtWebgpuInverseSession implements InverseSession {
   readonly #hooks: InverseEngineHooks;
   readonly #target: InverseSessionOptions['target'];
@@ -663,7 +670,7 @@ function diagnosePathReplaySlot(
   if (materialIssue != null) {
     return [{
       severity: 'info',
-      code: 'path-replay-unsupported-material',
+      code: materialIssue.code ?? 'path-replay-unsupported-material',
       path,
       message:
         `[vitrum/pt-webgpu] InverseSession path "${path}" is outside the scoped path-replay ` +
@@ -951,12 +958,12 @@ function pathReplayEmitterReceiverSceneIssue(
 
 function pathReplayEmitterReceiverMaterialIssue(
   material: MaterialSpec,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
-    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+    return materialMapIssue(maps);
   }
   return null;
 }
@@ -965,7 +972,7 @@ function pathReplayMaterialIssue(
   material: MaterialSpec,
   field: string,
   iridescenceCoupled: boolean,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   if (field === 'baseColor' && isPathReplayCompatibleUnlitBaseColorMaterial(material)) return null;
   if (field === 'emissive' || field === 'emissiveIntensity') {
     return materialIssueForEmissive(material);
@@ -993,19 +1000,19 @@ function pathReplayMaterialIssue(
 
 function materialIssueForEmissive(
   material: MaterialSpec,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayPrimaryEmissionUnsupportedMaps(material);
   if (maps.length > 0) {
-    return { message: `transport/visibility maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+    return materialMapIssue(maps);
   }
   return null;
 }
 
 function materialIssueForBrdf(
   material: MaterialSpec,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   if (material.shadingModel === 'unlit') {
     return { message: 'unlit materials only support path-replay for baseColor primary-hit fitting', details: { reason: 'unlit' } };
   }
@@ -1013,14 +1020,14 @@ function materialIssueForBrdf(
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
-    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+    return materialMapIssue(maps);
   }
   return null;
 }
 
 function materialIssueForAoMapIntensity(
   material: MaterialSpec,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   const common = materialIssueCommon(material, {
     allowIridescence: material.shadingModel === 'unlit',
     allowAnisotropy: material.shadingModel === 'unlit',
@@ -1028,26 +1035,26 @@ function materialIssueForAoMapIntensity(
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
-    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+    return materialMapIssue(maps);
   }
   return null;
 }
 
 function materialIssueForLightMapIntensity(
   material: MaterialSpec,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayPrimaryEmissionUnsupportedMaps(material);
   if (maps.length > 0) {
-    return { message: `transport/visibility maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+    return materialMapIssue(maps);
   }
   return null;
 }
 
 function materialIssueForIridescence(
   material: MaterialSpec,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   if (material.shadingModel === 'unlit') {
     return { message: 'unlit materials do not evaluate the iridescence direct-light lobe', details: { reason: 'unlit' } };
   }
@@ -1055,14 +1062,14 @@ function materialIssueForIridescence(
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
-    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+    return materialMapIssue(maps);
   }
   return null;
 }
 
 function materialIssueForAnisotropy(
   material: MaterialSpec,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): PathReplayMaterialIssue | null {
   if (material.shadingModel === 'unlit') {
     return { message: 'unlit materials do not evaluate the anisotropic direct-light lobe', details: { reason: 'unlit' } };
   }
@@ -1070,7 +1077,7 @@ function materialIssueForAnisotropy(
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
-    return { message: `transport/normal/geometry maps are not replayed: ${maps.join(', ')}`, details: { unsupportedMaterialFields: maps } };
+    return materialMapIssue(maps);
   }
   return null;
 }
@@ -1078,15 +1085,42 @@ function materialIssueForAnisotropy(
 function materialIssueCommon(
   material: MaterialSpec,
   options: { readonly allowIridescence: boolean; readonly allowAnisotropy: boolean },
-): { message: string; details: Record<string, string | number> } | null {
+): PathReplayMaterialIssue | null {
   if (material.alphaMode != null && material.alphaMode !== 'opaque') {
-    return { message: `alphaMode "${material.alphaMode}" changes visibility/coverage`, details: { field: 'alphaMode', value: material.alphaMode } };
+    return {
+      code: 'path-replay-unsupported-visibility',
+      message: `alphaMode "${material.alphaMode}" changes visibility/coverage`,
+      details: {
+        field: 'alphaMode',
+        value: material.alphaMode,
+        finiteDifferenceReason: 'visibility',
+        affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
+      },
+    };
   }
   if (material.opacity != null && material.opacity < 1) {
-    return { message: 'opacity below 1 changes visibility/coverage', details: { field: 'opacity', value: material.opacity } };
+    return {
+      code: 'path-replay-unsupported-visibility',
+      message: 'opacity below 1 changes visibility/coverage',
+      details: {
+        field: 'opacity',
+        value: material.opacity,
+        finiteDifferenceReason: 'visibility',
+        affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
+      },
+    };
   }
   if ((material.transmission ?? 0) > 1e-6) {
-    return { message: 'transmission transport is not replayed', details: { field: 'transmission', value: material.transmission ?? 0 } };
+    return {
+      code: 'path-replay-unsupported-transport',
+      message: 'transmission transport is not replayed',
+      details: {
+        field: 'transmission',
+        value: material.transmission ?? 0,
+        finiteDifferenceReason: 'transport',
+        affectedTerms: ['fresnel-partition', 'refraction-direction', 'medium-attenuation'],
+      },
+    };
   }
   if (!options.allowIridescence && (material.iridescence ?? 0) > 1e-6) {
     return { message: 'iridescence is coupled to the optimized BRDF field', details: { field: 'iridescence', value: material.iridescence ?? 0 } };
@@ -1095,18 +1129,109 @@ function materialIssueCommon(
     return { message: 'anisotropy is coupled to the optimized BRDF field', details: { field: 'anisotropy', value: material.anisotropy ?? 0 } };
   }
   if (material.frontLayer != null || material.backLayer != null || material.thinFilmStack != null) {
-    return { message: 'layered/thin-film material stacks are not replayed', details: { field: 'layeredMaterial' } };
+    return {
+      code: 'path-replay-unsupported-transport',
+      message: 'layered/thin-film material stacks are not replayed',
+      details: {
+        field: 'layeredMaterial',
+        finiteDifferenceReason: 'transport',
+        affectedTerms: ['layer-selection', 'thin-film-phase', 'transmission-mis'],
+      },
+    };
   }
   if (material.spectralAttenuation != null || material.dispersionAbbeNumber != null) {
-    return { message: 'spectral/dispersion material transport is not replayed', details: { field: 'spectralOrDispersion' } };
+    return {
+      code: 'path-replay-unsupported-transport',
+      message: 'spectral/dispersion material transport is not replayed',
+      details: {
+        field: 'spectralOrDispersion',
+        finiteDifferenceReason: 'transport',
+        affectedTerms: ['hero-wavelength', 'spectral-attenuation', 'dispersion-ior'],
+      },
+    };
   }
   if ((material.scatteringCoefficient ?? 0) > 0 || material.scatteringCoefficientRGB != null) {
-    return { message: 'volume/scattering material transport is not replayed', details: { field: 'scattering' } };
+    return {
+      code: 'path-replay-unsupported-transport',
+      message: 'volume/scattering material transport is not replayed',
+      details: {
+        field: 'scattering',
+        finiteDifferenceReason: 'transport',
+        affectedTerms: ['volume-walk', 'medium-scattering', 'phase-function'],
+      },
+    };
   }
   if (material.extensions != null && Object.keys(material.extensions).length > 0) {
     return { message: 'opaque MaterialSpec.extensions are not replayed by the adjoint pass', details: { field: 'extensions' } };
   }
   return null;
+}
+
+function materialMapIssue(maps: readonly string[]): PathReplayMaterialIssue {
+  const categories = new Set(maps.map(pathReplayMaterialMapCategory));
+  const details: Record<string, string | readonly string[]> = { unsupportedMaterialFields: maps };
+  if (categories.size === 1) {
+    const category = categories.values().next().value as PathReplayMaterialMapCategory;
+    switch (category) {
+      case 'transport':
+        details.finiteDifferenceReason = 'transport';
+        details.affectedTerms = ['fresnel-partition', 'refraction-direction', 'medium-attenuation'];
+        return {
+          code: 'path-replay-unsupported-transport',
+          message: `transport maps are not replayed: ${maps.join(', ')}`,
+          details,
+        };
+      case 'visibility':
+        details.finiteDifferenceReason = 'visibility';
+        details.affectedTerms = ['alpha-coverage', 'ray-visibility', 'shadow-visibility'];
+        return {
+          code: 'path-replay-unsupported-visibility',
+          message: `visibility maps are not replayed: ${maps.join(', ')}`,
+          details,
+        };
+      case 'normal':
+        details.finiteDifferenceReason = 'normal';
+        details.affectedTerms = ['normal-map-frame', 'bump-gradient', 'clearcoat-normal-frame'];
+        return {
+          code: 'path-replay-unsupported-normal',
+          message: `normal maps are not replayed: ${maps.join(', ')}`,
+          details,
+        };
+      case 'geometry':
+        details.finiteDifferenceReason = 'geometry';
+        details.affectedTerms = ['micro-displacement', 'bvh-geometry', 'visibility'];
+        return {
+          code: 'path-replay-unsupported-material',
+          message: `geometry maps are not replayed: ${maps.join(', ')}`,
+          details,
+        };
+    }
+  }
+  details.finiteDifferenceReason = 'mixed-material-domain';
+  return {
+    code: 'path-replay-unsupported-material',
+    message: `mixed transport/visibility/normal/geometry maps are not replayed: ${maps.join(', ')}`,
+    details,
+  };
+}
+
+type PathReplayMaterialMapCategory = 'transport' | 'visibility' | 'normal' | 'geometry';
+
+function pathReplayMaterialMapCategory(field: string): PathReplayMaterialMapCategory {
+  switch (field) {
+    case 'transmissionMap':
+    case 'thicknessMap':
+      return 'transport';
+    case 'alphaMap':
+      return 'visibility';
+    case 'normalMap':
+    case 'bumpMap':
+    case 'clearcoatNormalMap':
+      return 'normal';
+    case 'displacementMap':
+    default:
+      return 'geometry';
+  }
 }
 
 function pathReplayTargetRequiresLighting(field: string, material: MaterialSpec): boolean {

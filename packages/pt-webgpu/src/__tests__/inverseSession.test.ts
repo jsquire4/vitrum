@@ -1172,9 +1172,12 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     });
     expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-material',
+      code: 'path-replay-unsupported-visibility',
       path: 'materials.panel.emissive',
-      details: expect.objectContaining({ unsupportedMaterialFields: expect.arrayContaining(['alphaMap']) }),
+      details: expect.objectContaining({
+        finiteDifferenceReason: 'visibility',
+        unsupportedMaterialFields: expect.arrayContaining(['alphaMap']),
+      }),
     }));
     session.dispose();
   });
@@ -1857,24 +1860,26 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
   });
 
   it.each([
-    ['transmission', { transmission: 0.25 }],
-    ['anisotropy', { anisotropy: 0.25 }],
-    ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
-    ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
-    ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
-    ['displacement map', { displacementMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }],
-    ['clearcoat normal map', { clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }],
-    ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }],
-    ['thin-film stack', { thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 180 }] } }],
+    ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility'],
+    ['opacity', { opacity: 0.75 }, 'path-replay-unsupported-visibility'],
+    ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport'],
+    ['anisotropy', { anisotropy: 0.25 }, 'path-replay-unsupported-material'],
+    ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }, 'path-replay-unsupported-normal'],
+    ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility'],
+    ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport'],
+    ['displacement map', { displacementMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-material'],
+    ['clearcoat normal map', { clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }, 'path-replay-unsupported-normal'],
+    ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }, 'path-replay-unsupported-transport'],
+    ['thin-film stack', { thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 180 }] } }, 'path-replay-unsupported-transport'],
     ['spectral attenuation', {
       spectralAttenuation: {
         wavelengthStart: 380,
         wavelengthEnd: 700,
         values: new Float32Array([0.1, 0.2, 0.3]),
       },
-    }],
-    ['volume scattering', { scatteringCoefficientRGB: [0.1, 0.2, 0.3] as [number, number, number] }],
-  ])('degrades to finite-difference for path-replay material with %s', (_label, patch) => {
+    }, 'path-replay-unsupported-transport'],
+    ['volume scattering', { scatteringCoefficientRGB: [0.1, 0.2, 0.3] as [number, number, number] }, 'path-replay-unsupported-transport'],
+  ])('degrades to finite-difference for path-replay material with %s', (_label, patch, expectedCode) => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1892,7 +1897,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     });
     expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-material',
+      code: expectedCode,
       path: 'materials.panel.baseColor',
     }));
     session.dispose();
