@@ -126,6 +126,7 @@ const EXPECTATION_TABLE = {
   "pt/mutation-environment": { expected: "ok" },
   "pt/mutation-emitter": { expected: "ok" },
   "pt/mutation-transform": { expected: "ok" },
+  "pt/mutation-topology": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -190,6 +191,7 @@ const PT_CONFIGS = [
   { label: "pt/mutation-environment", eng: {},                                  scene: { mutation: "environment" } },
   { label: "pt/mutation-emitter", eng: {},                                      scene: { mutation: "emitter" } },
   { label: "pt/mutation-transform", eng: {},                                    scene: { mutation: "transform" } },
+  { label: "pt/mutation-topology", eng: {},                                     scene: { mutation: "topology" } },
 ];
 
 const WH_CONFIGS = [
@@ -377,6 +379,34 @@ function buildMutationTransformScene() {
       normals: GLTF_QUAD.normals,
       uvs: GLTF_QUAD.uvs,
       indices: new Uint32Array(GLTF_QUAD.indices),
+      material: {
+        shadingModel: "unlit",
+        baseColor: [0.95, 0.1, 0.08],
+        roughness: 1.0,
+        metallic: 0.0,
+      },
+    }],
+    emitters: [],
+    environment: { kind: "none" },
+  };
+}
+
+function buildMutationTopologyScene() {
+  return {
+    primitives: [{
+      kind: "mesh",
+      id: "mutation-topology-primitive",
+      positions: new Float32Array([
+        -0.25, -0.20, 0,
+         0.25, -0.20, 0,
+        -0.25,  0.20, 0,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]),
+      indices: new Uint32Array([0, 1, 2]),
       material: {
         shadingModel: "unlit",
         baseColor: [0.95, 0.1, 0.08],
@@ -1218,6 +1248,7 @@ async function buildGateScene(opts = {}) {
   if (opts.mutation === "environment") return buildMutationEnvironmentScene();
   if (opts.mutation === "emitter") return buildMutationEmitterScene();
   if (opts.mutation === "transform") return buildMutationTransformScene();
+  if (opts.mutation === "topology") return buildMutationTopologyScene();
   return buildCornellScene(opts);
 }
 
@@ -1622,6 +1653,7 @@ const MUTATION_DELTA_THRESHOLDS = {
   environment: { meanAbs: 2.0, maxAbs: 8 },
   emitter: { meanAbs: 2.0, maxAbs: 8 },
   transform: { meanAbs: 2.0, maxAbs: 8 },
+  topology: { meanAbs: 2.0, maxAbs: 8 },
 };
 
 /**
@@ -1735,6 +1767,12 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
             0, 0, 1, 0,
             0.95, 0, 0, 1,
           ])),
+        });
+      } else if (sceneOpts.mutation === "topology") {
+        engine.updatePrimitive("mutation-topology-primitive", {
+          positions: GLTF_QUAD.positions,
+          normals: GLTF_QUAD.normals,
+          indices: new Uint32Array(GLTF_QUAD.indices),
         });
       } else {
         throw new Error(`unknown mutation gate kind: ${sceneOpts.mutation}`);

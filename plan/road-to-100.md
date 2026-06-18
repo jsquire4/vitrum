@@ -1249,7 +1249,7 @@ reset without falling through to `setScene()`, and directly invokes
 history buffers are cleared through the production method instead of a local
 test sketch.
 
-✅ **ADAPTER-BACKED PT MATERIAL/ENVIRONMENT/EMITTER/TRANSFORM MUTATION PROOFS ADDED (2026-06-17):**
+✅ **ADAPTER-BACKED PT MATERIAL/ENVIRONMENT/EMITTER/TRANSFORM/TOPOLOGY MUTATION PROOFS ADDED (2026-06-17):**
 `tools/behavioral-gate/gate.mjs` now includes real pt-webgpu mutation lanes that
 render, patch, render again with the same camera/seeds, and require measurable
 readback deltas (`meanAbs >= 2`, `maxAbs >= 8`) with zero GPU errors:
@@ -1259,26 +1259,28 @@ GPU-visible output, `pt/mutation-environment` proves same-sized
 buffers, light-tree/lite-texture refresh, reset, and GPU-visible miss radiance,
 `pt/mutation-emitter` proves `updateEmitter()` point-light patches propagate
 through emitter buffers/light-tree refresh/reset to GPU-visible direct lighting,
-and `pt/mutation-transform` proves `updatePrimitive()` transform patches update
-TLAS state into GPU-visible geometry movement on the full-tier backend.
+`pt/mutation-transform` proves `updatePrimitive()` transform patches update
+TLAS state into GPU-visible geometry movement on the full-tier backend, and
+`pt/mutation-topology` proves vertex/index-count topology resize patches rebuild
+the BLAS/TLAS geometry buffers into GPU-visible output without a full scene reset.
 This moves these seams beyond mock write-count tests on the available WSL adapter.
-2026-06-17 follow-up: the same four mutation lanes now also pass through
+2026-06-17 follow-up: the same five mutation lanes now also pass through
 `npm run behavioral-gate:dzn -- --filter mutation --require-full-tier` on the
 companion full-tier WSL dzn runtime, with committed machine-readable evidence in
 `tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json`. The dzn status
 records `tier:"full"`, zero GPU errors, `nan:false`, and mutation deltas above
 the gate thresholds for material (`meanAbs=41.582`, `maxAbs=174`), environment
 (`meanAbs=136.250`, `maxAbs=190`), emitter (`meanAbs=36.566`, `maxAbs=187`),
-and transform (`meanAbs=38.924`, `maxAbs=230`);
+transform (`meanAbs=38.924`, `maxAbs=230`), and topology
+(`meanAbs=48.359`, `maxAbs=230`);
 `npm run behavioral-gate:dzn-status-check` verifies the artifact. That run also
 exposed and fixed a real primitive-less full-tier validation bug: empty
 `bvhNodes`/`tlasNodes` uploads used 16-byte generic placeholders while the WGSL
 `array<BVHNode>` bindings require a 32-byte minimum stride.
 
-Remaining proof is broader adapter-backed end-to-end promotion: full-tier
-geometry/topology/resource mutation lanes beyond environment buffers, cached
-bind groups, denoiser history, and walkaround GI propagation observed together
-under the WSL GPU/browser harness.
+Remaining proof is broader adapter-backed end-to-end promotion: instanced-count
+and resource mutation lanes, cached bind groups, denoiser history, and walkaround
+GI propagation observed together under the WSL GPU/browser harness.
 
 #### 5D — Documentation sync (part of 100% — prevents false claims)
 
