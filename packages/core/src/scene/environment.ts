@@ -42,13 +42,16 @@ export interface HdriEnvironment {
    *   the lookup direction by `−rotationY` before computing UV, and
    *   `sampleEnvironmentImportance` rotates the CDF-sampled direction by
    *   `+rotationY` to yield the world-space sample direction.
-   * - `walkaround-hybrid` — PARTIAL: the scene-load path builds equirect
+   * - `walkaround-hybrid` — IMPLEMENTED: the scene-load path builds equirect
    *   importance-sampling inverse-CDFs (sinθ-weighted, rotationY-aware) and
-   *   rotates directional IBL samples by `+rotationY`. However full directional
-   *   IBL is not yet complete (no env NEE call site, DDGI probe misses still use
-   *   a procedural gradient); the environment contributes only as an approximate
-   *   tint until the Wave-4 env pillar lands. `rotationY` is wired into the CDF
-   *   build and is NOT silently ignored.
+   *   rotates directional IBL samples by `+rotationY`. The realtime shaders use
+   *   the shared `envRadiance` path for sky misses, ReSTIR-DI environment
+   *   candidates, GI/NRC escape rays, transparent OIT, and material
+   *   `envMapIntensity` lighting. DDGI probe updates receive the same
+   *   environment texture and rotation through their probe environment bindings.
+   *   Promotion evidence still lives in GPU validation gates because these are
+   *   finite realtime/probe samples, but `rotationY` is an active transport
+   *   parameter rather than a tint-only hook.
    */
   readonly rotationY?: number;            // radians, default 0
 }
