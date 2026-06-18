@@ -21,8 +21,9 @@
  *
  * Temporal history is a private ping-pong pair owned by this denoiser
  * (rgba16float, full internal-res). It is reset (hasHistory = 0) on the first
- * frame and whenever the camera moves (`ctx.isMoving`), so a fresh disocclusion
- * does not blend in stale geometry — mirroring BMFR's per-frame accept/reject.
+ * frame, whenever the camera moves (`ctx.isMoving`), and after
+ * `requestAccumReset()` schedules a frame-zero mutation reset, so fresh
+ * disocclusions or scene/light edits do not blend stale history.
  *
  * Pipeline uses `layout: 'auto'`; the UBO is allocated once and re-packed only
  * when the moving / history state changes.
@@ -49,6 +50,7 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import { shouldResetDenoiserHistory } from './historyReset.js';
 
 export class BmfrDenoiser implements Denoiser {
   readonly id = 'bmfr' as const;
@@ -127,9 +129,10 @@ export class BmfrDenoiser implements Denoiser {
     const w = ctx.width;
     const h = ctx.height;
 
-    // Camera motion / first frame → drop history so a disocclusion does not
-    // blend in stale geometry (BMFR accept/reject analogue).
-    const useHistory = this._historyValid && !isMoving;
+    // Camera motion / frame-zero reset → drop history so disocclusions and
+    // mutation-triggered accumulator resets do not blend stale samples.
+    const resetHistory = shouldResetDenoiserHistory(ctx.frameIndex, isMoving);
+    const useHistory = this._historyValid && !resetHistory;
     this._packUniforms(useHistory ? 1 : 0);
 
     const histRead = this._pingPong === 0 ? this._historyA! : this._historyB!;

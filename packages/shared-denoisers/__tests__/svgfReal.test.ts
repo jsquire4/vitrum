@@ -27,7 +27,10 @@ import {
 } from '../src/svgfRealWebGPU.js';
 import {
   SVGF_REPROJ_DEFAULT_UNIFORMS,
+  SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
+  packSVGFReprojUniforms,
 } from '../src/svgfRealBindings.js';
+import { SVGF_REPROJECTION_WGSL } from '../src/wgsl/svgfReprojection.wgsl.js';
 import {
   SVGF_HISTORY_MIN_FOR_MOMENTS,
 } from '../src/wgsl/svgfVarianceFromMoments.wgsl.js';
@@ -188,6 +191,38 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
 // ── Test 2: Disocclusion reset ───────────────────────────────────────────────
 
 describe('svgfReprojCPU — disocclusion reset', () => {
+  it('forceReset rejects otherwise-valid history and writes the current frame', () => {
+    const W = 2, H = 2;
+    const color = makeColor(W, H, 0.5, 0.25, 0.125);
+    const prevColor = makeColor(W, H, 9, 9, 9);
+    const { depth1, norm, objId } = makeGeo(W, H, 2.0, 0, 0, 1);
+    const motion = new Float32Array(W * H * 2).fill(0);
+
+    const result = svgfReprojCPU({
+      currColor: color,
+      prevColor,
+      motionVec: motion,
+      currDepth: depth1,
+      currNormal: norm,
+      currObjId: objId,
+      prevDepth: depth1,
+      prevNormal: norm,
+      prevObjId: objId,
+      historyLengthIn: new Uint32Array(W * H).fill(32),
+      momentsIn: new Float32Array(W * H * 2).fill(8),
+      width: W,
+      height: H,
+      forceReset: 1,
+    });
+
+    for (let i = 0; i < W * H; i++) {
+      expect(result.historyLengthOut[i]).toBe(1);
+      expect(result.colorOut[i * 3] ?? 0).toBeCloseTo(0.5, 5);
+      expect(result.colorOut[i * 3 + 1] ?? 0).toBeCloseTo(0.25, 5);
+      expect(result.colorOut[i * 3 + 2] ?? 0).toBeCloseTo(0.125, 5);
+    }
+  });
+
   it('should reset history to 1 and α=1 on depth jump', () => {
     const W = 2, H = 2;
     const color = makeColor(W, H, 0.5, 0.5, 0.5);
@@ -260,6 +295,25 @@ describe('svgfReprojCPU — disocclusion reset', () => {
     });
 
     expect(result.historyLengthOut[0]).toBe(1);
+  });
+});
+
+describe('SVGFReprojUBO — forceReset packing', () => {
+  it('uses the old 16-byte pad slot for forceReset without changing UBO size', () => {
+    const bytes = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
+    packSVGFReprojUniforms({
+      ...SVGF_REPROJ_DEFAULT_UNIFORMS,
+      forceReset: 1,
+    }, bytes);
+    const view = new DataView(bytes);
+
+    expect(SVGF_REPROJ_UNIFORMS_SIZE_BYTES).toBe(16);
+    expect(view.getUint32(12, true)).toBe(1);
+  });
+
+  it('keeps the WGSL reprojection path gated by forceReset', () => {
+    expect(SVGF_REPROJECTION_WGSL).toContain('forceReset');
+    expect(SVGF_REPROJECTION_WGSL).toContain('let reprojValid = !forceReset');
   });
 });
 

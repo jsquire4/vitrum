@@ -8,6 +8,7 @@ import { NeuralDenoiser } from '../neural.js';
 import { NoneDenoiser } from '../none.js';
 import { OIDNFinalDenoiser } from '../oidnFinal.js';
 import { SVGFRealDenoiser } from '../svgfReal.js';
+import { shouldResetDenoiserHistory } from '../historyReset.js';
 
 const fakeGraph = (): InferenceGraph =>
   ({ run() {} }) as unknown as InferenceGraph;
@@ -132,5 +133,16 @@ describe('Denoiser.state', () => {
       reason: 'OIDN inference cycle failed: boom',
       retryable: true,
     } satisfies DenoiserState);
+  });
+});
+
+describe('shouldResetDenoiserHistory', () => {
+  it('treats frame zero as the mutation reset signal from requestAccumReset', () => {
+    expect(shouldResetDenoiserHistory(0, false)).toBe(true);
+    expect(shouldResetDenoiserHistory(4, false)).toBe(false);
+  });
+
+  it('also resets on camera motion regardless of frame index', () => {
+    expect(shouldResetDenoiserHistory(12, true)).toBe(true);
   });
 });

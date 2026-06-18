@@ -158,6 +158,7 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
     sigmaDepth: opts.reprojUniforms?.sigmaDepth ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaDepth,
     sigmaNormal: opts.reprojUniforms?.sigmaNormal ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaNormal,
     alphaMin: opts.reprojUniforms?.alphaMin ?? SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,
+    forceReset: opts.reprojUniforms?.forceReset ?? SVGF_REPROJ_DEFAULT_UNIFORMS.forceReset ?? 0,
   };
 
   const { device, dispose: destroyEphemeral } = await acquireDenoiseDevice({

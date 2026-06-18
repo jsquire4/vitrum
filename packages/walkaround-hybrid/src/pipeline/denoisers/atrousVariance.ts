@@ -51,6 +51,7 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import { shouldResetDenoiserHistory } from './historyReset.js';
 
 const ATROUS_VARIANCE_ATROUS_UBO_BINDING_STRIDE_BYTES = 256;
 
@@ -240,13 +241,16 @@ export class AtrousVarianceDenoiser implements Denoiser {
       : common.varianceBuffer;
 
     // welfordUboRef.buf is allocated eagerly in initialize().
+    // `frameIndex === 0` is the pipeline-wide mutation reset signal from
+    // requestAccumReset(); camera motion also resets via isMoving.
+    const resetHistory = shouldResetDenoiserHistory(frameIndex, isMoving);
     // W2-C13 follow-up: byte-identical to the prior Uint32Array([frameIndex+1,
     // forceReset, 0, 0]) write — defineUbo packs two u32 fields at offsets 0/4
     // and zero-fills the trailing pad to the 16-byte minimum-binding floor.
     const wUboBytes = new ArrayBuffer(WELFORD_TEMPORAL_UBO.sizeBytes);
     WELFORD_TEMPORAL_UBO.pack(new DataView(wUboBytes), 0, {
       sampleN:    frameIndex + 1,
-      forceReset: isMoving ? 1 : 0,
+      forceReset: resetHistory ? 1 : 0,
     });
     device.queue.writeBuffer(this._welfordUboRef.buf!, 0, wUboBytes);
 

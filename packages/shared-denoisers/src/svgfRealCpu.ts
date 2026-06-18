@@ -52,6 +52,8 @@ export interface SVGFReprojCPUInput {
   readonly sigmaDepth?:  number;
   readonly sigmaNormal?: number;
   readonly alphaMin?:    number;
+  /** Non-zero mirrors SVGFReprojUBO.forceReset and rejects all previous history. */
+  readonly forceReset?:  number;
 }
 
 export interface SVGFReprojCPUOutput {
@@ -70,6 +72,7 @@ export function svgfReprojCPU(input: SVGFReprojCPUInput): SVGFReprojCPUOutput {
   const sigmaDepth  = input.sigmaDepth  ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaDepth;
   const sigmaNormal = input.sigmaNormal ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaNormal;
   const alphaMin    = input.alphaMin    ?? SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin;
+  const forceReset  = (input.forceReset ?? 0) !== 0;
 
   const colorOut   = new Float32Array(W * H * 3);
   const histOut    = new Uint32Array(W * H);
@@ -106,33 +109,35 @@ export function svgfReprojCPU(input: SVGFReprojCPUInput): SVGFReprojCPUOutput {
       let accR = 0, accG = 0, accB = 0;
       let accM1 = 0, accM2 = 0, accH = 0, accW = 0;
 
-      for (let t = 0; t < 4; t++) {
-        const [ox, oy] = tapOffsets[t]!;
-        const tx = prevX + ox;
-        const ty = prevY + oy;
-        if (tx < 0 || ty < 0 || tx >= W || ty >= H) continue;
+      if (!forceReset) {
+        for (let t = 0; t < 4; t++) {
+          const [ox, oy] = tapOffsets[t]!;
+          const tx = prevX + ox;
+          const ty = prevY + oy;
+          if (tx < 0 || ty < 0 || tx >= W || ty >= H) continue;
 
-        const ti = ty * W + tx;
-        const zPrev = input.prevDepth[ti] ?? 0;
-        const nPX = (input.prevNormal[ti * 3]     ?? 0) * 2 - 1;
-        const nPY = (input.prevNormal[ti * 3 + 1] ?? 0) * 2 - 1;
-        const nPZ = (input.prevNormal[ti * 3 + 2] ?? 0) * 2 - 1;
-        const oPrev = input.prevObjId[ti] ?? 0;
+          const ti = ty * W + tx;
+          const zPrev = input.prevDepth[ti] ?? 0;
+          const nPX = (input.prevNormal[ti * 3]     ?? 0) * 2 - 1;
+          const nPY = (input.prevNormal[ti * 3 + 1] ?? 0) * 2 - 1;
+          const nPZ = (input.prevNormal[ti * 3 + 2] ?? 0) * 2 - 1;
+          const oPrev = input.prevObjId[ti] ?? 0;
 
-        // Disocclusion test (Eq. 2)
-        if (Math.abs(zCurr - zPrev) > sigmaDepth * Math.max(zCurr, zPrev) + 1e-4) continue;
-        const nDot = nCurrX * nPX + nCurrY * nPY + nCurrZ * nPZ;
-        if (nDot < sigmaNormal) continue;
-        if (oPrev !== objIdCurr) continue;
+          // Disocclusion test (Eq. 2)
+          if (Math.abs(zCurr - zPrev) > sigmaDepth * Math.max(zCurr, zPrev) + 1e-4) continue;
+          const nDot = nCurrX * nPX + nCurrY * nPY + nCurrZ * nPZ;
+          if (nDot < sigmaNormal) continue;
+          if (oPrev !== objIdCurr) continue;
 
-        const w = tapWeights[t]!;
-        accR += (input.prevColor[ti * 3]     ?? 0) * w;
-        accG += (input.prevColor[ti * 3 + 1] ?? 0) * w;
-        accB += (input.prevColor[ti * 3 + 2] ?? 0) * w;
-        accM1 += (input.momentsIn[ti * 2]     ?? 0) * w;
-        accM2 += (input.momentsIn[ti * 2 + 1] ?? 0) * w;
-        accH  += (input.historyLengthIn[ti] ?? 0) * w;
-        accW  += w;
+          const w = tapWeights[t]!;
+          accR += (input.prevColor[ti * 3]     ?? 0) * w;
+          accG += (input.prevColor[ti * 3 + 1] ?? 0) * w;
+          accB += (input.prevColor[ti * 3 + 2] ?? 0) * w;
+          accM1 += (input.momentsIn[ti * 2]     ?? 0) * w;
+          accM2 += (input.momentsIn[ti * 2 + 1] ?? 0) * w;
+          accH  += (input.historyLengthIn[ti] ?? 0) * w;
+          accW  += w;
+        }
       }
 
       const currR = input.currColor[pi * 3]     ?? 0;
@@ -144,7 +149,7 @@ export function svgfReprojCPU(input: SVGFReprojCPUInput): SVGFReprojCPUOutput {
       let prevR = 0, prevG = 0, prevB = 0;
       let prevM1 = 0, prevM2 = 0;
 
-      if (accW > 1e-6) {
+      if (!forceReset && accW > 1e-6) {
         const invW = 1 / accW;
         prevR = accR * invW;
         prevG = accG * invW;

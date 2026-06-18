@@ -51,6 +51,7 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import { shouldResetDenoiserHistory } from './historyReset.js';
 
 type TextureViewFor = (texture: GPUTexture) => GPUTextureView;
 
@@ -64,12 +65,13 @@ export class SVGFRealDenoiser implements Denoiser {
   private _fallbackPipeline!: GPUComputePipeline;
   private _atrousPipeline!: GPUComputePipeline;
 
-  /** Reprojection UBO — packed once at init time, stable per frame. */
+  /** Reprojection UBO — stable shape; forceReset may be re-packed per frame. */
   private readonly _reprojUboRef: UboRef = { buf: undefined };
   private readonly _atrousUboRefs: UboRef[] = Array.from(
     { length: SVGF_REAL_DEFAULT_ATROUS_ITERATIONS },
     () => ({ buf: undefined }),
   );
+  private _lastForceReset = -1;
 
   /** Ping-pong index for history/moments/prevRadiance (0 = A→read, B→write). */
   private _pingPong = 0;
@@ -133,9 +135,7 @@ export class SVGFRealDenoiser implements Denoiser {
       size: SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    const scratch = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
-    packSVGFReprojUniforms(SVGF_REPROJ_DEFAULT_UNIFORMS, scratch);
-    device.queue.writeBuffer(this._reprojUboRef.buf, 0, scratch);
+    this._writeReprojUniforms(device, 0);
 
     const atrousUsage = GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST;
     for (let i = 0; i < this._atrousUboRefs.length; i += 1) {
@@ -156,6 +156,17 @@ export class SVGFRealDenoiser implements Denoiser {
    *  `this._pingPong === 0 ? x : y` ternaries throughout dispatch(). */
   private _selectPingPong<T>(a: T, b: T): T {
     return this._pingPong === 0 ? a : b;
+  }
+
+  private _writeReprojUniforms(device: GPUDevice, forceReset: number): void {
+    if (this._lastForceReset === forceReset) return;
+    const scratch = new ArrayBuffer(SVGF_REPROJ_UNIFORMS_SIZE_BYTES);
+    packSVGFReprojUniforms({
+      ...SVGF_REPROJ_DEFAULT_UNIFORMS,
+      forceReset,
+    }, scratch);
+    device.queue.writeBuffer(this._reprojUboRef.buf!, 0, scratch);
+    this._lastForceReset = forceReset;
   }
 
   private _buildReprojBindGroup(
@@ -242,12 +253,15 @@ export class SVGFRealDenoiser implements Denoiser {
       wgY16,
       computeDesc,
       resourceCache,
+      isMoving,
     } = ctx;
     const common = resources.common;
     const svgf = resources.svgf;
     const textureViewFor: TextureViewFor = resourceCache
       ? (texture) => resourceCache.textureView(texture)
       : (texture) => texture.createView();
+    const forceReset = shouldResetDenoiserHistory(ctx.frameIndex, isMoving) ? 1 : 0;
+    this._writeReprojUniforms(device, forceReset);
 
     // ── Pass 1: Reprojection ─────────────────────────────────────────────
     // Bindings follow svgfReprojection.wgsl.ts binding declarations (0..14).

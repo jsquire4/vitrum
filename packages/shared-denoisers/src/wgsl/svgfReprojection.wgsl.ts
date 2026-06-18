@@ -60,7 +60,9 @@ struct SVGFReprojUBO {
   // α_min: minimum EMA weight (Schied Eq. 4). Default 0.05 (Schied paper).
   // Prevents convergence from becoming arbitrarily slow at high history counts.
   alphaMin:     f32,
-  _pad:         u32,
+  // non-zero → reject previous-frame history for this dispatch. Walkaround uses
+  // this after scene/material/light mutations that call requestAccumReset().
+  forceReset:   u32,
 };
 
 // ============================================================
@@ -150,19 +152,7 @@ fn svgfReprojMain(@builtin(global_invocation_id) gid: vec3u) {
   let prevPos   = vec2i(floor(prevPosF));
   let frac      = fract(prevPosF);
 
-  // Bilinear gather: four taps.
-  let coords = array<vec2i, 4>(
-    prevPos,
-    prevPos + vec2i(1, 0),
-    prevPos + vec2i(0, 1),
-    prevPos + vec2i(1, 1),
-  );
-  let bilerp = array<f32, 4>(
-    (1.0 - frac.x) * (1.0 - frac.y),
-    frac.x         * (1.0 - frac.y),
-    (1.0 - frac.x) * frac.y,
-    frac.x         * frac.y,
-  );
+  let forceReset = reproj_ubo.forceReset != 0u;
 
   // Accumulate color and moments from valid taps.
   var accColor   = vec3f(0.0);
@@ -171,27 +161,43 @@ fn svgfReprojMain(@builtin(global_invocation_id) gid: vec3u) {
   var accHistory = 0.0;
   var accWeight  = 0.0;
 
-  for (var i = 0; i < 4; i++) {
-    let c = coords[i];
-    if (c.x < 0 || c.y < 0) { continue; }
-    let cu = vec2u(c);
-    if (!tapValid(cu, dims, zCurr, nCurr, objIdCurr, sigmaDepth, sigmaNormal)) {
-      continue;
-    }
-    let w = bilerp[i];
-    let prevC = textureLoad(reproj_prevColor, cu, 0).rgb;
-    let prevM = textureLoad(reproj_momentsIn, cu, 0).rg;
-    let prevH = f32(textureLoad(reproj_historyLengthIn, cu, 0).r);
+  if (!forceReset) {
+    // Bilinear gather: four taps.
+    let coords = array<vec2i, 4>(
+      prevPos,
+      prevPos + vec2i(1, 0),
+      prevPos + vec2i(0, 1),
+      prevPos + vec2i(1, 1),
+    );
+    let bilerp = array<f32, 4>(
+      (1.0 - frac.x) * (1.0 - frac.y),
+      frac.x         * (1.0 - frac.y),
+      (1.0 - frac.x) * frac.y,
+      frac.x         * frac.y,
+    );
 
-    accColor   += prevC * w;
-    accM1      += prevM.r * w;
-    accM2      += prevM.g * w;
-    accHistory += prevH * w;
-    accWeight  += w;
+    for (var i = 0; i < 4; i++) {
+      let c = coords[i];
+      if (c.x < 0 || c.y < 0) { continue; }
+      let cu = vec2u(c);
+      if (!tapValid(cu, dims, zCurr, nCurr, objIdCurr, sigmaDepth, sigmaNormal)) {
+        continue;
+      }
+      let w = bilerp[i];
+      let prevC = textureLoad(reproj_prevColor, cu, 0).rgb;
+      let prevM = textureLoad(reproj_momentsIn, cu, 0).rg;
+      let prevH = f32(textureLoad(reproj_historyLengthIn, cu, 0).r);
+
+      accColor   += prevC * w;
+      accM1      += prevM.r * w;
+      accM2      += prevM.g * w;
+      accHistory += prevH * w;
+      accWeight  += w;
+    }
   }
 
   // Determine if reprojection succeeded (any valid tap).
-  let reprojValid = accWeight > 1e-6;
+  let reprojValid = !forceReset && accWeight > 1e-6;
 
   var newHistory: u32;
   var alpha: f32;

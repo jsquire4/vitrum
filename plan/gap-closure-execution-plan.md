@@ -421,7 +421,11 @@ replacement for V28-B recaptures.
   invalidation seam for reallocating mutation fast paths is now source/test
   pinned in `packages/pt-webgpu/src/__tests__/mutationDesyncs.test.ts`
   (topology resize and instanced-count changes invalidate before commit/reset).
-  Broader denoiser-history and walkaround GI propagation lanes remain.
+  Walkaround denoiser-history reset is now source/shader pinned: frame-zero
+  mutation resets drive Welford `forceReset`, BMFR `hasHistory=0`, and
+  SVGF-real reprojection `forceReset` through the old UBO pad slot, with
+  focused shared-denoiser and walkaround tests. Broader walkaround GI
+  propagation and combined real-adapter mutation-matrix promotion remain.
 
 ## How To Use This Plan
 

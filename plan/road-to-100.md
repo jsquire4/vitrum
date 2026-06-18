@@ -1289,11 +1289,20 @@ exposed and fixed a real primitive-less full-tier validation bug: empty
 now also pins cached bind-group invalidation for reallocating mutation fast
 paths before commit/reset: vertex/index-count topology patches and
 instanced-mesh count changes both call `invalidateBindGroups()`, update scene
-state, reset accumulation, and avoid falling through to `setScene()`. Remaining
-proof is broader adapter-backed end-to-end promotion for denoiser history and
-walkaround GI propagation under the WSL GPU/browser harness; cached bind-group
-coverage here is specifically the pt-webgpu reallocating-mutation seam, not a
-blanket claim about every future cache.
+state, reset accumulation, and avoid falling through to `setScene()`. Cached
+bind-group coverage here is specifically the pt-webgpu reallocating-mutation
+seam, not a blanket claim about every future cache.
+
+2026-06-18 denoiser-history source/shader follow-up:
+`WalkaroundGPUPipeline.requestAccumReset()` schedules the next frame with
+`frameIndex === 0`, and walkaround temporal denoisers now share that as a
+history-reset signal: à-trous-variance writes Welford `forceReset=1`, BMFR
+emits `hasHistory=0`, and SVGF-real packs `forceReset` into the existing
+16-byte reprojection UBO pad slot so the shader rejects prior history and writes
+current-frame samples. `shared-denoisers` CPU/shader/packing tests and
+walkaround denoiser-policy tests pin the seam. Remaining proof is broader
+adapter-backed end-to-end promotion for walkaround GI propagation under the WSL
+GPU/browser harness.
 
 #### 5D — Documentation sync (part of 100% — prevents false claims)
 
