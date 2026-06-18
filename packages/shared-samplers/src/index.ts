@@ -25,6 +25,7 @@ export { tonemapWgsl } from './wgsl/tonemap.wgsl.js';
 export { PCG_WGSL, PCG_MODULE_NAME, PCG_HASH_TO_F32_WGSL } from './wgsl/pcg.wgsl.js';
 export { BSDF_PRIMITIVES_WGSL, BSDF_PRIMITIVES_MODULE_NAME } from './wgsl/bsdfPrimitives.wgsl.js';
 export { luminance, luminanceAt } from './luminance.js';
+export { haltonSO3AxisAngleFromFrameIndex } from './haltonSo3.js';
 export { bakePreethamSkyEquirect } from './preethamSky.js';
 export type { PreethamSkyBake, PreethamSkyBakeOptions } from './preethamSky.js';
 export {
