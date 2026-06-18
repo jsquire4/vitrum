@@ -6,6 +6,7 @@
 const MATRIX_PATH = "plan/renderer-fidelity-matrix.md";
 const PLAYBOOK_PATH = "plan/fidelity-promotion-playbook.md";
 const README_PATH = "README.md";
+const ARCHITECTURE_PATH = "plan/library-architecture.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
 
 const PT_WEBGPU_SUPPORTED_ROWS = [
@@ -204,6 +205,7 @@ async function assertDznStatus(status, feature) {
 const matrix = await readText(MATRIX_PATH);
 const playbook = await readText(PLAYBOOK_PATH);
 const readme = await readText(README_PATH);
+const architecture = await readText(ARCHITECTURE_PATH);
 const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
 
 for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
@@ -246,6 +248,12 @@ if (readme.includes("clearcoat/sheen unsupported")) {
 }
 if (!readme.includes("pt-webgpu (WebGPU)")) {
   fail("README capability matrix must include the pt-webgpu backend column");
+}
+if (architecture.includes("experimental backend, evolving toward Phase 7 goals")) {
+  fail("library architecture still labels the whole pt-webgpu package as the stale experimental backend");
+}
+if (!architecture.includes("peer WebGPU PT backend; row-level fidelity tiers")) {
+  fail("library architecture must describe pt-webgpu with row-level fidelity tiers");
 }
 
 console.log(

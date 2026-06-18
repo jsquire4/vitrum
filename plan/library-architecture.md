@@ -61,9 +61,9 @@
 
 **Depends on** (see `packages/pt-webgl2/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, and `@vitrum/shared-denoisers`.
 
-### `@vitrum/pt-webgpu` *(experimental backend, evolving toward Phase 7 goals)*
+### `@vitrum/pt-webgpu` *(peer WebGPU PT backend; row-level fidelity tiers)*
 
-**Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is an active experimental backend (progressive accumulation + CPU-built BVH + GPU traversal + multi-bounce diffuse/specular baseline), evolving toward hero-wavelength spectral, fuller Disney BSDF coverage, neural radiance caching (NRC), and other techniques that don't fit cleanly into the WebGL2 fragment-shader model.
+**Owns**: a from-scratch WebGPU-native path-tracer backend. Current implementation is a peer PT backend with full/lite adapter tiers, progressive accumulation, CPU-built BVH/TLAS paths, GPU traversal, multi-bounce material transport, bounded emitter arrays, and per-feature fidelity tracked in `plan/renderer-fidelity-matrix.md`. Experimental status is row-level or API-productionisation-specific, not a package-wide "stub/prototype" label.
 
 **Depends on** (see `packages/pt-webgpu/package.json`): `@vitrum/core`, `@vitrum/shared-bvh`, `@vitrum/shared-samplers`, `@vitrum/shared-denoisers`.
 
