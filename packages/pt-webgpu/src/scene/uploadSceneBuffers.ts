@@ -3,6 +3,7 @@ import {
   partitionSceneBySupport,
   solveSkin,
   type AnalyticShape,
+  type EngineWarning,
   type MaterialSpec,
   type Scene,
   type SceneEmitter,
@@ -387,6 +388,11 @@ export interface BuildPackedSceneOptions {
    * sees every static mesh/skinned/instanced primitive.
    */
   readonly geometryMode?: 'tlas' | 'merged';
+
+  /** Structured warning sink used by engine-owned scene ingestion. */
+  readonly onWarning?: (warning: EngineWarning) => void;
+  readonly warningPhase?: EngineWarning['phase'];
+  readonly warningMethod?: string;
 }
 
 /**
@@ -446,7 +452,7 @@ export function packFoldedMaterialEntry(
  * positions/normals/tangents so that packSceneFromCore uses the correct
  * deformed geometry and tangent frame.
  */
-function applySolveSkinToScene(scene: Scene): Scene {
+function applySolveSkinToScene(scene: Scene, warningOptions: BuildPackedSceneOptions): Scene {
   let anyChanged = false;
   const nextPrimitives = scene.primitives.map((p) => {
     if (p.kind !== 'skinned-mesh') return p;
@@ -465,14 +471,37 @@ function applySolveSkinToScene(scene: Scene): Scene {
         ...(solved.tangents ? { tangents: solved.tangents } : {}),
       };
     } catch (err) {
-      console.warn(
-        `[vitrum/pt-webgpu] solveSkin failed for primitive "${p.id}"; using rest pose. ${String(err)}`,
-      );
+      emitSolveSkinFallbackWarning(p.id, err, warningOptions);
       return p;
     }
   });
   if (!anyChanged) return scene;
   return { ...scene, primitives: nextPrimitives };
+}
+
+function emitSolveSkinFallbackWarning(
+  primitiveId: ScenePrimitive['id'],
+  err: unknown,
+  warningOptions: BuildPackedSceneOptions,
+): void {
+  const message = `[vitrum/pt-webgpu] solveSkin failed for primitive "${primitiveId}"; using rest pose. ${String(err)}`;
+  const warning: EngineWarning = {
+    code: 'pt-webgpu.set-scene-skin-fallback',
+    backend: 'pt-webgpu',
+    phase: warningOptions.warningPhase ?? 'setScene',
+    method: warningOptions.warningMethod ?? 'setScene',
+    message,
+    details: {
+      primitiveId: String(primitiveId),
+      fallback: 'rest-pose',
+    },
+    raw: err,
+  };
+  if (warningOptions.onWarning) {
+    warningOptions.onWarning(warning);
+    return;
+  }
+  console.warn(message);
 }
 
 function padTriangleIndicesToVec4(indices: Uint32Array): Uint32Array {
@@ -562,7 +591,7 @@ export function buildPackedScene(
   // Item 1 — apply CPU LBS to skinned-mesh primitives so packSceneFromCore uses
   // solved (deformed) positions instead of rest-pose. morphTargets are also
   // handled by solveSkin (blend applied before LBS).
-  const scene = applySolveSkinToScene(filteredScene);
+  const scene = applySolveSkinToScene(filteredScene, options);
   const geometryMode = options.geometryMode ?? 'tlas';
 
   // Camera-visible emitters: delegate to the shared packFoldedMaterialEntry helper

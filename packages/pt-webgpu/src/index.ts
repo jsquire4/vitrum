@@ -1327,6 +1327,9 @@ class PTEngineWebGPU implements Engine {
     const packed = buildPackedScene(scene, {
       cameraVisibleEmitters: this.#cameraVisibleEmitters,
       geometryMode: this.#traceTier === 'lite' ? 'merged' : 'tlas',
+      onWarning: (warning) => this.#warn(warning),
+      warningPhase: 'setScene',
+      warningMethod: 'setScene',
     });
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();

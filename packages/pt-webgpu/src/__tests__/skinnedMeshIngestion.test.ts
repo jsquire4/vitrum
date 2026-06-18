@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene, SkinnedMeshPrimitive } from '@vitrum/core';
+import type { EngineWarning, Scene, SkinnedMeshPrimitive } from '@vitrum/core';
 import { solveSkin } from '@vitrum/core';
 import { buildPackedScene, scenePackResultFromPacked } from '../scene/uploadSceneBuffers.js';
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
@@ -140,6 +140,49 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
     expect(packed.positions[1]).toBeCloseTo(0, 4);
     expect(packed.positions[2]).toBeCloseTo(0, 4);
     expect(packed.positions[4]).toBeCloseTo(1, 4);
+  });
+
+  it('routes initial solveSkin failures through structured warnings when provided', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+      const restNormals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+      const prim: SkinnedMeshPrimitive = {
+        ...makeSkinnedPrim({
+          id: 'bad-bone-inverses',
+          positions: restPositions,
+          normals: restNormals,
+          bonesMatrix: ident4(),
+        }),
+        boneInverses: new Float32Array(0),
+      };
+      const warnings: EngineWarning[] = [];
+
+      const packed = buildPackedScene(makeScene(prim), {
+        onWarning: (warning) => warnings.push(warning),
+        warningPhase: 'setScene',
+        warningMethod: 'setScene',
+      });
+
+      expect(packed.positions[0]).toBeCloseTo(0, 4);
+      expect(packed.positions[4]).toBeCloseTo(1, 4);
+      expect(warn).not.toHaveBeenCalled();
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]!).toMatchObject({
+        code: 'pt-webgpu.set-scene-skin-fallback',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        details: {
+          primitiveId: 'bad-bone-inverses',
+          fallback: 'rest-pose',
+        },
+      });
+      expect(warnings[0]!.message).toContain('using rest pose');
+      expect(String(warnings[0]!.raw)).toContain('boneInverses length');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('morphTargets are applied before LBS when morphWeights are non-zero', () => {
