@@ -3,9 +3,9 @@
 glTF 2.0 → `@vitrum/core` Scene adapter.
 
 Hand-rolled GLB container parsing and accessor unpacking. Browser + Node
-compatible; image decoding is pluggable, with a small built-in Node PNG fallback
-for `loadGltfAndDecodeTextures()`. Draco / meshopt compressed geometry is
-supported via host-supplied decoder hooks (the package bundles no compressed
+compatible; image decoding is pluggable, with small built-in Node PNG/JPEG
+fallbacks for `loadGltfAndDecodeTextures()`. Draco / meshopt compressed geometry
+is supported via host-supplied decoder hooks (the package bundles no compressed
 geometry decoder — see [Compressed geometry](#compressed-geometry)).
 
 ---

@@ -533,6 +533,8 @@ async function decodeTextureRef(
   if (decodePixels == null) {
     if (canDecodeRawPngPixelsWithNode(ref.handle as RawImageHandle)) {
       decodePixels = decodeRawPngPixelsWithNode;
+    } else if (canDecodeRawJpegPixelsWithNode(ref.handle as RawImageHandle)) {
+      decodePixels = decodeRawJpegPixelsWithNode;
     } else if (canDecodeRawImagePixelsWithPlatform()) {
       decodePixels = decodeRawImagePixelsWithPlatform;
     }
@@ -656,6 +658,10 @@ function canDecodeRawPngPixelsWithNode(handle: RawImageHandle): boolean {
   return isNodeLikeHost() && isPngRawImageHandle(handle);
 }
 
+function canDecodeRawJpegPixelsWithNode(handle: RawImageHandle): boolean {
+  return isNodeLikeHost() && isJpegRawImageHandle(handle);
+}
+
 function isNodeLikeHost(): boolean {
   const host = globalThis as typeof globalThis & {
     process?: { versions?: { node?: unknown } };
@@ -674,6 +680,13 @@ function isPngRawImageHandle(handle: RawImageHandle): boolean {
     data[5] === 0x0a &&
     data[6] === 0x1a &&
     data[7] === 0x0a;
+}
+
+function isJpegRawImageHandle(handle: RawImageHandle): boolean {
+  const data = handle.data;
+  const mimeType = handle.mimeType.toLowerCase();
+  return (mimeType === 'image/jpeg' || mimeType === 'image/jpg') ||
+    (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff);
 }
 
 const decodeRawPngPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, context) => {
@@ -698,6 +711,28 @@ const decodeRawPngPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, con
   }
 };
 
+const decodeRawJpegPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, context) => {
+  try {
+    const jpeg = await importJpegJs();
+    const decode = jpegDecodeFn(jpeg);
+    const decoded = decode(nodeBufferFromUint8Array(handle.data), { useTArray: true });
+    return {
+      width: decoded.width,
+      height: decoded.height,
+      data: decoded.data,
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: context.colorSpace,
+    };
+  } catch (err) {
+    throw new PlatformTextureDecodeError(
+      'platform-image-decode-failed',
+      `[vitrum/gltf-adapter] ${context.path} could not be decoded as JPEG through the built-in Node decoder: ` +
+        `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
+    );
+  }
+};
+
 interface PngJsSyncReader {
   read(data: unknown): {
     readonly width: number;
@@ -715,6 +750,37 @@ interface PngJsModule {
 async function importPngJs(): Promise<PngJsModule> {
   const specifier = 'pngjs';
   return await import(specifier) as PngJsModule;
+}
+
+interface JpegJsDecodedImage {
+  readonly width: number;
+  readonly height: number;
+  readonly data: Uint8Array | Uint8ClampedArray;
+}
+
+type JpegJsDecodeFn = (
+  data: unknown,
+  options?: { readonly useTArray?: boolean },
+) => JpegJsDecodedImage;
+
+interface JpegJsModule {
+  readonly decode?: JpegJsDecodeFn;
+  readonly default?: {
+    readonly decode?: JpegJsDecodeFn;
+  };
+}
+
+async function importJpegJs(): Promise<JpegJsModule> {
+  const specifier = 'jpeg-js';
+  return await import(specifier) as JpegJsModule;
+}
+
+function jpegDecodeFn(module: JpegJsModule): JpegJsDecodeFn {
+  const decode = module.decode ?? module.default?.decode;
+  if (typeof decode !== 'function') {
+    throw new Error('jpeg-js decode export is unavailable');
+  }
+  return decode;
 }
 
 function nodeBufferFromUint8Array(bytes: Uint8Array): unknown {
