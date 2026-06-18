@@ -151,31 +151,31 @@ Source rows: `plan/renderer-fidelity-matrix.md:19-31`. "Implemented?" was
 
 | # | Feature | Backend | Implemented? (verified) | Correctness-validatable on lavapipe NOW? | Needs real-GPU perf? | Scenario (seed / res / spp) | Promotion blocker |
 |---|---------|---------|-------------------------|-------------------------------------------|----------------------|------------------------------|-------------------|
-| 1 | Hero-λ + CMF accumulation | pt-webgpu | ✅ `HERO_WAVELENGTH_WGSL` real Wilkie 2014 MIS+CMF→RGB (`shared-samplers/src/wgsl/heroWavelength.wgsl.ts:1-60`) | ✅ | No | `rfe08-13-spectral-payload` (4242 / 1280×720 / 1024) | Native lavapipe capture adapter not yet wired (§1.0) |
-| 2 | Spectral Beer–Lambert (packed μ) | pt-webgpu | ✅ `sampleMaterialSpectralMu` packed accessor + 32-bin grid (`pt-webgpu/.../material.wgsl.ts:206, 423`) | ✅ | No | `rfe08-13-spectral-payload` (4242 / 1280×720 / 1024) | Same as #1 (shares the spectral preset + extension flag) |
-| 3 | Multi-layer thin-film TMM | pt-webgpu | ✅ `thinFilmTmmRt` real Belcour & Barla transfer-matrix solver (`pt-webgpu/.../material.wgsl.ts:229-285`) | ✅ (hue-vs-angle is a pixel claim) | No | `rfe14-thinfilm-angle-shift` (9001 / 1280×720 / 1024) | Capture adapter (§1.0); needs the angle-sweep variant captured |
-| 4 | Cauchy dispersion | pt-webgpu | ✅ `cauchyIorAtLambda` real (`pt-webgpu/.../material.wgsl.ts:340-351`); gated on spectral ext + `dispersionAbbeNumber` | ✅ | No | `rfe08-13-spectral-payload` (shares spectral preset) | Same as #1/#2; no dedicated dispersion scenario yet — may need a prism/fan scene |
-| 5 | Layered front/back + transmission MIS | pt-webgpu | ✅ `activeLayerWeightRgb` + η² PDF (matrix mech: `wgslContract.test.ts`); WG-4 landed | ✅ | No | `rfe03-layered-front-back` (1337 / 1280×720 / 512) | Capture adapter (§1.0); baseline PNG already committed (`baseline/rfe03-layered-front-back.png`) |
-| 6 | SSS / translucent panels | pt-webgpu | ✅ derived `isTranslucent` gate (mech: `wgslContract.test.ts`) | ✅ (mixed-panel "SSS only where flagged" is a pixel claim) | No | `rfe07-11-sss-mixed-panels` (2027 / 1280×720 / 512) | Capture adapter (§1.0); baseline PNG committed |
-| 7 | Multi-emitter direct lighting | pt-webgpu | ✅ bounded emitter arrays (mech: `scenePack.test.ts`, `wgslContract.test.ts`) | ✅ (≈2× floor irradiance is a pixel claim; cf. `m5-multi-light-cornell`) | No | `rfe09-bridge-global-cmf` (31415 / 1024×1024 / 256) or `m5-multi-light-cornell` (6121) | Capture adapter (§1.0); no emitter-count-only baseline committed yet |
-| 8 | Material-fields parity (cornell) | pt-webgpu | ✅ (pt-webgl2 is tracked in the fidelity matrix separately); pt-webgpu side WG-0 baseline committed | ✅ | No | `ptwgpu-parity-material-fields` (777 / 1280×720 / 512) | **Closest to done** — baseline `baseline/ptwgpu-parity-material-fields.png` committed; strict-hash re-capture on full-tier adapter is the only step |
-| 9 | Caustic strategies | pt-webgpu | ✅ strategy plumbing (mech: `factoryCapabilities.test.ts`); full tier only | ✅ correctness; ⚠️ **also a perf/quality claim** | **YES** (quality **and perf** per the Road §6.1 promotion process) | `rfe05-caustic-strategy` (27182 / 1280×720 / 1024), 3 variants `none / manifold-nee / photon-map` | Real-GPU perf number required; PSNR relaxed to 26 |
+| 1 | Hero-λ + CMF accumulation | pt-webgpu | ✅ `HERO_WAVELENGTH_WGSL` real Wilkie 2014 MIS+CMF→RGB (`shared-samplers/src/wgsl/heroWavelength.wgsl.ts:1-60`) | ✅ | No | `rfe08-13-spectral-payload` / `ptwgpu-spectral-hero` | ✅ CLOSED for pt-webgpu: renderer matrix cites dzn spectral ON/OFF A/B plus committed `baseline/ptwgpu-spectral-hero.png`; `npm run renderer-fidelity-proof-check` verifies the matrix text, PNG, and dzn full-tier status. |
+| 2 | Spectral Beer–Lambert (packed μ) | pt-webgpu | ✅ `sampleMaterialSpectralMu` packed accessor + 32-bin grid (`pt-webgpu/.../material.wgsl.ts:206, 423`) | ✅ | No | `rfe08-13-spectral-payload` / spectral status | ✅ CLOSED for pt-webgpu: matrix records the dzn μ-curve present-vs-absent A/B and the proof check pins the dzn spectral full-tier status. |
+| 3 | Multi-layer thin-film TMM | pt-webgpu | ✅ `thinFilmTmmRt` real Belcour & Barla transfer-matrix solver (`pt-webgpu/.../material.wgsl.ts:229-285`) | ✅ (hue-vs-angle is a pixel claim) | No | `rfe14-thinfilm-angle-shift` / `ptwgpu-thinfilm-angle` | ✅ CLOSED for pt-webgpu: matrix cites the dzn hue-vs-angle A/B plus committed `baseline/ptwgpu-thinfilm-angle.png`; proof check pins both. |
+| 4 | Cauchy dispersion | pt-webgpu | ✅ `cauchyIorAtLambda` real (`pt-webgpu/.../material.wgsl.ts:340-351`); gated on spectral ext + `dispersionAbbeNumber` | ✅ | No | `rfe08-13-spectral-payload` / `ptwgpu-cauchy-dispersion` | ✅ CLOSED for pt-webgpu: matrix cites dzn Abbe-set A/B plus committed `baseline/ptwgpu-cauchy-dispersion.png`; proof check also pins dzn spectral full-tier status. |
+| 5 | Layered front/back + transmission MIS | pt-webgpu | ✅ `activeLayerWeightRgb` + η² PDF (matrix mech: `wgslContract.test.ts`); WG-4 landed | ✅ | No | `rfe03-layered-front-back` / `ptwgpu-layered-front` | ✅ CLOSED for pt-webgpu: matrix cites dzn front/back A/B plus committed `baseline/ptwgpu-layered-front.png`; proof check pins the artifact. |
+| 6 | SSS / translucent panels | pt-webgpu | ✅ derived `isTranslucent` gate (mech: `wgslContract.test.ts`) | ✅ (mixed-panel "SSS only where flagged" is a pixel claim) | No | `rfe07-11-sss-mixed-panels` / `ptwgpu-sss-mixed-panels` | ✅ CLOSED for pt-webgpu: matrix cites dzn mixed-panel A/B plus committed `baseline/ptwgpu-sss-mixed-panels.png`; proof check pins the artifact. |
+| 7 | Multi-emitter direct lighting | pt-webgpu | ✅ bounded emitter arrays (mech: `scenePack.test.ts`, `wgslContract.test.ts`) | ✅ (≈2× floor irradiance is a pixel claim; cf. `m5-multi-light-cornell`) | No | `rfe09-bridge-global-cmf` / `cornell-manylights` | ✅ CLOSED for pt-webgpu: matrix cites committed `baseline/cornell-manylights.png`; proof check also pins point/disc/spot dzn full-tier status. |
+| 8 | Material-fields parity (cornell) | pt-webgpu | ✅ (pt-webgl2 is tracked in the fidelity matrix separately); pt-webgpu side WG-0 baseline committed | ✅ | No | `ptwgpu-parity-material-fields` (777 / 1280×720 / 512) | ✅ CLOSED for pt-webgpu: matrix records byte-for-byte strict-hash re-capture (PSNR 999 dB) against `baseline/ptwgpu-parity-material-fields.png`; proof check pins the artifact. |
+| 9 | Caustic strategies | pt-webgpu | ✅ strategy plumbing (mech: `factoryCapabilities.test.ts`); full tier only | ✅ correctness | No for current fidelity row; real-GPU throughput remains a separate performance track | `rfe05-caustic-strategy` / `mnee-glass-slab` | ✅ CLOSED for pt-webgpu fidelity: matrix cites deterministic MNEE GPU validation plus committed `baseline/mnee-glass-slab.png`; proof check also pins dzn caustic full-tier status. |
 | 10 | SVGF-real denoiser | pt-webgpu | ❌ **`unsupported` — intentional regime mismatch, NOT promotable** (wiring removed; mech: `unsupportedDenoiserDegrade.test.ts` asserts warn + degrade-to-no-denoise) | n/a | n/a | n/a | pt-webgpu is a CONVERGED progressive tracer; SVGF is a real-time 1-spp spatiotemporal filter. The converged denoiser is **`oidn-final`**. SVGF stays in `shared-denoisers` for the realtime walkaround stack only. Do not "promote" — nothing to capture. |
 | 10b | SVGF-real denoiser | **pt-webgl2** | ❌ **`unsupported` — same regime mismatch** (converged tracer; only `oidn-final` is wired in `ptEngineWebGL2.ts`) | n/a | n/a | n/a | Same as #10: SVGF-real is real-time-only and intentionally unsupported on this converged backend. Use `oidn-final`. Not a code gap to fill. |
-| 11 | BDPT (eye↔light) | pt-webgpu | ✅ GPU light-subpath shipped per roadmap §0.5 (`bdptExtendLightSubpath` @compute); CPU fill + kernel eval (mech: `bdptPlumbing.test.ts`) | ✅ converged A/B is a pixel claim | No (correctness); perf is a separate throughput win (roadmap §6.2) | Cornell-box BDPT-on scene at fixed seed (cf. `HARDWARE-VALIDATION-NEEDS.md V1`) | Capture adapter (§1.0); no dedicated BDPT gap-closure scenario in presets — author one |
+| 11 | BDPT (eye↔light) | pt-webgpu | ✅ GPU light-subpath shipped per roadmap §0.5 (`bdptExtendLightSubpath` @compute); CPU fill + kernel eval (mech: `bdptPlumbing.test.ts`) | ✅ converged A/B is a pixel claim | No (correctness); perf is a separate throughput win (roadmap §6.2) | Cornell-box BDPT-on / `cornell-bdpt-on` | ✅ CLOSED for pt-webgpu fidelity: matrix cites V18/V25 GPU validation plus committed `baseline/cornell-bdpt-on.png`; proof check also pins dzn BDPT full-tier status. Multi-vertex BDPT remains a separate research-mode Road tail, not this matrix row. |
 | 11b | BDPT (eye↔light) | pt-webgl2 | ✅ native WebGL2 path (mech: `bdptDriver.test.ts`, `composeTraceGlsl.test.ts`) | ⚠️ pt-webgl2 is **WebGL2** — native lavapipe here is a **WebGPU** device, so this row still needs a browser GL capture path. | No | same Cornell BDPT scene, `backend: pt-webgl2` | pt-webgl2 needs a real-browser GL capture; lavapipe-WebGPU does not cover WebGL2 rows |
 
-**Lavapipe-NOW rows (correctness, no perf gate):** #1, #2, #3, #4, #5, #6, #7,
-#8, #11(pt-webgpu) — i.e. **every pt-webgpu hero-material/spectral/layered/
-SSS/emitter/BDPT row**. These are the bulk of the matrix and the WSL env's whole
-point: their claims are *"are the pixels physically right"*, which a CPU
-rasteriser answers correctly.
+**Already promoted for pt-webgpu:** #1, #2, #3, #4, #5, #6, #7, #8, #9, and
+#11 are no longer queued adapter work. `plan/renderer-fidelity-matrix.md` is the
+active truth table, and `npm run renderer-fidelity-proof-check` verifies that
+its pt-webgpu `supported` rows still cite committed runtime evidence.
 
-**Additionally need real-GPU (transport C):**
-- #9 caustic strategies — the acceptance criterion explicitly includes **perf**.
+**Additionally need real-GPU/browser (transport C):**
 - Any pt-webgl2/WebGL2 row (#11b plus pt-webgl2 spectral/caustic fidelity rows)
   — pt-webgl2 is **WebGL2**, and the
   native lavapipe device is **WebGPU**; WebGL2 capture still needs a real browser.
+- Real-GPU caustic throughput remains a performance-program item, not a blocker
+  for the current pt-webgpu fidelity-matrix support grade.
 
 **Not promotable at all (intentional regime mismatch):** #10 and #10b SVGF-real
 are `unsupported` on **both** converged backends (pt-webgpu and pt-webgl2) by
@@ -185,48 +185,26 @@ the real SVGF impl stays in `shared-denoisers` for the realtime walkaround stack
 
 ---
 
-## 3. Sequencing (cheapest/highest-confidence first)
+## 3. Sequencing (current)
 
-### Tier 1 — promote now on lavapipe, lowest risk
+### Closed for pt-webgpu fidelity
 
-1. **#8 material-fields parity (pt-webgpu)** — baseline already committed
-   (`baseline/ptwgpu-parity-material-fields.png`); just needs a full-tier strict
-   re-capture (lavapipe clears full tier). Highest confidence, lowest effort.
-2. **#5 layered front/back** and **#6 SSS/translucent** — baselines committed
-   (`baseline/rfe03-*`, `baseline/rfe07-11-*`); WG-4 already landed for #5. Pure
-   correctness A/B against the committed PNGs.
-3. **#3 thin-film TMM** — verified real solver; baseline committed
-   (`baseline/rfe14-*`); needs the angle-sweep variant captured. Visually
-   striking + deterministic = high-confidence promotion.
+Rows #1-#9 and #11 are closed for the pt-webgpu column of the renderer-fidelity
+matrix. Keep `npm run renderer-fidelity-proof-check` green when editing the
+matrix or moving baselines.
 
-### Tier 2 — lavapipe, depends on the spectral implementation landing
+### Still queued
 
-4. **#1 hero-λ, #2 spectral Beer–Lambert, #4 Cauchy dispersion** — all share the
-   `rfe08-13-spectral-payload` preset + the `vitrum.ptWebgpu.spectralHeroWavelength`
-   extension. The pt-webgpu side is verified-real and independent from pt-webgl2
-   browser-capture promotion tails — capture the **pt-webgpu** spectral rows
-   first.
-
-### Tier 3 — lavapipe correctness, but author a scenario first
-
-5. **#7 multi-emitter** — no emitter-count-only baseline committed; reuse
-   `m5-multi-light-cornell` (seed 6121) or add a preset, then capture.
-6. **#11 BDPT (pt-webgpu)** — GPU light-subpath is shipped; no dedicated
-   gap-closure scenario exists. Author a Cornell-BDPT-on preset (cf.
-   `HARDWARE-VALIDATION-NEEDS.md V1`, seeded), then lavapipe-capture the
-   converged A/B.
+1. **pt-webgl2/WebGL2 fidelity rows** — WebGL2 path; needs real-browser GL
+   capture. The WSL native lavapipe device is a WebGPU adapter and cannot prove
+   pt-webgl2 runtime A/B rows.
+2. **Research/performance tails** — multi-vertex BDPT radiometric promotion and
+   caustic strategy throughput remain Road/performance-program work. They should
+   not be represented as missing pt-webgpu fidelity-matrix proof.
 
 (SVGF-real, formerly Tier-3 #10, is no longer in the promotion queue — it is
 `unsupported` on both converged backends by design; see "Not in the promotion
 queue" below.)
-
-### Tier 4 — requires real GPU (transport C), schedule on a Windows-Chrome session
-
-8. **#9 caustic strategies** — perf-gated (`none / manifold-nee / photon-map`
-   ms/sample on the RTX 4090 via `VITRUM_USE_WIN_CHROME=1`). Cannot finish on
-   lavapipe.
-9. **All pt-webgl2/WebGL2 rows** (#11b plus pt-webgl2 spectral/caustic fidelity)
-   — WebGL2 path; needs real-browser GL capture.
 
 ### Not in the promotion queue — real code work (roadmap §0.5, north-star fidelity)
 
@@ -245,12 +223,8 @@ queue" below.)
 ### Dependency summary
 
 ```
-lavapipe env (tools/gpu-env, DONE) ─┬─► Tier 1 (#8, #5, #6, #3)         [promote now]
-                                    ├─► Tier 2 (#1, #2, #4)             [pt-webgpu independent of WebGL2 capture]
-                                    └─► Tier 3 (#7, #11-ptwgpu)         [author scenario, then capture]
-
-native lavapipe PNG adapter (NOT WIRED, FINDINGS.md:138) ──► unblocks all of the above for hands-free WSL capture
-real GPU / Win-Chrome (transport C) ──► Tier 4 (#9 perf, all pt-webgl2/WebGL2 rows)
+pt-webgpu fidelity rows (#1-#9, #11) ──► CLOSED; guarded by renderer-fidelity-proof-check
+real GPU / Win-Chrome (transport C) ───► pt-webgl2/WebGL2 browser A/B rows + perf tails
 SVGF-real (#10 / #10b) ──► NOT in queue: unsupported by design on both converged backends (oidn-final is the converged denoiser)
 ```
 
