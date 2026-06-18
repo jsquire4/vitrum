@@ -105,6 +105,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     const result = await loadGltfWithProgressiveEngine(gltf, options);
 
     expect(result.backend).toBe('pt-webgpu');
+    expect(result.profileId).toBe('pt-webgpu-lite');
     expect(result.engine).toBe(handle);
     expect(result.attached).toBe(true);
     expect(result.textureDecodeReport).toBe(result.asset.textureDecodeReport);
@@ -180,5 +181,43 @@ describe('@vitrum/engine/gltf progressive helper', () => {
 
     expect(probeAdapterProfileMock).toHaveBeenCalledTimes(1);
     expect(createProgressiveEngineMock).not.toHaveBeenCalled();
+  });
+
+  it('reports the full runtime profile for full-tier progressive loads', async () => {
+    probeAdapterProfileMock.mockResolvedValueOnce({
+      hasWebGPU: true,
+      hybridCapable: true,
+      hybridLiteCapable: true,
+      ptWebgpuTier: 'full',
+      maxStorageBuffersPerStage: 16,
+      maxStorageTexturesPerStage: 8,
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      hasWebGL2: true,
+      recommendedRealtimeTier: 'ultra',
+      recommendedHeroBackend: 'pt-webgpu',
+      limits: Object.freeze({}),
+    });
+    const { gltf, buffers } = makeInlineTexturedTriangleGltf();
+    delete gltf.cameras;
+    const handle = {
+      coordinator: {},
+      realtime: {},
+      converged: {},
+      dispose: vi.fn(),
+    };
+    createProgressiveEngineMock.mockResolvedValueOnce(handle);
+
+    const result = await loadGltfWithProgressiveEngine(gltf, {
+      buffers,
+      engineOptions: {
+        canvas: {} as HTMLCanvasElement,
+        seedFromRealtime: false,
+      },
+    });
+
+    expect(result.backend).toBe('pt-webgpu');
+    expect(result.profileId).toBe('pt-webgpu');
+    expect(result.engine).toBe(handle);
   });
 });

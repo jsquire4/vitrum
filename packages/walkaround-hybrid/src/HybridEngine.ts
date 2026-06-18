@@ -786,11 +786,12 @@ export class HybridEngine implements Engine {
       //   - mesh-area → folded into the referenced mesh's emissive material, so
       //     it reaches both the ReSTIR-DI emissive-triangle path and DDGI as
       //     emissive geometry.
-      //   - point / spot → projected to DDGI fixture lights by
-      //     coreEmittersToDDGILights. Spots include real cone data (spotAxis +
-      //     cosInner/cosOuter); evalPointLight in the probe shader applies the
-      //     smoothstep falloff when the axis is non-zero (axisLen² > 0.25).
-      //     Points carry a zero axis and remain omnidirectional.
+      //   - point / spot → analytic direct-light terms in shade/OIT plus
+      //     DDGI/RC fixture-light uploads via coreEmittersToDDGILights. Spots
+      //     include real cone data (spotAxis + cosInner/cosOuter);
+      //     evalPointLight in the probe shaders applies the smoothstep falloff
+      //     when the axis is non-zero (axisLen² > 0.25). Points carry a zero
+      //     axis and remain omnidirectional.
       //   - directional → projected to a DDGI `sun` light by
       //     coreEmittersToDDGILights, carrying the emitter's REAL direction
       //     (negated to a travel direction), intensity, and colour into the

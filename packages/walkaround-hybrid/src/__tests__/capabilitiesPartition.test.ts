@@ -11,10 +11,11 @@
  *          before the core-native BVH+DDGI path.
  *        - emitters: directional / rect-area / disc-area / point / spot /
  *          mesh-area (rect/disc → ReSTIR-DI tris + DDGI fixtures; mesh-area →
- *          mesh emissive; point/spot → DDGI fixture lights; directional →
- *          DDGI `sun` light via coreEmittersToDDGILights, carrying the
- *          emitter's real direction/intensity/colour, single-counted by the
- *          host's sun-intensity multiplier=1). A scene directional is KEPT
+ *          mesh emissive; point/spot → shade/OIT analytic direct-light terms
+ *          plus DDGI/RC fixture lights; directional → DDGI `sun` light via
+ *          coreEmittersToDDGILights, carrying the emitter's real
+ *          direction/intensity/colour, single-counted by the host's
+ *          sun-intensity multiplier=1). A scene directional is KEPT
  *          (not warn-skipped) and reaches the DDGI sun path.
  *   2. `setScene` filters the scene through `partitionSceneBySupport(scene,
  *      this.capabilities)` BEFORE BVH ingestion, so an

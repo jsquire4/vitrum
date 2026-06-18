@@ -69,6 +69,7 @@ export type LoadGltfWithProgressiveEngineOptions = Omit<
 export interface GltfProgressiveEngineResult {
   readonly asset: GltfAssetResult;
   readonly backend: 'pt-webgpu';
+  readonly profileId: GltfBackendProfileId;
   readonly engine: ProgressiveEngineHandle;
   readonly controller: GltfSceneController;
   readonly attached: true;
@@ -145,7 +146,7 @@ export async function loadGltfWithProgressiveEngine(
     backend: 'pt-webgpu',
     attachScene: false,
   });
-  await resolvePtWebgpuRuntimeProfile(
+  const runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
     'pt-webgpu',
     adapterOptions.compatibilityMode ?? 'best-effort',
     loaded.asset,
@@ -160,6 +161,7 @@ export async function loadGltfWithProgressiveEngine(
   return {
     asset: loaded.asset,
     backend: 'pt-webgpu',
+    profileId: runtimeProfileId ?? loaded.profileId,
     engine,
     controller: loaded.controller,
     attached: true,

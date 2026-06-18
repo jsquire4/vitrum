@@ -199,11 +199,10 @@ const ALL_EMITTERS_NATIVE: BackendSupportDetails['emitters'] = Object.freeze({
 });
 
 /**
- * Walkaround-hybrid emitter support: point/spot are routed through the DDGI
- * fixture-light path only (no ReSTIR-DI term) — they contribute to indirect
- * GI via probe radiance but are NOT directly sampled in the ReSTIR direct-
- * illumination reservoir. Road-to-100: H41 Option A adds an analytic NEE loop
- * for point/spot in the shade pass (W4).
+ * Walkaround-hybrid emitter support: point/spot now have native analytic
+ * direct-light paths in shade / transparent OIT and are also projected into
+ * DDGI / RC fixture-light uploads for probe transport. ReSTIR-DI reservoirs
+ * remain area-emitter based, but point/spot are no longer DDGI-only rows.
  */
 const WALKAROUND_EMITTERS: BackendSupportDetails['emitters'] = Object.freeze({
   directional: 'native',
@@ -905,10 +904,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportedPrimitiveKinds: ['mesh', 'skinned-mesh', 'instanced-mesh', 'analytic'],
     // rect-area/disc-area → ReSTIR-DI emitter tris + DDGI fixtures; mesh-area →
     // mesh emissive material; directional → DDGI `sun` light. point/spot →
-    // DDGI fixture lights (DDGI-only routing; no ReSTIR-DI direct term —
-    // grade 'approximate'; see WALKAROUND_EMITTERS). Spots carry real cone data
-    // (spotAxis + cosInner/cosOuter) and evalPointLight in the probe shader
-    // applies smoothstep cone falloff. See coreEmittersToDDGILights.
+    // analytic shade/OIT direct-light terms plus DDGI/RC fixture lights. Spots
+    // carry real cone data (spotAxis + cosInner/cosOuter) and evalPointLight in
+    // the probe shader applies smoothstep cone falloff. See
+    // coreEmittersToDDGILights and shade.wgsl's H41 analytic NEE loop.
     // `directional` → coreEmittersToDDGILights maps it to a `sun` DDGILight
     // carrying its real direction + intensity + colour; the host single-counts it
     // by setting the DDGI sun-intensity multiplier to 1. ReSTIR-DI harvests no
