@@ -6,7 +6,10 @@ import {
   evaluateBrdfWithSheen,
   type Vec3,
 } from '../inverse/brdfAdjoint.js';
-import { PT_WEBGPU_ADJOINT_PASS_WGSL } from '../wgsl/pathTrace/adjointPass.wgsl.js';
+import {
+  ADJOINT_EMITTER_TARGET_DIRECTIONAL,
+  PT_WEBGPU_ADJOINT_PASS_WGSL,
+} from '../wgsl/pathTrace/adjointPass.wgsl.js';
 
 const H = 1e-4;
 
@@ -148,6 +151,44 @@ describe('path-replay adjoint emitter gradients — independent CPU oracle', () 
     expect(fdIntensity).toBeCloseTo(expectedIntensity, 6);
   });
 
+  it('directional emitter derivatives stay defined at zero radiance', () => {
+    const factor = Math.max(dot(normal, wi), 0);
+    const black: Vec3 = [0, 0, 0];
+    const zeroIntensity = 0;
+    const expectedIntensityAtZero = dot(dLoss, mul(brdf, scale(color, factor)));
+    const fdIntensityAtZero = (
+      deltaEmitterLoss(color, zeroIntensity + H, factor) -
+      deltaEmitterLoss(color, zeroIntensity - H, factor)
+    ) / (2 * H);
+    expect(fdIntensityAtZero).toBeCloseTo(expectedIntensityAtZero, 6);
+
+    for (let c = 0; c < 3; c++) {
+      const plus = perturb(color, c, H);
+      const minus = perturb(color, c, -H);
+      const fdColorAtZeroIntensity = (
+        deltaEmitterLoss(plus, zeroIntensity, factor) -
+        deltaEmitterLoss(minus, zeroIntensity, factor)
+      ) / (2 * H);
+      expect(fdColorAtZeroIntensity).toBeCloseTo(0, 6);
+    }
+
+    const fdIntensityAtBlack = (
+      deltaEmitterLoss(black, intensity + H, factor) -
+      deltaEmitterLoss(black, intensity - H, factor)
+    ) / (2 * H);
+    expect(fdIntensityAtBlack).toBeCloseTo(0, 6);
+
+    for (let c = 0; c < 3; c++) {
+      const plus = perturb(black, c, H);
+      const minus = perturb(black, c, -H);
+      const fdColorAtBlack = (
+        deltaEmitterLoss(plus, intensity, factor) -
+        deltaEmitterLoss(minus, intensity, factor)
+      ) / (2 * H);
+      expect(fdColorAtBlack).toBeCloseTo(dLoss[c]! * brdf[c]! * factor * intensity, 6);
+    }
+  });
+
   it('mapped mesh-area gradients use packedRadiance/color and packedRadiance/intensity quotients when nonzero', () => {
     const mapScale: Vec3 = [0.35, 0.8, 1.6];
     const factor = Math.max(dot(normal, wi), 0) / 2.9;
@@ -178,6 +219,8 @@ describe('path-replay adjoint emitter gradients — independent CPU oracle', () 
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn scatterEmitterRadianceGradient');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dPackedRadiance_dColor = packedRadiance / emitterColor;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dPackedRadiance_dIntensity = packedRadiance / emitterIntensity;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('if (dIrrMean.w <= 1e-6) { continue; }');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * attenuation)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * areaFactor)');
   });

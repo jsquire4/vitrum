@@ -1063,14 +1063,28 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       intensity: 1,
       direction: [0, -1, 0] as [number, number, number],
       angularDiameter: 0.01,
-    }], 'emitters.soft-sun.intensity'],
-  ])('keeps %s emitter targets on path-replay now that cone sampling is mirrored', (_label, emitters, path) => {
+    }], 'emitters.soft-sun.intensity', 'scalar' as const],
+    ['zero-intensity directional intensity', [{
+      kind: 'directional' as const,
+      id: 'dark-sun',
+      color: [1, 0.8, 0.6] as [number, number, number],
+      intensity: 0,
+      direction: [0, -1, 0] as [number, number, number],
+    }], 'emitters.dark-sun.intensity', 'scalar' as const],
+    ['black directional color', [{
+      kind: 'directional' as const,
+      id: 'black-sun',
+      color: [0, 0, 0] as [number, number, number],
+      intensity: 2,
+      direction: [0, -1, 0] as [number, number, number],
+    }], 'emitters.black-sun.color', 'rgb' as const],
+  ])('keeps %s emitter targets on path-replay now that directional replay is mirrored', (_label, emitters, path, kind) => {
     const fake = makeFakeEngine();
     fake.scene = { ...fake.scene, emitters };
     const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
-      parameters: [{ path, kind: 'scalar' }],
+      parameters: [{ path, kind }],
       method: 'path-replay',
     });
     expect(session.method).toBe('path-replay');

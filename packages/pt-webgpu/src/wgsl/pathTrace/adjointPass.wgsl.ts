@@ -1050,7 +1050,6 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
       let dIrrMean = directionalLights[dBase + 1u];
-      if (dIrrMean.w <= 1e-6) { continue; }
       var wi = safe_normalize(dDirAD.xyz);
       let angularDiameterRaw = dDirAD.w;
       let directionalShadowDisabled = angularDiameterRaw < 0.0;
