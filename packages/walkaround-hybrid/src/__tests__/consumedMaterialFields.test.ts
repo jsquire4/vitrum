@@ -25,6 +25,7 @@ import {
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
+  EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
 } from '../restir/consumedMaterialFields.js';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
@@ -322,6 +323,22 @@ describe('collectUnconsumedMaterialFields', () => {
     ])).toEqual(['mapped-emitter', 'mesh-panel']);
   });
 
+  it('documents exact direct-emitter texel support separately from residual all-path approximation', () => {
+    expect(EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS).toMatchObject({
+      directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
+      fallbackDirectEmitterPdf: 'uv-local-barycentric-micro-emitter-selection',
+      residualApproximation: 'all-path-texel-pdf',
+      missing: 'all-path-exact-texel-alias-pdf',
+    });
+    expect(EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS.exactDirectEmitterConditions).toContain('cpu-readable-emissive-map');
+    expect(EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS.approximatePaths).toEqual([
+      'ReSTIR-GI',
+      'RC',
+      'DDGI',
+      'fallback-direct-emitter',
+    ]);
+  });
+
   it('ignores null/undefined field values', () => {
     const prims: ReadonlyArray<PrimLike> = [
       { kind: 'mesh', material: { baseColor: [1, 0, 0], baseColorMap: null, normalMap: undefined } },
@@ -507,7 +524,13 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       );
       expect(texelPdfWarnings).toHaveLength(1);
       expect(texelPdfWarnings[0]?.details?.primitiveIds).toContain('mapped-glow');
-      expect(texelPdfWarnings[0]?.details?.missing).toBe('exact-texel-alias-pdf');
+      expect(texelPdfWarnings[0]?.details).toMatchObject({
+        directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
+        fallbackDirectEmitterPdf: 'uv-local-barycentric-micro-emitter-selection',
+        residualApproximation: 'all-path-texel-pdf',
+        missing: 'all-path-exact-texel-alias-pdf',
+      });
+      expect(texelPdfWarnings[0]?.message).toContain('exact texel-cell sub-triangles');
     } finally {
       engine.dispose();
     }

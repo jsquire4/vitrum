@@ -119,6 +119,7 @@ import {
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
+  EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
@@ -957,14 +958,14 @@ export class HybridEngine implements Engine {
       method,
       message:
         `[vitrum/walkaround-hybrid] ${method}: material-backed emissiveMap ` +
-        `surfaces are rendered and localized with UV-aware micro-emitter ` +
-        `selection, but exact texel-space emitter alias tables/PDFs are not ` +
-        `guaranteed across direct, GI, RC, DDGI, and fallback sampling paths; ` +
+        `surfaces are rendered; eligible ReSTIR-DI finite emitters are split ` +
+        `into exact texel-cell sub-triangles, but exact texel-space alias ` +
+        `tables/PDFs are not guaranteed across GI, RC, DDGI, and fallback ` +
+        `sampling paths; ` +
         `primitives: ${primitiveIds.join(', ')}.`,
       details: {
         primitiveIds,
-        approximation: 'uv-local-micro-emitter-selection',
-        missing: 'exact-texel-alias-pdf',
+        ...EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
       },
     });
   }

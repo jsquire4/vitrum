@@ -636,7 +636,11 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(texelPdfWarnings).toHaveLength(1);
       expect(texelPdfWarnings[0]?.method).toBe('updatePrimitive');
       expect(texelPdfWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
-      expect(texelPdfWarnings[0]?.details?.missing).toBe('exact-texel-alias-pdf');
+      expect(texelPdfWarnings[0]?.details).toMatchObject({
+        directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
+        residualApproximation: 'all-path-texel-pdf',
+        missing: 'all-path-exact-texel-alias-pdf',
+      });
     } finally {
       engine.dispose();
     }
@@ -1117,6 +1121,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       );
       expect(warning?.method).toBe('updateEmitter');
       expect(warning?.details?.primitiveIds).toEqual(['mesh-a']);
+      expect(warning?.details?.directEmitterPdf).toBe('exact-texel-cell-subtriangles-when-eligible');
+      expect(warning?.details?.missing).toBe('all-path-exact-texel-alias-pdf');
     } finally {
       engine.dispose();
     }

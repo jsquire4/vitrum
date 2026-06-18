@@ -31,9 +31,11 @@
  *                           materialSpecEmissiveLe
  *  emissiveIntensity      same as emissive
  *  emissiveMap            materialAtlas.wgsl samples readable sRGB emissive
- *                           maps for camera-visible emitter glow and UV-local
- *                           finite-emitter payloads in ReSTIR-DI/DDGI/RC; exact
- *                           texel-alias PDFs across all paths remain approximate.
+ *                           maps for camera-visible emitter glow; ReSTIR-DI direct
+ *                           emitter lists split eligible CPU-readable maps into
+ *                           exact texel-cell sub-triangles, while GI/RC/DDGI and
+ *                           fallback paths still report all-path texel-PDF
+ *                           approximation.
  *  transmission           packingHelpers.ts – packBVHIndexWFromCore (trans4
  *                           lane) + resolveRoughMetal (glass-roughness branch)
  *  transmissionMap        materialAtlas.wgsl samples readable linear R-channel
@@ -207,6 +209,22 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'alphaMap',
 ]);
 
+/** Structured payload for the residual emissive-map texel-PDF warning. */
+export const EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS = {
+  directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
+  fallbackDirectEmitterPdf: 'uv-local-barycentric-micro-emitter-selection',
+  residualApproximation: 'all-path-texel-pdf',
+  missing: 'all-path-exact-texel-alias-pdf',
+  exactDirectEmitterConditions: [
+    'cpu-readable-emissive-map',
+    'non-mirrored-wrap',
+    'non-degenerate-uvs',
+    'bounded-covered-texel-cells',
+    'readable-covered-texels',
+  ],
+  approximatePaths: ['ReSTIR-GI', 'RC', 'DDGI', 'fallback-direct-emitter'],
+} as const;
+
 function materialBearingPrimitiveKind(kind: string): boolean {
   return (
     kind === 'mesh' ||
@@ -341,12 +359,11 @@ export function collectApproximateAlphaBlendPrimitiveIds(
 }
 
 /**
- * Return primitive ids whose material-backed emissive maps are rendered through
- * UV-local/micro-emitter approximations rather than exact texel-alias emitter
- * PDFs. This is a truthfulness surface, not a rejection: walkaround still
- * samples readable emissive maps for visible glow and localized direct
- * lighting, but it does not build full texel alias tables across all DI/GI/RC
- * paths.
+ * Return primitive ids whose material-backed emissive maps still need a residual
+ * all-path texel-PDF warning. This is a truthfulness surface, not a rejection:
+ * walkaround samples readable emissive maps for visible glow and can split
+ * eligible ReSTIR-DI finite emitters into exact texel-cell sub-triangles, but it
+ * does not guarantee texel alias PDFs across every GI/RC/DDGI/fallback path.
  */
 export function collectApproximateEmissiveMapTexelPdfPrimitiveIds(
   primitives: ReadonlyArray<{
