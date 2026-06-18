@@ -235,7 +235,11 @@ describe('H12: lite-tier capabilities truth', () => {
 
   it('lite tier: setScene warns when scene contains analytic primitives', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
     warn.mockClear();
     // The warn must fire BEFORE the GPU upload — use try/catch for GPU stub noise.
     const scene: Scene = {
@@ -258,6 +262,17 @@ describe('H12: lite-tier capabilities truth', () => {
     }
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) => c.includes('analytic') && c.includes('Lite tier'))).toBe(true);
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.lite-analytic-primitive',
+        details: expect.objectContaining({
+          count: 1,
+          primitiveIds: ['a'],
+          primitiveKinds: ['analytic'],
+          requiredTier: 'full',
+        }),
+      }),
+    ]));
     engine.dispose();
     warn.mockRestore();
   });
@@ -720,7 +735,11 @@ describe('H12: lite-tier capabilities truth', () => {
   // explicit mesh-area remains unsupported.
   it('lite tier: setScene does not warn for disc-area but still warns for mesh-area emitters', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
     warn.mockClear();
     const scene: Scene = {
       primitives: [
@@ -746,6 +765,18 @@ describe('H12: lite-tier capabilities truth', () => {
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) => c.includes('disc-area') && c.includes('Lite tier'))).toBe(false);
     expect(calls.some((c) => c.includes('mesh-area') && c.includes('Lite tier'))).toBe(true);
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.lite-unsupported-emitters',
+        details: expect.objectContaining({
+          kinds: 'mesh-area',
+          count: 1,
+          emitterIds: ['ma'],
+          emitterKinds: ['mesh-area'],
+          requiredTier: 'full',
+        }),
+      }),
+    ]));
     engine.dispose();
     warn.mockRestore();
   });
@@ -753,7 +784,11 @@ describe('H12: lite-tier capabilities truth', () => {
   // Item 19 — lite tier warns when scene has ≥2 directional emitters (first-only rendering).
   it('lite tier: setScene warns when scene contains ≥2 directional emitters (item 19)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
     warn.mockClear();
     const scene: Scene = {
       primitives: [
@@ -779,6 +814,18 @@ describe('H12: lite-tier capabilities truth', () => {
     const calls = warn.mock.calls.map((c) => c.join(' '));
     expect(calls.some((c) => c.includes('directional') && c.includes('2'))).toBe(true);
     expect(calls.some((c) => c.includes('lite') || c.includes('Lite'))).toBe(true);
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.lite-multiple-directional-emitters',
+        details: expect.objectContaining({
+          count: 2,
+          ignored: 1,
+          keptEmitterId: 'd1',
+          ignoredEmitterIds: ['d2'],
+          requiredTier: 'full',
+        }),
+      }),
+    ]));
     engine.dispose();
     warn.mockRestore();
   });

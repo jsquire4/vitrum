@@ -1086,6 +1086,7 @@ class PTEngineWebGPU implements Engine {
       // baked into the lite tier's single world-space BLAS at pack time.
       const analyticPrimitives = scene.primitives.filter((p) => p.kind === 'analytic');
       if (analyticPrimitives.length > 0) {
+        const primitiveIds = analyticPrimitives.map((p) => p.id);
         this.#warn({
           code: 'pt-webgpu.lite-analytic-primitive',
           backend: 'pt-webgpu',
@@ -1095,7 +1096,12 @@ class PTEngineWebGPU implements Engine {
             `[vitrum/pt-webgpu] Lite tier: scene contains ${analyticPrimitives.length} analytic primitive(s) — ` +
             'analytic shape rendering requires the full tier (group-1 bindings are absent on lite). ' +
             'These will be silently ignored.',
-          details: { count: analyticPrimitives.length },
+          details: {
+            count: analyticPrimitives.length,
+            primitiveIds,
+            primitiveKinds: ['analytic'],
+            requiredTier: 'full',
+          },
         });
       }
       // B12 — only mesh-area is unsupported on lite; point/spot/rect/disc-area
@@ -1107,6 +1113,8 @@ class PTEngineWebGPU implements Engine {
       );
       if (unsupportedEmitters.length > 0) {
         const kinds = [...new Set(unsupportedEmitters.map((e) => e.kind))].join(', ');
+        const emitterIds = unsupportedEmitters.map((e) => e.id);
+        const emitterKinds = unsupportedEmitters.map((e) => e.kind);
         this.#warn({
           code: 'pt-webgpu.lite-unsupported-emitters',
           backend: 'pt-webgpu',
@@ -1116,7 +1124,13 @@ class PTEngineWebGPU implements Engine {
             `[vitrum/pt-webgpu] Lite tier: scene contains emitters of kind(s) [${kinds}] — ` +
             'mesh-area emitters are not supported on the lite tier (no NEE path in lite kernel). ' +
             'These will be silently ignored.',
-          details: { kinds, count: unsupportedEmitters.length },
+          details: {
+            kinds,
+            count: unsupportedEmitters.length,
+            emitterIds,
+            emitterKinds,
+            requiredTier: 'full',
+          },
         });
       }
       // B12 — HDRI environments are now supported via texture packing; no warn needed.
@@ -1125,6 +1139,8 @@ class PTEngineWebGPU implements Engine {
       // Multiple directionals are silently truncated to 1; warn so the host is aware.
       const directionalEmitters = scene.emitters.filter((e) => e.kind === 'directional');
       if (directionalEmitters.length >= 2) {
+        const keptEmitterId = directionalEmitters[0]?.id;
+        const ignoredEmitterIds = directionalEmitters.slice(1).map((e) => e.id);
         this.#warn({
           code: 'pt-webgpu.lite-multiple-directional-emitters',
           backend: 'pt-webgpu',
@@ -1134,7 +1150,13 @@ class PTEngineWebGPU implements Engine {
             `[vitrum/pt-webgpu] Lite tier: scene contains ${directionalEmitters.length} directional emitter(s) — ` +
             `lite tier renders only the first directional; the remaining ${directionalEmitters.length - 1} will be silently ignored. ` +
             'Use the full tier for multi-directional lighting.',
-          details: { count: directionalEmitters.length, ignored: directionalEmitters.length - 1 },
+          details: {
+            count: directionalEmitters.length,
+            ignored: directionalEmitters.length - 1,
+            keptEmitterId,
+            ignoredEmitterIds,
+            requiredTier: 'full',
+          },
         });
       }
       const vertexColorPrimitiveIds = collectVertexColorPrimitiveIds(scene);
