@@ -6,11 +6,11 @@ This file lists every change from the 2026-05-28 complexity-remediation sweep (a
 
 ---
 
-> ## 🔴 V28 — §H remediation validation worksheet (2026-06-09; the CURRENT top-priority GPU session)
+> ## V28 — §H remediation validation worksheet (historical 2026-06-09 GPU session)
 >
 > The §H remediation (items_to_fix.md §H, commits `b09acaf..` on local main) landed ~50 fixes;
-> **12 are render-changing and unit/oracle-tested but NOT yet GPU-validated.** This is the validator's
-> run order. House rules: every A/B against an INDEPENDENT reference (CPU oracle / cross-backend /
+> **12 were initially render-changing and unit/oracle-tested but not yet GPU-validated.** This was the validator's
+> run order; the landed-fix validation gate is now cleared by the close-out block below. House rules: every A/B against an INDEPENDENT reference (CPU oracle / cross-backend /
 > analytic — never a same-lineage golden, the F-TLAS1 lesson); harnesses live in `~/projects/wsl-gpu`
 > (lavapipe oracle + dzn/RTX-4090); the webgl2-capture pattern to clone is
 > `wsl-gpu/webgl2-capture/run-ptwebgl2-h1.mjs`.
@@ -65,7 +65,7 @@ This file lists every change from the 2026-05-28 complexity-remediation sweep (a
 >
 > **STEP 4 — re-seed + close out:** after PASSes, re-capture the moved T1 goldens + any reference
 > renders on DDGI-indirect/textured/emitter-lit paths; update this V28 block per item (PASS/INSPECT +
-> artifact paths); flip the "PENDING GPU VALIDATION" line in items_to_fix.md §H. Anything that FAILS:
+> artifact paths); clear the then-pending validation marker in items_to_fix.md §H. Anything that FAILS:
 > file it in §H with evidence — fix the physics, never the gate (2026-06-04 lesson).
 >
 > **2026-06-17 render-changing addendum:** walkaround point/spot paths now consume authored
@@ -129,7 +129,7 @@ This file lists every change from the 2026-05-28 complexity-remediation sweep (a
 > - **STEP 2.10 — H6 rotationY cross-backend half (pt-webgpu): ✅ PASS** (`v28-h6-ptwebgpu-rotationy.ts`, lavapipe). Dispatches the PRODUCTION pt-webgpu `rotateYNeg`/`rotateYPos` (extracted from `connect.wgsl`) over 5 dirs × 5 angles: `max|rotateYNeg − RY(−θ)·d| = 8.7e-8` (analytic convention), `max|rotateYNeg − pt-webgl2 makeRotationYMat4(−θ)·d| = 8.7e-8` (cross-backend convention match to float precision), inverse round-trip `rotateYPos∘rotateYNeg − d = 2.6e-8`, zero-rotation identity `2.6e-8`. Both backends look up the unrotated HDRI at `RY(−rotationY)·d` → an HDRI rotates IDENTICALLY on both. The pt-webgl2 half already proved the dome visibly rotates (bgMean 0.51/0.02/0.02/0.51) + rotationY=0 byte-identical; this closes the cross-backend convention half.
 > - **STEP 3.12c — H28 re-verified on lavapipe** (`v28-h28-relu-alias.ts`): FIXED RELU_WGSL → `[0,2,0,4,0,0,7,0]` (correct max(0,x)); BROKEN alias 0≡3 → REJECTED by WebGPU usage-scope validation. Consistent with the prior-pass entry above.
 > ### V28 CLOSE-OUT (2026-06-09) — landed-fix validation COMPLETE
-> Every landed (✅) §H fix with a radiometric/behavioral surface now has a real-device or executed-deterministic proof: **pt-webgl2** H1/H2/H4 (earlier campaign) + H3 (uploaded+unit-pinned, corroborated by H6 visible-env 0.51); **walkaround** H15 (UV seam both modes), H16 (invalidate override pinned), H17/H19 (skin vs solveSkin residual→0 + broken-variant A/B), H18 (emitter NEE), **H41 (found+FIXED `25f4105` — stride bug; point 12.5×, spot inert→lit)**; **pt-webgpu** H13 (refraction MIS), H52 (Disney zero-lobe), H51-D-point, H6 (rotationY), H9 (code-confirmed; full-tier device-limit-gated); **neural** H28 (real-adapter repro). The §H docs/ledger/test-infra ✅ items (H39/H40/H43/H44/H46-H49/H53/H54/H57/H58) are code-read-verified (doc-matches-code). **NOT validated because still OPEN (◻), not landed fixes** — feature/fidelity tail, tracked in §H, NOT default-path regressions: H25-H27/H29 (PPG/NRC opt-in estimator gaps), H32 (TLAS skipGlass closest-hit), H33-H34 (shared-bvh), the H20-H24/H31 engineering clusters. Remaining nice-to-have completeness: pt-webgpu cross-backend halves of H6/H52, V25 BDPT (pt-webgl) root-cause. **The "PENDING GPU VALIDATION" gate on the landed §H remediation is CLEARED.**
+> Every landed (✅) §H fix with a radiometric/behavioral surface now has a real-device or executed-deterministic proof: **pt-webgl2** H1/H2/H4 (earlier campaign) + H3 (uploaded+unit-pinned, corroborated by H6 visible-env 0.51); **walkaround** H15 (UV seam both modes), H16 (invalidate override pinned), H17/H19 (skin vs solveSkin residual→0 + broken-variant A/B), H18 (emitter NEE), **H41 (found+FIXED `25f4105` — stride bug; point 12.5×, spot inert→lit)**; **pt-webgpu** H13 (refraction MIS), H52 (Disney zero-lobe), H51-D-point, H6 (rotationY), H9 (code-confirmed; full-tier device-limit-gated); **neural** H28 (real-adapter repro). The §H docs/ledger/test-infra ✅ items (H39/H40/H43/H44/H46-H49/H53/H54/H57/H58) are code-read-verified (doc-matches-code). The feature/fidelity tails that were still open at this 2026-06-09 checkpoint were subsequently tracked and reconciled in `plan/road-to-100.md` / `plan/gap-closure-execution-plan.md`; do not treat this historical close-out paragraph as the live queue. Remaining nice-to-have completeness at the time was pt-webgpu cross-backend halves of H6/H52 and V25 BDPT (pt-webgl) root-cause. **The landed §H remediation validation gate is cleared.**
 
 ---
 
