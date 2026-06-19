@@ -1788,9 +1788,11 @@ that one predictable API can ingest and route arbitrary glTF assets. Promote
 them to hard 100% blockers only if the Road definition is widened from
 contract-complete to contract-complete plus SOTA throughput/convergence.
 
-1. Low-discrepancy sampling (`LD-SAMPLING-01`): shared Owen-scrambled Sobol or
-   PMJ02 tables, per-dimension assignment audit, blue-noise screen scrambling,
-   pt-webgpu integration, and pt-webgl2 RANDOM_TYPE revival/replacement.
+1. Low-discrepancy sampling (`LD-SAMPLING-01`): shared Sobol table generation
+   plus pt-webgl2 `sampling:'sobol'` opt-in are code-closed and covered by the
+   GLSL `sobol-on` shader gate; remaining work is Owen/blue-noise scrambling,
+   per-dimension assignment audit, pt-webgpu integration, and equal-time RMSE
+   convergence proof.
 2. Compressed wide BVH traversal (`WBVH-01`): opt-in CWBVH-style builder,
    packed node layout, WGSL traversal, CPU brute-force oracle, backend
    capability flag, and binary-BVH fallback until parity/perf are proven.
@@ -1845,16 +1847,18 @@ Walkaround **100%** and arbitrary glTF **100%** are not the same: arbitrary glTF
 
 ### F1 — Low-discrepancy sampling (biggest convergence win per effort)
 
-Both converged backends run PCG only; pt-webgl2's Sobol/stratified branches are
-pinned dead (1×1 dummy textures, `featureTypes.ts`), shared-samplers has only
-Hammersley/PCG. SOTA is Owen-scrambled Sobol or PMJ02 + blue-noise screen-space
-distribution — typically a 2–4× effective-convergence multiplier.
-**Work:** real table generation in `shared-samplers` (Owen-Sobol or PMJ02,
-CPU-baked, uploaded as textures/buffers), per-dimension assignment audit
-(bounce/lobe/light dims), blue-noise rank-1 screen scramble; revive or replace
-the dead pt-webgl2 RANDOM_TYPE branches; pt-webgpu equivalent in
-`kernel.wgsl.ts` RNG plumbing. Validate via equal-time RMSE A/B on the
-reference scenes (self-validating: error curves, not eyeballs).
+PCG remains the default for both converged backends. The old pt-webgl2
+Sobol-dummy complaint is no longer true: `shared-samplers` now exports a
+256×256 RGBA Sobol table generator, `createPTEngine_WebGL2({ sampling:'sobol' })`
+compiles `RANDOM_TYPE=1`, uploads a real RGBA32F Sobol texture, samples texel
+centres, and the GLSL gate compiles a production `sobol-on` variant. Stratified
+sampling is still intentionally unexposed because its textures remain
+dummy-bound. pt-webgpu still has no equivalent low-discrepancy RNG plumbing.
+
+**Remaining work:** Owen/blue-noise scrambling, per-dimension assignment audit
+(bounce/lobe/light dims), pt-webgpu equivalent in `kernel.wgsl.ts` RNG plumbing,
+and equal-time RMSE A/B on the reference scenes (self-validating error curves,
+not eyeballs).
 
 ### F2 — Compressed wide BVH traversal (biggest throughput win)
 

@@ -78,13 +78,15 @@ import { FULLSCREEN_VERT } from "../../packages/pt-webgl2/src/gl/fullscreenQuad.
 //   - bdpt: driven by opts.bdpt (true/false). At compose time, bdpt=true adds the
 //     bdpt_light_subpath + bdpt_connection chunks; bdpt=false omits them entirely.
 //     Both are production-reachable. All other features are either always-on (mis,
-//     russianRoulette), pinned-off (fog, backgroundMap, randomType, debugMode), or
-//     only affect #define values (not the composed chunk set).
+//     russianRoulette), pinned-off (fog, backgroundMap, stratified randomType=2,
+//     debugMode), or only affect #define values (not the composed chunk set).
 //   - dof: driven by opts.dof (truthy/null). FEATURE_DOF resolves in #if blocks.
 //   - cameraType: driven by opts.cameraType (0=perspective, 1=ortho, 2=equirect).
 //     CAMERA_TYPE resolves in #if blocks inside getCameraRay().
 //   - stainedGlassPerturbation: driven by opts.stainedGlassPerturbation. Affects one
 //     GLSL block. Compile-time meaningful; include one variant.
+//   - randomType: driven by opts.sampling for production PCG(0) and Sobol(1).
+//     Stratified(2) remains unexposed because its textures are still dummy-bound.
 //
 // Compose-time branching is ONLY on `bdpt` (composeTraceGlsl() branches on it to
 // include/exclude the BDPT render chunks). All other flags only affect #define
@@ -99,9 +101,10 @@ import { FULLSCREEN_VERT } from "../../packages/pt-webgl2/src/gl/fullscreenQuad.
 //   cameraType-ortho    F    F       1           F           CAMERA_TYPE=1 #if paths
 //   cameraType-equirect F    F       2           F           CAMERA_TYPE=2 #if paths
 //   stained-glass       F    F       0           T           perturbation #if path
+//   sobol-on            F    F       0           F           RANDOM_TYPE=1 Sobol RNG path
 //
 // (bdpt+dof+cameraType combinations not listed are not novel — no additional GLSL
-//  path branches open; all other define combos follow from the above 6 drivers.)
+//  path branches open; all other define combos follow from the drivers above.)
 
 const COMBOS = [
   {
@@ -150,6 +153,14 @@ const COMBOS = [
       mis: true, russianRoulette: true, bdpt: false, dof: false,
       cameraType: 0, stainedGlassPerturbation: true,
       fog: false, backgroundMap: false, randomType: 0, debugMode: 0,
+    },
+  },
+  {
+    name: "sobol-on",
+    features: {
+      mis: true, russianRoulette: true, bdpt: false, dof: false,
+      cameraType: 0, stainedGlassPerturbation: false,
+      fog: false, backgroundMap: false, randomType: 1, debugMode: 0,
     },
   },
 ];
