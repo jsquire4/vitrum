@@ -1284,6 +1284,14 @@ deliberately unsupported until a true geometry/BVH displacement path exists.
   atlas textures directly while keeping slice uploads, DDGI material-snapshot
   refresh, probe invalidation, and emitter refresh side effects pinned by
   `mutationMatrix.test.ts` + `bvhBufferHost.test.ts`.
+- ~~Merged-BVH material dedup could collapse atlas-distinct materials~~
+  ✅ CODE CLOSED 2026-06-19 follow-up: `shared-bvh/src/worldSpaceMerge.ts`
+  now signs atlas-consumed texture refs through Float32-precision UV
+  transform/sampler metadata, unsupported/non-finite texCoord tokens, atlas
+  scalar metadata, and the same bare-object texture compatibility shim consumed
+  by `materialTextureAtlas.ts`. `materialSig.test.ts` pins tiny-but-GPU-visible
+  transform/scalar differences, bare texture objects, and unsupported texCoord
+  values.
 - ~~ReSTIR primary hit uses different UV than shade~~ ✅ SOURCE-VERIFIED STALE:
   RIS/primary/OIT paths call the shared material-atlas helpers with hit UV0 plus
   `materialAtlasUv1ForHit`.

@@ -124,6 +124,52 @@ describe('materialSig — Beer-Lambert fields (H33)', () => {
     expect(materialSig(a)).not.toBe(materialSig(b));
   });
 
+  it('does not round away Float32-visible texture transform differences', () => {
+    const handle = { name: 'normal' };
+    const a: MaterialSpec = {
+      ...BASE,
+      normalMap: {
+        handle,
+        transform: { offset: [0.00001, 0], scale: [1, 1], rotation: 0.00001 },
+      },
+    };
+    const b: MaterialSpec = {
+      ...BASE,
+      normalMap: {
+        handle,
+        transform: { offset: [0.00002, 0], scale: [1, 1], rotation: 0.00002 },
+      },
+    };
+    expect(Math.fround(0.00001)).not.toBe(Math.fround(0.00002));
+    expect(materialSig(a)).not.toBe(materialSig(b));
+  });
+
+  it('does not round away Float32-visible atlas scalar metadata differences', () => {
+    const a: MaterialSpec = { ...BASE, normalScale: 1.00001, envMapIntensity: 0.50001 };
+    const b: MaterialSpec = { ...BASE, normalScale: 1.00002, envMapIntensity: 0.50002 };
+    expect(Math.fround(a.normalScale!)).not.toBe(Math.fround(b.normalScale!));
+    expect(materialSig(a)).not.toBe(materialSig(b));
+  });
+
+  it('signs bare texture-object values the same way the walkaround atlas compatibility shim consumes them', () => {
+    const handleA = { name: 'bare-alpha-a', width: 1, height: 1, data: new Uint8Array([255, 0, 0, 255]) };
+    const handleB = { name: 'bare-alpha-b', width: 1, height: 1, data: new Uint8Array([0, 255, 0, 255]) };
+    const a = { ...BASE, alphaMap: handleA } as unknown as MaterialSpec;
+    const b = { ...BASE, alphaMap: handleB } as unknown as MaterialSpec;
+    expect(materialSig(a)).not.toBe(materialSig(b));
+    expect(materialSig(a)).not.toBe(materialSig(BASE));
+  });
+
+  it('keeps unsupported and non-finite texture texCoord values distinct in the dedup key', () => {
+    const handle = { name: 'uv-edge' };
+    const unsupported: MaterialSpec = { ...BASE, lightMap: { handle, texCoord: 2 } };
+    const nanTexCoord: MaterialSpec = { ...BASE, lightMap: { handle, texCoord: NaN } };
+    const defaultUv: MaterialSpec = { ...BASE, lightMap: { handle, texCoord: 0 } };
+    expect(materialSig(unsupported)).not.toBe(materialSig(defaultUv));
+    expect(materialSig(nanTexCoord)).not.toBe(materialSig(defaultUv));
+    expect(materialSig(nanTexCoord)).not.toBe(materialSig(unsupported));
+  });
+
   it('includes extension lobe scalar controls packed by renderer material payloads', () => {
     const lowClearcoat: MaterialSpec = { ...BASE, clearcoat: 0.1, clearcoatRoughness: 0.2 };
     const highClearcoat: MaterialSpec = { ...BASE, clearcoat: 0.8, clearcoatRoughness: 0.2 };

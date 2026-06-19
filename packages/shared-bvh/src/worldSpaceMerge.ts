@@ -437,7 +437,13 @@ const TEXTURE_MAP_FIELDS: readonly TextureMapField[] = [
 ];
 
 function finiteSig(value: number | undefined, fallback: number): string {
-  return Number.isFinite(value) ? (value ?? fallback).toFixed(4) : fallback.toFixed(4);
+  const v = Number.isFinite(value) ? (value as number) : fallback;
+  return String(Math.fround(v));
+}
+
+function rawNumberSig(value: number | undefined, fallback: number): string {
+  if (value === undefined) return finiteSig(undefined, fallback);
+  return Number.isFinite(value) ? String(Math.fround(value)) : String(value);
 }
 
 function vecSig(
@@ -452,15 +458,40 @@ function vecSig(
   return parts.join(',');
 }
 
-function textureRefSig(ref: TextureRef | undefined): string {
+function rawVecSig(
+  value: readonly number[] | undefined,
+  fallback: readonly number[],
+  count: 2,
+): string {
+  const parts: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    parts.push(rawNumberSig(value?.[i], fallback[i] ?? 0));
+  }
+  return parts.join(',');
+}
+
+function textureRefLike(value: unknown): TextureRef | undefined {
+  if (value == null || typeof value !== 'object') return undefined;
+  if ('handle' in value) return value as TextureRef;
+  return { handle: value };
+}
+
+function textureTexCoordSig(texCoord: number | undefined): string {
+  const uv = texCoord ?? 0;
+  if (uv === 0 || uv === 1) return `uv${uv}`;
+  return `uvUnsupported=${rawNumberSig(uv, 0)}`;
+}
+
+function textureRefSig(value: unknown): string {
+  const ref = textureRefLike(value);
   if (ref?.handle == null) return '';
   const transform = ref.transform;
   return [
     handleId(ref.handle),
-    `uv${Number.isFinite(ref.texCoord) ? ref.texCoord ?? 0 : 0}`,
-    `off=${vecSig(transform?.offset, [0, 0], 2)}`,
-    `scale=${vecSig(transform?.scale, [1, 1], 2)}`,
-    `rot=${finiteSig(transform?.rotation, 0)}`,
+    textureTexCoordSig(ref.texCoord),
+    `off=${rawVecSig(transform?.offset, [0, 0], 2)}`,
+    `scale=${rawVecSig(transform?.scale, [1, 1], 2)}`,
+    `rot=${rawNumberSig(transform?.rotation, 0)}`,
     `wrap=${ref.wrapS ?? 'repeat'},${ref.wrapT ?? 'repeat'}`,
     `filter=${ref.magFilter ?? ''},${ref.minFilter ?? ''},${ref.mipFilter ?? ''}`,
   ].join(';');
@@ -468,7 +499,7 @@ function textureRefSig(ref: TextureRef | undefined): string {
 
 function textureMapSig(m: MaterialSpec): string {
   return TEXTURE_MAP_FIELDS
-    .map((field) => `${field}=${textureRefSig(m[field] as TextureRef | undefined)}`)
+    .map((field) => `${field}=${textureRefSig(m[field])}`)
     .join('|');
 }
 
@@ -492,10 +523,9 @@ function stableJsonSig(value: unknown): string {
  * the merged-BVH GI/PT consumers read: base PBR/alpha/transmission scalars,
  * lobe-extension scalars, Beer-Lambert fields, all packed texture-map refs
  * including handle identity + UV transform/sampler metadata, and pt-webgl2's
- * folded mesh-emitter shadow flag. Numeric fields retain the historical
- * `toFixed(4)` quantisation, so two primitives
- * carrying structurally-equal materials collapse to one LUT slot — exactly as the
- * THREE value-dedup does for React/R3F material churn. Map identity uses the opaque
+ * folded mesh-emitter shadow flag. Numeric tokens use the same Float32 precision
+ * as the GPU payloads, so atlas/material metadata differences that survive upload
+ * cannot be rounded away by the dedup key. Map identity uses the opaque
  * `TextureRef.handle` (the core analogue of THREE's `texture.uuid`).
  *
  * Beer-Lambert fields (`attenuationColor`, `attenuationDistance`, `thickness`) are
