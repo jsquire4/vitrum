@@ -36,7 +36,7 @@ function makeInlineTexturedTriangleGltf(): { gltf: GltfJson; buffers: Map<number
       asset: { version: '2.0' },
       scene: 0,
       scenes: [{ nodes: [0] }],
-      nodes: [{ mesh: 0 }],
+      nodes: [{ mesh: 0, camera: 0 }],
       cameras: [{ type: 'perspective' }],
       meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
       materials: [{ pbrMetallicRoughness: { baseColorTexture: { index: 0 } } }],

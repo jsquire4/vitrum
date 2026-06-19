@@ -41,6 +41,7 @@
 import type { GltfJson, GltfAccessor } from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
 import { componentByteSize, typeComponentCount } from './accessors.js';
+import { gltfPrimitiveKey, type GltfSceneReachability } from './sceneScope.js';
 
 const DRACO_EXT = 'KHR_draco_mesh_compression';
 const MESHOPT_EXT = 'EXT_meshopt_compression';
@@ -105,6 +106,11 @@ export type MeshoptDecodeFn = (
 export interface GltfDecodeHooks {
   readonly dracoDecode?: DracoDecodeFn | undefined;
   readonly meshoptDecode?: MeshoptDecodeFn | undefined;
+}
+
+export interface GltfCompressionScope {
+  readonly sceneReachability?: GltfSceneReachability | undefined;
+  readonly bufferViewIndices?: ReadonlySet<number> | undefined;
 }
 
 export type GltfCompressionDiagnosticCode =
@@ -180,12 +186,19 @@ export async function resolveCompression(
   hooks: GltfDecodeHooks,
   warnings: string[],
   onDiagnostic?: GltfCompressionDiagnosticSink,
+  scope: GltfCompressionScope = {},
 ): Promise<GltfJson> {
   const hasMeshopt = (gltf.bufferViews ?? []).some(
-    (bv) => getMeshoptBufferViewExtension(bv) !== undefined,
+    (bv, index) =>
+      (scope.bufferViewIndices === undefined || scope.bufferViewIndices.has(index)) &&
+      getMeshoptBufferViewExtension(bv) !== undefined,
   );
-  const hasDraco = (gltf.meshes ?? []).some((m) =>
-    m.primitives.some((p) => p.extensions?.[DRACO_EXT] !== undefined),
+  const hasDraco = (gltf.meshes ?? []).some((m, meshIndex) =>
+    m.primitives.some((p, primitiveIndex) =>
+      (scope.sceneReachability === undefined ||
+        scope.sceneReachability.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) &&
+      p.extensions?.[DRACO_EXT] !== undefined
+    ),
   );
   if (!hasMeshopt && !hasDraco) return gltf;
 
@@ -196,10 +209,10 @@ export async function resolveCompression(
   // meshopt first: it operates at bufferView level, so a (theoretical) Draco
   // blob inside a meshopt-wrapped view would already be decompressed.
   if (hasMeshopt) {
-    await _resolveMeshopt(out, buffers, hooks.meshoptDecode, required, warnings, onDiagnostic);
+    await _resolveMeshopt(out, buffers, hooks.meshoptDecode, required, warnings, onDiagnostic, scope.bufferViewIndices);
   }
   if (hasDraco) {
-    await _resolveDraco(out, buffers, hooks.dracoDecode, required.has(DRACO_EXT), warnings, onDiagnostic);
+    await _resolveDraco(out, buffers, hooks.dracoDecode, required.has(DRACO_EXT), warnings, onDiagnostic, scope.sceneReachability);
   }
   return out;
 }
@@ -305,9 +318,11 @@ async function _resolveMeshopt(
   required: ReadonlySet<string>,
   warnings: string[],
   onDiagnostic: GltfCompressionDiagnosticSink | undefined,
+  scopedBufferViews: ReadonlySet<number> | undefined,
 ): Promise<void> {
   const views = gltf.bufferViews ?? [];
   for (let i = 0; i < views.length; i++) {
+    if (scopedBufferViews !== undefined && !scopedBufferViews.has(i)) continue;
     const bv = views[i]!;
     const meshopt = getMeshoptBufferViewExtension(bv);
     if (!meshopt) continue;
@@ -431,12 +446,19 @@ async function _resolveDraco(
   isRequired: boolean,
   warnings: string[],
   onDiagnostic: GltfCompressionDiagnosticSink | undefined,
+  sceneReachability: GltfSceneReachability | undefined,
 ): Promise<void> {
   const meshes = gltf.meshes ?? [];
   for (let mi = 0; mi < meshes.length; mi++) {
     const mesh = meshes[mi]!;
     const label = mesh.name ?? mi;
     for (const [primitiveIndex, prim] of mesh.primitives.entries()) {
+      if (
+        sceneReachability !== undefined &&
+        !sceneReachability.primitiveKeys.has(gltfPrimitiveKey(mi, primitiveIndex))
+      ) {
+        continue;
+      }
       const primitivePath = `meshes[${mi}].primitives[${primitiveIndex}]`;
       const ext = prim.extensions?.[DRACO_EXT] as DracoPrimitiveExt | undefined;
       if (!ext) continue;

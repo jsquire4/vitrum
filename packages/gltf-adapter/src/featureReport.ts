@@ -18,6 +18,12 @@ import type {
   GltfPrimitive,
   GltfTextureInfo,
 } from './gltfTypes.js';
+import {
+  collectGltfSceneReachability,
+  collectPrimitiveMaterialIndices,
+  gltfPrimitiveKey,
+  type GltfSceneReachability,
+} from './sceneScope.js';
 
 export type GltfResourceKind = 'embedded' | 'bufferView' | 'data-uri' | 'external-uri' | 'missing';
 
@@ -179,6 +185,12 @@ export type GltfBackendPolicy = 'fidelity' | 'realtime' | 'strict' | 'best-effor
 
 export interface AnalyzeGltfAssetOptions {
   readonly textureSourceExtensions?: readonly GltfTextureSourceExtensionName[];
+  /**
+   * When supplied, compatibility-affecting primitive/material/scene rows are
+   * scoped to the graph reachable from this scene. Omit to keep the historical
+   * whole-asset inventory behavior.
+   */
+  readonly sceneIndex?: number;
 }
 
 const REQUIRED_EXTENSION_SUPPORT = new Set([
@@ -344,12 +356,18 @@ export function analyzeGltfAsset(
   options: AnalyzeGltfAssetOptions = {},
 ): GltfFeatureReport {
   const selectedTextureSourceExtensions = new Set<string>(options.textureSourceExtensions ?? []);
-  const extensions = analyzeExtensions(gltf, selectedTextureSourceExtensions);
+  const sceneScope = options.sceneIndex === undefined
+    ? undefined
+    : collectGltfSceneReachability(gltf, options.sceneIndex);
+  const extensions = analyzeExtensions(gltf, selectedTextureSourceExtensions, sceneScope);
   const resources = analyzeResources(gltf);
-  const primitives = analyzePrimitives(gltf);
-  const materials = analyzeMaterials(gltf);
-  const animations = analyzeAnimations(gltf);
-  const punctualLights = extractPunctualLightCount(gltf);
+  const primitives = analyzePrimitives(gltf, sceneScope);
+  const materials = analyzeMaterials(gltf, sceneScope);
+  const animations = analyzeAnimations(gltf, sceneScope);
+  const punctualLights = sceneScope?.punctualLightIndices.size ?? extractPunctualLightCount(gltf);
+  const cameraPaths = sceneScope === undefined
+    ? (gltf.cameras ?? []).map((_, index) => `cameras[${index}]`)
+    : [...sceneScope.cameraIndices].sort((a, b) => a - b).map((index) => `cameras[${index}]`);
 
   return {
     ...(gltf.asset?.version !== undefined ? { assetVersion: gltf.asset.version } : {}),
@@ -361,9 +379,9 @@ export function analyzeGltfAsset(
     animations,
     sceneGraph: {
       scenes: gltf.scenes?.length ?? 0,
-      nodes: gltf.nodes?.length ?? 0,
-      cameras: gltf.cameras?.length ?? 0,
-      cameraPaths: (gltf.cameras ?? []).map((_, index) => `cameras[${index}]`),
+      nodes: sceneScope?.nodeIndices.size ?? gltf.nodes?.length ?? 0,
+      cameras: sceneScope?.cameraIndices.size ?? gltf.cameras?.length ?? 0,
+      cameraPaths,
       punctualLights,
     },
   };
@@ -741,14 +759,27 @@ function samplerPolicySupport(
 function analyzeExtensions(
   gltf: GltfJson,
   selectedTextureSourceExtensions: ReadonlySet<string>,
+  sceneScope: GltfSceneReachability | undefined,
 ): GltfExtensionReport {
-  const used = sorted(gltf.extensionsUsed ?? []);
-  const required = sorted(gltf.extensionsRequired ?? []);
-  const all = new Set([...used, ...required]);
   const sourcePaths: SourcePathMap = new Map();
-  (gltf.extensionsUsed ?? []).forEach((ext, index) => addSourcePath(sourcePaths, ext, `extensionsUsed[${index}]`));
-  (gltf.extensionsRequired ?? []).forEach((ext, index) => addSourcePath(sourcePaths, ext, `extensionsRequired[${index}]`));
-  collectNestedExtensionNames(gltf, all, sourcePaths);
+  const all = new Set<string>();
+  if (sceneScope === undefined) {
+    for (const ext of gltf.extensionsUsed ?? []) all.add(ext);
+    for (const ext of gltf.extensionsRequired ?? []) all.add(ext);
+    collectNestedExtensionNames(gltf, all, sourcePaths);
+  } else {
+    collectScopedNestedExtensionNames(gltf, sceneScope, all, sourcePaths);
+  }
+  (gltf.extensionsUsed ?? []).forEach((ext, index) => {
+    if (sceneScope === undefined || all.has(ext)) addSourcePath(sourcePaths, ext, `extensionsUsed[${index}]`);
+  });
+  (gltf.extensionsRequired ?? []).forEach((ext, index) => {
+    if (!requiredExtensionAppliesToScope(ext, sceneScope, all)) return;
+    addSourcePath(sourcePaths, ext, `extensionsRequired[${index}]`);
+    if (sceneScope !== undefined && !all.has(ext)) all.add(ext);
+  });
+  const used = sorted((gltf.extensionsUsed ?? []).filter((ext) => sceneScope === undefined || all.has(ext)));
+  const required = sorted((gltf.extensionsRequired ?? []).filter((ext) => requiredExtensionAppliesToScope(ext, sceneScope, all)));
 
   const supported: string[] = [];
   const requiresHook: string[] = [];
@@ -756,7 +787,7 @@ function analyzeExtensions(
   const unsupportedRequired: string[] = [];
 
   for (const ext of sorted(all)) {
-    if (extensionRequiresHostHook(gltf, ext, required, selectedTextureSourceExtensions)) requiresHook.push(ext);
+    if (extensionRequiresHostHook(gltf, ext, required, selectedTextureSourceExtensions, sceneScope)) requiresHook.push(ext);
     if (REQUIRED_EXTENSION_SUPPORT.has(ext)) {
       supported.push(ext);
       continue;
@@ -774,7 +805,7 @@ function analyzeExtensions(
     requiresHook: sorted(requiresHook),
     unsupportedOptional: sorted(unsupportedOptional),
     unsupportedRequired: sorted(unsupportedRequired),
-    textureSourceUses: collectTextureSourceExtensionUses(gltf, required, selectedTextureSourceExtensions),
+    textureSourceUses: collectTextureSourceExtensionUses(gltf, required, selectedTextureSourceExtensions, sceneScope),
     sourcePaths: sourcePathRecord(sourcePaths),
   };
 }
@@ -784,13 +815,14 @@ function extensionRequiresHostHook(
   ext: string,
   required: readonly string[],
   selectedTextureSourceExtensions: ReadonlySet<string>,
+  sceneScope: GltfSceneReachability | undefined,
 ): boolean {
   if (!EXTENSIONS_REQUIRING_HOST_HOOK.has(ext)) return false;
   if (ext === 'KHR_draco_mesh_compression') {
-    return dracoCompressionRequiresHostHook(gltf, required.includes(ext));
+    return dracoCompressionRequiresHostHook(gltf, required.includes(ext), sceneScope);
   }
   if (MESHOPT_COMPRESSION_EXTENSIONS.has(ext)) {
-    return meshoptCompressionRequiresHostHook(gltf, required.includes(ext));
+    return meshoptCompressionRequiresHostHook(gltf, required.includes(ext), sceneScope);
   }
   if (!TEXTURE_SOURCE_EXTENSIONS.has(ext)) return true;
 
@@ -800,21 +832,26 @@ function extensionRequiresHostHook(
   // the base `texture.source` fallback until the host opts into the extension.
   if (required.includes(ext)) return true;
   if (selectedTextureSourceExtensions.has(ext)) {
-    return (gltf.textures ?? []).some((texture) =>
+    return textureEntriesForScope(gltf, sceneScope).some(([, texture]) =>
       textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
     );
   }
-  return (gltf.textures ?? []).some((texture) =>
+  return textureEntriesForScope(gltf, sceneScope).some(([, texture]) =>
     texture.source === undefined &&
     textureSourceExtensionHasImageSource(texture.extensions?.[ext]),
   );
 }
 
-function dracoCompressionRequiresHostHook(gltf: GltfJson, isRequired: boolean): boolean {
+function dracoCompressionRequiresHostHook(
+  gltf: GltfJson,
+  isRequired: boolean,
+  sceneScope: GltfSceneReachability | undefined,
+): boolean {
   if (isRequired) return true;
 
-  for (const mesh of gltf.meshes ?? []) {
-    for (const primitive of mesh.primitives ?? []) {
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
+      if (sceneScope !== undefined && !sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
       if (primitive.extensions?.KHR_draco_mesh_compression === undefined) continue;
       if (!dracoPrimitiveHasRealFallback(gltf, primitive)) return true;
     }
@@ -835,15 +872,34 @@ function dracoPrimitiveHasRealFallback(
     accessorIndices.every((accessorIndex) => gltf.accessors?.[accessorIndex]?.bufferView !== undefined);
 }
 
-function meshoptCompressionRequiresHostHook(gltf: GltfJson, isRequired: boolean): boolean {
+function meshoptCompressionRequiresHostHook(
+  gltf: GltfJson,
+  isRequired: boolean,
+  sceneScope: GltfSceneReachability | undefined,
+): boolean {
   if (isRequired) return true;
+  const scopedBufferViews = sceneScope?.bufferViewIndices;
 
-  for (const bufferView of gltf.bufferViews ?? []) {
+  for (const [bufferViewIndex, bufferView] of (gltf.bufferViews ?? []).entries()) {
+    if (scopedBufferViews !== undefined && !scopedBufferViews.has(bufferViewIndex)) continue;
     if (!hasMeshoptCompressionExtension(bufferView.extensions)) continue;
     if (!meshoptBufferViewHasRealFallback(gltf, bufferView.buffer)) return true;
   }
 
   return false;
+}
+
+function requiredExtensionAppliesToScope(
+  ext: string,
+  sceneScope: GltfSceneReachability | undefined,
+  scopedExtensionNames: ReadonlySet<string>,
+): boolean {
+  if (sceneScope === undefined || scopedExtensionNames.has(ext)) return true;
+  // Supported required extensions are resource-local in vitrum's scoped import
+  // policy: if the selected scene does not reach the extension-bearing resource,
+  // it should not reject a clean selected-scene load. Unknown required extensions
+  // stay asset-level blockers because their semantics are unknowable.
+  return !REQUIRED_EXTENSION_SUPPORT.has(ext);
 }
 
 function meshoptBufferViewHasRealFallback(gltf: GltfJson, bufferIndex: number): boolean {
@@ -879,9 +935,10 @@ function collectTextureSourceExtensionUses(
   gltf: GltfJson,
   required: readonly string[],
   selectedTextureSourceExtensions: ReadonlySet<string>,
+  sceneScope: GltfSceneReachability | undefined,
 ): readonly GltfTextureSourceExtensionUse[] {
   const uses: GltfTextureSourceExtensionUse[] = [];
-  for (const [textureIndex, texture] of (gltf.textures ?? []).entries()) {
+  for (const [textureIndex, texture] of textureEntriesForScope(gltf, sceneScope)) {
     for (const extension of TEXTURE_SOURCE_EXTENSION_NAMES) {
       const source = texture.extensions?.[extension]?.source;
       if (typeof source !== 'number') continue;
@@ -928,7 +985,10 @@ function classifyImage(image: GltfImage, index: number): GltfResourceUse {
   return { index, kind: 'external-uri', uri: image.uri, ...mime };
 }
 
-function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
+function analyzePrimitives(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): GltfPrimitiveFeatureReport {
   const byMode = new Map<string, number>();
   const unsupportedModes = new Set<string>();
   const fallbackGeneratedModes = new Set<string>();
@@ -953,6 +1013,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   const meshNodesWithSkin = new Map<number, string[]>();
   const meshNodesWithoutSkin = new Map<number, string[]>();
   for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
+    if (sceneScope !== undefined && !sceneScope.nodeIndices.has(nodeIndex)) continue;
     if (node.mesh === undefined) continue;
     const target = node.skin !== undefined ? meshNodesWithSkin : meshNodesWithoutSkin;
     const paths = target.get(node.mesh) ?? [];
@@ -962,6 +1023,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
 
   for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
     for (const [primitiveIndex, primitive] of (mesh.primitives ?? []).entries()) {
+      if (sceneScope !== undefined && !sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
       const primitivePath = `meshes[${meshIndex}].primitives[${primitiveIndex}]`;
       total += 1;
       addSourcePath(issuePaths, 'kind:mesh', primitivePath);
@@ -1035,6 +1097,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     }
   }
   for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
+    if (sceneScope !== undefined && !sceneScope.nodeIndices.has(nodeIndex)) continue;
     if (node.mesh === undefined || node.extensions?.EXT_mesh_gpu_instancing === undefined) continue;
     hasInstancing = true;
     const instancingPath = `nodes[${nodeIndex}].extensions.EXT_mesh_gpu_instancing`;
@@ -1048,7 +1111,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
       addSourcePath(issuePaths, 'instancedSkinnedOrMorphed', instancingPath);
     }
   }
-  for (const bv of gltf.bufferViews ?? []) {
+  for (const bv of bufferViewsForScope(gltf, sceneScope)) {
     if (hasMeshoptCompressionExtension(bv.extensions)) usesMeshopt = true;
   }
   const hasSkins = hasBoundSkinAttrs;
@@ -1084,13 +1147,15 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
 function analyzeUnrepresentableMaterialUvSets(
   gltf: GltfJson,
   materialUvSets: ReadonlyMap<number, ReadonlySet<number>>,
+  sceneScope: GltfSceneReachability | undefined,
 ): readonly number[] {
   const unrepresentable = new Set<number>();
   const usedMaterials = new Set<number>();
 
-  for (const mesh of gltf.meshes ?? []) {
-    for (const primitive of mesh.primitives ?? []) {
-      for (const materialIndex of primitiveMaterialIndices(primitive)) {
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
+      if (sceneScope !== undefined && !sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
+      for (const materialIndex of collectPrimitiveMaterialIndices(primitive)) {
         usedMaterials.add(materialIndex);
         const uvSets = materialUvSets.get(materialIndex);
         if (uvSets === undefined) continue;
@@ -1117,15 +1182,6 @@ function analyzeUnrepresentableMaterialUvSets(
   return [...unrepresentable].sort((a, b) => a - b);
 }
 
-function primitiveMaterialIndices(primitive: GltfPrimitive): readonly number[] {
-  const indices = new Set<number>();
-  if (primitive.material !== undefined) indices.add(primitive.material);
-  for (const mapping of primitive.extensions?.KHR_materials_variants?.mappings ?? []) {
-    if (Number.isInteger(mapping.material) && mapping.material >= 0) indices.add(mapping.material);
-  }
-  return [...indices];
-}
-
 function primitiveMorphTexcoordIsRepresentable(
   gltf: GltfJson,
   primitive: GltfPrimitive,
@@ -1135,7 +1191,7 @@ function primitiveMorphTexcoordIsRepresentable(
   if (primitive.attributes?.[baseSemantic] === undefined) return false;
   if (uvIndex <= 1) return true;
 
-  for (const materialIndex of primitiveMaterialIndices(primitive)) {
+  for (const materialIndex of collectPrimitiveMaterialIndices(primitive)) {
     const material = gltf.materials?.[materialIndex];
     if (material == null) continue;
     const uvSets = materialTextureUvSets(material);
@@ -1161,8 +1217,14 @@ function materialTextureUvSets(material: GltfMaterial): ReadonlySet<number> {
   return uvSets;
 }
 
-function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
+function analyzeMaterials(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): GltfMaterialFeatureReport {
   const materials = gltf.materials ?? [];
+  const materialEntries = [...materials.entries()].filter(([materialIndex]) =>
+    sceneScope === undefined || sceneScope.materialIndices.has(materialIndex)
+  );
   const fields = new Set<keyof MaterialSpec>();
   const textureFields = new Set<keyof MaterialSpec>();
   const samplerPolicies: GltfTextureSamplerPolicyUse[] = [];
@@ -1204,7 +1266,7 @@ function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
     if (info.extensions?.KHR_texture_transform) textureTransformCount += 1;
   };
 
-  for (const [materialIndex, mat] of materials.entries()) {
+  for (const [materialIndex, mat] of materialEntries) {
     currentMaterialIndex = materialIndex;
     const matPath = `materials[${materialIndex}]`;
     const pbr = mat.pbrMetallicRoughness;
@@ -1341,7 +1403,7 @@ function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
   }
 
   return {
-    count: materials.length,
+    count: materialEntries.length,
     materialFields: sorted(fields) as (keyof MaterialSpec)[],
     textureFields: sorted(textureFields) as (keyof MaterialSpec)[],
     samplerPolicies: samplerPolicies.sort((a, b) =>
@@ -1351,7 +1413,7 @@ function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
     unsupportedKnownExtensions: sorted(unsupportedKnownExtensions),
     alphaModes: sorted(alphaModes),
     uvSets: [...uvSets].sort((a, b) => a - b),
-    unrepresentableUvSets: analyzeUnrepresentableMaterialUvSets(gltf, materialUvSets),
+    unrepresentableUvSets: analyzeUnrepresentableMaterialUvSets(gltf, materialUvSets, sceneScope),
     textureTransformCount,
     volumeThicknessTextureCount,
     specularGlossinessMaterialCount,
@@ -1421,23 +1483,37 @@ function textureMinFilterModes(value: number | undefined): {
   }
 }
 
-function analyzeAnimations(gltf: GltfJson): GltfAnimationFeatureReport {
+function analyzeAnimations(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): GltfAnimationFeatureReport {
   const paths = new Set<string>();
   const interpolations = new Set<string>();
   const targetNodes = new Set<number>();
+  const animationIndices = new Set<number>();
   let channelCount = 0;
-  for (const animation of gltf.animations ?? []) {
-    for (const sampler of animation.samplers ?? []) {
-      interpolations.add(sampler.interpolation ?? 'LINEAR');
-    }
+  for (const [animationIndex, animation] of (gltf.animations ?? []).entries()) {
+    let animationHasReachableChannel = sceneScope === undefined;
     for (const channel of animation.channels ?? []) {
+      if (
+        sceneScope !== undefined &&
+        (channel.target.node === undefined || !sceneScope.nodeIndices.has(channel.target.node))
+      ) {
+        continue;
+      }
+      animationHasReachableChannel = true;
       channelCount += 1;
       paths.add(channel.target.path);
       if (channel.target.node !== undefined) targetNodes.add(channel.target.node);
     }
+    if (!animationHasReachableChannel) continue;
+    animationIndices.add(animationIndex);
+    for (const sampler of animation.samplers ?? []) {
+      interpolations.add(sampler.interpolation ?? 'LINEAR');
+    }
   }
   return {
-    count: gltf.animations?.length ?? 0,
+    count: sceneScope === undefined ? gltf.animations?.length ?? 0 : animationIndices.size,
     channelCount,
     paths: sorted(paths),
     interpolations: sorted(interpolations),
@@ -1453,6 +1529,87 @@ function textureInfoUvSetPath(info: GltfTextureInfo, path: string): string {
   return info.extensions?.KHR_texture_transform?.texCoord !== undefined
     ? `${path}.extensions.KHR_texture_transform.texCoord`
     : `${path}.texCoord`;
+}
+
+function textureEntriesForScope(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): Array<readonly [number, NonNullable<GltfJson['textures']>[number]]> {
+  const textures = gltf.textures ?? [];
+  if (sceneScope === undefined) return [...textures.entries()];
+  const textureIndices = new Set<number>();
+  for (const materialIndex of sceneScope.materialIndices) {
+    const material = gltf.materials?.[materialIndex];
+    if (material == null) continue;
+    for (const textureIndex of materialTextureIndices(material)) {
+      textureIndices.add(textureIndex);
+    }
+  }
+  return [...textureIndices]
+    .sort((a, b) => a - b)
+    .map((textureIndex) => [textureIndex, textures[textureIndex]] as const)
+    .filter((entry): entry is readonly [number, NonNullable<GltfJson['textures']>[number]] => entry[1] !== undefined);
+}
+
+function materialTextureIndices(material: GltfMaterial): readonly number[] {
+  const indices = new Set<number>();
+  const visit = (value: unknown): void => {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return;
+    const object = value as Record<string, unknown>;
+    if (typeof object.index === 'number') indices.add(object.index);
+    for (const child of Object.values(object)) visit(child);
+  };
+  visit(material);
+  return [...indices].sort((a, b) => a - b);
+}
+
+function bufferViewsForScope(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): readonly NonNullable<GltfJson['bufferViews']>[number][] {
+  const bufferViews = gltf.bufferViews ?? [];
+  if (sceneScope === undefined) return bufferViews;
+  return [...sceneScope.bufferViewIndices]
+    .sort((a, b) => a - b)
+    .map((index) => bufferViews[index])
+    .filter((bufferView): bufferView is NonNullable<GltfJson['bufferViews']>[number] => bufferView !== undefined);
+}
+
+function collectScopedNestedExtensionNames(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability,
+  out: Set<string>,
+  sourcePaths: SourcePathMap,
+): void {
+  for (const nodeIndex of sceneScope.nodeIndices) {
+    const node = gltf.nodes?.[nodeIndex];
+    if (node !== undefined) collectNestedExtensionNames(node, out, sourcePaths, `nodes[${nodeIndex}]`);
+  }
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
+      if (!sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
+      collectNestedExtensionNames(
+        primitive,
+        out,
+        sourcePaths,
+        `meshes[${meshIndex}].primitives[${primitiveIndex}]`,
+      );
+    }
+  }
+  for (const materialIndex of sceneScope.materialIndices) {
+    const material = gltf.materials?.[materialIndex];
+    if (material !== undefined) collectNestedExtensionNames(material, out, sourcePaths, `materials[${materialIndex}]`);
+  }
+  for (const [textureIndex, texture] of textureEntriesForScope(gltf, sceneScope)) {
+    collectNestedExtensionNames(texture, out, sourcePaths, `textures[${textureIndex}]`);
+  }
+  if (sceneScope.punctualLightIndices.size > 0) {
+    out.add('KHR_lights_punctual');
+    addSourcePath(sourcePaths, 'KHR_lights_punctual', 'extensions.KHR_lights_punctual');
+  }
+  if (out.has('KHR_materials_variants')) {
+    addSourcePath(sourcePaths, 'KHR_materials_variants', 'extensions.KHR_materials_variants');
+  }
 }
 
 function collectNestedExtensionNames(

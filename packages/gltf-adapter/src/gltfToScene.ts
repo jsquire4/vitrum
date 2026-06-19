@@ -112,6 +112,8 @@ import {
   isPointLineMode,
   pointLineModeName,
 } from './primitiveModeFallback.js';
+import { collectGltfSceneReachability } from './sceneScope.js';
+import { analyzeGltfAsset } from './featureReport.js';
 
 const GLTF_PRIMITIVE_MODE_TRIANGLES = 4;
 
@@ -506,6 +508,12 @@ export async function gltfToScene(
   const onCompressionDiagnostic = (diagnostic: GltfCompressionDiagnostic): void => {
     diagnostics.push(diagnostic);
   };
+  const sceneIndex = opts.sceneIndex ?? gltf.scene ?? 0;
+  const sceneReachability = collectGltfSceneReachability(gltf, sceneIndex);
+  const scopedFeatureReport = analyzeGltfAsset(gltf, {
+    ...(opts.textureSourceExtensions ? { textureSourceExtensions: opts.textureSourceExtensions } : {}),
+    sceneIndex,
+  });
 
   // ── 2. Validate version ────────────────────────────────────────────────────
   const version = gltf.asset?.version;
@@ -520,7 +528,7 @@ export async function gltfToScene(
     });
   }
 
-  const requiredExtensions = gltf.extensionsRequired ?? [];
+  const requiredExtensions = scopedFeatureReport.extensions.required;
   for (let i = 0; i < requiredExtensions.length; i += 1) {
     const ext = requiredExtensions[i]!;
     if (!isRequiredExtensionSupported(ext, opts.textureSourceExtensions)) {
@@ -537,8 +545,8 @@ export async function gltfToScene(
   }
 
   // ── 3. Warn on out-of-scope top-level features ─────────────────────────────
-  if (gltf.cameras && (gltf.cameras).length > 0) {
-    for (const [cameraIndex] of gltf.cameras.entries()) {
+  if (sceneReachability.cameraIndices.size > 0) {
+    for (const cameraIndex of [...sceneReachability.cameraIndices].sort((a, b) => a - b)) {
       emitImportDiagnostic(warnings, diagnostics, {
         severity: 'warning',
         code: 'ignored-camera',
@@ -549,13 +557,15 @@ export async function gltfToScene(
       });
     }
   }
-  if (gltf.skins && gltf.skins.length > 0) {
+  if (sceneReachability.skinIndices.size > 0) {
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
       code: 'skin-rest-pose',
-      path: 'skins',
+      path: [...sceneReachability.skinIndices].sort((a, b) => a - b)
+        .map((skinIndex) => `skins[${skinIndex}]`)
+        .join(','),
       message:
-        `[vitrum/gltf-adapter] This glTF has ${gltf.skins.length} skin(s). ` +
+        `[vitrum/gltf-adapter] Selected scene ${sceneIndex} uses ${sceneReachability.skinIndices.size} skin(s). ` +
         'Skinned nodes are imported as SkinnedMeshPrimitive at rest pose. ' +
         'The engine does not advance clips itself: drive the pose host-side by ' +
         'sampling the imported animations (sampleAnimationClip), rebuilding bone ' +
@@ -577,6 +587,10 @@ export async function gltfToScene(
     { dracoDecode: opts.dracoDecode, meshoptDecode: opts.meshoptDecode },
     warnings,
     onCompressionDiagnostic,
+    {
+      sceneReachability,
+      bufferViewIndices: sceneReachability.bufferViewIndices,
+    },
   );
 
   // ── 4. Resolve textures ────────────────────────────────────────────────────
@@ -605,6 +619,7 @@ export async function gltfToScene(
     ),
   );
   for (const [materialIndex, material] of (gltf.materials ?? []).entries()) {
+    if (!sceneReachability.materialIndices.has(materialIndex)) continue;
     if (material.doubleSided !== true) continue;
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
@@ -625,7 +640,6 @@ export async function gltfToScene(
   );
 
   // ── 6. Pick the target scene ───────────────────────────────────────────────
-  const sceneIndex = opts.sceneIndex ?? gltf.scene ?? 0;
   const gltfScene = gltf.scenes?.[sceneIndex];
   const rootNodes = gltfScene?.nodes ?? [];
 

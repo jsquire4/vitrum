@@ -2875,6 +2875,78 @@ describe('loadGltfForEngine', () => {
     expect(result.controller.scene.primitives).toHaveLength(1);
   });
 
+  it('scopes strict compatibility to the selected scene instead of unused scenes', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.scenes = [{ nodes: [0] }, { nodes: [1] }];
+    gltf.nodes = [
+      { mesh: 0 },
+      { mesh: 1, camera: 0 },
+    ];
+    gltf.cameras = [{}];
+    gltf.materials = [
+      { pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+      { doubleSided: true, pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+    ];
+    gltf.meshes = [
+      { primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 0 }] },
+      { primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 1, mode: 0 }] },
+    ];
+
+    const cleanEngine = { backendId: 'pt-webgl2' as const, setScene: vi.fn() };
+    const clean = await loadGltfForEngine(gltf, {
+      buffers,
+      sceneIndex: 0,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine: async () => cleanEngine,
+    });
+
+    expect(clean.asset.scene.primitives).toHaveLength(1);
+    expect(clean.asset.diagnostics.some((diagnostic) =>
+      diagnostic.code === 'ignored-camera' ||
+      diagnostic.code === 'double-sided-material',
+    )).toBe(false);
+    const selectedCompatibility = clean.asset.backendCompatibility.find((entry) =>
+      entry.profileId === 'pt-webgl2'
+    );
+    expect(selectedCompatibility?.issues.some((issue) =>
+      issue.name === 'doubleSided' ||
+      issue.name === 'cameras' ||
+      issue.name === 'mode:0',
+    )).toBe(false);
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      sceneIndex: 1,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine: async () => ({ backendId: 'pt-webgl2' as const, setScene: vi.fn() }),
+    })).rejects.toThrow('Selected backend "pt-webgl2" does not satisfy reject-degraded');
+  });
+
+  it('omits unused non-variant materials from selected-scene textureDecodeReport', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.materials = [
+      { pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+      { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+    ];
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      material: 0,
+    };
+    gltf.textures = [{ source: 0 }];
+    gltf.images = [{ uri: 'data:image/png;base64,AQID', mimeType: 'image/png' }];
+
+    const result = await loadGltfAsset(gltf, { buffers, sceneIndex: 0 });
+
+    expect(result.textureDecodeReport.entries).toHaveLength(0);
+    expect(result.backendCompatibility.flatMap((entry) => entry.issues).some((issue) =>
+      issue.path.includes('materials[1]') ||
+      issue.path.includes('textures[0]') ||
+      issue.name === 'baseColorMap',
+    )).toBe(false);
+  });
+
   it('lets direct callers target the pt-webgpu-lite profile while factories receive pt-webgpu', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     const engine = { backendId: 'pt-webgpu' as const, setScene: vi.fn() };
@@ -3246,6 +3318,8 @@ describe('loadGltfForEngine', () => {
   it('allows skin rest-pose diagnostics in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.skins = [{ joints: [0] }];
+    gltf.nodes![0] = { ...gltf.nodes![0]!, skin: 0 };
+    addUnboundSkinAttributes(gltf, buffers);
 
     const createAcceptedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
     const accepted = await loadGltfForEngine(gltf, {
@@ -3257,7 +3331,7 @@ describe('loadGltfForEngine', () => {
     expect(accepted.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: 'skin-rest-pose',
-        path: 'skins',
+        path: 'skins[0]',
       }),
     ]));
     expect(createAcceptedEngine).toHaveBeenCalledTimes(1);
@@ -3268,7 +3342,7 @@ describe('loadGltfForEngine', () => {
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-degraded',
       createEngine: createRejectedEngine,
-    })).rejects.toThrow('import:skin-rest-pose=approximate at skins');
+    })).rejects.toThrow('import:skin-rest-pose=approximate at skins[0]');
 
     expect(createRejectedEngine).not.toHaveBeenCalled();
   });

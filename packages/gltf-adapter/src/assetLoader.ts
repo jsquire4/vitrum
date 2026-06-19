@@ -115,11 +115,12 @@ export async function loadGltfAsset(
   const imageBytes = await resolveExternalImages(parsed.gltf, parsed.baseUri, options);
 
   const backendPolicy = options.backendPolicy ?? 'fidelity';
+  const sceneIndex = options.sceneIndex ?? parsed.gltf.scene ?? 0;
   const featureReport = analyzeGltfAsset(parsed.gltf, {
     ...(options.textureSourceExtensions ? { textureSourceExtensions: options.textureSourceExtensions } : {}),
+    sceneIndex,
   });
   const staticBackendCompatibility = rankGltfBackends(featureReport, backendPolicy);
-  const sceneIndex = options.sceneIndex ?? parsed.gltf.scene ?? 0;
   const sceneOptions: GltfToSceneOptions = {
     buffers,
     imageBytes,
@@ -134,7 +135,11 @@ export async function loadGltfAsset(
   const sceneResult = await gltfToScene(parsed.gltf, sceneOptions);
   const sceneWithMaterialTable = sceneResult.convertedMaterials === undefined
     ? sceneResult.scene
-    : appendInactiveMaterialPrimitives(sceneResult.scene, sceneResult.convertedMaterials);
+    : appendInactiveMaterialPrimitives(
+      sceneResult.scene,
+      sceneResult.convertedMaterials,
+      materialIndicesForSelectedScene(sceneResult.materialVariantBindings),
+    );
   const textureDecodeReport = buildTextureDecodeReport(sceneWithMaterialTable);
   const backendCompatibility = rerankBackendCompatibility(
     reconcileBackendCompatibilityAfterSceneImport(
@@ -177,10 +182,15 @@ export async function loadGltfAndDecodeTextures(
       asset.scene,
       decoded.scene,
       decodeOptions,
+      materialIndicesForSelectedScene(asset.materialVariantBindings),
     );
   const sceneWithMaterialTable = convertedMaterials === undefined
     ? decoded.scene
-    : appendInactiveMaterialPrimitives(decoded.scene, convertedMaterials.materials);
+    : appendInactiveMaterialPrimitives(
+      decoded.scene,
+      convertedMaterials.materials,
+      materialIndicesForSelectedScene(asset.materialVariantBindings),
+    );
   const textureDecodeReport = buildTextureDecodeReport(sceneWithMaterialTable);
   const textureDecodeDiagnostics = [
     ...decoded.diagnostics,
@@ -518,6 +528,7 @@ async function decodeConvertedMaterials(
   originalScene: Scene,
   decodedScene: Scene,
   options: DecodeSceneTexturesOptions,
+  materialIndices: ReadonlySet<number>,
 ): Promise<DecodeConvertedMaterialsResult> {
   const activeMaterialMap = new Map<MaterialSpec, MaterialSpec>();
   for (let i = 0; i < originalScene.primitives.length; i += 1) {
@@ -535,7 +546,7 @@ async function decodeConvertedMaterials(
     const activeDecoded = activeMaterialMap.get(material);
     if (activeDecoded !== undefined) {
       decodedMaterials[i] = activeDecoded;
-    } else {
+    } else if (materialIndices.has(i)) {
       pending.push({ index: i, material });
     }
   }
@@ -564,10 +575,12 @@ async function decodeConvertedMaterials(
 function appendInactiveMaterialPrimitives(
   scene: Scene,
   materials: readonly MaterialSpec[],
+  materialIndices: ReadonlySet<number> | undefined,
 ): Scene {
   const activeMaterials = new Set(scene.primitives.map((primitive) => materialForPrimitive(primitive)));
   const inactive = materials
     .map((material, index) => ({ index, material }))
+    .filter(({ index }) => materialIndices === undefined || materialIndices.has(index))
     .filter(({ material }) => !activeMaterials.has(material));
   if (inactive.length === 0) return scene;
   const synthetic = materialsToSyntheticScene(inactive);
@@ -575,6 +588,21 @@ function appendInactiveMaterialPrimitives(
     ...scene,
     primitives: [...scene.primitives, ...synthetic.primitives],
   };
+}
+
+function materialIndicesForSelectedScene(
+  bindings: GltfAssetResult['materialVariantBindings'],
+): ReadonlySet<number> {
+  if (bindings === undefined) return new Set();
+  const indices = new Set<number>();
+  for (const binding of bindings) {
+    if (binding.baseMaterialIndex !== undefined) indices.add(binding.baseMaterialIndex);
+    if (binding.basePatch?.materialIndex !== undefined) indices.add(binding.basePatch.materialIndex);
+    for (const variantPatch of binding.variantPatches ?? []) {
+      if (variantPatch.patch.materialIndex !== undefined) indices.add(variantPatch.patch.materialIndex);
+    }
+  }
+  return indices;
 }
 
 function materialsToSyntheticScene(
