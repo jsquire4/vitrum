@@ -1,6 +1,6 @@
 import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
-import { packMaterialsTexture } from './materialsTexture.js';
+import { MATERIAL_PIXELS, packMaterialsTexture } from './materialsTexture.js';
 import { packLightsTexture } from './lightsTexture.js';
 import { hasMeshAreaLightForPrimitive, packMeshAreaLights, TRI_LIGHT_PIXELS } from './meshAreaLights.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
@@ -231,6 +231,39 @@ function updateResidentMeshLightTexture(
     deleteOldTextures.push(current.meshLights);
   }
   return meshLights;
+}
+
+function updateResidentMaterialSlotTexture(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Float32Array,
+  dim: number,
+  slot: number,
+): void {
+  if (gl.isContextLost()) {
+    throw new Error('pt-webgl2: WebGL context lost — cannot update scene materials texture');
+  }
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  let texel = slot * MATERIAL_PIXELS;
+  let remaining = MATERIAL_PIXELS;
+  while (remaining > 0) {
+    const x = texel % dim;
+    const y = Math.floor(texel / dim);
+    const width = Math.min(remaining, dim - x);
+    gl.texSubImage2D(
+      gl.TEXTURE_2D,
+      0,
+      x,
+      y,
+      width,
+      1,
+      gl.RGBA,
+      gl.FLOAT,
+      data.subarray(texel * 4, (texel + width) * 4),
+    );
+    texel += width;
+    remaining -= width;
+  }
 }
 
 function materialWithCastShadow(primitive: Extract<ScenePrimitive, { material: MaterialSpec }>): MaterialSpec {
@@ -596,14 +629,23 @@ export function tryFastPathMaterialMutation(
     materialLayerMap ?? undefined,
     { vertexColorMaterialIds: current.vertexColorMaterialIds },
   );
-  updateRgba32f(gl, current.materials, materialData.data as Float32Array, materialData.dim, 'scene materials');
+  if (
+    foldedMaterials == null &&
+    !atlasRefreshNeeded &&
+    materialTextureDimMatches(current, geoPack, materialData)
+  ) {
+    updateResidentMaterialSlotTexture(gl, current.materials, materialData.data as Float32Array, materialData.dim, slot);
+  } else {
+    updateRgba32f(gl, current.materials, materialData.data as Float32Array, materialData.dim, 'scene materials');
+  }
 
   const meshLightsData = hasMeshAreaLightForPrimitive(nextScene, primitiveId)
     || (current.meshLightCount ?? 0) > 0
     ? packMeshAreaLights(nextScene, nextGeoPack)
     : null;
-  const meshLights = meshLightsData?.data != null
-    ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights')
+  const deleteOldTextures: (WebGLTexture | null)[] = [];
+  const meshLights = meshLightsData != null
+    ? updateResidentMeshLightTexture(gl, current, meshLightsData, deleteOldTextures)
     : null;
   return {
     textures: withTextureReplacementsForGl(gl, current, {
@@ -628,7 +670,7 @@ export function tryFastPathMaterialMutation(
     geoPack: nextGeoPack,
     deleteOldTextures: [
       ...(deleteOldAtlas ? [current.textures2DArray] : []),
-      ...(meshLightsData != null ? [current.meshLights] : []),
+      ...deleteOldTextures,
     ],
     ...(structuredWarnings.length > 0 ? { structuredWarnings } : {}),
   };

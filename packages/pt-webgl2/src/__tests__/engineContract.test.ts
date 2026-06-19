@@ -1317,7 +1317,9 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
       expect(fallbackWarnings).toHaveLength(0);
       expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
+      const materialRowUploads = texSubImage2D.mock.calls.slice(initialSubImage2D);
+      expect(materialRowUploads.length).toBeGreaterThan(1);
+      expect(materialRowUploads.every((call) => call[5] === 1)).toBe(true);
       expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.35);
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(handle);
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.texCoord).toBe(1);

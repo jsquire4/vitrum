@@ -96,7 +96,7 @@ function fakeMerged(materials: readonly MaterialSpec[]): WorldSpaceMergeResult {
   };
 }
 
-function fakeCurrent(): UploadedSceneTextures {
+function fakeCurrent(overrides: Partial<UploadedSceneTextures> = {}): UploadedSceneTextures {
   const tex = {} as WebGLTexture;
   return {
     bvhBounds: tex,
@@ -126,10 +126,35 @@ function fakeCurrent(): UploadedSceneTextures {
     vertexColorMaterialIds: new Set(),
     triangleCount: 2,
     destroy: vi.fn(),
+    ...overrides,
   };
 }
 
 describe('tryFastPathMaterialMutation', () => {
+  it('subuploads only material rows for scalar-only material mutations', () => {
+    const gl = fakeGl();
+    const previous = material({ roughness: 1 });
+    const next = material({ roughness: 0.25 });
+
+    const swap = tryFastPathMaterialMutation(
+      gl,
+      fakeCurrent({ meshLights: null, meshLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0 }),
+      fakeMerged([previous, material({ baseColor: [0.1, 0.1, 0.1] })]),
+      sceneWithPrimitive(panelPrimitive(next)),
+      'panel',
+      { material: next },
+    );
+
+    expect(swap).not.toBeNull();
+    expect(swap?.geoPack?.materials[0]).toEqual(expect.objectContaining({ roughness: 0.25 }));
+    expect((gl.texImage2D as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
+    const subImageCalls = (gl.texSubImage2D as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(subImageCalls.length).toBeGreaterThan(1);
+    for (const call of subImageCalls) {
+      expect(call[5]).toBe(1);
+    }
+  });
+
   it('re-packs mesh-area light data after an emissive material mutation', () => {
     const gl = fakeGl();
     const previous = material({ emissive: [0.1, 0, 0], emissiveIntensity: 1 });
@@ -153,10 +178,14 @@ describe('tryFastPathMaterialMutation', () => {
     expect(swap?.textures.totalEmissiveArea).toBeCloseTo(1, 6);
 
     const subImageCalls = (gl.texSubImage2D as unknown as ReturnType<typeof vi.fn>).mock.calls;
-    expect(subImageCalls).toHaveLength(1);
     const calls = (gl.texImage2D as unknown as ReturnType<typeof vi.fn>).mock.calls;
-    expect(calls).toHaveLength(1);
-    const meshLightData = calls[0]?.[8] as Float32Array;
+    expect(calls).toHaveLength(0);
+    const meshLightCall = subImageCalls.find((call) => {
+      const data = call[8];
+      return data instanceof Float32Array && data[4] === 6;
+    });
+    expect(meshLightCall).toBeDefined();
+    const meshLightData = meshLightCall?.[8] as Float32Array;
     expect(meshLightData[4]).toBeCloseTo(6, 6);
     expect(meshLightData[5]).toBeCloseTo(0, 6);
     expect(meshLightData[6]).toBeCloseTo(0, 6);
