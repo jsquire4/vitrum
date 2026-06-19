@@ -132,7 +132,10 @@ export async function loadGltfAsset(
     ...(options.pointLineFallbackRadius !== undefined ? { pointLineFallbackRadius: options.pointLineFallbackRadius } : {}),
   };
   const sceneResult = await gltfToScene(parsed.gltf, sceneOptions);
-  const textureDecodeReport = buildTextureDecodeReport(sceneResult.scene);
+  const sceneWithMaterialTable = sceneResult.convertedMaterials === undefined
+    ? sceneResult.scene
+    : appendInactiveMaterialPrimitives(sceneResult.scene, sceneResult.convertedMaterials);
+  const textureDecodeReport = buildTextureDecodeReport(sceneWithMaterialTable);
   const backendCompatibility = rerankBackendCompatibility(
     reconcileBackendCompatibilityAfterSceneImport(
       staticBackendCompatibility,
@@ -355,6 +358,7 @@ function emissiveTexelPdfIssueSatisfiedByDecode(
   if (key == null) return false;
   return entries.every((entry) =>
     (entry.handleKind === 'pixel-data' || entry.handleKind === 'data-texture') &&
+    entry.handleColorSpace === 'linear' &&
     entry.backendReadiness[key] === 'ready'
   );
 }

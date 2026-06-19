@@ -2320,6 +2320,49 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect((ptWebgl2?.approximateCount ?? 0)).toBeLessThan(preDecodePtWebgl2?.approximateCount ?? 0);
   });
 
+  it('keeps emissiveTexture texel-PDF degradation for PT backends after sRGB webgpu-target decode', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.materials![0] = {
+      emissiveFactor: [1, 1, 1],
+      emissiveTexture: { index: 0 },
+    };
+    const decodePixels = vi.fn(() => ({
+      width: 2,
+      height: 2,
+      data: new Uint8Array([
+        255, 0, 0, 255,
+        0, 255, 0, 255,
+        0, 0, 255, 255,
+        255, 255, 255, 255,
+      ]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: 'srgb' as const,
+    }));
+
+    const decoded = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      decodePixels,
+      textureTarget: 'webgpu',
+    });
+    expect(decoded.textureDecodeReport.entries).toContainEqual(expect.objectContaining({
+      materialField: 'emissiveMap',
+      handleKind: 'pixel-data',
+      handleColorSpace: 'srgb',
+    }));
+
+    const ptWebgl2 = decoded.backendCompatibility.find((entry) => entry.profileId === 'pt-webgl2');
+    const ptWebgpu = decoded.backendCompatibility.find((entry) => entry.profileId === 'pt-webgpu');
+    expect(ptWebgl2?.issues).toContainEqual(expect.objectContaining({
+      name: 'emissiveMap.texelPdf',
+      support: 'approximate',
+    }));
+    expect(ptWebgpu?.issues).toContainEqual(expect.objectContaining({
+      name: 'emissiveMap.texelPdf',
+      support: 'approximate',
+    }));
+  });
+
   it('reports material textures that require UV sets beyond the core Scene contract', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = { index: 0, texCoord: 2 };
@@ -2958,6 +3001,28 @@ describe('loadGltfForEngine', () => {
     );
 
     expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rechecks strict compatibility against an engine-reported runtime profile before attaching', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const engine = {
+      backendId: 'pt-webgpu' as const,
+      backendProfileId: 'pt-webgpu-lite' as const,
+      setScene: vi.fn(),
+    };
+    const createEngine = vi.fn(async () => engine);
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgpu',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'Actual engine profile "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: material:baseColorMap=unsupported',
+    );
+
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(engine.setScene).not.toHaveBeenCalled();
   });
 
   it('rejects a runtime profile from a different backend family', async () => {
@@ -3647,6 +3712,21 @@ describe('loadGltfForEngine', () => {
     expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
     expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
     expect(handle.data[2]).toBeCloseTo(1);
+  });
+
+  it('reports inactive material variant textures before decode', async () => {
+    const { gltf, buffers } = makeInlineTexturedVariantGltf();
+
+    const result = await loadGltfAsset(gltf, { buffers });
+
+    expect(result.textureDecodeReport.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        primitiveId: 'gltf-material-1',
+        materialField: 'baseColorMap',
+        path: 'materials[1].pbrMetallicRoughness.baseColorTexture',
+        handleKind: 'raw-image',
+      }),
+    ]));
   });
 
   it('preserves EXT_mesh_gpu_instancing metadata on bridge-created controllers', async () => {

@@ -170,9 +170,13 @@ export async function loadGltfForEngine<
   }
 
   const backend = backendIdFromEngine(engine) ?? selectedBackend;
+  const engineProfileId = backendProfileIdFromEngine(engine);
   if (backend !== selectedBackend) {
-    selectedProfileId = backend;
-    enforceCompatibility(asset, backend, backend, compatibilityMode, options, 'Actual engine backend');
+    selectedProfileId = engineProfileId ?? backend;
+    enforceCompatibility(asset, backend, selectedProfileId, compatibilityMode, options, 'Actual engine backend');
+  } else if (engineProfileId !== undefined && engineProfileId !== selectedProfileId) {
+    selectedProfileId = resolveRuntimeProfile(backend, selectedProfileId, engineProfileId);
+    enforceCompatibility(asset, backend, selectedProfileId, compatibilityMode, options, 'Actual engine profile');
   }
 
   const attachScene = options.attachScene ?? true;
@@ -509,8 +513,19 @@ function backendIdFromEngine(engine: GltfScenePatchTarget | undefined): BackendI
   return isBackendId(backendId) ? backendId : undefined;
 }
 
+function backendProfileIdFromEngine(engine: GltfScenePatchTarget | undefined): GltfBackendProfileId | undefined {
+  if (engine == null) return undefined;
+  const profileId = (engine as { readonly backendProfileId?: unknown; readonly profileId?: unknown }).backendProfileId ??
+    (engine as { readonly profileId?: unknown }).profileId;
+  return isBackendProfileId(profileId) ? profileId : undefined;
+}
+
 function isBackendId(value: unknown): value is BackendId {
   return value === 'walkaround-hybrid' || value === 'pt-webgl2' || value === 'pt-webgpu';
+}
+
+function isBackendProfileId(value: unknown): value is GltfBackendProfileId {
+  return isBackendId(value) || value === 'pt-webgpu-lite';
 }
 
 function formatCompatibilityIssue(issue: GltfCompatibilityIssue): string {
