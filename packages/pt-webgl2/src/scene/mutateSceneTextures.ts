@@ -426,8 +426,13 @@ function canRewritePrimitiveListResident(
   built: ReturnType<typeof buildSceneGeometryTextureData>,
   materialsData: ReturnType<typeof packMaterialsTexture>,
   atlas: ReturnType<typeof packTextureAtlas>,
+  nextAtlasLayerCapacity: number,
 ): boolean {
-  if (current.textures2DArray != null || atlas != null) return false;
+  if (atlas != null) {
+    if (!canUpdateAtlasInPlace(current, atlas, nextAtlasLayerCapacity)) return false;
+  } else if (current.textures2DArray != null) {
+    return false;
+  }
   return canRewriteGeometryResident(current, currentMerged, built, materialsData);
 }
 
@@ -845,9 +850,20 @@ export function tryFastPathPrimitiveListMutation(
     atlas?.layerOfByColorSpace,
     { vertexColorMaterialIds: built.vertexColorMaterialIds },
   );
+  const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
+  const nextAtlasLayerCapacity = atlas != null
+    ? textureAtlasLayerCapacity(atlas.layerCount, maxAtlasLayers)
+    : 0;
   if (
     currentMerged != null &&
-    canRewritePrimitiveListResident(current, currentMerged, built, materialsData, atlas)
+    canRewritePrimitiveListResident(
+      current,
+      currentMerged,
+      built,
+      materialsData,
+      atlas,
+      nextAtlasLayerCapacity,
+    )
   ) {
     updateRgba32f(gl, current.bvhBounds, built.bvhData.bounds, built.bvhData.boundsDim, 'scene BVH bounds');
     updateRgba32ui(gl, current.bvhContents, built.bvhData.contents, built.bvhData.contentsDim, 'scene BVH contents');
@@ -869,6 +885,9 @@ export function tryFastPathPrimitiveListMutation(
       built.attrData.layers,
       'vertex attributes',
     );
+    if (atlas != null && current.textures2DArray != null) {
+      updateTextureAtlasLayers(gl, current.textures2DArray, atlas);
+    }
 
     let meshLights = current.meshLights;
     const deleteOldTextures: (WebGLTexture | null)[] = [];
@@ -886,6 +905,12 @@ export function tryFastPathPrimitiveListMutation(
         totalEmissiveArea: built.meshLightsData.totalEmissiveArea,
         totalEmissivePower: built.meshLightsData.totalEmissivePower,
         triangleCount: built.triangleCount,
+        ...(atlas != null ? {
+          materialAtlasDim: atlas.dim,
+          materialAtlasLayerCount: atlas.layerCount,
+          materialAtlasLayerCapacity: current.materialAtlasLayerCapacity,
+          materialLayerMap: atlas.layerOfByColorSpace,
+        } : {}),
         vertexColorMaterialIds: built.vertexColorMaterialIds,
       }),
       geoPack: built.merged,
