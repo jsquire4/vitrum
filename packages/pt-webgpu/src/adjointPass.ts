@@ -15,7 +15,12 @@
  * of the AdjointPass instance (engine-owned; freed via dispose()).
  */
 
-import { asMat4 } from '@vitrum/core';
+import { asMat4, type FrameInput, type Scene, type ScenePrimitive } from '@vitrum/core';
+import {
+  expandIndicesToStride4,
+  mergeUv1FromCore,
+  mergeWorldSpaceFromCore,
+} from '@vitrum/shared-bvh';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import {
   PT_WEBGPU_ADJOINT_PASS_WGSL,
@@ -53,12 +58,22 @@ import {
 } from './wgsl/pathTrace/adjointPass.wgsl.js';
 import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
-import type { FrameInput, Scene } from '@vitrum/core';
 import type { AdjointGradientRequest } from './inverse/inverseSession.js';
 import {
   meshAreaEmitterAdjointRangeForScene,
   packMeshAreaAdjointReplayArrays,
 } from './scene/emitterPacking.js';
+
+interface AdjointWorldSpaceGeometry {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly uvs: Float32Array;
+  readonly tangents: Float32Array;
+  readonly colors: Float32Array;
+  readonly indices: Uint32Array;
+  readonly triMaterialIds: Uint32Array;
+  readonly triangleCount: number;
+}
 
 export class AdjointPass {
   readonly #device: GPUDevice;
@@ -295,6 +310,15 @@ export class AdjointPass {
       }
     }
 
+    const geometryOverride = buildAdjointWorldSpaceGeometryOverride(
+      scene,
+      supportedAnalyticShapes,
+      materialIndexForPrimitive,
+    );
+    if (geometryOverride != null) {
+      uboU[22] = geometryOverride.triangleCount >>> 0;
+    }
+
     // H14-D: track all transient buffers in a list; finally block destroys any
     // that survive a rejected mapAsync (device loss, OOM) so no GPU memory leaks.
     const U = (globalThis as { GPUBufferUsage: typeof GPUBufferUsage }).GPUBufferUsage;
@@ -327,16 +351,37 @@ export class AdjointPass {
           U.STORAGE | U.COPY_DST,
           meshAreaAdjointReplay.meshAreaLightSourceFactorsData,
         );
+    const positionsBuffer = geometryOverride == null
+      ? sb.positionsBuffer
+      : mk(geometryOverride.positions.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.positions);
+    const indicesBuffer = geometryOverride == null
+      ? sb.indicesBuffer
+      : mk(geometryOverride.indices.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.indices);
+    const triMaterialIdsBuffer = geometryOverride == null
+      ? sb.triMaterialIdsBuffer
+      : mk(geometryOverride.triMaterialIds.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.triMaterialIds);
+    const normalsBuffer = geometryOverride == null
+      ? sb.normalsBuffer
+      : mk(geometryOverride.normals.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.normals);
+    const uvsBuffer = geometryOverride == null
+      ? sb.uvsBuffer
+      : mk(geometryOverride.uvs.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.uvs);
+    const colorsBuffer = geometryOverride == null
+      ? sb.colorsBuffer
+      : mk(geometryOverride.colors.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.colors);
+    const tangentsBuffer = geometryOverride == null
+      ? sb.tangentsBuffer
+      : mk(geometryOverride.tangents.byteLength, U.STORAGE | U.COPY_DST, geometryOverride.tangents);
 
     const bind = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: paramsBuf } },
-        { binding: 1, resource: { buffer: sb.positionsBuffer } },
-        { binding: 2, resource: { buffer: sb.indicesBuffer } },
-        { binding: 3, resource: { buffer: sb.triMaterialIdsBuffer } },
+        { binding: 1, resource: { buffer: positionsBuffer } },
+        { binding: 2, resource: { buffer: indicesBuffer } },
+        { binding: 3, resource: { buffer: triMaterialIdsBuffer } },
         { binding: 4, resource: { buffer: sb.materialsBuffer } },
-        { binding: 5, resource: { buffer: sb.normalsBuffer } },
+        { binding: 5, resource: { buffer: normalsBuffer } },
         { binding: 6, resource: { buffer: sb.pointLightsBuffer } },
         { binding: 7, resource: { buffer: dLossBuf } },
         { binding: 8, resource: { buffer: gradBuf } },
@@ -345,16 +390,16 @@ export class AdjointPass {
         { binding: 11, resource: { buffer: sb.directionalLightsBuffer } },
         { binding: 12, resource: { buffer: sb.spotLightsBuffer } },
         { binding: 13, resource: { buffer: meshAreaLightsBuffer } },
-        { binding: 14, resource: { buffer: sb.uvsBuffer } },
+        { binding: 14, resource: { buffer: uvsBuffer } },
         { binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer } },
         { binding: 16, resource: sb.materialTextureView },
         { binding: 17, resource: sb.materialTextureSampler },
-        { binding: 18, resource: { buffer: sb.colorsBuffer } },
+        { binding: 18, resource: { buffer: colorsBuffer } },
         { binding: 19, resource: sb.materialLinearTextureView },
         { binding: 20, resource: { buffer: sb.environmentMapTexelsBuffer } },
         { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
         { binding: 22, resource: { buffer: meshAreaLightSourceFactorsBuffer } },
-        { binding: 23, resource: { buffer: sb.tangentsBuffer } },
+        { binding: 23, resource: { buffer: tangentsBuffer } },
       ],
     });
 
@@ -388,6 +433,77 @@ export class AdjointPass {
   dispose(): void {
     this.#pipeline = null;
   }
+}
+
+export function buildAdjointWorldSpaceGeometryOverride(
+  scene: Scene,
+  supportedAnalyticShapes: ReadonlySet<string>,
+  materialIndexForPrimitive: (scene: Scene, id: string, shapes: ReadonlySet<string>) => number | null,
+): AdjointWorldSpaceGeometry | null {
+  const replayable = scene.primitives.filter(isAdjointReplayMeshPrimitive);
+  if (replayable.length !== scene.primitives.length) return null;
+  if (!replayable.some((primitive) => primitive.transform != null && !isIdentityMat4(primitive.transform))) {
+    return null;
+  }
+
+  const merged = mergeWorldSpaceFromCore(scene, {
+    positionStride: 4,
+    filter: isAdjointReplayMeshPrimitive,
+  });
+  if (merged.triangleCount === 0) return null;
+
+  const mergedTriMaterialIds = new Uint32Array(merged.triangleCount);
+  for (const range of merged.meshVertexRanges) {
+    const matId = materialIndexForPrimitive(scene, range.name, supportedAnalyticShapes);
+    if (matId == null) return null;
+    const triEnd = Math.min(mergedTriMaterialIds.length, range.triStart + range.triCount);
+    for (let tri = range.triStart; tri < triEnd; tri += 1) {
+      mergedTriMaterialIds[tri] = matId >>> 0;
+    }
+  }
+
+  const triMaterialIds = new Uint32Array(merged.triangleCount);
+  for (let tri = 0; tri < merged.triangleCount; tri += 1) {
+    const mergedTri = merged.bvhTriToMergedTri[tri] ?? tri;
+    triMaterialIds[tri] = mergedTriMaterialIds[mergedTri] ?? 0;
+  }
+
+  const uv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount);
+  const uvs = new Float32Array(merged.vertexCount * 4);
+  for (let vertex = 0; vertex < merged.vertexCount; vertex += 1) {
+    uvs[vertex * 4] = merged.uvs[vertex * 2] ?? 0;
+    uvs[vertex * 4 + 1] = merged.uvs[vertex * 2 + 1] ?? 0;
+    if (uv1 != null) {
+      uvs[vertex * 4 + 2] = uv1[vertex * 2] ?? 0;
+      uvs[vertex * 4 + 3] = uv1[vertex * 2 + 1] ?? 0;
+    }
+  }
+
+  return {
+    positions: merged.positions,
+    normals: merged.normals,
+    uvs,
+    tangents: merged.tangents,
+    colors: merged.colors,
+    indices: expandIndicesToStride4(merged.indices),
+    triMaterialIds,
+    triangleCount: merged.triangleCount,
+  };
+}
+
+function isAdjointReplayMeshPrimitive(
+  primitive: ScenePrimitive,
+): primitive is Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' }> {
+  return primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh';
+}
+
+function isIdentityMat4(transform: Float32Array): boolean {
+  const expected = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+  if (transform.length < 16) return false;
+  for (let i = 0; i < 16; i += 1) {
+    if (Math.abs((transform[i] ?? 0) - expected[i]!) > 1e-6) return false;
+  }
+  return true;
 }
 
 function adjointEmitterTargetForScene(

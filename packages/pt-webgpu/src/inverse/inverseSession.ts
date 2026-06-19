@@ -754,6 +754,18 @@ function diagnosePathReplaySlot(
       details: primitiveIssue.details,
     }];
   }
+  const sceneGeometryIssue = pathReplaySceneGeometryIssue(scene);
+  if (sceneGeometryIssue != null) {
+    return [{
+      severity: 'info',
+      code: 'path-replay-unsupported-scene-geometry',
+      path,
+      message:
+        `[vitrum/pt-webgpu] InverseSession path "${path}" needs whole-scene triangle replay, ` +
+        `${sceneGeometryIssue.message}; using finite-difference.`,
+      details: sceneGeometryIssue.details,
+    }];
+  }
 
   const materialIssue = pathReplayMaterialIssue(prim.material, target.field, iridescenceOptimizedPrimitiveIds.has(target.id));
   if (materialIssue != null) {
@@ -905,10 +917,17 @@ function pathReplayPrimitiveIssue(
       details: { primitiveKind: primitive.kind },
     };
   }
-  if (primitive.transform != null && !isIdentityMat4(primitive.transform)) {
+  return null;
+}
+
+function pathReplaySceneGeometryIssue(
+  scene: Scene,
+): { message: string; details: Record<string, string | boolean> } | null {
+  for (const primitive of scene.primitives) {
+    if (primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh') continue;
     return {
-      message: 'non-identity primitive transforms are not mirrored by the adjoint replay pass',
-      details: { primitiveKind: primitive.kind, nonIdentityTransform: true },
+      message: `scene primitive "${primitive.id}" has kind "${primitive.kind}", outside the flat triangle replay domain`,
+      details: { primitiveId: primitive.id, primitiveKind: primitive.kind },
     };
   }
   return null;
@@ -1364,15 +1383,6 @@ function pathReplayLightingIssue(
         : {}),
     },
   };
-}
-
-function isIdentityMat4(transform: Float32Array): boolean {
-  const expected = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
-  if (transform.length < 16) return false;
-  for (let i = 0; i < 16; i += 1) {
-    if (Math.abs((transform[i] ?? 0) - expected[i]!) > 1e-6) return false;
-  }
-  return true;
 }
 
 function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean {

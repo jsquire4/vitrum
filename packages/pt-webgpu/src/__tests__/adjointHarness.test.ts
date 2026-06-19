@@ -365,13 +365,19 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
   });
 
   it('engine adjoint PASS binds the material texture replay resources', () => {
-    expect(ADJOINT_PASS_TS).toContain('binding: 14, resource: { buffer: sb.uvsBuffer }');
+    expect(ADJOINT_PASS_TS).toContain('const uvsBuffer = geometryOverride == null');
+    expect(ADJOINT_PASS_TS).toContain('? sb.uvsBuffer');
+    expect(ADJOINT_PASS_TS).toContain('const colorsBuffer = geometryOverride == null');
+    expect(ADJOINT_PASS_TS).toContain('? sb.colorsBuffer');
+    expect(ADJOINT_PASS_TS).toContain('const tangentsBuffer = geometryOverride == null');
+    expect(ADJOINT_PASS_TS).toContain('? sb.tangentsBuffer');
+    expect(ADJOINT_PASS_TS).toContain('binding: 14, resource: { buffer: uvsBuffer }');
     expect(ADJOINT_PASS_TS).toContain('binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer }');
     expect(ADJOINT_PASS_TS).toContain('binding: 16, resource: sb.materialTextureView');
     expect(ADJOINT_PASS_TS).toContain('binding: 17, resource: sb.materialTextureSampler');
-    expect(ADJOINT_PASS_TS).toContain('binding: 18, resource: { buffer: sb.colorsBuffer }');
+    expect(ADJOINT_PASS_TS).toContain('binding: 18, resource: { buffer: colorsBuffer }');
     expect(ADJOINT_PASS_TS).toContain('binding: 19, resource: sb.materialLinearTextureView');
-    expect(ADJOINT_PASS_TS).toContain('binding: 23, resource: { buffer: sb.tangentsBuffer }');
+    expect(ADJOINT_PASS_TS).toContain('binding: 23, resource: { buffer: tangentsBuffer }');
     expect(ADJOINT_PASS_TS).toContain("case 'baseColor':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_BASECOLOR;');
     expect(ADJOINT_PASS_TS).toContain('unsupported material adjoint field');

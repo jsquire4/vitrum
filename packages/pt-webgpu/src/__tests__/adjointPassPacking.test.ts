@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { asMat4, type FrameInput, type Scene } from '@vitrum/core';
-import { AdjointPass } from '../adjointPass.js';
+import { AdjointPass, buildAdjointWorldSpaceGeometryOverride } from '../adjointPass.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 import type { AdjointGradientRequest } from '../inverse/inverseSession.js';
 import {
@@ -253,6 +253,65 @@ function makeUploadedSceneBuffers(makeBuffer: (size?: number) => FakeBuffer): Up
 }
 
 describe('AdjointPass host packing', () => {
+  it('builds a world-space replay override for transformed mesh geometry without remapping material slots', () => {
+    const translated = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      2, 0, 0, 1,
+    ]));
+    const scene = makeScene();
+    const base = scene.primitives[0]!;
+    if (base.kind !== 'mesh') throw new Error('test fixture expected a mesh');
+    const transformedScene: Scene = {
+      ...scene,
+      primitives: [{
+        ...base,
+        transform: translated,
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        uv1: new Float32Array([0.25, 0.25, 0.75, 0.25, 0.25, 0.75]),
+        tangents: new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]),
+        colors: new Float32Array([1, 0, 0, 1, 0, 1, 0, 0.5, 0, 0, 1, 1]),
+      }],
+    };
+
+    const override = buildAdjointWorldSpaceGeometryOverride(
+      transformedScene,
+      new Set(),
+      (_scene, id) => (id === 'panel' ? 7 : null),
+    );
+
+    expect(override).not.toBeNull();
+    expect(override!.triangleCount).toBe(1);
+    expect(Array.from(override!.positions)).toEqual([
+      2, 0, 0, 0,
+      3, 0, 0, 0,
+      2, 1, 0, 0,
+    ]);
+    expect(Array.from(override!.normals)).toEqual([
+      0, 0, 1, 0,
+      0, 0, 1, 0,
+      0, 0, 1, 0,
+    ]);
+    expect(Array.from(override!.indices)).toEqual([0, 1, 2, 0]);
+    expect(Array.from(override!.triMaterialIds)).toEqual([7]);
+    expect(Array.from(override!.uvs)).toEqual([
+      0, 0, 0.25, 0.25,
+      1, 0, 0.75, 0.25,
+      0, 1, 0.25, 0.75,
+    ]);
+    expect(Array.from(override!.colors)).toEqual([
+      1, 0, 0, 1,
+      0, 1, 0, 0.5,
+      0, 0, 1, 1,
+    ]);
+    expect(Array.from(override!.tangents)).toEqual([
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ]);
+  });
+
   it('packs replay sample count and swaps mesh-area emitter adjoint replay buffers into bindings', async () => {
     const restoreWebGpuConstants = installWebGpuConstants();
     try {

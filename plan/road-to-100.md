@@ -48,6 +48,12 @@
 > covered by loader/spec tests, dispatch failures fall back to raw HDR,
 > NRC opt-in emits a structured experimental/biased warning, and glTF
 > `decodeSceneTextures(target:"webgpu")` now actually resolves raw image handles
+> to backend-ready texture payloads. Latest pt-webgpu inverse follow-up: transformed
+> mesh/skinned scenes now bake a transient world-space flat replay stream for the
+> adjoint pass (positions, normals, uv0/uv1, tangents, colors, vec4 indices, and
+> live material IDs), so non-identity mesh transforms no longer force a path-replay
+> downgrade; analytic and instanced scene geometry remain structured finite-difference
+> downgrades because the adjoint pass still does not traverse TLAS/analytic instances.
 > **2026-06-18 source-verified follow-up:** pt-webgpu primary-hit path replay now keeps
 > unlit emissive fits, emissive/light-map primary terms with normal-only maps, and
 > unlit AO map intensity with irrelevant BRDF lobe flags on the analytic route;

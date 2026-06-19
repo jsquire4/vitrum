@@ -103,6 +103,7 @@ export interface InverseSessionDiagnostic {
     | 'path-replay-unsupported-normal'
     | 'path-replay-unsupported-environment'
     | 'path-replay-unsupported-primitive'
+    | 'path-replay-unsupported-scene-geometry'
     | 'path-replay-unsupported-material'
     | 'path-replay-unsupported-lighting'
     | 'path-replay-unsupported-emitter'

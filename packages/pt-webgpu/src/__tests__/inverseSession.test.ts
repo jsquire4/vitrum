@@ -2826,12 +2826,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       0, 0, 1, 0,
       0, 0, 0, 1,
     ]));
-    const translated = asMat4(new Float32Array([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      2, 0, 0, 1,
-    ]));
     const baseMesh = fake.scene.primitives[0]!;
     if (baseMesh.kind !== 'mesh') throw new Error('test fixture expected a mesh primitive');
     const cases: Scene['primitives'] = [
@@ -2850,10 +2844,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         material: baseMesh.material,
         instances: [identity],
       },
-      {
-        ...baseMesh,
-        transform: translated,
-      },
     ];
     for (const primitive of cases) {
       fake.scene = { ...fake.scene, primitives: [primitive] };
@@ -2870,6 +2860,66 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       }));
       session.dispose();
     }
+  });
+
+  it('keeps path-replay for transformed mesh targets because the adjoint pass bakes a world-space replay stream', () => {
+    const fake = makeFakeEngine();
+    const translated = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      2, 0, 0, 1,
+    ]));
+    const baseMesh = fake.scene.primitives[0]!;
+    if (baseMesh.kind !== 'mesh') throw new Error('test fixture expected a mesh primitive');
+    fake.scene = { ...fake.scene, primitives: [{ ...baseMesh, transform: translated }] };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-primitive',
+      path: 'materials.panel.baseColor',
+    }));
+    session.dispose();
+  });
+
+  it('degrades to finite-difference when non-flat scene geometry would affect path replay visibility', () => {
+    const fake = makeFakeEngine();
+    const baseMesh = fake.scene.primitives[0]!;
+    if (baseMesh.kind !== 'mesh') throw new Error('test fixture expected a mesh primitive');
+    fake.scene = {
+      ...fake.scene,
+      primitives: [
+        baseMesh,
+        {
+          kind: 'analytic',
+          id: 'sphere-occluder',
+          shape: 'sphere',
+          params: new Float32Array([0, 0, 0, 1]),
+          material: baseMesh.material,
+        },
+      ],
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-scene-geometry',
+      path: 'materials.panel.baseColor',
+    }));
+    session.dispose();
   });
 
   it('passes specular adjoint params to the hook with the expected flat offsets', async () => {
