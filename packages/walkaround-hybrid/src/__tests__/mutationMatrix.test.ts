@@ -530,6 +530,41 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive emits a structured warning for unknown no-op patch fields', () => {
+    const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        hostOnlyField: 1,
+        anotherHostOnlyField: true,
+        ignoredUndefined: undefined,
+      } as never);
+      engine.updatePrimitive('mesh-a', {
+        hostOnlyField: 2,
+        anotherHostOnlyField: false,
+      } as never);
+
+      const unknownWarnings = warnings.filter((w) =>
+        w.code === 'walkaround-hybrid.unknown-primitive-patch-fields',
+      );
+      expect(unknownWarnings).toHaveLength(1);
+      expect(unknownWarnings[0]).toMatchObject({
+        backend: 'walkaround-hybrid',
+        phase: 'mutation',
+        method: 'updatePrimitive',
+        details: {
+          primitiveId: 'mesh-a',
+          fields: ['anotherHostOnlyField', 'hostOnlyField'],
+        },
+      });
+      expect(pipeline.resize).not.toHaveBeenCalled();
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      expect(pipeline.refreshTlasRefit).not.toHaveBeenCalled();
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(transform + material) rebuilds and warns instead of dropping the material patch', () => {
     const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
@@ -1201,10 +1236,11 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
   });
 
-  it('setSize resizes frame resources only; zero/same-size calls are no-ops and DDGI is preserved', () => {
-    const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+  it('setSize resizes frame resources only; invalid/same-size calls are no-ops with a structured warning', () => {
+    const { engine, pipeline, ddgi, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       engine.setSize(64, 64);
+      engine.setSize(0, 128);
       engine.setSize(0, 128);
       expect(pipeline.resize).not.toHaveBeenCalled();
 
@@ -1214,6 +1250,14 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(pipeline.resize).toHaveBeenCalledWith(128, 80);
       expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
       expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
+      const sizeWarnings = warnings.filter((w) => w.code === 'walkaround-hybrid.invalid-set-size');
+      expect(sizeWarnings).toHaveLength(1);
+      expect(sizeWarnings[0]).toMatchObject({
+        backend: 'walkaround-hybrid',
+        phase: 'lifecycle',
+        method: 'setSize',
+        details: { width: 0, height: 128 },
+      });
     } finally {
       engine.dispose();
     }

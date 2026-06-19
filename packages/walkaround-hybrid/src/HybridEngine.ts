@@ -251,6 +251,10 @@ export class HybridEngine implements Engine {
   private _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
   /** Tracks authored directional angular-diameter partial-support warnings. */
   private _warnedDirectionalAngularDiameterApproximationIds = new Set<string>();
+  /** Tracks invalid setSize dimensions already reported to hosts. */
+  private _warnedInvalidSetSize = new Set<string>();
+  /** Tracks unknown primitive patch field sets already reported to hosts. */
+  private _warnedUnknownPrimitivePatchFields = new Set<string>();
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
   private _internalWidth:        number;
@@ -1298,9 +1302,14 @@ export class HybridEngine implements Engine {
     // topologyRebuild internally if the count doesn't match.
     const result = this._routePrimitiveUpdate(id, patch);
     if (result == null) {
-      // No recognised patch field — treat as a no-op rather than throw so
-      // hosts can pass through optional patches without checking each
-      // field's presence.
+      // No recognised patch field: keep the forgiving no-op behavior, but make
+      // the integration mistake visible through the structured warning channel.
+      this._warnUnknownPrimitivePatchFields(
+        id,
+        Object.entries(patch as Record<string, unknown>)
+          .filter(([, value]) => value !== undefined)
+          .map(([field]) => field),
+      );
       return;
     }
     this._applyUpdateResult(result);
@@ -1376,6 +1385,27 @@ export class HybridEngine implements Engine {
       }], this._lastScene?.emitters ?? []),
       'updatePrimitive',
     );
+  }
+
+  private _warnUnknownPrimitivePatchFields(
+    id: string,
+    fields: readonly string[],
+  ): void {
+    if (fields.length === 0) return;
+    const sortedFields = Array.from(new Set(fields)).sort();
+    const key = `${id}:${sortedFields.join(',')}`;
+    if (this._warnedUnknownPrimitivePatchFields.has(key)) return;
+    this._warnedUnknownPrimitivePatchFields.add(key);
+    this._warn({
+      code: 'walkaround-hybrid.unknown-primitive-patch-fields',
+      backend: 'walkaround-hybrid',
+      phase: 'mutation',
+      method: 'updatePrimitive',
+      message:
+        `[vitrum/walkaround-hybrid] updatePrimitive("${id}"): patch fields are not ` +
+        `recognized by this backend and were ignored: ${sortedFields.join(', ')}.`,
+      details: { primitiveId: id, fields: sortedFields },
+    });
   }
 
   /**
@@ -2124,7 +2154,8 @@ export class HybridEngine implements Engine {
     if (width <= 0 || height <= 0) {
       // Defensive: WebGPU createTexture rejects zero-sized textures.
       // Hosts sometimes feed in transient 0-pixel sizes during resize
-      // animations — silently ignore.
+      // animations. Keep the no-op behavior, but do not hide it from hosts.
+      this._warnInvalidSetSize(width, height);
       return;
     }
     this._width = width;
@@ -2139,6 +2170,22 @@ export class HybridEngine implements Engine {
     }
     // No DDGI invalidation — the irradiance atlas is world-space, not
     // screen-space, so it survives a resize unchanged.
+  }
+
+  private _warnInvalidSetSize(width: number, height: number): void {
+    const key = `${width}x${height}`;
+    if (this._warnedInvalidSetSize.has(key)) return;
+    this._warnedInvalidSetSize.add(key);
+    this._warn({
+      code: 'walkaround-hybrid.invalid-set-size',
+      backend: 'walkaround-hybrid',
+      phase: 'lifecycle',
+      method: 'setSize',
+      message:
+        `[vitrum/walkaround-hybrid] setSize(${width}, ${height}) ignored: ` +
+        `width and height must both be positive before GPU frame resources can be resized.`,
+      details: { width, height },
+    });
   }
 
   /**

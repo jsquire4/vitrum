@@ -206,6 +206,13 @@
 > mixed material+geometry patches through a full rebuild so the material patch
 > is applied and unsupported material fields cannot be hidden by geometry fast
 > paths.
+> Same-day walkaround no-op diagnostic follow-up: invalid `setSize(width,height)`
+> calls with non-positive dimensions still no-op to avoid zero-sized WebGPU
+> allocations, but now emit structured `walkaround-hybrid.invalid-set-size`
+> warnings with the rejected dimensions; non-empty `updatePrimitive()` patches
+> whose fields are not recognized still no-op for host pass-through compatibility
+> but now emit `walkaround-hybrid.unknown-primitive-patch-fields` with exact
+> primitive id and field list.
 > Same-day PT runtime-warning follow-up: pt-webgl2 and pt-webgpu `setScene()`
 > unsupported-material/displacement warnings now retain the aggregate `fields`
 > list while also reporting exact `primitiveIds` plus per-primitive
