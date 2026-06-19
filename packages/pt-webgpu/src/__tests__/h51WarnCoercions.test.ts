@@ -110,7 +110,7 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
       bdpt: true,
-      bdptOptions: { maxLightBounces: 20 },
+      bdptOptions: { maxLightBounces: 20, experimentalMultiVertex: true },
       onWarning,
     });
 
@@ -132,7 +132,7 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
       bdpt: true,
-      bdptOptions: { maxLightBounces: 2 },
+      bdptOptions: { maxLightBounces: 2, experimentalMultiVertex: true },
       onWarning,
     });
 
@@ -141,11 +141,21 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
     ).toBe(true);
     expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
       code: 'pt-webgpu.bdpt-multivertex-research-mode',
-      details: { requested: 2, resolved: 2, safeDefault: 1 },
+      details: { requested: 2, resolved: 2, safeDefault: 1, experimentalMultiVertex: true },
     }));
 
     engine.dispose();
     warn.mockRestore();
+  });
+
+  it('rejects multi-vertex BDPT unless the research flag is explicit', async () => {
+    await expect(
+      createPTEngine_WebGPU({
+        device: makeStubDevice(),
+        bdpt: true,
+        bdptOptions: { maxLightBounces: 2 },
+      }),
+    ).rejects.toThrow('bdptOptions.experimentalMultiVertex=true');
   });
 
   it('warns when maxLightBounces is fractional and rounds down', async () => {
@@ -154,7 +164,7 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
       bdpt: true,
-      bdptOptions: { maxLightBounces: 2.75 },
+      bdptOptions: { maxLightBounces: 2.75, experimentalMultiVertex: true },
       onWarning,
     });
 

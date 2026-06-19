@@ -262,7 +262,7 @@ describe('pt-webgl2 upload-gap guard — load-bearing uniforms ARE uploaded', ()
   it('A5: BDPT host-driver uploads explicit multi-vertex research depth', async () => {
     const rec = await renderAndRecord(sceneWithMeshAreaLight(), {
       bdpt: true,
-      bdptOptions: { maxLightBounces: 3 },
+      bdptOptions: { maxLightBounces: 3, experimentalMultiVertex: true },
     });
     expect(rec.has('uBdptLightSubpathPass')).toBe(true);
     expect(rec.has('uBdptMaxLightBounces')).toBe(true);

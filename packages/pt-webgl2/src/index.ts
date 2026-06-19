@@ -1254,6 +1254,12 @@ export const createPTEngine_WebGL2: EngineFactory<
   }
   const resolvedBdptMaxLightBounces = resolveBdptMaxLightBounces(bdptMaxLightBounces);
   if (opts.bdpt === true && resolvedBdptMaxLightBounces > BDPT_SAFE_DEFAULT_LIGHT_BOUNCES) {
+    if (opts.bdptOptions?.experimentalMultiVertex !== true) {
+      throw new RangeError(
+        'createPTEngine_WebGL2: bdptOptions.maxLightBounces > 1 activates the multi-vertex BDPT research path; ' +
+        'set bdptOptions.experimentalMultiVertex=true to opt in, or omit maxLightBounces for the endpoint-only safe default.',
+      );
+    }
     emitWebgl2Warning(opts, {
       code: 'pt-webgl2.bdpt-multivertex-research-mode',
       backend: 'pt-webgl2',
@@ -1262,12 +1268,13 @@ export const createPTEngine_WebGL2: EngineFactory<
       message:
         `[vitrum/pt-webgl2] bdptOptions.maxLightBounces=${resolvedBdptMaxLightBounces} enables the ` +
         'multi-vertex BDPT research path. Current radiometric promotion evidence is endpoint-only, ' +
-        'so this WebGL2 path is explicitly opt-in; omit bdptOptions.maxLightBounces for the ' +
+        'so this WebGL2 path requires experimentalMultiVertex:true; omit bdptOptions.maxLightBounces for the ' +
         'endpoint-only safe default.',
       details: {
         requested: bdptMaxLightBounces,
         resolved: resolvedBdptMaxLightBounces,
         safeDefault: BDPT_SAFE_DEFAULT_LIGHT_BOUNCES,
+        experimentalMultiVertex: true,
       },
     });
   }

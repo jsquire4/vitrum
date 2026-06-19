@@ -35,11 +35,16 @@ export interface PTEngineWebGL2Options extends EngineOptions {
   readonly bdptOptions?: {
     /**
      * Max stored light-subpath vertices. Default 1 keeps `bdpt:true` endpoint-only
-     * and aligned with the safe default used by pt-webgpu. Values >1 opt into the
-     * current pt-webgl2 multi-vertex research path and emit a construction warning
-     * until radiometric promotion evidence closes.
+     * and aligned with the safe default used by pt-webgpu. Values >1 require
+     * `experimentalMultiVertex:true` because the current multi-vertex path is a
+     * research harness, not a promoted production estimator.
      */
     readonly maxLightBounces?: number;
+    /**
+     * Required to activate `maxLightBounces > 1`; preserves the known multi-vertex
+     * BDPT research path for A/B captures while preventing accidental use.
+     */
+    readonly experimentalMultiVertex?: boolean;
   };
   /**
    * Optional texture-fetch LOD by bounce depth. `0` (default) disables the optimization

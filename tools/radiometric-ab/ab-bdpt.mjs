@@ -103,8 +103,11 @@ const controlRuns = [];
 console.log("Part 1b: BDPT light-subpath depth controls...");
 for (const maxLightBounces of CONTROL_MAX_LIGHT_BOUNCES) {
   console.log(`  Rendering BDPT control (maxLightBounces:${maxLightBounces})...`);
+  const bdptOptions = maxLightBounces > 1
+    ? { maxLightBounces, experimentalMultiVertex: true }
+    : { maxLightBounces };
   const controlResult = await renderScene(
-    { ...FULL_TIER, bdpt: true, bdptOptions: { maxLightBounces } },
+    { ...FULL_TIER, bdpt: true, bdptOptions },
     scene,
     MEAN_FRAMES,
   );

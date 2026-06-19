@@ -131,7 +131,7 @@ describe('A5 BDPT host driver', () => {
       const engine = await createPTEngine_WebGL2({
         device: gl,
         bdpt: true,
-        bdptOptions: { maxLightBounces: 3 },
+        bdptOptions: { maxLightBounces: 3, experimentalMultiVertex: true },
         onWarning: (w) => structured.push(w),
       });
       engine.setScene(sceneWithAnalyticLight());
@@ -142,11 +142,21 @@ describe('A5 BDPT host driver', () => {
       expect(warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path'))).toBe(true);
       expect(structured).toContainEqual(expect.objectContaining({
         code: 'pt-webgl2.bdpt-multivertex-research-mode',
-        details: { requested: 3, resolved: 3, safeDefault: 1 },
+        details: { requested: 3, resolved: 3, safeDefault: 1, experimentalMultiVertex: true },
       }));
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it('rejects multi-vertex BDPT unless the research flag is explicit', async () => {
+    await expect(
+      createPTEngine_WebGL2({
+        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        bdpt: true,
+        bdptOptions: { maxLightBounces: 2 },
+      }),
+    ).rejects.toThrow('bdptOptions.experimentalMultiVertex=true');
   });
 
   it('validates and warns for WebGL2 BDPT maxLightBounces coercions', async () => {
@@ -164,7 +174,7 @@ describe('A5 BDPT host driver', () => {
       const engine = await createPTEngine_WebGL2({
         device: orderedGl([]) as unknown as WebGL2RenderingContext,
         bdpt: true,
-        bdptOptions: { maxLightBounces: 8.75 },
+        bdptOptions: { maxLightBounces: 8.75, experimentalMultiVertex: true },
         onWarning: (w) => structured.push(w),
       });
       expect(warn.mock.calls.some((c) => String(c[0]).includes('clamping to supported WebGL2 BDPT'))).toBe(true);
@@ -174,7 +184,7 @@ describe('A5 BDPT host driver', () => {
       }));
       expect(structured).toContainEqual(expect.objectContaining({
         code: 'pt-webgl2.bdpt-multivertex-research-mode',
-        details: { requested: 8.75, resolved: 3, safeDefault: 1 },
+        details: { requested: 8.75, resolved: 3, safeDefault: 1, experimentalMultiVertex: true },
       }));
       engine.dispose();
     } finally {
@@ -187,7 +197,7 @@ describe('A5 BDPT host driver', () => {
       const engine = await createPTEngine_WebGL2({
         device: orderedGl([]) as unknown as WebGL2RenderingContext,
         bdpt: true,
-        bdptOptions: { maxLightBounces: 2.75 },
+        bdptOptions: { maxLightBounces: 2.75, experimentalMultiVertex: true },
         onWarning: (w) => roundStructured.push(w),
       });
       expect(roundWarn.mock.calls.some((c) => String(c[0]).includes('rounding down to integer 2'))).toBe(true);

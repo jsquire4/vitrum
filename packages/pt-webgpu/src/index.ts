@@ -278,12 +278,20 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   /** BDPT tuning — read only when {@link bdpt} is `true`. */
   readonly bdptOptions?: {
     /**
-     * Max light-subpath bounces, clamped 1–8 with a construction warning. Default 1
+     * Max light-subpath bounces, clamped 1-8 with a construction warning. Default 1
      * keeps `bdpt:true` endpoint-only and radiometrically neutral against the
-     * unidirectional estimator; values >1 opt into the current multi-vertex research
-     * path and emit a warning until full all-strategy weighting lands.
+     * unidirectional estimator. Values >1 require `experimentalMultiVertex:true`
+     * because the current multi-vertex path is a research harness whose
+     * connection estimator is not yet composed against the regular eye-path
+     * strategy.
      */
     readonly maxLightBounces?: number;
+    /**
+     * Required to activate `maxLightBounces > 1`. This deliberately keeps the
+     * known-biased multi-vertex BDPT research path out of normal construction
+     * while preserving it for radiometric debugging and promotion work.
+     */
+    readonly experimentalMultiVertex?: boolean;
   };
   /**
    * Power-weighted light-tree importance sampling for direct-light NEE (Conty
@@ -543,7 +551,7 @@ class PTEngineWebGPU implements Engine {
     // A9 — light-subpath bounce cap raised 3 → 8 (matches the eye cap; the merged
     // pdf array BDPT_MAX_MERGED=19 = c≤8 + e≤8 + 3 headroom). Default is endpoint-only
     // until the multi-vertex connection estimator is weighted against the regular
-    // eye-path strategy; hosts may opt up to 8 for research captures.
+    // eye-path strategy; research captures must set experimentalMultiVertex:true.
     this.#bdptMaxLightBounces = resolveBdptMaxLightBounces(opts.bdptOptions?.maxLightBounces);
     // EXPERIMENTAL ReSTIR-PT reuse: compile-time opt-in, full-tier only. GpuResources
     // gates the full-tier requirement internally; mirror the resolved value here so
@@ -2316,6 +2324,12 @@ export const createPTEngine_WebGPU: EngineFactory<
     traceTier === 'full' &&
     resolvedBdptMaxLightBounces > BDPT_SAFE_DEFAULT_LIGHT_BOUNCES
   ) {
+    if (opts.bdptOptions?.experimentalMultiVertex !== true) {
+      throw new RangeError(
+        'createPTEngine_WebGPU: bdptOptions.maxLightBounces > 1 activates the multi-vertex BDPT research path; ' +
+        'set bdptOptions.experimentalMultiVertex=true to opt in, or omit maxLightBounces for the endpoint-only safe default.',
+      );
+    }
     emitPteWarning(opts, {
       code: 'pt-webgpu.bdpt-multivertex-research-mode',
       backend: 'pt-webgpu',
@@ -2324,12 +2338,13 @@ export const createPTEngine_WebGPU: EngineFactory<
       message:
         `[vitrum/pt-webgpu] bdptOptions.maxLightBounces=${resolvedBdptMaxLightBounces} enables the ` +
         'multi-vertex BDPT research path. Current radiometric evidence shows this path is not yet ' +
-        'weighted against the regular eye-path strategy, so it is explicitly opt-in; omit ' +
+        'weighted against the regular eye-path strategy, so it requires experimentalMultiVertex:true; omit ' +
         'bdptOptions.maxLightBounces for the endpoint-only radiometrically neutral default.',
       details: {
         requested: bdptMaxLightBounces,
         resolved: resolvedBdptMaxLightBounces,
         safeDefault: BDPT_SAFE_DEFAULT_LIGHT_BOUNCES,
+        experimentalMultiVertex: true,
       },
     });
   }
