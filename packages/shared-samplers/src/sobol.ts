@@ -48,6 +48,14 @@ const DIRECTIONS_4 = [
   0x800228f8, 0x400b3cdc, 0x200fb67a, 0xb00ddb9d,
 ] as const;
 
+function toU32(value: number): number {
+  return value >>> 0;
+}
+
+function finiteIntegerOrZero(value: number): number {
+  return Number.isFinite(value) ? Math.floor(value) : 0;
+}
+
 export function reverseBits32(value: number): number {
   let x = value >>> 0;
   x = (((x & 0xaaaaaaaa) >>> 1) | ((x & 0x55555555) << 1)) >>> 0;
@@ -66,6 +74,62 @@ export function maskedSobol(index: number, directions: readonly number[]): numbe
   return out >>> 0;
 }
 
+export function sobolHash(value: number): number {
+  let x = value >>> 0;
+  x = toU32(x ^ (x >>> 16));
+  x = Math.imul(x, 0x85ebca6b) >>> 0;
+  x = toU32(x ^ (x >>> 13));
+  x = Math.imul(x, 0xc2b2ae35) >>> 0;
+  x = toU32(x ^ (x >>> 16));
+  return x;
+}
+
+export function sobolHashCombine(seed: number, value: number): number {
+  const s = seed >>> 0;
+  const v = value >>> 0;
+  const mix = toU32(v + toU32(toU32(s << 6) + (s >>> 2)));
+  return toU32(s ^ mix);
+}
+
+export function laineKarrasPermutation(value: number, seed: number): number {
+  let x = toU32((value >>> 0) + (seed >>> 0));
+  x = toU32(x ^ Math.imul(x, 0x6c50b47c));
+  x = toU32(x ^ Math.imul(x, 0xb82f1e52));
+  x = toU32(x ^ Math.imul(x, 0xc7afe638));
+  x = toU32(x ^ Math.imul(x, 0x8d22f6e6));
+  return x;
+}
+
+/**
+ * Hash-based nested uniform Owen scramble over base-2 digits.
+ *
+ * This mirrors the WebGL2 `nestedUniformScrambleBase2` shader helper and the
+ * pt-webgpu binding-free Sobol RNG. The Laine-Karras permutation comes from the
+ * JCGT 2020 practical hash-based Owen scrambling path used by the original GLSL
+ * implementation.
+ */
+export function nestedUniformScrambleBase2(value: number, seed: number): number {
+  return reverseBits32(laineKarrasPermutation(value, seed));
+}
+
+function directionsForDimension(dimension: number): readonly number[] {
+  switch ((finiteIntegerOrZero(dimension) >>> 0) & 3) {
+    case 0:
+      return DIRECTIONS_1;
+    case 1:
+      return DIRECTIONS_2;
+    case 2:
+      return DIRECTIONS_3;
+    default:
+      return DIRECTIONS_4;
+  }
+}
+
+export function sobolTextureComponentBits(index: number, dimension: number): number {
+  const i = (finiteIntegerOrZero(index) >>> 0) % SOBOL_TEXTURE_POINTS;
+  return reverseBits32(maskedSobol(i, directionsForDimension(dimension))) & 0x00ffffff;
+}
+
 function sobolComponent(index: number, directions: readonly number[]): number {
   return (reverseBits32(maskedSobol(index, directions)) & 0x00ffffff) * SOBOL_FACTOR;
 }
@@ -79,6 +143,30 @@ export function sobolTexturePoint(index: number): readonly [number, number, numb
     sobolComponent(i, DIRECTIONS_3),
     sobolComponent(i, DIRECTIONS_4),
   ];
+}
+
+/**
+ * CPU oracle for pt-webgpu's binding-free Sobol RNG.
+ *
+ * `dimension` is intentionally reduced to the shader's 8-bit per-path counter
+ * so tests can catch CPU/GPU drift at the exact public shader contract.
+ */
+export function owenScrambledSobolU32(pathIndex: number, dimension: number): number {
+  const path = finiteIntegerOrZero(pathIndex) & 0x00ffffff;
+  const dim = finiteIntegerOrZero(dimension) & 0xff;
+  const seed = sobolHash(sobolHashCombine(path, dim));
+  const shuffleSeed = sobolHashCombine(seed, 0);
+  const shuffledIndex = nestedUniformScrambleBase2(
+    reverseBits32(path),
+    shuffleSeed,
+  ) % SOBOL_TEXTURE_POINTS;
+  const result = sobolTextureComponentBits(shuffledIndex, dim);
+  const componentSeed = sobolHashCombine(seed, 1 + (dim & 3));
+  return toU32(nestedUniformScrambleBase2(result, componentSeed) & 0xffffff00);
+}
+
+export function owenScrambledSobolFloat(pathIndex: number, dimension: number): number {
+  return (owenScrambledSobolU32(pathIndex, dimension) >>> 8) * SOBOL_FACTOR;
 }
 
 export function generateSobolTextureData(pointCount = SOBOL_TEXTURE_POINTS): Float32Array {

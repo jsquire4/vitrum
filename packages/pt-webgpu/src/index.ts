@@ -304,9 +304,10 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   /**
    * Primary path-sampling sequence. Default `'pcg'` preserves the historical random
    * stream. `'sobol'` compiles the opt-in pt-webgpu WGSL Sobol RNG module across
-   * the megakernel plus SPPM/ReSTIR-PT/BDPT auxiliary pipelines. This is first-
-   * order pixel-scrambled Sobol; Owen/blue-noise/per-dimension promotion evidence
-   * remains tracked in the Road ledger.
+   * the megakernel plus SPPM/ReSTIR-PT/BDPT auxiliary pipelines. This is
+   * hash-based Owen-scrambled Sobol over the first-four direction-table set;
+   * blue-noise rotation, broader dimension audits, and RMSE promotion evidence
+   * remain tracked in the Road ledger.
    */
   readonly sampling?: 'pcg' | 'sobol';
   /**
@@ -2389,14 +2390,14 @@ export const createPTEngine_WebGPU: EngineFactory<
       phase: 'construction',
       method: 'createPTEngine_WebGPU',
       message:
-        "[vitrum/pt-webgpu] sampling:'sobol' enables an opt-in first-order " +
-        'pixel-scrambled Sobol RNG across the pt-webgpu megakernel and auxiliary ' +
-        'SPPM/ReSTIR-PT/BDPT pipelines. Owen scrambling, blue-noise rotations, ' +
-        'per-dimension audit, and equal-time RMSE promotion evidence remain Road-to-100 tails.',
+        "[vitrum/pt-webgpu] sampling:'sobol' enables an opt-in hash-based " +
+        'Owen-scrambled Sobol RNG across the pt-webgpu megakernel and auxiliary ' +
+        'SPPM/ReSTIR-PT/BDPT pipelines. Blue-noise rotations, broader dimension ' +
+        'audits, and equal-time RMSE promotion evidence remain Road-to-100 tails.',
       details: {
         sampling: 'sobol',
         fallback: 'none',
-        promotionTails: ['owen-scrambling', 'blue-noise-rotation', 'per-dimension-audit', 'equal-time-rmse-ab'],
+        promotionTails: ['blue-noise-rotation', 'broader-dimension-audit', 'equal-time-rmse-ab'],
       },
     });
   }

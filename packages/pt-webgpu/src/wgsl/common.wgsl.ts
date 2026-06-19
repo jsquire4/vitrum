@@ -10,10 +10,12 @@ export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
  * (`pcgInit`, `pcgNext`, `rand_f32`, `rand2`, `rand3`) so the path-trace,
  * ReSTIR-PT, SPPM, BDPT, and adjoint call sites can switch as a composed
  * whole. This mirrors the pt-webgl2 Sobol texture path's first-four direction
- * set plus Laine-Karras-style scrambling, but keeps it binding-free for WebGPU.
+ * set plus JCGT/Laine-Karras hash-based Owen scrambling, but keeps it
+ * binding-free for WebGPU.
  *
- * Promotion caveat: this is a first-order pixel-scrambled Sobol mode, not yet
- * the final Owen/blue-noise/per-dimension-audited sampler.
+ * Promotion caveat: higher dimensions are hash-decorrelated over the first four
+ * direction tables; there is no blue-noise rotation or measured RMSE promotion
+ * evidence yet.
  */
 export const PT_WEBGPU_SOBOL_RNG_WGSL = /* wgsl */ `
 const PT_SOBOL_FACTOR = 0.000000059604644775390625; // 1 / 2^24

@@ -29,7 +29,14 @@ export {
   SOBOL_TEXTURE_CHANNELS,
   reverseBits32,
   maskedSobol,
+  sobolHash,
+  sobolHashCombine,
+  laineKarrasPermutation,
+  nestedUniformScrambleBase2,
+  sobolTextureComponentBits,
   sobolTexturePoint,
+  owenScrambledSobolU32,
+  owenScrambledSobolFloat,
   generateSobolTextureData,
 } from './sobol.js';
 export { BSDF_PRIMITIVES_WGSL, BSDF_PRIMITIVES_MODULE_NAME } from './wgsl/bsdfPrimitives.wgsl.js';

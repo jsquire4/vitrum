@@ -1814,12 +1814,16 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
 1. Low-discrepancy sampling (`LD-SAMPLING-01`): shared Sobol table generation
    plus pt-webgl2 `sampling:'sobol'` opt-in and pt-webgpu
    `sampling:'sobol'` opt-in are code-closed. pt-webgl2 is covered by the GLSL
-   `sobol-on` shader gate; pt-webgpu composes a binding-free first-order
-   pixel-scrambled Sobol RNG through the full/lite megakernels plus
+   `sobol-on` shader gate; pt-webgpu composes a binding-free hash-based
+   Owen-scrambled Sobol RNG through the full/lite megakernels plus
    SPPM/ReSTIR-PT/BDPT auxiliary pipelines and surfaces an experimental
-   capability/warning. Remaining work is Owen/blue-noise scrambling,
-   per-dimension assignment audit, shader/adapter gate breadth for the Sobol
-   WebGPU variants, and equal-time RMSE convergence proof.
+   capability/warning. 2026-06-19 follow-up: `shared-samplers` now exports a
+   CPU oracle for the same Laine-Karras / nested-uniform base-2 scramble and the
+   pt-webgpu stream, including the current high-dimension behavior
+   (four direction tables plus per-dimension hash decorrelation). Remaining work
+   is blue-noise rotation, broader bounce/lobe/light dimension assignment audit,
+   real-adapter shader/behavioral gates for the Sobol WebGPU variants, and
+   equal-time RMSE convergence proof.
 2. Compressed wide BVH traversal (`WBVH-01`): the shared substrate is now
    partially landed: `shared-bvh` exports CWBVH-style 8-wide packing, quantized
    child bounds, deterministic packed metadata, conservative dequantized bounds
@@ -1893,12 +1897,15 @@ a binding-free WGSL Sobol RNG module with the existing `pcgInit`/`rand_f32`
 symbol contract so the megakernel, lite kernel, SPPM photon pass, ReSTIR-PT
 reuse passes, and BDPT light-subpath pass all switch coherently. It is explicitly
 tagged `pt-webgpu-sobol-sampling` in `capabilities.experimentalFeatures` and
-warns that this is first-order pixel-scrambled Sobol, not the final
-Owen/blue-noise/per-dimension-audited sampler.
+warns that this is hash-based Owen-scrambled Sobol over the first-four
+direction-table set, not the final blue-noise/per-dimension-audited sampler.
+`shared-samplers` now exposes a CPU oracle for the exact stream, so shader and
+host-side tests can detect future CPU/GPU drift in the scramble or dimension
+decorrelation behavior.
 
-**Remaining work:** Owen/blue-noise scrambling, per-dimension assignment audit
-(bounce/lobe/light dims), real-adapter shader/behavioral gates for the Sobol
-WebGPU variants, and equal-time RMSE A/B on the reference scenes
+**Remaining work:** blue-noise rotation, broader per-dimension assignment audit
+(bounce/lobe/light dims), real-adapter behavioral proof for the Sobol WebGPU
+variants, and equal-time RMSE A/B on the reference scenes
 (self-validating error curves, not eyeballs).
 
 ### F2 — Compressed wide BVH traversal (biggest throughput win)

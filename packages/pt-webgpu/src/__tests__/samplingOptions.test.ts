@@ -67,6 +67,7 @@ describe('pt-webgpu sampling options', () => {
 
     for (const wgsl of [full, lite, restirProducer, restirCombined]) {
       expect(wgsl).toContain('fn ptSobolNextU32(state: ptr<function, u32>) -> u32');
+      expect(wgsl).toContain('fn ptSobolNestedUniformScrambleBase2(x: u32, seed: u32) -> u32');
       expect(wgsl).toContain('fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32');
       expect(wgsl).toContain('fn rand_f32(state: ptr<function, u32>) -> f32');
       expect(wgsl).not.toContain('(*state) = (*state) * 747796405u + 2891336453u;');
@@ -99,9 +100,17 @@ describe('pt-webgpu sampling options', () => {
     expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-sobol-sampling')).toBe(true);
     expect(structured.some((w) =>
       w.code === 'pt-webgpu.sobol-sampling-experimental' &&
-      w.details?.sampling === 'sobol',
+      w.details?.sampling === 'sobol' &&
+      Array.isArray(w.details?.promotionTails) &&
+      !w.details.promotionTails.includes('owen-scrambling') &&
+      w.details.promotionTails.includes('blue-noise-rotation') &&
+      w.details.promotionTails.includes('broader-dimension-audit') &&
+      w.details.promotionTails.includes('equal-time-rmse-ab'),
     )).toBe(true);
-    expect(warn.mock.calls.some((c) => c.join(' ').includes("sampling:'sobol'"))).toBe(true);
+    const warningText = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(warningText).toContain("sampling:'sobol'");
+    expect(warningText).toContain('Owen-scrambled Sobol RNG');
+    expect(warningText).not.toContain('Owen scrambling, blue-noise');
     warn.mockRestore();
   });
 });
