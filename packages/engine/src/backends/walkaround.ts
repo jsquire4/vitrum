@@ -62,7 +62,11 @@ export async function constructWalkaround(
   // with the matching `requiredLimits` (previously NO limits were requested,
   // so full hybrid silently relied on adapter defaults — a latent gap).
   const profile = await probeAdapterProfile(adapter);
-  opts.onAdapterProfile?.(profile);
+  try {
+    opts.onAdapterProfile?.(profile);
+  } catch {
+    // Host telemetry callbacks must not break backend construction.
+  }
 
   // `recommendedRealtimeTier === 'unavailable'` captures BOTH the below-lite
   // case AND the software-adapter (SwiftShader) case — a software adapter can

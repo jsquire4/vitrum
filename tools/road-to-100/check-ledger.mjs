@@ -249,6 +249,41 @@ for (const needle of [
   }
 }
 
+const walkaroundBackendConstructor = await readText("packages/engine/src/backends/walkaround.ts");
+for (const needle of [
+  "opts.onAdapterProfile?.(profile);",
+  "Host telemetry callbacks must not break backend construction.",
+]) {
+  if (!walkaroundBackendConstructor.includes(needle)) {
+    fail(`walkaround backend must retain guarded adapter-profile callback routing: ${needle}`);
+  }
+}
+
+const canvasConfigureHelper = await readText("packages/engine/src/configureWebGpuCanvas.ts");
+if (!canvasConfigureHelper.includes("Host error callbacks must not break best-effort canvas configuration.")) {
+  fail("configureWebGpuCanvas must retain guarded optional error callback handling");
+}
+
+const vanillaLifecycle = await readText("packages/engine/src/lifecycle/vanilla.ts");
+if (!vanillaLifecycle.includes("Host error callbacks must not break best-effort swap-chain acquisition.")) {
+  fail("acquireSwapChainView must retain guarded optional error callback handling");
+}
+
+const createEngineConstructionTest = await readText("packages/engine/src/__tests__/createEngineConstruction.test.ts");
+if (!createEngineConstructionTest.includes("guards throwing onAdapterProfile callbacks during walkaround construction")) {
+  fail("createEngineConstruction must retain adapter-profile callback guard regression test");
+}
+
+const configureWebGpuCanvasTest = await readText("packages/engine/src/__tests__/configureWebGpuCanvas.test.ts");
+if (!configureWebGpuCanvasTest.includes("guards throwing optional error callbacks")) {
+  fail("configureWebGpuCanvas test must retain callback guard regression test");
+}
+
+const swapChainPlumbingTest = await readText("packages/engine/__tests__/swapChainPlumbing.test.ts");
+if (!swapChainPlumbingTest.includes("guards throwing optional error callbacks on getCurrentTexture failure")) {
+  fail("swapChainPlumbing test must retain callback guard regression test");
+}
+
 const hybridEngineSource = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
 for (const needle of [
   "updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void",

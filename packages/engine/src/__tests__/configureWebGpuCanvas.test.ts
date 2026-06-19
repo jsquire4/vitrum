@@ -66,4 +66,12 @@ describe('configureWebGpuCanvas', () => {
     configureWebGpuCanvas(makeCanvas({ configure }), FAKE_DEVICE, onError);
     expect(onError).toHaveBeenCalledWith(err);
   });
+
+  it('guards throwing optional error callbacks', () => {
+    Object.defineProperty(globalThis, 'navigator', { value: { gpu: {} }, configurable: true });
+    const configure = vi.fn(() => { throw new Error('configure failed'); });
+    const onError = vi.fn(() => { throw new Error('host callback failed'); });
+    expect(() => configureWebGpuCanvas(makeCanvas({ configure }), FAKE_DEVICE, onError)).not.toThrow();
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
 });

@@ -39,6 +39,10 @@ export function configureWebGpuCanvas(
     }
   } catch (err) {
     // Best-effort canvas configure for attachVitrum swap-chain plumbing.
-    onError?.(err);
+    try {
+      onError?.(err);
+    } catch {
+      // Host error callbacks must not break best-effort canvas configuration.
+    }
   }
 }

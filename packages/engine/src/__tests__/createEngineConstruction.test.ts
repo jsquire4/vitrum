@@ -157,6 +157,32 @@ describe('createEngine backend construction safety', () => {
     expect(device.destroy).not.toHaveBeenCalled();
   });
 
+  it('guards throwing onAdapterProfile callbacks during walkaround construction', async () => {
+    const device = makeDevice();
+    const shared: SharedDeviceCtx = {
+      adapter: makeAdapter(device),
+      device,
+      ownsDeviceLifecycle: false,
+    };
+    hybridFactory.mockResolvedValue(makeEngine());
+    const onAdapterProfile = vi.fn(() => {
+      throw new Error('host profile callback failed');
+    });
+
+    await expect(
+      constructWalkaround(
+        { ...makeOptions(undefined, 'walkaround-hybrid'), onAdapterProfile },
+        scene,
+        aabb,
+        false,
+        shared,
+      ),
+    ).resolves.toBeDefined();
+
+    expect(onAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(hybridFactory).toHaveBeenCalledTimes(1);
+  });
+
   it('passes ReSTIR-PT reuse into pt-webgpu device-limit negotiation', async () => {
     const device = makeDevice();
     const adapter = makeAdapter(device);

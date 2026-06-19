@@ -95,7 +95,11 @@ export function acquireSwapChainView(
   try {
     return ctx.getCurrentTexture().createView();
   } catch (err) {
-    onError?.(err);
+    try {
+      onError?.(err);
+    } catch {
+      // Host error callbacks must not break best-effort swap-chain acquisition.
+    }
     return undefined;
   }
 }
