@@ -64,6 +64,39 @@ function transformedUvReference(
   ];
 }
 
+function bumpForwardDifferenceReference(
+  height: (uv: readonly [number, number]) => number,
+  rawUv: readonly [number, number],
+  linearTextureDims: readonly [number, number],
+  uvFitScale: readonly [number, number],
+): readonly [number, number] {
+  const sourceDims = [
+    Math.max(linearTextureDims[0] * uvFitScale[0], 1),
+    Math.max(linearTextureDims[1] * uvFitScale[1], 1),
+  ] as const;
+  const step = [1 / sourceDims[0], 1 / sourceDims[1]] as const;
+  const hC = height(rawUv);
+  const hU = height([rawUv[0] + step[0], rawUv[1]]);
+  const hV = height([rawUv[0], rawUv[1] + step[1]]);
+  return [(hU - hC) / step[0], (hV - hC) / step[1]];
+}
+
+function normalize3(v: readonly [number, number, number]): readonly [number, number, number] {
+  const len = Math.hypot(v[0], v[1], v[2]);
+  return len > 1e-12 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 0, 0];
+}
+
+function bumpPerturbedNormalReference(
+  gradient: readonly [number, number],
+  bumpScale: number,
+): readonly [number, number, number] {
+  return normalize3([
+    -bumpScale * gradient[0],
+    -bumpScale * gradient[1],
+    1,
+  ]);
+}
+
 function parseMaterialTexUvConstants(wgsl: string): Map<string, number> {
   const constants = new Map<string, number>();
   const re = /const\s+(MATERIAL_TEX_UV_[A-Z0-9_]+)\s*=\s*(\d+)u;/g;
@@ -711,6 +744,24 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
         wrapTextureCoordReference(uv[1], 2) * 0.25,
       ],
       [0.3, 0.1375],
+    );
+  });
+
+  it('CPU oracle: bump finite differences step in raw UV by uploaded source dimensions', () => {
+    const height = ([u, v]: readonly [number, number]): number =>
+      u * u + 2 * v * v + 0.25 * u * v;
+    const rawUv = [0.2, 0.3] as const;
+
+    const gradient = bumpForwardDifferenceReference(height, rawUv, [8, 10], [0.25, 0.5]);
+    expectCloseArray(gradient, [0.975, 1.65]);
+
+    const fixed512Gradient = bumpForwardDifferenceReference(height, rawUv, [512, 512], [1, 1]);
+    expect(Math.abs(gradient[0] - fixed512Gradient[0])).toBeGreaterThan(0.49);
+    expect(Math.abs(gradient[1] - fixed512Gradient[1])).toBeGreaterThan(0.39);
+
+    expectCloseArray(
+      bumpPerturbedNormalReference(gradient, 0.25),
+      [-0.21878586532124316, -0.3704062336207192, 0.9022097549339923],
     );
   });
 

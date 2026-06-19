@@ -27,12 +27,17 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { Scene } from '@vitrum/core';
 import { FRAME_PARAMS_BYTE_SIZE } from '../scene/frameParamsLayout.js';
 import {
   PT_WEBGPU_TRACE_WGSL,
   composePtWebgpuTraceWgsl,
 } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from '../scene/materialPacking.js';
+import {
+  DIRECTIONAL_LIGHT_FLOAT_STRIDE,
+  packEmitterArrays,
+} from '../scene/emitterPacking.js';
 
 // ---------------------------------------------------------------------------
 // CPU mirrors of the WGSL volumetric math (identical formulas).
@@ -44,6 +49,53 @@ const INV_4PI = 1.0 / (4.0 * Math.PI);
 function hgPhase(cosTheta: number, g: number): number {
   const denom = 1.0 + g * g - 2.0 * g * cosTheta;
   return (INV_4PI * (1.0 - g * g)) / Math.max(Math.pow(denom, 1.5), 1e-9);
+}
+
+function normalize3(v: readonly [number, number, number]): readonly [number, number, number] {
+  const len = Math.hypot(v[0], v[1], v[2]);
+  return len > 1e-8 ? [v[0] / len, v[1] / len, v[2] / len] : [0, 1, 0];
+}
+
+function dot3(a: readonly [number, number, number], b: readonly [number, number, number]): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+function directionalMediumNeeReference(
+  directionalRecords: Float32Array,
+  directionalLightCount: number,
+  travelDir: readonly [number, number, number],
+  throughputInMedium: readonly [number, number, number],
+  g: number,
+): readonly [number, number, number] {
+  const travel = normalize3(travelDir);
+  const radiance: [number, number, number] = [0, 0, 0];
+  for (let i = 0; i < directionalLightCount; i += 1) {
+    const base = i * DIRECTIONAL_LIGHT_FLOAT_STRIDE;
+    const meanIrradiance = directionalRecords[base + 7] ?? 0;
+    if (meanIrradiance <= 1e-6) continue;
+    const lightDir = normalize3([
+      directionalRecords[base] ?? 0,
+      directionalRecords[base + 1] ?? 1,
+      directionalRecords[base + 2] ?? 0,
+    ]);
+    const phase = hgPhase(dot3(travel, lightDir), g);
+    radiance[0] += throughputInMedium[0] * (directionalRecords[base + 4] ?? 0) * phase;
+    radiance[1] += throughputInMedium[1] * (directionalRecords[base + 5] ?? 0) * phase;
+    radiance[2] += throughputInMedium[2] * (directionalRecords[base + 6] ?? 0) * phase;
+  }
+  return radiance;
+}
+
+function directionalMediumNeeScene(): Scene {
+  return {
+    primitives: [],
+    environment: { kind: 'none' },
+    emitters: [
+      { kind: 'directional', id: 'sun-a', direction: [0, -1, 0], color: [1, 0.5, 0.25], intensity: 2 },
+      { kind: 'directional', id: 'dark-sun', direction: [1, 0, 0], color: [8, 8, 8], intensity: 0 },
+      { kind: 'directional', id: 'sun-b', direction: [1, -1, 0], color: [0.25, 0.75, 1.5], intensity: 3 },
+    ],
+  };
 }
 
 /**
@@ -163,6 +215,34 @@ describe('HG importance sampler matches its pdf (IS weight ≈ 1)', () => {
 });
 
 describe('Volumetric in-medium directional NEE WGSL guard', () => {
+  it('CPU oracle: packed RGB directionals add in-medium NEE with HG phase and mean gating', () => {
+    const packed = packEmitterArrays(directionalMediumNeeScene());
+    expect(packed.directionalLightCount).toBe(3);
+    expect(packed.directionalLightsData.length).toBe(3 * DIRECTIONAL_LIGHT_FLOAT_STRIDE);
+
+    const radiance = directionalMediumNeeReference(
+      packed.directionalLightsData,
+      packed.directionalLightCount,
+      [0.2, 0.9, 0.1],
+      [0.7, 0.5, 0.25],
+      0.35,
+    );
+    expect(radiance[0]).toBeCloseTo(0.3879549966510263, 12);
+    expect(radiance[1]).toBeCloseTo(0.23957166395375434, 12);
+    expect(radiance[2]).toBeCloseTo(0.15080759319470188, 12);
+
+    const withoutDarkDirectional = directionalMediumNeeReference(
+      packed.directionalLightsData.filter((_, i) => i < 8 || i >= 16),
+      2,
+      [0.2, 0.9, 0.1],
+      [0.7, 0.5, 0.25],
+      0.35,
+    );
+    expect(withoutDarkDirectional[0]).toBeCloseTo(radiance[0], 12);
+    expect(withoutDarkDirectional[1]).toBeCloseTo(radiance[1], 12);
+    expect(withoutDarkDirectional[2]).toBeCloseTo(radiance[2], 12);
+  });
+
   it('uses packed N-directional RGB records instead of the legacy scalar lightDir mirror', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('for (var medDi = 0u; medDi < params.directionalLightCount; medDi = medDi + 1u)');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let dDirAD = directionalLights[dBase];');
