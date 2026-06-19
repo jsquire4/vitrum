@@ -109,6 +109,10 @@ for (const [stalePhrase, message] of [
   ["### C2. `memory/in-flight-sweep.md` is mostly stale and misleading", "stale C2 memory heading"],
   ["### C3. CHANGELOG.md likely missing recent entries", "stale C3 changelog heading"],
   ["### C4. Per-package READMEs may overclaim", "stale C4 README heading"],
+  ["zero footprint in the\ncurrent code", "stale Section E zero-footprint contradiction"],
+  ["validateBvhEncoding` leaves the public surface", "stale E7 validateBvhEncoding un-export claim"],
+  ["un-exported `validateBvhEncoding` from `shared-bvh/index.ts`", "stale AGENTS/shared-bvh validateBvhEncoding export claim"],
+  ["have not been comprehensively audited", "stale Section E unaudited-wave note"],
 ]) {
   if (items.includes(stalePhrase)) {
     fail(`items_to_fix.md contains ${message}`);
@@ -134,6 +138,7 @@ for (const [docName, docText] of [
     "`TextureRef.texCoord` on pt-webgl2 (documented unkept promise)",
     "H-residue (H5 BDPT host driver",
     "/home/jsquire4/.claude/projects/-home-jsquire4-projects-vitrum/memory/",
+    "un-exported `validateBvhEncoding` from `shared-bvh/index.ts`",
   ]) {
     if (docText.includes(stalePhrase)) {
       fail(`${docName} contains stale agent-brief text: ${stalePhrase}`);

@@ -87,19 +87,19 @@ reconciliation. Descriptions kept below for posterity.
 
 ### E1–E7 — seven sprint-of-2026-05-17 commits lost via merge races
 
-All seven landed as standalone feature commits in the May 17 sprint but their
-changes did not survive into HEAD because subsequent commits were branched
-from pre-feature parents and silently overwrote them on merge. The features
-still exist as commits in `git log`; they just have zero footprint in the
-current code. All seven are type-system / structural / API-hygiene changes —
-none is a runtime correctness bug, the pre-sprint behaviour is what's
-running.
+All seven originally landed as standalone feature commits in the May 17 sprint,
+then were lost by later pre-feature-parent merges. They have since been
+re-landed or superseded; Section E is now a historical audit trail, and the
+closure note under each item is the current part to read. Do not treat the
+original "symptom" and "verification" paragraphs below as live source truth
+without re-checking current code.
 
 **Status as of 2026-05-24:**
 - E1–E7 — **closed/re-landed**. Keep these entries as historical provenance.
 
-The audit so far has spot-checked W2/W3/W6/W7 sub-bullets. W4/W11/W12/W13
-have not been comprehensively audited — additional losses may surface.
+The old audit note about W4/W11/W12/W13 needing later audit is superseded by
+the subsequent Road/source-check reconciliation waves. Treat any newly suspected
+merge-race loss as a fresh finding that needs direct source-read evidence.
 
 ### E1. W3-D7 FrameOutput discriminated union — closed (re-landed)
 
@@ -120,9 +120,9 @@ have not been comprehensively audited — additional losses may surface.
 - **Fix:** re-port the D6 changes to `scene/math.ts` (brand + asMat4), then re-update the 21 implicit-cast construction sites that D6 originally fixed (three-bindings, pt-webgpu, engine).
 - **Closure note (2026-05-24):** re-landed with `asMat4`/`isMat4`, and callsites migrated across packages/examples.
 
-### E7. W7-G5 validateBvhEncoding un-export — **RE-APPLIED 2026-05-19**
+### E7. W7-G5 shared-bvh export hygiene — superseded/source-verified
 
-Re-applied during the same session that filed the audit. `packages/shared-bvh/src/index.ts` now uses selective named exports (`buildSceneBVH`, `refitBvhBounds`, the two interface types) from `bvhCommon.js` instead of `export * from`. `validateBvhEncoding` leaves the public surface. Both shared-bvh test files that needed it now import from `'../bvhCommon.js'` directly. All downstream packages (walkaround-hybrid, walkaround-rc, pt-webgpu, pt-webgl, engine) typecheck clean — the external surface of @vitrum/shared-bvh that they actually use is unchanged.
+The original May 2026 export-hygiene note said `validateBvhEncoding` should leave the public surface. Current source has intentionally moved past that exact closure: `packages/shared-bvh/src/index.ts` exports `validateBvhEncoding` from `validateBvhEncoding.js`, `packages/shared-bvh/src/__tests__/buildArrayBvh.test.ts` imports it from the package index as a diagnostic invariant helper, and H34 records it as an exported diagnostic/adapter rather than a required production call. This is not a live implementation gap; the stale part was the old "un-exported" wording.
 
 ### E6. W6-E6 ForkAccess indirection — closed (re-landed)
 
