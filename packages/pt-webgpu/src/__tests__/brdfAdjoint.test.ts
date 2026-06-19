@@ -31,6 +31,11 @@ import {
 	  dBrdf_dIridescenceThicknessRange,
 	  dBrdf_dAnisotropy,
 	  dBrdf_dAnisotropyRotation,
+	  dBrdf_dBaseColorWithAnisotropy,
+	  dBrdf_dRoughnessWithAnisotropy,
+	  dBrdf_dMetallicWithAnisotropy,
+	  dBrdf_dSpecularColorWithAnisotropy,
+	  dBrdf_dSpecularIntensityWithAnisotropy,
 	} from '../inverse/brdfAdjoint.js';
 import {
   PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL,
@@ -568,6 +573,140 @@ describe('BRDF adjoint — map-free KHR_materials_anisotropy scalar partials == 
       expect(Math.abs(analytic[c]! - fd)).toBeLessThan(1e-4);
     }
   });
+
+  it('keeps baseColor partials on the anisotropic forward mirror', () => {
+    const h = 1e-4;
+    const analytic = dBrdf_dBaseColorWithAnisotropy(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.anisotropy,
+      cfg.anisotropyRotation,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    for (let j = 0; j < 3; j++) {
+      const fp = evaluateBrdfWithAnisotropy(
+        perturb(cfg.baseColor, j, h), cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.anisotropy, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity,
+      );
+      const fm = evaluateBrdfWithAnisotropy(
+        perturb(cfg.baseColor, j, -h), cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.anisotropy, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity,
+      );
+      const fd = (fp[j]! - fm[j]!) / (2 * h);
+      expect(Math.abs(analytic[j]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+
+  it('keeps roughness and metallic partials on the anisotropic forward mirror', () => {
+    const h = 1e-4;
+    const roughness = dBrdf_dRoughnessWithAnisotropy(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.anisotropy,
+      cfg.anisotropyRotation,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    const roughP = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness + h, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity,
+    );
+    const roughM = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness - h, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (roughP[c]! - roughM[c]!) / (2 * h);
+      expect(Math.abs(roughness[c]! - fd)).toBeLessThan(1e-4);
+    }
+
+    const metallic = dBrdf_dMetallicWithAnisotropy(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.anisotropy,
+      cfg.anisotropyRotation,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    const metalP = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness, cfg.metallic + h, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity,
+    );
+    const metalM = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness, cfg.metallic - h, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (metalP[c]! - metalM[c]!) / (2 * h);
+      expect(Math.abs(metallic[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
+
+  it('keeps specular partials on the anisotropic forward mirror', () => {
+    const h = 1e-4;
+    const specularColor = dBrdf_dSpecularColorWithAnisotropy(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.anisotropy,
+      cfg.anisotropyRotation,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    for (let j = 0; j < 3; j++) {
+      const fp = evaluateBrdfWithAnisotropy(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.anisotropy, cfg.anisotropyRotation, perturb(cfg.specularColor, j, h), cfg.specularIntensity,
+      );
+      const fm = evaluateBrdfWithAnisotropy(
+        cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+        cfg.anisotropy, cfg.anisotropyRotation, perturb(cfg.specularColor, j, -h), cfg.specularIntensity,
+      );
+      const fd = (fp[j]! - fm[j]!) / (2 * h);
+      expect(Math.abs(specularColor[j]! - fd)).toBeLessThan(1e-4);
+    }
+
+    const specularIntensity = dBrdf_dSpecularIntensityWithAnisotropy(
+      cfg.baseColor,
+      cfg.roughness,
+      cfg.metallic,
+      cfg.normal,
+      cfg.wo,
+      cfg.wi,
+      cfg.anisotropy,
+      cfg.anisotropyRotation,
+      cfg.specularColor,
+      cfg.specularIntensity,
+    );
+    const intensityP = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity + h,
+    );
+    const intensityM = evaluateBrdfWithAnisotropy(
+      cfg.baseColor, cfg.roughness, cfg.metallic, cfg.normal, cfg.wo, cfg.wi,
+      cfg.anisotropy, cfg.anisotropyRotation, cfg.specularColor, cfg.specularIntensity - h,
+    );
+    for (let c = 0; c < 3; c++) {
+      const fd = (intensityP[c]! - intensityM[c]!) / (2 * h);
+      expect(Math.abs(specularIntensity[c]! - fd)).toBeLessThan(1e-4);
+    }
+  });
 });
 
 describe('BRDF adjoint — analytic Lambert cross-check (pure diffuse)', () => {
@@ -666,8 +805,14 @@ describe('BRDF adjoint — WGSL codegen shape pins (oracle equivalence)', () => 
 	  it('anisotropy partials mirror the map-free anisotropic GGX local derivatives', () => {
 	    expect(wgsl).toContain('fn dBrdf_dAnisotropy(');
 	    expect(wgsl).toContain('fn dBrdf_dAnisotropyRotation(');
+	    expect(wgsl).toContain('fn dBrdf_dBaseColorWithAnisotropy(');
+	    expect(wgsl).toContain('fn dBrdf_dRoughnessWithAnisotropy(');
+	    expect(wgsl).toContain('fn dBrdf_dMetallicWithAnisotropy(');
+	    expect(wgsl).toContain('fn dBrdf_dSpecularColorWithAnisotropy(');
+	    expect(wgsl).toContain('fn dBrdf_dSpecularIntensityWithAnisotropy(');
 	    expect(wgsl).toContain('const ANISOTROPY_DERIV_STEP = 1e-3;');
 	    expect(wgsl).toContain('const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;');
+	    expect(wgsl).toContain('const ANISOTROPIC_BASE_PARAM_DERIV_STEP = 1e-4;');
 	    expect(wgsl).toContain('fn adjointEvalBrdfSpecAnisotropic(');
 	    expect(wgsl).toContain('let ap = clamp(anisotropy + ANISOTROPY_DERIV_STEP, 0.0, 1.0);');
 	    expect(wgsl).toContain('anisotropyRotation + ANISOTROPY_ROTATION_DERIV_STEP');

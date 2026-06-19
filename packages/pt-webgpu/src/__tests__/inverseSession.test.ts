@@ -2075,11 +2075,49 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps base BRDF controls on path-replay when anisotropy is present', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                anisotropy: 0.55,
+                anisotropyRotation: 0.3,
+                anisotropyMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 0.5, 0.8, 1]) } },
+                specularColor: [0.7, 0.8, 0.9],
+                specularIntensity: 0.65,
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(9) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.baseColor', kind: 'rgb' },
+        { path: 'materials.panel.roughness', kind: 'scalar' },
+        { path: 'materials.panel.metallic', kind: 'scalar' },
+        { path: 'materials.panel.specularColor', kind: 'rgb' },
+        { path: 'materials.panel.specularIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-material',
+    }));
+    session.dispose();
+  });
+
   it.each([
     ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility', 'visibility'],
     ['opacity', { opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport', 'transport'],
-    ['anisotropy', { anisotropy: 0.25 }, 'path-replay-unsupported-material', undefined],
     ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }, 'path-replay-unsupported-normal', 'normal'],
     ['bump map', { bumpMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 0.5, 1]) } } }, 'path-replay-unsupported-normal', 'normal'],
     ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],

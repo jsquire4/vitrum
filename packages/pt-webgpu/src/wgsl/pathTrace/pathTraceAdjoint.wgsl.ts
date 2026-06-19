@@ -275,6 +275,7 @@ const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;
 const IRIDESCENCE_THICKNESS_DERIV_STEP = 1e-2;
 const ANISOTROPY_DERIV_STEP = 1e-3;
 const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;
+const ANISOTROPIC_BASE_PARAM_DERIV_STEP = 1e-4;
 fn adjointIridXyzToRec709(xyz: vec3f) -> vec3f {
   return vec3f(
      3.2404542 * xyz.x - 1.5371385 * xyz.y - 0.4985314 * xyz.z,
@@ -519,6 +520,182 @@ fn adjointEvaluateBrdfWithAnisotropy(
     f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi,
   );
   return diff + spec;
+}
+
+fn adjointPerturbChannelClamped(v: vec3f, channel: u32, delta: f32) -> vec3f {
+  var outv = v;
+  outv[channel] = clamp(outv[channel] + delta, 0.0, 1.0);
+  return outv;
+}
+
+fn dBrdf_dBaseColorWithAnisotropy(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dBaseColorWithSpecular(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
+    );
+  }
+  var outv = vec3f(0.0);
+  for (var c: u32 = 0u; c < 3u; c = c + 1u) {
+    let plus = adjointPerturbChannelClamped(baseColor, c, ANISOTROPIC_BASE_PARAM_DERIV_STEP);
+    let minus = adjointPerturbChannelClamped(baseColor, c, -ANISOTROPIC_BASE_PARAM_DERIV_STEP);
+    let denom = plus[c] - minus[c];
+    if (denom > 1e-8) {
+      let fp = adjointEvaluateBrdfWithAnisotropy(
+        plus, roughness, metallic, normal, wo, wi,
+        anisotropy, anisotropyRotation, specularColor, specularIntensity,
+      );
+      let fm = adjointEvaluateBrdfWithAnisotropy(
+        minus, roughness, metallic, normal, wo, wi,
+        anisotropy, anisotropyRotation, specularColor, specularIntensity,
+      );
+      outv[c] = (fp[c] - fm[c]) / denom;
+    }
+  }
+  return outv;
+}
+
+fn dBrdf_dRoughnessWithAnisotropy(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dRoughnessWithSpecular(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
+    );
+  }
+  let rp = clamp(roughness + ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let rm = clamp(roughness - ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let denom = rp - rm;
+  if (denom <= 1e-8) { return vec3f(0.0); }
+  let fp = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, rp, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  );
+  let fm = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, rm, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  );
+  return (fp - fm) / denom;
+}
+
+fn dBrdf_dMetallicWithAnisotropy(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dMetallic(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
+    );
+  }
+  let mp = clamp(metallic + ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let mm = clamp(metallic - ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let denom = mp - mm;
+  if (denom <= 1e-8) { return vec3f(0.0); }
+  let fp = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, mp, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  );
+  let fm = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, mm, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  );
+  return (fp - fm) / denom;
+}
+
+fn dBrdf_dSpecularColorWithAnisotropy(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dSpecularColor(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
+    );
+  }
+  var outv = vec3f(0.0);
+  for (var c: u32 = 0u; c < 3u; c = c + 1u) {
+    let plus = adjointPerturbChannelClamped(specularColor, c, ANISOTROPIC_BASE_PARAM_DERIV_STEP);
+    let minus = adjointPerturbChannelClamped(specularColor, c, -ANISOTROPIC_BASE_PARAM_DERIV_STEP);
+    let denom = plus[c] - minus[c];
+    if (denom > 1e-8) {
+      let fp = adjointEvaluateBrdfWithAnisotropy(
+        baseColor, roughness, metallic, normal, wo, wi,
+        anisotropy, anisotropyRotation, plus, specularIntensity,
+      );
+      let fm = adjointEvaluateBrdfWithAnisotropy(
+        baseColor, roughness, metallic, normal, wo, wi,
+        anisotropy, anisotropyRotation, minus, specularIntensity,
+      );
+      outv[c] = (fp[c] - fm[c]) / denom;
+    }
+  }
+  return outv;
+}
+
+fn dBrdf_dSpecularIntensityWithAnisotropy(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> vec3f {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dSpecularIntensity(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor,
+    );
+  }
+  let ip = clamp(specularIntensity + ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let im = clamp(specularIntensity - ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let denom = ip - im;
+  if (denom <= 1e-8) { return vec3f(0.0); }
+  let fp = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, ip,
+  );
+  let fm = adjointEvaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, im,
+  );
+  return (fp - fm) / denom;
 }
 
 fn dBrdf_dAnisotropy(

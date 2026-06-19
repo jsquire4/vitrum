@@ -78,7 +78,11 @@
 > specularColorMap/specularIntensityMap, clearcoatMap/clearcoatRoughnessMap,
 > sheenColorMap/sheenRoughnessMap, iridescenceMap/iridescenceThicknessMap,
 > and anisotropyMap local chain/state factors for scoped pt-webgpu
-> path-replay fits, made transparent-OIT direct sun
+> path-replay fits, and follow-up adjoint partials keep baseColor,
+> roughness, metallic, specularColor, and specularIntensity on path replay
+> for anisotropic direct-light BRDF materials instead of downgrading the
+> whole fit to finite difference merely because KHR_materials_anisotropy is
+> present, made transparent-OIT direct sun
 > cast-shadow-aware, rejected adjoint path replay for primitive targets the
 > triangle-only replay pass cannot actually hit, added material-lobe analytic point/spot and
 > camera-visible finite-emitter direct lighting to transparent OIT, and

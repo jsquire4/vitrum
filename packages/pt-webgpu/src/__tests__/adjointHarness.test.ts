@@ -122,10 +122,11 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m27 = materials[matId * MATERIAL_VEC4_STRIDE + 27u]');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m26 = materials[matId * MATERIAL_VEC4_STRIDE + 26u]');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dBaseColorWithSpecular(');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dMetallic(');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColor(');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensity(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dBaseColorWithAnisotropy(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dRoughnessWithAnisotropy(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dMetallicWithAnisotropy(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularColorWithAnisotropy(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dSpecularIntensityWithAnisotropy(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let m23 = materials[matId * MATERIAL_VEC4_STRIDE + 23u]');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dClearcoat(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dBrdf_dClearcoatRoughness(');

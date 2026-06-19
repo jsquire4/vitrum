@@ -1076,7 +1076,7 @@ function materialIssueForBrdf(
   if (material.shadingModel === 'unlit') {
     return { message: 'unlit materials only support path-replay for baseColor primary-hit fitting', details: { reason: 'unlit' } };
   }
-  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: false });
+  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {

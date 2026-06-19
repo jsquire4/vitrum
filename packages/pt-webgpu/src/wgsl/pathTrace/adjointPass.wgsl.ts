@@ -848,20 +848,25 @@ fn directLightAdjoint(
   nDotL: f32,
   Li: vec3f,
 ) -> DirectLightAdjoint {
-  let gBaseColor = dLoss_dR * dBrdf_dBaseColorWithSpecular(
-    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+  let gBaseColor = dLoss_dR * dBrdf_dBaseColorWithAnisotropy(
+    baseColor, roughness, metallic, n, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
   ) * nDotL * Li;
-  let gRough = dot(dLoss_dR, dBrdf_dRoughnessWithSpecular(
-    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+  let gRough = dot(dLoss_dR, dBrdf_dRoughnessWithAnisotropy(
+    baseColor, roughness, metallic, n, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
   ) * nDotL * Li);
-  let gSpecularColor = dLoss_dR * dBrdf_dSpecularColor(
-    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+  let gSpecularColor = dLoss_dR * dBrdf_dSpecularColorWithAnisotropy(
+    baseColor, roughness, metallic, n, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
   ) * nDotL * Li;
-  let gSpecularIntensity = dot(dLoss_dR, dBrdf_dSpecularIntensity(
-    baseColor, roughness, metallic, n, wo, wi, specularColor,
+  let gSpecularIntensity = dot(dLoss_dR, dBrdf_dSpecularIntensityWithAnisotropy(
+    baseColor, roughness, metallic, n, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
   ) * nDotL * Li);
-  let gMetallic = dot(dLoss_dR, dBrdf_dMetallic(
-    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+  let gMetallic = dot(dLoss_dR, dBrdf_dMetallicWithAnisotropy(
+    baseColor, roughness, metallic, n, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
   ) * nDotL * Li);
   let gClearcoat = dot(dLoss_dR, dBrdf_dClearcoat(
     clearcoatRoughness, n, wo, wi,

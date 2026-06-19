@@ -66,6 +66,7 @@ const IRIDESCENCE_IOR_DERIV_STEP = 1e-3;
 const IRIDESCENCE_THICKNESS_DERIV_STEP = 1e-2;
 const ANISOTROPY_DERIV_STEP = 1e-3;
 const ANISOTROPY_ROTATION_DERIV_STEP = 1e-3;
+const ANISOTROPIC_BASE_PARAM_DERIV_STEP = 1e-4;
 
 // ── primitive mirrors (match material.wgsl.ts exactly) ──────────────────────
 
@@ -1165,6 +1166,192 @@ export function dBrdf_dAnisotropyRotation(
     (fp[1] - fm[1]) / (2 * step),
     (fp[2] - fm[2]) / (2 * step),
   ];
+}
+
+/**
+ * Replay-local partials for base-BRDF controls when KHR_materials_anisotropy is
+ * active. The closed-form isotropic partials above use an isotropic GGX
+ * D/G scale; when anisotropy is nonzero, these helpers differentiate the same
+ * frozen-direction anisotropic BRDF mirror used by the forward path. This is
+ * still a single path-replay pass, not a full-render finite-difference probe.
+ */
+export function dBrdf_dBaseColorWithAnisotropy(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  anisotropy: number,
+  anisotropyRotation: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dBaseColor(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
+    );
+  }
+  const out: [number, number, number] = [0, 0, 0];
+  const step = ANISOTROPIC_BASE_PARAM_DERIV_STEP;
+  for (let c = 0; c < 3; c++) {
+    const plus = perturbChannelClamped(baseColor, c, step);
+    const minus = perturbChannelClamped(baseColor, c, -step);
+    const denom = plus[c]! - minus[c]!;
+    if (denom <= 1e-8) continue;
+    const fp = evaluateBrdfWithAnisotropy(
+      plus, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    );
+    const fm = evaluateBrdfWithAnisotropy(
+      minus, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    );
+    out[c] = (fp[c]! - fm[c]!) / denom;
+  }
+  return out;
+}
+
+export function dBrdf_dRoughnessWithAnisotropy(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  anisotropy: number,
+  anisotropyRotation: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dRoughness(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
+    );
+  }
+  const step = ANISOTROPIC_BASE_PARAM_DERIV_STEP;
+  const rp = Math.min(1.0, Math.max(0.0, roughness + step));
+  const rm = Math.min(1.0, Math.max(0.0, roughness - step));
+  const denom = rp - rm;
+  if (denom <= 1e-8) return [0, 0, 0];
+  const fp = evaluateBrdfWithAnisotropy(
+    baseColor, rp, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  );
+  const fm = evaluateBrdfWithAnisotropy(
+    baseColor, rm, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  );
+  return [(fp[0] - fm[0]) / denom, (fp[1] - fm[1]) / denom, (fp[2] - fm[2]) / denom];
+}
+
+export function dBrdf_dMetallicWithAnisotropy(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  anisotropy: number,
+  anisotropyRotation: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dMetallic(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
+    );
+  }
+  const step = ANISOTROPIC_BASE_PARAM_DERIV_STEP;
+  const mp = Math.min(1.0, Math.max(0.0, metallic + step));
+  const mm = Math.min(1.0, Math.max(0.0, metallic - step));
+  const denom = mp - mm;
+  if (denom <= 1e-8) return [0, 0, 0];
+  const fp = evaluateBrdfWithAnisotropy(
+    baseColor, roughness, mp, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  );
+  const fm = evaluateBrdfWithAnisotropy(
+    baseColor, roughness, mm, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+  );
+  return [(fp[0] - fm[0]) / denom, (fp[1] - fm[1]) / denom, (fp[2] - fm[2]) / denom];
+}
+
+export function dBrdf_dSpecularColorWithAnisotropy(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  anisotropy: number,
+  anisotropyRotation: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dSpecularColor(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor, specularIntensity,
+    );
+  }
+  const out: [number, number, number] = [0, 0, 0];
+  const step = ANISOTROPIC_BASE_PARAM_DERIV_STEP;
+  for (let c = 0; c < 3; c++) {
+    const plus = perturbChannelClamped(specularColor, c, step);
+    const minus = perturbChannelClamped(specularColor, c, -step);
+    const denom = plus[c]! - minus[c]!;
+    if (denom <= 1e-8) continue;
+    const fp = evaluateBrdfWithAnisotropy(
+      baseColor, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, plus, specularIntensity,
+    );
+    const fm = evaluateBrdfWithAnisotropy(
+      baseColor, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, minus, specularIntensity,
+    );
+    out[c] = (fp[c]! - fm[c]!) / denom;
+  }
+  return out;
+}
+
+export function dBrdf_dSpecularIntensityWithAnisotropy(
+  baseColor: Vec3,
+  roughness: number,
+  metallic: number,
+  normal: Vec3,
+  wo: Vec3,
+  wi: Vec3,
+  anisotropy: number,
+  anisotropyRotation: number,
+  specularColor: Vec3 = [1, 1, 1],
+  specularIntensity = 1,
+): Vec3 {
+  if (anisotropy <= 1e-4) {
+    return dBrdf_dSpecularIntensity(
+      baseColor, roughness, metallic, normal, wo, wi, specularColor,
+    );
+  }
+  const step = ANISOTROPIC_BASE_PARAM_DERIV_STEP;
+  const ip = Math.min(1.0, Math.max(0.0, specularIntensity + step));
+  const im = Math.min(1.0, Math.max(0.0, specularIntensity - step));
+  const denom = ip - im;
+  if (denom <= 1e-8) return [0, 0, 0];
+  const fp = evaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, ip,
+  );
+  const fm = evaluateBrdfWithAnisotropy(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, im,
+  );
+  return [(fp[0] - fm[0]) / denom, (fp[1] - fm[1]) / denom, (fp[2] - fm[2]) / denom];
+}
+
+function perturbChannelClamped(v: Vec3, channel: number, delta: number): Vec3 {
+  const out: [number, number, number] = [v[0], v[1], v[2]];
+  out[channel] = Math.min(1.0, Math.max(0.0, out[channel]! + delta));
+  return out;
 }
 
 function dBrdf_dSpecularF0(
