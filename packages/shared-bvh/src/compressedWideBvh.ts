@@ -58,6 +58,12 @@ export interface CwbvhRay {
 export interface CwbvhTraverseOptions {
   readonly positionStride?: number;
   readonly indexStride?: number;
+  /**
+   * Wide-node root to traverse. Defaults to 0 for single-BLAS CWBVH trees.
+   * Renderer-shaped forests concatenate one CWBVH tree per BLAS and use this to
+   * mirror TLAS BLAS-root remapping.
+   */
+  readonly root?: number;
   readonly triEps?: number;
   readonly tMin?: number;
   readonly tMax?: number;
@@ -456,6 +462,33 @@ function shouldSkipGlassTriangle(
   return trans4 > 4;
 }
 
+function resolveCwbvhRoot(cwbvh: CompressedWideBvhBuildResult, root: number | undefined): number {
+  const resolved = root ?? 0;
+  if (!Number.isInteger(resolved) || resolved < 0 || resolved >= cwbvh.cwbvhNodeCount) {
+    throw new RangeError(`CWBVH root ${resolved} is outside 0..${Math.max(0, cwbvh.cwbvhNodeCount - 1)}`);
+  }
+  return resolved;
+}
+
+function cwbvhNodeBounds(
+  cwbvh: Pick<CompressedWideBvhBuildResult, 'cwbvhNodeBounds'>,
+  nodeIndex: number,
+): { min: readonly [number, number, number]; max: readonly [number, number, number] } {
+  const nb = nodeIndex * 6;
+  return {
+    min: [
+      cwbvh.cwbvhNodeBounds[nb + 0] ?? 0,
+      cwbvh.cwbvhNodeBounds[nb + 1] ?? 0,
+      cwbvh.cwbvhNodeBounds[nb + 2] ?? 0,
+    ],
+    max: [
+      cwbvh.cwbvhNodeBounds[nb + 3] ?? 0,
+      cwbvh.cwbvhNodeBounds[nb + 4] ?? 0,
+      cwbvh.cwbvhNodeBounds[nb + 5] ?? 0,
+    ],
+  };
+}
+
 export function intersectCompressedWideBvhFirstHit(
   cwbvh: CompressedWideBvhBuildResult,
   positions: Float32Array,
@@ -476,21 +509,13 @@ export function intersectCompressedWideBvhFirstHit(
     return { didHit: false, dist: closest, triangleIndex: -1, sourceTriangleIndex: -1, bary: hitBary };
   }
 
-  const rootMin: [number, number, number] = [
-    cwbvh.cwbvhNodeBounds[0] ?? 0,
-    cwbvh.cwbvhNodeBounds[1] ?? 0,
-    cwbvh.cwbvhNodeBounds[2] ?? 0,
-  ];
-  const rootMax: [number, number, number] = [
-    cwbvh.cwbvhNodeBounds[3] ?? 0,
-    cwbvh.cwbvhNodeBounds[4] ?? 0,
-    cwbvh.cwbvhNodeBounds[5] ?? 0,
-  ];
-  if (intersectAabb(ray, rootMin, rootMax, tMin, closest) == null) {
+  const root = resolveCwbvhRoot(cwbvh, opts.root);
+  const rootBounds = cwbvhNodeBounds(cwbvh, root);
+  if (intersectAabb(ray, rootBounds.min, rootBounds.max, tMin, closest) == null) {
     return { didHit: false, dist: closest, triangleIndex: -1, sourceTriangleIndex: -1, bary: hitBary };
   }
 
-  const stack: number[] = [0];
+  const stack: number[] = [root];
   while (stack.length > 0) {
     const nodeIndex = stack.pop()!;
     const count = Math.min(CWBVH_CHILDREN, cwbvh.cwbvhChildCount[nodeIndex] ?? 0);
@@ -555,19 +580,11 @@ export function intersectCompressedWideBvhAnyHit(
 
   if (cwbvh.cwbvhNodeCount === 0) return false;
 
-  const rootMin: [number, number, number] = [
-    cwbvh.cwbvhNodeBounds[0] ?? 0,
-    cwbvh.cwbvhNodeBounds[1] ?? 0,
-    cwbvh.cwbvhNodeBounds[2] ?? 0,
-  ];
-  const rootMax: [number, number, number] = [
-    cwbvh.cwbvhNodeBounds[3] ?? 0,
-    cwbvh.cwbvhNodeBounds[4] ?? 0,
-    cwbvh.cwbvhNodeBounds[5] ?? 0,
-  ];
-  if (intersectAabb(ray, rootMin, rootMax, tMin, tMax) == null) return false;
+  const root = resolveCwbvhRoot(cwbvh, opts.root);
+  const rootBounds = cwbvhNodeBounds(cwbvh, root);
+  if (intersectAabb(ray, rootBounds.min, rootBounds.max, tMin, tMax) == null) return false;
 
-  const stack: number[] = [0];
+  const stack: number[] = [root];
   while (stack.length > 0) {
     const nodeIndex = stack.pop()!;
     const count = Math.min(CWBVH_CHILDREN, cwbvh.cwbvhChildCount[nodeIndex] ?? 0);

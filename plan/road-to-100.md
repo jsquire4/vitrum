@@ -1939,7 +1939,11 @@ any-hit traversal through the remapped wide-node forest, advertises
 `pt-webgpu-cwbvh-closest-traversal`, emits a structured experimental warning,
 and keeps the default full-tier shader and 34-buffer device floor unchanged. The
 CWBVH any-hit wrapper preserves `triShadowCastDisabled`, so `castShadow:false`
-geometry remains camera-visible but non-occluding.
+geometry remains camera-visible but non-occluding. Same-day oracle follow-up:
+the shared CWBVH CPU traversal oracle now accepts an explicit wide-root index
+and has a concatenated-forest regression that proves nonzero roots hit only
+their remapped BLAS subtree, matching the root-routing shape used by pt-webgpu's
+opt-in TLAS traversal path.
 
 **Remaining work:** renderer binary-vs-CWBVH traversal parity tests; and
 equal-scene throughput/memory A/B before any renderer default promotion. Becomes

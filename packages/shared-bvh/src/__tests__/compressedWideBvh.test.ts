@@ -6,6 +6,7 @@ import {
   CWBVH_CHILD_NODE,
   CWBVH_CHILDREN,
   CWBVH_CHILD_BOUNDS_PACKED_U32,
+  CWBVH_CHILD_EMPTY,
   buildCompressedWideBvh,
   cwbvhChildBounds,
   intersectCompressedWideBvhAnyHit,
@@ -13,6 +14,7 @@ import {
   packCwbvhBuildBoundsForWgsl,
   packCwbvhChildBoundsForWgsl,
   reorderCwbvhTrianglePayloads,
+  type CompressedWideBvhBuildResult,
   type CwbvhRay,
 } from '../index.js';
 
@@ -133,6 +135,75 @@ function growBounds(
   bounds.max[0] = Math.max(bounds.max[0], p[0]);
   bounds.max[1] = Math.max(bounds.max[1], p[1]);
   bounds.max[2] = Math.max(bounds.max[2], p[2]);
+}
+
+function concatFloat32(a: Float32Array, b: Float32Array): Float32Array {
+  const out = new Float32Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function concatUint16(a: Uint16Array, b: Uint16Array): Uint16Array {
+  const out = new Uint16Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function concatUint32(a: Uint32Array, b: Uint32Array): Uint32Array {
+  const out = new Uint32Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function offsetCwbvhMeta(
+  meta: Uint32Array,
+  nodeOffset: number,
+  triangleOffset: number,
+): Uint32Array {
+  const out = new Uint32Array(meta);
+  for (let i = 0; i < out.length; i += CWBVH_CHILD_META_WORDS) {
+    const kind = out[i] ?? CWBVH_CHILD_EMPTY;
+    if (kind === CWBVH_CHILD_NODE) {
+      out[i + 1] = (out[i + 1] ?? 0) + nodeOffset;
+    } else if (kind === CWBVH_CHILD_LEAF) {
+      out[i + 1] = (out[i + 1] ?? 0) + triangleOffset;
+    }
+  }
+  return out;
+}
+
+function offsetSourceTriangles(source: Uint32Array, triangleOffset: number): Uint32Array {
+  const out = new Uint32Array(source.length);
+  for (let i = 0; i < source.length; i += 1) out[i] = (source[i] ?? 0) + triangleOffset;
+  return out;
+}
+
+function concatCwbvhRoots(
+  a: CompressedWideBvhBuildResult,
+  b: CompressedWideBvhBuildResult,
+): CompressedWideBvhBuildResult {
+  const triangleOffset = a.reorderedToSourceTriangle.length;
+  return {
+    ...a,
+    bvhNodes: concatFloat32(a.bvhNodes, b.bvhNodes),
+    reorderedIndices: concatUint32(a.reorderedIndices, b.reorderedIndices),
+    reorderedTriMaterialIds: concatUint32(a.reorderedTriMaterialIds, b.reorderedTriMaterialIds),
+    reorderedToSourceTriangle: concatUint32(
+      a.reorderedToSourceTriangle,
+      offsetSourceTriangles(b.reorderedToSourceTriangle, triangleOffset),
+    ),
+    cwbvhNodeBounds: concatFloat32(a.cwbvhNodeBounds, b.cwbvhNodeBounds),
+    cwbvhChildBounds: concatUint16(a.cwbvhChildBounds, b.cwbvhChildBounds),
+    cwbvhChildMeta: concatUint32(
+      a.cwbvhChildMeta,
+      offsetCwbvhMeta(b.cwbvhChildMeta, a.cwbvhNodeCount, triangleOffset),
+    ),
+    cwbvhChildCount: concatUint32(a.cwbvhChildCount, b.cwbvhChildCount),
+    cwbvhNodeCount: a.cwbvhNodeCount + b.cwbvhNodeCount,
+  };
 }
 
 describe('compressedWideBvh', () => {
@@ -309,6 +380,43 @@ describe('compressedWideBvh', () => {
         bruteForceAnyHit(mesh.positions, mesh.indices, ray),
       );
     }
+  });
+
+  it('can traverse a nonzero wide root in a concatenated renderer-shaped forest', () => {
+    const positions = new Float32Array([
+      0, 0, 0, 0,
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      10, 0, 0, 0,
+      11, 0, 0, 0,
+      10, 1, 0, 0,
+    ]);
+    const first = buildCompressedWideBvh(
+      positions,
+      new Uint32Array([0, 1, 2, 0]),
+      new Uint32Array([1]),
+    );
+    const second = buildCompressedWideBvh(
+      positions,
+      new Uint32Array([3, 4, 5, 0]),
+      new Uint32Array([2]),
+    );
+    const forest = concatCwbvhRoots(first, second);
+    const secondRoot = first.cwbvhNodeCount;
+    const ray: CwbvhRay = { origin: [10.25, 0.25, 2], direction: [0, 0, -1] };
+
+    expect(intersectCompressedWideBvhFirstHit(forest, positions, ray).didHit).toBe(false);
+    expect(intersectCompressedWideBvhAnyHit(forest, positions, ray)).toBe(false);
+
+    const hit = intersectCompressedWideBvhFirstHit(forest, positions, ray, { root: secondRoot });
+    expect(hit.didHit).toBe(true);
+    expect(hit.dist).toBeCloseTo(2, 6);
+    expect(hit.sourceTriangleIndex).toBe(1);
+    expect(intersectCompressedWideBvhAnyHit(forest, positions, ray, { root: secondRoot })).toBe(true);
+
+    expect(() => intersectCompressedWideBvhFirstHit(forest, positions, ray, { root: forest.cwbvhNodeCount })).toThrow(
+      /CWBVH root/,
+    );
   });
 
   it('mirrors the WGSL skipGlass transmission-nibble filter', () => {
