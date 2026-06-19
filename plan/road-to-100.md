@@ -650,6 +650,11 @@ buckets that the A–D framing was missing:**
   H-channel came plus the public shape-id ↔ WGSL dispatch linkage, converting
   that advertised capability from capability/string coverage into behavior
   coverage.
+  `oracle.normalMapTangentFrame.test.ts` now independently pins authored
+  tangent.xyzw handedness, UV-gradient tangent fallback, `normalScale`,
+  front/back layer normal descriptor selection, and clearcoat-normal scaling,
+  converting the normal-map tangent-frame lane from string/linkage coverage into
+  executable behavior coverage.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
