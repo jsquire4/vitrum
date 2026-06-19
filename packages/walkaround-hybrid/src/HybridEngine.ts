@@ -1363,9 +1363,15 @@ export class HybridEngine implements Engine {
     if ((patch as { receiveShadow?: boolean }).receiveShadow === false) {
       this._warnReservedReceiveShadowPrimitiveIds([id], 'updatePrimitive');
     }
-    const material = (patch as unknown as { material?: Record<string, unknown> }).material;
-    if (material == null) return;
+    const materialPatch = (patch as unknown as { material?: Record<string, unknown> }).material;
+    if (materialPatch == null) return;
     const previousPrimitive = this._lastScene?.primitives.find((p) => String(p.id) === id);
+    const previousMaterial = previousPrimitive != null && 'material' in previousPrimitive
+      ? previousPrimitive.material as unknown as Record<string, unknown>
+      : undefined;
+    const material = previousMaterial != null
+      ? { ...previousMaterial, ...materialPatch }
+      : materialPatch;
     this._warnUnconsumedMaterialFields(
       collectUnconsumedMaterialFieldsForMaterial(material),
       'updatePrimitive',

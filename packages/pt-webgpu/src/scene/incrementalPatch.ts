@@ -93,14 +93,33 @@ const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Scalar material fields that are packed into `materialTexDescriptorsBuffer`
+ * instead of `materialsBuffer`. Until the mutation path can rewrite that
+ * descriptor buffer in-place, changes to these fields need the same full repack
+ * as texture-handle changes.
+ */
+const MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS: ReadonlySet<string> = new Set([
+  'alphaMode',
+  'alphaCutoff',
+  'opacity',
+  'aoMapIntensity',
+  'lightMapIntensity',
+  'bumpScale',
+  'envMapIntensity',
+  'anisotropy',
+  'anisotropyRotation',
+  'normalScale',
+  'clearcoatNormalScale',
+]);
+
+/**
  * Material-only patch: `material` present and no other facet keys touched.
  *
- * Item 2a — texture-map fields (TextureRef: baseColorMap, normalMap, etc.) are
- * NOT eligible for the material fast path because the fast path only rewrites
- * the packed float scalars in `materialsBuffer`. Texture-map changes require a
- * full repack so `materialTexDescriptorsBuffer` and the GPU texture_2d_arrays
- * are rebuilt. Any patch whose `material` contains a TextureRef field falls
- * through to `setScene`.
+ * Item 2a — fields stored outside `materialsBuffer` are NOT eligible for the
+ * material fast path because the fast path only rewrites the packed BSDF float
+ * scalars in `materialsBuffer`. Texture-map changes and descriptor-resident
+ * scalar changes require a full repack so `materialTexDescriptorsBuffer` and the
+ * GPU texture_2d_arrays are rebuilt. Any such patch falls through to `setScene`.
  */
 export function canFastPathMaterialPatch(
   patch: Partial<ScenePrimitive>,
@@ -113,6 +132,7 @@ export function canFastPathMaterialPatch(
   const mat = patch.material as unknown as Record<string, unknown>;
   for (const field of Object.keys(mat)) {
     if (TEXTURE_MAP_FIELDS.has(field)) return false;
+    if (MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS.has(field)) return false;
   }
   const typedMat = patch.material as Partial<MaterialSpec>;
   if (typedMat.frontLayer?.normalMap != null || typedMat.frontLayer?.normalScale != null) return false;

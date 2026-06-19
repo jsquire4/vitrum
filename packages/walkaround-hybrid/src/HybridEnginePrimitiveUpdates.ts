@@ -1346,9 +1346,15 @@ export function materialPatch(
       `HybridEngine.updatePrimitive("${id}"): materialPatch requires patch.material.`,
     );
   }
-  const nextMaterial = patch.material;
   const primIndex = ctx.lastScene.primitives.findIndex((p) => String(p.id) === id);
   const prevPrim = primIndex >= 0 ? ctx.lastScene.primitives[primIndex] : undefined;
+  const prevMaterial =
+    prevPrim && 'material' in prevPrim ? prevPrim.material : undefined;
+  const nextMaterial = (
+    prevMaterial != null
+      ? { ...prevMaterial, ...patch.material }
+      : patch.material
+  ) as MaterialSpec;
   ctx.warnUnconsumedMaterialFields?.(
     collectUnconsumedMaterialFieldsForMaterial(nextMaterial as unknown as Record<string, unknown>),
   );
@@ -1382,8 +1388,6 @@ export function materialPatch(
     );
   }
 
-  const prevMaterial =
-    prevPrim && 'material' in prevPrim ? prevPrim.material : undefined;
   if (materialAtlasPatchRequiresFullRebuild(prevMaterial, nextMaterial)) {
     return topologyRebuild(id, patch, ctx);
   }

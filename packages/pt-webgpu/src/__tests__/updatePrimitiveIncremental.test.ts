@@ -296,7 +296,33 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
-  it('lite tier warns when material fast-path patches include full-tier-only scalar fields', async () => {
+  it('rebuilds descriptor buffers for full-tier material patches with descriptor-resident scalar fields', async () => {
+    installWebGpuConstStubs();
+    const { device, writeBuffer, createBuffer } = makeStubDevice();
+    const engine = await createPTEngine_WebGPU({ device });
+    engine.setScene(makeScene());
+
+    const writesBefore = writeBuffer.mock.calls.length;
+    const buffersBefore = createBuffer.mock.calls.length;
+
+    engine.updatePrimitive?.('mesh-b', {
+      material: {
+        baseColor: [0.2, 0.7, 0.9],
+        roughness: 0.05,
+        metallic: 0.4,
+        alphaMode: 'blend',
+        opacity: 0.5,
+        normalScale: 0.6,
+        envMapIntensity: 0.25,
+        anisotropy: 0.4,
+      },
+    });
+
+    expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+    expect(writeBuffer.mock.calls.length).not.toBe(writesBefore + 1);
+  });
+
+  it('lite tier rebuilds and warns when material patches include full-tier-only scalar fields', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeLiteStubDevice();
     const structured: EngineWarning[] = [];
@@ -326,14 +352,13 @@ describe('pt-webgpu incremental primitive updates', () => {
         },
       });
 
-      expect(createBuffer.mock.calls.length).toBe(buffersBefore);
-      expect(writeBuffer.mock.calls.length).toBe(writesBefore + 1);
+      expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
+      expect(writeBuffer.mock.calls.length).not.toBe(writesBefore + 1);
       expect(structured).toEqual(expect.arrayContaining([
         expect.objectContaining({
           code: 'pt-webgpu.unsupported-material-fields',
-          method: 'updatePrimitive',
+          method: 'setScene',
           details: expect.objectContaining({
-            id: 'mesh-b',
             primitiveIds: ['mesh-b'],
             fields: expect.arrayContaining([
               'alphaMode',

@@ -246,6 +246,12 @@ function storedScene(engine: HybridEngine): Scene {
   return scene;
 }
 
+function storedBvh(engine: HybridEngine): SceneBVHBuffers {
+  const buffers = (engine as unknown as HybridEngineInternals)._bvhBuffers;
+  if (buffers == null) throw new Error('expected seeded BVH buffers');
+  return buffers;
+}
+
 function unpackUvFromVec4W(stream: Float32Array, vertexIndex: number): [number, number] {
   const words = new Uint32Array(stream.buffer, stream.byteOffset, stream.byteLength / 4);
   const word = words[vertexIndex * 4 + 3] ?? 0;
@@ -549,6 +555,28 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material partial) preserves existing material fields in GPU-side material slots', () => {
+    const { engine, pipeline } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: { roughness: 0.25 },
+      } as unknown as Partial<ScenePrimitive>);
+
+      expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      const gpuMaterial = storedBvh(engine).coreMaterials[0];
+      expect(gpuMaterial?.baseColor).toEqual([0.8, 0.2, 0.2]);
+      expect(gpuMaterial?.metallic).toBe(0);
+      expect(gpuMaterial?.roughness).toBe(0.25);
+      const sceneMaterial = (storedScene(engine).primitives[0] as Extract<ScenePrimitive, { kind: 'mesh' }>).material;
+      expect(sceneMaterial.baseColor).toEqual([0.8, 0.2, 0.2]);
+      expect(sceneMaterial.metallic).toBe(0);
+      expect(sceneMaterial.roughness).toBe(0.25);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(receiveShadow:false) emits the reserved receiveShadow warning', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
@@ -710,6 +738,41 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         residualApproximation: 'all-path-texel-pdf',
         missing: 'all-path-exact-texel-alias-pdf',
       });
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material partial) computes emissive-map approximation warnings from the merged material', () => {
+    const sourceScene = baseScene();
+    const first = sourceScene.primitives[0] as Extract<ScenePrimitive, { kind: 'mesh' }>;
+    const scene: Scene = {
+      ...sourceScene,
+      primitives: [
+        {
+          ...first,
+          material: {
+            ...first.material,
+            emissiveMap: {
+              handle: { width: 1, height: 1, data: new Uint8Array([255, 128, 64, 255]) },
+            },
+          },
+        },
+        ...sourceScene.primitives.slice(1),
+      ],
+    };
+    const { engine, warnings } = seedEngine(scene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: { emissive: [1, 0.5, 0.25] },
+      } as unknown as Partial<ScenePrimitive>);
+
+      const texelPdfWarnings = warnings.filter((w) =>
+        w.code === 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
+      );
+      expect(texelPdfWarnings).toHaveLength(1);
+      expect(texelPdfWarnings[0]?.method).toBe('updatePrimitive');
+      expect(texelPdfWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
     } finally {
       engine.dispose();
     }
