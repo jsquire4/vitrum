@@ -3948,6 +3948,33 @@ describe('loadGltfForEngine', () => {
     })).rejects.toThrow('baseColorMap');
   });
 
+  it('deduplicates strict texture-readiness failures into the canonical decode-report message', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+
+    let error: unknown;
+    try {
+      await loadGltfForEngine(gltf, {
+        buffers,
+        decodeImage: async () => ({ kind: 'decoded-texture' }),
+        backend: 'pt-webgl2',
+        compatibilityMode: 'reject-degraded',
+        createEngine: async () => ({ setScene: vi.fn() }),
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(GltfCompatibilityError);
+    const failures = (error as GltfCompatibilityError).failures;
+    expect(failures).toContain(
+      'texture:baseColorMap=requires-hook at materials[0].pbrMetallicRoughness.baseColorTexture (opaque)',
+    );
+    expect(failures).not.toContain(
+      'texture:texture-readiness:baseColorMap=requires-hook at materials[0].pbrMetallicRoughness.baseColorTexture',
+    );
+    expect(failures.filter((failure) => failure.includes('baseColorMap'))).toHaveLength(1);
+  });
+
   it('rejects degraded authored sampler policies before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };

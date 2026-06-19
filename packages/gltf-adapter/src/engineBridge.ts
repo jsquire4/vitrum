@@ -309,6 +309,7 @@ function enforceCompatibility<
     !isSatisfiedCompatibilityIssue(issue, options, asset, backend)
   );
   const rejectedIssues = effectiveIssues
+    .filter((issue) => !isTextureReadinessIssue(issue))
     .filter((issue) => {
       if (mode === 'reject-unsupported') return issue.support === 'unsupported';
       return issue.support !== 'native';
@@ -542,8 +543,7 @@ function isSatisfiedCompatibilityIssue<
   backend: BackendId,
 ): boolean {
   if (
-    issue.category === 'texture' &&
-    issue.name.startsWith('texture-readiness:') &&
+    isTextureReadinessIssue(issue) &&
     issue.support === 'requires-hook'
   ) {
     return opaqueTextureHandlesReadyForBackend(options, backend);
@@ -571,4 +571,8 @@ function isSatisfiedCompatibilityIssue<
     return bakedRoughnessMap && !bakeUnavailable;
   }
   return false;
+}
+
+function isTextureReadinessIssue(issue: GltfCompatibilityIssue): boolean {
+  return issue.category === 'texture' && issue.name.startsWith('texture-readiness:');
 }
