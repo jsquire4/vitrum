@@ -37,6 +37,14 @@ export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 34;
 export const PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 4;
 
+/** Full tier plus the opt-in CWBVH closest-hit traversal buffers in group 3. */
+export const PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 5;
+
+/** Full tier plus both opt-in CWBVH closest-hit and ReSTIR-PT reuse buffers. */
+export const PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 4;
+
 /** @public — back-compat alias for PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE; test consumers reference this name. */
 export const PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE =
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
@@ -99,6 +107,8 @@ export const PT_WEBGPU_REQUIRED_LIMITS: Record<string, number> = {
 export interface PtWebgpuRequiredLimitOptions {
   /** Include the opt-in ReSTIR-PT reuse reservoir/result storage buffers. */
   readonly restirPtReuse?: boolean;
+  /** Include the opt-in CWBVH closest-hit traversal storage buffers. */
+  readonly cwbvhClosest?: boolean;
 }
 
 /** Request the highest tier the adapter can satisfy (used by host device acquisition). */
@@ -109,8 +119,12 @@ export function ptWebgpuRequiredLimitsForAdapter(
   const maxBuffers = adapter.limits.maxStorageBuffersPerShaderStage;
   const maxTextures = adapter.limits.maxStorageTexturesPerShaderStage;
   const fullBufferFloor = options.restirPtReuse === true
-    ? PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE
-    : PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+    ? (options.cwbvhClosest === true
+        ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+        : PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE)
+    : (options.cwbvhClosest === true
+        ? PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+        : PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE);
   if (
     maxBuffers >= fullBufferFloor &&
     maxTextures >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE

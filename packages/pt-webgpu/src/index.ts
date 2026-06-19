@@ -57,7 +57,7 @@ import {
   UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS,
   collectUnsupportedMaterialFieldsForTraceTier,
 } from './supportDetails.js';
-import { GpuResources } from './gpuResources.js';
+import { GpuResources, type PtWebgpuBvhTraversalMode } from './gpuResources.js';
 import {
   OIDNFinalDispatcher,
   type DenoisedFrame,
@@ -77,6 +77,8 @@ import {
   TONEMAP_MODE_INDEX,
 } from '@vitrum/shared-samplers';
 import {
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
 } from './webgpuLimits.js';
@@ -85,6 +87,7 @@ import {
 } from './sppmParams.js';
 
 export { PT_WEBGPU_COMMON_WGSL, HAMMERSLEY_WGSL, OCTAHEDRAL_CORE_WGSL };
+export type { PtWebgpuBvhTraversalMode } from './gpuResources.js';
 export {
   PT_WEBGPU_REQUIRED_LIMITS,
   PT_WEBGPU_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -94,6 +97,8 @@ export {
   PT_WEBGPU_FULL_MAX_STORAGE_BUFFERS_PER_GROUP,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
@@ -263,6 +268,13 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
     /** GRIS W-cap (temporal-feedback gain bound, the V19 grison guard). Default 10. */
     readonly wCap?: number;
   };
+  /**
+   * Mesh BVH traversal backend. Default `'binary'` uses the canonical binary BVH.
+   * `'cwbvh-closest-experimental'` opts the full-tier megakernel into the
+   * uploaded compressed-wide BVH forest for closest-hit traversal while keeping
+   * binary any-hit shadows for `castShadow:false` predicate parity.
+   */
+  readonly bvhTraversal?: PtWebgpuBvhTraversalMode;
   /** BDPT tuning — read only when {@link bdpt} is `true`. */
   readonly bdptOptions?: {
     /**
@@ -407,6 +419,7 @@ class PTEngineWebGPU implements Engine {
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
   readonly #traceTier: PtWebgpuTraceTier;
+  readonly #bvhTraversal: PtWebgpuBvhTraversalMode;
 
   #scene: Scene | null = null;
   #sceneBuffers: UploadedSceneBuffers | null = null;
@@ -493,6 +506,9 @@ class PTEngineWebGPU implements Engine {
     this.#sampling = opts.sampling === 'sobol' ? 'sobol' : 'pcg';
     this.#cameraVisibleEmitters = opts.cameraVisibleEmitters !== false;
     this.#traceTier = traceTier;
+    this.#bvhTraversal = opts.bvhTraversal === 'cwbvh-closest-experimental'
+      ? 'cwbvh-closest-experimental'
+      : 'binary';
     this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     this.#causticStrategy = opts.causticStrategy ?? 'none';
@@ -544,6 +560,7 @@ class PTEngineWebGPU implements Engine {
       this.#restirPtReuse,
       (warning) => this.#warn(warning),
       this.#sampling,
+      this.#bvhTraversal,
     );
     if (opts.denoiser === 'oidn-final') {
       const modelUrl = opts.oidn?.modelUrl;
@@ -809,6 +826,9 @@ class PTEngineWebGPU implements Engine {
         ...(this.#bdpt && this.#traceTier !== 'lite' ? (['pt-webgpu-bdpt'] as const) : []),
         ...(this.#restirPtReuse ? (['pt-webgpu-restir-pt-reuse'] as const) : []),
         ...(this.#sampling === 'sobol' ? (['pt-webgpu-sobol-sampling'] as const) : []),
+        ...(this.#bvhTraversal === 'cwbvh-closest-experimental'
+          ? (['pt-webgpu-cwbvh-closest-traversal'] as const)
+          : []),
         ...(this.#traceTier !== 'lite' && this.#causticStrategy === 'photon-map'
           ? (['pt-webgpu-photon-map-sppm'] as const)
           : []),
@@ -2364,6 +2384,24 @@ export const createPTEngine_WebGPU: EngineFactory<
       },
     });
   }
+  const requestedBvhTraversal = (opts as { readonly bvhTraversal?: unknown }).bvhTraversal;
+  const cwbvhClosestRequested = requestedBvhTraversal === 'cwbvh-closest-experimental';
+  if (
+    requestedBvhTraversal != null &&
+    requestedBvhTraversal !== 'binary' &&
+    requestedBvhTraversal !== 'cwbvh-closest-experimental'
+  ) {
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.unsupported-bvh-traversal',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        `[vitrum/pt-webgpu] bvhTraversal="${String(requestedBvhTraversal)}" requested, but only ` +
+        "'binary' and 'cwbvh-closest-experimental' are wired. Degrading to binary traversal.",
+      details: { requested: requestedBvhTraversal, fallback: 'binary' },
+    });
+  }
   // H51-C: warn once listing any extensions keys the host supplied that are
   // either (a) graduated legacy keys that no longer do anything, or (b) truly
   // unknown keys. In both cases the key is silently ignored at runtime; the
@@ -2420,6 +2458,26 @@ export const createPTEngine_WebGPU: EngineFactory<
   if (opts.restirPtReuse === true) {
     assertRestirPtReuseSupported(opts.device, traceTier);
   }
+  if (cwbvhClosestRequested) {
+    assertCwbvhClosestSupported(opts.device, traceTier, opts.restirPtReuse === true);
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.cwbvh-closest-experimental',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        "[vitrum/pt-webgpu] bvhTraversal:'cwbvh-closest-experimental' routes full-tier closest-hit mesh traversal through the uploaded CWBVH forest. " +
+        'Binary BVH any-hit remains active for shadow/castShadow predicate parity; renderer parity/performance A/B is still required before default promotion.',
+      details: {
+        traversal: 'cwbvh-closest-experimental',
+        closestHit: 'cwbvh',
+        anyHit: 'binary',
+        requiredStorageBuffersPerStage: opts.restirPtReuse === true
+          ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+          : PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      },
+    });
+  }
   if (traceTier === 'full') {
     console.info(
       '[vitrum/pt-webgpu] Full trace tier: TLAS, analytic shapes, HDRI, area lights, motion/variance aux, caustics.',
@@ -2455,6 +2513,29 @@ function assertRestirPtReuseSupported(device: GPUDevice, traceTier: PtWebgpuTrac
       `createPTEngine_WebGPU: restirPtReuse requires maxStorageBuffersPerShaderStage >= ` +
       `${PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE}; device exposes ${maxBuffers}. ` +
       'Request the ReSTIR-PT reuse limit floor when acquiring the GPUDevice.',
+    );
+  }
+}
+
+function assertCwbvhClosestSupported(
+  device: GPUDevice,
+  traceTier: PtWebgpuTraceTier,
+  restirPtReuse: boolean,
+): void {
+  if (traceTier !== 'full') {
+    throw new Error(
+      "createPTEngine_WebGPU: bvhTraversal:'cwbvh-closest-experimental' requires traceTier \"full\"; the selected lite tier does not bind full-tier TLAS/material/CWBVH groups.",
+    );
+  }
+  const required = restirPtReuse
+    ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
+    : PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
+  const maxBuffers = device.limits.maxStorageBuffersPerShaderStage;
+  if (maxBuffers < required) {
+    throw new Error(
+      "createPTEngine_WebGPU: bvhTraversal:'cwbvh-closest-experimental' requires " +
+      `maxStorageBuffersPerShaderStage >= ${required}; device exposes ${maxBuffers}. ` +
+      'Request the CWBVH traversal limit floor when acquiring the GPUDevice, or omit bvhTraversal to use the binary BVH.',
     );
   }
 }

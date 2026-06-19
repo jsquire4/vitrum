@@ -1,9 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createPTEngine_WebGPU } from '../index.js';
 
-function makeStubDevice(): GPUDevice {
+function makeStubDevice(
+  limits: Partial<GPUSupportedLimits> = {
+    maxStorageBuffersPerShaderStage: 64,
+    maxStorageTexturesPerShaderStage: 8,
+  },
+): GPUDevice {
   return {
     createCommandEncoder: vi.fn(),
+    limits,
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     lost: new Promise<never>(() => {}),
@@ -114,5 +120,41 @@ describe('createPTEngine_WebGPU', () => {
         device: lowLimitDevice,
       }),
     ).rejects.toThrow(/below the lite tier/i);
+  });
+
+  it('advertises and warns for opt-in CWBVH closest-hit traversal', async () => {
+    const warnings: string[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      bvhTraversal: 'cwbvh-closest-experimental',
+      onWarning: (warning) => warnings.push(warning.code),
+    });
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-cwbvh-closest-traversal')).toBe(true);
+    expect(warnings).toContain('pt-webgpu.cwbvh-closest-experimental');
+    engine.dispose();
+  });
+
+  it('rejects CWBVH closest-hit traversal on lite-tier devices', async () => {
+    await expect(
+      createPTEngine_WebGPU({
+        device: makeStubDevice({
+          maxStorageBuffersPerShaderStage: 10,
+          maxStorageTexturesPerShaderStage: 4,
+        }),
+        bvhTraversal: 'cwbvh-closest-experimental',
+      }),
+    ).rejects.toThrow(/requires traceTier "full"/);
+  });
+
+  it('rejects CWBVH closest-hit traversal when the full-tier device limit floor is too low', async () => {
+    await expect(
+      createPTEngine_WebGPU({
+        device: makeStubDevice({
+          maxStorageBuffersPerShaderStage: 34,
+          maxStorageTexturesPerShaderStage: 5,
+        }),
+        bvhTraversal: 'cwbvh-closest-experimental',
+      }),
+    ).rejects.toThrow(/requires maxStorageBuffersPerShaderStage >= 39/);
   });
 });

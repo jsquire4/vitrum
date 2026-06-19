@@ -21,6 +21,7 @@
  * `common.wgsl.ts` and is referenced through the shared global scope.
  */
 import {
+  CWBVH_INTERSECT_CORE_WGSL,
   TLAS_SCENE_HIT_TRAVERSAL_WGSL,
   TLAS_SCENE_HIT_INIT_ANCHOR,
   TLAS_SCENE_HIT_ASSIGNMENT_ANCHOR,
@@ -148,3 +149,232 @@ fn hitMaterialId(hit: SceneHit) -> u32 {
   return 0u;
 }
 `;
+
+function replaceWgslFunction(source: string, name: string, replacement: string): string {
+  const signature = `fn ${name}(`;
+  const start = source.indexOf(signature);
+  if (start < 0) {
+    throw new Error(`WGSL function ${name} not found`);
+  }
+  const bodyStart = source.indexOf('{', start);
+  if (bodyStart < 0) {
+    throw new Error(`WGSL function ${name} has no body`);
+  }
+  let depth = 0;
+  for (let i = bodyStart; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return `${source.slice(0, start)}${replacement}${source.slice(i + 1)}`;
+      }
+    }
+  }
+  throw new Error(`WGSL function ${name} body is unterminated`);
+}
+
+function insertBeforeWgslFunction(source: string, name: string, insertion: string): string {
+  const signature = `fn ${name}(`;
+  const start = source.indexOf(signature);
+  if (start < 0) {
+    throw new Error(`WGSL function ${name} not found`);
+  }
+  return `${source.slice(0, start)}${insertion}${source.slice(start)}`;
+}
+
+function ptWebgpuCwbvhCoreWgsl(): string {
+  let out = CWBVH_INTERSECT_CORE_WGSL;
+  const pointerParams = [
+    'cwbvhNodeBounds',
+    'cwbvhChildBoundsPacked',
+    'cwbvhChildMeta',
+    'cwbvhChildCount',
+    'bvh_index',
+    'bvh_position',
+  ];
+  for (const name of pointerParams) {
+    out = out.replace(new RegExp(`\\n  ${name}: ptr<storage, array<[^\\n]+>, read>,`, 'g'), '');
+    out = out.replace(new RegExp(`\\n    &${name},`, 'g'), '');
+    out = out.replace(new RegExp(`\\n    ${name},`, 'g'), '');
+  }
+  out = out
+    .replace(/cwbvhLoadChildBounds\(\s*cwbvhNodeBounds,\s*cwbvhChildBoundsPacked,\s*/g, 'cwbvhLoadChildBounds(')
+    .replace(/\(\*cwbvhNodeBounds\)/g, 'cwbvhNodeBounds')
+    .replace(/\(\*cwbvhChildBoundsPacked\)/g, 'cwbvhChildBoundsPacked')
+    .replace(/\(\*cwbvhChildMeta\)/g, 'cwbvhChildMeta')
+    .replace(/\(\*cwbvhChildCount\)/g, 'cwbvhChildCount')
+    .replace(/\(\*bvh_index\)/g, 'indices')
+    .replace(/\(\*bvh_position\)/g, 'positions');
+  return out;
+}
+
+const PT_WEBGPU_CWBVH_BINDINGS_AND_WRAPPERS_WGSL = /* wgsl */ `
+${ptWebgpuCwbvhCoreWgsl()}
+
+@group(3) @binding(12) var<storage, read> cwbvhNodeBounds: array<CwbvhNodeBounds>;
+@group(3) @binding(13) var<storage, read> cwbvhChildBoundsPacked: array<u32>;
+@group(3) @binding(14) var<storage, read> cwbvhChildMeta: array<CwbvhChildMeta>;
+@group(3) @binding(15) var<storage, read> cwbvhChildCount: array<u32>;
+@group(3) @binding(16) var<storage, read> cwbvhTlasBlasRoots: array<u32>;
+
+fn traceMeshCwbvhClosest(
+  ray: Ray,
+  tMin: f32,
+  tMaxBound: f32,
+  hit: ptr<function, SceneHit>,
+  rootNode: u32,
+  captureShadingDetails: bool,
+) -> bool {
+  (*hit).didHit = false;
+  (*hit).dist = tMaxBound;
+  (*hit).triIndex = 0u;
+  (*hit).normal = vec3f(0.0, 1.0, 0.0);
+  (*hit).baryVW = vec2f(0.0);
+  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+
+  let nodeCount = arrayLength(&cwbvhChildCount);
+  if (nodeCount == 0u || rootNode >= nodeCount) {
+    return false;
+  }
+  var cRay: CwbvhRay;
+  cRay.origin = ray.origin;
+  cRay.direction = ray.direction;
+  let cHit = cwbvhIntersectFirstHitRangeFromRoot(
+    cRay,
+    params.triIntersectEpsilon,
+    tMin,
+    tMaxBound,
+    nodeCount,
+    rootNode,
+    false,
+  );
+  if (!cHit.didHit || cHit.dist <= tMin || cHit.dist >= tMaxBound || cHit.triIndex >= min(params.triangleCount, arrayLength(&indices))) {
+    return false;
+  }
+
+  var shadeNormal = cHit.normal;
+  var shadeBaryVW = vec2f(cHit.barycoord.y, cHit.barycoord.z);
+  if (captureShadingDetails) {
+    let tri = indices[cHit.triIndex];
+    if (tri.x < arrayLength(&positions) && tri.y < arrayLength(&positions) && tri.z < arrayLength(&positions)) {
+      let a = positions[tri.x].xyz;
+      let b = positions[tri.y].xyz;
+      let c = positions[tri.z].xyz;
+      shadeNormal = safe_normalize(cross(b - a, c - a));
+      if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
+        let na = normals[tri.x].xyz;
+        let nb = normals[tri.y].xyz;
+        let nc = normals[tri.z].xyz;
+        shadeNormal = safe_normalize(na * cHit.barycoord.x + nb * cHit.barycoord.y + nc * cHit.barycoord.z);
+      }
+    }
+  }
+  (*hit).didHit = true;
+  (*hit).dist = cHit.dist;
+  (*hit).triIndex = cHit.triIndex;
+  (*hit).normal = shadeNormal;
+  (*hit).baryVW = shadeBaryVW;
+  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+  return true;
+}
+
+fn traceTlasClosestCwbvh(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>) -> bool {
+  if (params.tlasNodeCount == 0u || arrayLength(&tlasNodes) == 0u || arrayLength(&tlasInstanceIndices) == 0u) {
+    return traceMeshCwbvhClosest(ray, tMin, tMax, hit, 0u, true);
+  }
+  (*hit).didHit = false;
+  (*hit).dist = tMax;
+  (*hit).triIndex = 0u;
+  (*hit).normal = vec3f(0.0, 1.0, 0.0);
+  (*hit).baryVW = vec2f(0.0);
+  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+  var stack: array<u32, 64>;
+  var stackPtr = 0u;
+  stack[stackPtr] = 0u;
+  stackPtr = stackPtr + 1u;
+  while (stackPtr > 0u) {
+    stackPtr = stackPtr - 1u;
+    let nodeIdx = stack[stackPtr];
+    if (nodeIdx >= min(params.tlasNodeCount, arrayLength(&tlasNodes))) { continue; }
+    let node = tlasNodes[nodeIdx];
+    let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
+    let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
+    if (!intersectAabb(ray, bmin, bmax, tMin, (*hit).dist)) { continue; }
+    let splitOrCount = node.splitAxisOrTriCount;
+    if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
+      let count = splitOrCount & 0x0000ffffu;
+      let start = node.rightChildOrTriOffset;
+      for (var i = 0u; i < count; i = i + 1u) {
+        let permIdx = start + i;
+        if (permIdx >= arrayLength(&tlasInstanceIndices)) { continue; }
+        let instIdx = tlasInstanceIndices[permIdx];
+        let m = instIdx * 4u;
+        if (m + 3u >= arrayLength(&tlasInstanceWorldToLocal) || m + 3u >= arrayLength(&tlasInstanceLocalToWorld)) { continue; }
+        let w2l0 = tlasInstanceWorldToLocal[m];
+        let w2l1 = tlasInstanceWorldToLocal[m + 1u];
+        let w2l2 = tlasInstanceWorldToLocal[m + 2u];
+        let w2l3 = tlasInstanceWorldToLocal[m + 3u];
+        let l2w0 = tlasInstanceLocalToWorld[m];
+        let l2w1 = tlasInstanceLocalToWorld[m + 1u];
+        let l2w2 = tlasInstanceLocalToWorld[m + 2u];
+        let l2w3 = tlasInstanceLocalToWorld[m + 3u];
+        var localRay: Ray;
+        localRay.origin = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
+        localRay.direction = transformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
+        var localHit: SceneHit;
+        let blasRoot = select(0u, cwbvhTlasBlasRoots[instIdx], instIdx < arrayLength(&cwbvhTlasBlasRoots));
+        _ = traceMeshCwbvhClosest(localRay, tMin, INFINITY, &localHit, blasRoot, true);
+        if (localHit.didHit && localHit.dist > tMin && localHit.dist < (*hit).dist) {
+          let localHitPos = localRay.origin + localRay.direction * localHit.dist;
+          let worldHitPos = transformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
+          let worldDist = dot(worldHitPos - ray.origin, ray.direction);
+          if (worldDist <= tMin || worldDist >= (*hit).dist) { continue; }
+          (*hit).didHit = true;
+          (*hit).dist = worldDist;
+          (*hit).triIndex = localHit.triIndex;
+          (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
+          (*hit).instanceIndex = instIdx;
+          (*hit).baryVW = localHit.baryVW;
+        }
+      }
+    } else {
+      let leftChild = nodeIdx + 1u;
+      let rightChild = nodeIdx + node.rightChildOrTriOffset;
+      if (stackPtr + 2u < 64u) {
+        stack[stackPtr] = rightChild; stackPtr = stackPtr + 1u;
+        stack[stackPtr] = leftChild; stackPtr = stackPtr + 1u;
+      } else {
+        return (*hit).didHit;
+      }
+    }
+  }
+  return (*hit).didHit;
+}
+`;
+
+const PT_WEBGPU_TRACE_CLOSEST_CWBVH_WGSL = /* wgsl */ `fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
+  var hit: SceneHit;
+  _ = traceTlasClosestCwbvh(ray, tMin, tMax, &hit);
+  _ = traceAnalyticShapes(ray, tMin, tMax, true, &hit);
+  return hit;
+}
+`;
+
+export interface PtWebgpuIntersectionComposeOptions {
+  readonly cwbvhClosest?: boolean;
+}
+
+export function composePtWebgpuPathTraceIntersectionWgsl(
+  opts: PtWebgpuIntersectionComposeOptions = {},
+): string {
+  if (opts.cwbvhClosest !== true) {
+    return PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL;
+  }
+  const withCwbvh = insertBeforeWgslFunction(
+    PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL,
+    'traceClosest',
+    PT_WEBGPU_CWBVH_BINDINGS_AND_WRAPPERS_WGSL,
+  );
+  return replaceWgslFunction(withCwbvh, 'traceClosest', PT_WEBGPU_TRACE_CLOSEST_CWBVH_WGSL);
+}

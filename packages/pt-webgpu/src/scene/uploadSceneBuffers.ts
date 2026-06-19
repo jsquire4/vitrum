@@ -263,8 +263,8 @@ export type { PrimitiveTlasBinding };
  *     `#buildSharedPipelineLayout()` → `bindGroupLayout3`
  *   - `buildBindGroups` and `buildReservoirBindGroups` in `gpuResources.ts` bind
  *     the render-consumed subset. Prototype CWBVH buffers are uploaded here as
- *     opt-in traversal plumbing but remain unbound until the traversal-selection
- *     shader slice lands.
+ *     opt-in traversal plumbing and are bound by the full-tier
+ *     `bvhTraversal:'cwbvh-closest-experimental'` path.
  *
  * The TLAS entries must remain contiguous at the END so realloc/registry tests
  * can keep the TLAS table as one tail block.

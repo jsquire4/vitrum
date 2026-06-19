@@ -10,7 +10,10 @@ import {
   OCTAHEDRAL_CORE_WGSL,
 } from '@vitrum/shared-samplers';
 import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from './pathTrace/material.wgsl.js';
-import { PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL } from './pathTrace/intersection.wgsl.js';
+import {
+  PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL,
+  composePtWebgpuPathTraceIntersectionWgsl,
+} from './pathTrace/intersection.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from './pathTrace/bsdf.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CONNECT_WGSL } from './pathTrace/connect.wgsl.js';
 import {
@@ -92,6 +95,7 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  */
 export interface PtWebgpuTraceComposeOptions {
   readonly sampling?: PtWebgpuSamplingMode;
+  readonly cwbvhClosest?: boolean;
 }
 
 export function composePtWebgpuTraceWgsl(
@@ -100,6 +104,9 @@ export function composePtWebgpuTraceWgsl(
 ): string {
   const kernel = composePathTraceKernelWgsl({ volumetricSss: !bdptEnabled });
   const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
+  const intersection = composePtWebgpuPathTraceIntersectionWgsl({
+    cwbvhClosest: opts.cwbvhClosest === true,
+  });
   return /* wgsl */ `
 ${common}
 ${HAMMERSLEY_WGSL}
@@ -107,7 +114,7 @@ ${OCTAHEDRAL_CORE_WGSL}
 ${LUMINANCE_WGSL}
 ${HERO_WAVELENGTH_WGSL}
 ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
-${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
+${intersection}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}
@@ -146,6 +153,9 @@ export function composePtWebgpuCompositeTraceWgsl(
     restirPtComposite: true,
   });
   const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
+  const intersection = composePtWebgpuPathTraceIntersectionWgsl({
+    cwbvhClosest: opts.cwbvhClosest === true,
+  });
   const body = /* wgsl */ `
 ${common}
 ${HAMMERSLEY_WGSL}
@@ -153,7 +163,7 @@ ${OCTAHEDRAL_CORE_WGSL}
 ${LUMINANCE_WGSL}
 ${HERO_WAVELENGTH_WGSL}
 ${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
-${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
+${intersection}
 ${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
 ${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
 ${MNEE_NEWTON_WGSL}

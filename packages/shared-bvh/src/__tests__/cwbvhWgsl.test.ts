@@ -2,18 +2,30 @@ import { describe, expect, it } from 'vitest';
 import {
   CWBVH_CHILDREN,
   CWBVH_CHILD_BOUNDS_PACKED_U32,
+  CWBVH_INTERSECT_CORE_WGSL,
   CWBVH_INTERSECT_STACK_DEPTH,
   CWBVH_INTERSECT_WGSL,
 } from '../index.js';
 
 describe('CWBVH_INTERSECT_WGSL', () => {
   it('exports closest-hit and any-hit traversal entry points', () => {
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain('fn cwbvhIntersectFirstHitRangeFromRoot(');
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain('fn cwbvhIntersectFirstHitFromRoot(');
+    expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectFirstHitRangeFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectFirstHitFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectFirstHit(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectAnyFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectAny(');
     expect(CWBVH_INTERSECT_WGSL).toContain('struct CwbvhIntersectionResult');
     expect(CWBVH_INTERSECT_WGSL).toContain('struct CwbvhChildMeta');
+  });
+
+  it('exposes a helper-free core module for renderer compositions', () => {
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain('struct CwbvhIntersectionResult');
+    expect(CWBVH_INTERSECT_CORE_WGSL).not.toContain('fn safeInvDir(d: vec3f) -> vec3f');
+    expect(CWBVH_INTERSECT_CORE_WGSL).not.toContain('fn mollerTrumboreCore(');
+    expect(CWBVH_INTERSECT_WGSL).toContain('fn safeInvDir(d: vec3f) -> vec3f');
+    expect(CWBVH_INTERSECT_WGSL).toContain('fn mollerTrumboreCore(');
   });
 
   it('supports explicit forest roots while preserving root-zero wrappers', () => {

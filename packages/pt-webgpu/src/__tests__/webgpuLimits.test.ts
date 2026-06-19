@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
@@ -14,7 +16,7 @@ import {
   mergeAdapterRequiredLimits,
   ptWebgpuRequiredLimitsForAdapter,
 } from '../webgpuLimits.js';
-import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { PT_WEBGPU_TRACE_WGSL, composePtWebgpuTraceWgsl } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 
 function countDistinctStorageBufferBindings(wgsl: string): number {
@@ -40,6 +42,16 @@ describe('webgpuLimits', () => {
       PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     );
     expect(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(34);
+  });
+
+  it('CWBVH closest-hit opt-in has a separate storage-buffer floor', () => {
+    expect(countDistinctStorageBufferBindings(PT_WEBGPU_TRACE_WGSL)).toBe(34);
+    expect(countDistinctStorageBufferBindings(composePtWebgpuTraceWgsl(false, { cwbvhClosest: true }))).toBe(
+      PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+    );
+    expect(PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(
+      PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE + 5,
+    );
   });
 
   it('mergeAdapterRequiredLimits clamps to adapter caps', () => {
@@ -79,6 +91,23 @@ describe('webgpuLimits', () => {
     } as GPUAdapter;
     expect(ptWebgpuRequiredLimitsForAdapter(adapter, { restirPtReuse: true })).toEqual({
       maxStorageBuffersPerShaderStage: PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    });
+  });
+
+  it('ptWebgpuRequiredLimitsForAdapter requests the CWBVH closest-hit floor when opted in', () => {
+    const adapter = {
+      limits: {
+        maxStorageBuffersPerShaderStage: 64,
+        maxStorageTexturesPerShaderStage: 8,
+      },
+    } as GPUAdapter;
+    expect(ptWebgpuRequiredLimitsForAdapter(adapter, { cwbvhClosest: true })).toEqual({
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+      maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+    });
+    expect(ptWebgpuRequiredLimitsForAdapter(adapter, { cwbvhClosest: true, restirPtReuse: true })).toEqual({
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
     });
   });

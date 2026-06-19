@@ -18,10 +18,7 @@ import { MOLLER_TRUMBORE_WGSL, SAFE_INV_DIR_WGSL } from './bvhIntersect.wgsl.js'
 
 export const CWBVH_INTERSECT_STACK_DEPTH = 64;
 
-export const CWBVH_INTERSECT_WGSL = /* wgsl */ `
-${SAFE_INV_DIR_WGSL}
-${MOLLER_TRUMBORE_WGSL}
-
+export const CWBVH_INTERSECT_CORE_WGSL = /* wgsl */ `
 const CWBVH_CHILDREN: u32 = 8u;
 const CWBVH_CHILD_BOUNDS_PACKED_U32: u32 = 3u;
 const CWBVH_INTERSECT_STACK_DEPTH: u32 = ${CWBVH_INTERSECT_STACK_DEPTH}u;
@@ -138,7 +135,7 @@ fn cwbvhAabbEntry(
   return tNear;
 }
 
-fn cwbvhIntersectFirstHitFromRoot(
+fn cwbvhIntersectFirstHitRangeFromRoot(
   cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
   cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
   cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
@@ -147,11 +144,14 @@ fn cwbvhIntersectFirstHitFromRoot(
   bvh_position: ptr<storage, array<vec4f>, read>,
   ray: CwbvhRay,
   triEps: f32,
+  tMin: f32,
+  tMax: f32,
   nodeCount: u32,
   rootNode: u32,
   skipGlass: bool,
 ) -> CwbvhIntersectionResult {
   var best = cwbvhMiss();
+  best.dist = tMax;
   if (nodeCount == 0u || rootNode >= nodeCount) {
     return best;
   }
@@ -205,7 +205,7 @@ fn cwbvhIntersectFirstHitFromRoot(
           let pb4 = (*bvh_position)[idx.y];
           let pc4 = (*bvh_position)[idx.z];
           let tri = mollerTrumboreCore(ray.origin, ray.direction, pa4.xyz, pb4.xyz, pc4.xyz, triEps);
-          if (tri.hit && tri.t < best.dist) {
+          if (tri.hit && tri.t > tMin && tri.t < best.dist) {
             best.didHit = true;
             best.dist = tri.t;
             best.triIndex = triIdx;
@@ -225,6 +225,36 @@ fn cwbvhIntersectFirstHitFromRoot(
   }
 
   return best;
+}
+
+fn cwbvhIntersectFirstHitFromRoot(
+  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
+  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
+  cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
+  cwbvhChildCount: ptr<storage, array<u32>, read>,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  ray: CwbvhRay,
+  triEps: f32,
+  nodeCount: u32,
+  rootNode: u32,
+  skipGlass: bool,
+) -> CwbvhIntersectionResult {
+  return cwbvhIntersectFirstHitRangeFromRoot(
+    cwbvhNodeBounds,
+    cwbvhChildBoundsPacked,
+    cwbvhChildMeta,
+    cwbvhChildCount,
+    bvh_index,
+    bvh_position,
+    ray,
+    triEps,
+    triEps,
+    CWBVH_INTERSECT_INFINITY,
+    nodeCount,
+    rootNode,
+    skipGlass,
+  );
 }
 
 fn cwbvhIntersectFirstHit(
@@ -367,4 +397,10 @@ fn cwbvhIntersectAny(
     skipGlass,
   );
 }
+`;
+
+export const CWBVH_INTERSECT_WGSL = /* wgsl */ `
+${SAFE_INV_DIR_WGSL}
+${MOLLER_TRUMBORE_WGSL}
+${CWBVH_INTERSECT_CORE_WGSL}
 `;

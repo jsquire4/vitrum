@@ -210,6 +210,30 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     expect(gpu.bindGroupLayout).not.toBeNull();
   });
 
+  it('full CWBVH closest-hit opt-in extends only group 3 with read-only CWBVH buffers', () => {
+    const stub = makeStubDevice();
+    const gpu = new GpuResources(
+      stub.device,
+      'full',
+      false,
+      false,
+      undefined,
+      'pcg',
+      'cwbvh-closest-experimental',
+    );
+    gpu.ensurePipeline();
+
+    const g3 = stub.createdLayouts.find((layout) => layout.label === 'vitrum.pt-webgpu.layout.group3.full');
+    expect(g3).toBeDefined();
+    expect(g3!.entries.map((e) => e.binding)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+    ]);
+    const g3m = new Map(g3!.entries.map((e) => [e.binding, e]));
+    for (const binding of [12, 13, 14, 15, 16]) {
+      expect(g3m.get(binding)!.buffer?.type).toBe('read-only-storage');
+    }
+  });
+
   // B12 — bindings 12/13/14 added for liteEnvTex + liteEnvCdfTex + liteLightTex.
   it('lite tier: single-group explicit layout (bindings 0..14), no group 1/2/3, no bdpt pipeline', () => {
     const stub = makeStubDevice();

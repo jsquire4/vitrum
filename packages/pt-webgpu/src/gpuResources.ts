@@ -50,6 +50,8 @@ import {
   RPT_GROUP0_BINDING_BASE,
 } from './wgsl/pathTrace/restirPtCompose.wgsl.js';
 
+export type PtWebgpuBvhTraversalMode = 'binary' | 'cwbvh-closest-experimental';
+
 // ── Module-level binding-layout helpers (D8.3) ─────────────────────────────
 // These are hoisted out of the per-method local-scope to eliminate the
 // duplication that previously existed between #buildSharedPipelineLayout and
@@ -282,6 +284,7 @@ export class GpuResources {
   readonly #traceTier: PtWebgpuTraceTier;
   readonly #bdpt: boolean;
   readonly #sampling: PtWebgpuSamplingMode;
+  readonly #cwbvhClosest: boolean;
   readonly #onWarning: ((warning: EngineWarning) => void) | undefined;
   /**
    * Compile-time opt-in for the ReSTIR-PT reservoir/reuse pre-passes (the hero-
@@ -475,12 +478,14 @@ export class GpuResources {
     restirPtReuse = false,
     onWarning?: (warning: EngineWarning) => void,
     sampling: PtWebgpuSamplingMode = 'pcg',
+    bvhTraversal: PtWebgpuBvhTraversalMode = 'binary',
   ) {
     this.#device = device;
     this.#traceTier = traceTier;
     this.#bdpt = bdpt;
     this.#sampling = sampling;
     this.#onWarning = onWarning;
+    this.#cwbvhClosest = bvhTraversal === 'cwbvh-closest-experimental' && traceTier === 'full';
     // Reuse is full-tier only: the per-pass layouts bind the full-tier scene
     // groups (analytics/TLAS/lights). On the lite tier the flag is inert.
     this.#restirPtReuse = restirPtReuse && traceTier === 'full';
@@ -796,6 +801,15 @@ export class GpuResources {
           _buf(9, _rw), // A4-progressive: sppmPixelStats (read_write storage)
           _buf(10, _ro), // tangent.xyzw (authored/generated TBN handedness)
           _buf(11, _ro), // vertex color.rgba (glTF COLOR_0)
+          ...(this.#cwbvhClosest
+            ? [
+                _buf(12, _ro), // CWBVH parent node bounds
+                _buf(13, _ro), // CWBVH child bounds packed u16 pairs
+                _buf(14, _ro), // CWBVH child metadata
+                _buf(15, _ro), // CWBVH live child counts
+                _buf(16, _ro), // TLAS BLAS roots remapped to CWBVH wide roots
+              ]
+            : []),
         ],
       });
       bindGroupLayouts.push(this.bindGroupLayout1, this.bindGroupLayout2, this.bindGroupLayout3);
@@ -823,7 +837,7 @@ export class GpuResources {
     // WS4 — the full-tier kernel is composed for this engine's integrator
     // config: the volumetric SSS random walk is compiled in only when BDPT is
     // OFF (structural gate — energy conservation; BDPT has no medium logic).
-    const samplingOpts = { sampling: this.#sampling };
+    const samplingOpts = { sampling: this.#sampling, cwbvhClosest: this.#cwbvhClosest };
     const traceWgsl =
       this.#traceTier === 'lite'
         ? composePtWebgpuTraceLiteWgsl(samplingOpts)
@@ -1149,7 +1163,10 @@ export class GpuResources {
     // for this engine's BDPT mode (matches the default megakernel's SSS/BDPT gate).
     this.rptCompositePipeline = mk(
       'vitrum.pt-webgpu.restirPt.compositeMegakernel',
-      composePtWebgpuCompositeTraceWgsl(this.#bdpt, { sampling: this.#sampling }),
+      composePtWebgpuCompositeTraceWgsl(this.#bdpt, {
+        sampling: this.#sampling,
+        cwbvhClosest: this.#cwbvhClosest,
+      }),
       'main',
     );
   }
@@ -1376,6 +1393,15 @@ export class GpuResources {
           { binding: 9, resource: { buffer: this.sppmPixelStatsBuffer! } },
           { binding: 10, resource: { buffer: sb.tangentsBuffer } },
           { binding: 11, resource: { buffer: sb.colorsBuffer } },
+          ...(this.#cwbvhClosest
+            ? [
+                { binding: 12, resource: { buffer: sb.cwbvhNodeBoundsBuffer } },
+                { binding: 13, resource: { buffer: sb.cwbvhChildBoundsPackedBuffer } },
+                { binding: 14, resource: { buffer: sb.cwbvhChildMetaBuffer } },
+                { binding: 15, resource: { buffer: sb.cwbvhChildCountBuffer } },
+                { binding: 16, resource: { buffer: sb.cwbvhTlasBlasRootsBuffer } },
+              ]
+            : []),
         ],
       });
     }
