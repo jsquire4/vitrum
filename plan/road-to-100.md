@@ -1803,8 +1803,10 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    checks, explicit u16→u32 WGSL upload packing, reordered triangle-payload
    overlay helpers, CPU first-hit/any-hit traversal oracles compared against
    brute force, and WGSL closest/any-hit traversal helpers
-   covered by the WebGPU shader/pipeline gate. Remaining work is backend opt-in
-   capability flags, binary-BVH fallback policy, GPU traversal parity tests, and
+   covered by the WebGPU shader/pipeline gate. A standalone WebGPU parity oracle
+   now compares the WGSL CWBVH traversal against the CPU oracle for closest-hit,
+   any-hit, and glass-skip cases. Remaining work is backend opt-in capability
+   flags, binary-BVH fallback policy, renderer binary-vs-CWBVH parity tests, and
    real equal-scene throughput/memory proof.
 
 ### Execution dependency
@@ -1893,13 +1895,16 @@ supplied. The shared WGSL side is also started: child bounds have an explicit u1
 packer, and `CWBVH_INTERSECT_WGSL` exposes closest-hit and any-hit traversal
 helpers over the packed wide-node buffers. Shader-gate compiles a concrete
 CWBVH harness pipeline through the same Naga ptr-parameter compatibility layer
-used by the existing shared BVH traversal.
+used by the existing shared BVH traversal. `tools/behavioral-gate/cwbvh-parity-oracle.mjs`
+also runs the CWBVH WGSL traversal on WebGPU and compares closest-hit, any-hit,
+and glass-skip results against the CPU oracle; the committed
+`cwbvh-parity-status.json` pins that proof.
 
 **Remaining work:** per-backend opt-in flags and upload routing; binary-BVH
-fallback policy; GPU CWBVH-vs-binary traversal parity tests; and equal-scene
-throughput/memory A/B before any renderer default promotion. Becomes decisive
-if/when a WebGPU ray-tracing extension ships (whole-field handicap today: no RT
-cores in the browser for anyone).
+fallback policy; renderer binary-vs-CWBVH traversal parity tests; and
+equal-scene throughput/memory A/B before any renderer default promotion. Becomes
+decisive if/when a WebGPU ray-tracing extension ships (whole-field handicap
+today: no RT cores in the browser for anyone).
 
 ### F3 — Shipped denoiser weights (out-of-the-box UX)
 

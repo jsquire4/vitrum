@@ -1,0 +1,16 @@
+{
+  "generatedAt": "2026-06-19T18:43:17.776Z",
+  "harness": "cwbvh-parity-oracle",
+  "verdict": "PASS",
+  "command": "npm run behavioral-gate:cwbvh -- --write-status",
+  "rayCount": 5,
+  "cwbvhNodeCount": 8,
+  "triangleCount": 51,
+  "checks": {
+    "closestNoSkip": true,
+    "closestSkipGlass": true,
+    "anyNoSkip": true,
+    "anySkipGlass": true
+  },
+  "mismatches": []
+}
