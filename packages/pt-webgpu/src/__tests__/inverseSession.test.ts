@@ -1202,7 +1202,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps emitter path-replay on finite-difference when receiver materials use unreplayed bump maps', () => {
+  it('keeps emitter path-replay when receiver materials use replayed bump maps', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1224,15 +1224,9 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       parameters: [{ path: 'emitters.lamp.intensity', kind: 'scalar' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-normal',
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       path: 'emitters.lamp.intensity',
-      details: expect.objectContaining({
-        finiteDifferenceReason: 'normal',
-        primitiveId: 'panel',
-        unsupportedMaterialFields: expect.arrayContaining(['bumpMap']),
-      }),
     }));
     session.dispose();
   });
@@ -2022,7 +2016,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps bump and clearcoat normal controls on finite-difference until those terms are replayed', () => {
+  it('keeps bumpScale on path-replay for replayed bump-map direct lighting', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2033,17 +2027,86 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
               material: {
                 ...pr.material,
                 bumpScale: 0.7,
+                bumpMap: { handle: { width: 2, height: 1, data: new Float32Array([0.1, 0, 0, 1, 0.9, 0, 0, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.bumpScale', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()).toEqual([[expect.closeTo(0.7, 6)]]);
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
+  it('keeps normalScale on finite-difference when chained through a bump-map tangent frame', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                normalScale: 0.8,
+                normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.7, 0.45, 1, 1]) } },
+                bumpMap: { handle: { width: 2, height: 1, data: new Float32Array([0.1, 0, 0, 1, 0.9, 0, 0, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.normalScale', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-normal',
+      path: 'materials.panel.normalScale',
+      details: expect.objectContaining({
+        finiteDifferenceReason: 'normal',
+        unsupportedMaterialFields: expect.arrayContaining(['bumpMap']),
+      }),
+    }));
+    session.dispose();
+  });
+
+  it('keeps clearcoat normal controls on finite-difference until those terms are replayed', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
                 clearcoatNormalScale: 0.6,
               },
             }
           : pr,
       ),
     };
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [
-        { path: 'materials.panel.bumpScale', kind: 'scalar' },
         { path: 'materials.panel.clearcoatNormalScale', kind: 'scalar' },
       ],
       method: 'path-replay',
@@ -2051,11 +2114,9 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
 
     expect(session.method).toBe('finite-difference');
     expect(session.currentValues()).toEqual([
-      [expect.closeTo(0.7, 6)],
       [expect.closeTo(0.6, 6)],
     ]);
     for (const field of [
-      'bumpScale',
       'clearcoatNormalScale',
     ]) {
       expect(session.diagnostics).toContainEqual(expect.objectContaining({
@@ -2203,7 +2264,6 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility', 'visibility'],
     ['opacity', { opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport', 'transport'],
-    ['bump map', { bumpMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 0.5, 1]) } } }, 'path-replay-unsupported-normal', 'normal'],
     ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
     ['thickness map', { thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],

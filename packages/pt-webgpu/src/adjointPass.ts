@@ -41,6 +41,7 @@ import {
   ADJOINT_FIELD_LIGHT_MAP_INTENSITY,
   ADJOINT_FIELD_ENV_MAP_INTENSITY,
   ADJOINT_FIELD_NORMAL_SCALE,
+  ADJOINT_FIELD_BUMP_SCALE,
   ADJOINT_FIELD_EMITTER_COLOR,
   ADJOINT_FIELD_EMITTER_INTENSITY,
   ADJOINT_EMITTER_TARGET_DIRECTIONAL,
@@ -213,6 +214,9 @@ export class AdjointPass {
           break;
         case 'normalScale':
           fieldCode = ADJOINT_FIELD_NORMAL_SCALE;
+          break;
+        case 'bumpScale':
+          fieldCode = ADJOINT_FIELD_BUMP_SCALE;
           break;
         case 'emissive':
           fieldCode = ADJOINT_FIELD_EMISSIVE;

@@ -87,6 +87,7 @@ export const ADJOINT_FIELD_AO_MAP_INTENSITY = 19;
 export const ADJOINT_FIELD_LIGHT_MAP_INTENSITY = 20;
 export const ADJOINT_FIELD_ENV_MAP_INTENSITY = 21;
 export const ADJOINT_FIELD_NORMAL_SCALE = 22;
+export const ADJOINT_FIELD_BUMP_SCALE = 23;
 
 export const ADJOINT_EMITTER_TARGET_DIRECTIONAL = 1;
 export const ADJOINT_EMITTER_TARGET_POINT = 2;
@@ -110,6 +111,8 @@ const ADJOINT_MATERIAL_TEX_UV_AO =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 5;
 const ADJOINT_MATERIAL_TEX_UV_LIGHT =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 6;
+const ADJOINT_MATERIAL_TEX_UV_BUMP =
+  MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 7;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT = MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS =
   MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
@@ -199,8 +202,8 @@ struct AdjointParams {
 @group(0) @binding(13) var<storage, read>      meshAreaLights: array<vec4f>;
 // Material-map replay subset: mirrors the forward texture samplers for local
 // base/ORM/AO/specular/clearcoat/sheen/iridescence/anisotropy chain factors and
-// camera-direct emissive partials plus top-level normal-map shading. Path-changing
-// maps (alpha, transmission, bump/clearcoat-normal, displacement) still route
+// camera-direct emissive partials plus top-level normal/bump-map shading. Path-changing
+// maps (alpha, transmission, clearcoat-normal, displacement) still route
 // through finite difference until their visibility/transport/normal terms are
 // replayed here.
 @group(0) @binding(14) var<storage, read>      meshUvs: array<vec4f>;
@@ -318,6 +321,7 @@ const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS = ${ADJOINT_MATERIAL_TEX_UV_ROUGHNESS}u;
 const ADJOINT_MATERIAL_TEX_UV_METALLIC = ${ADJOINT_MATERIAL_TEX_UV_METALLIC}u;
 const ADJOINT_MATERIAL_TEX_UV_AO = ${ADJOINT_MATERIAL_TEX_UV_AO}u;
 const ADJOINT_MATERIAL_TEX_UV_LIGHT = ${ADJOINT_MATERIAL_TEX_UV_LIGHT}u;
+const ADJOINT_MATERIAL_TEX_UV_BUMP = ${ADJOINT_MATERIAL_TEX_UV_BUMP}u;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT = ${ADJOINT_MATERIAL_TEX_UV_CLEARCOAT}u;
 const ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS = ${ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS}u;
 const ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR = ${ADJOINT_MATERIAL_TEX_UV_SHEEN_COLOR}u;
@@ -466,6 +470,23 @@ fn sampleAdjointMaterialLayerLinear(layerIdx: i32, base: u32, triIndex: u32, bar
   return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, lod);
 }
 
+fn sampleAdjointMaterialLayerLinearRawUv(layerIdx: i32, base: u32, rawUv: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f) -> vec4f {
+  if (layerIdx < 0 || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  let uvMeta = materialTexDescriptors[base + uvMetaOffset];
+  let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
+  let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
+  let rot = uvMeta.w;
+  let c = cos(rot);
+  let s = sin(rot);
+  let uv = vec2f(
+    xform.z * c * rawUv.x + xform.z * s * rawUv.y + xform.x,
+    -xform.w * s * rawUv.x + xform.w * c * rawUv.y + xform.y,
+  );
+  let wrappedUv = vec2f(adjointWrapTextureCoord(uv.x, wrapMode.x), adjointWrapTextureCoord(uv.y, wrapMode.y));
+  let fittedUv = wrappedUv * uvFitScale;
+  return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, 0.0);
+}
+
 fn sampleAdjointEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
   if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
@@ -596,6 +617,59 @@ fn sampleAdjointNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: 
   if (plen <= 1e-6) { return out; }
   let n = perturbed / plen;
   let dPerturbed_dScale = frame.tangent * xy.x + frame.bitangent * xy.y;
+  out.normal = n;
+  out.dNormal_dScale = (dPerturbed_dScale - n * dot(n, dPerturbed_dScale)) / plen;
+  return out;
+}
+
+struct AdjointBumpMapSample {
+  normal: vec3f,
+  dNormal_dScale: vec3f,
+}
+
+fn sampleAdjointBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f) -> AdjointBumpMapSample {
+  var out: AdjointBumpMapSample;
+  out.normal = shadingNormal;
+  out.dNormal_dScale = vec3f(0.0);
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 16u >= arrayLength(&materialTexDescriptors) || triIndex >= arrayLength(&indices)) { return out; }
+  let bumpIdx = i32(materialTexDescriptors[base + 3u].w);
+  if (bumpIdx < 0) { return out; }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
+      tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+    return out;
+  }
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, shadingNormal);
+  if (!frame.valid) { return out; }
+  let bumpUvFitScale = materialTexDescriptors[base + 10u].zw;
+  let bumpWrapMode = materialTexDescriptors[base + 16u].zw;
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uvMeta = materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_BUMP];
+  let texCoord = u32(uvMeta.x);
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
+  let rawUv0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
+  let rawUv1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
+  let rawUv = select(rawUv0, rawUv1, texCoord == 1u);
+  let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));
+  let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
+  let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
+  let hC = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv, ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hU = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(texelStep.x, 0.0), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hV = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(0.0, texelStep.y), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let dhdu = (hU - hC) / texelStep.x;
+  let dhdv = (hV - hC) / texelStep.y;
+  let gradient = dhdu * frame.tangent + dhdv * frame.bitangent;
+  let bumpScale = materialTexDescriptors[base + 4u].z;
+  let perturbed = shadingNormal - bumpScale * gradient;
+  let plen = length(perturbed);
+  if (plen <= 1e-6) { return out; }
+  let n = perturbed / plen;
+  let dPerturbed_dScale = -gradient;
   out.normal = n;
   out.dNormal_dScale = (dPerturbed_dScale - n * dot(n, dPerturbed_dScale)) / plen;
   return out;
@@ -1241,8 +1315,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // gets nDotL<=0 against an interior light and contributes no gradient.
     let nFace = select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0);
     let normalMapSample = sampleAdjointNormalMap(matId, hit.tri, hitBaryVW, nFace);
-    let n = normalMapSample.normal;
+    let bumpMapSample = sampleAdjointBumpMap(matId, hit.tri, hitBaryVW, normalMapSample.normal);
+    let n = bumpMapSample.normal;
     let dNormal_dNormalScale = normalMapSample.dNormal_dScale;
+    let dNormal_dBumpScale = bumpMapSample.dNormal_dScale;
     let pos = ray.origin + ray.direction * hit.t;
     let wo = -ray.direction;
 
@@ -1278,6 +1354,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gAnisotropyRotation = 0.0;
     var gEnvMapIntensity = 0.0;
     var gNormalScale = 0.0;
+    var gBumpScale = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -1328,6 +1405,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (!isUnlit) {
         gNormalScale = gNormalScale + directLightNormalScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb,
+        );
+        gBumpScale = gBumpScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb,
@@ -1390,6 +1473,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (!isUnlit) {
         gNormalScale = gNormalScale + directLightNormalScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+        );
+        gBumpScale = gBumpScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
@@ -1458,6 +1547,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (!isUnlit) {
         gNormalScale = gNormalScale + directLightNormalScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+        );
+        gBumpScale = gBumpScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
@@ -1545,6 +1640,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
         );
+        gBumpScale = gBumpScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+        );
         let areaFactor = 1.0 / max(lightPdf, 1e-6);
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
@@ -1626,6 +1727,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
         );
+        gBumpScale = gBumpScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+        );
         let areaFactor = 1.0 / max(lightPdf, 1e-6);
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
@@ -1687,6 +1794,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
             effectiveAnisotropy, effectiveAnisotropyRotation, Li,
           );
+          gBumpScale = gBumpScale + directLightNormalScaleGradient(
+            dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+            wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+            effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+            effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          );
           let brdfValue = directLightBrdfValue(
             effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1740,6 +1853,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gEnvMapIntensity * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_NORMAL_SCALE}u) {
         adjointScatter(gradOffset, gNormalScale * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_BUMP_SCALE}u) {
+        adjointScatter(gradOffset, gBumpScale * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT}u) {
         adjointScatter(gradOffset, gClearcoat * clearcoatFactor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT_ROUGHNESS}u) {

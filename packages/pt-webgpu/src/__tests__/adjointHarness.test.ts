@@ -38,6 +38,7 @@ import {
   ADJOINT_FIELD_LIGHT_MAP_INTENSITY,
   ADJOINT_FIELD_ENV_MAP_INTENSITY,
   ADJOINT_FIELD_NORMAL_SCALE,
+  ADJOINT_FIELD_BUMP_SCALE,
   ADJOINT_FIELD_EMITTER_COLOR,
   ADJOINT_FIELD_EMITTER_INTENSITY,
   ADJOINT_EMITTER_TARGET_DIRECTIONAL,
@@ -308,6 +309,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_FIELD_LIGHT_MAP_INTENSITY).toBe(20);
     expect(ADJOINT_FIELD_ENV_MAP_INTENSITY).toBe(21);
     expect(ADJOINT_FIELD_NORMAL_SCALE).toBe(22);
+    expect(ADJOINT_FIELD_BUMP_SCALE).toBe(23);
     expect(ADJOINT_EMITTER_TARGET_DIRECTIONAL).toBe(1);
     expect(ADJOINT_EMITTER_TARGET_POINT).toBe(2);
     expect(ADJOINT_EMITTER_TARGET_SPOT).toBe(3);
@@ -330,6 +332,7 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
       ADJOINT_MATERIAL_TEX_UV_METALLIC: mainUv(4),
       ADJOINT_MATERIAL_TEX_UV_AO: mainUv(5),
       ADJOINT_MATERIAL_TEX_UV_LIGHT: mainUv(6),
+      ADJOINT_MATERIAL_TEX_UV_BUMP: mainUv(7),
       ADJOINT_MATERIAL_TEX_UV_ANISOTROPY: mainUv(8),
       ADJOINT_MATERIAL_TEX_UV_CLEARCOAT: extensionUv(0),
       ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS: extensionUv(1),
@@ -367,6 +370,8 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ENV_MAP_INTENSITY;');
     expect(ADJOINT_PASS_TS).toContain("case 'normalScale':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_NORMAL_SCALE;');
+    expect(ADJOINT_PASS_TS).toContain("case 'bumpScale':");
+    expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_BUMP_SCALE;');
     expect(ADJOINT_PASS_TS).toContain("case 'anisotropy':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ANISOTROPY;');
     expect(ADJOINT_PASS_TS).toContain("case 'anisotropyRotation':");
@@ -391,15 +396,21 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_ENV_MAP_INTENSITY}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gEnvMapIntensity * invReplaySamples)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_NORMAL');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('const ADJOINT_MATERIAL_TEX_UV_BUMP');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(23) var<storage, read>       meshTangents');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let ta = meshTangents[tri.x];');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let handednessRaw = ta.w * u + tb.w * v + tc.w * w;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('frame.bitangent = cross(normal, tangent) * handedness;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointNormalMap');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointBumpMap');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let bumpMapSample = sampleAdjointBumpMap(matId, hit.tri, hitBaryVW, normalMapSample.normal)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let normalMapSample = sampleAdjointNormalMap(matId, hit.tri, hitBaryVW, nFace)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dNormal_dNormalScale = normalMapSample.dNormal_dScale');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dNormal_dBumpScale = bumpMapSample.dNormal_dScale');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn directLightNormalScaleGradient');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_NORMAL_SCALE}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gNormalScale * invReplaySamples)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_BUMP_SCALE}u`);
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointScatter(gradOffset, gBumpScale * invReplaySamples)');
   });
 });
