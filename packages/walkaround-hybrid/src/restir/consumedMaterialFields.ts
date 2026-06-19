@@ -115,8 +115,9 @@
  *                           from their red channel before top-coat evaluation.
  *  clearcoatRoughnessMap readable linear maps multiply scalar
  *                           `clearcoatRoughness` from their green channel.
- *  clearcoatNormalMap    readable normal maps perturb only the shade-owned
- *                           clearcoat lobe through the derived-TBN atlas path.
+ *  clearcoatNormalMap    readable normal maps perturb the shade-owned
+ *                           clearcoat lobe plus DI/GI suffix and receiver
+ *                           material payloads through the derived-TBN atlas path.
  *  clearcoatNormalScale  metadata scale for `clearcoatNormalMap`.
  *  sheen                 stored in material atlas metadata and added as a
  *                           Charlie/Neubelt-Pettineo sheen lobe in shade-owned
@@ -147,7 +148,8 @@
  * transmissionMap / thicknessMap / lightMap / specular maps / clearcoat maps /
  * sheen maps / anisotropyMap / iridescence maps / bumpMap,
  * remaining layered BSDF scalars, spectral curves, volume scattering,
- * thin-film stacks, layered BSDF, and extension maps — is rejected by the
+ * thin-film stacks, layered BSDF, and unlisted future maps/extension families
+ * — is rejected by the
  * warning/truthfulness surface rather than silently rendered as native.
  */
 

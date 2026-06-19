@@ -326,8 +326,10 @@ type MaterialSupportMatrix = Readonly<
  * per-triangle lanes (RGBA8 baseColor in bvhIndex.w, u8 rough/metal/ior lanes,
  * 4-bit transmission, scalar-alpha cutout bit, pre-baked Beer-Lambert tint) +
  * f32 HDR emissive Le. The texture-atlas path samples readable uv0/uv1
- * baseColorMap, normal/ORM/AO/alpha/emissive/transmission maps, and a
- * camera-visible lightMap in shade; other TextureRefs are not sampled.
+ * baseColorMap, normal/ORM/AO/alpha/emissive/transmission/thickness/light
+ * maps plus specular/clearcoat/sheen/anisotropy/iridescence/bump map
+ * families; the approximate rows below reflect compact GI/reservoir semantics,
+ * not dropped TextureRefs.
  * Everything not consumed is warned once per setScene via
  * `walkaround-hybrid.unconsumed-material-fields`
  * (restir/consumedMaterialFields.ts allowlist — this matrix mirrors it exactly:

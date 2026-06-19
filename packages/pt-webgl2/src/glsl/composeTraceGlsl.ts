@@ -920,14 +920,18 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 								bdptEyePdfRev[ bdptEyeDepth ] = bdptPrevScatterPdf;
 								bdptEyeSpec[ bdptEyeDepth ] = bdptEyeIsSpec;
 							}
-							// Skip the primary hit: an explicit connection there double-counts
-							// with the unidirectional NEE above (fork !state.firstRay).
-							if ( ! state.firstRay && bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
-								vec3 throughputRgbBdpt = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
-								for ( int bdptLvi = 0; bdptLvi < uBdptMaxLightBounces; bdptLvi ++ ) {
-									pc_fragColor.rgb += evaluateBdptConnection(
-										hitPoint,
-										surf.normal,
+								// Skip the primary hit: an explicit connection there double-counts
+								// with the unidirectional NEE above (fork !state.firstRay).
+								if ( ! state.firstRay && bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
+									vec3 throughputRgbBdpt = wavelengthToRGB( state.wavelength, state.throughput, state.wavelengthPdf );
+									// bdptLvi=0 is the emitter endpoint, which matches the same
+									// per-bounce direct-light strategy already estimated by NEE.
+									// Start at the first scattered light vertex so the safe
+									// maxLightBounces=1 default remains radiometrically neutral.
+									for ( int bdptLvi = 1; bdptLvi < uBdptMaxLightBounces; bdptLvi ++ ) {
+										pc_fragColor.rgb += evaluateBdptConnection(
+											hitPoint,
+											surf.normal,
 										- ray.direction,    // worldWo at eye vertex
 										throughputRgbBdpt,
 										surf,
