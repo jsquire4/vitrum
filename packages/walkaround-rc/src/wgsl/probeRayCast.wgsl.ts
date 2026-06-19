@@ -492,6 +492,23 @@ fn rcSampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) ->
   return rcSampleMaterialAtlasRawAtOffset(triIndex, slot * 2u, uv0, uv1);
 }
 
+fn rcSampleSurfaceEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3f {
+  let uvs = rcHitMaterialUvs(hit);
+  if (uvs.valid == 0u) {
+    return scalarEmission;
+  }
+  let texel = rcSampleMaterialAtlasRawAtOffset(
+    hit.indices.w,
+    RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
+    uvs.uv0,
+    uvs.uv1,
+  );
+  if (texel.x < 0.0) {
+    return scalarEmission;
+  }
+  return scalarEmission * texel.rgb;
+}
+
 fn rcMaterialMapChannel(v: vec4f, channel: u32) -> f32 {
   if (channel == 1u) { return v.g; }
   if (channel == 2u) { return v.b; }
@@ -1365,7 +1382,7 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     // A7 (2026-06-10): point/spot analytic lights (fixtures). lightCount==0 ⇒ no-op.
     let pointSpotLights = evalRCPointSpotLights(hitPos, n, wo, probeMat, normalBias, triEps);
 
-    let emissive = matEmissive;
+    let emissive = rcSampleSurfaceEmissiveMap(hit, matEmissive);
 
     var transContrib = vec3f(0.0);
     if (mat.transmission > 0.5) {

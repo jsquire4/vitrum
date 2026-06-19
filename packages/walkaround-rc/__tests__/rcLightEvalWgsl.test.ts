@@ -186,4 +186,17 @@ describe('RC light-eval WGSL contract', () => {
     expect(emitterNee).toContain('let Le = rcSampleEmitterLeAtBary(e, localBary, e.Le);');
     expect(emitterNee).toContain('Lo = Lo + response * Le * G * e.area * shadowT;');
   });
+
+  it('samples emissive maps for RC direct probe-hit surface emission', () => {
+    const surfaceEmission = functionBody(PROBE_RAY_CAST_WGSL, 'rcSampleSurfaceEmissiveMap');
+    const probeKernel = functionBody(PROBE_RAY_CAST_WGSL, 'probeRayCastKernel');
+
+    expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;');
+    expect(surfaceEmission).toContain('let uvs = rcHitMaterialUvs(hit);');
+    expect(surfaceEmission).toContain('RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET');
+    expect(surfaceEmission).toContain('return scalarEmission * texel.rgb;');
+    expect(probeKernel).toContain('let matEmissive = mat.emissive;');
+    expect(probeKernel).toContain('let emissive = rcSampleSurfaceEmissiveMap(hit, matEmissive);');
+    expect(probeKernel).not.toContain('let emissive = matEmissive;');
+  });
 });

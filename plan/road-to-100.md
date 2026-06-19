@@ -1121,7 +1121,7 @@ shade/ReSTIR material scoring.
 |------|------|---------|
 | Pack alphaMode + cutoff | ✅ CODE CLOSED for scalar cutout + alpha-map metadata: `packingHelpers.ts` bit 2 in `bvh_material`; `materialTextureAtlas.ts` stores alpha mode/opacity/cutoff metadata; tests in `roughMetalPacking.test.ts` and `materialTextureAtlas.test.ts` | Fractional blend remains approximate, but no longer fully opaque |
 | Shade discard | ✅ CODE CLOSED as traversal discard: `materialAtlas.wgsl.ts` exposes both stochastic cutout (`traceSceneFirstHitAlphaMaskTextured`) and opaque-pass (`traceSceneFirstHitAlphaMaskTexturedOpaqueOnly`) first-hit helpers. Shade, ReSTIR-DI, temporal/spatial primary casts, default ReSTIR-GI, and NRC-GI now use the opaque-only helper for alpha-blend surfaces, while alpha-mask cutout still happens before reservoir writes. | Fractional blend is intentionally OIT-owned camera composition, not a stochastic reservoir vertex; true transparent transport remains a separate promotion target. |
-| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, composites over `combinedDenoisedTexture`, shades direct sun plus analytic point/spot and four-sample fixed-stratified finite mesh emitters through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, uses a deterministic five-tap material-lobe estimate for camera-visible sky/environment lighting across HDRI-backed and no-HDRI scalar/procedural sky scenes, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | First-hit light-map/emissive terms remain camera-visible approximations; direct sun/point/spot/finite-emitter shadows now use alpha-aware deterministic transmittance, ReSTIR/GI reservoirs use opaque-only first-hit predicates, shade/ReSTIR/GI shadow predicates evaluate texture-alpha blockers as binary/transmittance visibility, and DDGI probe direct sun/point/mesh-emitter visibility now applies atlas-backed alpha shadow transmittance. Transparent layers still are not true ReSTIR/GI transport participants until validated separately |
+| Composite blend | ✅ CODE CLOSED/approximate: `transparentOit.wgsl.ts` front-to-back ray-walks fractional blend layers, skips effectively invisible blend layers (`coverage <= 0.001`) so deeper transparent layers can still composite, composites over `combinedDenoisedTexture`, shades direct sun plus analytic point/spot and four-sample fixed-stratified finite mesh emitters through the material-payload GGX/clearcoat/sheen/aniso/iridescence BRDF, uses a deterministic five-tap material-lobe estimate for camera-visible sky/environment lighting across HDRI-backed and no-HDRI scalar/procedural sky scenes, writes `transparentCompositeTexture`, and `TemporalAccumPass` consumes that output | First-hit light-map/emissive terms remain camera-visible approximations; direct sun/point/spot/finite-emitter shadows now use alpha-aware deterministic transmittance, ReSTIR/GI reservoirs use opaque-only first-hit predicates, shade/ReSTIR/GI shadow predicates evaluate texture-alpha blockers as binary/transmittance visibility, and DDGI probe direct sun/point/mesh-emitter visibility now applies atlas-backed alpha shadow transmittance. Transparent layers still are not true ReSTIR/GI transport participants until validated separately |
 | ~~`alphaMap`~~ | ✅ CODE CLOSED/approximate: readable alpha maps are linear atlas layers with per-map UV, transform, wrap, and alphaMode/opacity/cutoff metadata. Mask uses `opacity * baseColorMap.a * alphaMap.r < alphaCutoff`; blend coverage feeds the transparent-OIT pass for camera-visible composition and direct sun/point/spot/finite-emitter shadow transmittance, DDGI probe direct-light shadow transmittance, and `traceSceneAnyAlphaMaskTextured` evaluates atlas coverage for shade/ReSTIR-DI/ReSTIR-GI/NRC/GRIS shadow visibility. Transparent GI/ReSTIR transport participation remains approximate. | Keep warning until transparent GI/ReSTIR promotion lands |
 
 #### 3D — Texture atlas (non-optional for walkaround material 100%)
@@ -1198,8 +1198,12 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   use them to steer/tint the reflected-SH complement with bounded lobe weights;
   RC probe-cast sun/emitter/point/spot terms now sample and consume clearcoat,
   clearcoat-normal, sheen, anisotropy, and iridescence in its compact direct BRDF
-  response. These rows remain `approximate` pending furnace/GPU A/B promotion,
-  not because the fields are dropped. 2026-06-16 ReGIR follow-up:
+  response. 2026-06-19 RC emissive follow-up: ordinary RC probe hits now sample
+  `RC_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET` through hit UV0/UV1 and modulate scalar
+  `mat.emissive` before adding surface emission, matching DDGI's direct
+  probe-hit emissive-map path and pinning it separately from emitter NEE in
+  `rcLightEvalWgsl.test.ts`. These rows remain `approximate` pending furnace/GPU
+  A/B promotion, not because the fields are dropped. 2026-06-16 ReGIR follow-up:
   the grid-build WRS target now uses the chosen packed light-tree leaf
   importance (`treeInput.powers`, AABB, and cone term) for `qHat`, so mapped
   material-backed micro-emitters no longer fall back to scalar `EmitterTri.Le`
@@ -1211,7 +1215,7 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   `walkaround-hybrid.emissive-map-texel-pdf-approximation` runtime warning for
   non-glTF hosts. These paths still do not build full
   texel-alias emitter PDFs; analytic/extra emitter mapped payloads and
-  non-NEE GI/DDGI emission remain approximate,
+  non-direct-probe-hit GI emission remain approximate,
 GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
 transparent blend now has camera-visible OIT composition with direct sun plus

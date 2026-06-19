@@ -74,4 +74,15 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('ggxBrdf');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('emitterLeAtXi');
   });
+
+  it('continues past zero-coverage blend layers before compositing fractional layers', () => {
+    const zeroCoverage = TRANSPARENT_OIT_WGSL.indexOf('if (alpha.mode == 2u && alpha.coverage <= 0.001)');
+    const fractional = TRANSPARENT_OIT_WGSL.indexOf('if (alpha.mode == 2u && alpha.coverage < 0.999)');
+    expect(zeroCoverage).toBeGreaterThanOrEqual(0);
+    expect(fractional).toBeGreaterThan(zeroCoverage);
+    const zeroCoverageBlock = TRANSPARENT_OIT_WGSL.slice(zeroCoverage, fractional);
+    expect(zeroCoverageBlock).toContain('traveled = traveled + hit.dist + step;');
+    expect(zeroCoverageBlock).toContain('walkRay.origin = primaryRay.origin + primaryRay.direction * traveled;');
+    expect(zeroCoverageBlock).toContain('continue;');
+  });
 });

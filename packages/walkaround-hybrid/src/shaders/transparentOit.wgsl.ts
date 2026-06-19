@@ -464,7 +464,13 @@ fn transparentOitMain(@builtin(global_invocation_id) gid: vec3u) {
       continue;
     }
 
-    if (alpha.mode == 2u && alpha.coverage > 0.001 && alpha.coverage < 0.999) {
+    if (alpha.mode == 2u && alpha.coverage <= 0.001) {
+      traveled = traveled + hit.dist + step;
+      walkRay.origin = primaryRay.origin + primaryRay.direction * traveled;
+      continue;
+    }
+
+    if (alpha.mode == 2u && alpha.coverage < 0.999) {
       let a = clamp(alpha.coverage, 0.0, 1.0);
       let hitPos = walkRay.origin + walkRay.direction * hit.dist;
       let layerRadiance = oitLayerRadiance(hit, hitPos, primaryRay.direction, word);
