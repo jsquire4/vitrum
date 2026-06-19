@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { EngineWarning } from '@vitrum/core';
 import { HybridEngine, type HybridEngineOptions } from '../HybridEngine.js';
 import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
@@ -114,12 +115,31 @@ describe('HybridEngine nrcEnabled — gate storage (full tier)', () => {
 
 describe('HybridEngine tier:lite — forces merged BVH', () => {
   it('forces bvhMode merged even when the host requested tlas', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
     const engine = new HybridEngine(baseOpts({
       tier: 'lite',
       extensions: { 'walkaround-hybrid': { bvhMode: 'tlas' } },
+      onWarning: (warning) => structured.push(warning),
     }));
     // The lite path overrides any host bvhMode to 'merged' (drops TLAS buffers).
     expect(cfg(engine).restirBvhModeOverride).toBe('merged');
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'walkaround-hybrid.lite-bvh-mode-overridden',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'createWalkaroundEngine_Hybrid',
+        details: expect.objectContaining({
+          tier: 'lite',
+          requestedBvhMode: 'tlas',
+          effectiveBvhMode: 'merged',
+          fallback: 'merged-bvh',
+        }),
+      }),
+    ]));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("tier:'lite' overrides bvhMode:'tlas'"));
+    warn.mockRestore();
   });
 
   it('forces bvhMode merged when no host bvhMode was set', () => {

@@ -6,12 +6,14 @@
  * Contains:
  *   - {@link ParsedHybridEngineConfig} — the immutable derived-config record type.
  *   - {@link validateHybridEngineOptions} — pure throws (lite/neural/OIDN/denoiser guards).
- *   - {@link deriveHybridEngineConfig} — pure defaulting into the derived record.
+ *   - {@link deriveHybridEngineConfig} — defaulting into the derived record plus construction diagnostics.
  *   - {@link parseHybridEngineOptions} — thin orchestrator over the two halves.
  *
- * No `this` dependency, no GPU side effects. All behaviour-preserving.
+ * No `this` dependency, no GPU side effects. Construction warnings preserve the
+ * historical console output and also route through host `onWarning` when supplied.
  */
 
+import type { EngineWarning } from '@vitrum/core';
 import type { HybridEngineOptions } from './HybridEngineOptions.js';
 import { VALID_DENOISERS } from './HybridEngineOptions.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/constants.js';
@@ -26,9 +28,38 @@ import { PPG_MIS_ALPHA } from './ppg/ppgConstants.js';
 /** Default per-frame target interval (~60 FPS soft-cap). */
 const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
 
+function emitConfigWarning(opts: HybridEngineOptions, warning: EngineWarning): void {
+  console.warn(warning.message);
+  if (opts.onWarning == null) return;
+  try {
+    opts.onWarning(warning);
+  } catch {
+    // Host warning callbacks must not break construction-time option parsing.
+  }
+}
+
+function warnLiteBvhModeOverride(opts: HybridEngineOptions): void {
+  emitConfigWarning(opts, {
+    code: 'walkaround-hybrid.lite-bvh-mode-overridden',
+    backend: 'walkaround-hybrid',
+    phase: 'construction',
+    method: 'createWalkaroundEngine_Hybrid',
+    message:
+      `[HybridEngine] tier:'lite' overrides bvhMode:'tlas' → 'merged' ` +
+      `(TLAS scene buffers exceed the lite resource budget). Instanced/` +
+      `multi-mesh scene fidelity is reduced. Use tier:'full' for TLAS.`,
+    details: {
+      tier: 'lite',
+      requestedBvhMode: 'tlas',
+      effectiveBvhMode: 'merged',
+      fallback: 'merged-bvh',
+    },
+  });
+}
+
 /**
- * The construction-time-immutable config the engine derives PURELY from its
- * options — no `this` dependency, no GPU side effects. Extracting the ~80 LOC
+ * The construction-time-immutable config the engine derives from its options —
+ * no `this` dependency, no GPU side effects. Extracting the ~80 LOC
  * of defaulting + validation that produced these out of the constructor (WD
  * decomposition sweep) keeps the constructor focused on object wiring (DDGI /
  * RC subsystem creation, capabilities, init coordinator, debug surface) that
@@ -235,11 +266,12 @@ export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
 }
 
 /**
- * Pure defaulting of `HybridEngineOptions` into the immutable derived config,
- * given an already-resolved quality `preset`. ASSUMES the options have already
+ * Defaulting of `HybridEngineOptions` into the immutable derived config, given
+ * an already-resolved quality `preset`. ASSUMES the options have already
  * passed {@link validateHybridEngineOptions} (it does not re-throw the
  * validation `TypeError`s). Behaviour-preserving: every field is defaulted
- * exactly as the pre-Theme-H inline path produced it.
+ * exactly as the pre-Theme-H inline path produced it. Construction diagnostics
+ * are emitted here because lite-tier bvh-mode coercion is resolved here.
  *
  * @param preset resolved {@link resolveQualityPreset} output for the engine's
  *   effective quality tier (the caller resolves the tier so the lite-biased
@@ -275,11 +307,7 @@ export function deriveHybridEngineConfig(
     // host knows instanced-scene fidelity is reduced on this weak adapter.
     restirBvhModeOverride: isLite
       ? (whExt?.bvhMode === 'tlas'
-          ? (console.warn(
-              `[HybridEngine] tier:'lite' overrides bvhMode:'tlas' → 'merged' ` +
-              `(TLAS scene buffers exceed the lite resource budget). Instanced/` +
-              `multi-mesh scene fidelity is reduced. Use tier:'full' for TLAS.`,
-            ), 'merged')
+          ? (warnLiteBvhModeOverride(opts), 'merged')
           : 'merged')
       : whExt?.bvhMode,
     // Precedence: explicit opts → preset → engine default (~60 FPS cap).
@@ -383,8 +411,9 @@ export function deriveHybridEngineConfig(
  *
  * The quality-tier resolution (`opts.qualityTier ?? (isLite ? 'medium' :
  * 'ultra')`) lives HERE — between the throws and the derive — so the
- * lite-biased default + explicit override exist in exactly one place. Pure
- * (no `this`, no GPU). Behaviour-preserving over the pre-Theme-H inline path:
+ * lite-biased default + explicit override exist in exactly one place. It has no
+ * `this` or GPU dependency; construction diagnostics may emit through the host
+ * warning sink. Behaviour-preserving over the pre-Theme-H inline path:
  * same throws in the same order, same derived config. See
  * {@link ParsedHybridEngineConfig}.
  */

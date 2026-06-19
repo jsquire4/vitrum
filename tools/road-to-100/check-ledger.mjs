@@ -269,6 +269,31 @@ for (const needle of [
   }
 }
 
+const hybridEngineConfig = await readText("packages/walkaround-hybrid/src/HybridEngineConfig.ts");
+for (const needle of [
+  "function warnLiteBvhModeOverride",
+  "walkaround-hybrid.lite-bvh-mode-overridden",
+  "requestedBvhMode: 'tlas'",
+  "effectiveBvhMode: 'merged'",
+  "opts.onWarning(warning)",
+]) {
+  if (!hybridEngineConfig.includes(needle)) {
+    fail(`HybridEngineConfig must retain structured lite-tier bvh-mode override warning: ${needle}`);
+  }
+}
+
+const hybridLiteTierTest = await readText("packages/walkaround-hybrid/src/__tests__/hybridLiteTier.test.ts");
+for (const needle of [
+  "walkaround-hybrid.lite-bvh-mode-overridden",
+  "requestedBvhMode: 'tlas'",
+  "effectiveBvhMode: 'merged'",
+  "fallback: 'merged-bvh'",
+]) {
+  if (!hybridLiteTierTest.includes(needle)) {
+    fail(`hybrid lite-tier tests must pin structured bvh-mode override warning: ${needle}`);
+  }
+}
+
 const hybridFrameOrchestrator = await readText("packages/walkaround-hybrid/src/HybridEngineFrameOrchestrator.ts");
 for (const needle of [
   "deps.subsystems.rc.dispatchFrame({",

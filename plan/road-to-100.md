@@ -228,6 +228,11 @@
 > whose fields are not recognized still no-op for host pass-through compatibility
 > but now emit `walkaround-hybrid.unknown-primitive-patch-fields` with exact
 > primitive id and field list.
+> Same-day lite-tier diagnostic follow-up: `tier:'lite'` overriding
+> `extensions['walkaround-hybrid'].bvhMode:'tlas'` now preserves the historical
+> console warning and also emits structured
+> `walkaround-hybrid.lite-bvh-mode-overridden` through the host `onWarning`
+> callback with requested/effective BVH mode details.
 > Same-day PT runtime-warning follow-up: pt-webgl2 and pt-webgpu `setScene()`
 > unsupported-material/displacement warnings now retain the aggregate `fields`
 > list while also reporting exact `primitiveIds` plus per-primitive
