@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { HdriEnvironment, NoneEnvironment, ProceduralSkyEnvironment } from '@vitrum/core';
+import type { EngineWarning, HdriEnvironment, NoneEnvironment, ProceduralSkyEnvironment } from '@vitrum/core';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 
 const luminance = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
@@ -46,6 +46,75 @@ describe('buildEquirectInfo', () => {
     expect(out.map).toBeNull();
     expect(out.marginal).toBeNull();
     expect(out.conditional).toBeNull();
+  });
+
+  it('preserves malformed DataTexture-shaped HDRI dimensions in structured diagnostics', () => {
+    const warnings: EngineWarning[] = [];
+    const out = buildEquirectInfo({
+      kind: 'hdri',
+      hdri: {
+        image: {
+          width: 2,
+          height: 1,
+          data: new Float32Array([1]),
+        },
+      },
+    }, {
+      onWarning: (warning) => warnings.push(warning),
+    });
+
+    expect(out.map).toBeNull();
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'pt-webgl2.hdri-unreadable',
+      details: expect.objectContaining({
+        width: 2,
+        height: 1,
+        sourceType: '[object Float32Array]',
+      }),
+    }));
+  });
+
+  it('accepts DataTexture-shaped HDRI handles with explicit channel hints', () => {
+    const out = buildEquirectInfo({
+      kind: 'hdri',
+      hdri: {
+        image: {
+          width: 2,
+          height: 1,
+          data: new Float32Array([
+            1, 0, 0, 1,
+            0, 1, 0, 1,
+          ]),
+        },
+        __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+      },
+    });
+
+    expect(out.map).not.toBeNull();
+    expect(out.map!.width).toBe(2);
+    expect(out.map!.height).toBe(1);
+    expect(out.map!.data[0]).toBeCloseTo(1);
+    expect(out.map!.data[4]).toBeCloseTo(0);
+    expect(out.map!.data[5]).toBeCloseTo(1);
+    expect(out.totalSum).toBeGreaterThan(0);
+  });
+
+  it('normalizes hinted uint8 sRGB HDRI handles before building CDFs', () => {
+    const out = buildEquirectInfo({
+      kind: 'hdri',
+      hdri: {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([128, 255, 0, 255]),
+        __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'srgb' },
+      },
+    });
+
+    expect(out.map).not.toBeNull();
+    expect(out.map!.data[0]).toBeCloseTo(0.21586, 4);
+    expect(out.map!.data[1]).toBeCloseTo(1);
+    expect(out.map!.data[2]).toBeCloseTo(0);
+    expect(out.totalSum).toBeGreaterThan(0);
   });
 
   const env = tinyHdri();

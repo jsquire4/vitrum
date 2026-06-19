@@ -1,5 +1,5 @@
 import type { Scene } from '@vitrum/core';
-import { bakePreethamSkyEquirect, luminance } from '@vitrum/shared-samplers';
+import { bakePreethamSkyEquirect, luminance, readEnvironmentMapPixels } from '@vitrum/shared-samplers';
 
 // ---------------------------------------------------------------------------
 // Preetham analytic daylight model
@@ -165,39 +165,37 @@ export function environmentParams(scene: Scene): EnvironmentParams {
   if (scene.environment.kind === 'procedural-sky') {
     return buildProceduralSkyEnvironmentParams(scene.environment);
   }
-  type HdriLike = { width?: number; height?: number; data?: ArrayLike<number> };
-  const hdri = scene.environment.hdri as HdriLike;
+  const hdri = readEnvironmentMapPixels(scene.environment.hdri);
   const width = Number(hdri?.width ?? 0);
   const height = Number(hdri?.height ?? 0);
   const data = hdri?.data;
   const pixelCount = width * height;
   const hasRgb =
+    hdri != null &&
     pixelCount > 0 &&
     data != null &&
     typeof data.length === 'number' &&
-    data.length >= pixelCount * 3;
+    data.length >= pixelCount * 4;
   if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 && hasRgb) {
-    // Detect whether the caller provided RGBA (stride 4) or RGB (stride 3) data.
-    // A w·h·4-length buffer passes the >= w·h·3 gate but must be decoded at
-    // stride 4 or every pixel after the first will read from the wrong offset.
-    const isRgba = data.length >= pixelCount * 4;
-    const stride = isRgba ? 4 : 3;
+    // Shared handle decoding normalizes raw/DataTexture-shaped RGB/RGBA
+    // payloads into RGBA linear floats before this packer builds the HDRI CDF.
+    const isImplicitRgba = hdri.sourceChannels === 4 && !hdri.explicitChannels;
     // Warn once on ambiguous / unexpected RGBA input so the host is aware of the
     // implicit stride detection (there is no authoritative flag in the scene API).
     const warnings: string[] = [];
-    if (isRgba) {
+    if (isImplicitRgba) {
       warnings.push(
         '[vitrum/pt-webgpu] HDRI data.length matches a w×h×4 RGBA layout; ' +
-          'decoding at stride 4. Pass a w×h×3 RGB array to suppress this warning.',
+          'decoding at stride 4. Pass a w×h×3 RGB array or __vitrum_hint__.channels to suppress this warning.',
       );
     }
     const texels = new Float32Array(pixelCount * 4);
     const cdf = new Float32Array(pixelCount + 1);
     let totalWeight = 0;
     for (let i = 0; i < pixelCount; i += 1) {
-      const r = Number(data[i * stride] ?? 0);
-      const g = Number(data[i * stride + 1] ?? 0);
-      const b = Number(data[i * stride + 2] ?? 0);
+      const r = Number(data[i * 4] ?? 0);
+      const g = Number(data[i * 4 + 1] ?? 0);
+      const b = Number(data[i * 4 + 2] ?? 0);
       texels[i * 4] = r;
       texels[i * 4 + 1] = g;
       texels[i * 4 + 2] = b;

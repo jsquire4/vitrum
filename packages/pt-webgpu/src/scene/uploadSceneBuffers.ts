@@ -553,9 +553,15 @@ function hdriHandleDiagnostics(scene: Scene): Record<string, unknown> {
   const handle = scene.environment.hdri;
   const record =
     handle != null && typeof handle === 'object'
-      ? handle as { width?: unknown; height?: unknown; data?: unknown; source?: unknown }
+      ? handle as {
+          width?: unknown;
+          height?: unknown;
+          data?: unknown;
+          image?: { width?: unknown; height?: unknown; data?: unknown };
+          source?: unknown;
+        }
       : undefined;
-  const data = record?.data;
+  const data = record?.data ?? record?.image?.data;
   const dataLength =
     data != null && typeof data === 'object' && 'length' in data
       ? Number((data as { length?: unknown }).length)
@@ -573,8 +579,8 @@ function hdriHandleDiagnostics(scene: Scene): Record<string, unknown> {
         ? data.constructor.name
         : typeof data;
   return {
-    width: record?.width,
-    height: record?.height,
+    width: record?.width ?? record?.image?.width,
+    height: record?.height ?? record?.image?.height,
     dataLength: Number.isFinite(dataLength) ? dataLength : undefined,
     handleType,
     dataType,
@@ -598,7 +604,8 @@ function structuredEnvironmentWarnings(
       : 'pt-webgpu.hdri-zero-luminance';
     const message = isUnreadable
       ? '[vitrum/pt-webgpu] HDRI environment is present but has no usable CPU pixel data; ' +
-        'pt-webgpu requires a raw {width, height, data} RGB/RGBA payload and will use a black no-environment fallback.'
+        'pt-webgpu requires a raw {width, height, data} or DataTexture-shaped {image:{width,height,data}} RGB/RGBA payload ' +
+        'and will use a black no-environment fallback.'
       : '[vitrum/pt-webgpu] HDRI environment has zero total luminance; using black no-environment fallback.';
     structured.push({
       code,

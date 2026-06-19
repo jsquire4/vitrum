@@ -68,6 +68,58 @@ describe('environmentPacking — RGBA stride detection', () => {
     // Should emit the RGBA stride warning
     expect(p.warnings.some((w) => w.includes('RGBA'))).toBe(true);
   });
+
+  it('decodes DataTexture-shaped HDRI handles with explicit channel hints', () => {
+    const scene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: {
+        kind: 'hdri',
+        hdri: {
+          image: {
+            width: 2,
+            height: 1,
+            data: new Float32Array([
+              1, 0, 0, 1,
+              0, 1, 0, 1,
+            ]),
+          },
+          __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+        },
+      },
+    };
+
+    const p = environmentParams(scene);
+    expect(p.hasHdri).toBe(true);
+    expect(p.hdriWidth).toBe(2);
+    expect(p.hdriHeight).toBe(1);
+    expect(p.hdriTexels[0]).toBeCloseTo(1);
+    expect(p.hdriTexels[4]).toBeCloseTo(0);
+    expect(p.hdriTexels[5]).toBeCloseTo(1);
+    expect(p.warnings.some((w) => w.includes('RGBA'))).toBe(false);
+  });
+
+  it('normalizes hinted uint8 sRGB HDRI handles before CDF construction', () => {
+    const scene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: {
+        kind: 'hdri',
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Uint8Array([128, 255, 0, 255]),
+          __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'srgb' },
+        },
+      },
+    };
+
+    const p = environmentParams(scene);
+    expect(p.hasHdri).toBe(true);
+    expect(p.hdriTexels[0]).toBeCloseTo(0.21586, 4);
+    expect(p.hdriTexels[1]).toBeCloseTo(1);
+    expect(p.hdriTexels[2]).toBeCloseTo(0);
+  });
 });
 
 describe('environmentPacking — all-black HDRI message', () => {

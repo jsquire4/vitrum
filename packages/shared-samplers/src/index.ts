@@ -37,6 +37,12 @@ export { luminance, luminanceAt } from './luminance.js';
 export { haltonSO3AxisAngleFromFrameIndex } from './haltonSo3.js';
 export { bakePreethamSkyEquirect } from './preethamSky.js';
 export type { PreethamSkyBake, PreethamSkyBakeOptions } from './preethamSky.js';
+export { readEnvironmentMapPixels } from './environmentMapPixels.js';
+export type {
+  EnvironmentMapColorSpace,
+  EnvironmentMapHandleHint,
+  EnvironmentMapPixels,
+} from './environmentMapPixels.js';
 export {
   buildLightTree,
   packLightTreeForGPU,

@@ -20,24 +20,13 @@
 // match the fork so the GLSL `equirect_sampling` decoder behaves identically.
 
 import type { EngineWarning, SceneEnvironment } from '@vitrum/core';
-import { bakePreethamSkyEquirect } from '@vitrum/shared-samplers';
+import { bakePreethamSkyEquirect, readEnvironmentMapPixels } from '@vitrum/shared-samplers';
 import type { EnvTextureData } from './sceneTextures.js';
-
-/** The opaque @vitrum/core `EnvironmentMapRef` is, for the HDRI path, a raw
- *  equirect payload: row-major **RGB** float pixels (3 floats/pixel),
- *  `data.length >= width * height * 3`. Matches the pt-webgpu interpretation
- *  (`environmentPacking.ts:76`). */
-interface HdriPayload {
-  readonly width?: number;
-  readonly height?: number;
-  readonly data?: ArrayLike<number>;
-}
 
 interface EquirectSource {
   readonly width: number;
   readonly height: number;
   readonly data: ArrayLike<number> | undefined;
-  readonly channels: 3 | 4;
 }
 
 export interface EquirectInfoBuildOptions {
@@ -124,16 +113,27 @@ export function buildEquirectInfo(
       mieDirectionalG: env.mieDirectionalG,
       ...(env.intensity !== undefined ? { intensity: env.intensity } : {}),
     });
-    source = { width: baked.width, height: baked.height, data: baked.texels, channels: 4 };
+    source = { width: baked.width, height: baked.height, data: baked.texels };
   } else {
-    const hdri = env.hdri as HdriPayload;
-    hdriHandleForDiagnostic = hdri;
-    source = {
-      width: Number(hdri?.width ?? 0),
-      height: Number(hdri?.height ?? 0),
-      data: hdri?.data,
-      channels: 3,
-    };
+    hdriHandleForDiagnostic = env.hdri;
+    const raw = env.hdri as {
+      readonly width?: unknown;
+      readonly height?: unknown;
+      readonly data?: ArrayLike<number>;
+      readonly image?: {
+        readonly width?: unknown;
+        readonly height?: unknown;
+        readonly data?: ArrayLike<number>;
+      };
+    } | null;
+    const hdri = readEnvironmentMapPixels(env.hdri);
+    source = hdri == null
+      ? {
+          width: Number(raw?.width ?? raw?.image?.width ?? 0),
+          height: Number(raw?.height ?? raw?.image?.height ?? 0),
+          data: raw?.data ?? raw?.image?.data,
+        }
+      : { width: hdri.width, height: hdri.height, data: hdri.data };
   }
 
   const width = source.width;
@@ -147,7 +147,7 @@ export function buildEquirectInfo(
     height <= 0 ||
     src == null ||
     typeof src.length !== 'number' ||
-    src.length < width * height * source.channels
+    src.length < width * height * 4
   ) {
     // H7 (2026-06-09): warn explicitly so the host knows the HDRI was dropped.
     // Without this, a missing/incorrectly-shaped HDRI payload results in a
@@ -155,7 +155,7 @@ export function buildEquirectInfo(
     // confusion during host integration).
     const message =
       '[pt-webgl2] HDRI environment is present (kind="hdri") but has no usable CPU pixel data. ' +
-        'pt-webgl2 requires a raw {width, height, data} RGB float payload (or use the ' +
+        'pt-webgl2 requires a raw {width, height, data} or DataTexture-shaped {image:{width,height,data}} RGB/RGBA payload (or use the ' +
         'sceneFromThreeJS on-ramp with texturePayload:"raw"). ' +
         'The environment will be ignored (EMPTY_ENV fallback). ' +
         // eslint-disable-next-line @typescript-eslint/no-base-to-string -- diagnostic warning; [object Object] output is acceptable here
@@ -194,7 +194,7 @@ export function buildEquirectInfo(
     let cumulativeRowWeight = 0.0;
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
-      const base = i * source.channels;
+      const base = i * 4;
       const r = Number(src[base] ?? 0);
       const g = Number(src[base + 1] ?? 0);
       const b = Number(src[base + 2] ?? 0);
