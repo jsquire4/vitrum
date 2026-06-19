@@ -1286,25 +1286,14 @@ function materialIssueCommon(
   material: MaterialSpec,
   options: { readonly allowIridescence: boolean; readonly allowAnisotropy: boolean },
 ): PathReplayMaterialIssue | null {
-  if (material.alphaMode != null && material.alphaMode !== 'opaque') {
+  const alphaMode = material.alphaMode ?? 'opaque';
+  if (alphaMode !== 'opaque') {
     return {
       code: 'path-replay-unsupported-visibility',
-      message: `alphaMode "${material.alphaMode}" changes visibility/coverage`,
+      message: `alphaMode "${alphaMode}" changes visibility/coverage`,
       details: {
         field: 'alphaMode',
-        value: material.alphaMode,
-        finiteDifferenceReason: 'visibility',
-        affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
-      },
-    };
-  }
-  if (material.opacity != null && material.opacity < 1) {
-    return {
-      code: 'path-replay-unsupported-visibility',
-      message: 'opacity below 1 changes visibility/coverage',
-      details: {
-        field: 'opacity',
-        value: material.opacity,
+        value: alphaMode,
         finiteDifferenceReason: 'visibility',
         affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
       },

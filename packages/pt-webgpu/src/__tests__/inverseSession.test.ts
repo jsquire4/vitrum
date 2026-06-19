@@ -1904,6 +1904,37 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps opaque-material baseColor on path-replay when opacity is inert', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'opaque',
+                opacity: 0.25,
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.baseColor', kind: 'rgb' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it('keeps AO map intensity on path-replay through the local base-color chain factor', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -2395,7 +2426,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
 
   it.each([
     ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility', 'visibility'],
-    ['opacity', { opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
+    ['blend opacity', { alphaMode: 'blend' as const, opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport', 'transport'],
     ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
