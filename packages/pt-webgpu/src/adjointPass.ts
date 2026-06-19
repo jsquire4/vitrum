@@ -153,9 +153,11 @@ export class AdjointPass {
     // Emitter color/intensity params use record1.xyz = unfactored color and
     // record1.w = fixed intensity. Mapped mesh-area emitters recover their
     // readable emissive-map multiplier from meshAreaLightSourceFactorsBuffer, so
-    // zero authored color channels remain differentiable. emitterTargetMeta
-    // packs kind in the low 8 bits and range count in the upper bits (1 for
-    // scalar light streams).
+    // zero authored color channels remain differentiable. The same vec4 stores
+    // the explicit mesh-area owner slot in `.w`, so capped/power-sorted replay
+    // can scatter by owner instead of assuming a contiguous packed range.
+    // emitterTargetMeta packs kind in the low 8 bits and range count in the upper
+    // bits (1 for scalar light streams).
     // Lit BRDF fields leave payloads 0.
     // A Float32 view aliases the same buffer.
     const needsMeshAreaAdjointReplay = params.some((p) =>
@@ -456,11 +458,11 @@ function adjointEmitterTargetForScene(
       case 'mesh-area': {
         if (emitter.id !== id) break;
         const range = meshAreaEmitterAdjointRangeForScene(scene, emitter.id);
-        if (range == null || range.capped) return null;
+        if (range == null) return null;
         return {
           kind: ADJOINT_EMITTER_TARGET_MESH,
-          slot: range.start,
-          count: range.count,
+          slot: range.adjointEmitterSlot,
+          count: 1,
           color: emitter.color,
           intensity: emitter.intensity,
         };

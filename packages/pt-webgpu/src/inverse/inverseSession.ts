@@ -936,16 +936,6 @@ function pathReplayEmitterTargetIssue(
           details: { emitterKind: emitter.kind },
         };
       }
-      if (range.capped) {
-        return {
-          message:
-            'mesh-area emitter target is in a globally capped/reordered triangle stream and needs source-triangle PDF mapping first',
-          details: {
-            emitterKind: emitter.kind,
-            meshAreaTriangleCount: range.totalMeshAreaTriangles,
-          },
-        };
-      }
       const mappedEmissionIssue = meshAreaEmitterMappedEmissionIssue(scene, emitter, field);
       if (mappedEmissionIssue != null) return mappedEmissionIssue;
       return null;

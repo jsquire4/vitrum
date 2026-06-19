@@ -1140,22 +1140,24 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps capped mesh-area emitter targets on finite-difference because cap sorting breaks contiguous source ranges', () => {
+  it('keeps capped mesh-area emitter targets on path-replay through adjoint owner tags', async () => {
     const fake = makeFakeEngine();
-    const identity = asMat4([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]);
+    const triangleCount = MESH_AREA_LIGHT_TRI_CAP + 1;
+    const positions = new Float32Array(triangleCount * 9);
+    const normals = new Float32Array(triangleCount * 9);
+    for (let tri = 0; tri < triangleCount; tri += 1) {
+      const x = tri * 2;
+      const o = tri * 9;
+      positions.set([x, 0, 0, x + 1, 0, 0, x, 1, 0], o);
+      normals.set([0, 0, 1, 0, 0, 1, 0, 0, 1], o);
+    }
     fake.scene = {
       ...fake.scene,
       primitives: [{
-        kind: 'instanced-mesh',
+        kind: 'mesh',
         id: 'panel',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        instances: Array.from({ length: MESH_AREA_LIGHT_TRI_CAP + 1 }, () => identity),
+        positions,
+        normals,
         material: { baseColor: [0.2, 0.2, 0.2], roughness: 0.5, metallic: 0 },
       }],
       emitters: [{
@@ -1166,23 +1168,27 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         meshId: 'panel',
       }],
     };
+    let captured: AdjointGradientRequest | null = null;
     const hooks: InverseEngineHooks = {
       ...fake.hooks,
-      computeAdjointGradient: async () => new Float32Array(1),
+      computeAdjointGradient: async (req) => {
+        captured = req;
+        return new Float32Array([0.6]);
+      },
     };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [{ path: 'emitters.mesh-light.intensity', kind: 'scalar' }],
       method: 'path-replay',
     });
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-emitter',
-      path: 'emitters.mesh-light.intensity',
-      details: expect.objectContaining({
-        meshAreaTriangleCount: MESH_AREA_LIGHT_TRI_CAP + 1,
-      }),
-    }));
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    const result = await session.step();
+    expect(captured).not.toBeNull();
+    expect(captured!.params).toEqual([
+      { domain: 'emitters', id: 'mesh-light', field: 'intensity', offset: 0, length: 1 },
+    ]);
+    expect(result.gradient).toEqual([[expect.closeTo(0.6, 6)]]);
     session.dispose();
   });
 

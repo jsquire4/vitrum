@@ -96,6 +96,13 @@ type PackedMeshAreaTriangle = {
    * texel/quadrature factors for mapped emitters.
    */
   readonly sourceFactor: Vec3;
+  /**
+   * Explicit mesh-area emitter ordinal for inverse adjoint replay, or -1 for
+   * synthesized implicit emitters. Stored in the source-factor vec4 `.w` lane so
+   * capped/reordered triangle streams can still scatter gradients to the owning
+   * emitter without assuming contiguity.
+   */
+  readonly adjointEmitterSlot: number;
   /** Emitted-power proxy used by the NEE cap and light tree: luminance(Le) · area. */
   readonly power: number;
   /** SHADOW-01 — true ⟺ source mesh-area emitter set castShadow:false.
@@ -105,6 +112,7 @@ type PackedMeshAreaTriangle = {
 
 type MeshAreaTrianglePackOptions = {
   readonly includeZeroRadianceTriangles?: boolean;
+  readonly adjointEmitterSlot?: number;
 };
 
 /**
@@ -163,10 +171,17 @@ export interface MeshAreaEmitterAdjointRange {
   readonly totalMeshAreaTriangles: number;
   /**
    * True when `packEmitterArrays` will sort/drop triangles by area. In that case
-   * the explicit emitter's source triangles are no longer guaranteed to occupy
-   * the contiguous range reported above, so inverse replay must stay on FD.
+   * the explicit emitter's source triangles are no longer guaranteed to occupy the
+   * contiguous range reported above; adjoint replay uses `adjointEmitterSlot`
+   * owner tags instead of range contiguity for capped streams.
    */
   readonly capped: boolean;
+  /**
+   * Stable explicit mesh-area emitter ordinal used by adjoint replay owner tags.
+   * Unlike `start`, this remains valid after the global NEE stream is capped and
+   * power-sorted.
+   */
+  readonly adjointEmitterSlot: number;
 }
 
 function pushVec4(
@@ -585,6 +600,7 @@ function packMeshAreaTriangles(
           sourceFactor: sourceFactor == null
             ? [1, 1, 1]
             : [sourceFactor[0], sourceFactor[1], sourceFactor[2]],
+          adjointEmitterSlot: options.adjointEmitterSlot ?? -1,
           power: emittedLuminance * area,
           castShadowDisabled,
         });
@@ -734,7 +750,9 @@ export function meshAreaEmitterAdjointRangeForScene(
   let cursor = 0;
   let targetStart = -1;
   let targetCount = 0;
+  let targetAdjointEmitterSlot = -1;
   let found = false;
+  let explicitMeshAreaSlot = 0;
 
   for (const emitter of scene.emitters) {
     if (emitter.kind !== 'mesh-area') continue;
@@ -742,14 +760,16 @@ export function meshAreaEmitterAdjointRangeForScene(
       emitter,
       scene,
       warnings,
-      { includeZeroRadianceTriangles: true },
+      { includeZeroRadianceTriangles: true, adjointEmitterSlot: explicitMeshAreaSlot },
     ).length;
     if (emitter.id === emitterId) {
       found = true;
       targetStart = cursor;
       targetCount = count;
+      targetAdjointEmitterSlot = explicitMeshAreaSlot;
     }
     cursor += count;
+    explicitMeshAreaSlot += 1;
   }
 
   for (const synthetic of synthesizeImplicitEmitters(scene, undefined, warnings)) {
@@ -762,6 +782,7 @@ export function meshAreaEmitterAdjointRangeForScene(
     count: targetCount,
     totalMeshAreaTriangles: cursor,
     capped: cursor > MESH_AREA_LIGHT_TRI_CAP,
+    adjointEmitterSlot: targetAdjointEmitterSlot,
   };
 }
 
@@ -775,14 +796,16 @@ export interface PackedMeshAreaAdjointReplayArrays {
 export function packMeshAreaAdjointReplayArrays(scene: Scene): PackedMeshAreaAdjointReplayArrays {
   const warnings: string[] = [];
   const meshAreaTriangles: PackedMeshAreaTriangle[] = [];
+  let explicitMeshAreaSlot = 0;
   for (const emitter of scene.emitters) {
     if (emitter.kind !== 'mesh-area') continue;
     meshAreaTriangles.push(...packMeshAreaTriangles(
       emitter,
       scene,
       warnings,
-      { includeZeroRadianceTriangles: true },
+      { includeZeroRadianceTriangles: true, adjointEmitterSlot: explicitMeshAreaSlot },
     ));
+    explicitMeshAreaSlot += 1;
   }
 
   for (const synthetic of synthesizeImplicitEmitters(scene, undefined, warnings)) {
@@ -806,7 +829,7 @@ export function packMeshAreaAdjointReplayArrays(scene: Scene): PackedMeshAreaAdj
     pushVec4(meshAreaLights, tri.triB);
     pushVec4(meshAreaLights, tri.triC);
     pushVec4(meshAreaLights, tri.radiance, tri.castShadowDisabled ? 1 : 0);
-    pushVec4(meshAreaLightSourceFactors, tri.sourceFactor);
+    pushVec4(meshAreaLightSourceFactors, tri.sourceFactor, tri.adjointEmitterSlot + 1);
   }
   const meshAreaLightCount = cappedTriangles.length;
   return {

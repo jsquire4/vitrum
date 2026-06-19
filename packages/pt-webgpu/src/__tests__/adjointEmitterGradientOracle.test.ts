@@ -226,6 +226,7 @@ describe('path-replay adjoint emitter gradients — independent CPU oracle', () 
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(22) var<storage, read>       meshAreaLightSourceFactors');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dPackedRadiance_dColor = sourceFactor * emitterIntensity;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dPackedRadiance_dIntensity = sourceFactor * emitterColor;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sourceOwnerSlot = ownerToken - 1u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('packedRadiance / emitterColor');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('packedRadiance / emitterIntensity');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('if (dIrrMean.w <= 1e-6) { continue; }');

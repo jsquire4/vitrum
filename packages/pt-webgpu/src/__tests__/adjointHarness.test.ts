@@ -278,7 +278,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(22) var<storage, read>       meshAreaLightSourceFactors');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dPackedRadiance_dColor = sourceFactor * emitterIntensity;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dPackedRadiance_dIntensity = sourceFactor * emitterColor;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sourceFactor = meshAreaLightSourceFactors[mi].rgb;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let sourceRecord = meshAreaLightSourceFactors[mi];');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sourceFactor = sourceRecord.rgb;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sourceOwnerSlot = ownerToken - 1u;');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('packedRadiance / emitterColor');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('packedRadiance / emitterIntensity');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u`);

@@ -196,10 +196,10 @@ struct AdjointParams {
 // record1.w = fixed intensity; emitterTargetMeta packs target kind in the low
 // 8 bits and a contiguous range count in the upper bits. Mapped mesh-area
 // emitters read meshAreaLightSourceFactors, so zero authored color channels do
-// not require a packedRadiance/color quotient. Mesh-area emitter targets use
-// this only for uncapped explicit emitters whose packed triangles remain
-// contiguous; capped/reordered mesh lights and full stochastic sampling stay on
-// finite difference.
+// not require a packedRadiance/color quotient. Mesh-area source-factor w
+// stores an explicit owner slot (1-based, 0 = implicit/unowned), letting capped
+// or power-sorted mesh-light replay scatter to the owning emitter without
+// relying on packed triangle contiguity.
 @group(0) @binding(9) var<storage, read>       adjointParamDescs: array<vec4u>;
 // rect-area lights: per light {position, uAxis, vAxis, radiance} (4 vec4 stride).
 @group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
@@ -226,9 +226,10 @@ struct AdjointParams {
 // normalized CDF. Mirrors scene/uploadSceneBuffers.ts environment packing.
 @group(0) @binding(20) var<storage, read>       environmentMapTexels: array<vec4f>;
 @group(0) @binding(21) var<storage, read>       environmentMapCdf: array<f32>;
-// mesh-area source factors: per triangle {emissiveMapFactor.rgb, 0}.
-// Unmapped mesh-area lights store 1,1,1. This keeps emitter-color gradients
-// defined when an authored color channel is currently zero.
+// mesh-area source factors: per triangle {emissiveMapFactor.rgb, ownerSlot+1}.
+// Unmapped mesh-area lights store 1,1,1. ownerSlot=0 means implicit/unowned.
+// This keeps emitter-color gradients defined when an authored color channel is
+// currently zero and keeps capped/reordered explicit mesh emitters targetable.
 @group(0) @binding(22) var<storage, read>       meshAreaLightSourceFactors: array<vec4f>;
 // xyz = tangent, w = bitangent sign; mirrors the forward normal-map path.
 @group(0) @binding(23) var<storage, read>       meshTangents: array<vec4f>;
@@ -1989,8 +1990,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let c = meshAreaLights[mb + 2u].xyz;
       let mr = meshAreaLights[mb + 3u];
       var sourceFactor = vec3f(1.0);
+      var sourceOwnerSlot = 0xffffffffu;
       if (mi < arrayLength(&meshAreaLightSourceFactors)) {
-        sourceFactor = meshAreaLightSourceFactors[mi].rgb;
+        let sourceRecord = meshAreaLightSourceFactors[mi];
+        sourceFactor = sourceRecord.rgb;
+        let ownerToken = u32(max(sourceRecord.w, 0.0) + 0.5);
+        if (ownerToken > 0u) {
+          sourceOwnerSlot = ownerToken - 1u;
+        }
       }
       let r1 = rand_f32(&rng);
       let r2 = rand_f32(&rng);
@@ -2066,7 +2073,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         );
         scatterEmitterRadianceGradient(
           ${ADJOINT_EMITTER_TARGET_MESH}u,
-          mi,
+          sourceOwnerSlot,
           dLoss_dR * brdfValue * (nDotL * areaFactor),
           sourceFactor,
           invReplaySamples,

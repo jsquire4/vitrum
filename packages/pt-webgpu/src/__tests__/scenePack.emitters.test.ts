@@ -5,6 +5,7 @@ import {
   buildLightTreeInputForScene,
   defaultDirectionalAngularDiameter,
   meshAreaEmitterAdjointRangeForScene,
+  packMeshAreaAdjointReplayArrays,
   sortMeshAreaTrianglesForNeeCapForTests,
 } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
@@ -138,6 +139,7 @@ describe('buildPackedScene emitter + environment packing', () => {
         triC: [0, 10, 0],
         radiance: [0.01, 0.01, 0.01],
         sourceFactor: [1, 1, 1],
+        adjointEmitterSlot: -1,
         power: luminance(0.01, 0.01, 0.01) * 50,
         castShadowDisabled: false,
       },
@@ -147,6 +149,7 @@ describe('buildPackedScene emitter + environment packing', () => {
         triC: [0, 1, 0],
         radiance: [100, 100, 100],
         sourceFactor: [1, 1, 1],
+        adjointEmitterSlot: -1,
         power: luminance(100, 100, 100) * 0.5,
         castShadowDisabled: false,
       },
@@ -164,7 +167,52 @@ describe('buildPackedScene emitter + environment packing', () => {
       count: 2,
       totalMeshAreaTriangles: 2,
       capped: false,
+      adjointEmitterSlot: 0,
     });
+  });
+
+  it('tags adjoint replay mesh-area triangles with stable explicit emitter owners', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'quad-a',
+          positions: new Float32Array([
+            0, 0, 0,
+            1, 0, 0,
+            1, 1, 0,
+            0, 1, 0,
+          ]),
+          normals: new Float32Array([
+            0, 0, 1,
+            0, 0, 1,
+            0, 0, 1,
+            0, 0, 1,
+          ]),
+          indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+          material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0 },
+        },
+        {
+          kind: 'mesh',
+          id: 'tri-b',
+          positions: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0 },
+        },
+      ],
+      emitters: [
+        { kind: 'mesh-area', id: 'a', meshId: 'quad-a', color: [1, 1, 1], intensity: 1 },
+        { kind: 'mesh-area', id: 'b', meshId: 'tri-b', color: [1, 1, 1], intensity: 1 },
+      ],
+      environment: { kind: 'none' },
+    };
+
+    const replay = packMeshAreaAdjointReplayArrays(scene);
+
+    expect(replay.meshAreaLightCount).toBe(3);
+    expect(replay.meshAreaLightSourceFactorsData[3]).toBe(1);
+    expect(replay.meshAreaLightSourceFactorsData[7]).toBe(1);
+    expect(replay.meshAreaLightSourceFactorsData[11]).toBe(2);
   });
 
   it('subdivides implicit emissive-map mesh lights through the packed-scene path', () => {
