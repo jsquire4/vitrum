@@ -94,6 +94,10 @@ export interface BackendPromiseRecord {
   readonly supportedEnvironmentKinds: readonly SceneEnvironment['kind'][];
   readonly supportedAnalyticShapes: readonly AnalyticShape[];
   readonly presentationMode: FramePresentationMode;
+  /** Static backend promise surface for the backend's audited full-capability
+   *  profile. Runtime-selected compatibility tiers may return a narrower
+   *  `EngineCapabilities.supportDetails` object while keeping the same backend
+   *  id; hosts must use the live engine capabilities for per-instance routing. */
   readonly supportDetails: BackendSupportDetails;
   readonly methodPromises: BackendMethodPromises;
   readonly frameInputPromises: FrameInputPromises;

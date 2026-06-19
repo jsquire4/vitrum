@@ -121,7 +121,7 @@
     "verdict": "FINDING",
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
-      "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the ceiling emitter → brighter than Lambertian.",
+      "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the probe field; brightness vs Lambertian is scene-direction dependent.",
       "The diffuse control keeps the same baseColor as the metal arm; the measured delta isolates metallic/roughness behavior.",
       "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
       "Lavapipe SPP=16; metallic-mirror at low SPP has high variance and can legitimately reflect a darker direction than the diffuse control.",

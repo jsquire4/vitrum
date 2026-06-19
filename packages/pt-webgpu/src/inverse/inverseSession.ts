@@ -289,7 +289,6 @@ const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'scatteringCoefficientRGB',
 ]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
-const PATH_REPLAY_NORMAL_ONLY_FIELDS = new Set<string>();
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -830,8 +829,7 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
 ): {
   readonly code:
     | 'path-replay-unsupported-transport'
-    | 'path-replay-unsupported-visibility'
-    | 'path-replay-unsupported-normal';
+    | 'path-replay-unsupported-visibility';
   readonly message: string;
   readonly details: Record<string, string | readonly string[]>;
 } | null {
@@ -856,18 +854,6 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
         field,
         finiteDifferenceReason: 'visibility',
         affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
-      },
-    };
-  }
-  if (PATH_REPLAY_NORMAL_ONLY_FIELDS.has(field)) {
-    return {
-      code: 'path-replay-unsupported-normal',
-      message:
-        'which changes shading normals that the scoped path-replay adjoint does not mirror yet',
-      details: {
-        field,
-        finiteDifferenceReason: 'normal',
-        affectedTerms: ['normal-map-frame', 'bump-gradient', 'clearcoat-normal-frame'],
       },
     };
   }

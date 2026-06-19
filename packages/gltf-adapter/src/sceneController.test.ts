@@ -226,6 +226,70 @@ function materialVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuff
   };
 }
 
+function materialVariantHighUvGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const packed = packF32([
+    [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    [0, 0, 1, 0, 0, 1],
+    [0.25, 0.25, 0.5, 0.25, 0.25, 0.5],
+  ]);
+  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  return {
+    buffers: new Map([
+      [0, packed.buffer],
+      [1, imageBytes.buffer],
+    ]),
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_materials_variants'],
+      extensionsRequired: ['KHR_materials_variants'],
+      extensions: {
+        KHR_materials_variants: {
+          variants: [{ name: 'uv2-textured' }],
+        },
+      },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0, TEXCOORD_0: 1, TEXCOORD_2: 2 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }],
+            },
+          },
+        }],
+      }],
+      materials: [
+        { name: 'base red', pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+        {
+          name: 'variant uv2 texture',
+          pbrMetallicRoughness: {
+            baseColorFactor: [1, 1, 1, 1],
+            baseColorTexture: { index: 0, texCoord: 2 },
+          },
+        },
+      ],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 3, mimeType: 'image/png' }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+        { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
+      bufferViews: [
+        ...packed.views,
+        { buffer: 1, byteOffset: 0, byteLength: imageBytes.byteLength },
+      ],
+      buffers: [
+        { byteLength: packed.buffer.byteLength },
+        { byteLength: imageBytes.byteLength },
+      ],
+    },
+  };
+}
+
 function identityMat4(): Float32Array {
   return new Float32Array([
     1, 0, 0, 0,
@@ -435,7 +499,7 @@ describe('GltfSceneController', () => {
     expect(primitive.instances[1]![13]).toBeCloseTo(3);
   });
 
-  it('switches KHR_materials_variants via material-only primitive patches', async () => {
+  it('switches KHR_materials_variants via primitive patches', async () => {
     const { gltf, buffers } = materialVariantGltf();
     const result = await gltfToScene(gltf, { buffers });
     const setScene = vi.fn();
@@ -469,6 +533,49 @@ describe('GltfSceneController', () => {
     expect((reset.primitivePatches[0]!.patch as { material: MaterialSpec }).material.baseColor)
       .toEqual([1, 0, 0]);
     expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
+  });
+
+  it('switches high-UV variant materials with matching uv1 patches and clears them on reset', async () => {
+    const { gltf, buffers } = materialVariantHighUvGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const updatePrimitive = vi.fn();
+    const controller = createGltfSceneController({ gltf, ...result });
+    const basePrimitive = controller.scene.primitives[0] as MeshPrimitive;
+
+    expect(basePrimitive.uv1).toBeUndefined();
+    expect(basePrimitive.material.baseColorMap).toBeUndefined();
+
+    const frame = controller.setVariant('uv2-textured', {
+      engine: { setScene: vi.fn(), updatePrimitive },
+    });
+
+    expect(frame.usedSetScene).toBe(false);
+    const patch = frame.primitivePatches[0]!.patch as Partial<MeshPrimitive>;
+    expect((patch.material as MaterialSpec).baseColorMap).toEqual(expect.objectContaining({ texCoord: 1 }));
+    expect(patch.uv1).toBeInstanceOf(Float32Array);
+    expect(Array.from(patch.uv1 as Float32Array)).toEqual([
+      0.25, 0.25,
+      0.5, 0.25,
+      0.25, 0.5,
+    ]);
+    expect(updatePrimitive).toHaveBeenCalledWith(
+      'gltf-prim-0',
+      expect.objectContaining({
+        uv1: expect.any(Float32Array),
+        material: expect.objectContaining({
+          baseColorMap: expect.objectContaining({ texCoord: 1 }),
+        }),
+      }),
+    );
+    expect((controller.scene.primitives[0] as MeshPrimitive).uv1).toBeInstanceOf(Float32Array);
+
+    const reset = controller.setVariant(undefined);
+    const resetPatch = reset.primitivePatches[0]!.patch as Partial<MeshPrimitive>;
+    expect(Object.prototype.hasOwnProperty.call(resetPatch, 'uv1')).toBe(true);
+    expect(resetPatch.uv1).toBeUndefined();
+    expect((resetPatch.material as MaterialSpec).baseColorMap).toBeUndefined();
+    expect((controller.scene.primitives[0] as MeshPrimitive).uv1).toBeUndefined();
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColorMap).toBeUndefined();
   });
 
   it('falls back to setScene when a variant material patch is rejected', async () => {

@@ -227,8 +227,12 @@ async function resolvePtWebgpuRuntimeProfile(
 
   const profile = await probeAdapterProfile();
   if (profile.ptWebgpuTier === 'full') return 'pt-webgpu';
+  if (profile.ptWebgpuTier === 'none') {
+    validatePtWebgpuRuntimeUnavailable(compatibilityMode);
+    return undefined;
+  }
 
-  const profileId = profile.ptWebgpuTier === 'lite' ? 'pt-webgpu-lite' : 'pt-webgpu';
+  const profileId = 'pt-webgpu-lite';
   validatePtWebgpuRuntimeProfile(
     profileId,
     profile.ptWebgpuTier,
@@ -237,6 +241,25 @@ async function resolvePtWebgpuRuntimeProfile(
     options,
   );
   return profileId;
+}
+
+function validatePtWebgpuRuntimeUnavailable(
+  compatibilityMode: GltfCompatibilityMode,
+): void {
+  if (compatibilityMode === 'best-effort') return;
+  throw new GltfCompatibilityError({
+    code: 'GLTF_COMPATIBILITY_REJECTED',
+    message:
+      `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to "none" trace tier, ` +
+      `which does not satisfy ${compatibilityMode}. ` +
+      `Use compatibilityMode:"best-effort", select "pt-webgl2", or run on a WebGPU adapter that satisfies pt-webgpu-lite.`,
+    backend: 'pt-webgpu',
+    profileId: 'pt-webgpu-lite',
+    runtimeProfile: 'pt-webgpu-lite',
+    compatibilityMode,
+    label: 'Selected backend',
+    failures: ['runtime:pt-webgpu=unsupported at adapterProfile.ptWebgpuTier'],
+  });
 }
 
 function validatePtWebgpuRuntimeProfile(
@@ -324,6 +347,14 @@ function isSatisfiedRuntimeCompatibilityIssue(
   options: LoadGltfWithEngineOptions,
   asset: GltfAssetResult,
 ): boolean {
+  if (
+    issue.category === 'texture' &&
+    issue.name.startsWith('texture-readiness:') &&
+    issue.support === 'requires-hook'
+  ) {
+    return opaqueTextureHandlesReadyForBackend(options, 'pt-webgpu');
+  }
+
   if (issue.support === 'requires-hook') {
     if (issue.name === 'KHR_draco_mesh_compression') return typeof options.dracoDecode === 'function';
     if (issue.name === 'EXT_meshopt_compression' || issue.name === 'KHR_meshopt_compression') {
@@ -348,6 +379,14 @@ function isSatisfiedRuntimeCompatibilityIssue(
   }
 
   return false;
+}
+
+function opaqueTextureHandlesReadyForBackend(
+  options: LoadGltfWithEngineOptions,
+  backend: CreateEngineBackendId,
+): boolean {
+  const policy = options.opaqueTextureHandlesReady;
+  return policy === true || (Array.isArray(policy) && policy.includes(backend));
 }
 
 function decodedAssetView(

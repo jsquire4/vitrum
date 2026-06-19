@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BACKEND_PROMISE_LEDGER } from '../engine/promiseLedger.js';
@@ -17,18 +17,25 @@ import { BACKEND_PROMISE_LEDGER } from '../engine/promiseLedger.js';
 type BackendWithMaterialEvidence = 'walkaround-hybrid' | 'pt-webgl2' | 'pt-webgpu';
 type EvidenceKind = 'packer+shader' | 'shared-classifier' | 'readback-oracle';
 
+interface EvidenceSnippet {
+  readonly path: string;
+  readonly includes: readonly string[];
+}
+
 interface MaterialNativeEvidence {
   readonly kind: EvidenceKind;
   readonly tests: readonly string[];
   readonly sources: readonly string[];
+  readonly snippets?: readonly EvidenceSnippet[];
 }
 
 function evidence(
   kind: EvidenceKind,
   tests: readonly string[],
   sources: readonly string[],
+  snippets?: readonly EvidenceSnippet[],
 ): MaterialNativeEvidence {
-  return { kind, tests, sources };
+  return { kind, tests, sources, ...(snippets != null ? { snippets } : {}) };
 }
 
 function group(
@@ -93,15 +100,41 @@ const PT_WEBGL2_TEXTURES = evidence('packer+shader', [
 ]);
 
 const PT_WEBGPU_SCALARS = evidence('packer+shader', [
-  'packages/pt-webgpu/src/__tests__/scenePack.test.ts',
+  'packages/pt-webgpu/src/__tests__/scenePack.materials.test.ts',
   'packages/pt-webgpu/src/__tests__/implicitMeshEmitter.test.ts',
+  'packages/pt-webgpu/src/__tests__/volumetricSss.test.ts',
   'packages/pt-webgpu/src/__tests__/wgslContract.test.ts',
 ], [
   'packages/pt-webgpu/src/scene/materialPacking.ts',
   'packages/pt-webgpu/src/scene/emitterPacking.ts',
   'packages/pt-webgpu/src/wgsl/pathTrace/material.wgsl.ts',
+  'packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts',
   'packages/pt-webgpu/src/wgsl/pathTrace/bsdf.wgsl.ts',
-]);
+], [
+  {
+    path: 'packages/pt-webgpu/src/__tests__/scenePack.materials.test.ts',
+    includes: [
+      'packs layered/spectral/thin-film summaries',
+      'packs authored dispersionAbbe independently of spectral attenuation',
+      'SPEC-01 specular scalar packing',
+      'VOL-THICKNESS KHR_materials_volume scalar packing',
+    ],
+  },
+  {
+    path: 'packages/pt-webgpu/src/__tests__/volumetricSss.test.ts',
+    includes: [
+      'σ_a packing from attenuationColor / attenuationDistance',
+      'volume thickness packing and attenuation-distance clamp',
+    ],
+  },
+  {
+    path: 'packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts',
+	    includes: [
+	      'WS4 volumetric random walk',
+	      'legacy Beer-Lambert + forward-scatter-radiance fallback',
+	    ],
+	  },
+	]);
 
 const PT_WEBGPU_TEXTURES = evidence('packer+shader', [
   'packages/pt-webgpu/src/__tests__/materialTextures.test.ts',
@@ -193,6 +226,22 @@ describe('GATE-02 native material evidence', () => {
       for (const [field, ev] of Object.entries(rows)) {
         for (const path of [...ev.tests, ...ev.sources]) {
           expect(existsSync(resolve(REPO_ROOT, path)), `${backend}.${field}: ${path}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('pins explicit proof snippets where a broad evidence file would be ambiguous', () => {
+    for (const [backend, rows] of Object.entries(MATERIAL_NATIVE_EVIDENCE)) {
+      for (const [field, ev] of Object.entries(rows)) {
+        for (const snippet of ev.snippets ?? []) {
+          const text = readFileSync(resolve(REPO_ROOT, snippet.path), 'utf8');
+          for (const needle of snippet.includes) {
+            expect(
+              text.includes(needle),
+              `${backend}.${field}: ${snippet.path} must contain ${needle}`,
+            ).toBe(true);
+          }
         }
       }
     }

@@ -345,6 +345,20 @@ export interface GltfMaterialVariantBinding {
   readonly meshIndex: number;
   readonly primitiveIndex: number;
   readonly baseMaterialIndex?: number;
+  readonly basePatch?: GltfMaterialVariantPrimitivePatch;
+  readonly variantPatches?: ReadonlyArray<GltfMaterialVariantPatch>;
+}
+
+export interface GltfMaterialVariantPrimitivePatch {
+  readonly materialIndex?: number;
+  readonly materialRouting?: MaterialSpec;
+  readonly uv1?: Float32Array | undefined;
+  readonly tangents?: Float32Array | undefined;
+}
+
+export interface GltfMaterialVariantPatch {
+  readonly variantIndex: number;
+  readonly patch: GltfMaterialVariantPrimitivePatch;
 }
 
 export interface GltfInstancingBinding {
@@ -821,6 +835,7 @@ export async function gltfToScene(
         'unreadable-optional-attribute',
         `${primitivePath}.attributes.TEXCOORD_1`,
       );
+      let primitiveUv1 = uv1;
 
       // Tangents — optional (xyzw per vertex).
       const tangentIdx = prim.attributes['TANGENT'];
@@ -1025,6 +1040,7 @@ export async function gltfToScene(
         });
         uvs = remapVec2Attribute(uvs, fallback.sourceVertices);
         uv1 = remapVec2Attribute(uv1, fallback.sourceVertices);
+        primitiveUv1 = remapVec2Attribute(primitiveUv1, fallback.sourceVertices);
         colors = remapVertexColors(colors, originalVertexCount, fallback.sourceVertices);
         tangents = undefined;
         if (skinIndices && skinWeights) {
@@ -1057,6 +1073,42 @@ export async function gltfToScene(
           meshIndex: node.mesh,
           primitiveIndex,
           ...(prim.material !== undefined ? { baseMaterialIndex: prim.material } : {}),
+          basePatch: _buildPrimitiveMaterialVariantPatch(
+            gltf,
+            buffers,
+            prim,
+            coreMaterials,
+            prim.material,
+            positions,
+            normals,
+            uvs,
+            primitiveUv1,
+            indices,
+            tangents,
+            `${mesh.name ?? node.mesh}`,
+            warnings,
+            diagnostics,
+            primitivePath,
+            onAccessorDiagnostic,
+          ),
+          variantPatches: _buildPrimitiveMaterialVariantPatches(
+            gltf,
+            buffers,
+            prim,
+            coreMaterials,
+            prim.material,
+            positions,
+            normals,
+            uvs,
+            primitiveUv1,
+            indices,
+            tangents,
+            `${mesh.name ?? node.mesh}`,
+            warnings,
+            diagnostics,
+            primitivePath,
+            onAccessorDiagnostic,
+          ),
         });
       }
 
@@ -1283,6 +1335,125 @@ function _resolvePrimitiveMaterialIndex(
     return baseMaterialIndex;
   }
   return mapping.material;
+}
+
+function _coreMaterialForIndex(
+  coreMaterials: readonly MaterialSpec[],
+  materialIndex: number | undefined,
+): MaterialSpec {
+  return materialIndex !== undefined && materialIndex < coreMaterials.length
+    ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
+    : GLTF_DEFAULT_MATERIAL;
+}
+
+function _buildPrimitiveMaterialVariantPatch(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  primitive: GltfPrimitive,
+  coreMaterials: readonly MaterialSpec[],
+  materialIndex: number | undefined,
+  positions: Float32Array,
+  normals: Float32Array,
+  uvs: Float32Array | undefined,
+  primitiveUv1: Float32Array | undefined,
+  indices: Uint32Array | undefined,
+  authoredTangents: Float32Array | undefined,
+  meshLabel: string,
+  warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
+  primitivePath: string,
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+): GltfMaterialVariantPrimitivePatch {
+  const material = _coreMaterialForIndex(coreMaterials, materialIndex);
+  const uvResolved = _resolvePrimitiveUvMaterial(
+    gltf,
+    buffers,
+    primitive,
+    material,
+    primitiveUv1,
+    warnings,
+    diagnostics,
+    primitivePath,
+    meshLabel,
+    onAccessorDiagnostic,
+  );
+  const finalTangents = authoredTangents ?? _maybeGenerateTangents(
+    positions,
+    normals,
+    uvs,
+    uvResolved.uv1,
+    indices,
+    uvResolved.material,
+    meshLabel,
+    warnings,
+    diagnostics,
+    primitivePath,
+  );
+  return {
+    ...(materialIndex !== undefined ? { materialIndex } : {}),
+    materialRouting: uvResolved.material,
+    uv1: uvResolved.uv1,
+    tangents: finalTangents,
+  };
+}
+
+function _buildPrimitiveMaterialVariantPatches(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  primitive: GltfPrimitive,
+  coreMaterials: readonly MaterialSpec[],
+  baseMaterialIndex: number | undefined,
+  positions: Float32Array,
+  normals: Float32Array,
+  uvs: Float32Array | undefined,
+  primitiveUv1: Float32Array | undefined,
+  indices: Uint32Array | undefined,
+  authoredTangents: Float32Array | undefined,
+  meshLabel: string,
+  warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
+  primitivePath: string,
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+): GltfMaterialVariantPatch[] {
+  const patches = new Map<number, GltfMaterialVariantPatch>();
+  const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
+  for (const mapping of mappings) {
+    for (const variantIndex of mapping.variants) {
+      if (patches.has(variantIndex)) continue;
+      const materialIndex = _resolvePrimitiveMaterialIndex(
+        gltf,
+        primitive,
+        baseMaterialIndex,
+        variantIndex,
+        warnings,
+        diagnostics,
+        meshLabel,
+        primitivePath,
+      );
+      patches.set(variantIndex, {
+        variantIndex,
+        patch: _buildPrimitiveMaterialVariantPatch(
+          gltf,
+          buffers,
+          primitive,
+          coreMaterials,
+          materialIndex,
+          positions,
+          normals,
+          uvs,
+          primitiveUv1,
+          indices,
+          authoredTangents,
+          meshLabel,
+          warnings,
+          diagnostics,
+          primitivePath,
+          onAccessorDiagnostic,
+        ),
+      });
+    }
+  }
+  return [...patches.values()];
 }
 
 function _maybeGenerateTangents(

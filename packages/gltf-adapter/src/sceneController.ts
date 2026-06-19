@@ -18,9 +18,15 @@ import {
   type Scene,
   type ScenePrimitive,
   type SkinnedMeshPrimitive,
+  type TextureRef,
 } from '@vitrum/core';
 import type { GltfJson, GltfNode, GltfPrimitive } from './gltfTypes.js';
-import type { GltfInstancingBinding, GltfMaterialVariantBinding, GltfToSceneResult } from './gltfToScene.js';
+import type {
+  GltfInstancingBinding,
+  GltfMaterialVariantBinding,
+  GltfMaterialVariantPrimitivePatch,
+  GltfToSceneResult,
+} from './gltfToScene.js';
 import { GLTF_DEFAULT_MATERIAL } from './materials.js';
 import {
   IDENTITY_MAT4,
@@ -468,8 +474,19 @@ export class GltfSceneController {
           binding.meshIndex,
           binding.primitiveIndex,
         );
-        const material = materialForIndex(this.#convertedMaterials, materialIndex, frame);
-        mergePrimitivePatch(patchMap, binding.primitiveId, { material } as Partial<ScenePrimitive>);
+        const variantPatch = materialVariantPatchForSelection(binding, selectedVariantIndex);
+        if (variantPatch) {
+          const material = materialForVariantPatch(
+            materialForIndex(this.#convertedMaterials, variantPatch.materialIndex, frame),
+            variantPatch,
+          );
+          mergePrimitivePatch(patchMap, binding.primitiveId, scenePrimitivePatchForMaterialVariant(variantPatch, material));
+        } else {
+          const material = materialForIndex(this.#convertedMaterials, materialIndex, frame);
+          mergePrimitivePatch(patchMap, binding.primitiveId, {
+            material: materialReplacementPatch(material),
+          } as Partial<ScenePrimitive>);
+        }
       }
     }
 
@@ -981,6 +998,155 @@ function materialForIndex(
     materialIndex,
   });
   return GLTF_DEFAULT_MATERIAL;
+}
+
+const MATERIAL_REPLACEMENT_CLEAR_FIELDS = [
+  'emissive',
+  'emissiveIntensity',
+  'shadingModel',
+  'alphaMode',
+  'alphaCutoff',
+  'opacity',
+  'transmission',
+  'ior',
+  'attenuationColor',
+  'attenuationDistance',
+  'thickness',
+  'baseColorMap',
+  'normalMap',
+  'normalScale',
+  'roughnessMap',
+  'metallicMap',
+  'transmissionMap',
+  'thicknessMap',
+  'emissiveMap',
+  'alphaMap',
+  'aoMap',
+  'aoMapIntensity',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'clearcoatNormalScale',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'bumpMap',
+  'bumpScale',
+  'displacementMap',
+  'displacementScale',
+  'displacementBias',
+  'lightMap',
+  'lightMapIntensity',
+  'sheen',
+  'sheenColor',
+  'sheenRoughness',
+  'clearcoat',
+  'clearcoatRoughness',
+  'iridescence',
+  'iridescenceIor',
+  'iridescenceThicknessRange',
+  'specularIntensity',
+  'specularColor',
+  'envMapIntensity',
+  'spectralAttenuation',
+  'dispersionAbbeNumber',
+  'scatteringCoefficient',
+  'scatteringAnisotropy',
+  'scatteringCoefficientRGB',
+  'frontLayer',
+  'backLayer',
+  'thinFilmStack',
+  'anisotropy',
+  'anisotropyRotation',
+  'extensions',
+] as const satisfies readonly (keyof MaterialSpec)[];
+
+const MATERIAL_TEXTURE_REF_FIELDS = [
+  'baseColorMap',
+  'normalMap',
+  'roughnessMap',
+  'metallicMap',
+  'transmissionMap',
+  'thicknessMap',
+  'emissiveMap',
+  'alphaMap',
+  'aoMap',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'bumpMap',
+  'displacementMap',
+  'lightMap',
+] as const satisfies readonly (keyof MaterialSpec)[];
+
+type MaterialTextureRefField = typeof MATERIAL_TEXTURE_REF_FIELDS[number];
+
+function materialReplacementPatch(material: MaterialSpec): MaterialSpec {
+  const patch: Record<string, unknown> = {};
+  for (const field of MATERIAL_REPLACEMENT_CLEAR_FIELDS) patch[field] = undefined;
+  return Object.assign(patch, material) as MaterialSpec;
+}
+
+function isTextureRef(value: unknown): value is TextureRef {
+  return value !== null && typeof value === 'object' && 'handle' in value;
+}
+
+function textureRefWithRouting(handleRef: TextureRef, routingRef: TextureRef): TextureRef {
+  return {
+    ...routingRef,
+    handle: handleRef.handle,
+  };
+}
+
+function materialForVariantPatch(
+  material: MaterialSpec,
+  patch: GltfMaterialVariantPrimitivePatch,
+): MaterialSpec {
+  if (patch.materialRouting === undefined) return material;
+  const routed: Record<string, unknown> = { ...material };
+  for (const field of MATERIAL_TEXTURE_REF_FIELDS) {
+    const routedRef = patch.materialRouting[field as MaterialTextureRefField];
+    const liveRef = material[field as MaterialTextureRefField];
+    if (isTextureRef(routedRef)) {
+      routed[field] = isTextureRef(liveRef)
+        ? textureRefWithRouting(liveRef, routedRef)
+        : routedRef;
+    } else {
+      delete routed[field];
+    }
+  }
+  return routed as unknown as MaterialSpec;
+}
+
+function materialVariantPatchForSelection(
+  binding: GltfMaterialVariantBinding,
+  selectedVariantIndex: number | undefined,
+): GltfMaterialVariantPrimitivePatch | undefined {
+  if (selectedVariantIndex === undefined) return binding.basePatch;
+  return binding.variantPatches?.find((patch) => patch.variantIndex === selectedVariantIndex)?.patch
+    ?? binding.basePatch;
+}
+
+function scenePrimitivePatchForMaterialVariant(
+  patch: GltfMaterialVariantPrimitivePatch,
+  material: MaterialSpec,
+): Partial<ScenePrimitive> {
+  return {
+    material: materialReplacementPatch(material),
+    uv1: patch.uv1,
+    tangents: patch.tangents,
+  } as unknown as Partial<ScenePrimitive>;
 }
 
 function normalizeBlendWeights(weights: readonly number[]): number[] {

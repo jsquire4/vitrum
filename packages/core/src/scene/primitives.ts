@@ -63,8 +63,10 @@ export interface InstancedMeshPrimitive {
   readonly material: MaterialSpec;
   readonly instances: ReadonlyArray<Mat4>;
   /** Whether these mesh instances cast shadows on other geometry. Default true.
-   *  Same per-backend status as {@link MeshPrimitive.castShadow} (pt-webgl2 /
-   *  pt-webgpu native; walkaround-hybrid approximate — DI shadow rays only). */
+   *  Same per-backend status as {@link MeshPrimitive.castShadow}. All shipping
+   *  backends grade primitive castShadow as native; walkaround-hybrid honors it
+   *  in DI, ReSTIR-GI, DDGI probe direct-light visibility, GRIS reuse visibility,
+   *  and RC probe direct-light visibility. */
   readonly castShadow?: boolean;
 }
 
@@ -196,8 +198,10 @@ export interface SkinnedMeshPrimitive {
   readonly material: MaterialSpec;
   readonly transform?: Mat4;
   /** Whether this mesh casts shadows on other geometry. Default true.
-   *  Same per-backend status as {@link MeshPrimitive.castShadow} (pt-webgl2 /
-   *  pt-webgpu native; walkaround-hybrid approximate — DI shadow rays only). */
+   *  Same per-backend status as {@link MeshPrimitive.castShadow}: all shipping
+   *  backends grade primitive castShadow as native; walkaround-hybrid honors it
+   *  in DI, ReSTIR-GI, DDGI probe direct-light visibility, GRIS reuse visibility,
+   *  and RC probe direct-light visibility. */
   readonly castShadow?: boolean;
   /** Whether this mesh receives shadows from other geometry. Default true.
    *  @reserved Same status as {@link MeshPrimitive.receiveShadow} — consumed by
