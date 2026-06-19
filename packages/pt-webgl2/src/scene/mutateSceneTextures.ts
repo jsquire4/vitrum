@@ -16,6 +16,7 @@ import {
   uploadRgba32fRect,
 } from './uploadSceneTextures.js';
 import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
+import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesArray.js';
 import { squareDim } from './bvhTextureAdapter.js';
 
 export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
@@ -48,6 +49,31 @@ const UNSUPPORTED_DISPLACEMENT_FIELDS: ReadonlySet<string> = new Set([
   'displacementScale',
   'displacementBias',
 ]);
+
+const TEXTURE_MAP_COLOR_SPACE: Readonly<Record<string, TextureSampleColorSpace>> = Object.freeze({
+  baseColorMap: 'srgb',
+  normalMap: 'linear',
+  roughnessMap: 'linear',
+  metallicMap: 'linear',
+  transmissionMap: 'linear',
+  thicknessMap: 'linear',
+  emissiveMap: 'srgb',
+  alphaMap: 'linear',
+  aoMap: 'linear',
+  clearcoatMap: 'linear',
+  clearcoatRoughnessMap: 'linear',
+  clearcoatNormalMap: 'linear',
+  sheenColorMap: 'srgb',
+  sheenRoughnessMap: 'linear',
+  iridescenceMap: 'linear',
+  iridescenceThicknessMap: 'linear',
+  anisotropyMap: 'linear',
+  specularColorMap: 'srgb',
+  specularIntensityMap: 'linear',
+  bumpMap: 'linear',
+  displacementMap: 'linear',
+  lightMap: 'linear',
+});
 
 const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
   'transform',
@@ -90,6 +116,7 @@ function isMeshLikePrimitive(p: ScenePrimitive | undefined): p is Extract<
 
 function canFastPathMaterialPatch(
   patch: Partial<ScenePrimitive>,
+  materialLayerMap: TextureAtlasLayerMap | null,
 ): patch is Partial<ScenePrimitive> & { material: MaterialSpec } {
   if (patch.material == null) return false;
   for (const key of Object.keys(patch)) {
@@ -97,9 +124,24 @@ function canFastPathMaterialPatch(
   }
   const mat = patch.material as unknown as Record<string, unknown>;
   for (const field of Object.keys(mat)) {
-    if (TEXTURE_MAP_FIELDS.has(field)) return false;
+    if (TEXTURE_MAP_FIELDS.has(field) && !canRetargetMaterialTextureField(field, mat[field], materialLayerMap)) {
+      return false;
+    }
   }
   return true;
+}
+
+function canRetargetMaterialTextureField(
+  field: string,
+  value: unknown,
+  materialLayerMap: TextureAtlasLayerMap | null,
+): boolean {
+  if (value == null) return true;
+  if (typeof value !== 'object') return true;
+  const handle = (value as { readonly handle?: unknown }).handle;
+  if (handle == null) return true;
+  const colorSpace = TEXTURE_MAP_COLOR_SPACE[field] ?? 'linear';
+  return materialLayerMap?.[colorSpace].has(handle) === true;
 }
 
 function unsupportedDisplacementPatchFields(patch: Partial<ScenePrimitive>): readonly string[] {
@@ -172,11 +214,10 @@ function materialSlotsByPrimitive(
 }
 
 function repackMeshAreaFoldedMaterials(
-  gl: WebGL2RenderingContext,
   current: UploadedSceneTextures,
   geoPack: WorldSpaceMergeResult,
   nextScene: Scene,
-): { materials: WebGLTexture; nextGeoPack: WorldSpaceMergeResult } {
+): { materialData: ReturnType<typeof packMaterialsTexture>; nextGeoPack: WorldSpaceMergeResult } {
   const foldedScene = foldMeshAreaEmittersIntoMaterials(nextScene);
   const foldedMaterialsByPrimitive = new Map<string, MaterialSpec>();
   for (const primitive of foldedScene.primitives) {
@@ -200,7 +241,7 @@ function repackMeshAreaFoldedMaterials(
     { vertexColorMaterialIds: current.vertexColorMaterialIds },
   );
   return {
-    materials: uploadRgba32f(gl, data.data, data.dim, 'scene materials'),
+    materialData: data,
     nextGeoPack: { ...geoPack, materials: nextMaterials },
   };
 }
@@ -247,7 +288,7 @@ export function tryFastPathMaterialMutation(
   primitiveId: string,
   patch: Partial<ScenePrimitive>,
 ): WebGl2MutationSwap | null {
-  if (current == null || geoPack == null || !canFastPathMaterialPatch(patch)) return null;
+  if (current == null || geoPack == null || !canFastPathMaterialPatch(patch, current.materialLayerMap)) return null;
   const primitive = nextScene.primitives.find((p) => String(p.id) === primitiveId);
   if (!isMeshLikePrimitive(primitive)) return null;
   const slot = uniqueMaterialSlotForPrimitive(geoPack, primitiveId);
@@ -255,25 +296,25 @@ export function tryFastPathMaterialMutation(
 
   const explicitMeshArea = hasExplicitMeshAreaEmitterForPrimitive(nextScene, primitiveId);
   const foldedMaterials = explicitMeshArea
-    ? repackMeshAreaFoldedMaterials(gl, current, geoPack, nextScene)
+    ? repackMeshAreaFoldedMaterials(current, geoPack, nextScene)
     : null;
 
   let nextGeoPack: WorldSpaceMergeResult;
-  let materials: WebGLTexture;
+  let materialData: ReturnType<typeof packMaterialsTexture>;
   if (foldedMaterials != null) {
     nextGeoPack = foldedMaterials.nextGeoPack;
-    materials = foldedMaterials.materials;
+    materialData = foldedMaterials.materialData;
   } else {
     const nextMaterials = geoPack.materials.slice();
     nextMaterials[slot] = materialWithCastShadow(primitive);
-    const data = packMaterialsTexture(
+    materialData = packMaterialsTexture(
       nextMaterials,
       current.materialLayerMap ?? undefined,
       { vertexColorMaterialIds: current.vertexColorMaterialIds },
     );
-    materials = uploadRgba32f(gl, data.data, data.dim, 'scene materials');
     nextGeoPack = { ...geoPack, materials: nextMaterials };
   }
+  updateRgba32f(gl, current.materials, materialData.data as Float32Array, materialData.dim, 'scene materials');
 
   const unsupportedDisplacementFields = unsupportedDisplacementPatchFields(patch);
   const structuredWarnings: EngineWarning[] = unsupportedDisplacementFields.length > 0
@@ -302,7 +343,6 @@ export function tryFastPathMaterialMutation(
     : null;
   return {
     textures: withTextureReplacementsForGl(gl, current, {
-      materials,
       ...(meshLightsData != null
         ? {
             meshLights,
@@ -313,7 +353,7 @@ export function tryFastPathMaterialMutation(
         : {}),
     }),
     geoPack: nextGeoPack,
-    deleteOldTextures: [current.materials, ...(meshLightsData != null ? [current.meshLights] : [])],
+    deleteOldTextures: [...(meshLightsData != null ? [current.meshLights] : [])],
     ...(structuredWarnings.length > 0 ? { structuredWarnings } : {}),
   };
 }
@@ -559,11 +599,19 @@ export function tryFastPathEmitterMutation(
     ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights')
     : null;
   const foldedMaterials = isMeshAreaMutation
-    ? repackMeshAreaFoldedMaterials(gl, current, geoPack, nextScene)
+    ? repackMeshAreaFoldedMaterials(current, geoPack, nextScene)
     : null;
+  if (foldedMaterials != null) {
+    updateRgba32f(
+      gl,
+      current.materials,
+      foldedMaterials.materialData.data as Float32Array,
+      foldedMaterials.materialData.dim,
+      'scene materials',
+    );
+  }
   return {
     textures: withTextureReplacementsForGl(gl, current, {
-      ...(foldedMaterials != null ? { materials: foldedMaterials.materials } : {}),
       lights,
       lightCount: lightsData.lightCount,
       meshLights,
@@ -575,7 +623,6 @@ export function tryFastPathEmitterMutation(
     deleteOldTextures: [
       current.lights,
       current.meshLights,
-      ...(foldedMaterials != null ? [current.materials] : []),
     ],
     structuredWarnings,
   };

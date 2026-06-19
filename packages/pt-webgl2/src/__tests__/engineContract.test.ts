@@ -727,6 +727,62 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('updates existing-atlas material texture-map patches in place', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    try {
+      const handle = { image: { data: new Float32Array([1, 0, 0, 1]), width: 1, height: 1 } };
+      const baseScene = triScene();
+      const prim = baseScene.primitives[0];
+      if (prim?.kind !== 'mesh') throw new Error('expected mesh fixture');
+      const scene: Scene = {
+        ...baseScene,
+        primitives: [{
+          ...prim,
+          material: {
+            ...prim.material,
+            baseColorMap: { handle },
+          },
+        }],
+      };
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(scene);
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+
+      e.updatePrimitive?.('tri', {
+        material: {
+          roughness: 0.35,
+          baseColorMap: { handle, texCoord: 1, wrapS: 'clamp-to-edge' },
+        },
+      } as never);
+
+      const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
+      expect(fallbackWarnings).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
+      expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.35);
+      expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(handle);
+      expect(e._debugGeoPack?.materials[0]?.baseColorMap?.texCoord).toBe(1);
+      expect(e._debugGeoPack?.materials[0]?.baseColorMap?.wrapS).toBe('clamp-to-edge');
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-mutation-fallback-rebuild') ||
+        m.includes('texture-map-material-patch'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('updates vertex-color material flags and attributes with in-place texture writes', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

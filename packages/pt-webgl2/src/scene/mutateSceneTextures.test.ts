@@ -23,6 +23,7 @@ function fakeGl(): WebGL2RenderingContext {
     bindTexture: vi.fn(),
     texParameteri: vi.fn(),
     texImage2D: vi.fn(),
+    texSubImage2D: vi.fn(),
     deleteTexture: vi.fn(),
   };
   return gl as unknown as WebGL2RenderingContext;
@@ -148,9 +149,11 @@ describe('tryFastPathMaterialMutation', () => {
     expect(swap?.textures.meshLightCount).toBe(2);
     expect(swap?.textures.totalEmissiveArea).toBeCloseTo(1, 6);
 
+    const subImageCalls = (gl.texSubImage2D as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(subImageCalls).toHaveLength(1);
     const calls = (gl.texImage2D as unknown as ReturnType<typeof vi.fn>).mock.calls;
-    expect(calls).toHaveLength(2);
-    const meshLightData = calls[1]?.[8] as Float32Array;
+    expect(calls).toHaveLength(1);
+    const meshLightData = calls[0]?.[8] as Float32Array;
     expect(meshLightData[4]).toBeCloseTo(6, 6);
     expect(meshLightData[5]).toBeCloseTo(0, 6);
     expect(meshLightData[6]).toBeCloseTo(0, 6);
