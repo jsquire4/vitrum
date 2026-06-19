@@ -40,6 +40,7 @@ import {
   ADJOINT_FIELD_AO_MAP_INTENSITY,
   ADJOINT_FIELD_LIGHT_MAP_INTENSITY,
   ADJOINT_FIELD_ENV_MAP_INTENSITY,
+  ADJOINT_FIELD_NORMAL_SCALE,
   ADJOINT_FIELD_EMITTER_COLOR,
   ADJOINT_FIELD_EMITTER_INTENSITY,
   ADJOINT_EMITTER_TARGET_DIRECTIONAL,
@@ -210,6 +211,9 @@ export class AdjointPass {
         case 'envMapIntensity':
           fieldCode = ADJOINT_FIELD_ENV_MAP_INTENSITY;
           break;
+        case 'normalScale':
+          fieldCode = ADJOINT_FIELD_NORMAL_SCALE;
+          break;
         case 'emissive':
           fieldCode = ADJOINT_FIELD_EMISSIVE;
           break;
@@ -320,6 +324,7 @@ export class AdjointPass {
         { binding: 20, resource: { buffer: sb.environmentMapTexelsBuffer } },
         { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
         { binding: 22, resource: { buffer: sb.meshAreaLightSourceFactorsBuffer } },
+        { binding: 23, resource: { buffer: sb.tangentsBuffer } },
       ],
     });
 

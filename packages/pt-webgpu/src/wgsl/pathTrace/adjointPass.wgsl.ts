@@ -86,6 +86,7 @@ export const ADJOINT_FIELD_IRIDESCENCE_THICKNESS_RANGE = 18;
 export const ADJOINT_FIELD_AO_MAP_INTENSITY = 19;
 export const ADJOINT_FIELD_LIGHT_MAP_INTENSITY = 20;
 export const ADJOINT_FIELD_ENV_MAP_INTENSITY = 21;
+export const ADJOINT_FIELD_NORMAL_SCALE = 22;
 
 export const ADJOINT_EMITTER_TARGET_DIRECTIONAL = 1;
 export const ADJOINT_EMITTER_TARGET_POINT = 2;
@@ -99,6 +100,8 @@ export const ADJOINT_PARAMS_UBO_BYTES = 64 + 16 + 16 + 16 + 16 + 16 + 16;
 const ADJOINT_MATERIAL_TEX_UV_EMISSIVE =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
 const ADJOINT_MATERIAL_TEX_UV_BASE_COLOR = MATERIAL_TEX_UV_META_VEC4_OFFSET;
+const ADJOINT_MATERIAL_TEX_UV_NORMAL =
+  MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 2;
 const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS =
   MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP * 3;
 const ADJOINT_MATERIAL_TEX_UV_METALLIC =
@@ -196,9 +199,10 @@ struct AdjointParams {
 @group(0) @binding(13) var<storage, read>      meshAreaLights: array<vec4f>;
 // Material-map replay subset: mirrors the forward texture samplers for local
 // base/ORM/AO/specular/clearcoat/sheen/iridescence/anisotropy chain factors and
-// camera-direct emissive partials. Path-changing maps (alpha, transmission,
-// normal/bump/clearcoat-normal, displacement) still route through finite
-// difference until their visibility/transport/normal terms are replayed here.
+// camera-direct emissive partials plus top-level normal-map shading. Path-changing
+// maps (alpha, transmission, bump/clearcoat-normal, displacement) still route
+// through finite difference until their visibility/transport/normal terms are
+// replayed here.
 @group(0) @binding(14) var<storage, read>      meshUvs: array<vec4f>;
 @group(0) @binding(15) var<storage, read>      materialTexDescriptors: array<vec4f>;
 @group(0) @binding(16) var                      materialTextures: texture_2d_array<f32>;
@@ -213,6 +217,8 @@ struct AdjointParams {
 // Unmapped mesh-area lights store 1,1,1. This keeps emitter-color gradients
 // defined when an authored color channel is currently zero.
 @group(0) @binding(22) var<storage, read>       meshAreaLightSourceFactors: array<vec4f>;
+// xyz = tangent, w = bitangent sign; mirrors the forward normal-map path.
+@group(0) @binding(23) var<storage, read>       meshTangents: array<vec4f>;
 
 // ── BRDF primitives ──────────────────────────────────────────────────────────
 const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
@@ -307,6 +313,7 @@ fn adjointMaterialEnvMapIntensity(matId: u32) -> f32 {
 const ADJOINT_MATERIAL_TEX_VEC4_STRIDE = ${MATERIAL_TEX_VEC4_STRIDE}u;
 const ADJOINT_MATERIAL_TEX_UV_BASE_COLOR = ${ADJOINT_MATERIAL_TEX_UV_BASE_COLOR}u;
 const ADJOINT_MATERIAL_TEX_UV_EMISSIVE = ${ADJOINT_MATERIAL_TEX_UV_EMISSIVE}u;
+const ADJOINT_MATERIAL_TEX_UV_NORMAL = ${ADJOINT_MATERIAL_TEX_UV_NORMAL}u;
 const ADJOINT_MATERIAL_TEX_UV_ROUGHNESS = ${ADJOINT_MATERIAL_TEX_UV_ROUGHNESS}u;
 const ADJOINT_MATERIAL_TEX_UV_METALLIC = ${ADJOINT_MATERIAL_TEX_UV_METALLIC}u;
 const ADJOINT_MATERIAL_TEX_UV_AO = ${ADJOINT_MATERIAL_TEX_UV_AO}u;
@@ -497,6 +504,101 @@ fn sampleAdjointVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f {
   let w = baryVW.y;
   let u = 1.0 - v - w;
   return meshVertexColors[tri.x] * u + meshVertexColors[tri.y] * v + meshVertexColors[tri.z] * w;
+}
+
+struct AdjointTangentFrame {
+  tangent: vec3f,
+  bitangent: vec3f,
+  valid: bool,
+}
+
+fn buildAdjointTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f) -> AdjointTangentFrame {
+  var frame: AdjointTangentFrame;
+  frame.valid = false;
+  if (triIndex >= arrayLength(&indices)) { return frame; }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
+      tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+    return frame;
+  }
+  if (tri.x < arrayLength(&meshTangents) && tri.y < arrayLength(&meshTangents) && tri.z < arrayLength(&meshTangents)) {
+    let v = baryVW.x;
+    let w = baryVW.y;
+    let u = 1.0 - v - w;
+    let ta = meshTangents[tri.x];
+    let tb = meshTangents[tri.y];
+    let tc = meshTangents[tri.z];
+    var tangent = ta.xyz * u + tb.xyz * v + tc.xyz * w;
+    let handednessRaw = ta.w * u + tb.w * v + tc.w * w;
+    if (length(tangent) > 1e-8 && abs(handednessRaw) > 0.5) {
+      tangent = tangent - normal * dot(normal, tangent);
+      let tlen = length(tangent);
+      if (tlen > 1e-8) {
+        tangent = tangent / tlen;
+        let handedness = select(-1.0, 1.0, handednessRaw >= 0.0);
+        frame.tangent = tangent;
+        frame.bitangent = cross(normal, tangent) * handedness;
+        frame.valid = true;
+        return frame;
+      }
+    }
+  }
+  let p0 = positions[tri.x].xyz;
+  let e1 = positions[tri.y].xyz - p0;
+  let e2 = positions[tri.z].xyz - p0;
+  let uv0 = meshUvs[tri.x].xy;
+  let duv1 = meshUvs[tri.y].xy - uv0;
+  let duv2 = meshUvs[tri.z].xy - uv0;
+  let det = duv1.x * duv2.y - duv2.x * duv1.y;
+  if (abs(det) < 1e-10) { return frame; }
+  var tangent = (duv2.y * e1 - duv1.y * e2) / det;
+  tangent = tangent - normal * dot(normal, tangent);
+  let tlen = length(tangent);
+  if (tlen < 1e-8) { return frame; }
+  tangent = tangent / tlen;
+  frame.tangent = tangent;
+  frame.bitangent = cross(normal, tangent);
+  frame.valid = true;
+  return frame;
+}
+
+struct AdjointNormalMapSample {
+  normal: vec3f,
+  dNormal_dScale: vec3f,
+}
+
+fn sampleAdjointNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f) -> AdjointNormalMapSample {
+  var out: AdjointNormalMapSample;
+  out.normal = geomNormal;
+  out.dNormal_dScale = vec3f(0.0);
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 14u >= arrayLength(&materialTexDescriptors)) { return out; }
+  let normalIdx = i32(materialTexDescriptors[base].y);
+  if (normalIdx < 0) { return out; }
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, geomNormal);
+  if (!frame.valid) { return out; }
+  let texel = sampleAdjointMaterialLayerLinear(
+    normalIdx,
+    base,
+    triIndex,
+    baryVW,
+    ADJOINT_MATERIAL_TEX_UV_NORMAL,
+    materialTexDescriptors[base + 8u].xy,
+    materialTexDescriptors[base + 14u].xy,
+  ).xyz;
+  let xy = texel.xy * 2.0 - vec2f(1.0);
+  let z = texel.z * 2.0 - 1.0;
+  let normalScale = materialTexDescriptors[base + 5u].w;
+  let perturbed = frame.tangent * (xy.x * normalScale) +
+    frame.bitangent * (xy.y * normalScale) +
+    geomNormal * z;
+  let plen = length(perturbed);
+  if (plen <= 1e-6) { return out; }
+  let n = perturbed / plen;
+  let dPerturbed_dScale = frame.tangent * xy.x + frame.bitangent * xy.y;
+  out.normal = n;
+  out.dNormal_dScale = (dPerturbed_dScale - n * dot(n, dPerturbed_dScale)) / plen;
+  return out;
 }
 
 fn sampleAdjointOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
@@ -940,6 +1042,72 @@ fn directLightBrdfValue(
     adjointSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
 }
 
+const ADJOINT_NORMAL_SCALE_DERIV_STEP = 1e-3;
+
+fn directLightContributionValue(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  Li: vec3f,
+) -> vec3f {
+  let nDotL = max(0.0, dot(n, wi));
+  if (nDotL <= 0.0) { return vec3f(0.0); }
+  return directLightBrdfValue(
+    baseColor, roughness, metallic, n, wo, wi, specularColor, specularIntensity,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    anisotropy, anisotropyRotation,
+  ) * nDotL * Li;
+}
+
+fn directLightNormalScaleGradient(
+  dLoss_dR: vec3f,
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  n: vec3f,
+  dNormal_dScale: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  Li: vec3f,
+) -> f32 {
+  if (dot(dNormal_dScale, dNormal_dScale) <= 1e-12) { return 0.0; }
+  let h = ADJOINT_NORMAL_SCALE_DERIV_STEP;
+  let nPlus = safe_normalize(n + dNormal_dScale * h);
+  let nMinus = safe_normalize(n - dNormal_dScale * h);
+  let cPlus = directLightContributionValue(
+    baseColor, roughness, metallic, nPlus, wo, wi, specularColor, specularIntensity,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    anisotropy, anisotropyRotation, Li,
+  );
+  let cMinus = directLightContributionValue(
+    baseColor, roughness, metallic, nMinus, wo, wi, specularColor, specularIntensity,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    anisotropy, anisotropyRotation, Li,
+  );
+  return dot(dLoss_dR, (cPlus - cMinus) / (2.0 * h));
+}
+
 fn scatterEmitterRadianceGradient(
   targetKind: u32,
   targetSlot: u32,
@@ -1071,7 +1239,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Face the shading normal toward the viewer — the SAME flip the forward shade
     // prologue applies (shadePrologue.wgsl.ts). Without it, back-facing geometry
     // gets nDotL<=0 against an interior light and contributes no gradient.
-    let n = select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0);
+    let nFace = select(-nGeo, nGeo, dot(nGeo, ray.direction) < 0.0);
+    let normalMapSample = sampleAdjointNormalMap(matId, hit.tri, hitBaryVW, nFace);
+    let n = normalMapSample.normal;
+    let dNormal_dNormalScale = normalMapSample.dNormal_dScale;
     let pos = ray.origin + ray.direction * hit.t;
     let wo = -ray.direction;
 
@@ -1106,6 +1277,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     var gAnisotropy = 0.0;
     var gAnisotropyRotation = 0.0;
     var gEnvMapIntensity = 0.0;
+    var gNormalScale = 0.0;
     for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
       let dBase = di * 2u;
       let dDirAD = directionalLights[dBase];
@@ -1154,6 +1326,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
+        gNormalScale = gNormalScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb,
+        );
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1210,6 +1388,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
+        gNormalScale = gNormalScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+        );
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1272,6 +1456,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
+        gNormalScale = gNormalScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+        );
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1349,6 +1539,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
+        gNormalScale = gNormalScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+        );
         let areaFactor = 1.0 / max(lightPdf, 1e-6);
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
@@ -1424,6 +1620,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
+        gNormalScale = gNormalScale + directLightNormalScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+        );
         let areaFactor = 1.0 / max(lightPdf, 1e-6);
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
@@ -1479,6 +1681,12 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         gAnisotropy = gAnisotropy + lg.anisotropyGrad;
         gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
         if (!isUnlit) {
+          gNormalScale = gNormalScale + directLightNormalScaleGradient(
+            dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+            wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
+            effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+            effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          );
           let brdfValue = directLightBrdfValue(
             effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1530,6 +1738,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         adjointScatter(gradOffset, gLightMapIntensity * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_ENV_MAP_INTENSITY}u) {
         adjointScatter(gradOffset, gEnvMapIntensity * invReplaySamples);
+      } else if (d.y == ${ADJOINT_FIELD_NORMAL_SCALE}u) {
+        adjointScatter(gradOffset, gNormalScale * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT}u) {
         adjointScatter(gradOffset, gClearcoat * clearcoatFactor * invReplaySamples);
       } else if (d.y == ${ADJOINT_FIELD_CLEARCOAT_ROUGHNESS}u) {

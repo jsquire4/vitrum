@@ -14,7 +14,9 @@
  * roughness, metallic, aoMapIntensity, emissive, specularColor,
  * specularIntensity, clearcoat, clearcoatRoughness, sheen, sheenColor,
  * sheenRoughness, iridescence, iridescenceIor, iridescenceThicknessRange,
- * anisotropy, anisotropyRotation).
+ * anisotropy, anisotropyRotation, normalScale). The normalScale derivative is
+ * replay-local in `adjointPass.wgsl.ts` because it chains through sampled normal
+ * maps and the direct-light contribution, not through a standalone BRDF partial here.
  * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
  * partials match the FD oracle to f32 precision, the chain rule + fixed-point
  * accumulation match an on-device finite-difference, and

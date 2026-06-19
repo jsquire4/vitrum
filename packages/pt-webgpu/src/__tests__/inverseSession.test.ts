@@ -1173,7 +1173,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps emitter path-replay on finite-difference when receiver materials use unreplayed normal maps', () => {
+  it('keeps emitter path-replay when receiver materials use replayed top-level normal maps', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1195,6 +1195,35 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       parameters: [{ path: 'emitters.lamp.intensity', kind: 'scalar' }],
       method: 'path-replay',
     });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      path: 'emitters.lamp.intensity',
+    }));
+    session.dispose();
+  });
+
+  it('keeps emitter path-replay on finite-difference when receiver materials use unreplayed bump maps', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                bumpMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 0.5, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'emitters.lamp.intensity', kind: 'scalar' }],
+      method: 'path-replay',
+    });
     expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-normal',
@@ -1202,7 +1231,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       details: expect.objectContaining({
         finiteDifferenceReason: 'normal',
         primitiveId: 'panel',
-        unsupportedMaterialFields: expect.arrayContaining(['normalMap']),
+        unsupportedMaterialFields: expect.arrayContaining(['bumpMap']),
       }),
     }));
     session.dispose();
@@ -1961,7 +1990,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps scalar normal map controls on finite-difference until path replay mirrors those terms', () => {
+  it('keeps top-level normalScale on path-replay for replayed normal-map direct lighting', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1972,6 +2001,37 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
               material: {
                 ...pr.material,
                 normalScale: 0.8,
+                normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.7, 0.45, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.normalScale', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()).toEqual([[expect.closeTo(0.8, 6)]]);
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
+  it('keeps bump and clearcoat normal controls on finite-difference until those terms are replayed', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
                 bumpScale: 0.7,
                 clearcoatNormalScale: 0.6,
               },
@@ -1979,11 +2039,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
           : pr,
       ),
     };
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [
-        { path: 'materials.panel.normalScale', kind: 'scalar' },
         { path: 'materials.panel.bumpScale', kind: 'scalar' },
         { path: 'materials.panel.clearcoatNormalScale', kind: 'scalar' },
       ],
@@ -1992,12 +2051,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
 
     expect(session.method).toBe('finite-difference');
     expect(session.currentValues()).toEqual([
-      [expect.closeTo(0.8, 6)],
       [expect.closeTo(0.7, 6)],
       [expect.closeTo(0.6, 6)],
     ]);
     for (const field of [
-      'normalScale',
       'bumpScale',
       'clearcoatNormalScale',
     ]) {
@@ -2114,11 +2171,38 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps base BRDF controls on path-replay when a top-level normalMap is present', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                normalScale: 0.8,
+                normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.7, 0.45, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it.each([
     ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility', 'visibility'],
     ['opacity', { opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport', 'transport'],
-    ['normal map', { normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) } } }, 'path-replay-unsupported-normal', 'normal'],
     ['bump map', { bumpMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 0.5, 1]) } } }, 'path-replay-unsupported-normal', 'normal'],
     ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],

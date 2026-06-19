@@ -256,6 +256,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'anisotropy',
   'anisotropyRotation',
   'envMapIntensity',
+  'normalScale',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
 const ADJOINT_MAPPED_EMISSION_EPS = 1e-8;
@@ -271,7 +272,7 @@ const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'scatteringCoefficientRGB',
 ]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
-const PATH_REPLAY_NORMAL_ONLY_FIELDS = new Set(['normalScale', 'bumpScale', 'clearcoatNormalScale']);
+const PATH_REPLAY_NORMAL_ONLY_FIELDS = new Set(['bumpScale', 'clearcoatNormalScale']);
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -1049,6 +1050,9 @@ function pathReplayMaterialIssue(
   if (field === 'anisotropy' || field === 'anisotropyRotation') {
     return materialIssueForAnisotropy(material);
   }
+  if (field === 'normalScale') {
+    return materialIssueForNormalScale(material);
+  }
   if (iridescenceCoupled) {
     return {
       message: 'another optimized parameter on this material targets iridescence, which is coupled to this BRDF field',
@@ -1132,6 +1136,21 @@ function materialIssueForAnisotropy(
 ): PathReplayMaterialIssue | null {
   if (material.shadingModel === 'unlit') {
     return { message: 'unlit materials do not evaluate the anisotropic direct-light lobe', details: { reason: 'unlit' } };
+  }
+  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
+  if (common != null) return common;
+  const maps = listPathReplayTransportOrGeometryMaps(material);
+  if (maps.length > 0) {
+    return materialMapIssue(maps);
+  }
+  return null;
+}
+
+function materialIssueForNormalScale(
+  material: MaterialSpec,
+): PathReplayMaterialIssue | null {
+  if (material.shadingModel === 'unlit') {
+    return { message: 'unlit materials do not evaluate the normal-mapped direct-light lobe', details: { reason: 'unlit' } };
   }
   const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
   if (common != null) return common;
@@ -1357,7 +1376,6 @@ function hasPathReplayTransportOrGeometryMap(m: MaterialSpec): boolean {
 
 function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string[] {
   const out: string[] = [];
-  if (m.normalMap != null) out.push('normalMap');
   if (m.transmissionMap != null) out.push('transmissionMap');
   if (m.thicknessMap != null) out.push('thicknessMap');
   if (m.alphaMap != null) out.push('alphaMap');
