@@ -19,7 +19,12 @@
 
 import type { EngineCapabilities, EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
 import { analyticPrimitiveToMesh, partitionSceneBySupport } from '@vitrum/core';
-import { mergeWorldSpaceFromCore, mergeUv1FromCore, type WorldSpaceMergeResult } from '@vitrum/shared-bvh';
+import {
+  mergeWorldSpaceFromCore,
+  mergeUv1FromCore,
+  refitBvhBounds,
+  type WorldSpaceMergeResult,
+} from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
 import { allocGlTexture } from '../gl/texAlloc.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
@@ -44,6 +49,21 @@ export interface SceneTexturesBuild {
 
 export interface SceneGeometryTexturesBuild {
   readonly bvh: ReturnType<typeof uploadBvhTextures>;
+  readonly attributesArray: WebGLTexture;
+  readonly meshLights: WebGLTexture | null;
+  readonly meshLightCount: number;
+  readonly totalEmissiveArea: number;
+  readonly totalEmissivePower: number;
+  readonly triangleCount: number;
+  readonly merged: WorldSpaceMergeResult;
+  readonly vertexColorMaterialIds: ReadonlySet<number>;
+  readonly warnings: readonly string[];
+  readonly structuredWarnings: readonly EngineWarning[];
+}
+
+export interface RefitSceneGeometryTexturesBuild {
+  readonly bvhBounds: WebGLTexture;
+  readonly bvhPosition: WebGLTexture;
   readonly attributesArray: WebGLTexture;
   readonly meshLights: WebGLTexture | null;
   readonly meshLightCount: number;
@@ -127,6 +147,122 @@ export function buildSceneGeometryTextures(
     totalEmissivePower: meshLightsData.totalEmissivePower,
     triangleCount: geometry.merged.triangleCount,
     merged: geometry.merged,
+    vertexColorMaterialIds,
+    warnings: meshLightsData.warnings,
+    structuredWarnings,
+  };
+}
+
+function sameUint32Array(a: Uint32Array, b: Uint32Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function sameMeshRanges(
+  a: WorldSpaceMergeResult['meshVertexRanges'],
+  b: WorldSpaceMergeResult['meshVertexRanges'],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const ai = a[i];
+    const bi = b[i];
+    if (
+      ai == null ||
+      bi == null ||
+      ai.name !== bi.name ||
+      ai.vertexStart !== bi.vertexStart ||
+      ai.vertexCount !== bi.vertexCount ||
+      ai.triStart !== bi.triStart ||
+      ai.triCount !== bi.triCount ||
+      (ai.windingFlipped === true) !== (bi.windingFlipped === true)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function canRefitAgainstCurrentTopology(
+  current: WorldSpaceMergeResult,
+  next: WorldSpaceMergeResult,
+): boolean {
+  return (
+    current.vertexCount === next.vertexCount &&
+    current.triangleCount === next.triangleCount &&
+    current.positionStrideFloats === next.positionStrideFloats &&
+    current.bvhIndexStride === next.bvhIndexStride &&
+    current.bvhNodes.length === next.bvhNodes.length &&
+    sameMeshRanges(current.meshVertexRanges, next.meshVertexRanges) &&
+    sameUint32Array(current.indices, next.indices) &&
+    sameUint32Array(current.triMaterialId, next.triMaterialId) &&
+    sameUint32Array(current.bvhTriToMergedTri, next.bvhTriToMergedTri) &&
+    sameUint32Array(current.mergedIndices, next.mergedIndices) &&
+    sameUint32Array(current.mergedTriMaterialId, next.mergedTriMaterialId)
+  );
+}
+
+export function buildRefitSceneGeometryTextures(
+  gl: WebGL2RenderingContext,
+  scene: Scene,
+  currentMerged: WorldSpaceMergeResult,
+  opts?: {
+    readonly warningPhase?: string;
+    readonly warningMethod?: string;
+  },
+): RefitSceneGeometryTexturesBuild | null {
+  const structuredWarnings: EngineWarning[] = [];
+  const warningOptions = {
+    onWarning: (warning: EngineWarning) => structuredWarnings.push(warning),
+    warningPhase: opts?.warningPhase ?? 'mutation',
+    warningMethod: opts?.warningMethod ?? 'updatePrimitive',
+  };
+  const geometry = buildGeometryInputs(scene, warningOptions);
+  if (!canRefitAgainstCurrentTopology(currentMerged, geometry.merged)) return null;
+
+  const refitNodes = new Float32Array(currentMerged.bvhNodes);
+  refitBvhBounds(
+    refitNodes,
+    currentMerged.indices,
+    geometry.merged.positions,
+    geometry.merged.positionStrideFloats,
+    currentMerged.bvhIndexStride,
+  );
+  const refitMerged: WorldSpaceMergeResult = {
+    ...geometry.merged,
+    bvhNodes: refitNodes,
+    indices: currentMerged.indices,
+    triMaterialId: currentMerged.triMaterialId,
+    bvhTriToMergedTri: currentMerged.bvhTriToMergedTri,
+    mergedIndices: currentMerged.mergedIndices,
+    mergedTriMaterialId: currentMerged.mergedTriMaterialId,
+  };
+
+  const bvhData = packBvhTextureData(refitMerged);
+  const meshLightsData = packMeshAreaLights(scene, refitMerged);
+  const meshLights =
+    meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights') : null;
+  const attributesArray = uploadRgba32fArray(
+    gl,
+    geometry.attrData.data,
+    geometry.attrData.dim,
+    geometry.attrData.layers,
+    'vertex attributes',
+  );
+  const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, refitMerged);
+
+  return {
+    bvhBounds: uploadRgba32f(gl, bvhData.bounds, bvhData.boundsDim, 'scene BVH bounds'),
+    bvhPosition: uploadRgba32f(gl, bvhData.position, bvhData.positionDim, 'scene BVH position'),
+    attributesArray,
+    meshLights,
+    meshLightCount: meshLightsData.triLightCount,
+    totalEmissiveArea: meshLightsData.totalEmissiveArea,
+    totalEmissivePower: meshLightsData.totalEmissivePower,
+    triangleCount: refitMerged.triangleCount,
+    merged: refitMerged,
     vertexColorMaterialIds,
     warnings: meshLightsData.warnings,
     structuredWarnings,

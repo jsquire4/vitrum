@@ -699,11 +699,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     const geometryFast = tryFastPathGeometryMutation(
       this.#gl,
       this.#sceneTextures,
+      this.#geoPack,
       nextScene,
       patch,
     );
     if (geometryFast != null) {
-      this.#warnPrimitiveMutationFallback(id, patch);
+      this.#warnPrimitiveMutationFallback(id, patch, geometryFast.mutationFallback);
       this.#commitMutationSwap(nextScene, geometryFast);
       return;
     }
@@ -975,7 +976,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     });
   }
 
-  #warnPrimitiveMutationFallback(id: string, patch: Partial<ScenePrimitive>): void {
+  #warnPrimitiveMutationFallback(
+    id: string,
+    patch: Partial<ScenePrimitive>,
+    mutationFallback?: { readonly fallbackReason: string; readonly nativePatchMissing: string },
+  ): void {
     const fields = primitivePatchFields(patch);
     const materialFields = materialPatchFields(patch);
     const materialTextureFields = materialTextureMapPatchFields(patch);
@@ -990,6 +995,18 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       details.materialTextureFields = materialTextureFields;
       details.fallbackReason = 'texture-map-material-patch';
       details.nativePatchMissing = 'targeted-material-atlas-texture-update';
+    } else if (
+      mutationFallback != null &&
+      (patchFallback == null || patchFallback.fallbackReason === 'geometry-bvh-texture-rebuild')
+    ) {
+      details.fallbackReason = mutationFallback.fallbackReason;
+      details.nativePatchMissing = mutationFallback.nativePatchMissing;
+      if (patchFallback?.animationFields !== undefined) {
+        details.animationFields = patchFallback.animationFields;
+      }
+      if (patchFallback?.fullUploadFields !== undefined) {
+        details.fullUploadFields = patchFallback.fullUploadFields;
+      }
     } else if (patchFallback != null) {
       details.fallbackReason = patchFallback.fallbackReason;
       details.nativePatchMissing = patchFallback.nativePatchMissing;

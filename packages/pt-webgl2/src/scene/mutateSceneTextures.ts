@@ -7,6 +7,7 @@ import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
 import {
+  buildRefitSceneGeometryTextures,
   buildSceneGeometryTextures,
   expandAnalyticPrimitiveFallbacks,
   uploadRgba32f,
@@ -71,6 +72,10 @@ export interface WebGl2MutationSwap {
   readonly scene?: Scene;
   readonly deleteOldTextures: readonly (WebGLTexture | null)[];
   readonly structuredWarnings?: readonly EngineWarning[];
+  readonly mutationFallback?: {
+    readonly fallbackReason: string;
+    readonly nativePatchMissing: string;
+  };
 }
 
 function isMeshLikePrimitive(p: ScenePrimitive | undefined): p is Extract<
@@ -313,10 +318,72 @@ export function tryFastPathMaterialMutation(
 export function tryFastPathGeometryMutation(
   gl: WebGL2RenderingContext,
   current: UploadedSceneTextures | null,
+  currentMerged: WorldSpaceMergeResult | null,
   nextScene: Scene,
   patch: Partial<ScenePrimitive>,
 ): WebGl2MutationSwap | null {
   if (current == null || !canRefreshGeometryTextures(patch)) return null;
+  if (currentMerged != null) {
+    const refit = buildRefitSceneGeometryTextures(gl, nextScene, currentMerged, {
+      warningPhase: 'mutation',
+      warningMethod: 'updatePrimitive',
+    });
+    if (refit != null) {
+      const structuredWarnings: EngineWarning[] = [...refit.structuredWarnings];
+      for (const warning of refit.warnings) {
+        structuredWarnings.push({
+          code: 'pt-webgl2.scene-upload-warning',
+          backend: 'pt-webgl2',
+          phase: 'mutation',
+          method: 'updatePrimitive',
+          message: `[vitrum/pt-webgl2] ${warning}`,
+          details: { warning, operation: 'geometry-bvh-refit-texture-refresh' },
+        });
+      }
+      const vertexColorMaterialIdsChanged = !sameNumberSet(
+        current.vertexColorMaterialIds,
+        refit.vertexColorMaterialIds,
+      );
+      const materialsData = vertexColorMaterialIdsChanged
+        ? packMaterialsTexture(
+            refit.merged.materials,
+            current.materialLayerMap ?? undefined,
+            { vertexColorMaterialIds: refit.vertexColorMaterialIds },
+          )
+        : null;
+      const materials = materialsData != null
+        ? uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials')
+        : null;
+
+      return {
+        textures: withTextureReplacementsForGl(gl, current, {
+          bvhBounds: refit.bvhBounds,
+          bvhPosition: refit.bvhPosition,
+          ...(materials != null ? { materials } : {}),
+          attributesArray: refit.attributesArray,
+          meshLights: refit.meshLights,
+          meshLightCount: refit.meshLightCount,
+          totalEmissiveArea: refit.totalEmissiveArea,
+          totalEmissivePower: refit.totalEmissivePower,
+          triangleCount: refit.triangleCount,
+          vertexColorMaterialIds: refit.vertexColorMaterialIds,
+        }),
+        geoPack: refit.merged,
+        deleteOldTextures: [
+          current.bvhBounds,
+          current.bvhPosition,
+          ...(materials != null ? [current.materials] : []),
+          current.attributesArray,
+          current.meshLights,
+        ],
+        structuredWarnings,
+        mutationFallback: {
+          fallbackReason: 'geometry-bvh-refit-texture-refresh',
+          nativePatchMissing: 'targeted-gpu-texture-subimage-update',
+        },
+      };
+    }
+  }
   const built = buildSceneGeometryTextures(gl, nextScene, {
     warningPhase: 'mutation',
     warningMethod: 'updatePrimitive',
@@ -375,6 +442,10 @@ export function tryFastPathGeometryMutation(
       current.meshLights,
     ],
     structuredWarnings,
+    mutationFallback: {
+      fallbackReason: 'geometry-bvh-texture-rebuild',
+      nativePatchMissing: 'targeted-geometry-bvh-refit',
+    },
   };
 }
 

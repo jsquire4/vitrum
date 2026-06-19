@@ -666,11 +666,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(fallbackWarnings[0]?.details).toEqual({
         primitiveId: 'tri',
         fields: ['transform'],
-        fallbackReason: 'geometry-bvh-texture-rebuild',
-        nativePatchMissing: 'targeted-geometry-bvh-refit',
+        fallbackReason: 'geometry-bvh-refit-texture-refresh',
+        nativePatchMissing: 'targeted-gpu-texture-subimage-update',
       });
-      expect(firstRefreshUploads - initialTextureUploads).toBe(6);
-      expect(createTexture.mock.calls.length - firstRefreshUploads).toBe(6);
+      expect(firstRefreshUploads - initialTextureUploads).toBe(3);
+      expect(createTexture.mock.calls.length - firstRefreshUploads).toBe(3);
       expect(e._debugGeoPack?.bvhNodes).not.toBe(beforeBvhNodes);
       expect(e._debugGeoPack?.materials).toEqual(beforeMaterials);
       expect(e._debugGeoPack?.positions[0]).toBeCloseTo(2, 6);
@@ -753,7 +753,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         fallbackReason: 'geometry-material-texture-rebuild',
         nativePatchMissing: 'targeted-vertex-color-attribute-material-flag-update',
       });
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(7);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(4);
     } finally {
       warn.mockRestore();
     }
@@ -805,7 +805,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         fields: ['colors'],
         fallbackReason: 'geometry-material-texture-rebuild',
       });
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(6);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(3);
     } finally {
       warn.mockRestore();
     }
