@@ -721,7 +721,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('keeps vertex-color patches on the full upload path because material slots encode color use', async () => {
+  it('keeps vertex-color patches on the bounded geometry/material texture refresh path', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl();
@@ -750,11 +750,62 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(fallbackWarnings[0]?.details).toEqual({
         primitiveId: 'tri',
         fields: ['colors'],
-        fallbackReason: 'primitive-scene-texture-repack',
-        nativePatchMissing: 'targeted-primitive-layout-or-analytic-update',
-        fullUploadFields: ['colors'],
+        fallbackReason: 'geometry-material-texture-rebuild',
+        nativePatchMissing: 'targeted-vertex-color-attribute-material-flag-update',
       });
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(8);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(7);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not repack the material texture when a vertex-color patch keeps the same material flag set', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    try {
+      const baseScene = triScene();
+      const prim = baseScene.primitives[0];
+      if (prim?.kind !== 'mesh') throw new Error('expected mesh fixture');
+      const scene: Scene = {
+        ...baseScene,
+        primitives: [{
+          ...prim,
+          colors: new Float32Array([
+            1, 1, 1, 1,
+            1, 1, 1, 1,
+            1, 1, 1, 1,
+            1, 1, 1, 1,
+          ]),
+        }],
+      };
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(scene);
+      const initialTextureUploads = createTexture.mock.calls.length;
+
+      e.updatePrimitive?.('tri', {
+        colors: new Float32Array([
+          1, 0, 0, 1,
+          0, 1, 0, 1,
+          0, 0, 1, 1,
+          1, 1, 1, 1,
+        ]),
+      } as never);
+
+      const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
+      expect(fallbackWarnings).toHaveLength(1);
+      expect(fallbackWarnings[0]?.details).toMatchObject({
+        primitiveId: 'tri',
+        fields: ['colors'],
+        fallbackReason: 'geometry-material-texture-rebuild',
+      });
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(6);
     } finally {
       warn.mockRestore();
     }

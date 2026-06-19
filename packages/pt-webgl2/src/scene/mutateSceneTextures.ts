@@ -53,6 +53,7 @@ const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
   'uvs',
   'uv1',
   'tangents',
+  'colors',
   'instances',
   'bones',
   'boneInverses',
@@ -109,6 +110,14 @@ function canRefreshGeometryTextures(patch: Partial<ScenePrimitive>): boolean {
     sawGeometryField = true;
   }
   return sawGeometryField;
+}
+
+function sameNumberSet(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const value of a) {
+    if (!b.has(value)) return false;
+  }
+  return true;
 }
 
 function materialWithCastShadow(primitive: Extract<ScenePrimitive, { material: MaterialSpec }>): MaterialSpec {
@@ -323,6 +332,20 @@ export function tryFastPathGeometryMutation(
       details: { warning, operation: 'geometry-texture-refresh' },
     });
   }
+  const vertexColorMaterialIdsChanged = !sameNumberSet(
+    current.vertexColorMaterialIds,
+    built.vertexColorMaterialIds,
+  );
+  const materialsData = vertexColorMaterialIdsChanged
+    ? packMaterialsTexture(
+        built.merged.materials,
+        current.materialLayerMap ?? undefined,
+        { vertexColorMaterialIds: built.vertexColorMaterialIds },
+      )
+    : null;
+  const materials = materialsData != null
+    ? uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials')
+    : null;
 
   return {
     textures: withTextureReplacementsForGl(gl, current, {
@@ -331,6 +354,7 @@ export function tryFastPathGeometryMutation(
       bvhPosition: built.bvh.position,
       bvhIndex: built.bvh.index,
       materialIndex: built.bvh.materialIndex,
+      ...(materials != null ? { materials } : {}),
       attributesArray: built.attributesArray,
       meshLights: built.meshLights,
       meshLightCount: built.meshLightCount,
@@ -346,6 +370,7 @@ export function tryFastPathGeometryMutation(
       current.bvhPosition,
       current.bvhIndex,
       current.materialIndex,
+      ...(materials != null ? [current.materials] : []),
       current.attributesArray,
       current.meshLights,
     ],

@@ -90,7 +90,6 @@ const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([
 ]);
 
 const FULL_SCENE_REPACK_PATCH_FIELDS = new Set([
-  'colors',
   'shape',
   'params',
 ]);
@@ -118,6 +117,12 @@ function primitiveFallbackReason(fields: readonly string[]): {
       fallbackReason: 'animation-geometry-rebuild',
       nativePatchMissing: 'targeted-skinned-or-morph-geometry-update',
       animationFields,
+    };
+  }
+  if (fields.includes('colors')) {
+    return {
+      fallbackReason: 'geometry-material-texture-rebuild',
+      nativePatchMissing: 'targeted-vertex-color-attribute-material-flag-update',
     };
   }
   if (fields.some((field) => GEOMETRY_REBUILD_PATCH_FIELDS.has(field))) {
