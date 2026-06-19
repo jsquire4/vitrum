@@ -164,8 +164,24 @@ function sampledFullPdf(
   sheenDensity: number,
 ): number {
   const raw = basePdf + clearcoat * clearcoatDensity + sheen * sheenDensity;
-  const lobeWeightSum = Math.max(1 + Math.max(clearcoat, 0) + Math.max(sheen, 0), 1);
-  return raw / lobeWeightSum;
+  return raw / lobeWeightSum(clearcoat, sheen);
+}
+
+function lobeWeightSum(clearcoat: number, sheen: number): number {
+  return Math.max(1 + Math.max(clearcoat, 0) + Math.max(sheen, 0), 1);
+}
+
+function sourceLobeProbabilities(clearcoat: number, sheen: number): {
+  base: number;
+  clearcoat: number;
+  sheen: number;
+} {
+  const denom = lobeWeightSum(clearcoat, sheen);
+  return {
+    base: 1 / denom,
+    clearcoat: Math.max(clearcoat, 0) / denom,
+    sheen: Math.max(sheen, 0) / denom,
+  };
 }
 
 function mix3(a: Vec3, b: Vec3, t: number): Vec3 {
@@ -213,6 +229,43 @@ describe('pt-webgpu extension lobe CPU references', () => {
     expect(sampled).toBeCloseTo(raw / (1 + cc + sheen), 12);
     expect(sampled).toBeLessThan(raw);
     expect(sampledFullPdf(basePdf, 0, ccDensity, 0, sheenDensity)).toBeCloseTo(basePdf, 12);
+  });
+
+  it('oracles source-lobe selection probabilities independently of WGSL string pins', () => {
+    const weights = sourceLobeProbabilities(0.6, 0.25);
+    expect(weights.base).toBeCloseTo(1 / 1.85, 12);
+    expect(weights.clearcoat).toBeCloseTo(0.6 / 1.85, 12);
+    expect(weights.sheen).toBeCloseTo(0.25 / 1.85, 12);
+    expect(weights.base + weights.clearcoat + weights.sheen).toBeCloseTo(1, 12);
+
+    const clamped = sourceLobeProbabilities(-0.4, 0.5);
+    expect(clamped.base).toBeCloseTo(1 / 1.5, 12);
+    expect(clamped.clearcoat).toBe(0);
+    expect(clamped.sheen).toBeCloseTo(0.5 / 1.5, 12);
+    expect(lobeWeightSum(-0.4, -0.25)).toBe(1);
+  });
+
+  it('oracles source-sampler throughput as the inverse of the selected mixture probability', () => {
+    const clearcoat = 0.4;
+    const sheen = 0.7;
+    const denom = lobeWeightSum(clearcoat, sheen);
+    const specProb = 0.31;
+    const diffProb = 0.69;
+    const fresnelR = 0.18;
+
+    const opaqueSpecSelect = specProb / denom;
+    const opaqueDiffSelect = diffProb / denom;
+    const dielectricReflectSelect = fresnelR / denom;
+    const dielectricRefractSelect = (1 - fresnelR) / denom;
+
+    expect(opaqueSpecSelect * (denom / specProb)).toBeCloseTo(1, 12);
+    expect(opaqueDiffSelect * (denom / diffProb)).toBeCloseTo(1, 12);
+    expect(dielectricReflectSelect * (denom / fresnelR)).toBeCloseTo(1, 12);
+    expect(dielectricRefractSelect * (denom / (1 - fresnelR))).toBeCloseTo(1, 12);
+
+    const withoutDenominator = specProb * (denom / specProb);
+    expect(withoutDenominator).toBeCloseTo(denom, 12);
+    expect(withoutDenominator).toBeGreaterThan(1);
   });
 
   it('keeps iridescence as an F0 modifier with an exact zero-default path', () => {

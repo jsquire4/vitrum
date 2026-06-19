@@ -5,24 +5,18 @@
  * - Item 18: removing the `min(hit.dist, 32.0)` Beer-Lambert clamp is numerically safe.
  * - Item 28: a safeInvDir helper prevents 0*Inf=NaN in axis-aligned ray–AABB slab tests.
  *
- * The `safeInvDir` helper below is a TypeScript model used to reason about
- * the slab-test math from JS — there is no shared TS implementation to
- * re-export (the production `safeInvDir` lives only as a WGSL string, the
- * `SAFE_INV_DIR_WGSL` export in `shared-bvh/src/wgsl/bvhIntersect.wgsl.ts`).
- * This mirror's
- * exact-zero handling now matches the WGSL post-fix-2026-05-19:
- * both use ±sentinel (this mirror uses ±1e20, WGSL uses ±1e30 — value
- * differs, sign convention matches). The canonical CPU mirror with
- * matching ±1e30 semantics lives in `@vitrum/shared-bvh`'s
- * `__tests__/safeInvDir.test.ts`; this file's mirror is older and
- * intentionally local.
+ * The canonical production `safeInvDir` behavior is pinned in
+ * `@vitrum/shared-bvh`'s `__tests__/safeInvDir.test.ts` against
+ * `SAFE_INV_DIR_WGSL`. The local helper below is a legacy pt-webgpu slab-math
+ * smoke model: it keeps the same exact-zero sign convention but uses a smaller
+ * finite sentinel because these tests only check NaN-free ray/AABB arithmetic.
  */
 
 import { describe, expect, it } from 'vitest';
 
 // ---------------------------------------------------------------------------
-// Test-only mirror of the proposed WGSL safeInvDir (Item 28).
-// Replaces a near-zero component with ±1e20 so slab tests never compute 0*Inf=NaN.
+// Test-only slab-math model of safeInvDir (Item 28).
+// Replaces a near-zero component with ±1e20 so these smoke tests never compute 0*Inf=NaN.
 // ---------------------------------------------------------------------------
 function safeInvDir(d: [number, number, number]): [number, number, number] {
   const EPS = 1e-30;

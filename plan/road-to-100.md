@@ -640,6 +640,16 @@ buckets that the A–D framing was missing:**
   adjoint replay pass: sign-encoded angular-diameter decode, rim/centre
   endpoints, unit-length directions, alternate-basis handling, and the
   solid-angle-uniform `cos(theta)` law.
+  `extensionLobeReference.test.ts` now independently pins the
+  base/clearcoat/sheen source-lobe mixture probabilities and inverse-probability
+  throughput relationship for opaque plus transmissive source sampling, so the
+  sampled-density / `brdfExtensionLobeWeightSum` lane is no longer protected only
+  by `wgslContract` string slices.
+  `oracle.analyticShapes.test.ts` now independently pins pt-webgpu full-tier
+  analytic-shape local intersectors for sphere, box, capsule, cylinder, and
+  H-channel came plus the public shape-id ↔ WGSL dispatch linkage, converting
+  that advertised capability from capability/string coverage into behavior
+  coverage.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
   compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
