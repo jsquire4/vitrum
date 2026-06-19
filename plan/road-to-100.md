@@ -256,6 +256,10 @@
 > Same-day DDGI sub-pass hardening: `DDGI` now routes `ProbeUpdatePass`
 > construction warnings through its guarded `_warn` wrapper, so a throwing
 > standalone host warning callback cannot break DDGI construction.
+> Same-day React attach-error follow-up: `<VitrumCanvas>` initial async attach
+> failures now route through guarded `onAttachError` and structured `onError`
+> with phase `attach:initial`, so host callback throws cannot leak out of the
+> React helper or turn attach/load failures into console-only diagnostics.
 > Same-day GI-state import follow-up: `importGIState()` grid-layout mismatch
 > rejection now emits structured
 > `walkaround-hybrid.import-gi-state-grid-mismatch` warnings with snapshot/current

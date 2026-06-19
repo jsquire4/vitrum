@@ -223,6 +223,32 @@ for (const needle of [
   }
 }
 
+const createEngineInternals = await readText("packages/engine/src/createEngineInternals.ts");
+if (!createEngineInternals.includes("| 'attach:initial'")) {
+  fail("CreateEngineErrorPhase must retain the React initial attach failure phase");
+}
+
+const vitrumCanvasSource = await readText("packages/engine/src/react/VitrumCanvas.tsx");
+for (const needle of [
+  "try { onAttachErrorRef.current?.(err); } catch",
+  "onErrorRef.current?.(err, { phase: 'attach:initial', recoverable: false });",
+]) {
+  if (!vitrumCanvasSource.includes(needle)) {
+    fail(`VitrumCanvas must retain guarded initial attach error routing: ${needle}`);
+  }
+}
+
+const vitrumCanvasTest = await readText("packages/engine/__tests__/vitrumCanvasMount.test.tsx");
+for (const needle of [
+  "reports initial attach failures through guarded React callbacks",
+  "phase: 'attach:initial'",
+  "host structured callback failed",
+]) {
+  if (!vitrumCanvasTest.includes(needle)) {
+    fail(`VitrumCanvas attach-error regression test must retain source proof: ${needle}`);
+  }
+}
+
 const hybridEngineSource = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
 for (const needle of [
   "updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void",

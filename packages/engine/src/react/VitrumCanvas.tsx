@@ -215,7 +215,8 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           if (cancelled) return;
           // H31 — call via ref so inline onAttachError props don't appear in
           // the effect dep array (which would cause teardown per parent render).
-          onAttachErrorRef.current?.(err);
+          try { onAttachErrorRef.current?.(err); } catch { /* host callback must not propagate — ignore */ }
+          try { onErrorRef.current?.(err, { phase: 'attach:initial', recoverable: false }); } catch { /* host callback must not propagate — ignore */ }
           console.error('[VitrumCanvas] attachVitrum failed:', err);
         });
 

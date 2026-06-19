@@ -450,4 +450,41 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
       }
     }
   });
+
+  it('reports initial attach failures through guarded React callbacks', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+
+    const attachError = new Error('attach failed');
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    vi.spyOn(vanillaModule, 'attachVitrum').mockRejectedValue(attachError);
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const onAttachError = vi.fn(() => {
+      throw new Error('host attach callback failed');
+    });
+    const onError = vi.fn(() => {
+      throw new Error('host structured callback failed');
+    });
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
+
+    const root = createRoot(container);
+    root.render(React.createElement(VitrumCanvas, {
+      scene: SCENE,
+      camera: CAMERA,
+      onAttachError,
+      onError,
+    }));
+
+    await vi.waitFor(() => expect(onAttachError).toHaveBeenCalledWith(attachError));
+    expect(onError).toHaveBeenCalledWith(attachError, {
+      phase: 'attach:initial',
+      recoverable: false,
+    });
+    expect(consoleError).toHaveBeenCalledWith('[VitrumCanvas] attachVitrum failed:', attachError);
+
+    root.unmount();
+  });
 });

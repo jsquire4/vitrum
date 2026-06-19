@@ -66,6 +66,7 @@ export type CreateEngineErrorPhase =
   | 'attach:gi-export'
   | 'attach:gi-import'
   | 'attach:auto-recreate'
+  | 'attach:initial'
   | 'attach:swapchain'
   | 'attach:renderFrame';
 
