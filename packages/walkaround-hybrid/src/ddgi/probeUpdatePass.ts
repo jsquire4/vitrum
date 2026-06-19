@@ -429,10 +429,21 @@ export class ProbeUpdatePass {
     // for hardware-GPU output.
     const gpu = await detectGpu();
     if (gpu.isWebGPU && gpu.adapterKind === 'swiftshader') {
-      console.error(
-        `[DDGI] SwiftShader detected (vendor='${gpu.adapterVendor}', architecture='${gpu.adapterArchitecture}'). ` +
-        `Refusing to initialize DDGI on software rasterizer. Launch Chrome with hardware GPU enabled to validate DDGI output.`,
-      );
+      this._warn({
+        code: 'walkaround-hybrid.ddgi-swiftshader-disabled',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'ProbeUpdatePass.init',
+        message:
+          `[DDGI] SwiftShader detected (vendor='${gpu.adapterVendor}', architecture='${gpu.adapterArchitecture}'). ` +
+          'Refusing to initialize DDGI on software rasterizer. Launch Chrome with hardware GPU enabled to validate DDGI output.',
+        details: {
+          adapterKind: gpu.adapterKind,
+          adapterVendor: gpu.adapterVendor,
+          adapterArchitecture: gpu.adapterArchitecture,
+          fallback: 'disable-ddgi-probe-update',
+        },
+      });
       return null;
     }
 
@@ -506,7 +517,15 @@ export class ProbeUpdatePass {
       });
       return { raysPipeline, blendIrrPipeline, blendVisPipeline, borderVisPipeline };
     } catch (e) {
-      console.error('[DDGI] Shader compilation failed:', e);
+      this._warn({
+        code: 'walkaround-hybrid.ddgi-shader-compilation-failed',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'ProbeUpdatePass.init',
+        message: `[DDGI] Shader compilation failed: ${String(e)}`,
+        details: { fallback: 'disable-ddgi-probe-update' },
+        raw: e,
+      });
       return null;
     }
   }

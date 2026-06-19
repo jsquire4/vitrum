@@ -326,6 +326,81 @@ describe('ProbeUpdatePass — _initAttempted guard prevents repeated init() on W
     }));
   });
 
+  it('routes SwiftShader DDGI refusal through structured warnings', async () => {
+    vi.mocked(detectGpu).mockResolvedValue({
+      isWebGPU: true,
+      adapterKind: 'swiftshader',
+      adapterVendor: 'Google',
+      adapterArchitecture: 'SwiftShader',
+    });
+    const warnings: EngineWarning[] = [];
+
+    const bvh = new SceneBvh();
+    const grid = new ProbeGrid();
+    const pass = new ProbeUpdatePass(bvh, grid, {
+      onWarning: (warning) => warnings.push(warning),
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await pass.runFrame({ backend: { device: {} as GPUDevice, isWebGPUBackend: true } }, 0, 1);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'walkaround-hybrid.ddgi-swiftshader-disabled',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'ProbeUpdatePass.init',
+      details: expect.objectContaining({
+        adapterKind: 'swiftshader',
+        adapterVendor: 'Google',
+        adapterArchitecture: 'SwiftShader',
+        fallback: 'disable-ddgi-probe-update',
+      }),
+    }));
+  });
+
+  it('routes DDGI shader compilation failures through structured warnings', async () => {
+    vi.mocked(detectGpu).mockResolvedValue({
+      isWebGPU: true,
+      adapterKind: 'hardware',
+      adapterVendor: 'test',
+      adapterArchitecture: 'test',
+    });
+    const compileError = new Error('compile boom');
+    const tracking: MockDeviceTracking = {
+      createdBuffers: [],
+      destroyedBuffers: [],
+      createdTextures: [],
+      destroyedTextures: [],
+    };
+    const device = makeMockDevice(tracking);
+    vi.mocked(device.createComputePipelineAsync).mockRejectedValueOnce(compileError);
+    const warnings: EngineWarning[] = [];
+
+    const bvh = new SceneBvh();
+    const grid = new ProbeGrid();
+    const pass = new ProbeUpdatePass(bvh, grid, {
+      onWarning: (warning) => warnings.push(warning),
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    await pass.runFrame({ backend: { device, isWebGPUBackend: true } }, 0, 1);
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'walkaround-hybrid.ddgi-shader-compilation-failed',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'ProbeUpdatePass.init',
+      details: { fallback: 'disable-ddgi-probe-update' },
+      raw: compileError,
+    }));
+  });
+
   it('routes navigator.gpu requestAdapter failures through structured warnings', async () => {
     vi.mocked(detectGpu).mockResolvedValue({
       isWebGPU: false,
