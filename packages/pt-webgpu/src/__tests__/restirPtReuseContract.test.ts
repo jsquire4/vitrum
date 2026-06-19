@@ -431,6 +431,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);',
       'out.anisotropy = materialAnisotropy(matId, hit.triIndex, hit.baryVW);',
       'out.anisotropyRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW);',
+      'out.envMapIntensity = materialEnvMapIntensity(matId);',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
@@ -446,6 +447,20 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda)',
       'out.baseColor = vec3f(reflScalar);',
       'let emissive = select(sm.emissive, spectralEmissionAtHero(sm.emissive, heroLambda), params.spectralEnabled != 0u);',
+    ]) {
+      expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
+    }
+  });
+
+  it('mirrors megakernel environment intensity and spectral handling in suffix paths', () => {
+    for (const line of [
+      'envMapIntensity: f32,',
+      'let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envMapIntensity;',
+      'sm.envMapIntensity,',
+      'let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);',
+      'Lo = Lo + suffixThroughput * envContribution * sm.envMapIntensity;',
+      'let envScaleV = materialEnvMapIntensity(vMatId);',
+      'Lo = reconEnv * envScaleV;',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }

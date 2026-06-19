@@ -159,9 +159,18 @@ describe('H12: lite-tier capabilities truth', () => {
 
   it('lite tier: pt-webgpu-bdpt is absent from experimentalFeatures even with bdpt:true', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeLiteDevice(), bdpt: true });
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDevice(),
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 2 },
+      onWarning: (w) => structured.push(w),
+    });
     expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-bdpt')).toBe(false);
     expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-lite-tier')).toBe(true);
+    expect(structured.map((w) => w.code)).toContain('pt-webgpu.lite-tier');
+    expect(structured.map((w) => w.code)).not.toContain('pt-webgpu.bdpt-multivertex-research-mode');
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('multi-vertex BDPT research path'))).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });

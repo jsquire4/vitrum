@@ -134,6 +134,7 @@ struct RptSuffixMaterial {
   specularIntensity: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
+  envMapIntensity: f32,
   isUnlit: bool,
 }
 
@@ -202,6 +203,7 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
   out.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW), 0.0, 1.0);
   out.anisotropy = materialAnisotropy(matId, hit.triIndex, hit.baryVW);
   out.anisotropyRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW);
+  out.envMapIntensity = materialEnvMapIntensity(matId);
   out.isUnlit = mat.isUnlit;
 
   let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
@@ -283,6 +285,8 @@ fn rptDirectAtVertex(
   anisotropy: f32,
   anisotropyRotation: f32,
   suffixThroughput: vec3f,
+  heroLambda: f32,
+  envMapIntensity: f32,
 ) -> vec3f {
   var contrib = vec3f(0.0);
   // Directional lights (delta): full weight, no MIS. Use the packed
@@ -515,8 +519,12 @@ fn rptDirectAtVertex(
           specularColor, specularIntensity,
           anisotropy, anisotropyRotation,
         );
+        // Mirror the megakernel environment estimators: spectral mode evaluates
+        // env radiance at the hero wavelength, and the current surface's
+        // envMapIntensity scales both the NEE and BSDF-escape halves.
+        let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envMapIntensity;
         let misWeight = powerHeuristic(envPdf, brdfPdf);
-        contrib = contrib + suffixThroughput * brdf * nDotL * envColor * misWeight / max(envPdf, 1e-8);
+        contrib = contrib + suffixThroughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8);
       }
     }
   }
@@ -581,6 +589,8 @@ fn rptComputeLoAtReconnection(
       sm.specularColor, sm.specularIntensity,
       sm.anisotropy, sm.anisotropyRotation,
       suffixThroughput,
+      heroLambda,
+      sm.envMapIntensity,
     );
 
     // Sample the next onward direction with the cosine (diffuse) lobe — the robust
@@ -618,7 +628,9 @@ fn rptComputeLoAtReconnection(
     let nextTrace = rptTraceClosestAfterAlpha(Ray(pos + normal * 1e-3, nextDir), rng);
     let nextHit = nextTrace.hit;
     if (!nextHit.didHit) {
-      Lo = Lo + suffixThroughput * sampleEnvironmentColor(nextDir);
+      let envRgb = sampleEnvironmentColor(nextDir);
+      let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);
+      Lo = Lo + suffixThroughput * envContribution * sm.envMapIntensity;
       break;
     }
     pos = nextTrace.rayOrigin + nextDir * nextHit.dist;
@@ -923,7 +935,10 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     let kReconEscapeDist: f32 = 100.0; // GI RECONNECT_MAX_DIST analogue
     xs = reconRay.origin + wiRecon * kReconEscapeDist;
     ns = -wiRecon;
-    Lo = sampleEnvironmentColor(wiRecon);
+    let reconEnvRgb = sampleEnvironmentColor(wiRecon);
+    let reconEnv = select(reconEnvRgb, spectralEmissionAtHero(reconEnvRgb, heroLambda), params.spectralEnabled != 0u);
+    let envScaleV = materialEnvMapIntensity(vMatId);
+    Lo = reconEnv * envScaleV;
   } else {
     xs = sTrace.rayOrigin + reconRay.direction * sHit.dist;
 

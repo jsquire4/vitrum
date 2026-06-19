@@ -272,6 +272,12 @@
 > against the runtime full/lite profile before attachment, disposes rejected
 > fallback engines, and strict compatibility failures are structured
 > `GltfCompatibilityError`s while preserving existing messages.
+> Same-day pt-webgpu ReSTIR-PT follow-up: the producer suffix/reconnection
+> environment paths now mirror the megakernel by spectralizing environment
+> radiance in hero-wavelength mode and applying the current surface's
+> `envMapIntensity` to both direct environment NEE and BSDF-escape/synthetic
+> reconnection env terms; lite-tier BDPT construction no longer emits the
+> full-tier multi-vertex research warning when BDPT is disabled by tier limits.
 > Same-day GI-state import follow-up: `importGIState()` grid-layout mismatch
 > rejection now emits structured
 > `walkaround-hybrid.import-gi-state-grid-mismatch` warnings with snapshot/current

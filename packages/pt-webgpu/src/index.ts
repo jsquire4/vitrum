@@ -2355,7 +2355,12 @@ export const createPTEngine_WebGPU: EngineFactory<
     });
   }
   const resolvedBdptMaxLightBounces = resolveBdptMaxLightBounces(bdptMaxLightBounces);
-  if (opts.bdpt === true && resolvedBdptMaxLightBounces > BDPT_SAFE_DEFAULT_LIGHT_BOUNCES) {
+  const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
+  if (
+    opts.bdpt === true &&
+    traceTier === 'full' &&
+    resolvedBdptMaxLightBounces > BDPT_SAFE_DEFAULT_LIGHT_BOUNCES
+  ) {
     emitPteWarning(opts, {
       code: 'pt-webgpu.bdpt-multivertex-research-mode',
       backend: 'pt-webgpu',
@@ -2443,7 +2448,6 @@ export const createPTEngine_WebGPU: EngineFactory<
     }
   }
 
-  const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
   if (opts.restirPtReuse === true) {
     assertRestirPtReuseSupported(opts.device, traceTier);
   }

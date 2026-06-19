@@ -10,12 +10,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createPTEngine_WebGPU } from '../index.js';
 import { collectMaterialTextures } from '../scene/materialTextures.js';
+import { PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE } from '../webgpuLimits.js';
 import type { MaterialSpec } from '@vitrum/core';
 
 function makeStubDevice(): GPUDevice {
   return {
     limits: {
-      maxStorageBuffersPerShaderStage: 16,
+      maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: 8,
     },
     createCommandEncoder: vi.fn(),
