@@ -1439,6 +1439,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     materialTextureAtlasView: GPUTextureView;
     materialMapMetaTextureView: GPUTextureView;
     bvhTangentTextureView: GPUTextureView;
+    bvhVertexColorTextureView: GPUTextureView;
   } | null {
     return this._initialized ? this._bvhHost.materialAtlasBindings() : null;
   }

@@ -277,7 +277,7 @@ struct RCLightBuffer {
 };
 
 // ─── Bind group declarations ──────────────────────────────────────────────────
-// Cast pass: @group(0) bindings 0-18.
+// Cast pass: @group(0) bindings 0-20.
 
 @group(0) @binding(0) var<storage, read>       rc_bvh:                   array<BVHNode>;
 @group(0) @binding(1) var<storage, read>       rc_geom_index:            array<vec4u>;
@@ -305,6 +305,7 @@ struct RCLightBuffer {
 @group(0) @binding(17) var                      rc_materialMapMeta:      texture_2d<f32>;
 @group(0) @binding(18) var<storage, read>       rc_geom_normal:           array<vec4f>;
 @group(0) @binding(19) var                      rc_geom_tangent:          texture_2d<f32>;
+@group(0) @binding(20) var                      rc_geom_vertex_color:     texture_2d<f32>;
 
 const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
 const RC_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
@@ -661,6 +662,33 @@ fn rcBvhTangentTexel(vertexIndex: u32) -> vec4f {
     return vec4f(0.0);
   }
   return textureLoad(rc_geom_tangent, vec2i(i32(vertexIndex % width), i32(y)), 0);
+}
+
+fn rcBvhVertexColorTexel(vertexIndex: u32) -> vec4f {
+  let dims = textureDimensions(rc_geom_vertex_color);
+  let width = u32(dims.x);
+  let height = u32(dims.y);
+  if (width == 0u || height == 0u) {
+    return vec4f(1.0);
+  }
+  let y = vertexIndex / width;
+  if (y >= height) {
+    return vec4f(1.0);
+  }
+  return clamp(textureLoad(rc_geom_vertex_color, vec2i(i32(vertexIndex % width), i32(y)), 0), vec4f(0.0), vec4f(1.0));
+}
+
+fn rcSampleVertexColorForHit(hit: IntersectionResult) -> vec4f {
+  let ca = rcBvhVertexColorTexel(hit.indices.x);
+  let cb = rcBvhVertexColorTexel(hit.indices.y);
+  let cc = rcBvhVertexColorTexel(hit.indices.z);
+  return clamp(
+    ca * hit.barycoord.x +
+    cb * hit.barycoord.y +
+    cc * hit.barycoord.z,
+    vec4f(0.0),
+    vec4f(1.0)
+  );
 }
 
 fn rcTransformDirectionCols(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f, v: vec3f) -> vec3f {
@@ -1182,9 +1210,10 @@ fn rcMaterialAlphaCoverageForHit(hit: IntersectionResult) -> RCAlphaCoverage {
   let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);
   let alphaTexel = rcSampleMaterialAtlasRaw(hit.indices.w, RC_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);
   let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
+  let vertexColorAlpha = rcSampleVertexColorForHit(hit).a;
   let opacity = clamp(coverageMeta.y, 0.0, 1.0);
   out.cutoff = clamp(coverageMeta.z, 0.0, 1.0);
-  out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
+  out.coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);
   return out;
 }
 

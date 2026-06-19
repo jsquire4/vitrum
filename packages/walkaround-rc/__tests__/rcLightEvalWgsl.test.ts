@@ -81,9 +81,12 @@ describe('RC light-eval WGSL contract', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;');
     expect(PROBE_RAY_CAST_WGSL).toContain('const RC_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcHitMaterialUvs(hit: IntersectionResult) -> RCHitMaterialUvs');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcBvhVertexColorTexel(vertexIndex: u32) -> vec4f');
+    expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSampleVertexColorForHit(hit: IntersectionResult) -> vec4f');
     expect(alphaCoverage).toContain('let baseColorTexel = rcSampleMaterialAtlasRaw(hit.indices.w, RC_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);');
     expect(alphaCoverage).toContain('let alphaTexel = rcSampleMaterialAtlasRaw(hit.indices.w, RC_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);');
-    expect(alphaCoverage).toContain('out.coverage = clamp(opacity * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
+    expect(alphaCoverage).toContain('let vertexColorAlpha = rcSampleVertexColorForHit(hit).a;');
+    expect(alphaCoverage).toContain('out.coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
     expect(alphaT).toContain('return clamp(1.0 - alpha.coverage, 0.0, 1.0);');
     expect(traceT).toContain('tau = tau * rcAlphaShadowTransmittanceForHit(hit);');
     expect(traceT).toContain('if (rcTraceAnyCastShadow(walkRay.origin, dir, max(0.0, tMax - traveled), triEps, skipGlass))');
@@ -175,6 +178,7 @@ describe('RC light-eval WGSL contract', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(17) var                      rc_materialMapMeta:      texture_2d<f32>;');
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(18) var<storage, read>       rc_geom_normal:           array<vec4f>;');
     expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(19) var                      rc_geom_tangent:          texture_2d<f32>;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('@group(0) @binding(20) var                      rc_geom_vertex_color:     texture_2d<f32>;');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcSampleEmitterLeAtBary(e: EmitterTri, localBary: vec3f, scalarEmission: vec3f) -> vec3f');
     expect(PROBE_RAY_CAST_WGSL).toContain('let encodedSourceTri = i32(round(e._padA));');
     expect(PROBE_RAY_CAST_WGSL).toContain('let texCoord = (wrapPacked >> 4u) & 0x3u;');

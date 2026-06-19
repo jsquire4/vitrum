@@ -464,6 +464,7 @@ function dispatchRcAndSetInputs(
             materialTextureAtlasView: rcMaterialAtlasBindings.materialTextureAtlasView,
             materialMapMetaTextureView: rcMaterialAtlasBindings.materialMapMetaTextureView,
             bvhTangentTextureView: rcMaterialAtlasBindings.bvhTangentTextureView,
+            bvhVertexColorTextureView: rcMaterialAtlasBindings.bvhVertexColorTextureView,
           }
         : {}),
     });

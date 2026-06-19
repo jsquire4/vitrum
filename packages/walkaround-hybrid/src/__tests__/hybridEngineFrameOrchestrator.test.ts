@@ -149,6 +149,7 @@ function makeRcFrameDeps(args: {
     materialTextureAtlasView?: GPUTextureView | null;
     materialMapMetaTextureView?: GPUTextureView | null;
     bvhTangentTextureView?: GPUTextureView | null;
+    bvhVertexColorTextureView?: GPUTextureView | null;
   };
   rcEmitters?: { readonly buffer: GPUBuffer; readonly count: number } | null;
   rcEnvBindings?: { readonly textureView: GPUTextureView; readonly sampler: GPUSampler } | null;
@@ -156,6 +157,7 @@ function makeRcFrameDeps(args: {
     readonly materialTextureAtlasView: GPUTextureView;
     readonly materialMapMetaTextureView: GPUTextureView;
     readonly bvhTangentTextureView: GPUTextureView;
+    readonly bvhVertexColorTextureView: GPUTextureView;
   } | null;
 }): HybridEngineFrameDeps {
   let lastTs = 0;
@@ -195,6 +197,7 @@ function makeRcFrameDeps(args: {
       materialTextureAtlasView?: GPUTextureView;
       materialMapMetaTextureView?: GPUTextureView;
       bvhTangentTextureView?: GPUTextureView;
+      bvhVertexColorTextureView?: GPUTextureView;
     }) => {
       args.capture.sunColor = inputs.sunColor;
       args.capture.sunCastShadowDisabled = inputs.sunCastShadowDisabled ?? false;
@@ -205,6 +208,7 @@ function makeRcFrameDeps(args: {
       args.capture.materialTextureAtlasView = inputs.materialTextureAtlasView ?? null;
       args.capture.materialMapMetaTextureView = inputs.materialMapMetaTextureView ?? null;
       args.capture.bvhTangentTextureView = inputs.bvhTangentTextureView ?? null;
+      args.capture.bvhVertexColorTextureView = inputs.bvhVertexColorTextureView ?? null;
     },
     buildRCInputs: () => null,
   };
@@ -358,6 +362,7 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
       materialTextureAtlasView?: GPUTextureView | null;
       materialMapMetaTextureView?: GPUTextureView | null;
       bvhTangentTextureView?: GPUTextureView | null;
+      bvhVertexColorTextureView?: GPUTextureView | null;
     } = { sunColor: null };
     const emittersBuf = { label: 'rc-emitters' } as unknown as GPUBuffer;
     const envTextureView = { label: 'rc-env-view' } as unknown as GPUTextureView;
@@ -365,6 +370,7 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
     const materialTextureAtlasView = { label: 'rc-material-atlas-view' } as unknown as GPUTextureView;
     const materialMapMetaTextureView = { label: 'rc-material-meta-view' } as unknown as GPUTextureView;
     const bvhTangentTextureView = { label: 'rc-tangent-view' } as unknown as GPUTextureView;
+    const bvhVertexColorTextureView = { label: 'rc-vertex-color-view' } as unknown as GPUTextureView;
 
     runHybridEngineFrame(
       makeRcFrameDeps({
@@ -373,7 +379,12 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
         capture,
         rcEmitters: { buffer: emittersBuf, count: 7 },
         rcEnvBindings: { textureView: envTextureView, sampler: envSampler },
-        rcMaterialAtlasBindings: { materialTextureAtlasView, materialMapMetaTextureView, bvhTangentTextureView },
+        rcMaterialAtlasBindings: {
+          materialTextureAtlasView,
+          materialMapMetaTextureView,
+          bvhTangentTextureView,
+          bvhVertexColorTextureView,
+        },
       }),
       FRAME_INPUT,
     );
@@ -385,5 +396,6 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
     expect(capture.materialTextureAtlasView).toBe(materialTextureAtlasView);
     expect(capture.materialMapMetaTextureView).toBe(materialMapMetaTextureView);
     expect(capture.bvhTangentTextureView).toBe(bvhTangentTextureView);
+    expect(capture.bvhVertexColorTextureView).toBe(bvhVertexColorTextureView);
   });
 });

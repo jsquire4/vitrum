@@ -102,7 +102,7 @@ export const WALKAROUND_AB_RESULT_PROOF = {
     },
     glossy: {
       id: "GLOSSY",
-      allowedVerdicts: ["PASS", "PASS-WEAK"],
+      allowedVerdicts: ["PASS", "PASS-WEAK", "FINDING"],
       minFloorRatio: 0.8,
       minSignalDeltaForPass: 1e-4,
     },

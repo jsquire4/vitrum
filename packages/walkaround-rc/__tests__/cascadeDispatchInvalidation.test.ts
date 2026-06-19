@@ -138,6 +138,8 @@ describe('RCDispatcher binding cache invalidation', () => {
       ...baseOpts(device),
       materialTextureAtlasView: makeExternalView('atlas-a'),
       materialMapMetaTextureView: makeExternalView('meta-a'),
+      bvhTangentTextureView: makeExternalView('tangent-a'),
+      bvhVertexColorTextureView: makeExternalView('vertex-color-a'),
     };
 
     dispatcher.dispatchFrameRaw(opts);
@@ -151,12 +153,14 @@ describe('RCDispatcher binding cache invalidation', () => {
       if (entry.binding !== 18 || typeof entry.resource !== 'object' || entry.resource == null) return false;
       return (entry.resource as { buffer?: unknown }).buffer === opts.bvhNormalsBuf;
     })).toBe(true);
+    expect(firstEntries.some((entry) => entry.binding === 19 && entry.resource === opts.bvhTangentTextureView)).toBe(true);
+    expect(firstEntries.some((entry) => entry.binding === 20 && entry.resource === opts.bvhVertexColorTextureView)).toBe(true);
     const bindGroupsAfterFirst = createBindGroup.mock.calls.length;
 
     dispatcher.dispatchFrameRaw({
       ...opts,
       frameSeed: 2,
-      materialTextureAtlasView: makeExternalView('atlas-b'),
+      bvhVertexColorTextureView: makeExternalView('vertex-color-b'),
     });
     expect(createBindGroup.mock.calls.length).toBeGreaterThan(bindGroupsAfterFirst);
   });

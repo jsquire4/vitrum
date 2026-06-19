@@ -73,6 +73,8 @@ interface DispatchHandles {
   placeholderMaterialMetaTexture?: GPUTexture;
   /** Owned 1x1 zero tangent texture when caller provided none. */
   placeholderTangentTexture?: GPUTexture;
+  /** Owned 1x1 white vertex-color texture when caller provided none. */
+  placeholderVertexColorTexture?: GPUTexture;
 }
 
 interface DispatchBindingSignature {
@@ -92,6 +94,7 @@ interface DispatchBindingSignature {
   readonly materialTextureAtlasView: GPUTextureView | null;
   readonly materialMapMetaTextureView: GPUTextureView | null;
   readonly bvhTangentTextureView: GPUTextureView | null;
+  readonly bvhVertexColorTextureView: GPUTextureView | null;
   readonly tlasNodesBuf: GPUBuffer | null;
   readonly tlasInstanceIndicesBuf: GPUBuffer | null;
   readonly tlasBlasRootsBuf: GPUBuffer | null;
@@ -158,6 +161,10 @@ export interface RCDispatchOptsRaw {
    *  scene binding. When omitted, mapped normal/bump paths fall back to a
    *  derived UV-gradient tangent frame. */
   bvhTangentTextureView?: GPUTextureView | null;
+  /** Per-vertex COLOR_0 rgba texture matching the main walkaround scene
+   *  binding. When omitted, RC uses opaque white so raw callers preserve the
+   *  historical scalar/material-map alpha behavior. */
+  bvhVertexColorTextureView?: GPUTextureView | null;
 
   frameSeed:          number;
   /** Möller–Trumbore coplanarity threshold. Default 1e-5. */
@@ -348,6 +355,7 @@ function bindingSignature(opts: RCDispatchOptsRaw): DispatchBindingSignature {
     materialTextureAtlasView: opts.materialTextureAtlasView ?? null,
     materialMapMetaTextureView: opts.materialMapMetaTextureView ?? null,
     bvhTangentTextureView: opts.bvhTangentTextureView ?? null,
+    bvhVertexColorTextureView: opts.bvhVertexColorTextureView ?? null,
     tlasNodesBuf: opts.tlasNodesBuf ?? null,
     tlasInstanceIndicesBuf: opts.tlasInstanceIndicesBuf ?? null,
     tlasBlasRootsBuf: opts.tlasBlasRootsBuf ?? null,
@@ -379,6 +387,7 @@ function sameBindingSignature(
     a.materialTextureAtlasView === b.materialTextureAtlasView &&
     a.materialMapMetaTextureView === b.materialMapMetaTextureView &&
     a.bvhTangentTextureView === b.bvhTangentTextureView &&
+    a.bvhVertexColorTextureView === b.bvhVertexColorTextureView &&
     a.tlasNodesBuf === b.tlasNodesBuf &&
     a.tlasInstanceIndicesBuf === b.tlasInstanceIndicesBuf &&
     a.tlasBlasRootsBuf === b.tlasBlasRootsBuf &&
@@ -551,6 +560,7 @@ export class RCDispatcher {
         { binding: 17, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },       // rc_materialMapMeta
         { binding: 18, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_geom_normal
         { binding: 19, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },       // rc_geom_tangent
+        { binding: 20, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },       // rc_geom_vertex_color
       ],
     });
   }
@@ -589,6 +599,7 @@ export class RCDispatcher {
       this._handles.placeholderMaterialAtlasTexture?.destroy();
       this._handles.placeholderMaterialMetaTexture?.destroy();
       this._handles.placeholderTangentTexture?.destroy();
+      this._handles.placeholderVertexColorTexture?.destroy();
       this._handles = null;
     }
     this._bindingSignature = null;
@@ -729,6 +740,34 @@ export class RCDispatcher {
     };
   }
 
+  private _resolveVertexColorTextureBindingRaw(
+    device: GPUDevice,
+    opts: RCDispatchOptsRaw,
+  ): {
+    bvhVertexColorTextureView: GPUTextureView;
+    placeholderVertexColorTexture?: GPUTexture;
+  } {
+    if (opts.bvhVertexColorTextureView) {
+      return { bvhVertexColorTextureView: opts.bvhVertexColorTextureView };
+    }
+    const vertexColorTexture = device.createTexture({
+      label: 'rc-bvh-vertex-color-placeholder',
+      size: { width: 1, height: 1 },
+      format: 'rgba32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: vertexColorTexture },
+      new Float32Array([1, 1, 1, 1]),
+      { bytesPerRow: 16 },
+      { width: 1, height: 1 },
+    );
+    return {
+      bvhVertexColorTextureView: vertexColorTexture.createView({ label: 'rc-bvh-vertex-color-placeholder-view' }),
+      placeholderVertexColorTexture: vertexColorTexture,
+    };
+  }
+
   /**
    * Build all pipelines and bind groups (one-time setup).
    * Called lazily on first `dispatchFrameRaw()`.
@@ -769,10 +808,15 @@ export class RCDispatcher {
       bvhTangentTextureView,
       placeholderTangentTexture,
     } = this._resolveTangentTextureBindingRaw(device, opts);
+    const {
+      bvhVertexColorTextureView,
+      placeholderVertexColorTexture,
+    } = this._resolveVertexColorTextureBindingRaw(device, opts);
 
     const { castPasses, castBindGroups } = this._buildCastPasses(
       device, opts, castBGL, castPipelineLayout, bvhBindings, envTextureView, envSampler,
       materialTextureAtlasView, materialMapMetaTextureView, bvhTangentTextureView,
+      bvhVertexColorTextureView,
     );
     const { mergePasses, mergeBindGroups } = this._buildMergePasses(
       device, opts, mergeBGL, mergePipelineLayout,
@@ -789,6 +833,7 @@ export class RCDispatcher {
       ...(placeholderMaterialAtlasTexture ? { placeholderMaterialAtlasTexture } : {}),
       ...(placeholderMaterialMetaTexture ? { placeholderMaterialMetaTexture } : {}),
       ...(placeholderTangentTexture ? { placeholderTangentTexture } : {}),
+      ...(placeholderVertexColorTexture ? { placeholderVertexColorTexture } : {}),
     };
   }
 
@@ -844,6 +889,7 @@ export class RCDispatcher {
     materialTextureAtlasView: GPUTextureView,
     materialMapMetaTextureView: GPUTextureView,
     bvhTangentTextureView: GPUTextureView,
+    bvhVertexColorTextureView: GPUTextureView,
   ): { castPasses: CastPassHandles[]; castBindGroups: GPUBindGroup[] } {
     const {
       bvhBuf, idxBuf, posBuf, normBuf, matBuf, triMatBuf,
@@ -927,6 +973,7 @@ export class RCDispatcher {
           { binding: 17, resource: materialMapMetaTextureView },
           { binding: 18, resource: { buffer: normBuf } },
           { binding: 19, resource: bvhTangentTextureView },
+          { binding: 20, resource: bvhVertexColorTextureView },
         ],
       });
 

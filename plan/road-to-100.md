@@ -65,6 +65,15 @@
 > probe bind-group reuse on that view, and multiplies vertex alpha into
 > `opacity * baseColorMap.a * alphaMap.r` coverage just like the main material
 > atlas path.
+> **2026-06-19 RC vertex-alpha follow-up:** RC probe shadow/transmittance now
+> binds the same per-vertex `COLOR_0` texture exposed by the main walkaround
+> scene bind group, keys RC bind-group reuse on that view, and multiplies
+> vertex alpha into the existing `opacity * baseColorMap.a * alphaMap.r`
+> coverage approximation. Raw RC callers get an opaque-white placeholder, so
+> the old scalar/material-map behavior is preserved when no vertex-color stream
+> is supplied. This closes the RC/DDGI/main-material alpha-coverage parity slice;
+> it does **not** promote transparent layers to full path-space GI transport
+> vertices.
 > pt-webgpu extension-lobe CPU reference tests now pin clearcoat, sheen,
 > iridescence zero-default, and normalized sampled-PDF behavior; this closes the
 > lobe-specific unit-proof tail but does **not** close GPU material-furnace /
@@ -258,6 +267,12 @@
 > `navigator.gpu.requestAdapter` failures and no-WebGPU probe-update init
 > failures through structured `walkaround-hybrid.ddgi-*` warnings when an
 > `onWarning` sink is present, preserving console fallback for standalone tests.
+> **2026-06-19 walkaround proof-harness follow-up:** the radiometric A/B host
+> harness now uses stricter visible material cases for glass/glossy probes and
+> treats a glossy-material `FINDING` as partial evidence only: enough to prove
+> the scene changes materially, not enough to promote rich-material GI. The
+> proof check therefore accepts that case without counting it as a full
+> promotion result.
 > Same-day DDGI sub-pass hardening: `DDGI` now routes `ProbeUpdatePass`
 > construction warnings through its guarded `_warn` wrapper, so a throwing
 > standalone host warning callback cannot break DDGI construction.

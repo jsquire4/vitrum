@@ -107,6 +107,7 @@ interface RCFrameInputs {
   readonly materialTextureAtlasView?: GPUTextureView | null;
   readonly materialMapMetaTextureView?: GPUTextureView | null;
   readonly bvhTangentTextureView?: GPUTextureView | null;
+  readonly bvhVertexColorTextureView?: GPUTextureView | null;
   /** A7 (2026-06-10): packed point/spot analytic lights buffer and count.
    *  Use `packRCLights()` to build. Omit ⇒ fixtures produce no RC radiance. */
   readonly lightsBuf?:          GPUBuffer | null;
@@ -488,6 +489,9 @@ export class RCSubsystem implements PipelineSubsystem {
             materialMapMetaTextureView: inputs.materialMapMetaTextureView,
             ...(inputs.bvhTangentTextureView != null
               ? { bvhTangentTextureView: inputs.bvhTangentTextureView }
+              : {}),
+            ...(inputs.bvhVertexColorTextureView != null
+              ? { bvhVertexColorTextureView: inputs.bvhVertexColorTextureView }
               : {}),
           }
         : {}),

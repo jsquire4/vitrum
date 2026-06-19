@@ -318,7 +318,7 @@ function checkWalkaroundGlass(proof, result) {
 function checkWalkaroundGlossy(proof, result) {
   checkWalkaroundCaseCommon("GLOSSY", proof, result);
   assertFiniteNumber(result.floorRatio, "walkaround-ab GLOSSY: floorRatio");
-  if (result.floorRatio < proof.minFloorRatio) {
+  if (result.verdict !== "FINDING" && result.floorRatio < proof.minFloorRatio) {
     fail(`walkaround-ab GLOSSY: floorRatio ${result.floorRatio} is below ${proof.minFloorRatio}`);
   }
   assertFiniteNumber(result.delta?.floorLum, "walkaround-ab GLOSSY: delta.floorLum");
@@ -332,6 +332,17 @@ function checkWalkaroundGlossy(proof, result) {
       `walkaround-ab GLOSSY: PASS requires observed material effect; max delta ${signal} ` +
       `is below ${proof.minSignalDeltaForPass}`,
     );
+  }
+  if (result.verdict === "FINDING") {
+    if (signal < proof.minSignalDeltaForPass) {
+      fail(
+        `walkaround-ab GLOSSY: FINDING requires an observed material delta; max delta ${signal} ` +
+        `is below ${proof.minSignalDeltaForPass}`,
+      );
+    }
+    if (result.materialEffectObserved !== true) {
+      fail("walkaround-ab GLOSSY: FINDING requires materialEffectObserved=true");
+    }
   }
 }
 

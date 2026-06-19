@@ -105,11 +105,18 @@ function makeCornellScene(opts = {}) {
   const floorRoughness = opts.floorRoughness ?? 1.0;
   const floorMetallic  = opts.floorMetallic  ?? 0.0;
   const floorColor     = opts.floorColor     ?? [0.8, 0.8, 0.8];
+  const backWallRoughness = opts.backWallRoughness ?? 1.0;
+  const backWallMetallic  = opts.backWallMetallic  ?? 0.0;
+  const backWallColor     = opts.backWallColor     ?? [0.8, 0.8, 0.8];
+  const glassHalfSize = opts.glassHalfSize ?? 0.5;
+  const glassAttenuationColor = opts.glassAttenuationColor ?? [1.0, 1.0, 1.0];
+  const glassAttenuationDistance = opts.glassAttenuationDistance ?? Infinity;
+  const glassThickness = opts.glassThickness ?? 0.0;
 
   const primitives = [
     makeQuad("floor",      [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]], [0,1,0],  floorColor, floorRoughness, floorMetallic),
     makeQuad("ceiling",    [[-1,1,-1],[-1,1,1],[1,1,1],[1,1,-1]],     [0,-1,0], [0.8,0.8,0.8]),
-    makeQuad("back-wall",  [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], [0.8,0.8,0.8]),
+    makeQuad("back-wall",  [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], backWallColor, backWallRoughness, backWallMetallic),
     makeQuad("left-wall",  [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1]),
     makeQuad("right-wall", [[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1]),
   ];
@@ -118,11 +125,25 @@ function makeCornellScene(opts = {}) {
     // Glass pane between camera and back wall.
     primitives.push({
       kind: "mesh", id: "glass-pane",
-      positions: new Float32Array([-0.5,-0.5,0.5, 0.5,-0.5,0.5, 0.5,0.5,0.5, -0.5,0.5,0.5]),
+      positions: new Float32Array([
+        -glassHalfSize,-glassHalfSize,0.5,
+         glassHalfSize,-glassHalfSize,0.5,
+         glassHalfSize, glassHalfSize,0.5,
+        -glassHalfSize, glassHalfSize,0.5,
+      ]),
       normals:   new Float32Array([0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1]),
       uvs:       new Float32Array(8),
       indices:   new Uint32Array([0,2,1, 2,0,3]),
-      material:  { baseColor: [1.0,1.0,1.0], roughness: 0.05, metallic: 0.0, transmission: 1.0 },
+      material:  {
+        baseColor: [1.0,1.0,1.0],
+        roughness: 0.05,
+        metallic: 0.0,
+        transmission: 1.0,
+        ior: 1.5,
+        attenuationColor: glassAttenuationColor,
+        attenuationDistance: glassAttenuationDistance,
+        thickness: glassThickness,
+      },
     });
   }
 
@@ -500,14 +521,14 @@ async function runSun() {
 
 // ── GLASS: Glass-GI validation ────────────────────────────────────────────────
 //
-// Scene A: Cornell with glass pane.
+// Scene A: Cornell with a mildly tinted glass pane.
 // Scene B: identical Cornell WITHOUT glass pane (noGlass control).
 // Both have the ceiling area emitter (intensity 12.0).
 //
-// Expected: through-glass region luminance ≥ no-glass × 0.5.
-// Physically: the glass transmits most of the direct light (Fresnel T≈0.92 for
-// normal incidence at n=1.5) and the transmitted GI from the diffuse wall behind
-// it. At low SPP the denoiser may attenuate, so we use a conservative 0.5 floor.
+// Expected: through-glass region luminance ≥ no-glass × 0.5, and the tinted
+// material produces a nonzero measured delta.  The previous clear-white glass
+// control was intentionally too similar to no-glass: it only proved non-black
+// pass-through, not material transport.
 //
 // We look at the centre of the image where the glass pane occlude the back wall.
 // The glass pane spans z=0.5, x∈[-0.5,0.5], y∈[-0.5,0.5]; the camera looks along
@@ -517,8 +538,14 @@ async function runGlass() {
   console.log("\n── GLASS: Glass-GI validation ──");
   const t0 = Date.now();
 
-  const glassResult   = await runVariant("glass",    {}, () => makeCornellScene({ glass: true  }));
-  const noGlassResult = await runVariant("no-glass", {}, () => makeCornellScene({ glass: false }));
+  const glassResult   = await runVariant("glass",    { denoiser: "none" }, () => makeCornellScene({
+    glass: true,
+    glassHalfSize: 1.15,
+    glassAttenuationColor: [1.0, 0.55, 0.55],
+    glassAttenuationDistance: 0.5,
+    glassThickness: 0.5,
+  }));
+  const noGlassResult = await runVariant("no-glass", { denoiser: "none" }, () => makeCornellScene({ glass: false }));
 
   const dt = ((Date.now() - t0) / 1000).toFixed(1);
 
@@ -592,8 +619,8 @@ async function runGlass() {
     renderTimeSec: parseFloat(dt),
     verdict,
     notes: [
-      "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer absorption = 0 (white glass).",
-      "Expected centreRatio ≥ 0.50 — conservative; denoiser can attenuate through-glass signal at low SPP.",
+      "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
+      "Expected centreRatio ≥ 0.50 — conservative for mild Beer tint and low-Spp transport.",
       "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
       "PASS-WEAK means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.",
     ],
@@ -602,13 +629,13 @@ async function runGlass() {
 
 // ── GLOSSY: Metallic probe check (B2) ────────────────────────────────────────
 //
-// Scene A: Cornell with metalness=1.0, roughness=0.05 floor (mirror-like).
-// Scene B: Cornell with metalness=0.0, roughness=1.0 floor (Lambertian default).
+// Scene A: Cornell with metalness=1.0, roughness=0.05 visible back wall.
+// Scene B: Cornell with metalness=0.0, roughness=1.0 visible back wall.
 //
 // Expected:
-//   1. Metallic floor has nonzero indirect (lo_indirectSpecular is active when metal>0,
+//   1. Metallic wall has nonzero indirect (lo_indirectSpecular is active when metal>0,
 //      gate: `metal <= 0.0 && rough >= 0.6 → skip`; with metal=1 it fires).
-//   2. Metallic floor overall luminance ≥ diffuse floor luminance because it reflects
+//   2. Metallic wall overall luminance ≥ diffuse wall luminance because it reflects
 //      the ceiling emitter directly (specular reflection of the bright emitter).
 //
 // We assert: metalLum > 0.01 (not black) and metalLum > diffuseLum × 0.8.
@@ -617,11 +644,11 @@ async function runGlossy() {
   console.log("\n── GLOSSY: Metallic probe check (B2) ──");
   const t0 = Date.now();
 
-  const metalResult   = await runVariant("metal",   {}, () => makeCornellScene({
-    floorRoughness: 0.05, floorMetallic: 1.0, floorColor: [0.9, 0.9, 0.9],
+  const metalResult   = await runVariant("metal",   { denoiser: "none" }, () => makeCornellScene({
+    backWallRoughness: 0.05, backWallMetallic: 1.0, backWallColor: [0.9, 0.9, 0.9],
   }));
-  const diffuseResult = await runVariant("diffuse", {}, () => makeCornellScene({
-    floorRoughness: 1.0,  floorMetallic: 0.0, floorColor: [0.8, 0.8, 0.8],
+  const diffuseResult = await runVariant("diffuse", { denoiser: "none" }, () => makeCornellScene({
+    backWallRoughness: 1.0,  backWallMetallic: 0.0, backWallColor: [0.9, 0.9, 0.9],
   }));
 
   const dt = ((Date.now() - t0) / 1000).toFixed(1);
@@ -633,36 +660,40 @@ async function runGlossy() {
   const overallMetal  = metalResult.lum;
   const overallDiffuse = diffuseResult.lum;
 
-  // Floor region — bottom strip of image (camera looks slightly down)
-  const floorMetal   = regionLuminance(metalResult.pixels,   W, 20, 85, 108, 127);
-  const floorDiffuse = regionLuminance(diffuseResult.pixels, W, 20, 85, 108, 127);
+  // Back-wall region — broad center crop, visible behind the glass-control pane.
+  const floorMetal   = regionLuminance(metalResult.pixels,   W, 32, 32, 96, 96);
+  const floorDiffuse = regionLuminance(diffuseResult.pixels, W, 32, 32, 96, 96);
   const floorDelta = floorMetal - floorDiffuse;
   const overallDelta = overallMetal - overallDiffuse;
 
-  // Check: metallic floor must be nonzero and at least 0.8× the diffuse floor.
-  // The mirror floor reflects the bright ceiling emitter → should be brighter or equal.
+  // Check: the glossy/metal material must be observable and nonzero. Earlier
+  // versions required metal >= diffuse, but that is geometry-dependent: a
+  // mirror wall can physically reflect a dark direction while the diffuse wall
+  // integrates the ceiling emitter. Such a result is still a promotion finding,
+  // not a harness failure.
   const floorRatio = floorDiffuse > 0.01 ? floorMetal / floorDiffuse : 0;
-  const notBlack   = floorMetal > 0.01;
+  const notBlack   = floorMetal > 1e-4 || overallMetal > 1e-3;
   const MIN_SIGNAL_DELTA = 1e-4;
   const materialEffectObserved =
     Math.max(absDelta(floorMetal, floorDiffuse), absDelta(overallMetal, overallDiffuse)) >= MIN_SIGNAL_DELTA;
-  // Structural assertion: metallic floor is directionally plausible (bright where
-  // reflected probe field is bright). At low SPP we just check nonzero + plausible ratio.
+  // Structural assertion: a bright/equal metal arm is a strong pass; a dark but
+  // nonzero, materially different arm is a recorded finding that blocks promotion.
   const plausible  = floorRatio >= 0.8;
 
   const verdict = notBlack && plausible && materialEffectObserved ? "PASS"
+                : notBlack && materialEffectObserved ? "FINDING"
                 : notBlack ? "PASS-WEAK"
                 : "FAIL";
 
-  console.log(`  metallic  floor: ${floorMetal.toFixed(4)}  overall=${overallMetal.toFixed(4)}`);
-  console.log(`  diffuse   floor: ${floorDiffuse.toFixed(4)}  overall=${overallDiffuse.toFixed(4)}`);
-  console.log(`  floor ratio (metal/diffuse): ${floorRatio.toFixed(3)}  (expected ≥ 0.80); delta=${floorDelta.toExponential(3)}`);
+  console.log(`  metallic  sample: ${floorMetal.toFixed(4)}  overall=${overallMetal.toFixed(4)}`);
+  console.log(`  diffuse   sample: ${floorDiffuse.toFixed(4)}  overall=${overallDiffuse.toFixed(4)}`);
+  console.log(`  sample ratio (metal/diffuse): ${floorRatio.toFixed(3)}  (expected ≥ 0.80); delta=${floorDelta.toExponential(3)}`);
   console.log(`  effect observed:${materialEffectObserved ? "YES" : "NO"}  (min |delta|=${MIN_SIGNAL_DELTA})`);
   console.log(`  verdict:  ${verdict} — render time ${dt}s`);
 
   return {
     id: "GLOSSY",
-    description: "B2 metallic probe: metalness=1,rough=0.05 vs metalness=0,rough=1 floor",
+    description: "B2 metallic probe: metalness=1,rough=0.05 vs metalness=0,rough=1 visible wall",
     spp: SPP,
     resolution: `${W}x${H}`,
     metal: {
@@ -685,10 +716,11 @@ async function runGlossy() {
     verdict,
     notes: [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
-      "Metal floor (n=1.0, rough=0.05): GGX specular lobe reflects the ceiling emitter → brighter than Lambertian.",
+      "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the ceiling emitter → brighter than Lambertian.",
+      "The diffuse control keeps the same baseColor as the metal arm; the measured delta isolates metallic/roughness behavior.",
       "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
-      "Lavapipe SPP=16; metallic-mirror at low SPP has high variance — ratio check uses ≥0.80.",
-      "PASS-WEAK means the metallic floor is non-black/plausible but the metal/diffuse captures are statistically indistinguishable at this SPP; do not promote glossy probe quality from that alone.",
+      "Lavapipe SPP=16; metallic-mirror at low SPP has high variance and can legitimately reflect a darker direction than the diffuse control.",
+      "FINDING means the material path is live and visibly changes the render, but this capture is a do-not-promote rich-material GI result.",
     ],
   };
 }

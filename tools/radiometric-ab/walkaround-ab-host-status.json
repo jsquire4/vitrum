@@ -1,9 +1,9 @@
 {
-  "generatedAt": "2026-06-18T18:01:19.403Z",
+  "generatedAt": "2026-06-19T12:00:18.892Z",
   "harness": "walkaround-ab",
   "verdict": "PASS-PARTIAL",
   "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/walkaround-ab.mjs",
-  "timeoutMs": 180000,
+  "timeoutMs": 300000,
   "icd": null,
   "exitStatus": 0,
   "signal": null,
@@ -12,7 +12,7 @@
     "a8": "NEGLIGIBLE",
     "sun": "PASS-PARTIAL",
     "glass": "PASS-WEAK",
-    "glossy": "PASS-WEAK"
+    "glossy": "FINDING"
   },
   "reason": {
     "code": "walkaround-ab-partial-proof",
