@@ -65,11 +65,13 @@ export interface MaterialTextureAtlasDiagnostic {
   readonly code:
     | 'unreadable-material-texture-map'
     | 'unsupported-material-texture-texcoord'
-    | 'ambiguous-material-texture-stride';
+    | 'ambiguous-material-texture-stride'
+    | 'invalid-material-texture-transform';
   readonly materialIndex: number;
   readonly field: AtlasMapField;
   readonly colorSpace: AtlasColorSpace;
   readonly texCoord?: number;
+  readonly transformComponents?: readonly string[];
   readonly pixelStride?: number;
   readonly valueCount?: number;
   readonly width?: number;
@@ -204,6 +206,28 @@ function asTextureRef(value: unknown): TextureRef | null {
   if (value == null || typeof value !== 'object') return null;
   if ('handle' in value) return value as TextureRef;
   return { handle: value };
+}
+
+function finiteOrFallback(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? (value as number) : fallback;
+}
+
+function invalidTextureTransformComponents(ref: TextureRef): string[] {
+  const transform = ref.transform;
+  if (transform == null) return [];
+  const invalid: string[] = [];
+  if (transform.offset != null) {
+    if (!Number.isFinite(transform.offset[0])) invalid.push('offset.x');
+    if (!Number.isFinite(transform.offset[1])) invalid.push('offset.y');
+  }
+  if (transform.scale != null) {
+    if (!Number.isFinite(transform.scale[0])) invalid.push('scale.x');
+    if (!Number.isFinite(transform.scale[1])) invalid.push('scale.y');
+  }
+  if (transform.rotation !== undefined && !Number.isFinite(transform.rotation)) {
+    invalid.push('rotation');
+  }
+  return invalid;
 }
 
 function textureRefSourceMetadata(ref: TextureRef): TextureRefSourceMetadata | undefined {
@@ -429,9 +453,37 @@ export function packMaterialTextureAtlas(
       });
       return;
     }
+    const pushInvalidTransformDiagnostic = (): void => {
+      const transformComponents = invalidTextureTransformComponents(ref);
+      if (transformComponents.length === 0) return;
+      const source = textureRefSourceMetadata(ref);
+      diagnostics.push({
+        code: 'invalid-material-texture-transform',
+        materialIndex,
+        field,
+        colorSpace,
+        texCoord,
+        transformComponents,
+        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
+        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
+        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
+        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
+        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
+        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
+        ...(source?.textureSourceExtension !== undefined
+          ? { textureSourceExtension: source.textureSourceExtension }
+          : {}),
+        message:
+          `${field} texture transform contains non-finite component(s) ` +
+          `${transformComponents.join(', ')}` +
+          `${source?.path !== undefined ? ` at ${source.path}` : ''}; ` +
+          'invalid components are replaced with the identity transform fallback.',
+      });
+    };
     let perHandle = readable.get(ref.handle);
     const existing = perHandle?.[colorSpace];
     if (existing != null) {
+      pushInvalidTransformDiagnostic();
       fieldLayers[field].add(existing.layer);
       return;
     }
@@ -487,6 +539,7 @@ export function packMaterialTextureAtlas(
           'attach __vitrum_hint__ = { channels: N } to decode it deterministically.',
       });
     }
+    pushInvalidTransformDiagnostic();
     const pixels = read.pixels;
     const layer = ordered.length;
     ordered.push({ handle: ref.handle, pixels, colorSpace });
@@ -542,15 +595,15 @@ export function packMaterialTextureAtlas(
       return;
     }
     const t = ref.transform;
-    const rotation = t?.rotation ?? 0;
+    const rotation = finiteOrFallback(t?.rotation, 0);
     const b0 = texel * 4;
     const b1 = b0 + 4;
     baseColorMetaData[b0] = layer;
     baseColorMetaData[b0 + 1] = wrapIndex(ref.wrapS) + wrapIndex(ref.wrapT) * 4 + texCoord * 16;
-    baseColorMetaData[b0 + 2] = t?.offset?.[0] ?? 0;
-    baseColorMetaData[b0 + 3] = t?.offset?.[1] ?? 0;
-    baseColorMetaData[b1] = t?.scale?.[0] ?? 1;
-    baseColorMetaData[b1 + 1] = t?.scale?.[1] ?? 1;
+    baseColorMetaData[b0 + 2] = finiteOrFallback(t?.offset?.[0], 0);
+    baseColorMetaData[b0 + 3] = finiteOrFallback(t?.offset?.[1], 0);
+    baseColorMetaData[b1] = finiteOrFallback(t?.scale?.[0], 1);
+    baseColorMetaData[b1 + 1] = finiteOrFallback(t?.scale?.[1], 1);
     baseColorMetaData[b1 + 2] = Math.cos(rotation);
     baseColorMetaData[b1 + 3] = Math.sin(rotation);
   };

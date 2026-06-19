@@ -1292,6 +1292,12 @@ deliberately unsupported until a true geometry/BVH displacement path exists.
   by `materialTextureAtlas.ts`. `materialSig.test.ts` pins tiny-but-GPU-visible
   transform/scalar differences, bare texture objects, and unsupported texCoord
   values.
+- ~~Non-finite material texture transforms could leak NaN/Inf into atlas metadata~~
+  ✅ CODE CLOSED 2026-06-19 follow-up: `materialTextureAtlas.ts` now sanitizes
+  non-finite KHR texture-transform offset/scale/rotation components to identity
+  fallbacks and emits `invalid-material-texture-transform` diagnostics with
+  source metadata. `materialTextureAtlas.test.ts` pins finite GPU metadata plus
+  source-pathed diagnostics for invalid transform components.
 - ~~ReSTIR primary hit uses different UV than shade~~ ✅ SOURCE-VERIFIED STALE:
   RIS/primary/OIT paths call the shared material-atlas helpers with hit UV0 plus
   `materialAtlasUv1ForHit`.

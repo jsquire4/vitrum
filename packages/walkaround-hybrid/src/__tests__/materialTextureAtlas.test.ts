@@ -184,6 +184,58 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[7]).toBeCloseTo(Math.sin(rotation), 5);
   });
 
+  it('sanitizes non-finite texture transforms and reports a structured diagnostic', () => {
+    const baseColorMap = {
+      handle: {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([255, 255, 255, 255]),
+        __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+      },
+      transform: {
+        offset: [Number.NaN, 0.25],
+        scale: [2, Number.POSITIVE_INFINITY],
+        rotation: Number.NEGATIVE_INFINITY,
+      },
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform',
+        textureIndex: 7,
+        imageIndex: 8,
+      },
+    } as TextureRef;
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap,
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.baseColorMetaData[0]).toBe(0);
+    expect(atlas.baseColorMetaData[2]).toBe(0);
+    expect(atlas.baseColorMetaData[3]).toBeCloseTo(0.25, 5);
+    expect(atlas.baseColorMetaData[4]).toBeCloseTo(2, 5);
+    expect(atlas.baseColorMetaData[5]).toBe(1);
+    expect(atlas.baseColorMetaData[6]).toBeCloseTo(1, 5);
+    expect(atlas.baseColorMetaData[7]).toBeCloseTo(0, 5);
+    expect(Array.from(atlas.baseColorMetaData.slice(0, 8)).every(Number.isFinite)).toBe(true);
+    expect(atlas.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'invalid-material-texture-transform',
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+        texCoord: 0,
+        transformComponents: ['offset.x', 'scale.y', 'rotation'],
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform',
+        textureIndex: 7,
+        imageIndex: 8,
+      }),
+    ]);
+    expect(atlas.diagnostics[0]?.message).toContain('offset.x, scale.y, rotation');
+  });
+
   it('keeps texCoord 1 baseColorMap layers readable and records the uv-set selector', () => {
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
