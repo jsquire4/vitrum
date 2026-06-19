@@ -48,4 +48,17 @@ describe('walkaround spot cone shader convention', () => {
     expect(analytic).toContain('let attenuation = oitPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);');
     expect(analytic).not.toContain('smoothstep(cosOuter, cosInner, cosTheta)');
   });
+
+  it('does not apply receiver cosine twice for opaque or transparent point/spot lighting', () => {
+    const opaque = functionBody(SHADING_TERMS_WGSL, 'lo_analyticNEE');
+    const transparent = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerAnalyticNEE');
+
+    expect(opaque).toContain('let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(opaque).toContain('Lo += lightLe * brdf * cone * attenuation * shadowT;');
+    expect(opaque).not.toContain('Lo += lightLe * brdf * nDotL');
+
+    expect(transparent).toContain('let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(transparent).toContain('Lo += lightLe * brdf * cone * attenuation * shadowT;');
+    expect(transparent).not.toContain('Lo += lightLe * brdf * nDotL');
+  });
 });

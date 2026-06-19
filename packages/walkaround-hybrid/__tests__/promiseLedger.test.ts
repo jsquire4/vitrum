@@ -20,6 +20,10 @@ function sorted(values: Iterable<string>): string[] {
   return Array.from(values).sort();
 }
 
+function hasFunctionProperty(target: object, key: PropertyKey): boolean {
+  return typeof (target as Record<PropertyKey, unknown>)[key] === 'function';
+}
+
 describe('walkaround-hybrid promise ledger compliance', () => {
   it('matches declared capability and optional-method promises', () => {
     const expected = BACKEND_PROMISE_LEDGER['walkaround-hybrid'];
@@ -50,6 +54,8 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(typeof engineView.updatePrimitive === 'function').toBe(expected.methodPromises.updatePrimitive);
     expect(typeof engineView.updateEmitter === 'function').toBe(expected.methodPromises.updateEmitter);
     expect(typeof engineView.updateEnvironment === 'function').toBe(expected.methodPromises.updateEnvironment);
+    expect(typeof engineView.addPrimitive === 'function').toBe(expected.methodPromises.addPrimitive);
+    expect(typeof engineView.removePrimitive === 'function').toBe(expected.methodPromises.removePrimitive);
     expect(typeof engineView.setSize === 'function').toBe(expected.methodPromises.setSize);
     expect(typeof engineView.updateLighting === 'function').toBe(expected.methodPromises.updateLighting);
     expect(typeof engineView.onFrame === 'function').toBe(expected.methodPromises.onFrame);
@@ -57,5 +63,18 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(typeof engineView.debug === 'object').toBe(expected.methodPromises.debug);
     expect(typeof engineView.getScene === 'function').toBe(expected.methodPromises.getScene);
     expect(typeof engineView.onError === 'function').toBe(expected.methodPromises.onError);
+    expect(typeof engineView.onWarning === 'function').toBe(expected.methodPromises.onWarning);
+    expect(typeof engineView.captureFrame === 'function').toBe(expected.methodPromises.captureFrame);
+    expect(typeof engineView.createInverseSession === 'function').toBe(expected.methodPromises.createInverseSession);
+    expect(typeof engineView.getRestirPtResultBuffer === 'function').toBe(
+      expected.methodPromises.getRestirPtResultBuffer,
+    );
+    expect(typeof engineView.getProgressiveSeedTexture === 'function').toBe(
+      expected.methodPromises.getProgressiveSeedTexture,
+    );
+    expect(typeof engineView.seedAccumulator === 'function').toBe(expected.methodPromises.seedAccumulator);
+    expect(hasFunctionProperty(engineView, 'exportGIState') || hasFunctionProperty(engineView, 'importGIState')).toBe(
+      expected.methodPromises.giStatePersistence,
+    );
   });
 });

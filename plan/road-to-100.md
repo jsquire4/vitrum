@@ -177,6 +177,11 @@
 > as shade/OIT (`dot(-axis, receiverToLight)`), and hard-edge
 > `penumbra:0` avoids `smoothstep(edge, edge, x)` undefined behavior. GPU
 > recapture remains a V28-B proof item because this is render-changing.
+> Same-day analytic point/spot radiometry follow-up: opaque shade and
+> transparent OIT no longer multiply receiver `NdotL` after the shared
+> extension-aware `evalGGX*` helpers, whose return value is already
+> cosine-weighted. `nDotL` remains a hemisphere gate only; V28-B recapture
+> remains required because grazing point/spot brightness changes visibly.
 > Latest walkaround soft-sun truthfulness follow-up: authored
 > `DirectionalEmitter.angularDiameter` now threads into the shared
 > WalkaroundUBO as a direct sun cone radius and is consumed by opaque direct

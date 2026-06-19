@@ -41,7 +41,7 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + geoNormal * 1e-3,');
     expect(TRANSPARENT_OIT_WGSL).toContain('shadowT = oitShadowTransmittance(');
     expect(TRANSPARENT_OIT_WGSL).toContain('let attenuation = oitPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += lightLe * brdf * nDotL * cone * attenuation * shadowT;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += lightLe * brdf * cone * attenuation * shadowT;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
     expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAreaEmitterNEE(');

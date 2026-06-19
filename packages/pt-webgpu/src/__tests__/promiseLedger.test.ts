@@ -15,6 +15,10 @@ function sorted(values: Iterable<string>): string[] {
   return Array.from(values).sort();
 }
 
+function hasFunctionProperty(target: object, key: PropertyKey): boolean {
+  return typeof (target as Record<PropertyKey, unknown>)[key] === 'function';
+}
+
 describe('pt-webgpu promise ledger compliance', () => {
   it('matches declared capability and optional-method promises', async () => {
     const expected = BACKEND_PROMISE_LEDGER['pt-webgpu'];
@@ -48,5 +52,17 @@ describe('pt-webgpu promise ledger compliance', () => {
     expect(typeof engine.getScene === 'function').toBe(expected.methodPromises.getScene);
     expect(typeof engine.onError === 'function').toBe(expected.methodPromises.onError);
     expect(typeof engine.onWarning === 'function').toBe(expected.methodPromises.onWarning);
+    expect(typeof engine.captureFrame === 'function').toBe(expected.methodPromises.captureFrame);
+    expect(typeof engine.createInverseSession === 'function').toBe(expected.methodPromises.createInverseSession);
+    expect(typeof engine.getRestirPtResultBuffer === 'function').toBe(
+      expected.methodPromises.getRestirPtResultBuffer,
+    );
+    expect(typeof engine.getProgressiveSeedTexture === 'function').toBe(
+      expected.methodPromises.getProgressiveSeedTexture,
+    );
+    expect(typeof engine.seedAccumulator === 'function').toBe(expected.methodPromises.seedAccumulator);
+    expect(hasFunctionProperty(engine, 'exportGIState') || hasFunctionProperty(engine, 'importGIState')).toBe(
+      expected.methodPromises.giStatePersistence,
+    );
   });
 });

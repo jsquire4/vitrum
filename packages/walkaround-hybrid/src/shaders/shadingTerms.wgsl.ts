@@ -249,7 +249,8 @@ fn lo_analyticNEE(
     // Authored range/decay falloff; default decay=2 preserves inverse-square.
     let attenuation = analyticPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);
     let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
-    Lo += lightLe * brdf * nDotL * cone * attenuation * shadowT;
+    // evalGGX* already includes the receiver cosine; nDotL is only a gate here.
+    Lo += lightLe * brdf * cone * attenuation * shadowT;
   }
   return Lo;
 }

@@ -268,7 +268,8 @@ fn oitLayerAnalyticNEE(
       wo,
       wi,
     );
-    Lo += lightLe * brdf * nDotL * cone * attenuation * shadowT;
+    // evalGGX* already includes the receiver cosine; nDotL is only a gate here.
+    Lo += lightLe * brdf * cone * attenuation * shadowT;
   }
   return Lo;
 }
