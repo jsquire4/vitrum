@@ -16,7 +16,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
   "sourceCheck": "npm run road-to-100-source-check",
   "proofUmbrella": "npm run proof-check",
   "closedContractCampaigns": [
-    "glTF predictable API plumbing and texture readiness diagnostics",
+    "glTF predictable API plumbing, selected-scene compatibility scoping, and texture readiness diagnostics",
     "backend structured warning/error surfaces for known degradation paths",
     "walkaround material atlas, alpha, emitter, and mutation truthfulness tails",
     "pt-webgpu direct-light scoped inverse replay with explicit downgrade diagnostics",
