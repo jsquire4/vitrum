@@ -588,6 +588,21 @@ export const bsdf_functions = /* glsl */`
 		clearcoatWeight /= totalWeight;
 	}
 
+	void getSamplingLobeWeights(
+		vec3 wo, vec3 clearcoatWo, SurfaceRecord surf,
+		inout float diffuseWeight, inout float specularWeight, inout float transmissionWeight, inout float clearcoatWeight
+	) {
+
+		// The path sampler chooses a lobe before a candidate wi exists. Use the
+		// same incident-direction-independent policy anywhere a mixed BSDF PDF is
+		// reported, including NEE/BDPT bsdfResult() calls for arbitrary light
+		// directions. The individual lobe BRDF values remain evaluated at the real
+		// wi; only the mixture-selection probabilities are frozen to the sampling
+		// policy so MIS sees the PDF of the distribution that could generate wi.
+		getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
+
+	}
+
 	float bsdfEval(
 		vec3 wo, vec3 clearcoatWo, vec3 wi, vec3 clearcoatWi, SurfaceRecord surf,
 		float heroWavelength,
@@ -678,12 +693,11 @@ export const bsdf_functions = /* glsl */`
 		vec3 clearcoatWo = normalize( surf.clearcoatInvBasis * worldWo );
 		vec3 clearcoatWi = normalize( surf.clearcoatInvBasis * worldWi );
 
-		vec3 wh = getHalfVector( wo, wi, surf.eta );
 		float diffuseWeight;
 		float specularWeight;
 		float transmissionWeight;
 		float clearcoatWeight;
-		getLobeWeights( wo, wi, wh, clearcoatWo, surf, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
+		getSamplingLobeWeights( wo, clearcoatWo, surf, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
 
 		float specularPdf;
 		return bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight, specularPdf, color );
@@ -758,8 +772,7 @@ export const bsdf_functions = /* glsl */`
 		float specularWeight;
 		float transmissionWeight;
 		float clearcoatWeight;
-		// using normal and basically-reflected ray since we don't have proper half vector here
-		getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
+		getSamplingLobeWeights( wo, clearcoatWo, surf, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
 
 		float pdf[4];
 		pdf[0] = diffuseWeight;
