@@ -296,6 +296,77 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
+  it('lite tier warns when material fast-path patches include full-tier-only scalar fields', async () => {
+    installWebGpuConstStubs();
+    const { device, writeBuffer, createBuffer } = makeLiteStubDevice();
+    const structured: EngineWarning[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const engine = await createPTEngine_WebGPU({
+        device,
+        traceTier: 'lite',
+        onWarning: (w) => structured.push(w),
+      });
+      engine.setScene(makeScene());
+      structured.length = 0;
+
+      const writesBefore = writeBuffer.mock.calls.length;
+      const buffersBefore = createBuffer.mock.calls.length;
+
+      engine.updatePrimitive?.('mesh-b', {
+        material: {
+          baseColor: [0.2, 0.7, 0.9],
+          roughness: 0.05,
+          metallic: 0.4,
+          alphaMode: 'blend',
+          opacity: 0.5,
+          normalScale: 0.6,
+          envMapIntensity: 0.25,
+          anisotropy: 0.4,
+        },
+      });
+
+      expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+      expect(writeBuffer.mock.calls.length).toBe(writesBefore + 1);
+      expect(structured).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'pt-webgpu.unsupported-material-fields',
+          method: 'updatePrimitive',
+          details: expect.objectContaining({
+            id: 'mesh-b',
+            primitiveIds: ['mesh-b'],
+            fields: expect.arrayContaining([
+              'alphaMode',
+              'opacity',
+              'normalScale',
+              'envMapIntensity',
+              'anisotropy',
+            ]),
+            primitiveFields: expect.arrayContaining([
+              expect.objectContaining({
+                primitiveId: 'mesh-b',
+                fields: expect.arrayContaining([
+                  'alphaMode',
+                  'opacity',
+                  'normalScale',
+                  'envMapIntensity',
+                  'anisotropy',
+                ]),
+              }),
+            ]),
+          }),
+        }),
+      ]));
+      expect(structured.some((w) =>
+        w.code === 'pt-webgpu.unsupported-material-fields' &&
+        Array.isArray(w.details?.fields) &&
+        (w.details.fields.includes('baseColor') || w.details.fields.includes('roughness')),
+      )).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('lite tier accepts same-count geometry patches via fallback merged-BLAS repack', async () => {
     installWebGpuConstStubs();
     const { device, createBuffer } = makeLiteStubDevice();

@@ -1,6 +1,5 @@
 import type {
   BackendTexture,
-  BackendSupportMode,
   CapturedFrame,
   CaptureFrameOptions,
   Engine,
@@ -23,7 +22,7 @@ import type {
   SceneEmitter,
   ScenePrimitive,
 } from '@vitrum/core';
-import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS, asBackendTexture, narrowToBackendTexture } from '@vitrum/core';
+import { BACKEND_PROMISE_LEDGER, asBackendTexture, narrowToBackendTexture } from '@vitrum/core';
 import {
   PtWebgpuInverseSession,
   type InverseEngineHooks,
@@ -53,6 +52,11 @@ import { FrameParamsSlot } from './scene/frameParamsLayout.js';
 import { packFrameParams } from './frameParamsPacker.js';
 import { SceneMutationRouter } from './sceneMutationRouter.js';
 import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
+import {
+  PT_WEBGPU_LITE_MATERIALS,
+  UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS,
+  collectUnsupportedMaterialFieldsForTraceTier,
+} from './supportDetails.js';
 import { GpuResources } from './gpuResources.js';
 import {
   OIDNFinalDispatcher,
@@ -110,12 +114,6 @@ export {
   type BdptLightPathBufferWebGPUOptions,
 } from './bdpt/bdptLightPathBufferWebGPU.js';
 
-const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
-  'displacementMap',
-  'displacementScale',
-  'displacementBias',
-] as const satisfies readonly (keyof MaterialSpec)[];
-
 interface UnsupportedMaterialFieldUse {
   readonly primitiveId: string;
   readonly fields: readonly string[];
@@ -153,107 +151,21 @@ function collectUnsupportedDisplacementFieldUses(scene: Scene): UnsupportedMater
   return collectPrimitiveMaterialFieldUses(scene, UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS);
 }
 
-function collectUnsupportedLayerNormalFields(
-  fields: Set<string>,
-  prefix: 'frontLayer' | 'backLayer',
-  layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
-): void {
-  if (layer?.normalMap != null) fields.add(`${prefix}.normalMap`);
-  if (layer?.normalScale != null) fields.add(`${prefix}.normalScale`);
-}
-
 function collectUnsupportedMaterialFieldUses(
   scene: Scene,
   traceTier: PtWebgpuTraceTier,
 ): UnsupportedMaterialFieldUse[] {
-  const unsupportedFields = traceTier === 'lite'
-    ? PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS
-    : UNSUPPORTED_MATERIAL_FIELDS;
   const uses: UnsupportedMaterialFieldUse[] = [];
   for (const primitive of scene.primitives) {
     const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
     if (material == null) continue;
-    const fields = new Set<string>();
-    for (const field of unsupportedFields) {
-      if (material[field] != null) fields.add(field);
-    }
-    if (traceTier === 'lite') {
-      collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
-      collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
-    }
-    if (fields.size > 0) {
-      uses.push({ primitiveId: primitive.id, fields: Array.from(fields).sort() });
+    const fields = collectUnsupportedMaterialFieldsForTraceTier(material, traceTier);
+    if (fields.length > 0) {
+      uses.push({ primitiveId: primitive.id, fields });
     }
   }
   return uses;
 }
-
-// CAP-01 — the remaining material fields this backend silently drops, derived
-// from the ledger's per-field support matrix so warning + capability rows can
-// never drift. Displacement keeps its own dedicated warning; `extensions` is
-// the contract-sanctioned host-discretionary escape hatch (no warning).
-const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
-  (field) =>
-    BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials[field] === 'unsupported' &&
-    !(UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS as readonly string[]).includes(field) &&
-    field !== 'extensions',
-);
-
-const PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS = [
-  // The lite trace shader composes no full-tier group-3 material texture
-  // bindings. These fields are therefore unrendered on lite even when the full
-  // pt-webgpu tier supports them.
-  'baseColorMap',
-  'normalMap',
-  'normalScale',
-  'roughnessMap',
-  'metallicMap',
-  'transmissionMap',
-  'thicknessMap',
-  'emissiveMap',
-  'alphaMap',
-  'aoMap',
-  'aoMapIntensity',
-  'clearcoatMap',
-  'clearcoatRoughnessMap',
-  'clearcoatNormalMap',
-  'clearcoatNormalScale',
-  'sheenColorMap',
-  'sheenRoughnessMap',
-  'iridescenceMap',
-  'iridescenceThicknessMap',
-  'anisotropyMap',
-  'specularColorMap',
-  'specularIntensityMap',
-  'bumpMap',
-  'bumpScale',
-  'lightMap',
-  'lightMapIntensity',
-  // Lite also omits the full-tier alpha-test, per-material environment scale,
-  // and anisotropic-BSDF routes.
-  'alphaMode',
-  'alphaCutoff',
-  'opacity',
-  'envMapIntensity',
-  'anisotropy',
-  'anisotropyRotation',
-] as const satisfies readonly (keyof MaterialSpec)[];
-
-const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = Object.freeze([
-  ...new Set([
-    ...UNSUPPORTED_MATERIAL_FIELDS,
-    ...PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS,
-  ]),
-]);
-
-const PT_WEBGPU_LITE_MATERIALS = Object.freeze({
-  ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
-  ...Object.fromEntries(
-    PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS.map((field) =>
-      [field, 'unsupported' as BackendSupportMode],
-    ),
-  ),
-});
 
 function liteCanBakeVertexColors(primitive: ScenePrimitive): boolean {
   const colors = (primitive as { readonly colors?: Float32Array }).colors;

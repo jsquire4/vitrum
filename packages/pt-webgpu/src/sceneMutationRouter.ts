@@ -8,8 +8,8 @@
 // return values are behavior-identical to the pre-extraction inline methods
 // (addPrimitive / removePrimitive / updatePrimitive / updateEmitter /
 // updateEnvironment + the 6 first-eligible-wins fast paths).
-import type { EngineWarning, MaterialSpec, Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
-import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS, asMat4, solveSkin } from '@vitrum/core';
+import type { EngineWarning, Scene, SceneEmitter, ScenePrimitive } from '@vitrum/core';
+import { asMat4, solveSkin } from '@vitrum/core';
 import type { ScenePackResult } from '@vitrum/shared-bvh';
 import {
   BVH_NODE_FLOATS,
@@ -52,6 +52,10 @@ import {
   type EnvSummaryForTree,
 } from './scene/emitterPacking.js';
 import { environmentParams } from './scene/environmentPacking.js';
+import {
+  UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS,
+  collectUnsupportedMaterialFieldsForTraceTier,
+} from './supportDetails.js';
 
 const IDENTITY_MAT4 = asMat4(new Float32Array([
   1, 0, 0, 0,
@@ -59,12 +63,6 @@ const IDENTITY_MAT4 = asMat4(new Float32Array([
   0, 0, 1, 0,
   0, 0, 0, 1,
 ]));
-
-const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
-  'displacementMap',
-  'displacementScale',
-  'displacementBias',
-] as const;
 
 function collectUnsupportedDisplacementPatchFields(
   material: Record<string, unknown>,
@@ -74,27 +72,6 @@ function collectUnsupportedDisplacementPatchFields(
     if (material[field] != null) fields.push(field);
   }
   return fields.sort();
-}
-
-// CAP-01 — matrix-driven list of the remaining material fields pt-webgpu
-// silently drops (every 'unsupported' ledger row except displacement, which has
-// its own dedicated warning, and the host-discretionary `extensions` hatch).
-// Mirrors UNSUPPORTED_MATERIAL_FIELDS in index.ts.
-const UNSUPPORTED_PATCH_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
-  (field) =>
-    BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials[field] === 'unsupported' &&
-    !(UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS as readonly string[]).includes(field) &&
-    field !== 'extensions',
-);
-
-function collectUnsupportedPatchMaterialFields(
-  material: Record<string, unknown>,
-): string[] {
-  const fields = new Set<string>();
-  for (const field of UNSUPPORTED_PATCH_MATERIAL_FIELDS) {
-    if (material[field] != null) fields.add(field);
-  }
-  return Array.from(fields).sort();
 }
 
 function warnHost(
@@ -600,8 +577,13 @@ export class SceneMutationRouter {
             },
           });
         }
-        // CAP-01 — same matrix-driven warning for the remaining dropped fields.
-        const unsupportedMaterialFields = collectUnsupportedPatchMaterialFields(mat);
+        // CAP-01 — same matrix-driven warning for the remaining dropped fields,
+        // narrowed by runtime trace tier so lite material patches cannot silently
+        // accept fields that only the full tier renders.
+        const unsupportedMaterialFields = collectUnsupportedMaterialFieldsForTraceTier(
+          mat,
+          host.isLiteTier?.() === true ? 'lite' : 'full',
+        );
         if (unsupportedMaterialFields.length > 0) {
           warnHost(host, {
             code: 'pt-webgpu.unsupported-material-fields',
@@ -611,7 +593,12 @@ export class SceneMutationRouter {
             message:
               `[vitrum/pt-webgpu] updatePrimitive("${id}"): material fields are supplied ` +
               `but not rendered by this backend: ${unsupportedMaterialFields.join(', ')}.`,
-            details: { id, fields: unsupportedMaterialFields },
+            details: {
+              id,
+              fields: unsupportedMaterialFields,
+              primitiveIds: [id],
+              primitiveFields: [{ primitiveId: id, fields: unsupportedMaterialFields }],
+            },
           });
         }
         const changedEmissiveField =
