@@ -1038,6 +1038,56 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps zero-intensity mapped mesh-area emitter intensity on path-replay through adjoint replay factors', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                emissiveMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 1, 0.25, 1]) } },
+              },
+            }
+          : pr,
+      ),
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mapped-dark-mesh-light',
+        color: [0.25, 0.5, 1],
+        intensity: 0,
+        meshId: 'panel',
+      }],
+    };
+    let captured: AdjointGradientRequest | null = null;
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async (req) => {
+        captured = req;
+        return new Float32Array([0.4]);
+      },
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'emitters.mapped-dark-mesh-light.intensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    const result = await session.step();
+    expect(captured).not.toBeNull();
+    expect(captured!.params).toEqual([
+      { domain: 'emitters', id: 'mapped-dark-mesh-light', field: 'intensity', offset: 0, length: 1 },
+    ]);
+    expect(result.gradient).toEqual([[expect.closeTo(0.4, 6)]]);
+    session.dispose();
+  });
+
   it('keeps mapped mesh-area emitter color on path-replay when an authored color channel is zero', async () => {
     const fake = makeFakeEngine();
     fake.scene = {

@@ -14,7 +14,7 @@
 
 import { describe, expect, it } from 'vitest';
 import type { MaterialSpec, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
-import { packEmitterArrays } from '../scene/emitterPacking.js';
+import { packEmitterArrays, packMeshAreaAdjointReplayArrays } from '../scene/emitterPacking.js';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -198,6 +198,38 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(packed.meshAreaLightSourceFactorsData[0]).toBeCloseTo(1, 5);
     expect(packed.meshAreaLightSourceFactorsData[1]).toBeCloseTo(0, 5);
     expect(packed.meshAreaLightSourceFactorsData[2]).toBeCloseTo(1, 5);
+  });
+
+  it('keeps zero-intensity explicit mapped mesh-area emitters only in the adjoint replay stream', () => {
+    const primitive = {
+      ...triMesh('mapped-zero-intensity-panel', [0, 0, 0], 0, {
+        emissiveMap: emissiveMap(new Float32Array([1, 0, 1, 1]), 1, 1),
+      }),
+      uvs: new Float32Array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
+    } as Scene['primitives'][number];
+    const scene: Scene = {
+      primitives: [primitive],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mapped-zero-intensity',
+        meshId: 'mapped-zero-intensity-panel',
+        color: [0.25, 0.5, 1],
+        intensity: 0,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const production = packEmitterArrays(scene);
+    const replay = packMeshAreaAdjointReplayArrays(scene);
+
+    expect(production.meshAreaLightCount).toBe(0);
+    expect(replay.meshAreaLightCount).toBe(1);
+    expect(replay.meshAreaLightsData[12]).toBeCloseTo(0, 5);
+    expect(replay.meshAreaLightsData[13]).toBeCloseTo(0, 5);
+    expect(replay.meshAreaLightsData[14]).toBeCloseTo(0, 5);
+    expect(replay.meshAreaLightSourceFactorsData[0]).toBeCloseTo(1, 5);
+    expect(replay.meshAreaLightSourceFactorsData[1]).toBeCloseTo(0, 5);
+    expect(replay.meshAreaLightSourceFactorsData[2]).toBeCloseTo(1, 5);
   });
 
   it('does not synthesize an implicit emitter when a readable emissiveMap averages black', () => {

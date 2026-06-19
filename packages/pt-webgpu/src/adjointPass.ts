@@ -55,7 +55,10 @@ import { ADJOINT_GRAD_FP } from './wgsl/pathTrace/pathTraceAdjoint.wgsl.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import type { FrameInput, Scene } from '@vitrum/core';
 import type { AdjointGradientRequest } from './inverse/inverseSession.js';
-import { meshAreaEmitterAdjointRangeForScene } from './scene/emitterPacking.js';
+import {
+  meshAreaEmitterAdjointRangeForScene,
+  packMeshAreaAdjointReplayArrays,
+} from './scene/emitterPacking.js';
 
 export class AdjointPass {
   readonly #device: GPUDevice;
@@ -134,7 +137,6 @@ export class AdjointPass {
     uboU[27] = sampleCount >>> 0;
     uboU[28] = sb.directionalLightCount >>> 0;
     uboU[29] = sb.spotLightCount >>> 0;
-    uboU[30] = sb.meshAreaLightCount >>> 0;
     uboU[32] = sb.environmentMapWidth >>> 0;
     uboU[33] = sb.environmentMapHeight >>> 0;
     uboU[34] = sb.hasEnvironmentMap ? 1 : 0;
@@ -156,6 +158,14 @@ export class AdjointPass {
     // scalar light streams).
     // Lit BRDF fields leave payloads 0.
     // A Float32 view aliases the same buffer.
+    const needsMeshAreaAdjointReplay = params.some((p) =>
+      p.domain === 'emitters' &&
+      scene.emitters.some((e) => e.id === p.id && e.kind === 'mesh-area'));
+    const meshAreaAdjointReplay = needsMeshAreaAdjointReplay
+      ? packMeshAreaAdjointReplayArrays(scene)
+      : null;
+    uboU[30] = (meshAreaAdjointReplay?.meshAreaLightCount ?? sb.meshAreaLightCount) >>> 0;
+
     const descs = new Uint32Array(Math.max(params.length, 1) * 8);
     const descsF = new Float32Array(descs.buffer);
     for (let i = 0; i < params.length; i++) {
@@ -305,6 +315,16 @@ export class AdjointPass {
     const gradBuf = mk(gradientLength * 4, U.STORAGE | U.COPY_SRC | U.COPY_DST, new Int32Array(gradientLength));
     const descBuf = mk(descs.byteLength, U.STORAGE | U.COPY_DST, descs);
     const stage = mk(gradientLength * 4, U.MAP_READ | U.COPY_DST);
+    const meshAreaLightsBuffer = meshAreaAdjointReplay == null
+      ? sb.meshAreaLightsBuffer
+      : mk(meshAreaAdjointReplay.meshAreaLightsData.byteLength, U.STORAGE | U.COPY_DST, meshAreaAdjointReplay.meshAreaLightsData);
+    const meshAreaLightSourceFactorsBuffer = meshAreaAdjointReplay == null
+      ? sb.meshAreaLightSourceFactorsBuffer
+      : mk(
+          meshAreaAdjointReplay.meshAreaLightSourceFactorsData.byteLength,
+          U.STORAGE | U.COPY_DST,
+          meshAreaAdjointReplay.meshAreaLightSourceFactorsData,
+        );
 
     const bind = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
@@ -322,7 +342,7 @@ export class AdjointPass {
         { binding: 10, resource: { buffer: sb.rectAreaLightsBuffer } },
         { binding: 11, resource: { buffer: sb.directionalLightsBuffer } },
         { binding: 12, resource: { buffer: sb.spotLightsBuffer } },
-        { binding: 13, resource: { buffer: sb.meshAreaLightsBuffer } },
+        { binding: 13, resource: { buffer: meshAreaLightsBuffer } },
         { binding: 14, resource: { buffer: sb.uvsBuffer } },
         { binding: 15, resource: { buffer: sb.materialTexDescriptorsBuffer } },
         { binding: 16, resource: sb.materialTextureView },
@@ -331,7 +351,7 @@ export class AdjointPass {
         { binding: 19, resource: sb.materialLinearTextureView },
         { binding: 20, resource: { buffer: sb.environmentMapTexelsBuffer } },
         { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
-        { binding: 22, resource: { buffer: sb.meshAreaLightSourceFactorsBuffer } },
+        { binding: 22, resource: { buffer: meshAreaLightSourceFactorsBuffer } },
         { binding: 23, resource: { buffer: sb.tangentsBuffer } },
       ],
     });

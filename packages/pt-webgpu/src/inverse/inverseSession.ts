@@ -263,7 +263,6 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'clearcoatNormalScale',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
-const ADJOINT_MAPPED_EMISSION_EPS = 1e-8;
 const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'ior',
   'transmission',
@@ -969,22 +968,7 @@ function meshAreaEmitterMappedEmissionIssue(
   const primitive = scene.primitives.find((p) => p.id === emitter.meshId);
   if (primitive == null || primitive.kind === 'analytic') return null;
   if (primitive.material.emissiveMap == null) return null;
-  if (field === 'intensity') {
-    if (Number.isFinite(emitter.intensity) && Math.abs(emitter.intensity) > ADJOINT_MAPPED_EMISSION_EPS) {
-      return null;
-    }
-    return {
-      message:
-        'mesh-area emitter target uses material emissiveMap radiance with zero/near-zero intensity; packed-radiance chain-rule ratio is undefined',
-      details: {
-        emitterKind: emitter.kind,
-        meshId: emitter.meshId,
-        unsupportedMaterialFields: ['emissiveMap'],
-        finiteDifferenceReason: 'zero-intensity-mapped-emission',
-      },
-    };
-  }
-  if (field === 'color') {
+  if (field === 'color' || field === 'intensity') {
     return null;
   }
   return {

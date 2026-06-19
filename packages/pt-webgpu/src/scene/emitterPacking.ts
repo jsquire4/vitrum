@@ -103,6 +103,10 @@ type PackedMeshAreaTriangle = {
   readonly castShadowDisabled: boolean;
 };
 
+type MeshAreaTrianglePackOptions = {
+  readonly includeZeroRadianceTriangles?: boolean;
+};
+
 /**
  * Mesh-area NEE triangle cap — prevents a large emissive mesh from producing an
  * unbounded GPU buffer (16 floats × 4 bytes per triangle) and an oversized CPU
@@ -443,6 +447,7 @@ function packMeshAreaTriangles(
   emitter: MeshAreaEmitter,
   scene: Scene,
   warnings: string[],
+  options: MeshAreaTrianglePackOptions = {},
 ): readonly PackedMeshAreaTriangle[] {
   const primitive = scene.primitives.find((p) => p.id === emitter.meshId);
   if (primitive == null || primitive.kind === 'analytic') {
@@ -565,11 +570,11 @@ function packMeshAreaTriangles(
               mappedBaseRadiance[1] * sourceFactor[1],
               mappedBaseRadiance[2] * sourceFactor[2],
             ]);
-        if (
-          triangleRadiance == null ||
-          luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) <
-            IMPLICIT_EMITTER_LUMINANCE_THRESHOLD
-        ) {
+        if (triangleRadiance == null) {
+          return;
+        }
+        const emittedLuminance = luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]);
+        if (!options.includeZeroRadianceTriangles && emittedLuminance < IMPLICIT_EMITTER_LUMINANCE_THRESHOLD) {
           return;
         }
         packed.push({
@@ -580,7 +585,7 @@ function packMeshAreaTriangles(
           sourceFactor: sourceFactor == null
             ? [1, 1, 1]
             : [sourceFactor[0], sourceFactor[1], sourceFactor[2]],
-          power: luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) * area,
+          power: emittedLuminance * area,
           castShadowDisabled,
         });
       };
@@ -733,7 +738,12 @@ export function meshAreaEmitterAdjointRangeForScene(
 
   for (const emitter of scene.emitters) {
     if (emitter.kind !== 'mesh-area') continue;
-    const count = packMeshAreaTriangles(emitter, scene, warnings).length;
+    const count = packMeshAreaTriangles(
+      emitter,
+      scene,
+      warnings,
+      { includeZeroRadianceTriangles: true },
+    ).length;
     if (emitter.id === emitterId) {
       found = true;
       targetStart = cursor;
@@ -752,6 +762,68 @@ export function meshAreaEmitterAdjointRangeForScene(
     count: targetCount,
     totalMeshAreaTriangles: cursor,
     capped: cursor > MESH_AREA_LIGHT_TRI_CAP,
+  };
+}
+
+export interface PackedMeshAreaAdjointReplayArrays {
+  readonly warnings: readonly string[];
+  readonly meshAreaLightCount: number;
+  readonly meshAreaLightsData: Float32Array;
+  readonly meshAreaLightSourceFactorsData: Float32Array;
+}
+
+export function packMeshAreaAdjointReplayArrays(scene: Scene): PackedMeshAreaAdjointReplayArrays {
+  const warnings: string[] = [];
+  const meshAreaTriangles: PackedMeshAreaTriangle[] = [];
+  for (const emitter of scene.emitters) {
+    if (emitter.kind !== 'mesh-area') continue;
+    meshAreaTriangles.push(...packMeshAreaTriangles(
+      emitter,
+      scene,
+      warnings,
+      { includeZeroRadianceTriangles: true },
+    ));
+  }
+
+  for (const synthetic of synthesizeImplicitEmitters(scene, undefined, warnings)) {
+    meshAreaTriangles.push(...packMeshAreaTriangles(synthetic, scene, warnings));
+  }
+
+  let cappedTriangles = meshAreaTriangles;
+  if (meshAreaTriangles.length > MESH_AREA_LIGHT_TRI_CAP) {
+    warnings.push(
+      `@vitrum/pt-webgpu: adjoint mesh-area replay triangle count (${meshAreaTriangles.length}) exceeds cap ` +
+        `(${MESH_AREA_LIGHT_TRI_CAP}); keeping the ${MESH_AREA_LIGHT_TRI_CAP} highest-emitted-power triangles.`,
+    );
+    cappedTriangles = sortMeshAreaTrianglesForNeeCapForTests(meshAreaTriangles)
+      .slice(0, MESH_AREA_LIGHT_TRI_CAP);
+  }
+
+  const meshAreaLights: number[] = [];
+  const meshAreaLightSourceFactors: number[] = [];
+  for (const tri of cappedTriangles) {
+    pushVec4(meshAreaLights, tri.triA);
+    pushVec4(meshAreaLights, tri.triB);
+    pushVec4(meshAreaLights, tri.triC);
+    pushVec4(meshAreaLights, tri.radiance, tri.castShadowDisabled ? 1 : 0);
+    pushVec4(meshAreaLightSourceFactors, tri.sourceFactor);
+  }
+  const meshAreaLightCount = cappedTriangles.length;
+  return {
+    warnings,
+    meshAreaLightCount,
+    meshAreaLightsData: packedFloatData(
+      meshAreaLights,
+      meshAreaLightCount,
+      MESH_AREA_LIGHT_FLOAT_STRIDE,
+      'adjoint-mesh-area-light',
+    ),
+    meshAreaLightSourceFactorsData: packedFloatData(
+      meshAreaLightSourceFactors,
+      meshAreaLightCount,
+      4,
+      'adjoint-mesh-area-light-source-factor',
+    ),
   };
 }
 
