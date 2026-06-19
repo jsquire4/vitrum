@@ -31,6 +31,8 @@ import {
   CIE_X_TABLE, CIE_Y_TABLE, CIE_Z_TABLE,
   X_CMF_CDF, Y_CMF_CDF, Z_CMF_CDF,
   X_CMF_INTEGRAL, Y_CMF_INTEGRAL, Z_CMF_INTEGRAL,
+  SOBOL_TEXTURE_SIZE,
+  generateSobolTextureData,
 } from '@vitrum/shared-samplers';
 import { BdptSubpathBuilder } from './BdptSubpathBuilder.js';
 import { PresentPass } from './PresentPass.js';
@@ -230,6 +232,7 @@ export class GlResources {
 
   #ptProgram: GlProgram | null = null;
   #blendProgram: GlProgram | null = null;
+  #randomType: 0 | 1 | 2 = 0;
 
   // ── Present pass (D10.1: extracted to PresentPass) ────────────────────────
   readonly #presentPass: PresentPass;
@@ -285,12 +288,15 @@ export class GlResources {
 
   /** Build the PT program from `composeTraceGlsl(features)` once (idempotent). */
   ensureProgram(features: TraceFeatures): void {
-    this.#ptProgram ??= new GlProgram(
-      this.#gl,
-      FULLSCREEN_VERT,
-      composeTraceGlsl(features),
-      featureDefines(features),
-    );
+    if (this.#ptProgram == null) {
+      this.#randomType = features.randomType;
+      this.#ptProgram = new GlProgram(
+        this.#gl,
+        FULLSCREEN_VERT,
+        composeTraceGlsl(features),
+        featureDefines(features),
+      );
+    }
   }
 
   /** The PT program (null before ensureProgram) — for the host to set uniforms/defines. */
@@ -527,6 +533,7 @@ export class GlResources {
     // engine teardown (Canvas remount / route change churn would accumulate them).
     if (this.#dummy2dTex != null) { gl.deleteTexture(this.#dummy2dTex); this.#dummy2dTex = null; }
     if (this.#dummy2dArrTex != null) { gl.deleteTexture(this.#dummy2dArrTex); this.#dummy2dArrTex = null; }
+    if (this.#sobolTex != null) { gl.deleteTexture(this.#sobolTex); this.#sobolTex = null; }
     // A5 — free the BDPT light-path ping-pong pair + copy FBO (D10.1: via BdptSubpathBuilder).
     this.#bdptBuilder.dispose();
   }
@@ -614,6 +621,9 @@ export class GlResources {
     if (bdptLightPath != null) {
       prog.bindTexture('uBdptLightPathTex', bdptLightPath);
     }
+    if (this.#randomType === 1) {
+      prog.bindTexture('sobolTexture', this.#sobolTex2D());
+    }
 
     // Non-texture scalar uniforms — uploaded after the texture loop.
     // H1 FIX: lights.count must be set as uint (setUint) — without it the analytic-light
@@ -629,6 +639,7 @@ export class GlResources {
 
   #dummy2dTex: WebGLTexture | null = null;
   #dummy2dArrTex: WebGLTexture | null = null;
+  #sobolTex: WebGLTexture | null = null;
 
   #dummyTex2D(): WebGLTexture {
     const gl = this.#gl;
@@ -656,6 +667,32 @@ export class GlResources {
       this.#dummy2dArrTex = t;
     }
     return this.#dummy2dArrTex;
+  }
+
+  #sobolTex2D(): WebGLTexture {
+    const gl = this.#gl;
+    if (this.#sobolTex == null) {
+      const t = gl.createTexture();
+      if (t == null) throw new Error('pt-webgl2: failed to create Sobol texture');
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA32F,
+        SOBOL_TEXTURE_SIZE,
+        SOBOL_TEXTURE_SIZE,
+        0,
+        gl.RGBA,
+        gl.FLOAT,
+        generateSobolTextureData(),
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this.#sobolTex = t;
+    }
+    return this.#sobolTex;
   }
 
   #destroyTargets(): void {

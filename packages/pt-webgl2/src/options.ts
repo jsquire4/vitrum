@@ -25,6 +25,12 @@ export interface PTEngineWebGL2Options extends EngineOptions {
   readonly spectral?: boolean;
   /** Bidirectional path tracing (S3). Default false. */
   readonly bdpt?: boolean;
+  /**
+   * Primary path-sampling sequence. Default `'pcg'` preserves the historical random
+   * stream. `'sobol'` compiles RANDOM_TYPE=1 and uploads a real 256x256 RGBA32F
+   * Sobol direction texture; stratified sampling remains intentionally unsupported.
+   */
+  readonly sampling?: 'pcg' | 'sobol';
   /** BDPT tuning — read only when {@link bdpt} is `true`. */
   readonly bdptOptions?: {
     /**

@@ -298,6 +298,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   readonly #causticStrategy: EngineCapabilities['causticStrategy'];
   readonly #spectralEnabled: boolean;
   readonly #bdpt: boolean;
+  readonly #randomType: TraceFeatures['randomType'];
   readonly #bdptMaxLightBounces: number;
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
@@ -352,6 +353,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     this.#spectralEnabled = opts.spectral ?? false;
     this.#bdpt = opts.bdpt ?? false;
+    this.#randomType = opts.sampling === 'sobol' ? 1 : 0;
     this.#bdptMaxLightBounces = resolveBdptMaxLightBounces(opts.bdptOptions?.maxLightBounces);
     // A5 (2026-06-10): the BDPT light-subpath passes are now host-driven (GlResources
     // .#buildBdptLightSubpath builds the ping-pong light-path texture per sample and
@@ -1069,6 +1071,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       bdpt: this.#bdpt,
       cameraType: this.#cameraType,
       dof: this.#dof != null,
+      randomType: this.#randomType,
     };
   }
 

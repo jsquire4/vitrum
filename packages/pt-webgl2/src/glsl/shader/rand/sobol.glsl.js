@@ -243,7 +243,7 @@ export const sobol_functions = /* glsl */`
 		uvec2 dim = uvec2( textureSize( sobolTexture, 0 ).xy );
 		uint y = index / dim.x;
 		uint x = index - y * dim.x;
-		vec2 uv = vec2( x, y ) / vec2( dim );
+		vec2 uv = ( vec2( x, y ) + 0.5 ) / vec2( dim );
 		return texture( sobolTexture, uv );
 
 	}

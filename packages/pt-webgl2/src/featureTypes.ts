@@ -31,15 +31,15 @@ export interface TraceFeatures {
   //   • backgroundMap  — FEATURE_BACKGROUND_MAP: a SEPARATE background texture distinct
   //                      from the environment map; the core contract has no such field
   //                      (env IS the background). Pinned false.
-  //   • randomType     — RANDOM_TYPE: PCG(0) is the only real RNG. Sobol(1)/Stratified(2)
-  //                      consume sobolTexture/stratifiedTexture/stratifiedOffsetTexture,
-  //                      which the host currently uploads as 1×1 dummies — enabling them
-  //                      would read garbage. Pinned PCG(0) until a real generator ships.
+  //   • randomType     — RANDOM_TYPE: PCG(0) is the default; Sobol(1) is host-
+  //                      controllable via opts.sampling and uploads a real Sobol
+  //                      texture. Stratified(2) still consumes dummy textures and
+  //                      remains deliberately unexposed until its tables ship.
   //   • debugMode      — DEBUG_MODE: g-buffer/AOV debug visualisations, not a production
   //                      render path. Pinned 0.
   readonly fog: boolean;            // FEATURE_FOG (pinned false)
   readonly backgroundMap: boolean;  // FEATURE_BACKGROUND_MAP (pinned false)
-  readonly randomType: RandomType;  // RANDOM_TYPE (pinned PCG=0)
+  readonly randomType: RandomType;  // RANDOM_TYPE (PCG default, Sobol opt-in)
   readonly debugMode: number;       // DEBUG_MODE (pinned 0)
 }
 

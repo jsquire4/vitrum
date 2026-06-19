@@ -81,6 +81,12 @@ export function createMockGl(recordOrOpts?: Map<string, unknown> | MockGlOptions
     const n = nameOf(loc);
     if (n != null) record.set(n, value);
   };
+  const recList = (key: string, value: unknown): void => {
+    if (record == null) return;
+    const existing = record.get(key);
+    if (Array.isArray(existing)) existing.push(value);
+    else record.set(key, [value]);
+  };
 
   const handlers: Record<string, (...args: unknown[]) => unknown> = {
     getExtension: () => ({}),
@@ -99,6 +105,8 @@ export function createMockGl(recordOrOpts?: Map<string, unknown> | MockGlOptions
     getShaderParameter: () => true,
     getProgramInfoLog: () => '',
     getShaderInfoLog: () => '',
+    shaderSource: (_shader, source) => recList('__shaderSources', source),
+    texImage2D: (...args) => recList('__texImage2D', args),
     // Name-tag locations only when recording (so GlProgram's per-name #loc cache
     // carries the name through to the setters below); else opaque, as before.
     getUniformLocation: record == null ? () => ({}) : (_prog, name) => ({ __u: name }),

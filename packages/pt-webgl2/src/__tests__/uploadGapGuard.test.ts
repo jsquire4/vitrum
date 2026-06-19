@@ -113,9 +113,9 @@ const EXPLICITLY_NON_UPLOADED_UNIFORMS = new Map<string, string>([
   ['materials', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
   ['textures', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
   ['backgroundMap', 'FEATURE_BACKGROUND_MAP compile-gated and pinned false'],
-  ['sobolTexture', 'RANDOM_TYPE compile-gated and pinned to PCG'],
-  ['stratifiedTexture', 'RANDOM_TYPE compile-gated and pinned to PCG'],
-  ['stratifiedOffsetTexture', 'RANDOM_TYPE compile-gated and pinned to PCG'],
+  ['sobolTexture', 'sampler uniform; bound to a real Sobol table when sampling=sobol'],
+  ['stratifiedTexture', 'RANDOM_TYPE stratified branch remains unexposed and dummy-bound'],
+  ['stratifiedOffsetTexture', 'RANDOM_TYPE stratified branch remains unexposed and dummy-bound'],
   ['uBdptLightPathTex', 'sampler uniform; BDPT path binds it when FEATURE_BDPT is active'],
   // Compile-gated non-default feature uniforms; focused tests below cover accepted
   // host-controllable variants where applicable.
