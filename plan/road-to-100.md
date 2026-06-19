@@ -1789,10 +1789,14 @@ them to hard 100% blockers only if the Road definition is widened from
 contract-complete to contract-complete plus SOTA throughput/convergence.
 
 1. Low-discrepancy sampling (`LD-SAMPLING-01`): shared Sobol table generation
-   plus pt-webgl2 `sampling:'sobol'` opt-in are code-closed and covered by the
-   GLSL `sobol-on` shader gate; remaining work is Owen/blue-noise scrambling,
-   per-dimension assignment audit, pt-webgpu integration, and equal-time RMSE
-   convergence proof.
+   plus pt-webgl2 `sampling:'sobol'` opt-in and pt-webgpu
+   `sampling:'sobol'` opt-in are code-closed. pt-webgl2 is covered by the GLSL
+   `sobol-on` shader gate; pt-webgpu composes a binding-free first-order
+   pixel-scrambled Sobol RNG through the full/lite megakernels plus
+   SPPM/ReSTIR-PT/BDPT auxiliary pipelines and surfaces an experimental
+   capability/warning. Remaining work is Owen/blue-noise scrambling,
+   per-dimension assignment audit, shader/adapter gate breadth for the Sobol
+   WebGPU variants, and equal-time RMSE convergence proof.
 2. Compressed wide BVH traversal (`WBVH-01`): opt-in CWBVH-style builder,
    packed node layout, WGSL traversal, CPU brute-force oracle, backend
    capability flag, and binary-BVH fallback until parity/perf are proven.
@@ -1853,12 +1857,18 @@ Sobol-dummy complaint is no longer true: `shared-samplers` now exports a
 compiles `RANDOM_TYPE=1`, uploads a real RGBA32F Sobol texture, samples texel
 centres, and the GLSL gate compiles a production `sobol-on` variant. Stratified
 sampling is still intentionally unexposed because its textures remain
-dummy-bound. pt-webgpu still has no equivalent low-discrepancy RNG plumbing.
+dummy-bound. pt-webgpu now also exposes `sampling:'sobol'`: the engine composes
+a binding-free WGSL Sobol RNG module with the existing `pcgInit`/`rand_f32`
+symbol contract so the megakernel, lite kernel, SPPM photon pass, ReSTIR-PT
+reuse passes, and BDPT light-subpath pass all switch coherently. It is explicitly
+tagged `pt-webgpu-sobol-sampling` in `capabilities.experimentalFeatures` and
+warns that this is first-order pixel-scrambled Sobol, not the final
+Owen/blue-noise/per-dimension-audited sampler.
 
 **Remaining work:** Owen/blue-noise scrambling, per-dimension assignment audit
-(bounce/lobe/light dims), pt-webgpu equivalent in `kernel.wgsl.ts` RNG plumbing,
-and equal-time RMSE A/B on the reference scenes (self-validating error curves,
-not eyeballs).
+(bounce/lobe/light dims), real-adapter shader/behavioral gates for the Sobol
+WebGPU variants, and equal-time RMSE A/B on the reference scenes
+(self-validating error curves, not eyeballs).
 
 ### F2 — Compressed wide BVH traversal (biggest throughput win)
 

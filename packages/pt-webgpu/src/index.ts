@@ -67,7 +67,10 @@ import {
   createBdptLightPathPlaceholder,
 } from './bdpt/bdptLightPathBufferWebGPU.js';
 import { AdjointPass } from './adjointPass.js';
-import { PT_WEBGPU_COMMON_WGSL } from './wgsl/common.wgsl.js';
+import {
+  PT_WEBGPU_COMMON_WGSL,
+  type PtWebgpuSamplingMode,
+} from './wgsl/common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
   OCTAHEDRAL_CORE_WGSL,
@@ -279,6 +282,14 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    */
   readonly lightTreeImportanceSampling?: boolean;
   /**
+   * Primary path-sampling sequence. Default `'pcg'` preserves the historical random
+   * stream. `'sobol'` compiles the opt-in pt-webgpu WGSL Sobol RNG module across
+   * the megakernel plus SPPM/ReSTIR-PT/BDPT auxiliary pipelines. This is first-
+   * order pixel-scrambled Sobol; Owen/blue-noise/per-dimension promotion evidence
+   * remains tracked in the Road ledger.
+   */
+  readonly sampling?: 'pcg' | 'sobol';
+  /**
    * Camera-visible emitters: emissive meshes glow when seen DIRECTLY by the
    * camera and THROUGH refractive surfaces (the stained-glass case), not only via
    * NEE on receiving surfaces. ON by default. When a scene represents an emissive
@@ -437,6 +448,7 @@ class PTEngineWebGPU implements Engine {
   readonly #postDenoiser: OIDNFinalDispatcher | null;
   readonly #spectralEnabled: boolean;
   readonly #lightTreeImportanceSampling: boolean;
+  readonly #sampling: PtWebgpuSamplingMode;
   readonly #cameraVisibleEmitters: boolean;
   readonly #bdpt: boolean;
   readonly #bdptMaxLightBounces: number;
@@ -478,6 +490,7 @@ class PTEngineWebGPU implements Engine {
     }
     this.#spectralEnabled = opts.spectral === true;
     this.#lightTreeImportanceSampling = opts.lightTreeImportanceSampling !== false;
+    this.#sampling = opts.sampling === 'sobol' ? 'sobol' : 'pcg';
     this.#cameraVisibleEmitters = opts.cameraVisibleEmitters !== false;
     this.#traceTier = traceTier;
     this.#maxBouncesLimit = Math.max(1, Math.min(opts.maxBounces ?? 3, EXPERIMENTAL_MAX_BOUNCES));
@@ -530,6 +543,7 @@ class PTEngineWebGPU implements Engine {
       this.#bdpt,
       this.#restirPtReuse,
       (warning) => this.#warn(warning),
+      this.#sampling,
     );
     if (opts.denoiser === 'oidn-final') {
       const modelUrl = opts.oidn?.modelUrl;
@@ -794,6 +808,7 @@ class PTEngineWebGPU implements Engine {
         // and the BDPT sub-path pipeline is not created on the lite layout).
         ...(this.#bdpt && this.#traceTier !== 'lite' ? (['pt-webgpu-bdpt'] as const) : []),
         ...(this.#restirPtReuse ? (['pt-webgpu-restir-pt-reuse'] as const) : []),
+        ...(this.#sampling === 'sobol' ? (['pt-webgpu-sobol-sampling'] as const) : []),
         ...(this.#traceTier !== 'lite' && this.#causticStrategy === 'photon-map'
           ? (['pt-webgpu-photon-map-sppm'] as const)
           : []),
@@ -2312,6 +2327,41 @@ export const createPTEngine_WebGPU: EngineFactory<
         "pt-webgpu is a converged progressive path tracer; 'svgf-real' is a real-time 1-spp filter and is unsupported here — " +
         "use 'oidn-final' for converged denoising. Degrading to no-denoise.",
       details: { requested: opts.denoiser },
+    });
+  }
+  const requestedSampling = (opts as { readonly sampling?: unknown }).sampling;
+  if (
+    requestedSampling != null &&
+    requestedSampling !== 'pcg' &&
+    requestedSampling !== 'sobol'
+  ) {
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.unsupported-sampling',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        `[vitrum/pt-webgpu] sampling="${String(requestedSampling)}" requested, but only ` +
+        "'pcg' and 'sobol' are wired. Degrading to the default PCG stream.",
+      details: { requested: requestedSampling },
+    });
+  }
+  if (requestedSampling === 'sobol') {
+    emitPteWarning(opts, {
+      code: 'pt-webgpu.sobol-sampling-experimental',
+      backend: 'pt-webgpu',
+      phase: 'construction',
+      method: 'createPTEngine_WebGPU',
+      message:
+        "[vitrum/pt-webgpu] sampling:'sobol' enables an opt-in first-order " +
+        'pixel-scrambled Sobol RNG across the pt-webgpu megakernel and auxiliary ' +
+        'SPPM/ReSTIR-PT/BDPT pipelines. Owen scrambling, blue-noise rotations, ' +
+        'per-dimension audit, and equal-time RMSE promotion evidence remain Road-to-100 tails.',
+      details: {
+        sampling: 'sobol',
+        fallback: 'none',
+        promotionTails: ['owen-scrambling', 'blue-noise-rotation', 'per-dimension-audit', 'equal-time-rmse-ab'],
+      },
     });
   }
   // H51-C: warn once listing any extensions keys the host supplied that are

@@ -1,4 +1,8 @@
-import { PT_WEBGPU_COMMON_WGSL } from './common.wgsl.js';
+import {
+  PT_WEBGPU_COMMON_WGSL,
+  composePtWebgpuCommonWgsl,
+  type PtWebgpuSamplingMode,
+} from './common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
   HERO_WAVELENGTH_WGSL,
@@ -17,6 +21,29 @@ import { PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL } from './pathTrace/kernelLite.wg
  * directional direct light. Fits adapters with ≥8 storage buffers and ≥4
  * storage textures per compute stage (e.g. SwiftShader Vulkan).
  */
+export interface PtWebgpuLiteTraceComposeOptions {
+  readonly sampling?: PtWebgpuSamplingMode;
+}
+
+export function composePtWebgpuTraceLiteWgsl(
+  opts: PtWebgpuLiteTraceComposeOptions = {},
+): string {
+  const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
+  return /* wgsl */ `
+${common}
+${HAMMERSLEY_WGSL}
+${OCTAHEDRAL_CORE_WGSL}
+${LUMINANCE_WGSL}
+${HERO_WAVELENGTH_WGSL}
+${PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_WGSL}
+${PT_WEBGPU_PATH_TRACE_INTERSECTION_LITE_WGSL}
+${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
+${PT_WEBGPU_PATH_TRACE_CONNECT_LITE_WGSL}
+${PT_WEBGPU_PATH_TRACE_CAUSTIC_LITE_WGSL}
+${PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL}
+`;
+}
+
 export const PT_WEBGPU_TRACE_LITE_WGSL = /* wgsl */ `
 ${PT_WEBGPU_COMMON_WGSL}
 ${HAMMERSLEY_WGSL}

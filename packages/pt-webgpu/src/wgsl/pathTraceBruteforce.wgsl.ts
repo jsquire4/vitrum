@@ -1,4 +1,8 @@
-import { PT_WEBGPU_COMMON_WGSL } from './common.wgsl.js';
+import {
+  PT_WEBGPU_COMMON_WGSL,
+  composePtWebgpuCommonWgsl,
+  type PtWebgpuSamplingMode,
+} from './common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
   HERO_WAVELENGTH_WGSL,
@@ -86,10 +90,18 @@ import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.
  * When `bdptEnabled` is true the kernel emits the legacy per-channel
  * Beer-Lambert absorption fallback instead.
  */
-export function composePtWebgpuTraceWgsl(bdptEnabled: boolean): string {
+export interface PtWebgpuTraceComposeOptions {
+  readonly sampling?: PtWebgpuSamplingMode;
+}
+
+export function composePtWebgpuTraceWgsl(
+  bdptEnabled: boolean,
+  opts: PtWebgpuTraceComposeOptions = {},
+): string {
   const kernel = composePathTraceKernelWgsl({ volumetricSss: !bdptEnabled });
+  const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
   return /* wgsl */ `
-${PT_WEBGPU_COMMON_WGSL}
+${common}
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_CORE_WGSL}
 ${LUMINANCE_WGSL}
@@ -125,13 +137,17 @@ ${kernel}
  * present in the kernel (rpt_result_in at group(0) binding 23). SPPM bindings
  * are in group(3) (bindings 6/7/8) and are not relocated by this transform.
  */
-export function composePtWebgpuCompositeTraceWgsl(bdptEnabled: boolean): string {
+export function composePtWebgpuCompositeTraceWgsl(
+  bdptEnabled: boolean,
+  opts: PtWebgpuTraceComposeOptions = {},
+): string {
   const kernel = composePathTraceKernelWgsl({
     volumetricSss: !bdptEnabled,
     restirPtComposite: true,
   });
+  const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
   const body = /* wgsl */ `
-${PT_WEBGPU_COMMON_WGSL}
+${common}
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_CORE_WGSL}
 ${LUMINANCE_WGSL}
@@ -176,9 +192,12 @@ ${kernel}
  *
  * Full-tier only; never composed on lite.
  */
-export function composeSppmPhotonPassWgsl(): string {
+export function composeSppmPhotonPassWgsl(
+  opts: PtWebgpuTraceComposeOptions = {},
+): string {
+  const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
   return /* wgsl */ `
-${PT_WEBGPU_COMMON_WGSL}
+${common}
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_CORE_WGSL}
 ${LUMINANCE_WGSL}

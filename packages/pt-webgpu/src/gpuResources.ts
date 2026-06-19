@@ -38,7 +38,8 @@ import {
   SPPM_PHOTON_CELLS_MAX_BYTES,
   SPPM_PIXEL_STATS_BYTES_PER_PIXEL,
 } from './wgsl/pathTrace/sppmBindings.wgsl.js';
-import { PT_WEBGPU_TRACE_LITE_WGSL } from './wgsl/pathTraceBruteforceLite.wgsl.js';
+import { composePtWebgpuTraceLiteWgsl } from './wgsl/pathTraceBruteforceLite.wgsl.js';
+import type { PtWebgpuSamplingMode } from './wgsl/common.wgsl.js';
 import { PT_WEBGPU_SEED_BLIT_WGSL } from './wgsl/seedBlit.wgsl.js';
 import { PT_WEBGPU_PRESENT_WGSL } from './wgsl/present.wgsl.js';
 import {
@@ -280,6 +281,7 @@ export class GpuResources {
   readonly #device: GPUDevice;
   readonly #traceTier: PtWebgpuTraceTier;
   readonly #bdpt: boolean;
+  readonly #sampling: PtWebgpuSamplingMode;
   readonly #onWarning: ((warning: EngineWarning) => void) | undefined;
   /**
    * Compile-time opt-in for the ReSTIR-PT reservoir/reuse pre-passes (the hero-
@@ -472,10 +474,12 @@ export class GpuResources {
     bdpt: boolean,
     restirPtReuse = false,
     onWarning?: (warning: EngineWarning) => void,
+    sampling: PtWebgpuSamplingMode = 'pcg',
   ) {
     this.#device = device;
     this.#traceTier = traceTier;
     this.#bdpt = bdpt;
+    this.#sampling = sampling;
     this.#onWarning = onWarning;
     // Reuse is full-tier only: the per-pass layouts bind the full-tier scene
     // groups (analytics/TLAS/lights). On the lite tier the flag is inert.
@@ -819,10 +823,11 @@ export class GpuResources {
     // WS4 — the full-tier kernel is composed for this engine's integrator
     // config: the volumetric SSS random walk is compiled in only when BDPT is
     // OFF (structural gate — energy conservation; BDPT has no medium logic).
+    const samplingOpts = { sampling: this.#sampling };
     const traceWgsl =
       this.#traceTier === 'lite'
-        ? PT_WEBGPU_TRACE_LITE_WGSL
-        : composePtWebgpuTraceWgsl(this.#bdpt);
+        ? composePtWebgpuTraceLiteWgsl(samplingOpts)
+        : composePtWebgpuTraceWgsl(this.#bdpt, samplingOpts);
     const module = this.#device.createShaderModule({
       label: `vitrum.pt-webgpu.pathTrace.${this.#traceTier}`,
       code: traceWgsl,
@@ -1121,22 +1126,22 @@ export class GpuResources {
     };
     this.rptProducerPipeline = mk(
       'vitrum.pt-webgpu.restirPt.producer',
-      composeRestirPtProducerWgsl(),
+      composeRestirPtProducerWgsl({ sampling: this.#sampling }),
       'restirPtProduce',
     );
     this.rptTemporalPipeline = mk(
       'vitrum.pt-webgpu.restirPt.temporal',
-      composeRestirPtTemporalWgsl(),
+      composeRestirPtTemporalWgsl({ sampling: this.#sampling }),
       'restirPtTemporal',
     );
     this.rptSpatialPipeline = mk(
       'vitrum.pt-webgpu.restirPt.spatial',
-      composeRestirPtSpatialWgsl(),
+      composeRestirPtSpatialWgsl({ sampling: this.#sampling }),
       'restirPtSpatial',
     );
     this.rptResolvePipeline = mk(
       'vitrum.pt-webgpu.restirPt.resolve',
-      composeRestirPtResolveWgsl(),
+      composeRestirPtResolveWgsl({ sampling: this.#sampling }),
       'restirPtResolve',
     );
     // A1 — the COMPOSITE megakernel uses the SAME [g0', g1, g2, g3] layout (it reads
@@ -1144,7 +1149,7 @@ export class GpuResources {
     // for this engine's BDPT mode (matches the default megakernel's SSS/BDPT gate).
     this.rptCompositePipeline = mk(
       'vitrum.pt-webgpu.restirPt.compositeMegakernel',
-      composePtWebgpuCompositeTraceWgsl(this.#bdpt),
+      composePtWebgpuCompositeTraceWgsl(this.#bdpt, { sampling: this.#sampling }),
       'main',
     );
   }
@@ -1708,7 +1713,7 @@ export class GpuResources {
       ) {
         const module = this.#device.createShaderModule({
           label: 'vitrum.pt-webgpu.sppm.photonPass',
-          code: composeSppmPhotonPassWgsl(),
+          code: composeSppmPhotonPassWgsl({ sampling: this.#sampling }),
         });
         const photonLayout = this.#device.createPipelineLayout({
           label: 'vitrum.pt-webgpu.sppm.photonPass.layout',

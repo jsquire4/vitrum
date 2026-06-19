@@ -74,7 +74,7 @@ const shaders = [];
     PT_WEBGPU_TRACE_WGSL,
   } = await import("../../packages/pt-webgpu/src/wgsl/pathTraceBruteforce.wgsl.ts");
 
-  const { PT_WEBGPU_TRACE_LITE_WGSL } = await import(
+  const { PT_WEBGPU_TRACE_LITE_WGSL, composePtWebgpuTraceLiteWgsl } = await import(
     "../../packages/pt-webgpu/src/wgsl/pathTraceBruteforceLite.wgsl.ts"
   );
 
@@ -109,10 +109,28 @@ const shaders = [];
     entryPoint: "main",
   });
 
+  // Opt-in low-discrepancy sampling variants. The default PCG variants above
+  // stay byte-pinned; these compile the selected binding-free Sobol RNG module.
+  shaders.push({
+    name: "pt-webgpu/trace-full-sss-sobol",
+    wgsl: composePtWebgpuTraceWgsl(false, { sampling: "sobol" }),
+    entryPoint: "main",
+  });
+  shaders.push({
+    name: "pt-webgpu/trace-full-bdpt-sobol",
+    wgsl: composePtWebgpuTraceWgsl(true, { sampling: "sobol" }),
+    entryPoint: "main",
+  });
+
   // Lite-tier path-trace kernel
   shaders.push({
     name: "pt-webgpu/trace-lite",
     wgsl: PT_WEBGPU_TRACE_LITE_WGSL,
+    entryPoint: "main",
+  });
+  shaders.push({
+    name: "pt-webgpu/trace-lite-sobol",
+    wgsl: composePtWebgpuTraceLiteWgsl({ sampling: "sobol" }),
     entryPoint: "main",
   });
 
@@ -127,6 +145,11 @@ const shaders = [];
   shaders.push({
     name: "pt-webgpu/composite-trace-bdpt",
     wgsl: composePtWebgpuCompositeTraceWgsl(true),
+    entryPoint: "main",
+  });
+  shaders.push({
+    name: "pt-webgpu/composite-trace-sss-sobol",
+    wgsl: composePtWebgpuCompositeTraceWgsl(false, { sampling: "sobol" }),
     entryPoint: "main",
   });
 
@@ -154,6 +177,11 @@ const shaders = [];
     wgsl: composeSppmPhotonPassWgsl(),
     entryPoint: "sppmEmitPhotons",
   });
+  shaders.push({
+    name: "pt-webgpu/sppm-photon-pass-sobol",
+    wgsl: composeSppmPhotonPassWgsl({ sampling: "sobol" }),
+    entryPoint: "sppmEmitPhotons",
+  });
 
   // ReSTIR-PT per-pass composers (per-pass because the combined unit has
   // conflicting binding decls that naga rejects — see restirPtCompose.wgsl.ts)
@@ -163,8 +191,18 @@ const shaders = [];
     entryPoint: "restirPtProduce",
   });
   shaders.push({
+    name: "pt-webgpu/restirpt-producer-sobol",
+    wgsl: composeRestirPtProducerWgsl({ sampling: "sobol" }),
+    entryPoint: "restirPtProduce",
+  });
+  shaders.push({
     name: "pt-webgpu/restirpt-temporal",
     wgsl: composeRestirPtTemporalWgsl(),
+    entryPoint: "restirPtTemporal",
+  });
+  shaders.push({
+    name: "pt-webgpu/restirpt-temporal-sobol",
+    wgsl: composeRestirPtTemporalWgsl({ sampling: "sobol" }),
     entryPoint: "restirPtTemporal",
   });
   shaders.push({
@@ -173,8 +211,18 @@ const shaders = [];
     entryPoint: "restirPtSpatial",
   });
   shaders.push({
+    name: "pt-webgpu/restirpt-spatial-sobol",
+    wgsl: composeRestirPtSpatialWgsl({ sampling: "sobol" }),
+    entryPoint: "restirPtSpatial",
+  });
+  shaders.push({
     name: "pt-webgpu/restirpt-resolve",
     wgsl: composeRestirPtResolveWgsl(),
+    entryPoint: "restirPtResolve",
+  });
+  shaders.push({
+    name: "pt-webgpu/restirpt-resolve-sobol",
+    wgsl: composeRestirPtResolveWgsl({ sampling: "sobol" }),
     entryPoint: "restirPtResolve",
   });
 }

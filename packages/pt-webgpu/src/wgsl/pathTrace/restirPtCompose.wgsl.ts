@@ -249,9 +249,14 @@ function monomorphiseReservoirHelpers(
  * the module is harmless (unused helper fns don't affect compilation) and keeps
  * the three modules' shared prefix identical.
  */
-function reuseSharedPrefix(): string {
+export interface RestirPtComposeOptions {
+  readonly sampling?: PtWebgpuSamplingMode;
+}
+
+function reuseSharedPrefix(opts: RestirPtComposeOptions = {}): string {
+  const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
   return /* wgsl */ `
-${PT_WEBGPU_COMMON_WGSL}
+${common}
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_CORE_WGSL}
 ${LUMINANCE_WGSL}
@@ -271,10 +276,10 @@ ${RESERVOIR_PT_HERO_WITH_SHIFT_WGSL}
  * relocated to @group(0) high bindings. Statically uses groups 0,1,2 (trace+NEE)
  * + group 0's reuse bindings. The wiring builds its pipeline layout to match.
  */
-export function composeRestirPtProducerWgsl(): string {
+export function composeRestirPtProducerWgsl(opts: RestirPtComposeOptions = {}): string {
   // Producer only STORES into rpt_reservoirOut.
   return monomorphiseReservoirHelpers(
-    relocateReuseGroup4ToGroup0(`${reuseSharedPrefix()}${RESTIR_PT_PRODUCER_WGSL}`),
+    relocateReuseGroup4ToGroup0(`${reuseSharedPrefix(opts)}${RESTIR_PT_PRODUCER_WGSL}`),
     { store: ['rpt_reservoirOut'] },
   );
 }
@@ -284,10 +289,10 @@ export function composeRestirPtProducerWgsl(): string {
  * temporal body (relocated). Statically uses groups 0,1,2 (the reconnection-
  * visibility traceAny) + group 0's reuse bindings.
  */
-export function composeRestirPtTemporalWgsl(): string {
+export function composeRestirPtTemporalWgsl(opts: RestirPtComposeOptions = {}): string {
   // Temporal LOADS+STORES rpt_resCurrent (rw) and LOADS rpt_resPrev (ro).
   return monomorphiseReservoirHelpers(
-    relocateReuseGroup4ToGroup0(`${reuseSharedPrefix()}${RESTIR_PT_TEMPORAL_WGSL}`),
+    relocateReuseGroup4ToGroup0(`${reuseSharedPrefix(opts)}${RESTIR_PT_TEMPORAL_WGSL}`),
     { ro: ['rpt_resPrev'], rw: ['rpt_resCurrent'], store: ['rpt_resCurrent'] },
   );
 }
@@ -298,12 +303,12 @@ export function composeRestirPtTemporalWgsl(): string {
  * traceAny) + group 0's reuse bindings. Reads the temporal output (b21, the
  * "current" slot) and writes the spatial output (b25).
  */
-export function composeRestirPtSpatialWgsl(): string {
+export function composeRestirPtSpatialWgsl(opts: RestirPtComposeOptions = {}): string {
   // Spatial READS rpt_resSpatialIn (b21 = the temporal output / "current" slot,
   // declared read_write in the shared layout → promote the `read` decl to match)
   // and WRITES rpt_resSpatialOut (b25). It never writes the slot it samples, so
   // neighbour reads are hazard-free.
-  let wgsl = relocateReuseGroup4ToGroup0(`${reuseSharedPrefix()}${RESTIR_PT_SPATIAL_WGSL}`);
+  let wgsl = relocateReuseGroup4ToGroup0(`${reuseSharedPrefix(opts)}${RESTIR_PT_SPATIAL_WGSL}`);
   wgsl = wgsl.replace(
     /(var<storage,)\s*read(>\s+rpt_resSpatialIn)/,
     (_m, pre: string, post: string) => `${pre} read_write${post}`,
@@ -321,7 +326,7 @@ export function composeRestirPtSpatialWgsl(): string {
  * body (relocated). Statically uses group 0 only (evaluateBrdf is pure math; the
  * pass reads `params` + the reservoir/result reuse bindings, all in group 0).
  */
-export function composeRestirPtResolveWgsl(): string {
+export function composeRestirPtResolveWgsl(opts: RestirPtComposeOptions = {}): string {
   // Resolve LOADS rpt_resResolved, which sits at the SPATIAL OUTPUT slot
   // (relocated binding 25 — the slot the spatial pass WRITES). The single shared
   // group-0 layout declares that slot `storage` (read_write), so resolve's binding
@@ -329,7 +334,7 @@ export function composeRestirPtResolveWgsl(): string {
   // entry is a validation mismatch). Promote the binding decl to `read_write`
   // (reading a read_write storage global directly is legal); the monomorphised load
   // indexes it directly, so this only changes the access qualifier — never the math.
-  let wgsl = relocateReuseGroup4ToGroup0(`${reuseSharedPrefix()}${RESTIR_PT_RESOLVE_WGSL}`);
+  let wgsl = relocateReuseGroup4ToGroup0(`${reuseSharedPrefix(opts)}${RESTIR_PT_RESOLVE_WGSL}`);
   wgsl = wgsl.replace(
     /(var<storage,)\s*read(>\s+rpt_resResolved)/,
     (_m, pre: string, post: string) => `${pre} read_write${post}`,
@@ -343,7 +348,11 @@ export function composeRestirPtResolveWgsl(): string {
   return monomorphiseReservoirHelpers(wgsl, { ro: ['rpt_resResolved'] });
 }
 
-import { PT_WEBGPU_COMMON_WGSL } from '../common.wgsl.js';
+import {
+  PT_WEBGPU_COMMON_WGSL,
+  composePtWebgpuCommonWgsl,
+  type PtWebgpuSamplingMode,
+} from '../common.wgsl.js';
 import {
   HAMMERSLEY_WGSL,
   HERO_WAVELENGTH_WGSL,
@@ -373,9 +382,10 @@ import { RESTIR_PT_RESOLVE_WGSL } from './restirPtResolve.wgsl.js';
  * three passes actually reference are concatenated, which keeps the compiled unit
  * minimal while still resolving every identifier.
  */
-export function composePtWebgpuReuseWgsl(): string {
+export function composePtWebgpuReuseWgsl(opts: RestirPtComposeOptions = {}): string {
+  const common = composePtWebgpuCommonWgsl(opts.sampling ?? 'pcg');
   return /* wgsl */ `
-${PT_WEBGPU_COMMON_WGSL}
+${common}
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_CORE_WGSL}
 ${LUMINANCE_WGSL}
