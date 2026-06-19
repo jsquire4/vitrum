@@ -910,11 +910,17 @@ function diagnosePathReplayEmitterSlot(
 
 function pathReplayPrimitiveIssue(
   primitive: ScenePrimitive,
-): { message: string; details: Record<string, string | boolean> } | null {
-  if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') {
+): { message: string; details: Record<string, string | number | boolean> } | null {
+  if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh' && primitive.kind !== 'instanced-mesh') {
     return {
       message: `primitive kind "${primitive.kind}" is not triangle-backed for path-replay`,
       details: { primitiveKind: primitive.kind },
+    };
+  }
+  if (primitive.kind === 'instanced-mesh' && primitive.instances.length === 0) {
+    return {
+      message: 'instanced-mesh target has zero instances in the replayed scene',
+      details: { primitiveKind: primitive.kind, instanceCount: 0 },
     };
   }
   return null;
@@ -922,9 +928,10 @@ function pathReplayPrimitiveIssue(
 
 function pathReplaySceneGeometryIssue(
   scene: Scene,
-): { message: string; details: Record<string, string | boolean> } | null {
+): { message: string; details: Record<string, string | number | boolean> } | null {
   for (const primitive of scene.primitives) {
     if (primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh') continue;
+    if (primitive.kind === 'instanced-mesh') continue;
     return {
       message: `scene primitive "${primitive.id}" has kind "${primitive.kind}", outside the flat triangle replay domain`,
       details: { primitiveId: primitive.id, primitiveKind: primitive.kind },

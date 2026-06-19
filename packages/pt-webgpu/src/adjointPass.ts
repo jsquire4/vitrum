@@ -442,7 +442,7 @@ export function buildAdjointWorldSpaceGeometryOverride(
 ): AdjointWorldSpaceGeometry | null {
   const replayable = scene.primitives.filter(isAdjointReplayMeshPrimitive);
   if (replayable.length !== scene.primitives.length) return null;
-  if (!replayable.some((primitive) => primitive.transform != null && !isIdentityMat4(primitive.transform))) {
+  if (!replayable.some(needsAdjointWorldSpaceGeometryOverride)) {
     return null;
   }
 
@@ -493,8 +493,22 @@ export function buildAdjointWorldSpaceGeometryOverride(
 
 function isAdjointReplayMeshPrimitive(
   primitive: ScenePrimitive,
-): primitive is Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' }> {
-  return primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh';
+): primitive is Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }> {
+  return (
+    primitive.kind === 'mesh' ||
+    primitive.kind === 'skinned-mesh' ||
+    primitive.kind === 'instanced-mesh'
+  );
+}
+
+function needsAdjointWorldSpaceGeometryOverride(
+  primitive: Extract<
+    ScenePrimitive,
+    { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }
+  >,
+): boolean {
+  if (primitive.kind === 'instanced-mesh') return primitive.instances.length > 0;
+  return primitive.transform != null && !isIdentityMat4(primitive.transform);
 }
 
 function isIdentityMat4(transform: Float32Array): boolean {

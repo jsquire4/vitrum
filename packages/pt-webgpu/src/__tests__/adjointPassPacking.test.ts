@@ -312,6 +312,69 @@ describe('AdjointPass host packing', () => {
     ]);
   });
 
+  it('builds a world-space replay override for instanced mesh geometry', () => {
+    const instanceA = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      2, 0, 0, 1,
+    ]));
+    const instanceB = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 3, 0, 1,
+    ]));
+    const scene = makeScene();
+    const base = scene.primitives[0]!;
+    if (base.kind !== 'mesh') throw new Error('test fixture expected a mesh');
+    const instancedScene: Scene = {
+      ...scene,
+      primitives: [{
+        kind: 'instanced-mesh',
+        id: base.id,
+        positions: base.positions,
+        normals: base.normals,
+        indices: base.indices ?? new Uint32Array([0, 1, 2]),
+        material: base.material,
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        uv1: new Float32Array([0.25, 0.25, 0.75, 0.25, 0.25, 0.75]),
+        instances: [instanceA, instanceB],
+      }],
+    };
+
+    const override = buildAdjointWorldSpaceGeometryOverride(
+      instancedScene,
+      new Set(),
+      (_scene, id) => (id === 'panel' ? 7 : null),
+    );
+
+    expect(override).not.toBeNull();
+    expect(override!.triangleCount).toBe(2);
+    expect(Array.from(override!.positions)).toEqual([
+      2, 0, 0, 0,
+      3, 0, 0, 0,
+      2, 1, 0, 0,
+      0, 3, 0, 0,
+      1, 3, 0, 0,
+      0, 4, 0, 0,
+    ]);
+    expect(Array.from(override!.uvs)).toEqual([
+      0, 0, 0.25, 0.25,
+      1, 0, 0.75, 0.25,
+      0, 1, 0.25, 0.75,
+      0, 0, 0.25, 0.25,
+      1, 0, 0.75, 0.25,
+      0, 1, 0.25, 0.75,
+    ]);
+    expect(Array.from(override!.triMaterialIds)).toEqual([7, 7]);
+    const triangles: string[] = [];
+    for (let tri = 0; tri < override!.triangleCount; tri += 1) {
+      triangles.push(Array.from(override!.indices.slice(tri * 4, tri * 4 + 3)).join(','));
+    }
+    expect(triangles.sort()).toEqual(['0,1,2', '3,4,5']);
+  });
+
   it('packs replay sample count and swaps mesh-area emitter adjoint replay buffers into bindings', async () => {
     const restoreWebGpuConstants = installWebGpuConstants();
     try {
