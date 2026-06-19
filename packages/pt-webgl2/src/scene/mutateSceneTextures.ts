@@ -142,6 +142,27 @@ function texturePatchNeedsAtlasRefresh(
   return false;
 }
 
+function textureHandleOf(value: unknown): unknown | null {
+  if (value == null || typeof value !== 'object') return null;
+  return (value as { readonly handle?: unknown }).handle ?? null;
+}
+
+function texturePatchMayCompactAtlas(
+  previousMaterial: MaterialSpec | undefined,
+  patch: Partial<ScenePrimitive> & { material: MaterialSpec },
+): boolean {
+  if (previousMaterial == null) return false;
+  const previous = previousMaterial as unknown as Record<string, unknown>;
+  const next = patch.material as unknown as Record<string, unknown>;
+  for (const field of Object.keys(next)) {
+    if (!TEXTURE_MAP_FIELDS.has(field)) continue;
+    const previousHandle = textureHandleOf(previous[field]);
+    if (previousHandle == null) continue;
+    if (textureHandleOf(next[field]) !== previousHandle) return true;
+  }
+  return false;
+}
+
 function textureValueNeedsAtlasRefresh(
   field: string,
   value: unknown,
@@ -149,7 +170,7 @@ function textureValueNeedsAtlasRefresh(
 ): boolean {
   if (value == null) return false;
   if (typeof value !== 'object') return false;
-  const handle = (value as { readonly handle?: unknown }).handle;
+  const handle = textureHandleOf(value);
   if (handle == null) return false;
   const colorSpace = TEXTURE_MAP_COLOR_SPACE[field] ?? 'linear';
   return materialLayerMap?.[colorSpace].has(handle) !== true;
@@ -299,16 +320,23 @@ function uploadAtlasWithCapacity(
   };
 }
 
-type MaterialAtlasRefreshReason = 'first-atlas' | 'atlas-removed' | 'dimension-change' | 'capacity-exhausted';
+type MaterialAtlasRefreshReason =
+  | 'first-atlas'
+  | 'atlas-removed'
+  | 'dimension-change'
+  | 'capacity-exhausted'
+  | 'capacity-compaction';
 
 function materialAtlasRefreshReason(
   current: UploadedSceneTextures,
   atlas: NonNullable<ReturnType<typeof packTextureAtlas>> | null,
+  nextLayerCapacity: number,
 ): MaterialAtlasRefreshReason | null {
   if (atlas == null) return current.textures2DArray != null ? 'atlas-removed' : null;
   if (current.textures2DArray == null) return 'first-atlas';
   if (current.materialAtlasDim !== atlas.dim) return 'dimension-change';
   if (atlas.layerCount > current.materialAtlasLayerCapacity) return 'capacity-exhausted';
+  if (nextLayerCapacity < current.materialAtlasLayerCapacity) return 'capacity-compaction';
   return null;
 }
 
@@ -341,11 +369,16 @@ function pushMaterialAtlasRefreshWarning(
   });
 }
 
-function canUpdateAtlasInPlace(current: UploadedSceneTextures, atlas: NonNullable<ReturnType<typeof packTextureAtlas>>): boolean {
+function canUpdateAtlasInPlace(
+  current: UploadedSceneTextures,
+  atlas: NonNullable<ReturnType<typeof packTextureAtlas>>,
+  nextLayerCapacity: number,
+): boolean {
   return (
     current.textures2DArray != null &&
     current.materialAtlasDim === atlas.dim &&
-    atlas.layerCount <= current.materialAtlasLayerCapacity
+    atlas.layerCount <= current.materialAtlasLayerCapacity &&
+    nextLayerCapacity >= current.materialAtlasLayerCapacity
   );
 }
 
@@ -362,7 +395,8 @@ export function tryFastPathMaterialMutation(
   if (!isMeshLikePrimitive(primitive)) return null;
   const slot = uniqueMaterialSlotForPrimitive(geoPack, primitiveId);
   if (slot == null || slot >= geoPack.materials.length) return null;
-  const atlasRefreshNeeded = texturePatchNeedsAtlasRefresh(patch, current.materialLayerMap);
+  const atlasRefreshNeeded = texturePatchNeedsAtlasRefresh(patch, current.materialLayerMap) ||
+    texturePatchMayCompactAtlas(geoPack.materials[slot], patch);
 
   const unsupportedDisplacementFields = unsupportedDisplacementPatchFields(patch);
   const structuredWarnings: EngineWarning[] = unsupportedDisplacementFields.length > 0
@@ -410,9 +444,10 @@ export function tryFastPathMaterialMutation(
   let materialAtlasLayerCount = current.materialAtlasLayerCount;
   let materialAtlasLayerCapacity = current.materialAtlasLayerCapacity;
   let deleteOldAtlas = false;
+  const maxAtlasLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   if (atlasRefreshNeeded) {
     if (atlas == null) {
-      const reason = materialAtlasRefreshReason(current, null);
+      const reason = materialAtlasRefreshReason(current, null, 0);
       atlasTexture = null;
       materialAtlasDim = 0;
       materialAtlasLayerCount = 0;
@@ -421,40 +456,38 @@ export function tryFastPathMaterialMutation(
       if (reason != null) {
         pushMaterialAtlasRefreshWarning(structuredWarnings, primitiveId, current, null, reason, 0);
       }
-    } else if (canUpdateAtlasInPlace(current, atlas)) {
-      updateTextureAtlasLayers(gl, current.textures2DArray as WebGLTexture, atlas);
-      materialAtlasDim = atlas.dim;
-      materialAtlasLayerCount = atlas.layerCount;
     } else {
-      const reason = materialAtlasRefreshReason(current, atlas);
-      const refreshedCapacity = current.textures2DArray != null
-        ? refreshTextureAtlasStorage(
-            gl,
-            current.textures2DArray,
+      const nextLayerCapacity = textureAtlasLayerCapacity(atlas.layerCount, maxAtlasLayers);
+      if (canUpdateAtlasInPlace(current, atlas, nextLayerCapacity)) {
+        updateTextureAtlasLayers(gl, current.textures2DArray as WebGLTexture, atlas);
+        materialAtlasDim = atlas.dim;
+        materialAtlasLayerCount = atlas.layerCount;
+      } else {
+        const reason = materialAtlasRefreshReason(current, atlas, nextLayerCapacity);
+        const refreshedCapacity = current.textures2DArray != null
+          ? refreshTextureAtlasStorage(
+              gl,
+              current.textures2DArray,
+              atlas,
+              { layerCapacity: nextLayerCapacity },
+            )
+          : null;
+        const uploadedAtlas = refreshedCapacity == null ? uploadAtlasWithCapacity(gl, atlas) : null;
+        atlasTexture = current.textures2DArray ?? uploadedAtlas?.texture ?? null;
+        materialAtlasDim = atlas.dim;
+        materialAtlasLayerCount = atlas.layerCount;
+        materialAtlasLayerCapacity = refreshedCapacity ?? uploadedAtlas?.capacity ?? 0;
+        deleteOldAtlas = false;
+        if (reason != null) {
+          pushMaterialAtlasRefreshWarning(
+            structuredWarnings,
+            primitiveId,
+            current,
             atlas,
-            {
-              layerCapacity: textureAtlasLayerCapacity(
-                atlas.layerCount,
-                gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number,
-              ),
-            },
-          )
-        : null;
-      const uploadedAtlas = refreshedCapacity == null ? uploadAtlasWithCapacity(gl, atlas) : null;
-      atlasTexture = current.textures2DArray ?? uploadedAtlas?.texture ?? null;
-      materialAtlasDim = atlas.dim;
-      materialAtlasLayerCount = atlas.layerCount;
-      materialAtlasLayerCapacity = refreshedCapacity ?? uploadedAtlas?.capacity ?? 0;
-      deleteOldAtlas = false;
-      if (reason != null) {
-        pushMaterialAtlasRefreshWarning(
-          structuredWarnings,
-          primitiveId,
-          current,
-          atlas,
-          reason,
-          materialAtlasLayerCapacity,
-        );
+            reason,
+            materialAtlasLayerCapacity,
+          );
+        }
       }
     }
   }
