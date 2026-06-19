@@ -1365,6 +1365,7 @@ export class HybridEngine implements Engine {
     }
     const material = (patch as unknown as { material?: Record<string, unknown> }).material;
     if (material == null) return;
+    const previousPrimitive = this._lastScene?.primitives.find((p) => String(p.id) === id);
     this._warnUnconsumedMaterialFields(
       collectUnconsumedMaterialFieldsForMaterial(material),
       'updatePrimitive',
@@ -1372,8 +1373,10 @@ export class HybridEngine implements Engine {
     this._warnApproximateAlphaBlendPrimitiveIds(
       collectApproximateAlphaBlendPrimitiveIds([{
         id,
-        kind: patch.kind ?? 'mesh',
+        kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
         material,
+        positions: primitivePatchNumericArray(patch, previousPrimitive, 'positions'),
+        colors: primitivePatchNumericArray(patch, previousPrimitive, 'colors'),
       }]),
       'updatePrimitive',
     );
@@ -2814,6 +2817,21 @@ export class HybridEngine implements Engine {
     };
   }
 
+}
+
+function primitivePatchNumericArray(
+  patch: Partial<ScenePrimitive>,
+  previousPrimitive: ScenePrimitive | undefined,
+  key: 'positions' | 'colors',
+): ArrayLike<number> | undefined {
+  const patchedValue = (patch as unknown as Record<string, unknown>)[key];
+  if (patchedValue != null && typeof (patchedValue as { length?: unknown }).length === 'number') {
+    return patchedValue as ArrayLike<number>;
+  }
+  const previousValue = (previousPrimitive as unknown as Record<string, unknown> | undefined)?.[key];
+  return previousValue != null && typeof (previousValue as { length?: unknown }).length === 'number'
+    ? previousValue as ArrayLike<number>
+    : undefined;
 }
 
 // ────────────────────────────────────────────────────────────────────────────

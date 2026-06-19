@@ -57,6 +57,7 @@ import {
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
   MATERIAL_TEX_VEC4_STRIDE,
 } from '../scene/materialTextures.js';
+import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
 
 const ADJOINT_PASS_TS = readFileSync(new URL('../adjointPass.ts', import.meta.url), 'utf8');
 
@@ -322,6 +323,12 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_EMITTER_TARGET_SPOT).toBe(3);
     expect(ADJOINT_EMITTER_TARGET_RECT).toBe(4);
     expect(ADJOINT_EMITTER_TARGET_MESH).toBe(5);
+  });
+
+  it('engine adjoint PASS material stride matches TS material packing', () => {
+    const match = PT_WEBGPU_ADJOINT_PASS_WGSL.match(/const MATERIAL_VEC4_STRIDE\s*=\s*(\d+)u;/);
+    expect(match).not.toBeNull();
+    expect(Number(match![1]) * 4).toBe(MATERIAL_FLOAT_STRIDE);
   });
 
   it('adjoint material texture constants mirror the forward material descriptor layout', () => {

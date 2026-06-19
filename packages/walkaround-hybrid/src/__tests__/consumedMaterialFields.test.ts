@@ -58,7 +58,13 @@ function makeOpts(): HybridEngineOptions {
 }
 
 /** Convenience alias for the parameter type of collectUnconsumedMaterialFields. */
-type PrimLike = { readonly id?: string; readonly kind: string; readonly material?: Record<string, unknown> };
+type PrimLike = {
+  readonly id?: string;
+  readonly kind: string;
+  readonly material?: Record<string, unknown>;
+  readonly positions?: Float32Array;
+  readonly colors?: Float32Array;
+};
 
 const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
   displacementMap: { handle: { id: 'height' } },
@@ -298,12 +304,27 @@ describe('collectUnconsumedMaterialFields', () => {
       { id: 'alpha-map', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', alphaMap: { handle: 'alpha' } } },
       { id: 'transparent-map', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0, alphaMap: { handle: 'alpha' } } },
       { id: 'solid', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 } },
+      {
+        id: 'vertex-alpha',
+        kind: 'mesh',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        colors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 0.5, 1, 1, 1, 1]),
+        material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 },
+      },
+      {
+        id: 'vertex-rgb',
+        kind: 'mesh',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        colors: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 },
+      },
     ];
     expect(collectApproximateAlphaBlendPrimitiveIds(prims)).toEqual([
       'alpha-map',
       'base-alpha',
       'base-map-alpha',
       'fractional',
+      'vertex-alpha',
     ]);
   });
 
@@ -490,6 +511,42 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       );
       expect(alphaWarnings).toHaveLength(1);
       expect(alphaWarnings[0]?.details?.primitiveIds).toContain('blend-pane');
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('emits a structured alpha approximation warning for vertex-color alpha blend', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const vertexAlphaScene: Scene = {
+        ...consumedOnlyScene(),
+        primitives: [
+          {
+            ...consumedOnlyScene().primitives[0]!,
+            id: 'vertex-alpha-pane',
+            colors: new Float32Array([
+              1, 1, 1, 1,
+              1, 1, 1, 0.5,
+              1, 1, 1, 1,
+            ]),
+            material: {
+              ...consumedOnlyScene().primitives[0]!.material,
+              alphaMode: 'blend',
+            },
+          } as unknown as ScenePrimitive,
+        ],
+      };
+      engine.setScene(vertexAlphaScene);
+      const alphaWarnings = structured.filter((w) =>
+        w.code === 'walkaround-hybrid.alpha-blend-approximation',
+      );
+      expect(alphaWarnings).toHaveLength(1);
+      expect(alphaWarnings[0]?.details?.primitiveIds).toContain('vertex-alpha-pane');
     } finally {
       engine.dispose();
     }

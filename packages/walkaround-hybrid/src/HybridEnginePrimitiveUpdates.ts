@@ -1314,6 +1314,17 @@ function materialAtlasPatchRequiresFullRebuild(
     envMapIntensityChanged;
 }
 
+function primitiveNumericArray(
+  prim: ScenePrimitive | undefined,
+  key: 'positions' | 'colors',
+): ArrayLike<number> | undefined {
+  if (prim == null) return undefined;
+  const value = (prim as unknown as Record<string, unknown>)[key];
+  return value != null && typeof (value as { length?: unknown }).length === 'number'
+    ? value as ArrayLike<number>
+    : undefined;
+}
+
 /**
  * Material-only fast path — re-pack affected triangle slices in
  * `bvhIndex` / `bvhBeerColors` and partial GPU upload (no SAH rebuild,
@@ -1346,6 +1357,8 @@ export function materialPatch(
       id,
       kind: prevPrim?.kind ?? 'mesh',
       material: nextMaterial as unknown as Record<string, unknown>,
+      positions: primitiveNumericArray(prevPrim, 'positions'),
+      colors: primitiveNumericArray(prevPrim, 'colors'),
     }]),
   );
   ctx.warnApproximateEmissiveMapTexelPdfPrimitiveIds?.(

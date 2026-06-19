@@ -340,6 +340,8 @@ export function collectApproximateAlphaBlendPrimitiveIds(
     readonly id?: string;
     readonly kind: string;
     readonly material?: Record<string, unknown>;
+    readonly positions?: ArrayLike<number> | undefined;
+    readonly colors?: ArrayLike<number> | undefined;
   }>,
 ): string[] {
   const ids: string[] = [];
@@ -351,7 +353,8 @@ export function collectApproximateAlphaBlendPrimitiveIds(
     if (!mat || mat.alphaMode !== 'blend') continue;
     const opacity = effectiveScalarBlendOpacity(mat);
     const hasTextureAlphaSource = mat.baseColorMap != null || mat.alphaMap != null;
-    if (opacity > 0 && (opacity < 1 || hasTextureAlphaSource)) {
+    const hasVertexAlphaSource = hasFractionalVertexAlpha(prim.positions, prim.colors);
+    if (opacity > 0 && (opacity < 1 || hasTextureAlphaSource || hasVertexAlphaSource)) {
       ids.push(prim.id ?? '(unnamed)');
     }
   }
@@ -419,6 +422,22 @@ function effectiveScalarBlendOpacity(material: Record<string, unknown>): number 
     ? unitAlpha(baseColor[3], 1)
     : 1;
   return Math.min(1, Math.max(0, opacity * baseAlpha));
+}
+
+function hasFractionalVertexAlpha(
+  positions: ArrayLike<number> | undefined,
+  colors: ArrayLike<number> | undefined,
+): boolean {
+  if (positions == null || colors == null) return false;
+  const vertexCount = Math.floor(positions.length / 3);
+  if (vertexCount <= 0) return false;
+  const stride = colors.length / vertexCount;
+  if (!Number.isInteger(stride) || stride < 4) return false;
+  for (let v = 0; v < vertexCount; v += 1) {
+    const alpha = unitAlpha(colors[v * stride + 3], 1);
+    if (alpha > 0 && alpha < 1) return true;
+  }
+  return false;
 }
 
 function unitAlpha(value: unknown, fallback: number): number {

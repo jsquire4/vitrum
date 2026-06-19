@@ -1007,7 +1007,8 @@ function maybeBakeSpecGlossRoughnessMap(
   if (!isRecord(specGloss) || !isRecord(specGloss.specularGlossinessTexture)) return null;
   const sourceRef = material.specularColorMap;
   if (sourceRef == null) return null;
-  const path = gltfTextureRefSource(sourceRef)?.path ??
+  const source = gltfTextureRefSource(sourceRef);
+  const path = source?.path ??
     `scene.primitives[${context.primitiveIndex}].material.roughnessMap`;
   const glossinessFactor = clamp01Number(specGloss.glossinessFactor, 1);
   const sourceHandle = cpuLinearTextureHandleForSpecGlossBake(sourceRef.handle);
@@ -1031,6 +1032,7 @@ function maybeBakeSpecGlossRoughnessMap(
     primitiveId: context.primitiveId,
     primitiveIndex: context.primitiveIndex,
     handleKind: classifyTextureHandle(sourceRef.handle),
+    ...textureSourceDiagnosticFields(source),
     message:
       `[vitrum/gltf-adapter] ${path} uses ` +
       'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture alpha for glossiness, ' +

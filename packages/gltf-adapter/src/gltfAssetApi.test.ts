@@ -2030,6 +2030,31 @@ describe('decodeSceneTextures', () => {
     ]);
   });
 
+  it('reports source provenance when spec-gloss alpha roughness baking cannot run', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      textureTarget: 'webgpu',
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+    });
+
+    const diagnostic = result.textureDecodeDiagnostics.find((entry) =>
+      entry.code === 'spec-gloss-alpha-bake-unavailable'
+    );
+    expect(diagnostic).toEqual(expect.objectContaining({
+      code: 'spec-gloss-alpha-bake-unavailable',
+      path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+      materialField: 'roughnessMap',
+      primitiveId: 'gltf-prim-0',
+      primitiveIndex: 0,
+      textureIndex: 0,
+      imageIndex: 0,
+      samplerIndex: 0,
+      imageMimeType: 'image/png',
+    }));
+  });
+
   it('preserves resize provenance on generated spec-gloss roughness reports', async () => {
     const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
     const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({

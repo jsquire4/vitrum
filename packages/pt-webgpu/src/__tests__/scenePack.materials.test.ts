@@ -294,11 +294,12 @@ describe('SPEC-01 specular scalar packing', () => {
 });
 
 // ── Material stride consistency gate (TS vs WGSL lockstep) ───────────────────
-// MATERIAL_VEC4_STRIDE is a constant that exists in two places:
+// MATERIAL_VEC4_STRIDE is a constant that exists in three places:
 //   1. TypeScript: materialPacking.ts (MATERIAL_VEC4_STRIDE = 29, exported as
 //      MATERIAL_FLOAT_STRIDE = 116)
 //   2. WGSL: material.wgsl.ts (const MATERIAL_VEC4_STRIDE = 29u;)
-// If they diverge, every material read in the GPU kernel is silently misaligned.
+//   3. WGSL: adjointPass.wgsl.ts (checked by adjointHarness.test.ts)
+// If they diverge, every material read in the GPU kernel/replay is silently misaligned.
 // This test checks both sources agree, and that the TS float-stride is exactly
 // 4× the WGSL vec4-stride.
 describe('material stride consistency (TS vs WGSL lockstep)', () => {
