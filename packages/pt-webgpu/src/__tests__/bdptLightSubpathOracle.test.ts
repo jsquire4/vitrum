@@ -75,7 +75,7 @@ describe('bdptLightSubpathOracle', () => {
   it('packBdptLightPathColumns marks unused columns invalid', () => {
     const width = 3;
     const data = packBdptLightPathColumns(width, null);
-    // Flat buffer layout: col*3+row vec4f. Each column's row-0 .w holds the kind.
+    // Flat buffer layout: col*5+row vec4f. Each column's row-0 .w holds the kind.
     expect(data[bdptLightPathColumnIndex(0, 0) + 3]).toBe(3);
     expect(data[bdptLightPathColumnIndex(1, 0) + 3]).toBe(3);
     expect(data[bdptLightPathColumnIndex(2, 0) + 3]).toBe(3);

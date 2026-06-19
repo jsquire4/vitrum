@@ -16,8 +16,10 @@
  * qsMinus pdfRev overrides); the eye-side overrides use `brdfDirectionalPdf` with
  * wo/wi as required (D1 — PBRT-correct non-symmetric reverse density). The eye
  * prefix (E_0…E_e construction-time SA pdfs + pos/normal/specular) is read from a
- * per-pixel GPU scratch buffer threaded through the eye loop. The light chain is
- * Lambertian (cosθ/π) throughout, matching the light-subpath kernel.
+ * per-pixel GPU scratch buffer threaded through the eye loop. Emitter endpoints
+ * keep the Lambertian/emission endpoint profile; surface light vertices use the
+ * row-3/row-4 material payload and real BSDF/PDF path from the light-subpath
+ * kernel.
  *
  * This is a 1:1 port of the CPU reference `bdpt/bdptConnectionMisFull.ts`, which
  * is pinned to `@vitrum/shared-samplers`'s `bdptConnectionMIS_full` /

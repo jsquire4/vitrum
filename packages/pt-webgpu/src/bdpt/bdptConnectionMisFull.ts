@@ -41,15 +41,16 @@
  * the connection geometry, exactly as PBRT's `MISWeight` overrides
  * `pt->pdfRev`, `ptMinus->pdfRev`, `qs->pdfRev`, `qsMinus->pdfRev`:
  *
- *   merged pdfFwd(E_e)     = light-vertex Lambertian density at L_c toward E_e
+ *   merged pdfFwd(E_e)     = light-vertex density at L_c toward E_e
  *   merged pdfFwd(E_{e-1}) = eye-material density at E_e (wo=connDir, wi→E_{e-1})
  *   merged pdfRev(L_c)     = eye-material density at E_e (wo→E_{e-1},  wi=connDir)
- *   merged pdfRev(L_{c-1}) = light-vertex Lambertian density at L_c toward L_{c-1}
+ *   merged pdfRev(L_{c-1}) = light-vertex density at L_c toward L_{c-1}
  *
- * The light subpath is Lambertian (cosine hemisphere) throughout, so its
- * connection-induced densities are `|cosθ| / π`. The eye-side densities use the
- * real BSDF directional pdf (`brdfDirectionalPdf`) with wo/wi as noted — D1
- * (PBRT-correct, non-symmetric reverse density).
+ * Emitter endpoints keep the Lambertian/emission endpoint profile. Surface light
+ * vertices can pass a real light-side BSDF directional pdf via `lightBrdfPdf`,
+ * matching the row-3/row-4 material payload path in `bdptConnection.wgsl.ts`.
+ * The eye-side densities use the real BSDF directional pdf (`brdfDirectionalPdf`)
+ * with wo/wi as noted — D1 (PBRT-correct, non-symmetric reverse density).
  *
  * References:
  *   - Veach 1997 §10.3 (BDPT MIS), §9.2 (power heuristic).
@@ -95,14 +96,14 @@ export interface EyeStackVertex {
   readonly isSpecular: boolean;
 }
 
-/** One stored light-subpath vertex (Lambertian; SA pdfs, NO baked-in G). */
+/** One stored light-subpath vertex (SA pdfs, NO baked-in G). */
 export interface LightStackVertex {
   readonly position: Vec3;
   readonly normal: Vec3;
   /** Forward (light→camera) solid-angle pdf. At the emitter this is the joint
    *  emitter-area × directional density (treated as area-measure endpoint). */
   readonly pdfFwd: number;
-  /** Reverse (camera→light) solid-angle pdf (Lambertian cosθ/π construction). */
+  /** Reverse (camera→light) solid-angle pdf from light-subpath construction. */
   readonly pdfRev: number;
   readonly isSpecular: boolean;
 }
@@ -155,7 +156,7 @@ function lambertianDirectionalPdf(surfNormal: Vec3, dir: Vec3): number {
  * connection vertex `E_e` (D1: pass wo/wi exactly; do NOT symmetrise).
  *
  * - `lightChain[0..c]` = L_0 (emitter) … L_c (light connection vertex), forward
- *   ordering (emitter first). Lambertian construction-time SA pdfs, no G.
+ *   ordering (emitter first). Construction-time SA pdfs, no G.
  * - `eyeChain[0..e]` = E_0 (primary hit) … E_e (eye connection vertex), in
  *   camera→scene order. Construction-time merged SA pdfs (see EyeStackVertex).
  * - `camera` = the camera endpoint vertex (pos/normal; pdfs are unit-Jacobian).
@@ -167,8 +168,14 @@ export function assembleMergedConnectionPath(args: {
   readonly eyeChain: ReadonlyArray<EyeStackVertex>;
   readonly camera: { readonly position: Vec3; readonly normal: Vec3 };
   readonly eyeBrdfPdf: (wo: Vec3, wi: Vec3) => number;
+  /**
+   * Optional real BSDF directional-pdf evaluator at the light connection vertex
+   * `L_c`. When omitted, or when connecting directly to the emitter endpoint, the
+   * oracle uses the legacy Lambertian/emission endpoint profile.
+   */
+  readonly lightBrdfPdf?: (wo: Vec3, wi: Vec3) => number;
 }): { vertices: MergedVertex[]; selectedS: number } {
-  const { lightChain, eyeChain, camera, eyeBrdfPdf } = args;
+  const { lightChain, eyeChain, camera, eyeBrdfPdf, lightBrdfPdf } = args;
   const c = lightChain.length - 1; // light connection vertex index
   const e = eyeChain.length - 1; // eye connection vertex (current bounce) depth
   const Lc = lightChain[c]!;
@@ -177,10 +184,16 @@ export function assembleMergedConnectionPath(args: {
   const connDir = normalize(sub(Lc.position, Ee.position)); // E_e → L_c
   const eToLc = connDir; // wi at E_e toward light
   const lcToE = normalize(sub(Ee.position, Lc.position)); // L_c → E_e
+  const lcToLcMinus =
+    c >= 1 ? normalize(sub(lightChain[c - 1]!.position, Lc.position)) : null;
+  const lightPdf = (wo: Vec3, wi: Vec3): number =>
+    lightBrdfPdf != null && c >= 1
+      ? lightBrdfPdf(wo, wi)
+      : lambertianDirectionalPdf(Lc.normal, wi);
 
   // ── Connection-induced overrides (PBRT MISWeight remapping) ─────────────────
-  // merged pdfFwd(E_e): light-vertex outgoing density at L_c toward E_e (Lambertian).
-  const fwdEe = lambertianDirectionalPdf(Lc.normal, lcToE);
+  // merged pdfFwd(E_e): light-vertex outgoing density at L_c toward E_e.
+  const fwdEe = lightPdf(lcToLcMinus ?? Lc.normal, lcToE);
   // merged pdfRev(L_c): eye-material density at E_e, wo→E_{e-1}, wi=connDir.
   let revLc: number;
   let fwdEeMinus: number | null = null;
@@ -197,12 +210,10 @@ export function assembleMergedConnectionPath(args: {
     const eeToCam = normalize(sub(camera.position, Ee.position));
     revLc = eyeBrdfPdf(eeToCam, eToLc);
   }
-  // merged pdfRev(L_{c-1}): light-vertex density at L_c toward L_{c-1} (Lambertian).
+  // merged pdfRev(L_{c-1}): light-vertex density at L_c toward L_{c-1}.
   let revLcMinus: number | null = null;
-  if (c >= 1) {
-    const LcMinus = lightChain[c - 1]!;
-    const lcToLcMinus = normalize(sub(LcMinus.position, Lc.position));
-    revLcMinus = lambertianDirectionalPdf(Lc.normal, lcToLcMinus);
+  if (lcToLcMinus != null) {
+    revLcMinus = lightPdf(lcToE, lcToLcMinus);
   }
 
   const vertices: MergedVertex[] = [];
@@ -277,6 +288,7 @@ export function bdptConnectionMisFull(args: {
   readonly eyeChain: ReadonlyArray<EyeStackVertex>;
   readonly camera: { readonly position: Vec3; readonly normal: Vec3 };
   readonly eyeBrdfPdf: (wo: Vec3, wi: Vec3) => number;
+  readonly lightBrdfPdf?: (wo: Vec3, wi: Vec3) => number;
   readonly pRef: number;
   readonly beta?: number;
 }): number {

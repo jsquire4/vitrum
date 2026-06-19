@@ -104,6 +104,10 @@ function normalize(a: Vec3): Vec3 {
   return [a[0] / l, a[1] / l, a[2] / l];
 }
 
+function sub(a: Vec3, b: Vec3): Vec3 {
+  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+}
+
 describe('bdptConnectionMisFull — §10.3 port vs shared-samplers oracle', () => {
   it('ConvertDensity matches the PBRT destination-cosine Jacobian', () => {
     const from: Vec3 = [0, 0, 0];
@@ -202,6 +206,41 @@ describe('bdptConnectionMisFull — §10.3 port vs shared-samplers oracle', () =
     const wC = powerHeuristicWeight(buildStrategyPdfs(vertices, selectedS, 1e-6), selectedS, 2);
     expect(Math.abs(wA - wB)).toBeLessThanOrEqual(1e-12);
     expect(Math.abs(wA - wC)).toBeLessThanOrEqual(1e-12);
+  });
+
+  it('uses a real non-Lambertian light-vertex pdf for connection-induced overrides', () => {
+    const f = makeFixture();
+    const lightBrdfPdf = (wo: Vec3, wi: Vec3): number => {
+      const a = Math.abs(wo[0] * 0.11 + wo[1] * 0.31 + wo[2] * 0.17);
+      const b = Math.abs(wi[0] * 0.43 + wi[1] * 0.07 + wi[2] * 0.29);
+      return 0.09 + 0.53 * a + 0.37 * b + 0.21 * a * b;
+    };
+    const { vertices, selectedS } = assembleMergedConnectionPath({ ...f, lightBrdfPdf });
+    expect(selectedS).toBe(2);
+
+    const lc = f.lightChain[1]!;
+    const lcToPrev = normalize(sub(f.lightChain[0]!.position, lc.position));
+    const lcToEye = normalize(sub(f.eyeChain[2]!.position, lc.position));
+    const expectedFwdEe = lightBrdfPdf(lcToPrev, lcToEye);
+    const expectedRevLcMinus = lightBrdfPdf(lcToEye, lcToPrev);
+
+    // v[c+1] = E_e carries merged pdfFwd(E_e), induced by L_c's surface BSDF.
+    expect(vertices[2]!.pdfFwd).toBeCloseTo(expectedFwdEe, 14);
+    // v[c-1] = L_{c-1} carries merged pdfRev(L_{c-1}), also induced by L_c.
+    expect(vertices[0]!.pdfRev).toBeCloseTo(expectedRevLcMinus, 14);
+
+    const lambertianFwd =
+      Math.abs(lc.normal[0] * lcToEye[0] + lc.normal[1] * lcToEye[1] + lc.normal[2] * lcToEye[2]) /
+      Math.PI;
+    expect(Math.abs(vertices[2]!.pdfFwd - lambertianFwd)).toBeGreaterThan(1e-3);
+
+    const pRef = 0.021;
+    const expected = bdptConnectionMIS_full(
+      buildBDPTStrategyPDFs_full(toOracleVertices(vertices), selectedS, pRef),
+      selectedS,
+      2,
+    );
+    expect(bdptConnectionMisFull({ ...f, lightBrdfPdf, pRef })).toBeCloseTo(expected, 14);
   });
 
   it('single-light-vertex (c=0 emitter connection) matches the oracle', () => {

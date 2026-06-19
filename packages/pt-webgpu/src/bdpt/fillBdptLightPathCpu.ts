@@ -30,7 +30,7 @@ export function bdptLightPathColumnIndex(col: number, row: number): number {
   return (col * LIGHT_PATH_ROWS + row) * 4;
 }
 
-/** Flat vec4f light-path buffer contents (`col * 3 + row` ordering). */
+/** Flat vec4f light-path buffer contents (`col * 5 + row` ordering). */
 export function packBdptLightPathColumns(
   width: number,
   bounce0: ReturnType<typeof sampleBdptBounce0Cpu>,
