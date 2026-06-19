@@ -34,6 +34,14 @@ function tri(id: string, x: number): MeshPrimitive {
   };
 }
 
+function triListScene(count: number): Scene {
+  return {
+    primitives: Array.from({ length: count }, (_, i) => tri(`tri-${i}`, i * 2)),
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function sceneWithEmitter(): Scene {
   return {
     primitives: [tri('tri', 0)],
@@ -695,6 +703,50 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('rewrites same-dimension primitive topology patches into resident scene textures', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texSubImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialSubImage3D = texSubImage3D.mock.calls.length;
+
+      const nextIndices = new Uint32Array([0, 1, 2, 2, 3, 0]);
+      e.updatePrimitive?.('tri', { indices: nextIndices } as never);
+
+      const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
+      expect(fallbackWarnings).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(5);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      const scene = e.getScene?.();
+      const prim = scene?.primitives[0];
+      expect(prim?.kind).toBe('mesh');
+      if (prim?.kind === 'mesh') {
+        expect(Array.from(prim.indices ?? [])).toEqual(Array.from(nextIndices));
+      }
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-mutation-fallback-rebuild') ||
+        m.includes('targeted-geometry-bvh-refit'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('refreshes the material atlas for new readable material texture-map patches without scene fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
@@ -1339,6 +1391,50 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
       expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(2);
       expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rewrites dimension-stable primitive list mutations into resident scene textures', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texSubImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triListScene(5));
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialSubImage3D = texSubImage3D.mock.calls.length;
+
+      e.addPrimitive?.(tri('tri-5', 10));
+
+      expect(e.getScene?.()?.primitives.map((p) => String(p.id))).toEqual([
+        'tri-0',
+        'tri-1',
+        'tri-2',
+        'tri-3',
+        'tri-4',
+        'tri-5',
+      ]);
+      expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild')).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(6);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-list-fallback-rebuild') ||
+        m.includes('targeted-primitive-list-splice'),
+      )).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }

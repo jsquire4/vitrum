@@ -61,6 +61,17 @@ export interface SceneGeometryTexturesBuild {
   readonly structuredWarnings: readonly EngineWarning[];
 }
 
+export interface SceneGeometryTextureDataBuild {
+  readonly bvhData: BvhTextureData;
+  readonly attrData: ReturnType<typeof packAttributesArray>;
+  readonly meshLightsData: ReturnType<typeof packMeshAreaLights>;
+  readonly triangleCount: number;
+  readonly merged: WorldSpaceMergeResult;
+  readonly vertexColorMaterialIds: ReadonlySet<number>;
+  readonly warnings: readonly string[];
+  readonly structuredWarnings: readonly EngineWarning[];
+}
+
 export interface RefitSceneGeometryTexturesBuild {
   readonly bvhData: BvhTextureData;
   readonly attrData: ReturnType<typeof packAttributesArray>;
@@ -113,6 +124,41 @@ export function buildSceneGeometryTextures(
     readonly warningMethod?: string;
   },
 ): SceneGeometryTexturesBuild {
+  const data = buildSceneGeometryTextureData(scene, opts);
+  const bvh = uploadBvhTextures(gl, data.bvhData);
+  const meshLights =
+    data.meshLightsData.data != null
+      ? uploadRgba32f(gl, data.meshLightsData.data, data.meshLightsData.dim, 'mesh-area lights')
+      : null;
+  const attributesArray = uploadRgba32fArray(
+    gl,
+    data.attrData.data,
+    data.attrData.dim,
+    data.attrData.layers,
+    'vertex attributes',
+  );
+  return {
+    bvh,
+    attributesArray,
+    meshLights,
+    meshLightCount: data.meshLightsData.triLightCount,
+    totalEmissiveArea: data.meshLightsData.totalEmissiveArea,
+    totalEmissivePower: data.meshLightsData.totalEmissivePower,
+    triangleCount: data.triangleCount,
+    merged: data.merged,
+    vertexColorMaterialIds: data.vertexColorMaterialIds,
+    warnings: data.warnings,
+    structuredWarnings: data.structuredWarnings,
+  };
+}
+
+export function buildSceneGeometryTextureData(
+  scene: Scene,
+  opts?: {
+    readonly warningPhase?: string;
+    readonly warningMethod?: string;
+  },
+): SceneGeometryTextureDataBuild {
   const structuredWarnings: EngineWarning[] = [];
   const warningOptions = {
     onWarning: (warning: EngineWarning) => structuredWarnings.push(warning),
@@ -121,25 +167,12 @@ export function buildSceneGeometryTextures(
   };
   const geometry = buildGeometryInputs(scene, warningOptions);
   const bvhData = packBvhTextureData(geometry.merged);
-  const bvh = uploadBvhTextures(gl, bvhData);
   const meshLightsData = packMeshAreaLights(scene, geometry.merged);
-  const meshLights =
-    meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights') : null;
-  const attributesArray = uploadRgba32fArray(
-    gl,
-    geometry.attrData.data,
-    geometry.attrData.dim,
-    geometry.attrData.layers,
-    'vertex attributes',
-  );
   const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, geometry.merged);
   return {
-    bvh,
-    attributesArray,
-    meshLights,
-    meshLightCount: meshLightsData.triLightCount,
-    totalEmissiveArea: meshLightsData.totalEmissiveArea,
-    totalEmissivePower: meshLightsData.totalEmissivePower,
+    bvhData,
+    attrData: geometry.attrData,
+    meshLightsData,
     triangleCount: geometry.merged.triangleCount,
     merged: geometry.merged,
     vertexColorMaterialIds,

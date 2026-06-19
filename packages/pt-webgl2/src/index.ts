@@ -636,11 +636,17 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       ...this.#scene,
       primitives: [...this.#scene.primitives, primitive],
     };
-    const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, nextScene, {
+    const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, this.#geoPack, nextScene, {
       method: 'addPrimitive',
     });
     if (fast != null) {
-      this.#warnPrimitiveListFallback('addPrimitive', String(primitive.id), 'primitive-list-texture-refresh');
+      if (fast.mutationFallback != null) {
+        this.#warnPrimitiveListFallback(
+          'addPrimitive',
+          String(primitive.id),
+          'primitive-list-texture-refresh',
+        );
+      }
       this.#commitMutationSwap(nextScene, fast);
       return;
     }
@@ -666,11 +672,17 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       ...this.#scene,
       primitives,
     };
-    const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, nextScene, {
+    const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, this.#geoPack, nextScene, {
       method: 'removePrimitive',
     });
     if (fast != null) {
-      this.#warnPrimitiveListFallback('removePrimitive', String(id), 'primitive-list-texture-refresh');
+      if (fast.mutationFallback != null) {
+        this.#warnPrimitiveListFallback(
+          'removePrimitive',
+          String(id),
+          'primitive-list-texture-refresh',
+        );
+      }
       this.#commitMutationSwap(nextScene, fast);
       return;
     }
