@@ -147,8 +147,26 @@ export interface CollectedTextures {
   /** Unique LINEAR texture sources (normal + scalar/data maps — must NOT be sRGB-decoded),
    *  a separate index space → its own texture_2d_array. */
   readonly linearSources: unknown[];
+  /** Source-layer provenance for host-facing upload diagnostics. */
+  readonly sourceInfos: readonly MaterialTextureLayerInfo[];
+  /** Linear source-layer provenance for host-facing upload diagnostics. */
+  readonly linearSourceInfos: readonly MaterialTextureLayerInfo[];
   /** Per-material descriptor floats (MATERIAL_TEX_FLOAT_STRIDE per material). */
   readonly descriptors: Float32Array;
+}
+
+export type MaterialTextureColorSpace = 'srgb' | 'linear';
+
+export interface MaterialTextureLayerUse {
+  readonly materialIndex: number;
+  readonly field: string;
+  readonly colorSpace: MaterialTextureColorSpace;
+  readonly texCoord: number;
+}
+
+export interface MaterialTextureLayerInfo {
+  readonly layer: number;
+  readonly uses: readonly MaterialTextureLayerUse[];
 }
 
 function uvFitScaleFor(
@@ -282,9 +300,10 @@ export function applyMaterialTextureUvFitScales(
 export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>): CollectedTextures {
   const sources: unknown[] = [];
   const linearSources: unknown[] = [];
-  const makeIndexer = (list: unknown[]) => {
+  const makeIndexer = (list: unknown[], colorSpace: MaterialTextureColorSpace) => {
     const handleToIdx = new Map<unknown, number>();
-    return (ref: TextureRef | undefined): number => {
+    const usesByLayer: MaterialTextureLayerUse[][] = [];
+    const index = (ref: TextureRef | undefined, materialIndex: number, field: string): number => {
       const handle = ref?.handle;
       if (handle == null) return -1;
       let i = handleToIdx.get(handle);
@@ -293,11 +312,22 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
         list.push(handle);
         handleToIdx.set(handle, i);
       }
+      (usesByLayer[i] ??= []).push({
+        materialIndex,
+        field,
+        colorSpace,
+        texCoord: ref?.texCoord ?? 0,
+      });
       return i;
     };
+    const infos = (): readonly MaterialTextureLayerInfo[] =>
+      list.map((_, layer) => ({ layer, uses: usesByLayer[layer] ?? [] }));
+    return { index, infos };
   };
-  const indexOf = makeIndexer(sources);        // sRGB array
-  const indexOfLinear = makeIndexer(linearSources); // linear array
+  const sRgbIndexer = makeIndexer(sources, 'srgb');
+  const linearIndexer = makeIndexer(linearSources, 'linear');
+  const indexOf = sRgbIndexer.index;        // sRGB array
+  const indexOfLinear = linearIndexer.index; // linear array
 
   const descriptors = new Float32Array(materials.length * MATERIAL_TEX_FLOAT_STRIDE);
   materials.forEach((m, mi) => {
@@ -308,10 +338,10 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     // supplied, but allow distinct authored maps to carry independent UV/wrap.
     const roughnessMap = m.roughnessMap ?? m.metallicMap;
     const metallicMap = m.metallicMap ?? m.roughnessMap;
-    descriptors[b + 0] = indexOf(bc);            // baseColorIdx (sRGB array)
-    descriptors[b + 1] = indexOfLinear(m.normalMap);                 // normalIdx (linear array)
-    descriptors[b + 2] = indexOfLinear(roughnessMap); // roughness map (linear; glTF G channel)
-    descriptors[b + 3] = indexOf(m.emissiveMap); // emissiveIdx (sRGB array — same layers as baseColor)
+    descriptors[b + 0] = indexOf(bc, mi, 'baseColorMap');            // baseColorIdx (sRGB array)
+    descriptors[b + 1] = indexOfLinear(m.normalMap, mi, 'normalMap');                 // normalIdx (linear array)
+    descriptors[b + 2] = indexOfLinear(roughnessMap, mi, 'roughnessMap'); // roughness map (linear; glTF G channel)
+    descriptors[b + 3] = indexOf(m.emissiveMap, mi, 'emissiveMap'); // emissiveIdx (sRGB array — same layers as baseColor)
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
     descriptors[b + 6] = m.opacity ?? 1;
@@ -325,9 +355,9 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     // D3 — vec4 #3.yzw + #4.xyz: aoMap / lightMap / bumpMap (all LINEAR-space data:
     // occlusion factor, baked outgoing radiance, height field) routed through the
     // linear texture array. Index -1 when absent → the WGSL sampler is a no-op.
-    descriptors[b + 13] = indexOfLinear(m.aoMap);
-    descriptors[b + 14] = indexOfLinear(m.lightMap);
-    descriptors[b + 15] = indexOfLinear(m.bumpMap);
+    descriptors[b + 13] = indexOfLinear(m.aoMap, mi, 'aoMap');
+    descriptors[b + 14] = indexOfLinear(m.lightMap, mi, 'lightMap');
+    descriptors[b + 15] = indexOfLinear(m.bumpMap, mi, 'bumpMap');
     descriptors[b + 16] = m.aoMapIntensity ?? 1;
     descriptors[b + 17] = m.lightMapIntensity ?? 1;
     descriptors[b + 18] = m.bumpScale ?? 1;
@@ -335,39 +365,39 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     // D3 — vec4 #5: anisotropy scalars + optional KHR_materials_anisotropy map.
     descriptors[b + 20] = m.anisotropy ?? 0;
     descriptors[b + 21] = m.anisotropyRotation ?? 0;
-    descriptors[b + 22] = indexOfLinear(m.anisotropyMap);
+    descriptors[b + 22] = indexOfLinear(m.anisotropyMap, mi, 'anisotropyMap');
     descriptors[b + 23] = m.normalScale ?? 1;
     // Standalone alphaMap is coverage data (linear). BaseColor alpha still
     // participates too; each map carries its own UV metadata below.
-    descriptors[b + 24] = indexOfLinear(m.alphaMap);
-    descriptors[b + 25] = indexOfLinear(m.transmissionMap);
-    descriptors[b + 26] = indexOfLinear(metallicMap); // metallic map (linear; glTF B channel)
+    descriptors[b + 24] = indexOfLinear(m.alphaMap, mi, 'alphaMap');
+    descriptors[b + 25] = indexOfLinear(m.transmissionMap, mi, 'transmissionMap');
+    descriptors[b + 26] = indexOfLinear(metallicMap, mi, 'metallicMap'); // metallic map (linear; glTF B channel)
     descriptors[b + 27] = 0;
     // Extension-lobe texture maps. Color tint maps use the sRGB array; scalar
     // factor/roughness/thickness maps use the LINEAR array.
     const extIndexBase = b + MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET * 4;
-    descriptors[extIndexBase] = indexOfLinear(m.clearcoatMap);
-    descriptors[extIndexBase + 1] = indexOfLinear(m.clearcoatRoughnessMap);
-    descriptors[extIndexBase + 2] = indexOf(m.sheenColorMap);
-    descriptors[extIndexBase + 3] = indexOfLinear(m.sheenRoughnessMap);
-    descriptors[extIndexBase + 4] = indexOfLinear(m.iridescenceMap);
-    descriptors[extIndexBase + 5] = indexOfLinear(m.iridescenceThicknessMap);
-    descriptors[extIndexBase + 6] = indexOf(m.specularColorMap);
-    descriptors[extIndexBase + 7] = indexOfLinear(m.specularIntensityMap);
+    descriptors[extIndexBase] = indexOfLinear(m.clearcoatMap, mi, 'clearcoatMap');
+    descriptors[extIndexBase + 1] = indexOfLinear(m.clearcoatRoughnessMap, mi, 'clearcoatRoughnessMap');
+    descriptors[extIndexBase + 2] = indexOf(m.sheenColorMap, mi, 'sheenColorMap');
+    descriptors[extIndexBase + 3] = indexOfLinear(m.sheenRoughnessMap, mi, 'sheenRoughnessMap');
+    descriptors[extIndexBase + 4] = indexOfLinear(m.iridescenceMap, mi, 'iridescenceMap');
+    descriptors[extIndexBase + 5] = indexOfLinear(m.iridescenceThicknessMap, mi, 'iridescenceThicknessMap');
+    descriptors[extIndexBase + 6] = indexOf(m.specularColorMap, mi, 'specularColorMap');
+    descriptors[extIndexBase + 7] = indexOfLinear(m.specularIntensityMap, mi, 'specularIntensityMap');
     const clearcoatNormalBase = b + MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET * 4;
-    descriptors[clearcoatNormalBase] = indexOfLinear(m.clearcoatNormalMap);
+    descriptors[clearcoatNormalBase] = indexOfLinear(m.clearcoatNormalMap, mi, 'clearcoatNormalMap');
     descriptors[clearcoatNormalBase + 1] = m.clearcoatNormalScale ?? 1;
     descriptors[clearcoatNormalBase + 2] = 1;
     descriptors[clearcoatNormalBase + 3] = 1;
     const thicknessBase = b + MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4;
-    descriptors[thicknessBase] = indexOfLinear(m.thicknessMap);
+    descriptors[thicknessBase] = indexOfLinear(m.thicknessMap, mi, 'thicknessMap');
     descriptors[thicknessBase + 1] = 1;
     descriptors[thicknessBase + 2] = 1;
     descriptors[thicknessBase + 3] = 0;
     const layerNormalBase = b + MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET * 4;
-    descriptors[layerNormalBase] = indexOfLinear(m.frontLayer?.normalMap);
+    descriptors[layerNormalBase] = indexOfLinear(m.frontLayer?.normalMap, mi, 'frontLayer.normalMap');
     descriptors[layerNormalBase + 1] = m.frontLayer?.normalScale ?? 1;
-    descriptors[layerNormalBase + 2] = indexOfLinear(m.backLayer?.normalMap);
+    descriptors[layerNormalBase + 2] = indexOfLinear(m.backLayer?.normalMap, mi, 'backLayer.normalMap');
     descriptors[layerNormalBase + 3] = m.backLayer?.normalScale ?? 1;
     const layerNormalFitBase = b + MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET * 4;
     descriptors[layerNormalFitBase] = 1;
@@ -425,5 +455,11 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeUvMeta(descriptors, b, 1, m.backLayer?.normalMap, MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET);
   });
 
-  return { sources, linearSources, descriptors };
+  return {
+    sources,
+    linearSources,
+    sourceInfos: sRgbIndexer.infos(),
+    linearSourceInfos: linearIndexer.infos(),
+    descriptors,
+  };
 }

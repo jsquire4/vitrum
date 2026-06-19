@@ -22,8 +22,15 @@ import {
 import { buildLightTree, packLightTreeForGPU } from '@vitrum/shared-samplers';
 import { invertMat4 } from '../math/mat4.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
-import { applyMaterialTextureUvFitScales, collectMaterialTextures } from './materialTextures.js';
-import { createMaterialTextureArray } from './materialTextureArray.js';
+import {
+  applyMaterialTextureUvFitScales,
+  collectMaterialTextures,
+  type MaterialTextureLayerInfo,
+} from './materialTextures.js';
+import {
+  createMaterialTextureArray,
+  type MaterialTextureArrayWarning,
+} from './materialTextureArray.js';
 import { environmentParams } from './environmentPacking.js';
 import {
   buildLightTreeInputForScene,
@@ -56,10 +63,14 @@ interface PackedSceneData {
    *  extension color-tint maps; layer i = sources[i]); the GPU upload turns
    *  these into a texture_2d_array. */
   readonly materialTextureSources: readonly unknown[];
+  /** Provenance for each sRGB material texture layer, for structured upload warnings. */
+  readonly materialTextureSourceInfos: readonly MaterialTextureLayerInfo[];
   /** Dedup'd, upload-ordered LINEAR texture handles (normal, ORM, scalar maps,
    *  height/coverage/radiance data) → a second texture_2d_array sampled without
    *  sRGB decode. */
   readonly materialTextureLinearSources: readonly unknown[];
+  /** Provenance for each LINEAR material texture layer, for structured upload warnings. */
+  readonly materialTextureLinearSourceInfos: readonly MaterialTextureLayerInfo[];
   /**
    * Triangle indices — stride 4 (vec4u): 3 u32 vertex indices + `.w = 0`
    * (zero-fill contract). The pt-webgpu WGSL reads `.x,.y,.z` from
@@ -837,7 +848,9 @@ export function buildPackedScene(
     materials: new Float32Array(materials),
     materialTexDescriptors: texCollection.descriptors,
     materialTextureSources: texCollection.sources,
+    materialTextureSourceInfos: texCollection.sourceInfos,
     materialTextureLinearSources: texCollection.linearSources,
+    materialTextureLinearSourceInfos: texCollection.linearSourceInfos,
     bvhNodes: geo.bvhNodes,
     tlasNodes: geo.tlasNodes,
     tlasInstanceIndices: geo.tlasInstanceIndices,
@@ -1593,6 +1606,49 @@ export function rebuildTlasForSceneTransforms(
   return refitTlasTransforms(scene, primitiveTlasBindings, prevTlas);
 }
 
+function materialTextureWarningCode(warning: MaterialTextureArrayWarning): string {
+  switch (warning.code) {
+    case 'texture-unreadable':
+      return 'pt-webgpu.material-texture-unreadable';
+    case 'texture-size-mismatch':
+      return 'pt-webgpu.material-texture-size-mismatch';
+    case 'texture-unsupported-layout':
+      return 'pt-webgpu.material-texture-unsupported-layout';
+  }
+}
+
+function materialTextureEngineWarnings(
+  warnings: readonly MaterialTextureArrayWarning[],
+  colorSpace: 'sRGB' | 'linear',
+): readonly EngineWarning[] {
+  return warnings.map((warning) => {
+    const messageWarning = `material texture array (${colorSpace}): ${warning.warning}`;
+    const materialIndices = Array.from(new Set(warning.uses.map((use) => use.materialIndex)));
+    const fields = Array.from(new Set(warning.uses.map((use) => use.field)));
+    return {
+      code: materialTextureWarningCode(warning),
+      backend: 'pt-webgpu',
+      phase: 'setScene',
+      method: 'setScene',
+      message: `[vitrum/pt-webgpu] ${messageWarning}`,
+      details: {
+        warning: messageWarning,
+        colorSpace,
+        layer: warning.layer,
+        uses: warning.uses,
+        materialIndices,
+        fields,
+        fallback: warning.fallback,
+        width: warning.width,
+        height: warning.height,
+        arrayWidth: warning.arrayWidth,
+        arrayHeight: warning.arrayHeight,
+        byteLength: warning.byteLength,
+      },
+    };
+  });
+}
+
 export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): UploadedSceneBuffers {
   // Upload-time assertion: pt-webgpu uses stride-4 indices (vec4u, .w = 0).
   // byteLength must be a multiple of 4 u32 = 16 bytes.
@@ -1633,12 +1689,18 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', packed.uvs);
   const tangentsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tangents', packed.tangents);
   const colorsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.colors', packed.colors);
-  const materialTextureArray = createMaterialTextureArray(device, packed.materialTextureSources);
+  const materialTextureArray = createMaterialTextureArray(
+    device,
+    packed.materialTextureSources,
+    'rgba8unorm-srgb',
+    packed.materialTextureSourceInfos,
+  );
   // Linear array (normal + ORM) — rgba8unorm so the sampler does NOT sRGB-decode.
   const materialLinearArray = createMaterialTextureArray(
     device,
     packed.materialTextureLinearSources,
     'rgba8unorm',
+    packed.materialTextureLinearSourceInfos,
   );
   applyMaterialTextureUvFitScales(
     packed.materialTexDescriptors,
@@ -1657,6 +1719,10 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     ...materialTextureArray.warnings.map((w) => `material texture array (sRGB): ${w}`),
     ...materialLinearArray.warnings.map((w) => `material texture array (linear): ${w}`),
   ];
+  const materialTextureStructuredWarnings = [
+    ...materialTextureEngineWarnings(materialTextureArray.structuredWarnings, 'sRGB'),
+    ...materialTextureEngineWarnings(materialLinearArray.structuredWarnings, 'linear'),
+  ];
   const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes);
   const tlasInstanceIndicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices);
   const tlasBlasRootsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots);
@@ -1674,7 +1740,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const uploaded: UploadedSceneBuffers = {
     ...packed,
     warnings: [...packed.warnings, ...materialTextureWarnings],
-    structuredWarnings: packed.structuredWarnings,
+    structuredWarnings: [...packed.structuredWarnings, ...materialTextureStructuredWarnings],
     bvhNodeCount: Math.floor(packed.bvhNodes.length / BVH_NODE_FLOATS),
     tlasNodeCount: Math.floor(packed.tlasNodes.length / BVH_NODE_FLOATS),
     materialCount: Math.floor(packed.materials.length / MATERIAL_FLOAT_STRIDE),

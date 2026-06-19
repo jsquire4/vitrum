@@ -18,7 +18,27 @@
 // the binding is always satisfied (the descriptors are all -1, so the kernel
 // never samples it and the render stays byte-identical to pre-P2).
 
+import type { MaterialTextureLayerInfo, MaterialTextureLayerUse } from './materialTextures.js';
+
 export type MaterialTextureLayerUvScale = readonly [number, number];
+
+export type MaterialTextureArrayWarningCode =
+  | 'texture-unreadable'
+  | 'texture-size-mismatch'
+  | 'texture-unsupported-layout';
+
+export interface MaterialTextureArrayWarning {
+  readonly code: MaterialTextureArrayWarningCode;
+  readonly warning: string;
+  readonly layer: number;
+  readonly uses: readonly MaterialTextureLayerUse[];
+  readonly fallback?: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly arrayWidth?: number;
+  readonly arrayHeight?: number;
+  readonly byteLength?: number;
+}
 
 export interface MaterialTextureArray {
   readonly texture: GPUTexture;
@@ -31,6 +51,7 @@ export interface MaterialTextureArray {
   /** Per-layer source-rect UV scale: [copyWidth / arrayWidth, copyHeight / arrayHeight]. */
   readonly layerUvScales: readonly MaterialTextureLayerUvScale[];
   readonly warnings: readonly string[];
+  readonly structuredWarnings: readonly MaterialTextureArrayWarning[];
 }
 
 interface ImagePayload {
@@ -305,7 +326,15 @@ function createDummyArray(device: GPUDevice, format: GPUTextureFormat): Material
     mipLevelCount: 1,
     layerUvScales: [[1, 1]],
     warnings: [],
+    structuredWarnings: [],
   };
+}
+
+function layerUses(
+  layerInfos: ReadonlyArray<MaterialTextureLayerInfo> | undefined,
+  layer: number,
+): readonly MaterialTextureLayerUse[] {
+  return layerInfos?.[layer]?.uses ?? [];
 }
 
 /**
@@ -317,10 +346,12 @@ export function createMaterialTextureArray(
   device: GPUDevice,
   sources: ReadonlyArray<unknown>,
   format: GPUTextureFormat = 'rgba8unorm-srgb',
+  layerInfos?: ReadonlyArray<MaterialTextureLayerInfo>,
 ): MaterialTextureArray {
   if (sources.length === 0) return createDummyArray(device, format);
 
   const warnings: string[] = [];
+  const structuredWarnings: MaterialTextureArrayWarning[] = [];
   const payloads = sources.map(payloadOf);
   const maxDim = device.limits.maxTextureDimension2D;
   let width = 1;
@@ -347,15 +378,33 @@ export function createMaterialTextureArray(
   for (let layer = 0; layer < payloads.length; layer += 1) {
     const p = payloads[layer];
     if (p == null) {
-      warnings.push(`[materialTextureArray] source ${layer} has no usable image; layer left black.`);
+      const warning = `[materialTextureArray] source ${layer} has no usable image; layer left black.`;
+      warnings.push(warning);
+      structuredWarnings.push({
+        code: 'texture-unreadable',
+        warning,
+        layer,
+        uses: layerUses(layerInfos, layer),
+        fallback: 'black-layer',
+      });
       continue;
     }
     if (p.width !== width || p.height !== height) {
-      warnings.push(
+      const warning =
         `[materialTextureArray] source ${layer} is ${p.width}×${p.height} but the array is ` +
           `${width}×${height}; copied at native size and sampled through a per-layer UV-fit scale. ` +
-          `Use same-size textures when exact mip/border filtering parity is required.`,
-      );
+          `Use same-size textures when exact mip/border filtering parity is required.`;
+      warnings.push(warning);
+      structuredWarnings.push({
+        code: 'texture-size-mismatch',
+        warning,
+        layer,
+        uses: layerUses(layerInfos, layer),
+        width: p.width,
+        height: p.height,
+        arrayWidth: width,
+        arrayHeight: height,
+      });
     }
     const copyW = Math.min(p.width, width);
     const copyH = Math.min(p.height, height);
@@ -368,11 +417,21 @@ export function createMaterialTextureArray(
     } else if (p.data != null) {
       const upload = normalizeRawTextureUpload(p.data, p.width, p.height);
       if (upload == null) {
-        warnings.push(
+        const warning =
           `[materialTextureArray] source ${layer} has raw data with unsupported byte layout ` +
             `(${p.data.byteLength} bytes for ${p.width}×${p.height}); expected 1, 2, 3, or 4 ` +
-            `8-bit or normalized numeric channel(s) per pixel. Layer left black.`,
-        );
+            `8-bit or normalized numeric channel(s) per pixel. Layer left black.`;
+        warnings.push(warning);
+        structuredWarnings.push({
+          code: 'texture-unsupported-layout',
+          warning,
+          layer,
+          uses: layerUses(layerInfos, layer),
+          width: p.width,
+          height: p.height,
+          byteLength: p.data.byteLength,
+          fallback: 'black-layer',
+        });
         continue;
       }
       device.queue.writeTexture(
@@ -398,5 +457,6 @@ export function createMaterialTextureArray(
       return [copyW / width, copyH / height];
     }),
     warnings,
+    structuredWarnings,
   };
 }

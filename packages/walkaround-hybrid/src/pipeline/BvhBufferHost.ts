@@ -22,6 +22,7 @@ import {
 } from './bvhEmissiveTexture.js';
 import {
   uploadMaterialTextureAtlas,
+  type MaterialTextureAtlasPayload,
   type MaterialTextureAtlasGpu,
 } from './materialTextureAtlas.js';
 import {
@@ -504,6 +505,16 @@ export class BvhBufferHost {
       refreshBeerTexture(
         device, this._bvhRoughMetalTexture, roughMetalFull.data, roughMetalFull.triCount);
     }
+  }
+
+  refreshMaterialTextureAtlas(
+    device: GPUDevice,
+    materialTextureAtlas: MaterialTextureAtlasPayload,
+  ): void {
+    if (!this.initialized) return;
+    this._materialTextureAtlas?.atlasTexture.destroy();
+    this._materialTextureAtlas?.baseColorMetaTexture.destroy();
+    this._materialTextureAtlas = uploadMaterialTextureAtlas(device, materialTextureAtlas);
   }
 
   refreshBvhFullRebuild(

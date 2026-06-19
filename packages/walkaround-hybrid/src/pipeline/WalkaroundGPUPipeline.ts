@@ -37,6 +37,7 @@
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { EngineError, EngineWarning, Scene } from '@vitrum/core';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
+import type { MaterialTextureAtlasPayload } from './materialTextureAtlas.js';
 import type { BvhUpdateSink } from './BvhUpdateSink.js';
 import type { PipelineDebugTextures } from './PipelineDebugTextures.js';
 import type { InferenceGraph } from '../neural/InferenceGraph.js';
@@ -1476,6 +1477,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     if (!this._initialized) return;
     this._bvhHost.refreshBvhMaterialSlice(
       this._device, indexSlice, beerFull, emissiveFull, roughMetalFull);
+  }
+
+  refreshMaterialTextureAtlas(materialTextureAtlas: MaterialTextureAtlasPayload): void {
+    if (!this._initialized) return;
+    this._bvhHost.refreshMaterialTextureAtlas(this._device, materialTextureAtlas);
   }
 
   /**

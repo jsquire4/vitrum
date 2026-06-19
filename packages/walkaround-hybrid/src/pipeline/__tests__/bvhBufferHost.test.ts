@@ -98,6 +98,7 @@ vi.mock('../environmentTexture.js', () => ({
 
 import { BvhBufferHost } from '../BvhBufferHost.js';
 import { uploadAnalyticLightsTexture } from '../analyticLightsTexture.js';
+import { uploadMaterialTextureAtlas } from '../materialTextureAtlas.js';
 
 function mockDevice(): GPUDevice {
   return {
@@ -212,6 +213,38 @@ describe('BvhBufferHost', () => {
     expect(data[spot + 12]).toBeCloseTo(Math.cos(Math.PI / 3), 6);
     expect(data[spot + 13]).toBe(0);
 
+    host.dispose();
+  });
+
+  it('refreshMaterialTextureAtlas replaces only atlas texture bindings', () => {
+    const host = new BvhBufferHost();
+    const device = mockDevice();
+    const upload = vi.mocked(uploadMaterialTextureAtlas);
+    upload.mockClear();
+    host.uploadInitial(device, makeSceneBvhBuffers());
+    expect(upload).toHaveBeenCalledTimes(1);
+    const firstAtlas = upload.mock.results[0]?.value as {
+      atlasTexture: { destroy: ReturnType<typeof vi.fn> };
+      atlasTextureView: GPUTextureView;
+      baseColorMetaTexture: { destroy: ReturnType<typeof vi.fn> };
+      baseColorMetaTextureView: GPUTextureView;
+    };
+    const before = host.sceneBindGroupResources();
+
+    host.refreshMaterialTextureAtlas(
+      device,
+      { diagnostics: [] } as unknown as SceneBVHBuffers['materialTextureAtlas'],
+    );
+
+    expect(upload).toHaveBeenCalledTimes(2);
+    expect(firstAtlas.atlasTexture.destroy).toHaveBeenCalledTimes(1);
+    expect(firstAtlas.baseColorMetaTexture.destroy).toHaveBeenCalledTimes(1);
+    const after = host.sceneBindGroupResources();
+    expect(after.bvhNodesBuffer).toBe(before.bvhNodesBuffer);
+    expect(after.bvhIndexBuffer).toBe(before.bvhIndexBuffer);
+    expect(after.tlasNodesBuffer).toBe(before.tlasNodesBuffer);
+    expect(after.materialTextureAtlasView).not.toBe(before.materialTextureAtlasView);
+    expect(after.baseColorMapMetaTextureView).not.toBe(before.baseColorMapMetaTextureView);
     host.dispose();
   });
 

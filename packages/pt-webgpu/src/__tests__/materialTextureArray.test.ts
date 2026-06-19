@@ -97,6 +97,24 @@ describe('createMaterialTextureArray', () => {
     expect(array.warnings).toContain(
       '[materialTextureArray] source 2 is 4×2 but the array is 4×4; copied at native size and sampled through a per-layer UV-fit scale. Use same-size textures when exact mip/border filtering parity is required.',
     );
+    expect(array.structuredWarnings).toEqual([
+      expect.objectContaining({
+        code: 'texture-size-mismatch',
+        layer: 0,
+        width: 2,
+        height: 4,
+        arrayWidth: 4,
+        arrayHeight: 4,
+      }),
+      expect.objectContaining({
+        code: 'texture-size-mismatch',
+        layer: 2,
+        width: 4,
+        height: 2,
+        arrayWidth: 4,
+        arrayHeight: 4,
+      }),
+    ]);
   });
 
   it('expands 8-bit RGB raw data to RGBA8 rows before writeTexture', () => {
@@ -170,5 +188,38 @@ describe('createMaterialTextureArray', () => {
     expect(array.warnings).toContain(
       '[materialTextureArray] source 0 has raw data with unsupported byte layout (20 bytes for 1×1); expected 1, 2, 3, or 4 8-bit or normalized numeric channel(s) per pixel. Layer left black.',
     );
+    expect(array.structuredWarnings).toEqual([
+      expect.objectContaining({
+        code: 'texture-unsupported-layout',
+        layer: 0,
+        width: 1,
+        height: 1,
+        byteLength: 20,
+        fallback: 'black-layer',
+      }),
+    ]);
+  });
+
+  it('attaches source-layer uses to structured upload warnings', () => {
+    installGpuConstStubs();
+    const { device } = makeDevice();
+    const array = createMaterialTextureArray(
+      device,
+      [{ image: { width: 0, height: 0 } }],
+      'rgba8unorm-srgb',
+      [{
+        layer: 0,
+        uses: [{ materialIndex: 3, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 1 }],
+      }],
+    );
+
+    expect(array.structuredWarnings).toEqual([
+      expect.objectContaining({
+        code: 'texture-unreadable',
+        layer: 0,
+        fallback: 'black-layer',
+        uses: [{ materialIndex: 3, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 1 }],
+      }),
+    ]);
   });
 });

@@ -29,8 +29,8 @@
  *    refit path when only geometry moved, or the topology rebuild path when
  *    morph-animated tangents/UVs need attribute-texture refresh, while preserving
  *    the pose fields in scene state.
- *  - material-only patches → {@link materialPatch}: re-pack bvhIndex and
- *    bvhBeerColors slices and partial GPU upload (no setScene).
+ *  - material-only patches → {@link materialPatch}: re-pack bvhIndex,
+ *    bvhBeerColors/material textures, and partial GPU upload (no setScene).
  *
  * The hot-path branch design is preserved from the pre-extraction code.
  */
@@ -62,6 +62,7 @@ import {
   rebuildEmitterBuffersFromCoreScene,
 } from './restir/bvhCore.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
+import { packMaterialTextureAtlas } from './pipeline/materialTextureAtlas.js';
 
 /** Union world AABB from merged `bvhPositions` (RC bounds after transform refit). */
 function computeWorldAabbFromBvhPositions(
@@ -1388,9 +1389,7 @@ export function materialPatch(
     );
   }
 
-  if (materialAtlasPatchRequiresFullRebuild(prevMaterial, nextMaterial)) {
-    return topologyRebuild(id, patch, ctx);
-  }
+  const atlasNeedsRefresh = materialAtlasPatchRequiresFullRebuild(prevMaterial, nextMaterial);
   const updatedScene = applyPrimitivePatchToScene(ctx.lastScene, id, patch);
   const updatedRenderScene = applyPrimitivePatchToScene(ctx.renderScene, id, patch);
 
@@ -1421,6 +1420,9 @@ export function materialPatch(
     updatedCoreMaterials,
     bvh.bvhBeerColors.count,
   );
+  const materialTextureAtlas = atlasNeedsRefresh
+    ? packMaterialTextureAtlas(updatedCoreMaterials, triMaterialIds, bvh.bvhBeerColors.count)
+    : bvh.materialTextureAtlas;
   indexView.set(fullIndex);
   beerView.set(fullBeer);
   roughMetalView.set(fullRoughMetal);
@@ -1499,10 +1501,19 @@ export function materialPatch(
     // wholesale rationale as beer/emissive).
     { data: bvh.bvhRoughMetal.cpuData, triCount: bvh.bvhRoughMetal.count },
   );
+  if (atlasNeedsRefresh) {
+    ctx.pipeline.refreshMaterialTextureAtlas(materialTextureAtlas);
+  }
 
-  let outBvh: SceneBVHBuffers = { ...bvh, bvhEmissiveLe: updatedEmissiveLe, coreMaterials: updatedCoreMaterials };
-  const emitterAffectingMaterialChanged = materialRadianceOrVisibilityChanged(prevMaterial, nextMaterial);
-  if (materialAffectsDdgiProbeCache(prevMaterial, nextMaterial)) {
+  let outBvh: SceneBVHBuffers = {
+    ...bvh,
+    bvhEmissiveLe: updatedEmissiveLe,
+    materialTextureAtlas,
+    coreMaterials: updatedCoreMaterials,
+  };
+  const emitterAffectingMaterialChanged =
+    atlasNeedsRefresh || materialRadianceOrVisibilityChanged(prevMaterial, nextMaterial);
+  if (atlasNeedsRefresh || materialAffectsDdgiProbeCache(prevMaterial, nextMaterial)) {
     ctx.ddgi.invalidateProbeCache();
   }
   if (emitterAffectingMaterialChanged) {

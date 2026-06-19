@@ -130,12 +130,21 @@ function expectedExtensionUvMetaOffset(slot: number): number {
 describe('collectMaterialTextures (P2 host)', () => {
   it('dedups shared texture handles + indexes per material', () => {
     const tex = { id: 'A' };
-    const { sources, descriptors } = collectMaterialTextures([
-      mat({ baseColorMap: { handle: tex } }),
-      mat({ baseColorMap: { handle: tex } }), // same handle → dedup to index 0
+    const { sources, sourceInfos, descriptors } = collectMaterialTextures([
+      mat({ baseColorMap: { handle: tex, texCoord: 1 } }),
+      mat({ baseColorMap: { handle: tex, texCoord: 2 } }), // same handle → dedup to index 0
       mat({}), // no map
     ]);
     expect(sources).toEqual([tex]);
+    expect(sourceInfos).toEqual([
+      {
+        layer: 0,
+        uses: [
+          { materialIndex: 0, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 1 },
+          { materialIndex: 1, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 2 },
+        ],
+      },
+    ]);
     expect(descriptors[0]).toBe(0);
     expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE]).toBe(0);
     expect(descriptors[2 * MATERIAL_TEX_FLOAT_STRIDE]).toBe(-1);

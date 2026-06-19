@@ -1,16 +1,17 @@
 /**
- * BvhUpdateSink — narrow interface covering the 7 BVH / accumulator mutation
+ * BvhUpdateSink — narrow interface covering the BVH / accumulator mutation
  * methods that `HybridEnginePrimitiveUpdates` calls on the pipeline.
  *
  * Extracted from `WalkaroundGPUPipeline` (complexity sweep 2026-06-02) so that
  * the primitive-update helpers are decoupled from the full pipeline class and
  * can be tested with a lightweight stub instead of a real GPU pipeline.
  *
- * `WalkaroundGPUPipeline implements BvhUpdateSink` — all 7 methods exist on
+ * `WalkaroundGPUPipeline implements BvhUpdateSink` — these methods exist on
  * the pipeline already; the interface just formalises the contract.
  */
 
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
+import type { MaterialTextureAtlasPayload } from './materialTextureAtlas.js';
 
 /**
  * Sink for BVH-mutation + accumulator-reset calls issued by
@@ -98,6 +99,11 @@ export interface BvhUpdateSink {
     /** B1 — FULL per-tri roughness+metalness re-upload (optional). */
     roughMetalFull?: { data: ArrayBuffer; triCount: number },
   ): void;
+
+  /** Refresh only the material texture atlas + metadata textures after an
+   *  atlas-affecting material patch. BVH/TLAS/emitter buffers are handled by the
+   *  caller's separate material/emitter refresh paths. */
+  refreshMaterialTextureAtlas(materialTextureAtlas: MaterialTextureAtlasPayload): void;
 
   /**
    * Reset the temporal accumulator to frame 0 (α=1 next frame).

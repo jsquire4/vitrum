@@ -162,6 +162,7 @@ function makePipeline() {
     refreshBvhNormalsSlice: vi.fn(),
     refreshBvhRefit: vi.fn(),
     refreshBvhFullRebuild: vi.fn(),
+    refreshMaterialTextureAtlas: vi.fn(),
     refreshTlasRefit: vi.fn(),
     updateEmitters: vi.fn(),
     updateAnalyticLights: vi.fn(),
@@ -911,7 +912,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) rebuilds material texture atlas when atlas-backed maps change', () => {
+  it('updatePrimitive(material) refreshes material texture atlas when atlas-backed maps change', () => {
     const { engine, pipeline, ddgi } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
       engine.updatePrimitive('mesh-a', {
@@ -954,29 +955,30 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshMaterialTextureAtlas).toHaveBeenCalledTimes(1);
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
       expect(ddgi.invalidateProbeCache).toHaveBeenCalledTimes(1);
-      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
-      expect(rebuilt.materialTextureAtlas.readableBaseColorLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableNormalLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableRoughnessLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableAoLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableEmissiveLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableTransmissionLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableLightLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableSpecularColorLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableSpecularIntensityLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableClearcoatLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableClearcoatRoughnessLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableClearcoatNormalLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableSheenColorLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableSheenRoughnessLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableAnisotropyLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableIridescenceLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableIridescenceThicknessLayerCount).toBe(1);
+      const [atlas] = pipeline.refreshMaterialTextureAtlas.mock.calls[0] as [SceneBVHBuffers['materialTextureAtlas']];
+      expect(atlas.readableBaseColorLayerCount).toBe(1);
+      expect(atlas.readableNormalLayerCount).toBe(1);
+      expect(atlas.readableRoughnessLayerCount).toBe(1);
+      expect(atlas.readableAoLayerCount).toBe(1);
+      expect(atlas.readableAlphaLayerCount).toBe(1);
+      expect(atlas.readableEmissiveLayerCount).toBe(1);
+      expect(atlas.readableTransmissionLayerCount).toBe(1);
+      expect(atlas.readableLightLayerCount).toBe(1);
+      expect(atlas.readableSpecularColorLayerCount).toBe(1);
+      expect(atlas.readableSpecularIntensityLayerCount).toBe(1);
+      expect(atlas.readableClearcoatLayerCount).toBe(1);
+      expect(atlas.readableClearcoatRoughnessLayerCount).toBe(1);
+      expect(atlas.readableClearcoatNormalLayerCount).toBe(1);
+      expect(atlas.readableSheenColorLayerCount).toBe(1);
+      expect(atlas.readableSheenRoughnessLayerCount).toBe(1);
+      expect(atlas.readableAnisotropyLayerCount).toBe(1);
+      expect(atlas.readableIridescenceLayerCount).toBe(1);
+      expect(atlas.readableIridescenceThicknessLayerCount).toBe(1);
       const material = (storedScene(engine).primitives[0] as {
         material: {
           baseColorMap?: unknown;
@@ -1038,7 +1040,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) rebuilds material texture atlas when atlas metadata scalars change', () => {
+  it('updatePrimitive(material) refreshes material texture atlas when atlas metadata scalars change', () => {
     const lightHandle = baseColorMapHandle(192);
     const alphaHandle = baseColorMapHandle(64);
     const base = baseScene();
@@ -1102,17 +1104,18 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
-      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
-      expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(1);
-      expect(rebuilt.materialTextureAtlas.readableLightLayerCount).toBe(1);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshMaterialTextureAtlas).toHaveBeenCalledTimes(1);
+      const [atlas] = pipeline.refreshMaterialTextureAtlas.mock.calls[0] as [SceneBVHBuffers['materialTextureAtlas']];
+      expect(atlas.readableAlphaLayerCount).toBe(1);
+      expect(atlas.readableLightLayerCount).toBe(1);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material) rebuilds material texture atlas when scalar alpha coverage changes without alphaMap', () => {
+  it('updatePrimitive(material) refreshes material texture atlas when scalar alpha coverage changes without alphaMap', () => {
     const base = baseScene();
     const prim = base.primitives[0];
     if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
@@ -1146,19 +1149,20 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
-      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
-      expect(rebuilt.materialTextureAtlas.baseColorMetaData[40]).toBe(2);
-      expect(rebuilt.materialTextureAtlas.baseColorMetaData[41]).toBeCloseTo(0.5, 5);
-      expect(rebuilt.materialTextureAtlas.baseColorMetaData[42]).toBeCloseTo(0.5, 5);
-      expect(rebuilt.materialTextureAtlas.readableAlphaLayerCount).toBe(0);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshMaterialTextureAtlas).toHaveBeenCalledTimes(1);
+      const [atlas] = pipeline.refreshMaterialTextureAtlas.mock.calls[0] as [SceneBVHBuffers['materialTextureAtlas']];
+      expect(atlas.baseColorMetaData[40]).toBe(2);
+      expect(atlas.baseColorMetaData[41]).toBeCloseTo(0.5, 5);
+      expect(atlas.baseColorMetaData[42]).toBeCloseTo(0.5, 5);
+      expect(atlas.readableAlphaLayerCount).toBe(0);
     } finally {
       engine.dispose();
     }
   });
 
-  it('updatePrimitive(material) rebuilds material texture atlas when only envMapIntensity changes', () => {
+  it('updatePrimitive(material) refreshes material texture atlas when only envMapIntensity changes', () => {
     const base = baseScene();
     const prim = base.primitives[0];
     if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
@@ -1188,10 +1192,11 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         },
       });
 
-      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
-      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
-      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
-      expect(rebuilt.materialTextureAtlas.baseColorMetaData[208]).toBeCloseTo(0.25, 5);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshMaterialTextureAtlas).toHaveBeenCalledTimes(1);
+      const [atlas] = pipeline.refreshMaterialTextureAtlas.mock.calls[0] as [SceneBVHBuffers['materialTextureAtlas']];
+      expect(atlas.baseColorMetaData[208]).toBeCloseTo(0.25, 5);
     } finally {
       engine.dispose();
     }

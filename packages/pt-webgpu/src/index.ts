@@ -1264,7 +1264,8 @@ class PTEngineWebGPU implements Engine {
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);
-    this.#syncLiteTextures(this.#sceneBuffers);
+    const uploadedScene = this.#sceneBuffers;
+    this.#syncLiteTextures(uploadedScene);
     this.#bdptLightPath?.dispose();
     this.#bdptLightPath = null;
     if (this.#bdpt && this.#traceTier === 'full') {
@@ -1291,15 +1292,15 @@ class PTEngineWebGPU implements Engine {
         });
       }
     }
-    for (const warning of packed.structuredWarnings) {
+    for (const warning of uploadedScene.structuredWarnings) {
       this.#warn(warning);
     }
     const structuredScenePackWarnings = new Set(
-      packed.structuredWarnings
+      uploadedScene.structuredWarnings
         .map((warning) => warning.details?.warning)
         .filter((warning): warning is string => typeof warning === 'string'),
     );
-    for (const warning of packed.warnings) {
+    for (const warning of uploadedScene.warnings) {
       if (structuredScenePackWarnings.has(warning)) continue;
       this.#warn({
         code: 'pt-webgpu.scene-pack-warning',

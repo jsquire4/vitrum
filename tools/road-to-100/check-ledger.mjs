@@ -534,7 +534,7 @@ for (const needle of [
 
 const ptWebgpuIndex = await readText("packages/pt-webgpu/src/index.ts");
 for (const needle of [
-  "for (const warning of packed.structuredWarnings)",
+  "for (const warning of uploadedScene.structuredWarnings)",
   "const structuredScenePackWarnings = new Set",
   "if (structuredScenePackWarnings.has(warning)) continue;",
 ]) {
