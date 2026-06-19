@@ -1,4 +1,8 @@
-import type { GltfJson, GltfPrimitive } from './gltfTypes.js';
+import type { GltfJson, GltfMaterial, GltfPrimitive } from './gltfTypes.js';
+import {
+  GLTF_TEXTURE_SOURCE_EXTENSIONS,
+  type GltfTextureSourceExtension,
+} from './textures.js';
 
 export interface GltfSceneReachability {
   readonly sceneIndex: number;
@@ -6,7 +10,10 @@ export interface GltfSceneReachability {
   readonly meshIndices: ReadonlySet<number>;
   readonly primitiveKeys: ReadonlySet<string>;
   readonly materialIndices: ReadonlySet<number>;
+  readonly textureIndices: ReadonlySet<number>;
+  readonly imageIndices: ReadonlySet<number>;
   readonly bufferViewIndices: ReadonlySet<number>;
+  readonly bufferIndices: ReadonlySet<number>;
   readonly skinIndices: ReadonlySet<number>;
   readonly cameraIndices: ReadonlySet<number>;
   readonly punctualLightIndices: ReadonlySet<number>;
@@ -30,12 +37,16 @@ export function collectPrimitiveMaterialIndices(primitive: GltfPrimitive): reado
 export function collectGltfSceneReachability(
   gltf: GltfJson,
   sceneIndex: number,
+  textureSourceExtensions: readonly GltfTextureSourceExtension[] = [],
 ): GltfSceneReachability {
   const nodeIndices = new Set<number>();
   const meshIndices = new Set<number>();
   const primitiveKeys = new Set<string>();
   const materialIndices = new Set<number>();
+  const textureIndices = new Set<number>();
+  const imageIndices = new Set<number>();
   const bufferViewIndices = new Set<number>();
+  const bufferIndices = new Set<number>();
   const skinIndices = new Set<number>();
   const cameraIndices = new Set<number>();
   const punctualLightIndices = new Set<number>();
@@ -59,6 +70,7 @@ export function collectGltfSceneReachability(
         collectPrimitiveBufferViews(gltf, primitive, bufferViewIndices);
       }
     }
+    collectInstancingBufferViews(gltf, node, bufferViewIndices);
     if (node.skin !== undefined) {
       skinIndices.add(node.skin);
       const inverseBindMatrices = gltf.skins?.[node.skin]?.inverseBindMatrices;
@@ -97,13 +109,40 @@ export function collectGltfSceneReachability(
     }
   }
 
+  for (const materialIndex of materialIndices) {
+    collectMaterialTextureIndices(gltf.materials?.[materialIndex], textureIndices);
+  }
+
+  const enabledTextureSourceExtensions = new Set(textureSourceExtensions);
+  for (const textureIndex of textureIndices) {
+    const imageIndex = selectedTextureImageIndex(
+      gltf,
+      textureIndex,
+      enabledTextureSourceExtensions,
+    );
+    if (imageIndex !== undefined) imageIndices.add(imageIndex);
+  }
+
+  for (const imageIndex of imageIndices) {
+    const bufferView = gltf.images?.[imageIndex]?.bufferView;
+    if (bufferView !== undefined) bufferViewIndices.add(bufferView);
+  }
+
+  for (const bufferViewIndex of bufferViewIndices) {
+    const bufferIndex = gltf.bufferViews?.[bufferViewIndex]?.buffer;
+    if (bufferIndex !== undefined) bufferIndices.add(bufferIndex);
+  }
+
   return {
     sceneIndex,
     nodeIndices,
     meshIndices,
     primitiveKeys,
     materialIndices,
+    textureIndices,
+    imageIndices,
     bufferViewIndices,
+    bufferIndices,
     skinIndices,
     cameraIndices,
     punctualLightIndices,
@@ -117,12 +156,72 @@ function collectPrimitiveBufferViews(
 ): void {
   const addAccessor = (accessorIndex: number | undefined): void => {
     if (accessorIndex === undefined) return;
-    const bufferView = gltf.accessors?.[accessorIndex]?.bufferView;
+    const accessor = gltf.accessors?.[accessorIndex];
+    const bufferView = accessor?.bufferView;
     if (bufferView !== undefined) out.add(bufferView);
+    if (accessor?.sparse?.indices.bufferView !== undefined) out.add(accessor.sparse.indices.bufferView);
+    if (accessor?.sparse?.values.bufferView !== undefined) out.add(accessor.sparse.values.bufferView);
   };
   for (const accessorIndex of Object.values(primitive.attributes ?? {})) addAccessor(accessorIndex);
   addAccessor(primitive.indices);
   for (const target of primitive.targets ?? []) {
     for (const accessorIndex of Object.values(target)) addAccessor(accessorIndex);
   }
+  const draco = primitive.extensions?.KHR_draco_mesh_compression;
+  if (isRecord(draco) && typeof draco.bufferView === 'number') out.add(draco.bufferView);
+}
+
+function collectInstancingBufferViews(
+  gltf: GltfJson,
+  node: NonNullable<GltfJson['nodes']>[number],
+  out: Set<number>,
+): void {
+  const attributes = node.extensions?.EXT_mesh_gpu_instancing?.attributes;
+  if (attributes == null) return;
+  for (const accessorIndex of Object.values(attributes)) {
+    if (accessorIndex === undefined) continue;
+    const accessor = gltf.accessors?.[accessorIndex];
+    const bufferView = accessor?.bufferView;
+    if (bufferView !== undefined) out.add(bufferView);
+    if (accessor?.sparse?.indices.bufferView !== undefined) out.add(accessor.sparse.indices.bufferView);
+    if (accessor?.sparse?.values.bufferView !== undefined) out.add(accessor.sparse.values.bufferView);
+  }
+}
+
+function collectMaterialTextureIndices(
+  material: GltfMaterial | undefined,
+  out: Set<number>,
+): void {
+  visitMaterialValue(material, out);
+}
+
+function visitMaterialValue(value: unknown, out: Set<number>): void {
+  if (Array.isArray(value)) {
+    for (const item of value) visitMaterialValue(item, out);
+    return;
+  }
+  if (!isRecord(value)) return;
+  if (typeof value.index === 'number' && Number.isInteger(value.index) && value.index >= 0) {
+    out.add(value.index);
+  }
+  for (const child of Object.values(value)) visitMaterialValue(child, out);
+}
+
+function selectedTextureImageIndex(
+  gltf: GltfJson,
+  textureIndex: number,
+  enabledExtensions: ReadonlySet<GltfTextureSourceExtension>,
+): number | undefined {
+  const texture = gltf.textures?.[textureIndex];
+  if (texture == null) return undefined;
+  for (const extName of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
+    if (!enabledExtensions.has(extName)) continue;
+    const source = texture.extensions?.[extName]?.source;
+    if (source !== undefined) return source;
+  }
+  return texture.source;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

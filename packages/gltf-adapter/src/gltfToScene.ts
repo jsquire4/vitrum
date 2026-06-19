@@ -509,7 +509,7 @@ export async function gltfToScene(
     diagnostics.push(diagnostic);
   };
   const sceneIndex = opts.sceneIndex ?? gltf.scene ?? 0;
-  const sceneReachability = collectGltfSceneReachability(gltf, sceneIndex);
+  const sceneReachability = collectGltfSceneReachability(gltf, sceneIndex, opts.textureSourceExtensions ?? []);
   const scopedFeatureReport = analyzeGltfAsset(gltf, {
     ...(opts.textureSourceExtensions ? { textureSourceExtensions: opts.textureSourceExtensions } : {}),
     sceneIndex,
@@ -604,19 +604,22 @@ export async function gltfToScene(
     (diagnostic) => {
       diagnostics.push(diagnostic);
     },
+    sceneReachability.textureIndices,
   );
 
   // ── 5. Pre-convert materials ───────────────────────────────────────────────
   const coreMaterials = (gltf.materials ?? []).map((m, materialIndex) =>
-    convertMaterial(
-      m,
-      handleMap,
-      warnings,
-      gltf,
-      materialIndex,
-      opts.textureSourceExtensions,
-      onMaterialDiagnostic,
-    ),
+    sceneReachability.materialIndices.has(materialIndex)
+      ? convertMaterial(
+        m,
+        handleMap,
+        warnings,
+        gltf,
+        materialIndex,
+        opts.textureSourceExtensions,
+        onMaterialDiagnostic,
+      )
+      : GLTF_DEFAULT_MATERIAL,
   );
   for (const [materialIndex, material] of (gltf.materials ?? []).entries()) {
     if (!sceneReachability.materialIndices.has(materialIndex)) continue;

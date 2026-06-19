@@ -2947,6 +2947,107 @@ describe('loadGltfForEngine', () => {
     )).toBe(false);
   });
 
+  it('does not fetch external buffers or images reachable only from unused scenes/materials', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const originalBuffer = buffers.get(0)!;
+    gltf.scenes = [{ nodes: [0] }, { nodes: [1] }];
+    gltf.nodes = [{ mesh: 0 }, { mesh: 1 }];
+    gltf.materials = [
+      { pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+      { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+    ];
+    gltf.meshes = [
+      { primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 0 }] },
+      { primitives: [{ attributes: { POSITION: 2, NORMAL: 3 }, material: 1 }] },
+    ];
+    gltf.accessors = [
+      ...(gltf.accessors ?? []),
+      { bufferView: 2, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 3, componentType: 5126, count: 3, type: 'VEC3' },
+    ];
+    gltf.bufferViews = [
+      ...(gltf.bufferViews ?? []),
+      { buffer: 1, byteOffset: 0, byteLength: 9 * 4 },
+      { buffer: 1, byteOffset: 9 * 4, byteLength: 9 * 4 },
+    ];
+    gltf.buffers = [
+      { byteLength: originalBuffer.byteLength },
+      { uri: 'unused-scene.bin', byteLength: originalBuffer.byteLength },
+    ];
+    gltf.textures = [{ source: 0 }];
+    gltf.images = [{ uri: 'unused-material.png', mimeType: 'image/png' }];
+    const fetch = vi.fn(async (url: string) => {
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const result = await loadGltfAsset(gltf, {
+      buffers,
+      sceneIndex: 0,
+      baseUri: 'https://assets.example/model.gltf',
+      fetch,
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.scene.primitives).toHaveLength(1);
+    expect(result.textureDecodeReport.entries).toHaveLength(0);
+    expect(result.diagnostics.some((diagnostic) =>
+      diagnostic.path.includes('materials[1]') ||
+      diagnostic.path.includes('textures[0]') ||
+      diagnostic.path.includes('images[0]'),
+    )).toBe(false);
+  });
+
+  it('fetches selected-scene variant material textures without disabled texture-source sidecars', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.extensionsUsed = ['KHR_materials_variants', 'EXT_texture_webp'];
+    gltf.extensions = {
+      KHR_materials_variants: { variants: [{ name: 'variant' }] },
+    };
+    gltf.materials = [
+      { pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+      { pbrMetallicRoughness: { baseColorTexture: { index: 1 } } },
+    ];
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      material: 0,
+      extensions: {
+        KHR_materials_variants: {
+          mappings: [{ material: 1, variants: [0] }],
+        },
+      },
+    };
+    gltf.textures = [
+      { source: 0, extensions: { EXT_texture_webp: { source: 2 } } },
+      { source: 1 },
+    ];
+    gltf.images = [
+      { uri: 'base.png', mimeType: 'image/png' },
+      { uri: 'variant.png', mimeType: 'image/png' },
+      { uri: 'disabled-sidecar.webp', mimeType: 'image/webp' },
+    ];
+    const fetched: string[] = [];
+    const fetch = vi.fn(async (url: string) => {
+      fetched.push(url);
+      if (url.includes('disabled-sidecar.webp')) {
+        throw new Error(`disabled sidecar should not be fetched: ${url}`);
+      }
+      return response(bytes([1, 2, 3, 4]), url.endsWith('.png') ? 'image/png' : 'application/octet-stream');
+    });
+
+    const result = await loadGltfAsset(gltf, {
+      buffers,
+      sceneIndex: 0,
+      baseUri: 'https://assets.example/model.gltf',
+      fetch,
+    });
+
+    expect(fetched).toEqual([
+      'https://assets.example/base.png',
+      'https://assets.example/variant.png',
+    ]);
+    expect(result.textureDecodeReport.entries.map((entry) => entry.textureIndex).sort()).toEqual([0, 1]);
+  });
+
   it('lets direct callers target the pt-webgpu-lite profile while factories receive pt-webgpu', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     const engine = { backendId: 'pt-webgpu' as const, setScene: vi.fn() };

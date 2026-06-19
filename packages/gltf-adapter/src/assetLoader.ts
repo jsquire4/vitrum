@@ -36,6 +36,7 @@ import {
   type GltfAssetResourceKind,
   type GltfResourceDecodeFailureReason,
 } from './errors.js';
+import { collectGltfSceneReachability } from './sceneScope.js';
 
 export type GltfAssetInput = string | URL | ArrayBuffer | GltfJson;
 
@@ -111,11 +112,22 @@ export async function loadGltfAsset(
     if (!buffers.has(index)) buffers.set(index, buffer);
   }
 
-  await resolveExternalBuffers(parsed.gltf, buffers, parsed.baseUri, options);
-  const imageBytes = await resolveExternalImages(parsed.gltf, parsed.baseUri, options);
-
   const backendPolicy = options.backendPolicy ?? 'fidelity';
   const sceneIndex = options.sceneIndex ?? parsed.gltf.scene ?? 0;
+  const sceneReachability = collectGltfSceneReachability(
+    parsed.gltf,
+    sceneIndex,
+    options.textureSourceExtensions ?? [],
+  );
+
+  await resolveExternalBuffers(parsed.gltf, buffers, parsed.baseUri, options, sceneReachability.bufferIndices);
+  const imageBytes = await resolveExternalImages(
+    parsed.gltf,
+    parsed.baseUri,
+    options,
+    sceneReachability.imageIndices,
+  );
+
   const featureReport = analyzeGltfAsset(parsed.gltf, {
     ...(options.textureSourceExtensions ? { textureSourceExtensions: options.textureSourceExtensions } : {}),
     sceneIndex,
@@ -669,8 +681,10 @@ async function resolveExternalBuffers(
   buffers: Map<number, ArrayBuffer>,
   baseUri: string | undefined,
   options: LoadGltfAssetOptions,
+  bufferIndices?: ReadonlySet<number>,
 ): Promise<void> {
   for (const [index, buffer] of (gltf.buffers ?? []).entries()) {
+    if (bufferIndices !== undefined && !bufferIndices.has(index)) continue;
     if (buffers.has(index)) continue;
     if (buffer.uri == null) continue;
     if (buffer.uri.startsWith('data:')) {
@@ -687,9 +701,11 @@ async function resolveExternalImages(
   gltf: GltfJson,
   baseUri: string | undefined,
   options: LoadGltfAssetOptions,
+  imageIndices?: ReadonlySet<number>,
 ): Promise<Map<number, GltfImageBytes>> {
   const out = new Map<number, GltfImageBytes>();
   for (const [index, image] of (gltf.images ?? []).entries()) {
+    if (imageIndices !== undefined && !imageIndices.has(index)) continue;
     if (image.bufferView !== undefined) continue;
     if (image.uri == null || image.uri.startsWith('data:')) continue;
     const url = resolveUri(image.uri, baseUri, 'image');

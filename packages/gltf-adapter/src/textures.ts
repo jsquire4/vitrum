@@ -336,6 +336,7 @@ export async function buildTextureHandleMap(
   externalImages?: GltfImageBytesMap,
   textureSourceExtensions: readonly GltfTextureSourceExtension[] = [],
   onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
+  textureIndices?: ReadonlySet<number>,
 ): Promise<Map<number, unknown>> {
   const textures = gltf.textures ?? [];
   const imageHandles = new Map<number, Promise<unknown>>();
@@ -345,6 +346,7 @@ export async function buildTextureHandleMap(
 
   // Kick off unique image decodes in parallel.
   for (const [textureIndex, tex] of textures.entries()) {
+    if (textureIndices !== undefined && !textureIndices.has(textureIndex)) continue;
     const imageIdx = resolveTextureImageSource(tex, textureIndex, sourceExtensions, warnings, onDiagnostic);
     textureImageSources.set(textureIndex, imageIdx);
     if (imageIdx !== undefined && !imageHandles.has(imageIdx)) {
@@ -361,6 +363,7 @@ export async function buildTextureHandleMap(
   // Await all.
   const resolved = new Map<number, unknown>();
   for (const [texIdx] of textures.entries()) {
+    if (textureIndices !== undefined && !textureIndices.has(texIdx)) continue;
     const imageIdx = textureImageSources.get(texIdx);
     if (imageIdx !== undefined) {
       const p = imageHandles.get(imageIdx);
