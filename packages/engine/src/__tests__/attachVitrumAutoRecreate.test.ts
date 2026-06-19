@@ -50,6 +50,7 @@ function makeCamera() {
 function makeEngine(backendId = 'pt-webgl2', retainedScene: Scene | null = null) {
   const errorCallbacks: Array<(err: EngineError) => void> = [];
   const setScene = vi.fn();
+  const getScene = vi.fn(() => retainedScene);
   const engine = {
     backendId,
     state: 'ready',
@@ -60,13 +61,13 @@ function makeEngine(backendId = 'pt-webgl2', retainedScene: Scene | null = null)
     pause: vi.fn(),
     resume: vi.fn(),
     dispose: vi.fn(),
-    getScene: vi.fn(() => retainedScene),
+    getScene,
     onError: vi.fn((cb: (err: EngineError) => void) => {
       errorCallbacks.push(cb);
       return vi.fn();
     }),
   } as unknown as Engine;
-  return { engine, errorCallbacks, setScene };
+  return { engine, errorCallbacks, setScene, getScene };
 }
 
 describe('attachVitrum auto-recreate scene tracking', () => {
@@ -147,6 +148,45 @@ describe('attachVitrum auto-recreate scene tracking', () => {
 
     await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
     expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneC);
+
+    handle.dispose();
+  });
+
+  it('warns and falls back to the tracked scene when backend scene snapshot throws', async () => {
+    const first = makeEngine('pt-webgl2');
+    const second = makeEngine();
+    const snapshotError = new Error('snapshot failed');
+    const onError = vi.fn();
+    createEngineMock
+      .mockResolvedValueOnce(first.engine)
+      .mockResolvedValueOnce(second.engine);
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      onError,
+    });
+
+    handle.engine.setScene(sceneB);
+    first.getScene.mockImplementationOnce(() => {
+      throw snapshotError;
+    });
+
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    } as EngineError);
+
+    await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
+    expect(onError).toHaveBeenCalledWith(snapshotError, {
+      phase: 'attach:auto-recreate',
+      backend: 'pt-webgl2',
+      recoverable: true,
+    });
+    expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneB);
 
     handle.dispose();
   });
