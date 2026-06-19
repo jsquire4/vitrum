@@ -1949,12 +1949,17 @@ roots, dispatches closest-hit and any-hit through the WGSL `FromRoot` entry
 points with a nonzero wide-root ray, and compares those results against the CPU
 oracle. The committed parity status now requires `rootCount: 2`,
 `nonzeroRootClosest`, and `nonzeroRootAny`, so stale root-zero-only evidence no
-longer passes `npm run cwbvh-gpu-proof-check`.
+longer passes `npm run cwbvh-gpu-proof-check`. Same-day renderer-parity
+follow-up: the focused `pt/cwbvh-binary-parity` behavioral-gate lane now renders
+the same full-tier Cornell scene through binary traversal and
+`bvhTraversal:'cwbvh-closest-experimental'`, compares the readback pixels, and
+commits `tools/behavioral-gate/behavioral-gate-cwbvh-status.json` with
+`rmse=0`, `meanAbs=0`, and `maxAbs=0`; `npm run cwbvh-gpu-proof-check` now
+rejects stale renderer-parity evidence too.
 
-**Remaining work:** renderer binary-vs-CWBVH traversal parity tests; and
-equal-scene throughput/memory A/B before any renderer default promotion. Becomes
-decisive if/when a WebGPU ray-tracing extension ships (whole-field handicap
-today: no RT cores in the browser for anyone).
+**Remaining work:** equal-scene throughput/memory A/B before any renderer
+default promotion. Becomes decisive if/when a WebGPU ray-tracing extension ships
+(whole-field handicap today: no RT cores in the browser for anyone).
 
 ### F3 — Shipped denoiser weights (out-of-the-box UX)
 

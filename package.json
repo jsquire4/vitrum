@@ -44,7 +44,7 @@
     "road-to-100-source-check": "deno run --sloppy-imports --allow-read tools/road-to-100/check-ledger.mjs",
     "proof-check": "npm run road-to-100-source-check && npm run gltf-material-proof-check && npm run gltf-real-proof-check && npm run gltf-topology-proof-check && npm run gltf-browser-proof-check && npm run behavioral-gate:dzn-status-check && npm run cwbvh-gpu-proof-check && npm run radiometric-ab:proof-check && npm run radiometric-ab:restir-pt-specialty && npm run renderer-fidelity-proof-check && npm run learned-systems-proof-check",
     "behavioral-gate:dzn-status-check": "deno run --sloppy-imports --allow-read tools/behavioral-gate/check-dzn-status.mjs",
-    "cwbvh-gpu-proof-check": "deno run --sloppy-imports --allow-read tools/behavioral-gate/check-cwbvh-parity-status.mjs",
+    "cwbvh-gpu-proof-check": "deno run --sloppy-imports --allow-read tools/behavioral-gate/check-cwbvh-parity-status.mjs && deno run --sloppy-imports --allow-read tools/behavioral-gate/check-cwbvh-renderer-parity-status.mjs",
     "learned-systems-proof-check": "deno run --sloppy-imports --allow-read tools/learned-systems/check-status.mjs",
     "renderer-fidelity-proof-check": "deno run --sloppy-imports --allow-read tools/renderer-fidelity-proof/check-proofs.mjs",
     "radiometric-ab:walkaround": "node tools/radiometric-ab/run-walkaround-ab.mjs",

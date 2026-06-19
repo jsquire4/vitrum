@@ -130,6 +130,7 @@ const EXPECTATION_TABLE = {
   "pt/mutation-instanced-count": { expected: "ok" },
   "pt/mutation-add-primitive": { expected: "ok" },
   "pt/mutation-remove-primitive": { expected: "ok" },
+  "pt/cwbvh-binary-parity": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -198,6 +199,12 @@ const PT_CONFIGS = [
   { label: "pt/mutation-instanced-count", eng: {},                              scene: { mutation: "instanced-count" } },
   { label: "pt/mutation-add-primitive", eng: {},                                scene: { mutation: "add-primitive" } },
   { label: "pt/mutation-remove-primitive", eng: {},                             scene: { mutation: "remove-primitive" } },
+];
+
+const PT_FOCUSED_CONFIGS = [
+  // Full-tier proof lane: this needs the CWBVH storage-buffer floor and is covered
+  // by its own focused proof status rather than the default lavapipe sweep.
+  { label: "pt/cwbvh-binary-parity", eng: {},                                   scene: { cwbvhBinaryParity: true, ptSmokeLight: "rect" } },
 ];
 
 const WH_CONFIGS = [
@@ -1744,6 +1751,11 @@ const MUTATION_DELTA_THRESHOLDS = {
   "add-primitive": { meanAbs: 2.0, maxAbs: 8 },
   "remove-primitive": { meanAbs: 2.0, maxAbs: 8 },
 };
+const CWBVH_BINARY_PARITY_THRESHOLDS = {
+  rmse: 1.0,
+  meanAbs: 0.5,
+  maxAbs: 8,
+};
 
 /**
  * Run the expectation check for a single config result.
@@ -1765,7 +1777,7 @@ function checkExpectation(label, rawStatus, lum, errCount, nans) {
 // ── pt-webgpu runner ──────────────────────────────────────────────────────────
 
 async function runPtConfig(label, engineOpts, sceneOpts) {
-  const wantsFullTier = requireFullTier && engineOpts.traceTier !== "lite";
+  const wantsFullTier = (requireFullTier || sceneOpts.cwbvhBinaryParity === true) && engineOpts.traceTier !== "lite";
   const requestedEngineOpts = wantsFullTier
     ? { ...engineOpts, traceTier: "full" }
     : engineOpts;
@@ -1789,10 +1801,12 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   let errorMsg = null;
   let traceTier = "unknown";
   let mutation = null;
+  let cwbvhParity = null;
 
   async function renderFramesAndReadback() {
     let frameOutput = null;
-    for (let frame = 0; frame < SPP; frame++) {
+    const sampleCount = sceneOpts.cwbvhBinaryParity === true ? 2 : SPP;
+    for (let frame = 0; frame < sampleCount; frame++) {
       // eslint-disable-next-line no-loss-of-precision -- LCG constants intentionally exceed f64 mantissa; >>> 0 truncates to uint32 anyway
       const seed = ((frame * 6364136223846793005 + 1442695040888963407) >>> 0);
       frameOutput = engine.renderFrame({
@@ -1801,7 +1815,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
         cameraPosition: PT_EYE,
         viewport: { width: W, height: H, devicePixelRatio: 1 },
         frameIndex: frame, frameSeed: seed,
-        quality: { samplesTarget: SPP, bounces: 3, resolutionFactor: 1 },
+        quality: { samplesTarget: sampleCount, bounces: 3, resolutionFactor: 1 },
       });
       await device.queue.onSubmittedWorkDone();
       if (frameOutput?.isConverged) break;
@@ -1811,18 +1825,49 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   }
 
   try {
-    engine = await createPTEngine_WebGPU({
-      device,
-      maxBounces: 3,
-      maxSamplesPerPixel: SPP,
-      ...requestedEngineOpts,
-    });
-    traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
+    if (sceneOpts.cwbvhBinaryParity === true) {
+      const baseEngineOpts = {
+        device,
+        maxBounces: 3,
+        maxSamplesPerPixel: SPP,
+        ...requestedEngineOpts,
+        traceTier: "full",
+      };
 
-    const scene = await buildGateScene(sceneOpts);
-    engine.setScene(scene);
+      engine = await createPTEngine_WebGPU({
+        ...baseEngineOpts,
+        bvhTraversal: "binary",
+      });
+      traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
+      engine.setScene(await buildGateScene(sceneOpts));
+      const binaryPixels = await renderFramesAndReadback();
+      try { engine?.dispose(); } catch { /* best-effort cleanup — ignore */ }
+      engine = null;
+      if (!binaryPixels) throw new Error(`${label}: binary traversal produced no rendered frame`);
 
-    pixels = await renderFramesAndReadback();
+      engine = await createPTEngine_WebGPU({
+        ...baseEngineOpts,
+        bvhTraversal: "cwbvh-closest-experimental",
+      });
+      traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
+      engine.setScene(await buildGateScene(sceneOpts));
+      pixels = await renderFramesAndReadback();
+      if (!pixels) throw new Error(`${label}: CWBVH traversal produced no rendered frame`);
+      cwbvhParity = comparePixels(pixels, binaryPixels);
+    } else {
+      engine = await createPTEngine_WebGPU({
+        device,
+        maxBounces: 3,
+        maxSamplesPerPixel: SPP,
+        ...requestedEngineOpts,
+      });
+      traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
+
+      const scene = await buildGateScene(sceneOpts);
+      engine.setScene(scene);
+
+      pixels = await renderFramesAndReadback();
+    }
     if (sceneOpts.mutation) {
       beforeMutationPixels = pixels;
       if (sceneOpts.mutation === "material") {
@@ -1915,20 +1960,27 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       mutationThreshold == null ||
       mutation.meanAbs < mutationThreshold.meanAbs ||
       mutation.maxAbs < mutationThreshold.maxAbs);
+  const cwbvhParityFailed =
+    sceneOpts.cwbvhBinaryParity === true &&
+    (cwbvhParity == null ||
+      cwbvhParity.rmse > CWBVH_BINARY_PARITY_THRESHOLDS.rmse ||
+      cwbvhParity.meanAbs > CWBVH_BINARY_PARITY_THRESHOLDS.meanAbs ||
+      cwbvhParity.maxAbs > CWBVH_BINARY_PARITY_THRESHOLDS.maxAbs);
   let golden = null;
-  if (!wrongTier && !mutationFailed && !nans && errCount === 0 && lum >= LUM_THRESHOLD) {
+  if (!wrongTier && !mutationFailed && !cwbvhParityFailed && !nans && errCount === 0 && lum >= LUM_THRESHOLD) {
     golden = await compareOrUpdateGolden(label, pixels);
   }
   const rawStatus = wrongTier ? "WRONG-TIER"
     : (mutationFailed ? "NO-MUTATION"
-      : (nans ? "NaN"
-        : (errCount > 0 ? "GPU-ERROR"
-          : (lum < LUM_THRESHOLD ? "BLACK"
-            : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK")))));
+      : (cwbvhParityFailed ? "CWBVH-DELTA"
+        : (nans ? "NaN"
+          : (errCount > 0 ? "GPU-ERROR"
+            : (lum < LUM_THRESHOLD ? "BLACK"
+              : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK"))))));
   const tierMsg = wrongTier
     ? `--require-full-tier requested but pt-webgpu resolved ${traceTier}`
     : "";
-  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden, traceTier, tierMsg, mutation };
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden, traceTier, tierMsg, mutation, cwbvhParity };
 }
 
 // ── walkaround-hybrid runner ──────────────────────────────────────────────────
@@ -2050,6 +2102,11 @@ function formatMutation(mutation) {
   return `mutation=${mutation.kind} meanAbs=${mutation.meanAbs.toFixed(3)} maxAbs=${mutation.maxAbs}`;
 }
 
+function formatCwbvhParity(cwbvhParity) {
+  if (!cwbvhParity) return "";
+  return `cwbvhParity=binary rmse=${cwbvhParity.rmse.toFixed(3)} meanAbs=${cwbvhParity.meanAbs.toFixed(3)} maxAbs=${cwbvhParity.maxAbs} <=(${CWBVH_BINARY_PARITY_THRESHOLDS.rmse.toFixed(1)},${CWBVH_BINARY_PARITY_THRESHOLDS.meanAbs.toFixed(1)},${CWBVH_BINARY_PARITY_THRESHOLDS.maxAbs})`;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 console.log("=== behavioral-gate ===");
@@ -2063,7 +2120,12 @@ if (labelFilter) console.log(`Filter: ${labelFilter}`);
 console.log("");
 
 const results = [];
-const ptConfigs = labelFilter ? PT_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)) : PT_CONFIGS;
+const ptConfigs = labelFilter
+  ? [
+      ...PT_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)),
+      ...PT_FOCUSED_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)),
+    ]
+  : PT_CONFIGS;
 const whConfigs = labelFilter ? WH_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)) : WH_CONFIGS;
 if (labelFilter && ptConfigs.length + whConfigs.length === 0) {
   console.error(`No behavioral-gate configs matched --filter=${labelFilter}`);
@@ -2078,6 +2140,7 @@ for (const cfg of ptConfigs) {
   const marker = pass ? "PASS" : "FAIL";
   const goldenDetail = formatGolden(r.golden);
   const mutationDetail = formatMutation(r.mutation);
+  const cwbvhParityDetail = formatCwbvhParity(r.cwbvhParity);
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
     : r.tierMsg
@@ -2085,7 +2148,7 @@ for (const cfg of ptConfigs) {
     : r.gpuErrorMsg
       ? `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
     : `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
-  const extraDetails = [mutationDetail, goldenDetail].filter(Boolean).join(" | ");
+  const extraDetails = [mutationDetail, cwbvhParityDetail, goldenDetail].filter(Boolean).join(" | ");
   const detailWithGolden = extraDetails ? `${detail} | ${extraDetails}` : detail;
   console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detailWithGolden}${note ? " | " + note : ""}`);
 }

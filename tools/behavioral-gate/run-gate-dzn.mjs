@@ -145,6 +145,7 @@ function parseConfigRows(stdout) {
     const details = match[4].trim();
     const extras = (match[5] ?? '').split('|').map((part) => part.trim()).filter(Boolean);
     const mutation = extras.find((part) => part.startsWith('mutation=')) ?? '';
+    const cwbvhParity = extras.find((part) => part.startsWith('cwbvhParity=')) ?? '';
     const golden = extras.find((part) => part.startsWith('golden=')) ?? '';
     rows.push({
       verdict: match[1],
@@ -158,13 +159,19 @@ function parseConfigRows(stdout) {
       mutationKind: readToken(mutation, 'mutation'),
       mutationMeanAbs: readNumberToken(mutation, 'meanAbs'),
       mutationMaxAbs: readNumberToken(mutation, 'maxAbs'),
+      cwbvhParity: cwbvhParity || null,
+      cwbvhParityKind: readToken(cwbvhParity, 'cwbvhParity'),
+      cwbvhParityRmse: readNumberToken(cwbvhParity, 'rmse'),
+      cwbvhParityMeanAbs: readNumberToken(cwbvhParity, 'meanAbs'),
+      cwbvhParityMaxAbs: readNumberToken(cwbvhParity, 'maxAbs'),
+      cwbvhParityThresholds: readThresholds(cwbvhParity),
       golden: golden || null,
       goldenStatus: readToken(golden, 'golden'),
       goldenVariant: readToken(golden, 'variant'),
       rmse: readNumberToken(golden, 'rmse'),
       meanAbs: readNumberToken(golden, 'meanAbs'),
       maxAbs: readNumberToken(golden, 'maxAbs'),
-      thresholds: readGoldenThresholds(golden),
+      thresholds: readThresholds(golden),
       rawLine: line.trim(),
     });
   }
@@ -206,7 +213,7 @@ function readBoolToken(text, key) {
   return null;
 }
 
-function readGoldenThresholds(text) {
+function readThresholds(text) {
   const match = text.match(/<=\(([^,]+),([^,]+),([^)]+)\)/);
   if (!match) return null;
   const values = match.slice(1).map((v) => Number(v.trim()));

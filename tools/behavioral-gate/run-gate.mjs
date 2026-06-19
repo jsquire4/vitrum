@@ -15,7 +15,10 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
-const statusPath = resolve(scriptDir, 'behavioral-gate-host-status.json');
+const hostStatusPath = resolve(scriptDir, 'behavioral-gate-host-status.json');
+const requestedStatusPath = process.env.VITRUM_BEHAVIORAL_GATE_STATUS_PATH
+  ? resolve(repoRoot, process.env.VITRUM_BEHAVIORAL_GATE_STATUS_PATH)
+  : '';
 
 const gateArgs = process.argv.slice(2);
 const denoArgs = [
@@ -42,6 +45,23 @@ if (result.stderr) process.stderr.write(result.stderr);
 
 if (result.error) {
   throw result.error;
+}
+if (requestedStatusPath) {
+  const passed = result.status === 0;
+  const filter = readFlagValue(gateArgs, '--filter');
+  const status = {
+    generatedAt: new Date().toISOString(),
+    harness: 'behavioral-gate',
+    verdict: passed ? 'PASS' : 'FAIL',
+    command: `npm run behavioral-gate -- ${gateArgs.join(' ')}`.trim(),
+    filter: filter || null,
+    icd: process.env.VK_ICD_FILENAMES ?? null,
+    exitStatus: result.status,
+    signal: result.signal,
+    summary: parseSummary(result.stdout ?? ''),
+    configs: parseConfigRows(result.stdout ?? ''),
+  };
+  writeFileSync(requestedStatusPath, `${JSON.stringify(status, null, 2)}\n`);
 }
 if (result.status === 0) {
   process.exit(0);
@@ -75,8 +95,8 @@ if (knownDenoWgpuPanic) {
       'Re-run this wrapper after the Deno native WebGPU panic is fixed or the host path changes.',
     ],
   };
-  writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
-  console.error(`[behavioral-gate] HOST-BLOCKED status written to ${statusPath}`);
+  writeFileSync(hostStatusPath, `${JSON.stringify(status, null, 2)}\n`);
+  console.error(`[behavioral-gate] HOST-BLOCKED status written to ${hostStatusPath}`);
   process.exit(2);
 }
 
@@ -87,4 +107,86 @@ function readFlagValue(args, name) {
   if (eq) return eq.slice(name.length + 1);
   const i = args.indexOf(name);
   return i >= 0 ? (args[i + 1] ?? '') : '';
+}
+
+function parseSummary(stdout) {
+  const match = stdout.match(/=== summary: (\d+) configs total, (\d+) failures, (\d+) known-residuals ===/);
+  if (!match) return null;
+  return {
+    totalConfigs: Number(match[1]),
+    failures: Number(match[2]),
+    knownResiduals: Number(match[3]),
+  };
+}
+
+function parseConfigRows(stdout) {
+  const rows = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.match(/^\s*(PASS|FAIL|KNOWN-RESIDUAL)\s+\|\s+([^|]+?)\s+\|\s+([^|]+?)\s+\|\s+([^|]+?)(?:\s+\|\s+(.*))?$/);
+    if (!match) continue;
+    const details = match[4].trim();
+    const extras = (match[5] ?? '').split('|').map((part) => part.trim()).filter(Boolean);
+    const mutation = extras.find((part) => part.startsWith('mutation=')) ?? '';
+    const cwbvhParity = extras.find((part) => part.startsWith('cwbvhParity=')) ?? '';
+    const golden = extras.find((part) => part.startsWith('golden=')) ?? '';
+    rows.push({
+      verdict: match[1],
+      label: match[2].trim(),
+      rawStatus: match[3].trim(),
+      tier: readToken(details, 'tier'),
+      luminance: readNumberToken(details, 'lum'),
+      gpuErrors: readNumberToken(details, 'gpuErrs'),
+      nan: readBoolToken(details, 'nan'),
+      mutation: mutation || null,
+      mutationKind: readToken(mutation, 'mutation'),
+      mutationMeanAbs: readNumberToken(mutation, 'meanAbs'),
+      mutationMaxAbs: readNumberToken(mutation, 'maxAbs'),
+      cwbvhParity: cwbvhParity || null,
+      cwbvhParityKind: readToken(cwbvhParity, 'cwbvhParity'),
+      cwbvhParityRmse: readNumberToken(cwbvhParity, 'rmse'),
+      cwbvhParityMeanAbs: readNumberToken(cwbvhParity, 'meanAbs'),
+      cwbvhParityMaxAbs: readNumberToken(cwbvhParity, 'maxAbs'),
+      cwbvhParityThresholds: readThresholds(cwbvhParity),
+      golden: golden || null,
+      goldenStatus: readToken(golden, 'golden'),
+      goldenVariant: readToken(golden, 'variant'),
+      rmse: readNumberToken(golden, 'rmse'),
+      meanAbs: readNumberToken(golden, 'meanAbs'),
+      maxAbs: readNumberToken(golden, 'maxAbs'),
+      thresholds: readThresholds(golden),
+      rawLine: line.trim(),
+    });
+  }
+  return rows;
+}
+
+function readToken(text, key) {
+  const match = text.match(new RegExp(`${key}=([^\\s]+)`));
+  return match ? match[1] : null;
+}
+
+function readNumberToken(text, key) {
+  const value = readToken(text, key);
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function readBoolToken(text, key) {
+  const value = readToken(text, key);
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return null;
+}
+
+function readThresholds(text) {
+  const match = text.match(/<=\(([^,]+),([^,]+),([^)]+)\)/);
+  if (!match) return null;
+  const values = match.slice(1).map((v) => Number(v.trim()));
+  if (values.some((v) => !Number.isFinite(v))) return null;
+  return {
+    maxRmse: values[0],
+    maxMeanAbs: values[1],
+    maxAbs: values[2],
+  };
 }

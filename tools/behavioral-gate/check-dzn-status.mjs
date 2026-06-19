@@ -356,18 +356,43 @@ for (const expected of EXPECTED) {
         fail(`${expected.path}: ${expectedConfig.label} mutationMaxAbs below bound`);
       }
     }
+
+    if (expectedConfig.cwbvhParityKind != null) {
+      if (config.cwbvhParityKind !== expectedConfig.cwbvhParityKind) {
+        fail(`${expected.path}: ${expectedConfig.label} cwbvhParityKind mismatch`);
+      }
+      if (config.cwbvhParityRmse > expectedConfig.maxCwbvhParityRmse) {
+        fail(`${expected.path}: ${expectedConfig.label} cwbvhParityRmse exceeds bound`);
+      }
+      if (config.cwbvhParityMeanAbs > expectedConfig.maxCwbvhParityMeanAbs) {
+        fail(`${expected.path}: ${expectedConfig.label} cwbvhParityMeanAbs exceeds bound`);
+      }
+      if (config.cwbvhParityMaxAbs > expectedConfig.maxCwbvhParityMaxAbs) {
+        fail(`${expected.path}: ${expectedConfig.label} cwbvhParityMaxAbs exceeds bound`);
+      }
+      if (!sameJson(config.cwbvhParityThresholds, {
+        maxRmse: expectedConfig.maxCwbvhParityRmse,
+        maxMeanAbs: expectedConfig.maxCwbvhParityMeanAbs,
+        maxAbs: expectedConfig.maxCwbvhParityMaxAbs,
+      })) {
+        fail(`${expected.path}: ${expectedConfig.label} cwbvhParityThresholds mismatch`);
+      }
+    }
   }
 }
 
 const gateSource = await Deno.readTextFile(new URL("./gate.mjs", import.meta.url));
+const labelsCoveredByFocusedProofs = new Set([
+  "pt/cwbvh-binary-parity",
+]);
 const gateLabels = [...gateSource.matchAll(/label:\s*"([^"]+)"/g)]
   .map((match) => match[1])
   .filter((label) => label.includes("/") && !label.startsWith("__self-test/"));
 const missingLabels = [...new Set(gateLabels)]
-  .filter((label) => !coveredLabels.has(label))
+  .filter((label) => !coveredLabels.has(label) && !labelsCoveredByFocusedProofs.has(label))
   .sort();
 if (missingLabels.length > 0) {
   fail(`missing committed dzn status coverage for ${missingLabels.join(", ")}`);
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (17 committed dzn status artifacts; all real gate labels covered)");
+console.log("[behavioral-gate-dzn-status-check] PASS (17 committed dzn status artifacts; all regular gate labels covered; focused labels are covered by their own proof checks)");
