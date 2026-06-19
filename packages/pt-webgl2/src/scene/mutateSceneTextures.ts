@@ -298,6 +298,48 @@ function uploadAtlasWithCapacity(
   };
 }
 
+type MaterialAtlasRefreshReason = 'first-atlas' | 'atlas-removed' | 'dimension-change' | 'capacity-exhausted';
+
+function materialAtlasRefreshReason(
+  current: UploadedSceneTextures,
+  atlas: NonNullable<ReturnType<typeof packTextureAtlas>> | null,
+): MaterialAtlasRefreshReason | null {
+  if (atlas == null) return current.textures2DArray != null ? 'atlas-removed' : null;
+  if (current.textures2DArray == null) return 'first-atlas';
+  if (current.materialAtlasDim !== atlas.dim) return 'dimension-change';
+  if (atlas.layerCount > current.materialAtlasLayerCapacity) return 'capacity-exhausted';
+  return null;
+}
+
+function pushMaterialAtlasRefreshWarning(
+  warnings: EngineWarning[],
+  primitiveId: string,
+  current: UploadedSceneTextures,
+  atlas: NonNullable<ReturnType<typeof packTextureAtlas>> | null,
+  reason: MaterialAtlasRefreshReason,
+  nextLayerCapacity: number,
+): void {
+  warnings.push({
+    code: 'pt-webgl2.material-atlas-texture-refresh',
+    backend: 'pt-webgl2',
+    phase: 'mutation',
+    method: 'updatePrimitive',
+    message:
+      `[vitrum/pt-webgl2] updatePrimitive("${primitiveId}") refreshed the material texture atlas (${reason}); ` +
+      'same-dimension resident layer growth patches stay in place, but this change requires a texture refresh.',
+    details: {
+      primitiveId,
+      reason,
+      previousDim: current.materialAtlasDim,
+      nextDim: atlas?.dim ?? 0,
+      previousLayerCount: current.materialAtlasLayerCount,
+      nextLayerCount: atlas?.layerCount ?? 0,
+      previousLayerCapacity: current.materialAtlasLayerCapacity,
+      nextLayerCapacity,
+    },
+  });
+}
+
 function canUpdateAtlasInPlace(current: UploadedSceneTextures, atlas: NonNullable<ReturnType<typeof packTextureAtlas>>): boolean {
   return (
     current.textures2DArray != null &&
@@ -369,22 +411,37 @@ export function tryFastPathMaterialMutation(
   let deleteOldAtlas = false;
   if (atlasRefreshNeeded) {
     if (atlas == null) {
+      const reason = materialAtlasRefreshReason(current, null);
       atlasTexture = null;
       materialAtlasDim = 0;
       materialAtlasLayerCount = 0;
       materialAtlasLayerCapacity = 0;
       deleteOldAtlas = current.textures2DArray != null;
+      if (reason != null) {
+        pushMaterialAtlasRefreshWarning(structuredWarnings, primitiveId, current, null, reason, 0);
+      }
     } else if (canUpdateAtlasInPlace(current, atlas)) {
       updateTextureAtlasLayers(gl, current.textures2DArray as WebGLTexture, atlas);
       materialAtlasDim = atlas.dim;
       materialAtlasLayerCount = atlas.layerCount;
     } else {
+      const reason = materialAtlasRefreshReason(current, atlas);
       const uploadedAtlas = uploadAtlasWithCapacity(gl, atlas);
       atlasTexture = uploadedAtlas.texture;
       materialAtlasDim = atlas.dim;
       materialAtlasLayerCount = atlas.layerCount;
       materialAtlasLayerCapacity = uploadedAtlas.capacity;
       deleteOldAtlas = current.textures2DArray != null;
+      if (reason != null) {
+        pushMaterialAtlasRefreshWarning(
+          structuredWarnings,
+          primitiveId,
+          current,
+          atlas,
+          reason,
+          uploadedAtlas.capacity,
+        );
+      }
     }
   }
   const materialLayerMap = atlasRefreshNeeded ? atlas?.layerOfByColorSpace ?? null : current.materialLayerMap;
