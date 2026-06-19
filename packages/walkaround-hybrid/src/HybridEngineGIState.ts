@@ -117,20 +117,51 @@ export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot):
     return false;
   }
   const atlasOk = deps.ddgi.importAtlasData(deps.device, snapshot);
-  if (!atlasOk) return false;
+  if (!atlasOk) {
+    warnGIState(deps, {
+      code: 'walkaround-hybrid.import-gi-state-atlas-rejected',
+      backend: 'walkaround-hybrid',
+      phase: 'lifecycle',
+      method: 'importGIState',
+      message:
+        '[HybridEngine] importGIState: DDGI atlas restore failed — GI state restore rejected and GI will cold-start.',
+      details: {
+        fallback: 'cold-start-gi',
+        snapshot: {
+          irradianceAtlas: [snapshot.irrW, snapshot.irrH],
+          visibilityAtlas: [snapshot.visW, snapshot.visH],
+        },
+      },
+    });
+    return false;
+  }
   if (snapshot.restirGI == null) {
     // v3 (or earlier) / no reservoir section — atlas-only restore.
     // PPG section absent at this point means cold start; not a failure.
     if (snapshot.ppg != null) {
       // Best-effort: try to restore the PPG guide even without ReSTIR-GI.
-      deps.pipeline?.importPPGSTree(snapshot.ppg);
+      restorePPGStateBestEffort(deps, snapshot);
     }
     return true;
   }
   // A reservoir section is present: require it to restore too, else report
   // failure rather than a misleadingly-partial success.
   const reservoirOk = deps.pipeline?.importRestirGIReservoirs(deps.device, snapshot.restirGI) ?? false;
-  if (!reservoirOk) return false;
+  if (!reservoirOk) {
+    warnGIState(deps, {
+      code: 'walkaround-hybrid.import-gi-state-restir-reservoir-rejected',
+      backend: 'walkaround-hybrid',
+      phase: 'lifecycle',
+      method: 'importGIState',
+      message:
+        '[HybridEngine] importGIState: ReSTIR-GI reservoir restore failed — GI state restore rejected to avoid a partial restore.',
+      details: {
+        fallback: 'cold-start-gi',
+        hasPipeline: deps.pipeline != null,
+      },
+    });
+    return false;
+  }
   // PPG section (v4+): restore is best-effort — a PPG mismatch (different
   // maxSpatialCells or scene bounds) causes a warm log + cold restart rather
   // than failing the whole importGIState call. The DDGI probes and ReSTIR-GI
@@ -138,9 +169,29 @@ export function importGIStateImpl(deps: GIStateDeps, snapshot: GIStateSnapshot):
   // is not a correctness failure (guided sampling falls back to cosine until
   // the next training window converges).
   if (snapshot.ppg != null) {
-    deps.pipeline?.importPPGSTree(snapshot.ppg);
+    restorePPGStateBestEffort(deps, snapshot);
   }
   return true;
+}
+
+function restorePPGStateBestEffort(deps: GIStateDeps, snapshot: GIStateSnapshot): void {
+  if (snapshot.ppg == null) return;
+  const ppgOk = deps.pipeline?.importPPGSTree(snapshot.ppg) ?? false;
+  if (ppgOk) return;
+  warnGIState(deps, {
+    code: 'walkaround-hybrid.import-gi-state-ppg-guide-rejected',
+    backend: 'walkaround-hybrid',
+    phase: 'lifecycle',
+    method: 'importGIState',
+    message:
+      '[HybridEngine] importGIState: PPG guide restore failed — DDGI/ReSTIR-GI restore continues, but PPG will cold-start.',
+    details: {
+      fallback: 'cold-start-ppg',
+      hasPipeline: deps.pipeline != null,
+      maxSpatialCells: snapshot.ppg.maxSpatialCells,
+      maxDTreeNodesPerCell: snapshot.ppg.maxDTreeNodesPerCell,
+    },
+  });
 }
 
 function warnGIState(deps: GIStateDeps, warning: EngineWarning): void {
