@@ -638,6 +638,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
     const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, this.#geoPack, nextScene, {
       method: 'addPrimitive',
+      primitiveId: String(primitive.id),
     });
     if (fast != null) {
       if (fast.mutationFallback != null) {
@@ -674,6 +675,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
     const fast = tryFastPathPrimitiveListMutation(this.#gl, this.#sceneTextures, this.#geoPack, nextScene, {
       method: 'removePrimitive',
+      primitiveId: String(id),
     });
     if (fast != null) {
       if (fast.mutationFallback != null) {

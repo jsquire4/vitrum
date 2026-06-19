@@ -41,12 +41,54 @@ const WHITE_TEX = {
   __vitrum_hint__: { channels: 4 },
 };
 
+const ROUGHNESS_TEX = {
+  width: 1,
+  height: 1,
+  data: new Uint8Array([128]),
+  __vitrum_hint__: { channels: 1 },
+};
+
+const METALLIC_TEX = {
+  width: 1,
+  height: 1,
+  data: new Uint8Array([64]),
+  __vitrum_hint__: { channels: 1 },
+};
+
+const NORMAL_TEX = {
+  width: 1,
+  height: 1,
+  data: new Uint8Array([128, 128, 255, 255]),
+  __vitrum_hint__: { channels: 4 },
+};
+
+const AO_TEX = {
+  width: 1,
+  height: 1,
+  data: new Uint8Array([255]),
+  __vitrum_hint__: { channels: 1 },
+};
+
 function texturedTri(id: string, x: number): MeshPrimitive {
   return {
     ...tri(id, x),
     material: {
       ...GREY,
       baseColorMap: { handle: WHITE_TEX },
+    },
+  };
+}
+
+function multiMapTri(id: string, x: number): MeshPrimitive {
+  return {
+    ...tri(id, x),
+    material: {
+      ...GREY,
+      baseColorMap: { handle: WHITE_TEX },
+      roughnessMap: { handle: ROUGHNESS_TEX },
+      metallicMap: { handle: METALLIC_TEX },
+      normalMap: { handle: NORMAL_TEX },
+      aoMap: { handle: AO_TEX },
     },
   };
 }
@@ -62,6 +104,17 @@ function triListScene(count: number): Scene {
 function texturedTriListScene(count: number): Scene {
   return {
     primitives: Array.from({ length: count }, (_, i) => texturedTri(`tri-${i}`, i * 2)),
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
+function oneTexturedTriListScene(untexturedCount: number): Scene {
+  return {
+    primitives: [
+      ...Array.from({ length: untexturedCount }, (_, i) => tri(`tri-${i}`, i * 2)),
+      texturedTri(`tri-${untexturedCount}`, untexturedCount * 2),
+    ],
     emitters: [],
     environment: { kind: 'none' },
   };
@@ -1505,6 +1558,180 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         m.includes('primitive-list-fallback-rebuild') ||
         m.includes('targeted-primitive-list-splice') ||
         m.includes('material-atlas-texture-refresh'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('creates the first atlas during dimension-stable primitive list mutations without scene rebuild', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texSubImage3D = vi.fn();
+    const texImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triListScene(5));
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialSubImage3D = texSubImage3D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
+
+      e.addPrimitive?.(texturedTri('tri-5', 10));
+
+      expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild')).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(2);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
+      expect(texImage3D.mock.calls.at(-1)?.[3]).toBe(1);
+      expect(texImage3D.mock.calls.at(-1)?.[5]).toBe(2);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(5);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      const atlasWarnings = structured.filter((w) => w.code === 'pt-webgl2.material-atlas-texture-refresh');
+      expect(atlasWarnings).toHaveLength(1);
+      expect(atlasWarnings[0]?.method).toBe('addPrimitive');
+      expect(atlasWarnings[0]?.details).toMatchObject({
+        primitiveId: 'tri-5',
+        reason: 'first-atlas',
+        previousDim: 0,
+        nextDim: 1,
+        previousLayerCount: 0,
+        nextLayerCount: 1,
+        previousLayerCapacity: 0,
+        nextLayerCapacity: 2,
+      });
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-list-fallback-rebuild') ||
+        m.includes('targeted-primitive-list-splice'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('respecifies atlas storage during dimension-stable primitive list mutations without scene rebuild', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texSubImage3D = vi.fn();
+    const texImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(texturedTriListScene(5));
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialSubImage3D = texSubImage3D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
+
+      e.addPrimitive?.(multiMapTri('tri-5', 10));
+
+      expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild')).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
+      expect(texImage3D.mock.calls.at(-1)?.[3]).toBe(1);
+      expect(texImage3D.mock.calls.at(-1)?.[5]).toBe(8);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(5);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      const atlasWarnings = structured.filter((w) => w.code === 'pt-webgl2.material-atlas-texture-refresh');
+      expect(atlasWarnings).toHaveLength(1);
+      expect(atlasWarnings[0]?.method).toBe('addPrimitive');
+      expect(atlasWarnings[0]?.details).toMatchObject({
+        primitiveId: 'tri-5',
+        reason: 'capacity-exhausted',
+        previousDim: 1,
+        nextDim: 1,
+        previousLayerCount: 1,
+        nextLayerCount: 5,
+        previousLayerCapacity: 2,
+        nextLayerCapacity: 8,
+      });
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-list-fallback-rebuild') ||
+        m.includes('targeted-primitive-list-splice'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('removes the atlas during dimension-stable primitive list mutations without scene rebuild', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const deleteTexture = vi.fn();
+    const texSubImage2D = vi.fn();
+    const texSubImage3D = vi.fn();
+    const texImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { deleteTexture: typeof deleteTexture }).deleteTexture = deleteTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(oneTexturedTriListScene(5));
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialTextureDeletes = deleteTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialSubImage3D = texSubImage3D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
+
+      e.removePrimitive?.('tri-5');
+
+      expect(e.getScene?.()?.primitives.map((p) => String(p.id))).toEqual([
+        'tri-0',
+        'tri-1',
+        'tri-2',
+        'tri-3',
+        'tri-4',
+      ]);
+      expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild')).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
+      expect(deleteTexture.mock.calls.length - initialTextureDeletes).toBe(2);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(0);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(5);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      const atlasWarnings = structured.filter((w) => w.code === 'pt-webgl2.material-atlas-texture-refresh');
+      expect(atlasWarnings).toHaveLength(1);
+      expect(atlasWarnings[0]?.method).toBe('removePrimitive');
+      expect(atlasWarnings[0]?.details).toMatchObject({
+        primitiveId: 'tri-5',
+        reason: 'atlas-removed',
+        previousDim: 1,
+        nextDim: 0,
+        previousLayerCount: 1,
+        nextLayerCount: 0,
+        previousLayerCapacity: 2,
+        nextLayerCapacity: 0,
+      });
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-list-fallback-rebuild') ||
+        m.includes('targeted-primitive-list-splice'),
       )).toHaveLength(0);
     } finally {
       warn.mockRestore();
