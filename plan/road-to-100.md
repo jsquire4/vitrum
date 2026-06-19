@@ -589,6 +589,10 @@ buckets that the A–D framing was missing:**
   rather than live-computed "frozen" values. `oidnFinalDenoiser.test.ts` now pins
   dispatch-time OIDN failure degradation on walkaround: raw HDR fallback remains visible,
   state becomes retryable `failed`, and the next dispatch retries successfully.
+  **2026-06-18 follow-up:** dispatch-time OIDN failures now also route through
+  `HybridEngine.onWarning` as `walkaround-hybrid.oidn-final-inference-failed`
+  with model URL, dimensions, fallback target, and retryability; when no host warning
+  sink is installed, the prior console error fallback remains.
   `sprint9-10a-welford.test.ts` now adds an independent two-pass arithmetic oracle for
   Welford mean/M2 variance plus sample-budget first-frame and threshold tier behavior,
   so that formerly string-only adaptive-sampling path has executable numeric coverage.

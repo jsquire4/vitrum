@@ -52,6 +52,7 @@ import {
   releaseOIDNCacheEntry,
   type OIDNDenoiseInputs,
 } from '@vitrum/shared-denoisers';
+import type { EngineWarning } from '@vitrum/core';
 import {
   DENOISER_PASS_LABELS,
   DENOISER_READY_STATE,
@@ -95,6 +96,16 @@ export interface OIDNFinalDenoiserOptions {
    * array (`['wasm']`) to pin a provider for deterministic testing.
    */
   readonly executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
+
+  /**
+   * Structured warning sink forwarded from HybridEngine.onWarning.
+   *
+   * OIDN inference runs asynchronously after dispatch returns, so a failed
+   * inference cannot throw through renderFrame. The sink gives hosts the same
+   * machine-readable degradation surface as the realtime denoisers while the
+   * denoiser keeps returning the stale/HDR fallback texture.
+   */
+  readonly onWarning?: (warning: EngineWarning) => void;
 }
 
 import {
@@ -139,6 +150,7 @@ export class OIDNFinalDenoiser implements Denoiser {
   /** Last async preload/inference failure, surfaced via state() until retry. */
   private _lastFailureReason: string | null = null;
   private _lastFailureRetryable = true;
+  private readonly _onWarning: ((warning: EngineWarning) => void) | null;
   /** Disposed-flag — set in `dispose`. The background chain checks this
    *  after every await to bail out (and skip writes to destroyed textures). */
   private _disposed = false;
@@ -157,11 +169,13 @@ export class OIDNFinalDenoiser implements Denoiser {
       this.disabled = true;
       this._modelUrl = '';
       this._executionProviders = undefined;
+      this._onWarning = opts?.onWarning ?? null;
       return;
     }
     this.disabled = false;
     this._modelUrl = opts.modelUrl;
     this._executionProviders = opts.executionProviders;
+    this._onWarning = opts.onWarning ?? null;
   }
 
   async initialize(ctx: DenoiserInitContext): Promise<void> {
@@ -310,13 +324,13 @@ export class OIDNFinalDenoiser implements Denoiser {
       this._haveDenoisedOutput = true;
       this._lastFailureReason = null;
     } catch (err) {
-      // Swallow + log. The stale output texture remains visible; the next
-      // dispatch will retry. Hosts can detect persistent failure by
-      // observing that `_haveDenoisedOutput` never flips true (no public
-      // surface for this yet — W11 follow-up could expose a status hook).
-      this._lastFailureReason = `OIDN inference cycle failed: ${errorReason(err)}`;
+      // Swallow + report. The stale output texture remains visible; the next
+      // dispatch will retry. Hosts receive both a structured warning and the
+      // denoiser state transition (`failed`, retryable) through FrameStats.
+      const reason = `OIDN inference cycle failed: ${errorReason(err)}`;
+      this._lastFailureReason = reason;
       this._lastFailureRetryable = true;
-      console.error('[OIDNFinalDenoiser] inference cycle failed:', err);
+      this._warnInferenceFailure(reason, err, W, H);
     } finally {
       // Release the readback buffers — they're transient per-cycle.
       try { colorReadback.destroy(); } catch { /* already destroyed */ }
@@ -439,6 +453,34 @@ export class OIDNFinalDenoiser implements Denoiser {
       { offset: 0, bytesPerRow: uploadBpr },
       { width: W, height: H, depthOrArrayLayers: 1 },
     );
+  }
+
+  private _warnInferenceFailure(reason: string, err: unknown, width: number, height: number): void {
+    const warning: EngineWarning = {
+      code: 'walkaround-hybrid.oidn-final-inference-failed',
+      backend: 'walkaround-hybrid',
+      phase: 'renderFrame',
+      method: 'renderFrame',
+      message: `[OIDNFinalDenoiser] ${reason}; falling back to hdrColorTexture and retrying next dispatch.`,
+      details: {
+        reason,
+        modelUrl: this._modelUrl,
+        width,
+        height,
+        fallback: 'hdrColorTexture',
+        retryable: true,
+      },
+      raw: err,
+    };
+    if (this._onWarning != null) {
+      try {
+        this._onWarning(warning);
+      } catch {
+        // Host warning callbacks must not break the denoiser retry path.
+      }
+      return;
+    }
+    console.error('[OIDNFinalDenoiser] inference cycle failed:', err);
   }
 
   resize(width: number, height: number): void {

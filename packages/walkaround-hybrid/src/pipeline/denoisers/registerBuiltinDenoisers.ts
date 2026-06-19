@@ -75,5 +75,12 @@ export function registerBuiltinDenoisers(
   // OIDN: enabled when modelUrl is provided, registered-but-disabled
   // otherwise so callers selecting 'oidn-final' without config fail fast
   // with a clear remediation message.
-  registry.register(new OIDNFinalDenoiser(options?.oidn));
+  const oidnOptions =
+    options?.oidn !== undefined || options?.onWarning !== undefined
+      ? {
+        ...(options?.oidn ?? {}),
+        ...(options?.onWarning !== undefined ? { onWarning: options.onWarning } : {}),
+      }
+      : undefined;
+  registry.register(new OIDNFinalDenoiser(oidnOptions));
 }

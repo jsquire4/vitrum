@@ -62,6 +62,7 @@ import type {
   DenoiserDispatchContext,
   DenoiserInitContext,
 } from '../src/pipeline/denoisers/index.js';
+import type { EngineWarning } from '@vitrum/core';
 
 // ── Stub GPU helpers ────────────────────────────────────────────────────────
 
@@ -359,6 +360,53 @@ describe('OIDNFinalDenoiser.dispatch', () => {
       errorSpy.mockRestore();
     }
   });
+
+  it('emits a structured host warning instead of console-only reporting after dispatch-time OIDN failure', async () => {
+    const warnings: EngineWarning[] = [];
+    const d = new OIDNFinalDenoiser({
+      modelUrl: '/m.onnx',
+      onWarning: (warning) => warnings.push(warning),
+    });
+    const device = fakeDevice();
+    await d.initialize(fakeInitCtx(device));
+
+    const encoder = fakeEncoder();
+    const hdr = fakeTexture();
+    const ctx = fakeDispatchCtx(device, encoder, hdr, fakeTexture(), fakeTexture());
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      denoiseFinal.mockRejectedValueOnce(new Error('mock OIDN host-visible failure'));
+
+      const out = d.dispatch(ctx);
+      expect(out).toBe(hdr);
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        code: 'walkaround-hybrid.oidn-final-inference-failed',
+        backend: 'walkaround-hybrid',
+        phase: 'renderFrame',
+        method: 'renderFrame',
+        details: {
+          reason: 'OIDN inference cycle failed: mock OIDN host-visible failure',
+          modelUrl: '/m.onnx',
+          width: 64,
+          height: 32,
+          fallback: 'hdrColorTexture',
+          retryable: true,
+        },
+      });
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(d.state()).toEqual({
+        status: 'failed',
+        reason: 'OIDN inference cycle failed: mock OIDN host-visible failure',
+        retryable: true,
+      });
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe('OIDNFinalDenoiser.dispose', () => {
@@ -400,6 +448,20 @@ describe('OIDNFinalDenoiser — registry integration', () => {
     const d = reg.lookup('oidn-final');
     expect(d.id).toBe('oidn-final');
     expect(d.disabled).toBe(false);
+  });
+
+  it('forwards the host warning sink into the registered OIDN denoiser', () => {
+    const onWarning = vi.fn();
+    const reg = new DenoiserRegistry();
+    registerBuiltinDenoisers(reg, {
+      oidn: { modelUrl: '/m.onnx' },
+      onWarning,
+    });
+
+    const oidn = reg.lookup('oidn-final') as unknown as {
+      _onWarning: ((warning: EngineWarning) => void) | null;
+    };
+    expect(oidn._onWarning).toBe(onWarning);
   });
 
   it('DenoiserRegistry.lookup("oidn-final") throws "registered but disabled" without oidn config', () => {
