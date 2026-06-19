@@ -164,4 +164,24 @@ describe('RCDispatcher binding cache invalidation', () => {
     });
     expect(createBindGroup.mock.calls.length).toBeGreaterThan(bindGroupsAfterFirst);
   });
+
+  it('packs sunAngularRadius into the former sun-direction padding lane', () => {
+    installWebGpuConstants();
+    const { device } = makeMockDevice();
+    const dispatcher = new RCDispatcher(DIMS);
+    dispatcher.dispatchFrameRaw({
+      ...baseOpts(device),
+      sunAngularRadius: 0.075,
+    });
+    const queue = device.queue as unknown as {
+      writeBuffer: { mock: { calls: unknown[][] } };
+    };
+    const firstUniformWrite = queue.writeBuffer.mock.calls.find((call) => {
+      const buffer = call[2];
+      return buffer instanceof ArrayBuffer && buffer.byteLength === 160;
+    });
+    expect(firstUniformWrite).toBeDefined();
+    const raw = new Float32Array(firstUniformWrite![2] as ArrayBuffer);
+    expect(raw[19]).toBeCloseTo(0.075, 6);
+  });
 });

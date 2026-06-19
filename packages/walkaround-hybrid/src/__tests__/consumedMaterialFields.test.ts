@@ -651,7 +651,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('emits a structured warning for directional angularDiameter partial GI support', () => {
+  it('does not warn that directional angularDiameter is missing DDGI/RC probe support', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -674,14 +674,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const warnings = structured.filter((w) =>
         w.code === 'walkaround-hybrid.directional-angular-diameter-partial-support',
       );
-      expect(warnings).toHaveLength(1);
-      expect(warnings[0]?.details?.support).toBe('direct-sun-cone-only');
-      expect(JSON.stringify(warnings[0]?.details?.emitters)).toContain('soft-sun');
-      expect(JSON.stringify(warnings[0]?.details?.emitters)).toContain('0.04');
-      expect(warnings[0]?.details?.unsupported).toEqual([
-        'ddgi-sun-probe-soft-shadow',
-        'rc-sun-probe-soft-shadow',
-      ]);
+      expect(warnings).toHaveLength(0);
     } finally {
       engine.dispose();
     }

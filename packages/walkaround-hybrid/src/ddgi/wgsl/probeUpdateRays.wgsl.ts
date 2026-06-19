@@ -1495,6 +1495,39 @@ fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
  * in makeProbeUpdateRaysWGSL.
  */
 function makeDirectLightingWGSL(): string { return /* wgsl */`
+fn ddgiSoftSunHashToF32(seedIn: u32) -> f32 {
+  var seed = seedIn;
+  seed = seed ^ (seed >> 17u);
+  seed = seed * 0xBF324C81u;
+  seed = seed ^ (seed >> 13u);
+  seed = seed * 0x9C7493ADu;
+  seed = seed ^ (seed >> 15u);
+  return f32(seed >> 8u) * (1.0 / 16777216.0);
+}
+
+fn ddgiSoftSunDirection(sunBase: vec3f, angularRadius: f32, hitPos: vec3f) -> vec3f {
+  let radius = max(angularRadius, 0.0);
+  if (radius <= 1e-7) {
+    return sunBase;
+  }
+  let quant = vec3i(floor(hitPos / max(gridParams.spacing, 1e-4) * 1024.0));
+  let seed =
+    bitcast<u32>(quant.x) * 0x9E3779B9u ^
+    bitcast<u32>(quant.y) * 0x85EBCA6Bu ^
+    bitcast<u32>(quant.z) * 0xC2B2AE35u ^
+    0x44444749u;
+  let xi = vec2f(
+    ddgiSoftSunHashToF32(seed ^ 0x53474341u),
+    ddgiSoftSunHashToF32(seed ^ 0x4f495431u),
+  );
+  let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
+  let tangent = normalize(cross(upRef, sunBase));
+  let bitangent = cross(sunBase, tangent);
+  let r = radius * sqrt(xi.x);
+  let phi = 6.2831853 * xi.y;
+  return normalize(sunBase + tangent * (r * cos(phi)) + bitangent * (r * sin(phi)));
+}
+
 fn evalSunLight(lightDir: vec3f, lightColor: vec3f, intensity: f32,
                 hitPos: vec3f, hitNormal: vec3f, castShadowDisabled: bool) -> vec3f {
   let nDotL = max(0.0, dot(hitNormal, lightDir));
@@ -1573,7 +1606,7 @@ fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f) -> vec3f {
     let light = lights.items[li];
     let kind = ddgiLightKind(light);
     if (kind == LIGHT_SUN) {
-      let dir = normalize(-light.direction);
+      let dir = ddgiSoftSunDirection(normalize(-light.direction), light.innerCone, hitPos);
       result = result + evalSunLight(
         dir, light.color, light.intensity, hitPos, hitNormal,
         ddgiLightCastShadowDisabled(light));

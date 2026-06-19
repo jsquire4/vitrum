@@ -160,7 +160,7 @@ struct CascadeUniforms {
   intervalFar       : f32,
   cascadeIndex      : u32,
   sunDirection      : vec3f,
-  _pad2             : f32,
+  sunAngularRadius  : f32,
   sunColor          : vec3f,
   envIntensity      : f32,
   frameSeed         : u32,
@@ -227,6 +227,36 @@ fn dirToEquirectUV(d: vec3f) -> vec2f {
 }
 
 ${RC_SUN_VISIBILITY_WGSL}
+
+fn rcSoftSunDirection(
+  sunBase: vec3f,
+  angularRadius: f32,
+  hitPos: vec3f,
+  roomSize: vec3f,
+  cascadeIndex: u32,
+) -> vec3f {
+  let radius = max(angularRadius, 0.0);
+  if (radius <= 1e-7) {
+    return sunBase;
+  }
+  let quant = vec3i(floor(hitPos / max(min(roomSize.x, min(roomSize.y, roomSize.z)), 1e-4) * 1024.0));
+  let seed =
+    bitcast<u32>(quant.x) * 0x9E3779B9u ^
+    bitcast<u32>(quant.y) * 0x85EBCA6Bu ^
+    bitcast<u32>(quant.z) * 0xC2B2AE35u ^
+    cascadeIndex * 0x27D4EB2Du ^
+    0x52435355u;
+  let xi = vec2f(
+    pcgHashToF32(seed ^ 0x53474341u),
+    pcgHashToF32(seed ^ 0x4f495431u),
+  );
+  let upRef = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sunBase.y) < 0.99);
+  let tangent = normalize(cross(upRef, sunBase));
+  let bitangent = cross(sunBase, tangent);
+  let r = radius * sqrt(xi.x);
+  let phi = 6.2831853 * xi.y;
+  return normalize(sunBase + tangent * (r * cos(phi)) + bitangent * (r * sin(phi)));
+}
 
 // ─── RCLight struct ──────────────────────────────────────────────────────────
 // 64-byte analytic point/spot light for RC probe rays (A7, 2026-06-10).
@@ -1397,11 +1427,12 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
     // min(roomSize) * 0.001 mirrors DDGI's gridParams.spacing * 0.001 (M13).
     let normalBias = min(u.roomSize.x, min(u.roomSize.y, u.roomSize.z)) * 0.001;
 
+    let toSun = rcSoftSunDirection(u.sunDirection, u.sunAngularRadius, hitPos, u.roomSize, u.cascadeIndex);
     var sunVis = vec3f(1.0);
     if (u.sunCastShadowDisabled == 0u) {
-      sunVis = traceSunVisibility(hitPos + n * normalBias, u.sunDirection, slabStep, triEps);
+      sunVis = traceSunVisibility(hitPos + n * normalBias, toSun, slabStep, triEps);
     }
-    let directSun = u.sunColor * rcEvaluateProbeDirectResponse(probeMat, n, wo, u.sunDirection) * sunVis;
+    let directSun = u.sunColor * rcEvaluateProbeDirectResponse(probeMat, n, wo, toSun) * sunVis;
 
     // Rect-area emitter NEE (2026-06-07): closes the regime gap where RC saw
     // sun + emissive geometry + env but NOT the abstract rect-area emitter
@@ -1435,16 +1466,17 @@ fn probeRayCastKernel(@builtin(global_invocation_id) globalId: vec3u) {
         let secondNormal = rcApplyBumpMapForHit(secondHit, secondNormalMapped);
         let secondProbeMat = rcSampleProbeHitMaterial(secondHit, secondMat.baseColor, secondMat.roughness, secondMat.metalness, secondSmoothNormal, secondNormal);
         let secondColor = secondProbeMat.albedo;
+        let secondToSun = rcSoftSunDirection(u.sunDirection, u.sunAngularRadius, secondPos, u.roomSize, u.cascadeIndex);
         var sunVis2 = vec3f(1.0);
         if (u.sunCastShadowDisabled == 0u) {
           sunVis2 = traceSunVisibility(
             secondPos + secondNormal * normalBias,
-            u.sunDirection,
+            secondToSun,
             slabStep,
             triEps,
           );
         }
-        let nDotL2 = max(0.0, dot(secondNormal, u.sunDirection));
+        let nDotL2 = max(0.0, dot(secondNormal, secondToSun));
         transContrib = u.sunColor * secondColor * nDotL2 * 0.31831
                        * beerAttenColor * matColor * sunVis2;
       }

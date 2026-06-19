@@ -146,6 +146,8 @@ export interface RCDispatchOptsRaw {
   sunColor:           readonly [number, number, number];
   /** When true, direct RC sun lighting skips the sun visibility ray. */
   sunCastShadowDisabled?: boolean;
+  /** Finite directional emitter cone radius in radians. */
+  sunAngularRadius?: number;
 
   /** Environment equirectangular texture — caller supplies a pre-created
    *  view + sampler. Pass `null` to use the dispatcher's 1×1 black placeholder. */
@@ -211,6 +213,7 @@ interface CascadeUniformInputs {
   readonly sunDir:           readonly [number, number, number];
   readonly sunColor:         readonly [number, number, number];
   readonly sunCastShadowDisabled: boolean;
+  readonly sunAngularRadius: number;
   readonly envIntensity:     number;
   readonly frameSeed:        number;
   /** E2: Möller–Trumbore coplanarity threshold (was local WGSL const). */
@@ -244,6 +247,7 @@ function buildCascadeUniformDataInto(
     sunDir,
     sunColor,
     sunCastShadowDisabled,
+    sunAngularRadius,
     envIntensity,
     frameSeed,
     triIntersectEpsilon,
@@ -263,7 +267,7 @@ function buildCascadeUniformDataInto(
   // roomSize(3f), _pad1(f)
   // probeCount(3u), raysPerProbe(u)
   // rayGridSize(u), intervalNear(f), intervalFar(f), cascadeIndex(u)
-  // sunDirection(3f), _pad2(f)
+  // sunDirection(3f), sunAngularRadius(f)
   // sunColor(3f), envIntensity(f)
   // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), bvhMode(u)
   // tlasNodeCount(u), emitterCount(u) [slot 29 — RC emitter NEE]
@@ -279,7 +283,8 @@ function buildCascadeUniformDataInto(
   ui[12] = rayGridSize;
   d[13] = dim.intervalNear; d[14] = dim.intervalFar;
   ui[15] = k;
-  d[16] = sunDir[0]; d[17] = sunDir[1]; d[18] = sunDir[2]; d[19] = 0;
+  d[16] = sunDir[0]; d[17] = sunDir[1]; d[18] = sunDir[2];
+  d[19] = Number.isFinite(sunAngularRadius) ? Math.max(0, sunAngularRadius) : 0;
   d[20] = sunColor[0]; d[21] = sunColor[1]; d[22] = sunColor[2];
   d[23] = envIntensity;
   ui[24] = frameSeed;
@@ -475,6 +480,7 @@ export class RCDispatcher {
         sunDir:           opts.sunDirection,
         sunColor:         opts.sunColor,
         sunCastShadowDisabled: opts.sunCastShadowDisabled === true,
+        sunAngularRadius: opts.sunAngularRadius ?? 0,
         envIntensity:     1.0,
         frameSeed:        opts.frameSeed,
         triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,
@@ -930,6 +936,7 @@ export class RCDispatcher {
         sunDir:           opts.sunDirection,
         sunColor:         opts.sunColor,
         sunCastShadowDisabled: opts.sunCastShadowDisabled === true,
+        sunAngularRadius: opts.sunAngularRadius ?? 0,
         envIntensity:     1.0,
         frameSeed:        opts.frameSeed,
         triIntersectEpsilon: opts.triIntersectEpsilon ?? 1e-5,

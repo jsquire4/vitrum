@@ -17,6 +17,7 @@
    *   - intensity — multiplied by _sunIntensityMul for sun lights
    *   - position  — accessed via unsafe cast on fixture/teaLight lights
    *   - direction — sun travel-direction; packed for 'sun' lights (see below)
+   *   - angularRadius — sun cone radius in radians for soft directional lights
    *   - on        — filter: only lights where on===true are uploaded
    *   - castShadow — when false, the probe direct-light estimator skips the
    *     light's own visibility ray while still emitting radiance
@@ -65,6 +66,12 @@ export interface DDGILight {
    *  falls back to the legacy hardcoded `(0,-1,0)` straight-down sun so any
    *  host-supplied sun light without an explicit direction is unchanged. */
   readonly direction?: { readonly x: number; readonly y: number; readonly z: number };
+
+  /** SUN lights only — finite directional emitter cone radius in radians.
+   *  Derived from `DirectionalEmitter.angularDiameter / 2` by
+   *  `coreEmitterToDDGILight`. Undefined preserves the historical hard
+   *  directional probe-light path. */
+  readonly angularRadius?: number;
 
   /** RGB radiance multiplier for point-like lights (`fixture` / `teaLight`)
    *  AND for `sun` lights (the latter previously hardcoded `(1,0.95,0.85)` in

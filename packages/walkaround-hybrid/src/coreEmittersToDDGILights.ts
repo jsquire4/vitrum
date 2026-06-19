@@ -132,6 +132,9 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
           z: -e.direction[2] * inv,
         },
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
+        ...(typeof e.angularDiameter === 'number' && Number.isFinite(e.angularDiameter)
+          ? { angularRadius: Math.max(0, e.angularDiameter) * 0.5 }
+          : {}),
         ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
       };
     }

@@ -88,6 +88,8 @@ interface RCFrameInputs {
   readonly sunColor:            readonly [number, number, number];
   /** Scene directional emitter castShadow:false disables RC sun visibility rays. */
   readonly sunCastShadowDisabled?: boolean;
+  /** Finite directional emitter cone radius in radians. */
+  readonly sunAngularRadius?: number;
   readonly frameSeed:           number;
   readonly triIntersectEpsilon: number;
   /** Rect-area emitter NEE (2026-06-07): the main pipeline's packed
@@ -475,6 +477,7 @@ export class RCSubsystem implements PipelineSubsystem {
       sunDirection:     inputs.sunDirection,
       sunColor:         inputs.sunColor,
       sunCastShadowDisabled: inputs.sunCastShadowDisabled === true,
+      sunAngularRadius: inputs.sunAngularRadius ?? 0,
       frameSeed:        inputs.frameSeed,
       triIntersectEpsilon: inputs.triIntersectEpsilon,
       bvhMode:          this._bvhMode,

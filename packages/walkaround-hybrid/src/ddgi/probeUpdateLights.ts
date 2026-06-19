@@ -85,7 +85,9 @@ export function packDDGIProbeLights(
       data[base + 8] = dir?.x ?? 0;
       data[base + 9] = dir?.y ?? -1;
       data[base + 10] = dir?.z ?? 0;
-      data[base + 11] = 0;
+      data[base + 11] = typeof l.angularRadius === 'number' && Number.isFinite(l.angularRadius)
+        ? Math.max(0, l.angularRadius)
+        : 0;
       // Sun chroma: from the emitter when present; else the legacy warm-white
       // (1,0.95,0.85) the packer hardcoded before scene-directional wiring.
       data[base + 12] = col?.r ?? 1;

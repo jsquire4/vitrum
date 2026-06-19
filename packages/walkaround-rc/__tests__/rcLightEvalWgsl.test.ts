@@ -148,7 +148,9 @@ describe('RC light-eval WGSL contract', () => {
     expect(response).toContain('rcEvalSheenLobe(mat.sheen, mat.sheenRoughness, n, v, l)');
     expect(probeKernel).toContain('let probeMat    = rcSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, smoothNormal, n);');
     expect(probeKernel).toContain('let matColor    = probeMat.albedo;');
-    expect(probeKernel).toContain('let directSun = u.sunColor * rcEvaluateProbeDirectResponse(probeMat, n, wo, u.sunDirection) * sunVis;');
+    expect(probeKernel).toContain('let toSun = rcSoftSunDirection(u.sunDirection, u.sunAngularRadius, hitPos, u.roomSize, u.cascadeIndex);');
+    expect(probeKernel).toContain('let directSun = u.sunColor * rcEvaluateProbeDirectResponse(probeMat, n, wo, toSun) * sunVis;');
+    expect(probeKernel).toContain('let secondToSun = rcSoftSunDirection(u.sunDirection, u.sunAngularRadius, secondPos, u.roomSize, u.cascadeIndex);');
     expect(probeKernel).toContain('let emitterNEE = rcEmitterNEE(hitPos, n, wo, probeMat, u.emitterCount, jSeed, triEps, normalBias);');
     expect(probeKernel).toContain('let pointSpotLights = evalRCPointSpotLights(hitPos, n, wo, probeMat, normalBias, triEps);');
   });

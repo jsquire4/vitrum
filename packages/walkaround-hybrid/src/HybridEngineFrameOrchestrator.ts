@@ -450,6 +450,7 @@ function dispatchRcAndSetInputs(
       sunDirection: deps.lighting.primaryLightDir,
       sunColor,
       sunCastShadowDisabled,
+      sunAngularRadius: sunAngularRadiusForScene(deps.subsystems.lastScene),
       frameSeed: input.frameSeed,
       triIntersectEpsilon: deps.flags.tunables.triIntersectEpsilon,
       ...(rcEmitters != null

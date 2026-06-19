@@ -215,11 +215,14 @@
 > WalkaroundUBO as a direct sun cone radius and is consumed by opaque direct
 > sun NEE, transparent OIT sun lighting, and stained-glass caustics; the old
 > hard-coded 0.00436 rad radius remains only as the no-authored-diameter
-> default. Because DDGI/RC probe-cache sun transport is still directional,
-> `HybridEngine.setScene()` / `updateEmitter()` emit
-> `walkaround-hybrid.directional-angular-diameter-partial-support` with
-> `support:"direct-sun-cone-only"` for authored angular diameters. V28-B
-> recapture remains required for the visible direct-light change.
+> default. **2026-06-19 follow-up:** DDGI now carries the same authored sun
+> cone radius in the packed sun `innerCone` lane and samples deterministic
+> per-hit soft-sun directions for probe direct lighting; RC repurposes the
+> existing cascade-uniform sun padding lane as `sunAngularRadius` and applies
+> the same deterministic cone sample to direct probe hits and glass
+> continuation sun terms. The old
+> `walkaround-hybrid.directional-angular-diameter-partial-support` warning is
+> removed. V28-B recapture remains required because this is render-changing.
 > Same-day pt-webgl2 soft-sun follow-up: directional emitters now pack
 > positive finite `angularDiameter` into the lights texture, GLSL decodes it,
 > and `randomLightSample()` samples a finite cone with a solid-angle PDF instead

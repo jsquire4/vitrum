@@ -39,6 +39,7 @@ import {
   packDDGIProbeLights,
 } from '../probeUpdateLights.js';
 import { makeProbeUpdateRaysWGSL } from '../wgsl/probeUpdateRays.wgsl.js';
+import { coreEmitterToDDGILight } from '../../coreEmittersToDDGILights.js';
 
 const HEADER_FLOATS = 4;
 const LIGHT_STRIDE_FLOATS = 16;
@@ -125,8 +126,24 @@ describe('packDDGIProbeLights — sun light', () => {
     expect(f32[base + 8]).toBeCloseTo(0.1, 5);
     expect(f32[base + 9]).toBeCloseTo(-0.9, 5);
     expect(f32[base + 10]).toBeCloseTo(0.2, 5);
-    // innerCone / outerCone must be 0 for sun (no spot logic).
+    // innerCone defaults to sun angular radius = 0; outerCone is unused for sun.
     expect(f32[base + 11]).toBe(0);
+    expect(f32[base + 15]).toBe(0);
+  });
+
+  it('packs directional angular radius into the sun innerCone lane', () => {
+    const buf = packDDGIProbeLights([
+      {
+        kind: 'sun',
+        on: true,
+        intensity: 1,
+        direction: { x: 0, y: -1, z: 0 },
+        angularRadius: 0.04,
+      },
+    ], 1);
+    const { f32 } = decode(buf);
+    const base = lightBase(0);
+    expect(f32[base + 11]).toBeCloseTo(0.04, 6);
     expect(f32[base + 15]).toBe(0);
   });
 
@@ -182,6 +199,32 @@ describe('packDDGIProbeLights — sun light', () => {
     expect(f32[base + 4]).toBe(0);
     expect(f32[base + 5]).toBe(0);
     expect(f32[base + 6]).toBe(0);
+  });
+});
+
+describe('core directional emitter → DDGI sun', () => {
+  it('derives soft-sun angular radius from authored angularDiameter', () => {
+    const light = coreEmitterToDDGILight({
+      id: 'soft-sun',
+      kind: 'directional',
+      direction: [0, 1, 0],
+      color: [1, 0.9, 0.8],
+      intensity: 2,
+      angularDiameter: 0.08,
+    });
+    expect(light?.kind).toBe('sun');
+    expect(light?.angularRadius).toBeCloseTo(0.04, 6);
+  });
+});
+
+describe('probeUpdateRays soft-sun shader plumbing', () => {
+  it('samples the DDGI sun cone from the packed sun angular-radius lane', () => {
+    const shader = makeProbeUpdateRaysWGSL(4);
+    const evalDirectLighting = functionBody(shader, 'evalDirectLighting');
+    expect(shader).toContain('fn ddgiSoftSunDirection');
+    expect(shader).toContain('let radius = max(angularRadius, 0.0);');
+    expect(evalDirectLighting).toContain('ddgiSoftSunDirection(normalize(-light.direction), light.innerCone, hitPos)');
+    expect(evalDirectLighting).toContain('evalSunLight(');
   });
 });
 
