@@ -23,13 +23,26 @@ if (status.command !== "npm run behavioral-gate:cwbvh -- --write-status") {
 if (!Number.isInteger(status.rayCount) || status.rayCount < 5) {
   fail(`rayCount ${status.rayCount} is too small`);
 }
+if (status.rootCount !== 2) {
+  fail(`rootCount ${status.rootCount} does not prove multi-root CWBVH traversal`);
+}
+if (!Number.isInteger(status.nonzeroRoot) || status.nonzeroRoot <= 0) {
+  fail(`nonzeroRoot ${status.nonzeroRoot} does not prove root remapping`);
+}
 if (!Number.isInteger(status.cwbvhNodeCount) || status.cwbvhNodeCount <= 1) {
   fail(`cwbvhNodeCount ${status.cwbvhNodeCount} does not prove multi-node traversal`);
 }
 if (!Number.isInteger(status.triangleCount) || status.triangleCount < 50) {
   fail(`triangleCount ${status.triangleCount} is too small`);
 }
-for (const key of ["closestNoSkip", "closestSkipGlass", "anyNoSkip", "anySkipGlass"]) {
+for (const key of [
+  "closestNoSkip",
+  "closestSkipGlass",
+  "anyNoSkip",
+  "anySkipGlass",
+  "nonzeroRootClosest",
+  "nonzeroRootAny",
+]) {
   if (status.checks?.[key] !== true) fail(`missing check flag ${key}`);
 }
 if (!Array.isArray(status.mismatches) || status.mismatches.length !== 0) {
@@ -37,5 +50,5 @@ if (!Array.isArray(status.mismatches) || status.mismatches.length !== 0) {
 }
 
 console.log(
-  `[cwbvh-parity-proof-check] PASS (${status.rayCount} rays, ${status.cwbvhNodeCount} CWBVH nodes, ${status.triangleCount} triangles)`,
+  `[cwbvh-parity-proof-check] PASS (${status.rayCount} rays, ${status.rootCount} roots, ${status.cwbvhNodeCount} CWBVH nodes, ${status.triangleCount} triangles)`,
 );

@@ -1943,7 +1943,13 @@ geometry remains camera-visible but non-occluding. Same-day oracle follow-up:
 the shared CWBVH CPU traversal oracle now accepts an explicit wide-root index
 and has a concatenated-forest regression that proves nonzero roots hit only
 their remapped BLAS subtree, matching the root-routing shape used by pt-webgpu's
-opt-in TLAS traversal path.
+opt-in TLAS traversal path. Same-day GPU-proof follow-up:
+`tools/behavioral-gate/cwbvh-parity-oracle.mjs` now concatenates two CWBVH
+roots, dispatches closest-hit and any-hit through the WGSL `FromRoot` entry
+points with a nonzero wide-root ray, and compares those results against the CPU
+oracle. The committed parity status now requires `rootCount: 2`,
+`nonzeroRootClosest`, and `nonzeroRootAny`, so stale root-zero-only evidence no
+longer passes `npm run cwbvh-gpu-proof-check`.
 
 **Remaining work:** renderer binary-vs-CWBVH traversal parity tests; and
 equal-scene throughput/memory A/B before any renderer default promotion. Becomes

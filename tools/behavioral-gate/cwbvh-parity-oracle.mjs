@@ -9,6 +9,10 @@
  */
 
 import {
+  CWBVH_CHILD_EMPTY,
+  CWBVH_CHILD_LEAF,
+  CWBVH_CHILD_META_WORDS,
+  CWBVH_CHILD_NODE,
   CWBVH_INTERSECT_WGSL,
   buildCompressedWideBvh,
   intersectCompressedWideBvhAnyHit,
@@ -32,18 +36,18 @@ function makeScene() {
     }
   }
 
-  const indices = [];
-  const materialIds = [];
-  const payloads = [];
+  const rootZeroIndices = [];
+  const rootZeroMaterialIds = [];
+  const rootZeroPayloads = [];
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) {
       const v0 = y * (size + 1) + x;
       const v1 = v0 + 1;
       const v2 = v0 + size + 2;
       const v3 = v0 + size + 1;
-      indices.push(v0, v1, v2, 0, v0, v2, v3, 0);
-      materialIds.push(0, 0);
-      payloads.push(0, 0);
+      rootZeroIndices.push(v0, v1, v2, 0, v0, v2, v3, 0);
+      rootZeroMaterialIds.push(0, 0);
+      rootZeroPayloads.push(0, 0);
     }
   }
 
@@ -53,25 +57,39 @@ function makeScene() {
     0.8, 0, 1, 0,
     0, 0.8, 1, 0,
   );
-  indices.push(glassBase, glassBase + 1, glassBase + 2, GLASS_PAYLOAD);
-  materialIds.push(1);
-  payloads.push(GLASS_PAYLOAD);
+  rootZeroIndices.push(glassBase, glassBase + 1, glassBase + 2, GLASS_PAYLOAD);
+  rootZeroMaterialIds.push(1);
+  rootZeroPayloads.push(GLASS_PAYLOAD);
+
+  const secondRootBase = positions.length / 4;
+  positions.push(
+    10, 0, 0, 0,
+    11, 0, 0, 0,
+    10, 1, 0, 0,
+  );
+  const rootOneIndices = [secondRootBase, secondRootBase + 1, secondRootBase + 2, 0];
+  const rootOneMaterialIds = [0];
+  const rootOnePayloads = [0];
 
   return {
     positions: new Float32Array(positions),
-    indices: new Uint32Array(indices),
-    materialIds: new Uint32Array(materialIds),
-    payloads: new Uint32Array(payloads),
+    rootZeroIndices: new Uint32Array(rootZeroIndices),
+    rootZeroMaterialIds: new Uint32Array(rootZeroMaterialIds),
+    rootZeroPayloads: new Uint32Array(rootZeroPayloads),
+    rootOneIndices: new Uint32Array(rootOneIndices),
+    rootOneMaterialIds: new Uint32Array(rootOneMaterialIds),
+    rootOnePayloads: new Uint32Array(rootOnePayloads),
   };
 }
 
-function makeRays() {
+function makeRays(nonzeroRoot) {
   return [
     { label: "glass-short", origin: [0.2, 0.3, 2], direction: [0, 0, -1], tMax: 1.25 },
     { label: "glass-long", origin: [0.2, 0.3, 2], direction: [0, 0, -1], tMax: 3.0 },
     { label: "opaque-grid", origin: [2.2, 3.3, 2], direction: [0, 0, -1], tMax: 3.0 },
     { label: "miss-outside", origin: [6.0, 6.0, 2], direction: [0, 0, -1], tMax: 3.0 },
     { label: "short-before-surface", origin: [1.2, 1.2, 2], direction: [0, 0, -1], tMax: 0.5 },
+    { label: "nonzero-root-triangle", origin: [10.25, 0.25, 2], direction: [0, 0, -1], tMax: 3.0, root: nonzeroRoot },
   ];
 }
 
@@ -86,9 +104,71 @@ function rayBuffer(rays) {
     packed[i * 8 + 4] = ray.direction[0];
     packed[i * 8 + 5] = ray.direction[1];
     packed[i * 8 + 6] = ray.direction[2];
-    packed[i * 8 + 7] = 0;
+    packed[i * 8 + 7] = ray.root ?? 0;
   }
   return packed;
+}
+
+function concatFloat32(a, b) {
+  const out = new Float32Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function concatUint16(a, b) {
+  const out = new Uint16Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function concatUint32(a, b) {
+  const out = new Uint32Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function offsetCwbvhMeta(meta, nodeOffset, triangleOffset) {
+  const out = new Uint32Array(meta);
+  for (let i = 0; i < out.length; i += CWBVH_CHILD_META_WORDS) {
+    const kind = out[i] ?? CWBVH_CHILD_EMPTY;
+    if (kind === CWBVH_CHILD_NODE) {
+      out[i + 1] = (out[i + 1] ?? 0) + nodeOffset;
+    } else if (kind === CWBVH_CHILD_LEAF) {
+      out[i + 1] = (out[i + 1] ?? 0) + triangleOffset;
+    }
+  }
+  return out;
+}
+
+function offsetSourceTriangles(source, triangleOffset) {
+  const out = new Uint32Array(source.length);
+  for (let i = 0; i < source.length; i += 1) out[i] = (source[i] ?? 0) + triangleOffset;
+  return out;
+}
+
+function concatCwbvhRoots(a, b) {
+  const triangleOffset = a.reorderedToSourceTriangle.length;
+  return {
+    ...a,
+    bvhNodes: concatFloat32(a.bvhNodes, b.bvhNodes),
+    reorderedIndices: concatUint32(a.reorderedIndices, b.reorderedIndices),
+    reorderedTriMaterialIds: concatUint32(a.reorderedTriMaterialIds, b.reorderedTriMaterialIds),
+    reorderedToSourceTriangle: concatUint32(
+      a.reorderedToSourceTriangle,
+      offsetSourceTriangles(b.reorderedToSourceTriangle, triangleOffset),
+    ),
+    cwbvhNodeBounds: concatFloat32(a.cwbvhNodeBounds, b.cwbvhNodeBounds),
+    cwbvhChildBounds: concatUint16(a.cwbvhChildBounds, b.cwbvhChildBounds),
+    cwbvhChildMeta: concatUint32(
+      a.cwbvhChildMeta,
+      offsetCwbvhMeta(b.cwbvhChildMeta, a.cwbvhNodeCount, triangleOffset),
+    ),
+    cwbvhChildCount: concatUint32(a.cwbvhChildCount, b.cwbvhChildCount),
+    cwbvhNodeCount: a.cwbvhNodeCount + b.cwbvhNodeCount,
+  };
 }
 
 function shaderCode(rayCount, nodeCount) {
@@ -124,8 +204,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   ray.origin = packedRay.originAndTMax.xyz;
   ray.direction = packedRay.direction.xyz;
   let tMax = packedRay.originAndTMax.w;
+  let root = u32(packedRay.direction.w);
 
-  let closestNoSkip = cwbvhIntersectFirstHit(
+  let closestNoSkip = cwbvhIntersectFirstHitFromRoot(
     &cwbvhNodeBounds,
     &cwbvhChildBoundsPacked,
     &cwbvhChildMeta,
@@ -135,9 +216,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     ray,
     1.0e-5,
     CWBVH_GATE_NODE_COUNT,
+    root,
     false,
   );
-  let anyNoSkip = cwbvhIntersectAny(
+  let anyNoSkip = cwbvhIntersectAnyFromRoot(
     &cwbvhNodeBounds,
     &cwbvhChildBoundsPacked,
     &cwbvhChildMeta,
@@ -149,10 +231,11 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     tMax,
     1.0e-5,
     CWBVH_GATE_NODE_COUNT,
+    root,
     false,
   );
 
-  let closestSkip = cwbvhIntersectFirstHit(
+  let closestSkip = cwbvhIntersectFirstHitFromRoot(
     &cwbvhNodeBounds,
     &cwbvhChildBoundsPacked,
     &cwbvhChildMeta,
@@ -162,9 +245,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     ray,
     1.0e-5,
     CWBVH_GATE_NODE_COUNT,
+    root,
     true,
   );
-  let anySkip = cwbvhIntersectAny(
+  let anySkip = cwbvhIntersectAnyFromRoot(
     &cwbvhNodeBounds,
     &cwbvhChildBoundsPacked,
     &cwbvhChildMeta,
@@ -176,6 +260,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     tMax,
     1.0e-5,
     CWBVH_GATE_NODE_COUNT,
+    root,
     true,
   );
 
@@ -232,15 +317,24 @@ function compareHit(label, mode, gpu, cpu, mismatches) {
 }
 
 const scene = makeScene();
-const builtBase = buildCompressedWideBvh(scene.positions, scene.indices, scene.materialIds, {
+const builtRootZeroBase = buildCompressedWideBvh(scene.positions, scene.rootZeroIndices, scene.rootZeroMaterialIds, {
   maxLeafTriangles: 1,
 });
-const built = {
-  ...builtBase,
-  reorderedIndices: reorderCwbvhTrianglePayloads(builtBase, scene.payloads),
+const builtRootZero = {
+  ...builtRootZeroBase,
+  reorderedIndices: reorderCwbvhTrianglePayloads(builtRootZeroBase, scene.rootZeroPayloads),
 };
+const builtRootOneBase = buildCompressedWideBvh(scene.positions, scene.rootOneIndices, scene.rootOneMaterialIds, {
+  maxLeafTriangles: 1,
+});
+const builtRootOne = {
+  ...builtRootOneBase,
+  reorderedIndices: reorderCwbvhTrianglePayloads(builtRootOneBase, scene.rootOnePayloads),
+};
+const nonzeroRoot = builtRootZero.cwbvhNodeCount;
+const built = concatCwbvhRoots(builtRootZero, builtRootOne);
 const childBoundsPacked = packCwbvhBuildBoundsForWgsl(built);
-const rays = makeRays();
+const rays = makeRays(nonzeroRoot);
 const rayData = rayBuffer(rays);
 const outputWordsPerRay = 8;
 const output = new Uint32Array(rays.length * outputWordsPerRay);
@@ -337,10 +431,11 @@ readback.unmap();
 const mismatches = [];
 for (let i = 0; i < rays.length; i += 1) {
   const ray = rays[i];
-  const cpuNoSkip = intersectCompressedWideBvhFirstHit(built, scene.positions, ray);
-  const cpuSkip = intersectCompressedWideBvhFirstHit(built, scene.positions, ray, { skipGlass: true });
-  const cpuAnyNoSkip = intersectCompressedWideBvhAnyHit(built, scene.positions, ray, { tMax: ray.tMax });
-  const cpuAnySkip = intersectCompressedWideBvhAnyHit(built, scene.positions, ray, { tMax: ray.tMax, skipGlass: true });
+  const root = ray.root ?? 0;
+  const cpuNoSkip = intersectCompressedWideBvhFirstHit(built, scene.positions, ray, { root });
+  const cpuSkip = intersectCompressedWideBvhFirstHit(built, scene.positions, ray, { root, skipGlass: true });
+  const cpuAnyNoSkip = intersectCompressedWideBvhAnyHit(built, scene.positions, ray, { root, tMax: ray.tMax });
+  const cpuAnySkip = intersectCompressedWideBvhAnyHit(built, scene.positions, ray, { root, tMax: ray.tMax, skipGlass: true });
 
   const gpuNoSkip = output.slice(i * outputWordsPerRay, i * outputWordsPerRay + 4);
   const gpuSkip = output.slice(i * outputWordsPerRay + 4, i * outputWordsPerRay + 8);
@@ -360,13 +455,17 @@ const status = {
   verdict: mismatches.length === 0 ? "PASS" : "FAIL",
   command: "npm run behavioral-gate:cwbvh -- --write-status",
   rayCount: rays.length,
+  rootCount: 2,
+  nonzeroRoot,
   cwbvhNodeCount: built.cwbvhNodeCount,
-  triangleCount: Math.floor(scene.indices.length / 4),
+  triangleCount: Math.floor((scene.rootZeroIndices.length + scene.rootOneIndices.length) / 4),
   checks: {
     closestNoSkip: true,
     closestSkipGlass: true,
     anyNoSkip: true,
     anySkipGlass: true,
+    nonzeroRootClosest: !mismatches.some((m) => m.startsWith("nonzero-root-triangle/closest")),
+    nonzeroRootAny: !mismatches.some((m) => m.startsWith("nonzero-root-triangle/any")),
   },
   mismatches,
 };
@@ -383,8 +482,9 @@ if (mismatches.length > 0) {
 
 console.log("[cwbvh-parity] PASS");
 console.log(`  rays          : ${rays.length}`);
+console.log(`  roots         : 2 (nonzero root ${nonzeroRoot})`);
 console.log(`  CWBVH nodes   : ${built.cwbvhNodeCount}`);
-console.log(`  triangles     : ${Math.floor(scene.indices.length / 4)}`);
+console.log(`  triangles     : ${Math.floor((scene.rootZeroIndices.length + scene.rootOneIndices.length) / 4)}`);
 if (WRITE_STATUS) {
   console.log(`  status        : ${STATUS_PATH.pathname}`);
 }
