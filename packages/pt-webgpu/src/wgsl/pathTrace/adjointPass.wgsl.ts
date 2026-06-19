@@ -727,6 +727,161 @@ fn sampleAdjointBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal:
   return out;
 }
 
+struct AdjointNormalStackSample {
+  normal: vec3f,
+  clearcoatNormal: vec3f,
+}
+
+fn adjointMaterialNormalScale(matId: u32) -> f32 {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 5u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  return materialTexDescriptors[base + 5u].w;
+}
+
+fn adjointMaterialBumpScale(matId: u32) -> f32 {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 4u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  return materialTexDescriptors[base + 4u].z;
+}
+
+fn adjointMaterialClearcoatNormalScale(matId: u32) -> f32 {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + ADJOINT_MATERIAL_TEX_CLEARCOAT_NORMAL >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  return materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_CLEARCOAT_NORMAL].y;
+}
+
+fn sampleAdjointNormalMapWithScale(
+  matId: u32,
+  triIndex: u32,
+  baryVW: vec2f,
+  geomNormal: vec3f,
+  normalScale: f32,
+) -> vec3f {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 14u >= arrayLength(&materialTexDescriptors)) { return geomNormal; }
+  let normalIdx = i32(materialTexDescriptors[base].y);
+  if (normalIdx < 0) { return geomNormal; }
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, geomNormal);
+  if (!frame.valid) { return geomNormal; }
+  let texel = sampleAdjointMaterialLayerLinear(
+    normalIdx,
+    base,
+    triIndex,
+    baryVW,
+    ADJOINT_MATERIAL_TEX_UV_NORMAL,
+    materialTexDescriptors[base + 8u].xy,
+    materialTexDescriptors[base + 14u].xy,
+  ).xyz;
+  let xy = texel.xy * 2.0 - vec2f(1.0);
+  let z = texel.z * 2.0 - 1.0;
+  let perturbed = frame.tangent * (xy.x * normalScale) +
+    frame.bitangent * (xy.y * normalScale) +
+    geomNormal * z;
+  let plen = length(perturbed);
+  if (plen <= 1e-6) { return geomNormal; }
+  return perturbed / plen;
+}
+
+fn sampleAdjointBumpMapWithScale(
+  matId: u32,
+  triIndex: u32,
+  baryVW: vec2f,
+  shadingNormal: vec3f,
+  bumpScale: f32,
+) -> vec3f {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + 16u >= arrayLength(&materialTexDescriptors) || triIndex >= arrayLength(&indices)) { return shadingNormal; }
+  let bumpIdx = i32(materialTexDescriptors[base + 3u].w);
+  if (bumpIdx < 0) { return shadingNormal; }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
+      tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+    return shadingNormal;
+  }
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, shadingNormal);
+  if (!frame.valid) { return shadingNormal; }
+  let bumpUvFitScale = materialTexDescriptors[base + 10u].zw;
+  let bumpWrapMode = materialTexDescriptors[base + 16u].zw;
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uvMeta = materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_UV_BUMP];
+  let texCoord = u32(uvMeta.x);
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
+  let rawUv0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
+  let rawUv1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
+  let rawUv = select(rawUv0, rawUv1, texCoord == 1u);
+  let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));
+  let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
+  let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
+  let hC = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv, ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hU = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(texelStep.x, 0.0), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hV = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(0.0, texelStep.y), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let dhdu = (hU - hC) / texelStep.x;
+  let dhdv = (hV - hC) / texelStep.y;
+  let gradient = dhdu * frame.tangent + dhdv * frame.bitangent;
+  let perturbed = shadingNormal - bumpScale * gradient;
+  let plen = length(perturbed);
+  if (plen <= 1e-6) { return shadingNormal; }
+  return perturbed / plen;
+}
+
+fn sampleAdjointClearcoatNormalMapWithScale(
+  matId: u32,
+  triIndex: u32,
+  baryVW: vec2f,
+  clearcoatNormal: vec3f,
+  clearcoatNormalScale: f32,
+) -> vec3f {
+  let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
+  if (base + ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_NORMAL + 1u >= arrayLength(&materialTexDescriptors)) { return clearcoatNormal; }
+  let clearcoatNormalIdx = i32(materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_CLEARCOAT_NORMAL].x);
+  if (clearcoatNormalIdx < 0) { return clearcoatNormal; }
+  let frame = buildAdjointTangentFrame(triIndex, baryVW, clearcoatNormal);
+  if (!frame.valid) { return clearcoatNormal; }
+  let texel = sampleAdjointMaterialLayerLinear(
+    clearcoatNormalIdx,
+    base,
+    triIndex,
+    baryVW,
+    ADJOINT_MATERIAL_TEX_UV_CLEARCOAT_NORMAL,
+    materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_CLEARCOAT_NORMAL].zw,
+    materialTexDescriptors[base + ADJOINT_MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP].xy,
+  ).xyz;
+  let xy = texel.xy * 2.0 - vec2f(1.0);
+  let z = texel.z * 2.0 - 1.0;
+  let perturbed = frame.tangent * (xy.x * clearcoatNormalScale) +
+    frame.bitangent * (xy.y * clearcoatNormalScale) +
+    clearcoatNormal * z;
+  let plen = length(perturbed);
+  if (plen <= 1e-6) { return clearcoatNormal; }
+  return perturbed / plen;
+}
+
+fn sampleAdjointNormalStackWithScales(
+  matId: u32,
+  triIndex: u32,
+  baryVW: vec2f,
+  geomNormal: vec3f,
+  normalScale: f32,
+  bumpScale: f32,
+  clearcoatNormalScale: f32,
+) -> AdjointNormalStackSample {
+  var out: AdjointNormalStackSample;
+  let normalMapped = sampleAdjointNormalMapWithScale(matId, triIndex, baryVW, geomNormal, normalScale);
+  out.normal = sampleAdjointBumpMapWithScale(matId, triIndex, baryVW, normalMapped, bumpScale);
+  out.clearcoatNormal = sampleAdjointClearcoatNormalMapWithScale(
+    matId,
+    triIndex,
+    baryVW,
+    out.normal,
+    clearcoatNormalScale,
+  );
+  return out;
+}
+
 fn sampleAdjointOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
   if (base + 15u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
@@ -1200,13 +1355,15 @@ fn directLightContributionValue(
   ) * nDotL * Li;
 }
 
-fn directLightNormalScaleGradient(
+fn directLightNormalStackScaleGradient(
   dLoss_dR: vec3f,
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
   n: vec3f,
+  clearcoatNormal: vec3f,
   dNormal_dScale: vec3f,
+  dClearcoatNormal_dScale: vec3f,
   wo: vec3f,
   wi: vec3f,
   specularColor: vec3f,
@@ -1220,17 +1377,22 @@ fn directLightNormalScaleGradient(
   anisotropyRotation: f32,
   Li: vec3f,
 ) -> f32 {
-  if (dot(dNormal_dScale, dNormal_dScale) <= 1e-12) { return 0.0; }
+  if (dot(dNormal_dScale, dNormal_dScale) <= 1e-12 &&
+      dot(dClearcoatNormal_dScale, dClearcoatNormal_dScale) <= 1e-12) {
+    return 0.0;
+  }
   let h = ADJOINT_NORMAL_SCALE_DERIV_STEP;
   let nPlus = safe_normalize(n + dNormal_dScale * h);
   let nMinus = safe_normalize(n - dNormal_dScale * h);
+  let ccPlus = safe_normalize(clearcoatNormal + dClearcoatNormal_dScale * h);
+  let ccMinus = safe_normalize(clearcoatNormal - dClearcoatNormal_dScale * h);
   let cPlus = directLightContributionValue(
-    baseColor, roughness, metallic, nPlus, nPlus, wo, wi, specularColor, specularIntensity,
+    baseColor, roughness, metallic, nPlus, ccPlus, wo, wi, specularColor, specularIntensity,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     anisotropy, anisotropyRotation, Li,
   );
   let cMinus = directLightContributionValue(
-    baseColor, roughness, metallic, nMinus, nMinus, wo, wi, specularColor, specularIntensity,
+    baseColor, roughness, metallic, nMinus, ccMinus, wo, wi, specularColor, specularIntensity,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     anisotropy, anisotropyRotation, Li,
   );
@@ -1412,9 +1574,35 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let n = bumpMapSample.normal;
     let clearcoatNormalMapSample = sampleAdjointClearcoatNormalMap(matId, hit.tri, hitBaryVW, n);
     let clearcoatNormal = clearcoatNormalMapSample.normal;
-    let dNormal_dNormalScale = normalMapSample.dNormal_dScale;
-    let dNormal_dBumpScale = bumpMapSample.dNormal_dScale;
+    var dNormal_dNormalScale = normalMapSample.dNormal_dScale;
+    var dClearcoatNormal_dNormalScale = dNormal_dNormalScale;
+    var dNormal_dBumpScale = bumpMapSample.dNormal_dScale;
+    var dClearcoatNormal_dBumpScale = dNormal_dBumpScale;
     let dClearcoatNormal_dClearcoatNormalScale = clearcoatNormalMapSample.dNormal_dScale;
+    let normalScaleBase = adjointMaterialNormalScale(matId);
+    let bumpScaleBase = adjointMaterialBumpScale(matId);
+    let clearcoatNormalScaleBase = adjointMaterialClearcoatNormalScale(matId);
+    let stackH = ADJOINT_NORMAL_SCALE_DERIV_STEP;
+    let stackNormalPlus = sampleAdjointNormalStackWithScales(
+      matId, hit.tri, hitBaryVW, nFace,
+      normalScaleBase + stackH, bumpScaleBase, clearcoatNormalScaleBase,
+    );
+    let stackNormalMinus = sampleAdjointNormalStackWithScales(
+      matId, hit.tri, hitBaryVW, nFace,
+      normalScaleBase - stackH, bumpScaleBase, clearcoatNormalScaleBase,
+    );
+    dNormal_dNormalScale = (stackNormalPlus.normal - stackNormalMinus.normal) / (2.0 * stackH);
+    dClearcoatNormal_dNormalScale = (stackNormalPlus.clearcoatNormal - stackNormalMinus.clearcoatNormal) / (2.0 * stackH);
+    let stackBumpPlus = sampleAdjointNormalStackWithScales(
+      matId, hit.tri, hitBaryVW, nFace,
+      normalScaleBase, bumpScaleBase + stackH, clearcoatNormalScaleBase,
+    );
+    let stackBumpMinus = sampleAdjointNormalStackWithScales(
+      matId, hit.tri, hitBaryVW, nFace,
+      normalScaleBase, bumpScaleBase - stackH, clearcoatNormalScaleBase,
+    );
+    dNormal_dBumpScale = (stackBumpPlus.normal - stackBumpMinus.normal) / (2.0 * stackH);
+    dClearcoatNormal_dBumpScale = (stackBumpPlus.clearcoatNormal - stackBumpMinus.clearcoatNormal) / (2.0 * stackH);
     let pos = ray.origin + ray.direction * hit.t;
     let wo = -ray.direction;
 
@@ -1500,14 +1688,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
-        gNormalScale = gNormalScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+        gNormalScale = gNormalScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dNormalScale, dClearcoatNormal_dNormalScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb,
         );
-        gBumpScale = gBumpScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+        gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dBumpScale, dClearcoatNormal_dBumpScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb,
@@ -1574,14 +1764,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
-        gNormalScale = gNormalScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+        gNormalScale = gNormalScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dNormalScale, dClearcoatNormal_dNormalScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
         );
-        gBumpScale = gBumpScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+        gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dBumpScale, dClearcoatNormal_dBumpScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
@@ -1654,14 +1846,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
-        gNormalScale = gNormalScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+        gNormalScale = gNormalScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dNormalScale, dClearcoatNormal_dNormalScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
         );
-        gBumpScale = gBumpScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+        gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dBumpScale, dClearcoatNormal_dBumpScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
@@ -1749,14 +1943,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
-        gNormalScale = gNormalScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+        gNormalScale = gNormalScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dNormalScale, dClearcoatNormal_dNormalScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
         );
-        gBumpScale = gBumpScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+        gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dBumpScale, dClearcoatNormal_dBumpScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
@@ -1842,14 +2038,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       gAnisotropy = gAnisotropy + lg.anisotropyGrad;
       gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
       if (!isUnlit) {
-        gNormalScale = gNormalScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+        gNormalScale = gNormalScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dNormalScale, dClearcoatNormal_dNormalScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
         );
-        gBumpScale = gBumpScale + directLightNormalScaleGradient(
-          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+        gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
+          dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+          dNormal_dBumpScale, dClearcoatNormal_dBumpScale,
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveAnisotropy, effectiveAnisotropyRotation, Li,
@@ -1915,14 +2113,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         gAnisotropy = gAnisotropy + lg.anisotropyGrad;
         gAnisotropyRotation = gAnisotropyRotation + lg.anisotropyRotationGrad;
         if (!isUnlit) {
-          gNormalScale = gNormalScale + directLightNormalScaleGradient(
-            dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dNormalScale,
+          gNormalScale = gNormalScale + directLightNormalStackScaleGradient(
+            dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+            dNormal_dNormalScale, dClearcoatNormal_dNormalScale,
             wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
             effectiveAnisotropy, effectiveAnisotropyRotation, Li,
           );
-          gBumpScale = gBumpScale + directLightNormalScaleGradient(
-            dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, dNormal_dBumpScale,
+          gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
+            dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
+            dNormal_dBumpScale, dClearcoatNormal_dBumpScale,
             wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
             effectiveAnisotropy, effectiveAnisotropyRotation, Li,

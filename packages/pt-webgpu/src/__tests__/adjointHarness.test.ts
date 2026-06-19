@@ -418,10 +418,14 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let clearcoatNormalMapSample = sampleAdjointClearcoatNormalMap(matId, hit.tri, hitBaryVW, n)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let clearcoatNormal = clearcoatNormalMapSample.normal');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let normalMapSample = sampleAdjointNormalMap(matId, hit.tri, hitBaryVW, nFace)');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dNormal_dNormalScale = normalMapSample.dNormal_dScale');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dNormal_dBumpScale = bumpMapSample.dNormal_dScale');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('var dNormal_dNormalScale = normalMapSample.dNormal_dScale');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('var dClearcoatNormal_dNormalScale = dNormal_dNormalScale');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('var dNormal_dBumpScale = bumpMapSample.dNormal_dScale');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('var dClearcoatNormal_dBumpScale = dNormal_dBumpScale');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dNormal_dNormalScale = (stackNormalPlus.normal - stackNormalMinus.normal) / (2.0 * stackH)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dClearcoatNormal_dBumpScale = (stackBumpPlus.clearcoatNormal - stackBumpMinus.clearcoatNormal) / (2.0 * stackH)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dClearcoatNormal_dClearcoatNormalScale = clearcoatNormalMapSample.dNormal_dScale');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn directLightNormalScaleGradient');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn directLightNormalStackScaleGradient');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn directLightClearcoatNormalScaleGradient');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('adjointClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`d.y == ${ADJOINT_FIELD_NORMAL_SCALE}u`);

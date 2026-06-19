@@ -1148,12 +1148,6 @@ function materialIssueForNormalScale(
   }
   const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
   if (common != null) return common;
-  const nestedNormalMaps: string[] = [];
-  if (material.bumpMap != null) nestedNormalMaps.push('bumpMap');
-  if (material.clearcoatNormalMap != null) nestedNormalMaps.push('clearcoatNormalMap');
-  if (nestedNormalMaps.length > 0) {
-    return materialMapIssue(nestedNormalMaps);
-  }
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
     return materialMapIssue(maps);
@@ -1169,9 +1163,6 @@ function materialIssueForBumpScale(
   }
   const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
   if (common != null) return common;
-  if (material.clearcoatNormalMap != null) {
-    return materialMapIssue(['clearcoatNormalMap']);
-  }
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
     return materialMapIssue(maps);

@@ -2098,7 +2098,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps normalScale on finite-difference when chained through a bump-map tangent frame', () => {
+  it('keeps normalScale on path-replay when chained through a bump-map tangent frame', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2125,15 +2125,8 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-normal',
-      path: 'materials.panel.normalScale',
-      details: expect.objectContaining({
-        finiteDifferenceReason: 'normal',
-        unsupportedMaterialFields: expect.arrayContaining(['bumpMap']),
-      }),
-    }));
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
     session.dispose();
   });
 
@@ -2172,7 +2165,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps normalScale on finite-difference when chained through a clearcoat-normal tangent frame', () => {
+  it('keeps normalScale on path-replay when chained through a clearcoat-normal tangent frame', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2199,19 +2192,12 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-normal',
-      path: 'materials.panel.normalScale',
-      details: expect.objectContaining({
-        finiteDifferenceReason: 'normal',
-        unsupportedMaterialFields: expect.arrayContaining(['clearcoatNormalMap']),
-      }),
-    }));
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
     session.dispose();
   });
 
-  it('keeps bumpScale on finite-difference when chained through a clearcoat-normal tangent frame', () => {
+  it('keeps bumpScale on path-replay when chained through a clearcoat-normal tangent frame', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2238,15 +2224,8 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-normal',
-      path: 'materials.panel.bumpScale',
-      details: expect.objectContaining({
-        finiteDifferenceReason: 'normal',
-        unsupportedMaterialFields: expect.arrayContaining(['clearcoatNormalMap']),
-      }),
-    }));
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
     session.dispose();
   });
 
