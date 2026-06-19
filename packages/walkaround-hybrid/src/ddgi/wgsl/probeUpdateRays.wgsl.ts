@@ -1307,46 +1307,77 @@ fn bvhTraceAnyCastShadow(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) 
   );
 }
 
-fn ddgiTraceShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> f32 {
+fn ddgiTraceShadowVisibility(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> vec3f {
   var walkRay: Ray;
   walkRay.origin = origin;
   walkRay.direction = dir;
   var traveled = 0.0;
-  var tau = 1.0;
+  var visibility = vec3f(1.0);
   let step = max(1e-4, DDGI_TRI_EPSILON * 4.0);
+  let glassExitStep = max(step, gridParams.spacing * 1e-4);
+  let glassAdvanceStep = max(step, gridParams.spacing * 0.01);
 
   for (var layer = 0u; layer < 32u; layer = layer + 1u) {
     let remaining = tMax - traveled;
-    if (remaining <= step || tau <= 0.001) {
-      return clamp(tau, 0.0, 1.0);
+    if (remaining <= step || max(max(visibility.x, visibility.y), visibility.z) <= 0.001) {
+      return clamp(visibility, vec3f(0.0), vec3f(1.0));
     }
 
     let hit = traceSceneFirstHitDdgi(walkRay);
     if (!hit.didHit || hit.dist >= remaining) {
-      return clamp(tau, 0.0, 1.0);
+      return clamp(visibility, vec3f(0.0), vec3f(1.0));
     }
 
     let matId = bvh_materialId[hit.indices.w];
     let mat = materials[matId];
+    let hitPos = walkRay.origin + dir * hit.dist;
+    let isGlass = (mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u;
+    var advance = step;
     if ((mat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) == 0u) {
-      if (skipGlass && (mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u) {
+      if (skipGlass && isGlass) {
         // Let the walk continue through scalar glass, matching the predicate path.
+        advance = glassAdvanceStep;
       } else {
-        tau = tau * ddgiAlphaShadowTransmittanceForHit(hit);
-        if (tau <= 0.001) {
-          return 0.0;
+        let alphaT = ddgiAlphaShadowTransmittanceForHit(hit);
+        if (alphaT >= 0.999) {
+          // Fully transparent alpha-tested/alpha-blended blocker.
+          advance = select(step, glassAdvanceStep, isGlass);
+        } else if (alphaT > 0.001) {
+          visibility = visibility * alphaT;
+        } else if (!isGlass) {
+          return vec3f(0.0);
+        }
+
+        if (isGlass && alphaT < 0.999) {
+          var exitRay: Ray;
+          exitRay.origin = hitPos + dir * glassExitStep;
+          exitRay.direction = dir;
+          let exitHit = traceSceneFirstHitDdgi(exitRay);
+          let distToExit = select(mat.thickness, exitHit.dist, exitHit.didHit && exitHit.dist < remaining);
+          let thicknessMap = ddgiSampleThicknessMapFactorForHit(hit);
+          let scalarThicknessLimit = max(mat.thickness, 1e-4);
+          let mappedThicknessLimit = max(mat.thickness * thicknessMap.x, 0.0);
+          let pathLenLimit = select(scalarThicknessLimit, mappedThicknessLimit, thicknessMap.y > 0.5);
+          let pathLen = clamp(distToExit, 0.0, pathLenLimit);
+          let beerAtten = exp(-mat.attenuationColor * (pathLen / max(1e-4, mat.attenuationDistance)));
+          let glassTransmission = ddgiSampleTransmissionMapForHit(hit, mat.transmission);
+          visibility = visibility * glassTransmission * beerAtten;
+          if (max(max(visibility.x, visibility.y), visibility.z) <= 0.001) {
+            return vec3f(0.0);
+          }
+          advance = glassAdvanceStep;
         }
       }
     }
 
-    traveled = traveled + hit.dist + step;
+    traveled = traveled + hit.dist + advance;
     walkRay.origin = origin + dir * traveled;
   }
 
   if (bvhTraceAnyCastShadow(walkRay.origin, dir, max(0.0, tMax - traveled), skipGlass)) {
-    return 0.0;
+    return vec3f(0.0);
   }
-  return clamp(tau, 0.0, 1.0);
+  return clamp(visibility, vec3f(0.0), vec3f(1.0));
 }
 `; }
 
@@ -1512,13 +1543,13 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
 
   // M13: normal bias proportional to probe spacing (scene-scale-agnostic).
   let normalBias_p = gridParams.spacing * 0.001;
+  var shadowVisibility = vec3f(1.0);
   if (!ddgiLightCastShadowDisabled(light)) {
     let shadowOrig = hitPos + hitNormal * normalBias_p;
-    let shadowT = ddgiTraceShadowTransmittance(shadowOrig, lightDir, dist - normalBias_p, false);
-    if (shadowT <= 0.001) {
+    shadowVisibility = ddgiTraceShadowVisibility(shadowOrig, lightDir, dist - normalBias_p, false);
+    if (max(max(shadowVisibility.x, shadowVisibility.y), shadowVisibility.z) <= 0.001) {
       return vec3f(0.0);
     }
-    coneFalloff = coneFalloff * shadowT;
   }
   var distanceAttenuation = 1.0;
   if (light.decay > 0.01) {
@@ -1533,7 +1564,7 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
     distanceAttenuation = distanceAttenuation * x * x;
   }
   let atten = light.intensity * distanceAttenuation;
-  return light.color * atten * nDotL * coneFalloff;
+  return light.color * atten * nDotL * coneFalloff * shadowVisibility;
 }
 
 fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f) -> vec3f {
@@ -1562,8 +1593,8 @@ fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f) -> vec3f {
 //
 // Estimator (area form, pdf = 1/area ⇒ 1/pdf = area):
 //   Lo += (albedo/π) · Le · (cosSurf · cosLight / dist²) · area · vis
-// Shadow test: opaque first-hit only (glass tint ignored — DDGI is a coarse
-// cache). Bias via the same gridParams.spacing-derived normal offset as the
+// Shadow test: material-aware alpha plus Beer/transmission/thickness glass
+// visibility. Bias via the same gridParams.spacing-derived normal offset as the
 // sun path.
 // -----------------------------------------------------------------
 fn pcgHashToF32Ddgi(seed: u32) -> f32 {
@@ -1610,11 +1641,11 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, albedo: vec3f, seed0: u32) -> vec3f {
     if (cosSurf <= 0.0 || cosLight <= 0.0) { continue; }
 
     let G = (cosSurf * cosLight) / dist2;
-    var shadowT = 1.0;
+    var shadowT = vec3f(1.0);
     if (!castShadowDisabled) {
-      // Alpha-aware shadow walk — stop just short of the light sample.
-      shadowT = ddgiTraceShadowTransmittance(hitPos + n * normalBias, wi, dist - normalBias, false);
-      if (shadowT <= 0.001) { continue; }
+      // Material-aware shadow walk — stop just short of the light sample.
+      shadowT = ddgiTraceShadowVisibility(hitPos + n * normalBias, wi, dist - normalBias, false);
+      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.001) { continue; }
     }
 
     Lo = Lo + albedo * 0.31831 * Le * G * area * shadowT;   // 0.31831 = 1/π

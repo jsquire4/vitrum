@@ -67,9 +67,11 @@ describe('emitter castShadow:false shader gates', () => {
     expect(ddgi).toContain('fn bvhCastShadowDisabledForTri(triIdx: u32) -> bool');
     expect(ddgi).toContain('MATERIAL_FLAG_CAST_SHADOW_DISABLED');
     expect(ddgi).toContain('fn bvhTraceAnyCastShadow(');
-    expect(ddgi).toContain('fn ddgiTraceShadowTransmittance(');
-    expect(ddgi).toContain('let shadowT = ddgiTraceShadowTransmittance(shadowOrig, lightDir, dist - normalBias_p, false)');
-    expect(ddgi).toContain('tau = tau * ddgiAlphaShadowTransmittanceForHit(hit)');
+    expect(ddgi).toContain('fn ddgiTraceShadowVisibility(');
+    expect(ddgi).toContain('shadowVisibility = ddgiTraceShadowVisibility(shadowOrig, lightDir, dist - normalBias_p, false)');
+    expect(ddgi).toContain('shadowT = ddgiTraceShadowVisibility(hitPos + n * normalBias, wi, dist - normalBias, false)');
+    expect(ddgi).toContain('visibility = visibility * alphaT');
+    expect(ddgi).toContain('let glassTransmission = ddgiSampleTransmissionMapForHit(hit, mat.transmission);');
 
     for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
       expect(src).toContain('traceSceneAlphaTransmittanceTextured(');
