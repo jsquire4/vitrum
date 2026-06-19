@@ -832,7 +832,9 @@ fn dBrdf_dClearcoatRoughness(
 
 // ── analytic KHR_materials_sheen partials ───────────────────────────────────
 // Mirrors inverse/brdfAdjoint.ts:dBrdf_dSheen*. This is the additive
-// map-free Charlie sheen lobe only: no sheen maps, frozen sheenColor, frozen wi.
+// Charlie sheen lobe partial. The caller supplies the already-sampled effective
+// sheenColor / sheenRoughness; adjointPass.wgsl multiplies the returned scalar
+// gradients by the readable texture factors before scattering.
 fn adjointCharlieD(nDotH: f32, alpha: f32) -> f32 {
   let invAlpha = 1.0 / max(alpha, 1e-4);
   let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));

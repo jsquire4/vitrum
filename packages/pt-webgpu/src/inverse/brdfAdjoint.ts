@@ -500,8 +500,8 @@ export function evaluateBrdfWithClearcoat(
 
 /**
  * Map-free forward mirror of the additive KHR_materials_sheen lobe. Used by the
- * scalar sheen adjoint FD gate; sheenColor gradients/maps remain finite
- * difference because the pass does not yet replay texture sampling for this lobe.
+ * scalar sheen adjoint FD gate; the production adjoint pass chains readable
+ * sheenColor/sheenRoughness texture factors outside this CPU mirror.
  */
 export function evaluateBrdfWithSheen(
   baseColor: Vec3,

@@ -25,14 +25,15 @@
  * descent: at each internal node a child is chosen with probability
  * proportional to its **importance** `power / max(dist²(x, childAABB), floor)`
  * for the shading point `x`. This is the distance-weighted importance metric of
- * Estévez & Kulla 2018 (without the orientation-cone term, which `buildLightTree`
- * does not yet store). The selection pmf of a leaf is the product of the branch
- * probabilities along the root→leaf path; it sums to 1 over the leaves (a proper
- * probability tree) so it is an unbiased light-selection pdf for RIS/MIS.
+ * Estévez & Kulla 2018; when callers supply `cones`, traversal also applies the
+ * Conty-Estévez orientation-cone term, and omitted cones recover the old
+ * distance-only behaviour. The selection pmf of a leaf is the product of the
+ * branch probabilities along the root→leaf path; it sums to 1 over the leaves
+ * (a proper probability tree) so it is an unbiased light-selection pdf for RIS/MIS.
  *
- * Future SOTA upgrade to full Estévez-Kulla 2018 would add: (1) per-node
- * orientation cones; (2) SAH-like split with receiver-aware importance; (3)
- * adaptive (non-median) split. Tracked separately.
+ * Future SOTA upgrade to full Estévez-Kulla 2018 would add: (1) SAH-like split
+ * with receiver-aware importance; (2) adaptive (non-median) split. Tracked
+ * separately.
  *
  * References:
  *   - Shirley, Smits, Wang, Zimmerman 1996, "Monte Carlo Techniques for
