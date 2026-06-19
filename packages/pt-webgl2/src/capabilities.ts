@@ -91,8 +91,8 @@ export function buildCapabilities(
       ...PT_WEBGL2_BASE_SUPPORT_DETAILS,
       mutations: {
         ...PT_WEBGL2_BASE_SUPPORT_DETAILS.mutations,
-        transform: 'fallback-rebuild',
-        positions: 'fallback-rebuild',
+        transform: 'native',
+        positions: 'native',
         material: 'native',
         emitter: 'native',
         topology: 'fallback-rebuild',

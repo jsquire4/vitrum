@@ -704,7 +704,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       patch,
     );
     if (geometryFast != null) {
-      this.#warnPrimitiveMutationFallback(id, patch, geometryFast.mutationFallback);
+      if (geometryFast.mutationFallback != null) {
+        this.#warnPrimitiveMutationFallback(id, patch, geometryFast.mutationFallback);
+      }
       this.#commitMutationSwap(nextScene, geometryFast);
       return;
     }

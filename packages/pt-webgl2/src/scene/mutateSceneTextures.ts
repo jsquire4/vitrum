@@ -2,7 +2,7 @@ import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { packLightsTexture } from './lightsTexture.js';
-import { hasMeshAreaLightForPrimitive, packMeshAreaLights } from './meshAreaLights.js';
+import { hasMeshAreaLightForPrimitive, packMeshAreaLights, TRI_LIGHT_PIXELS } from './meshAreaLights.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
@@ -10,10 +10,13 @@ import {
   buildRefitSceneGeometryTextures,
   buildSceneGeometryTextures,
   expandAnalyticPrimitiveFallbacks,
+  updateRgba32f,
+  updateRgba32fArray,
   uploadRgba32f,
   uploadRgba32fRect,
 } from './uploadSceneTextures.js';
 import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
+import { squareDim } from './bvhTextureAdapter.js';
 
 export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'baseColorMap',
@@ -324,7 +327,7 @@ export function tryFastPathGeometryMutation(
 ): WebGl2MutationSwap | null {
   if (current == null || !canRefreshGeometryTextures(patch)) return null;
   if (currentMerged != null) {
-    const refit = buildRefitSceneGeometryTextures(gl, nextScene, currentMerged, {
+    const refit = buildRefitSceneGeometryTextures(nextScene, currentMerged, {
       warningPhase: 'mutation',
       warningMethod: 'updatePrimitive',
     });
@@ -337,7 +340,7 @@ export function tryFastPathGeometryMutation(
           phase: 'mutation',
           method: 'updatePrimitive',
           message: `[vitrum/pt-webgl2] ${warning}`,
-          details: { warning, operation: 'geometry-bvh-refit-texture-refresh' },
+          details: { warning, operation: 'geometry-bvh-refit-subimage-update' },
         });
       }
       const vertexColorMaterialIdsChanged = !sameNumberSet(
@@ -351,36 +354,48 @@ export function tryFastPathGeometryMutation(
             { vertexColorMaterialIds: refit.vertexColorMaterialIds },
           )
         : null;
-      const materials = materialsData != null
-        ? uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials')
-        : null;
+      updateRgba32f(gl, current.bvhBounds, refit.bvhData.bounds, refit.bvhData.boundsDim, 'scene BVH bounds');
+      updateRgba32f(gl, current.bvhPosition, refit.bvhData.position, refit.bvhData.positionDim, 'scene BVH position');
+      updateRgba32fArray(
+        gl,
+        current.attributesArray,
+        refit.attrData.data,
+        refit.attrData.dim,
+        refit.attrData.layers,
+        'vertex attributes',
+      );
+      if (materialsData != null) {
+        updateRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
+      }
+
+      const nextMeshLightsData = refit.meshLightsData;
+      const currentMeshLightDim = squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS);
+      let meshLights = current.meshLights;
+      const deleteOldTextures: (WebGLTexture | null)[] = [];
+      if (nextMeshLightsData.data == null) {
+        if (current.meshLights != null) {
+          meshLights = null;
+          deleteOldTextures.push(current.meshLights);
+        }
+      } else if (current.meshLights != null && currentMeshLightDim === nextMeshLightsData.dim) {
+        updateRgba32f(gl, current.meshLights, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
+      } else {
+        meshLights = uploadRgba32f(gl, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
+        deleteOldTextures.push(current.meshLights);
+      }
 
       return {
         textures: withTextureReplacementsForGl(gl, current, {
-          bvhBounds: refit.bvhBounds,
-          bvhPosition: refit.bvhPosition,
-          ...(materials != null ? { materials } : {}),
-          attributesArray: refit.attributesArray,
-          meshLights: refit.meshLights,
-          meshLightCount: refit.meshLightCount,
-          totalEmissiveArea: refit.totalEmissiveArea,
-          totalEmissivePower: refit.totalEmissivePower,
-          triangleCount: refit.triangleCount,
+          meshLights,
+          meshLightCount: nextMeshLightsData.triLightCount,
+          totalEmissiveArea: nextMeshLightsData.totalEmissiveArea,
+          totalEmissivePower: nextMeshLightsData.totalEmissivePower,
+          triangleCount: refit.merged.triangleCount,
           vertexColorMaterialIds: refit.vertexColorMaterialIds,
         }),
         geoPack: refit.merged,
-        deleteOldTextures: [
-          current.bvhBounds,
-          current.bvhPosition,
-          ...(materials != null ? [current.materials] : []),
-          current.attributesArray,
-          current.meshLights,
-        ],
+        deleteOldTextures,
         structuredWarnings,
-        mutationFallback: {
-          fallbackReason: 'geometry-bvh-refit-texture-refresh',
-          nativePatchMissing: 'targeted-gpu-texture-subimage-update',
-        },
       };
     }
   }

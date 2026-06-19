@@ -310,12 +310,19 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
         emitters: [],
         environment: { kind: 'none' },
       };
+      const gl = createMockGl();
+      const texSubImage2D = vi.fn();
+      const texSubImage3D = vi.fn();
+      (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+      (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
 
       const e = await createPTEngine_WebGL2({
-        ...opts(),
+        device: gl,
         onWarning: (warning) => structured.push(warning),
       });
       e.setScene(scene);
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialSubImage3D = texSubImage3D.mock.calls.length;
 
       const before = e._debugGeoPack!.positions[1 * 4 + 0]!; // v1 solved X after initial pose
 
@@ -334,15 +341,10 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
       expect(before).toBeCloseTo(4);  // v1 was bone-1-only = +4
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('updatePrimitive("sk3") fields [bones]'),
-      )).toHaveLength(1);
-      const fallbackWarning = structured.find((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
-      expect(fallbackWarning?.details).toEqual({
-        primitiveId: 'sk3',
-        fields: ['bones'],
-        fallbackReason: 'animation-geometry-rebuild',
-        nativePatchMissing: 'targeted-skinned-or-morph-geometry-update',
-        animationFields: ['bones'],
-      });
+      )).toHaveLength(0);
+      expect(structured.some((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toBe(false);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(2);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
 
       e.dispose();
     } finally {

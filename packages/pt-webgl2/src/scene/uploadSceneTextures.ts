@@ -25,7 +25,7 @@ import {
   refitBvhBounds,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
-import { packBvhTextureData, uploadBvhTextures } from './bvhTextureAdapter.js';
+import { packBvhTextureData, uploadBvhTextures, type BvhTextureData } from './bvhTextureAdapter.js';
 import { allocGlTexture } from '../gl/texAlloc.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { packAttributesArray } from './attributesTextureArray.js';
@@ -62,14 +62,9 @@ export interface SceneGeometryTexturesBuild {
 }
 
 export interface RefitSceneGeometryTexturesBuild {
-  readonly bvhBounds: WebGLTexture;
-  readonly bvhPosition: WebGLTexture;
-  readonly attributesArray: WebGLTexture;
-  readonly meshLights: WebGLTexture | null;
-  readonly meshLightCount: number;
-  readonly totalEmissiveArea: number;
-  readonly totalEmissivePower: number;
-  readonly triangleCount: number;
+  readonly bvhData: BvhTextureData;
+  readonly attrData: ReturnType<typeof packAttributesArray>;
+  readonly meshLightsData: ReturnType<typeof packMeshAreaLights>;
   readonly merged: WorldSpaceMergeResult;
   readonly vertexColorMaterialIds: ReadonlySet<number>;
   readonly warnings: readonly string[];
@@ -205,7 +200,6 @@ function canRefitAgainstCurrentTopology(
 }
 
 export function buildRefitSceneGeometryTextures(
-  gl: WebGL2RenderingContext,
   scene: Scene,
   currentMerged: WorldSpaceMergeResult,
   opts?: {
@@ -242,26 +236,12 @@ export function buildRefitSceneGeometryTextures(
 
   const bvhData = packBvhTextureData(refitMerged);
   const meshLightsData = packMeshAreaLights(scene, refitMerged);
-  const meshLights =
-    meshLightsData.data != null ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights') : null;
-  const attributesArray = uploadRgba32fArray(
-    gl,
-    geometry.attrData.data,
-    geometry.attrData.dim,
-    geometry.attrData.layers,
-    'vertex attributes',
-  );
   const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, refitMerged);
 
   return {
-    bvhBounds: uploadRgba32f(gl, bvhData.bounds, bvhData.boundsDim, 'scene BVH bounds'),
-    bvhPosition: uploadRgba32f(gl, bvhData.position, bvhData.positionDim, 'scene BVH position'),
-    attributesArray,
-    meshLights,
-    meshLightCount: meshLightsData.triLightCount,
-    totalEmissiveArea: meshLightsData.totalEmissiveArea,
-    totalEmissivePower: meshLightsData.totalEmissivePower,
-    triangleCount: refitMerged.triangleCount,
+    bvhData,
+    attrData: geometry.attrData,
+    meshLightsData,
     merged: refitMerged,
     vertexColorMaterialIds,
     warnings: meshLightsData.warnings,
@@ -619,6 +599,40 @@ export function uploadRgba32f(
   });
 }
 
+function guardTextureSubUpload(gl: WebGL2RenderingContext, resourceName: string): void {
+  if (gl.isContextLost()) {
+    throw new Error(
+      `pt-webgl2: WebGL context lost — cannot update ${resourceName} texture`,
+    );
+  }
+}
+
+/** In-place replacement for an existing square RGBA32F sampler2D payload. */
+export function updateRgba32f(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Float32Array,
+  dim: number,
+  resourceName: string,
+): void {
+  guardTextureSubUpload(gl, resourceName);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, dim, dim, gl.RGBA, gl.FLOAT, data);
+}
+
+/** In-place replacement for an existing square RGBA32UI sampler2D payload. */
+export function updateRgba32ui(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Uint32Array,
+  dim: number,
+  resourceName: string,
+): void {
+  guardTextureSubUpload(gl, resourceName);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, dim, dim, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data);
+}
+
 /** Non-square RGBA32F sampler2D (width×height) — for the equirect map / CDF slabs. */
 export function uploadRgba32fRect(
   gl: WebGL2RenderingContext,
@@ -650,4 +664,30 @@ export function uploadRgba32fArray(
     data,
     resourceName,
   });
+}
+
+/** In-place replacement for an existing RGBA32F sampler2DArray payload. */
+export function updateRgba32fArray(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Float32Array,
+  dim: number,
+  layers: number,
+  resourceName: string,
+): void {
+  guardTextureSubUpload(gl, resourceName);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+  gl.texSubImage3D(
+    gl.TEXTURE_2D_ARRAY,
+    0,
+    0,
+    0,
+    0,
+    dim,
+    dim,
+    layers,
+    gl.RGBA,
+    gl.FLOAT,
+    data,
+  );
 }

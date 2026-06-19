@@ -820,18 +820,18 @@ const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
  *  swaps update only the affected GL scene textures. Mesh-area emitter edits
  *  refresh both the folded emissive material texture and the mesh-light NEE
  *  texture without rebuilding the merged BVH.
- *  Geometry/TLAS content edits still fallback-rebuild: transform/positions/
- *  animation patches rebuild the WebGL2 BVH/attribute geometry textures, while
- *  preserving unrelated material/light/environment/atlas textures. Primitive
- *  layout changes that alter material-slot/color or analytic fallback shape still
+ *  Same-topology transform/positions/normal/uv/tangent/color edits refit BVH
+ *  bounds on the retained node topology and use texSubImage* writes into existing
+ *  BVH position/bounds, material-flag, and attribute textures. Primitive layout
+ *  changes that alter topology, material slots, or analytic fallback shape still
  *  use a full scene-texture repack. Topology add/remove rebuilds the WebGL2
  *  geometry/material/atlas/BVH texture pack for list edits after applying the
- *  same analytic-to-mesh fallback tessellation used by setScene(). Resize is native:
- *  it reallocates render targets and resets accumulation without scene/BVH work.
- *  Lighting is unsupported. */
+ *  same analytic-to-mesh fallback tessellation used by setScene(). Resize is
+ *  native: it reallocates render targets and resets accumulation without
+ *  scene/BVH work. Lighting is unsupported. */
 const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
-  transform: 'fallback-rebuild',
-  positions: 'fallback-rebuild',
+  transform: 'native',
+  positions: 'native',
   material: 'native',
   emitter: 'native',
   topology: 'fallback-rebuild',
@@ -1056,9 +1056,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       materials: PT_WEBGL2_MATERIALS,
       shadows: PT_WEBGL2_SHADOWS,
       denoisers: PT_WEBGL2_DENOISERS,
-      // buildCapabilities() mirrors this matrix: scene/content edits are
-      // fallback-rebuild (full scene-texture/BVH repack), while resize is a
-      // native render-target realloc/reset path.
+      // buildCapabilities() mirrors this matrix: same-topology transform and
+      // position/attribute edits are native subimage updates; topology/list
+      // edits still fallback-rebuild. Resize is a native render-target
+      // realloc/reset path.
       mutations: PT_WEBGL2_MUTATIONS,
     },
     methodPromises: {

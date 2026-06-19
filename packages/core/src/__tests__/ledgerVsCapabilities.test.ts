@@ -59,17 +59,18 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     );
   });
 
-  it('ledger mutations grade: scalar material/emitter/env edits and resize are native; geometry rows stay fallback', () => {
+  it('ledger mutations grade: scalar material/emitter/env and same-topology geometry edits are native; topology rows stay fallback', () => {
     // pt-webgl2 updates scalar material slots, emitter textures (including the
-    // mesh-area folded-material path), and environment textures without
-    // rebuilding the merged BVH. Geometry rows still rebuild the BVH/attribute
-    // texture pack, but preserve unrelated material/light/env/atlas textures.
+    // mesh-area folded-material path), environment textures, and same-topology
+    // transform/position/attribute payloads without rebuilding or reallocating
+    // the merged BVH texture set. Topology/list edits still rebuild the texture
+    // pack because there is no primitive-list splice yet.
     const { mutations } = ledger.supportDetails;
     expect(mutations.material).toBe('native');
     expect(mutations.environment).toBe('native');
     expect(mutations.resize).toBe('native');
-    expect(mutations.transform).toBe('fallback-rebuild');
-    expect(mutations.positions).toBe('fallback-rebuild');
+    expect(mutations.transform).toBe('native');
+    expect(mutations.positions).toBe('native');
     expect(mutations.emitter).toBe('native');
     expect(mutations.topology).toBe('fallback-rebuild');
     expect(mutations.addPrimitive).toBe('fallback-rebuild');
