@@ -844,8 +844,9 @@ export function dBrdf_dClearcoat(
 
 /**
  * Analytic ∂(evaluateBrdfFull)_c / ∂clearcoatRoughness for the additive
- * map-free KHR_materials_clearcoat lobe. This mirrors `evalClearcoatLobe` with
- * frozen directions and no clearcoat normal map.
+ * KHR_materials_clearcoat lobe. This mirrors `evalClearcoatLobe` with frozen
+ * directions; callers pass the effective clearcoat normal when a clearcoat
+ * normal map has already been replayed.
  */
 export function dBrdf_dClearcoatRoughness(
   clearcoat: number,

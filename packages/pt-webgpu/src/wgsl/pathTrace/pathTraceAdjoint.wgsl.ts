@@ -756,7 +756,8 @@ fn dBrdf_dAnisotropyRotation(
 
 // ── analytic KHR_materials_clearcoat partials ───────────────────────────────
 // Mirrors inverse/brdfAdjoint.ts:dBrdf_dClearcoat*. This is the additive
-// clearcoat lobe only: no clearcoat normal map, no clearcoat maps, frozen wi.
+// clearcoat lobe only: caller supplies the already-replayed clearcoat normal
+// and scalar clearcoat maps chain their local factors outside this helper.
 fn adjointClearcoatLobe(
   clearcoat: f32,
   clearcoatRoughness: f32,

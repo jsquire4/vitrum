@@ -184,10 +184,11 @@ export interface AdjointGradientRequest {
  *    the diffuse/specular partition and the specular Fresnel colour for
  *    non-metallic and partially-metallic surfaces; fully metallic surfaces still
  *    source F0 from baseColor and therefore have zero derivative here.
- *  - `clearcoat`, `clearcoatRoughness` — KHR_materials_clearcoat direct lobe
- *    controls. Clearcoat/clearcoatRoughness maps replay as local scalar
- *    chain-rule factors; clearcoatNormalMap stays on finite difference until
- *    the adjoint pass mirrors normal-map sampling and path/visibility effects.
+   *  - `clearcoat`, `clearcoatRoughness`, `clearcoatNormalScale` —
+   *    KHR_materials_clearcoat direct lobe controls. Clearcoat/
+   *    clearcoatRoughness maps replay as local scalar chain-rule factors;
+   *    clearcoatNormalMap replays its independent tangent-frame normal for the
+   *    additive clearcoat lobe.
  *  - `sheen`, `sheenColor`, `sheenRoughness` — KHR_materials_sheen direct lobe
  *    controls through the additive Charlie lobe. Sheen color/roughness maps
  *    replay as local chain-rule factors.
@@ -207,13 +208,14 @@ export interface AdjointGradientRequest {
  *  - baseColorMap/COLOR_0, roughnessMap/metallicMap, AO, specular
  *    color/intensity maps, clearcoat/sheen maps, iridescence/thickness maps,
  *    anisotropy maps, and light maps are replayed as local chain-rule factors
- *    for the lit BRDF / primary-hit emission domains above. Additive primary-hit
+   *    clearcoat-normal maps for the clearcoat lobe, and light maps are replayed
+   *    as local chain-rule factors for the lit BRDF / primary-hit emission domains
+   *    above. Additive primary-hit
  *    emissiveMap/lightMap terms are allowed on BRDF/unlit targets because they
- *    do not change the derivative of those optimized fields; dLossDRendered
- *    already contains their forward contribution. Alpha, transmission,
- *    normal/bump, displacement, and
- *    clearcoat-normal maps remain finite-difference fallbacks until their
- *    visibility/transport/normal terms are mirrored.
+   *    do not change the derivative of those optimized fields; dLossDRendered
+   *    already contains their forward contribution. Alpha, transmission, and
+   *    displacement maps remain finite-difference fallbacks until their
+   *    visibility/transport/geometry terms are mirrored.
  *  - `anisotropy` / `anisotropyRotation` — map-free scalar anisotropic-GGX
  *    controls through a local symmetric derivative of the direct-light specular
  *    lobe. Anisotropy maps replay the B-channel strength multiplier and RG
@@ -258,6 +260,7 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'envMapIntensity',
   'normalScale',
   'bumpScale',
+  'clearcoatNormalScale',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
 const ADJOINT_MAPPED_EMISSION_EPS = 1e-8;
@@ -273,7 +276,7 @@ const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'scatteringCoefficientRGB',
 ]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
-const PATH_REPLAY_NORMAL_ONLY_FIELDS = new Set(['clearcoatNormalScale']);
+const PATH_REPLAY_NORMAL_ONLY_FIELDS = new Set<string>();
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -1057,6 +1060,9 @@ function pathReplayMaterialIssue(
   if (field === 'bumpScale') {
     return materialIssueForBumpScale(material);
   }
+  if (field === 'clearcoatNormalScale') {
+    return materialIssueForClearcoatNormalScale(material);
+  }
   if (iridescenceCoupled) {
     return {
       message: 'another optimized parameter on this material targets iridescence, which is coupled to this BRDF field',
@@ -1158,8 +1164,11 @@ function materialIssueForNormalScale(
   }
   const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
   if (common != null) return common;
-  if (material.bumpMap != null) {
-    return materialMapIssue(['bumpMap']);
+  const nestedNormalMaps: string[] = [];
+  if (material.bumpMap != null) nestedNormalMaps.push('bumpMap');
+  if (material.clearcoatNormalMap != null) nestedNormalMaps.push('clearcoatNormalMap');
+  if (nestedNormalMaps.length > 0) {
+    return materialMapIssue(nestedNormalMaps);
   }
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
@@ -1175,6 +1184,27 @@ function materialIssueForBumpScale(
     return { message: 'unlit materials do not evaluate the bump-mapped direct-light lobe', details: { reason: 'unlit' } };
   }
   const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
+  if (common != null) return common;
+  if (material.clearcoatNormalMap != null) {
+    return materialMapIssue(['clearcoatNormalMap']);
+  }
+  const maps = listPathReplayTransportOrGeometryMaps(material);
+  if (maps.length > 0) {
+    return materialMapIssue(maps);
+  }
+  return null;
+}
+
+function materialIssueForClearcoatNormalScale(
+  material: MaterialSpec,
+): PathReplayMaterialIssue | null {
+  if (material.shadingModel === 'unlit') {
+    return {
+      message: 'unlit materials do not evaluate the clearcoat direct-light lobe',
+      details: { reason: 'unlit' },
+    };
+  }
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
@@ -1401,7 +1431,6 @@ function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string
   if (m.transmissionMap != null) out.push('transmissionMap');
   if (m.thicknessMap != null) out.push('thicknessMap');
   if (m.alphaMap != null) out.push('alphaMap');
-  if (m.clearcoatNormalMap != null) out.push('clearcoatNormalMap');
   if (m.displacementMap != null) out.push('displacementMap');
   return out;
 }
