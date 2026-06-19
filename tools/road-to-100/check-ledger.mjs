@@ -105,9 +105,39 @@ for (const [stalePhrase, message] of [
   ["runtime layout \"is not the interleaved per-pixel layout", "stale B3 legacy planar-layout quote"],
   ["dispatches 0 workgroups", "stale C1 PPG no-op dispatch text"],
   ["pre-alpha prototype", "stale C1 pt-webgpu maturity text"],
+  ["### C1. CLAUDE.md \"What's done\" section is at least one major work-package behind", "stale C1 CLAUDE.md heading"],
+  ["### C2. `memory/in-flight-sweep.md` is mostly stale and misleading", "stale C2 memory heading"],
+  ["### C3. CHANGELOG.md likely missing recent entries", "stale C3 changelog heading"],
+  ["### C4. Per-package READMEs may overclaim", "stale C4 README heading"],
 ]) {
   if (items.includes(stalePhrase)) {
     fail(`items_to_fix.md contains ${message}`);
+  }
+}
+if (!items.includes("### C1-C4. Documentation truthfulness sweep — closed/source-verified")) {
+  fail("items_to_fix.md must retain the reconciled Section C source summary");
+}
+
+const agentBrief = await readText("AGENTS.md");
+const claudeBrief = await readText("CLAUDE.md");
+for (const [docName, docText] of [
+  ["AGENTS.md", agentBrief],
+  ["CLAUDE.md", claudeBrief],
+]) {
+  if (!docText.includes("GitNexus is intentionally not part of the operating workflow for this repo right now.")) {
+    fail(`${docName} must retain the GitNexus-disabled operating note`);
+  }
+  for (const stalePhrase of [
+    "MUST run impact analysis before editing any symbol",
+    "NEVER edit a function, class, or method without first running `impact`",
+    "A4-progressive (true Hachisuka SPPM — current is streaming-window)",
+    "`TextureRef.texCoord` on pt-webgl2 (documented unkept promise)",
+    "H-residue (H5 BDPT host driver",
+    "/home/jsquire4/.claude/projects/-home-jsquire4-projects-vitrum/memory/",
+  ]) {
+    if (docText.includes(stalePhrase)) {
+      fail(`${docName} contains stale agent-brief text: ${stalePhrase}`);
+    }
   }
 }
 if (!items.includes("### B3. Neural denoiser layout — closed/source-verified")) {

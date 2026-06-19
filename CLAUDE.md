@@ -24,13 +24,12 @@
 - `walkaround-rc` — Radiance Cascades subsystem (cascade pyramid + dispatch + receiver)
 - `shared-bvh`, `shared-samplers`, `shared-denoisers`, `scene-lighting`, `stained-glass-extensions`, `dev` (debug overlays)
 
-## Where things stand (2026-06-10)
+## Where things stand (2026-06-19)
 
-- **Maturity headline: behavioral gate 26/26 configs non-black, zero GPU errors on lavapipe.** Release-candidate track for `engine` / `walkaround-hybrid` / `pt-webgl2` / `pt-webgpu`. SVGF-real intentionally `unsupported` on both converged backends (regime mismatch). In-repo naga shader compile gate (51 WGSL shaders, `npm run shader-gate`). CI: typecheck + test + lint + shader-gate + behavioral-gate.
-- **Trust-remediation rounds R7a–R7d (2026-06-10, commits a1b85b1–1a8ab08) key landings:** behavioral gate permanent (26/26); anisotropic GGX live on pt-webgpu; `onError` engine error surface (silent-GPU-error class dead); `@vitrum/gltf-adapter` new package (glTF 2.0 → core Scene); `captureFrame` pixel-readback API; `pickPrimitive` real on all 3 backends; `CameraLike`/`QualityTier`/presets public; examples/ tree + debugging runbook; IES dead chain removed; spectral×photon-map gather spectralized; giState v4 (PPG warm restore); SPPM streaming-window corrected.
-- **v1-closure campaign (2026-06-10, commits 6e90443–caab499) key landings:** SPPM photon gather (A4, streaming-window); Preetham sky (pt-webgpu); skinning native both PT backends; tonemap/exposure/outputColorSpace on all 3 backends (BEHAVIOR CHANGE: default `aces@1.0@sRGB` — migrate with `tonemap:'none'`); BDPT estimator coherence both backends; env pillar complete on walkaround; RC finished (A7); lifecycle hardening; in-repo shader compile gate.
-- **Authoritative sources:** open bugs → `items_to_fix.md` §H; pending GPU validation → `HARDWARE-VALIDATION-NEEDS.md` V28-B; road-to-100 priorities → `plan/road-to-100.md`; per-session state → memory dir `MEMORY.md`.
-- **Remaining work tail (verified, not papered over):** (1) A4-progressive (true Hachisuka SPPM — current is streaming-window); (2) A6 NRC semantics (distillation target + spreadC); (3) A8 GRIS default (biased default, GRIS off-default); (4) A10 production neural weights (starter only shipped); (5) B2 DDGI diffuse-only bounce; (6) glass refracted GI (B1 tail); (7) `TextureRef.texCoord` on pt-webgl2 (documented unkept promise); (8) V28-B GPU A/B recapture (all render-changing landings — improvement confirmations, not regression suspects); (9) H-residue (H5 BDPT host driver, H21/H24-cluster/H32/H34/H35). Full ledger: `plan/road-to-100.md`.
+- **Maturity headline:** release-candidate track for `engine`, `walkaround-hybrid`, `pt-webgl2`, and the peer `pt-webgpu` backend, with feature-level fidelity grades in `plan/renderer-fidelity-matrix.md`. The in-repo gates include typecheck, Vitest, proof-check, shader-gate, glTF sweeps, committed dzn status artifacts, and the pre-push WSL T1 GPU smoke.
+- **Recent Road-to-100 closure shape:** the old June 10 tail list is stale. A4 progressive SPPM, PPG dispatch/guiding, NRC structural/warm-up gates, GRIS opt-in/default-policy truthfulness, glTF texture/source-path diagnostics, pt-webgl2 `TextureRef.texCoord`, H25/H28/H29, and the main H-residue clusters have been reworked and reconciled in `plan/road-to-100.md` and `items_to_fix.md`.
+- **Honest remaining tail:** full analytic adjoint parity is still scoped; transparent ReSTIR/GI transport remains approximate; neural still needs a production checkpoint and quality A/B; NRC/neural default-tier decisions remain; multi-vertex BDPT is research-mode; and broad V28-B/material-furnace/rich-material/glTF/mutation/browser-adapter proof work remains before promotion claims are final.
+- **Authoritative sources:** `plan/road-to-100.md`, `plan/road-to-100-gap-ledger-2026-06-11.md`, and `items_to_fix.md`. Treat old rows as candidate backlog until source-read verified; do not reopen a closed item from prose alone.
 - **THREE removal: COMPLETE (2026-06-09).** Runtime engines consume `@vitrum/core` scenes only.
 
 Treat open items as real, prioritise honestly. Don't paper over with band-aids that suppress symptoms.
@@ -68,52 +67,15 @@ Mechanical checks: **`npm run typecheck`** (TypeScript, all packages with a `typ
 
 ## Memory location
 
-This project's per-session memory: `/home/jsquire4/.claude/projects/-home-jsquire4-projects-vitrum/memory/` (read `MEMORY.md` there for the index).
+This project's per-session memory: `/home/jsquire4/.Codex/projects/-home-jsquire4-projects-vitrum/memory/` (read `MEMORY.md` there for the index).
 
 ## When in doubt
 
 The user's pattern: ask one question at a time, surface options before locking decisions, don't sandbag with half-implementations. They tolerate longer timelines for better outcomes. They do not want SOTA-cargo-cult — every proposed technique needs verified-feasibility (public source, language portable to web, not RTX-hardware-locked) before scheduling. See `MEMORY.md` index in the memory directory for the full set of working preferences.
 
 <!-- gitnexus:start -->
-# GitNexus — Code Intelligence
+# GitNexus disabled in current Codex work
 
-This project is indexed by GitNexus as **vitrum** (8526 symbols, 19033 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
-
-> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
-
-## Always Do
-
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
-- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use `query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
-
-## Never Do
-
-- NEVER edit a function, class, or method without first running `impact` on it.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
-- NEVER commit changes without running `detect_changes()` to check affected scope.
-
-## Resources
-
-| Resource | Use for |
-|----------|---------|
-| `gitnexus://repo/vitrum/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/vitrum/clusters` | All functional areas |
-| `gitnexus://repo/vitrum/processes` | All execution flows |
-| `gitnexus://repo/vitrum/process/{name}` | Step-by-step execution trace |
-
-## CLI
-
-| Task | Read this skill file |
-|------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+GitNexus is intentionally not part of the operating workflow for this repo right now. The environment has been unreliable, and the active Road-to-100 goal requires direct source reads, grep/find, tests, shader gates, and WSL GPU validation instead. Do not use GitNexus impact/query/detect_changes instructions as a gate for edits or commits until the user explicitly re-enables that workflow.
 
 <!-- gitnexus:end -->

@@ -74,32 +74,12 @@ during the items-to-fix landings. Descriptions kept below for posterity.
 All four items closed during the items-to-fix landings + W13 documentation
 reconciliation. Descriptions kept below for posterity.
 
-### C1. CLAUDE.md "What's done" section is at least one major work-package behind
+### C1-C4. Documentation truthfulness sweep — closed/source-verified
 
-- **Where:** `/home/jsquire4/projects/vitrum/CLAUDE.md:20-25` says "Phase 6 (Sprints 0-13) complete; Phase 7 walkaround-hybrid (Sprints 14-18) shipped." It does not mention the "M7 DDGI Coherent Physical Model" work (verified shipped via comment at `probeUpdateRays.wgsl.ts:546-548` and `applyDDGIShading.ts:145-148`) which moved albedo/π baking from producer to receiver and restored per-frame `randomRotation` (verified at `probeUpdatePass.ts:667-669`).
-- **Where:** lines 29-37 list "load-bearing bugs the green test suite does not catch":
-  - "DDGI receiver double-applies albedo and 1/π" — **fixed** per A1 of the old sweep (probeUpdateRays.wgsl.ts:549 no longer premultiplies).
-  - "DDGI atlas border padding is allocated but never written" — **fixed**; `borderIrrPipeline` and `borderVisPipeline` exist (`probeUpdatePass.ts:133-135, 317-379`).
-  - "What ships as SVGF is à-trous + a variance scalar lookup" — **fixed**; `svgfReprojection.wgsl.ts`, `svgfVarianceFromMoments.wgsl.ts`, `svgf7x7SpatialFallback.wgsl.ts` exist in `packages/shared-denoisers/src/wgsl/` and `svgfRealWebGPU.ts` uses dedicated `r32float` depth textures.
-  - "PPG enable hard-throws at pipeline compile" — **closed/source-verified**; PPG now flows through `PPGUpdatePass`, computes a positive `wgCount`, and dispatches `dispatchWorkgroups(wgCount, 1, 1)`.
-  - "`pt-webgpu` glossy BSDF" — **closed/source-verified**; the path-trace BSDF uses Heitz 2018 VNDF sampling/PDFs and the remaining pt-webgpu work is fidelity promotion/evidence, not this old glossy mismatch.
-  - "Neural denoiser is decorative scaffolding (no 'neural' mode)" — **closed/source-verified for runtime wiring**; `'neural'` is a real opt-in denoiser mode, B3 verifies the interleaved input pack, and the remaining neural Road tail is production checkpoint + quality A/B.
-- **Fix:** Rewrite the "What's done" section to reflect M7 (DDGI coherent physical model), the new SVGF-real pipeline, the shipped `HybridEngine.updateLighting()` and `HybridEngine.setSize()` methods (lines 813, 882). Rewrite the "Where things actually stand" bullet list to only contain bugs that survive re-verification (the A/B sections of this file).
-
-### C2. `memory/in-flight-sweep.md` is mostly stale and misleading
-
-- **Where:** `~/.claude/projects/-home-jsquire4-projects-vitrum/memory/in-flight-sweep.md`. Direct verification on 2026-05-17 (this audit) confirmed that at least 9 of the ~12 "verified by direct read" bugs listed there have since been fixed: DDGI double-albedo, atlas border, randomRotation freeze, RC GI emissive bypass, ReSTIR p̂ inconsistency across RIS/temporal/spatial, SVGF depth channel mismatch, SVGF variance bindings, equiAngular PDF mismatch, light-tree mislabeling, bdptConnectionMIS naming, nodePowerPrefixSum naming.
-- **Fix:** Either delete the file or replace its contents with a one-line redirect: "See `vitrum/items_to_fix.md` and `stainedGlass/items_to_fix.md` for current verified state. The 2026-05-11 audit's findings have been largely closed." Optionally archive the old contents under `memory/archive/in-flight-sweep-2026-05-11.md`.
-
-### C3. CHANGELOG.md likely missing recent entries
-
-- **Where:** `CHANGELOG.md`. Verify: when was the last entry written? Compare to the M7 commit messages.
-- **Fix:** Walk `git log` since the last CHANGELOG entry; add bullets for the M7 DDGI work, `updateLighting`, `setSize`, the SVGF-real pipeline, and any other Phase-7+ shipped work.
-
-### C4. Per-package READMEs may overclaim
-
-- **Sample:** `packages/walkaround-hybrid/README.md:5` says "WebGPU **ReSTIR DI** walkaround engine with **DDGI** probe updates and atlas sampling. **Radiance Cascades (RC)** are implemented under `src/rc/` for standalone dispatch and material-wrapper flows; composition back into `HybridEngine`'s shade pass is tracked (see file header and plan/walkaround-without-three.md)." — This is **honest** (verified). No change required.
-- **Fix needed elsewhere:** Audit each package's README for similar honest-vs-overclaim distinctions. Headline test: "if a new consumer reads the README, will they expect a feature that isn't actually wired into the engine?"
+- **C1** — `CLAUDE.md` has been reconciled against the current Road state. The stale June 10 remaining-tail list (A4-progressive still streaming-window, PPG/NRC/GRIS/B2/H-residue as old implementation blockers, and pt-webgl2 `TextureRef.texCoord` as an unkept promise) is gone; the file now points agents at `plan/road-to-100.md`, `plan/road-to-100-gap-ledger-2026-06-11.md`, and this ledger, with the remaining work framed as adjoint/transparent-transport/learned-system/default-tier/proof-promotion tails.
+- **C2** — the old Claude memory sweep is no longer authoritative for this repo. Current repo-local onboarding (`AGENTS.md` + `CLAUDE.md`) points at the Road and current ledger, and the GitNexus instruction block has been replaced with a direct-source-read note because GitNexus is disabled for current Codex work.
+- **C3** — `CHANGELOG.md` has a current `[Unreleased]` feature/fix stream through the June 2026 implementation waves. Ordinary ledger-source reconciliation commits do not require a feature changelog entry; implementation-changing waves still should.
+- **C4** — per-package README overclaim drift was handled by W13 and later Road source checks. The current targeted scan did not find stale "pre-alpha", "not wired", "zero non-test consumer", or PPG hard-throw claims in package READMEs; future overclaim findings should be promoted only after a direct source/readme comparison.
 
 ---
 
