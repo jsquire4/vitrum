@@ -271,8 +271,8 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   /**
    * Mesh BVH traversal backend. Default `'binary'` uses the canonical binary BVH.
    * `'cwbvh-closest-experimental'` opts the full-tier megakernel into the
-   * uploaded compressed-wide BVH forest for closest-hit traversal while keeping
-   * binary any-hit shadows for `castShadow:false` predicate parity.
+   * uploaded compressed-wide BVH forest for closest-hit and any-hit mesh
+   * traversal while preserving `castShadow:false` shadow predicate parity.
    */
   readonly bvhTraversal?: PtWebgpuBvhTraversalMode;
   /** BDPT tuning — read only when {@link bdpt} is `true`. */
@@ -2466,12 +2466,12 @@ export const createPTEngine_WebGPU: EngineFactory<
       phase: 'construction',
       method: 'createPTEngine_WebGPU',
       message:
-        "[vitrum/pt-webgpu] bvhTraversal:'cwbvh-closest-experimental' routes full-tier closest-hit mesh traversal through the uploaded CWBVH forest. " +
-        'Binary BVH any-hit remains active for shadow/castShadow predicate parity; renderer parity/performance A/B is still required before default promotion.',
+        "[vitrum/pt-webgpu] bvhTraversal:'cwbvh-closest-experimental' routes full-tier closest-hit and any-hit mesh traversal through the uploaded CWBVH forest. " +
+        'The any-hit wrapper preserves castShadow:false predicate parity; renderer parity/performance A/B is still required before default promotion.',
       details: {
         traversal: 'cwbvh-closest-experimental',
         closestHit: 'cwbvh',
-        anyHit: 'binary',
+        anyHit: 'cwbvh-cast-shadow-aware',
         requiredStorageBuffersPerStage: opts.restirPtReuse === true
           ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
           : PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,

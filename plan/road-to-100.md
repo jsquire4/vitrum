@@ -1928,14 +1928,14 @@ old root-zero wrappers, so pt-webgpu's uploaded multi-BLAS CWBVH forest can be
 addressed by the remapped TLAS BLAS roots instead of being limited to node 0.
 Same-day renderer opt-in follow-up: `PTEngineWebGPUOptions.bvhTraversal:
 'cwbvh-closest-experimental'` now composes a full-tier shader variant that binds
-the five uploaded CWBVH buffers, routes mesh closest-hit traversal through the
-remapped wide-node forest, advertises `pt-webgpu-cwbvh-closest-traversal`, emits
-a structured experimental warning, and keeps the default full-tier shader and
-34-buffer device floor unchanged. Binary any-hit traversal intentionally remains
-active for shadow/castShadow predicate parity.
+the five uploaded CWBVH buffers, routes mesh closest-hit and shadow/visibility
+any-hit traversal through the remapped wide-node forest, advertises
+`pt-webgpu-cwbvh-closest-traversal`, emits a structured experimental warning,
+and keeps the default full-tier shader and 34-buffer device floor unchanged. The
+CWBVH any-hit wrapper preserves `triShadowCastDisabled`, so `castShadow:false`
+geometry remains camera-visible but non-occluding.
 
-**Remaining work:** predicate-aware CWBVH any-hit or an explicitly permanent
-binary-shadow fallback policy; renderer binary-vs-CWBVH traversal parity tests; and
+**Remaining work:** renderer binary-vs-CWBVH traversal parity tests; and
 equal-scene throughput/memory A/B before any renderer default promotion. Becomes
 decisive if/when a WebGPU ray-tracing extension ships (whole-field handicap
 today: no RT cores in the browser for anyone).

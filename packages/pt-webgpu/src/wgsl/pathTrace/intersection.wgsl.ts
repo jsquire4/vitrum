@@ -279,6 +279,75 @@ fn traceMeshCwbvhClosest(
   return true;
 }
 
+fn traceMeshCwbvhAny(
+  ray: Ray,
+  tMin: f32,
+  tMaxBound: f32,
+  rootNode: u32,
+) -> bool {
+  let nodeCount = arrayLength(&cwbvhChildCount);
+  if (nodeCount == 0u || rootNode >= nodeCount) {
+    return false;
+  }
+
+  var stack: array<u32, CWBVH_INTERSECT_STACK_DEPTH>;
+  var stackPtr = 0u;
+  stack[stackPtr] = rootNode;
+  stackPtr = stackPtr + 1u;
+  let invDir = safeInvDir(ray.direction);
+
+  while (stackPtr > 0u) {
+    stackPtr = stackPtr - 1u;
+    let nodeIndex = stack[stackPtr];
+    if (nodeIndex >= nodeCount) {
+      continue;
+    }
+    let count = min(cwbvhChildCount[nodeIndex], CWBVH_CHILDREN);
+    for (var slot = 0u; slot < count; slot = slot + 1u) {
+      let childIndex = nodeIndex * CWBVH_CHILDREN + slot;
+      let childInfo = cwbvhChildMeta[childIndex];
+      if (childInfo.kind == CWBVH_CHILD_EMPTY) {
+        continue;
+      }
+      let bounds = cwbvhLoadChildBounds(nodeIndex, slot);
+      let childT = cwbvhAabbEntry(ray.origin, invDir, bounds.boundsMin, bounds.boundsMax, tMaxBound);
+      if (childT == CWBVH_INTERSECT_INFINITY) {
+        continue;
+      }
+      if (childInfo.kind == CWBVH_CHILD_NODE) {
+        if (stackPtr >= CWBVH_INTERSECT_STACK_DEPTH) {
+          // Conservative any-hit overflow policy: prefer occlusion over a light leak.
+          return true;
+        }
+        stack[stackPtr] = childInfo.indexOrOffset;
+        stackPtr = stackPtr + 1u;
+      } else if (childInfo.kind == CWBVH_CHILD_LEAF) {
+        for (var i = 0u; i < childInfo.triCount; i = i + 1u) {
+          let triIdx = childInfo.indexOrOffset + i;
+          if (triIdx >= min(params.triangleCount, arrayLength(&indices))) {
+            continue;
+          }
+          if (triShadowCastDisabled(triIdx)) {
+            continue;
+          }
+          let tri = indices[triIdx];
+          if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+            continue;
+          }
+          let a = positions[tri.x].xyz;
+          let b = positions[tri.y].xyz;
+          let c = positions[tri.z].xyz;
+          let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c);
+          if (hitT > tMin && hitT < tMaxBound) {
+            return true;
+          }
+        }
+      }
+    }
+  }
+  return false;
+}
+
 fn traceTlasClosestCwbvh(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>) -> bool {
   if (params.tlasNodeCount == 0u || arrayLength(&tlasNodes) == 0u || arrayLength(&tlasInstanceIndices) == 0u) {
     return traceMeshCwbvhClosest(ray, tMin, tMax, hit, 0u, true);
@@ -351,6 +420,64 @@ fn traceTlasClosestCwbvh(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, Scen
   }
   return (*hit).didHit;
 }
+
+fn traceTlasAnyCwbvh(ray: Ray, tMin: f32, tMax: f32) -> bool {
+  if (params.tlasNodeCount == 0u || arrayLength(&tlasNodes) == 0u || arrayLength(&tlasInstanceIndices) == 0u) {
+    return traceMeshCwbvhAny(ray, tMin, tMax, 0u);
+  }
+  var stack: array<u32, 64>;
+  var stackPtr = 0u;
+  stack[stackPtr] = 0u;
+  stackPtr = stackPtr + 1u;
+  while (stackPtr > 0u) {
+    stackPtr = stackPtr - 1u;
+    let nodeIdx = stack[stackPtr];
+    if (nodeIdx >= min(params.tlasNodeCount, arrayLength(&tlasNodes))) { continue; }
+    let node = tlasNodes[nodeIdx];
+    let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
+    let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
+    if (!intersectAabb(ray, bmin, bmax, tMin, tMax)) { continue; }
+    let splitOrCount = node.splitAxisOrTriCount;
+    if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
+      let count = splitOrCount & 0x0000ffffu;
+      let start = node.rightChildOrTriOffset;
+      for (var i = 0u; i < count; i = i + 1u) {
+        let permIdx = start + i;
+        if (permIdx >= arrayLength(&tlasInstanceIndices)) { continue; }
+        let instIdx = tlasInstanceIndices[permIdx];
+        let m = instIdx * 4u;
+        if (m + 3u >= arrayLength(&tlasInstanceWorldToLocal)) { continue; }
+        let w2l0 = tlasInstanceWorldToLocal[m];
+        let w2l1 = tlasInstanceWorldToLocal[m + 1u];
+        let w2l2 = tlasInstanceWorldToLocal[m + 2u];
+        let w2l3 = tlasInstanceWorldToLocal[m + 3u];
+        var localRay: Ray;
+        localRay.origin = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
+        localRay.direction = transformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
+        var localTMax = tMax;
+        if (tMax < INFINITY * 0.5) {
+          let localEnd = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin + ray.direction * tMax);
+          localTMax = max(dot(localEnd - localRay.origin, localRay.direction), tMin);
+        }
+        let blasRoot = select(0u, cwbvhTlasBlasRoots[instIdx], instIdx < arrayLength(&cwbvhTlasBlasRoots));
+        if (traceMeshCwbvhAny(localRay, tMin, localTMax, blasRoot)) {
+          return true;
+        }
+      }
+    } else {
+      let leftChild = nodeIdx + 1u;
+      let rightChild = nodeIdx + node.rightChildOrTriOffset;
+      if (stackPtr + 2u < 64u) {
+        stack[stackPtr] = rightChild; stackPtr = stackPtr + 1u;
+        stack[stackPtr] = leftChild; stackPtr = stackPtr + 1u;
+      } else {
+        // Conservative any-hit overflow policy: prefer occlusion over a light leak.
+        return true;
+      }
+    }
+  }
+  return false;
+}
 `;
 
 const PT_WEBGPU_TRACE_CLOSEST_CWBVH_WGSL = /* wgsl */ `fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
@@ -358,6 +485,18 @@ const PT_WEBGPU_TRACE_CLOSEST_CWBVH_WGSL = /* wgsl */ `fn traceClosest(ray: Ray,
   _ = traceTlasClosestCwbvh(ray, tMin, tMax, &hit);
   _ = traceAnalyticShapes(ray, tMin, tMax, true, &hit);
   return hit;
+}
+`;
+
+const PT_WEBGPU_TRACE_ANY_CWBVH_WGSL = /* wgsl */ `fn traceAny(ray: Ray, tMin: f32, tMax: f32) -> bool {
+  if (traceTlasAnyCwbvh(ray, tMin, tMax)) {
+    return true;
+  }
+  var hit: SceneHit;
+  if (traceAnalyticShapes(ray, tMin, tMax, false, &hit)) {
+    return true;
+  }
+  return false;
 }
 `;
 
@@ -376,5 +515,6 @@ export function composePtWebgpuPathTraceIntersectionWgsl(
     'traceClosest',
     PT_WEBGPU_CWBVH_BINDINGS_AND_WRAPPERS_WGSL,
   );
-  return replaceWgslFunction(withCwbvh, 'traceClosest', PT_WEBGPU_TRACE_CLOSEST_CWBVH_WGSL);
+  const withCwbvhClosest = replaceWgslFunction(withCwbvh, 'traceClosest', PT_WEBGPU_TRACE_CLOSEST_CWBVH_WGSL);
+  return replaceWgslFunction(withCwbvhClosest, 'traceAny', PT_WEBGPU_TRACE_ANY_CWBVH_WGSL);
 }

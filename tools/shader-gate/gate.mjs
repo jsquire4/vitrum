@@ -122,8 +122,8 @@ const shaders = [];
     entryPoint: "main",
   });
 
-  // Opt-in CWBVH closest-hit traversal variant. Binary any-hit remains compiled
-  // through the same shader for shadow/castShadow predicate parity.
+  // Opt-in CWBVH closest/any-hit traversal variant. The any-hit wrapper keeps
+  // castShadow predicate parity with the binary BVH shadow path.
   shaders.push({
     name: "pt-webgpu/trace-full-cwbvh-closest",
     wgsl: composePtWebgpuTraceWgsl(false, { cwbvhClosest: true }),

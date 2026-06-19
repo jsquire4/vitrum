@@ -122,7 +122,7 @@ describe('createPTEngine_WebGPU', () => {
     ).rejects.toThrow(/below the lite tier/i);
   });
 
-  it('advertises and warns for opt-in CWBVH closest-hit traversal', async () => {
+  it('advertises and warns for opt-in CWBVH traversal', async () => {
     const warnings: string[] = [];
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
@@ -134,7 +134,7 @@ describe('createPTEngine_WebGPU', () => {
     engine.dispose();
   });
 
-  it('rejects CWBVH closest-hit traversal on lite-tier devices', async () => {
+  it('rejects CWBVH traversal on lite-tier devices', async () => {
     await expect(
       createPTEngine_WebGPU({
         device: makeStubDevice({
@@ -146,7 +146,7 @@ describe('createPTEngine_WebGPU', () => {
     ).rejects.toThrow(/requires traceTier "full"/);
   });
 
-  it('rejects CWBVH closest-hit traversal when the full-tier device limit floor is too low', async () => {
+  it('rejects CWBVH traversal when the full-tier device limit floor is too low', async () => {
     await expect(
       createPTEngine_WebGPU({
         device: makeStubDevice({

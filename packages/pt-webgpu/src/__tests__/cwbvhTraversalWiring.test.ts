@@ -66,11 +66,14 @@ describe('pt-webgpu CWBVH traversal wiring', () => {
     expect(wgsl).toContain('_ = traceTlasClosestCwbvh(ray, tMin, tMax, &hit);');
   });
 
-  it('retains binary any-hit traversal for shadow predicate parity', () => {
+  it('routes any-hit traversal through CWBVH while preserving shadow predicate parity', () => {
     const wgsl = composePtWebgpuTraceWgsl(false, { cwbvhClosest: true });
-    expect(wgsl).toContain('fn traceTlasAny(ray: Ray, tMin: f32, tMax: f32) -> bool');
-    expect(wgsl).toContain('traceMeshBvh(localRay, tMin, localTMax, false, &localHit, blasRoot, false)');
-    expect(wgsl).toContain('if (triShadowCastDisabled(t))');
+    expect(wgsl).toContain('fn traceMeshCwbvhAny(');
+    expect(wgsl).toContain('fn traceTlasAnyCwbvh(');
+    expect(wgsl).toContain('if (traceTlasAnyCwbvh(ray, tMin, tMax))');
+    expect(wgsl).toContain('traceMeshCwbvhAny(localRay, tMin, localTMax, blasRoot)');
+    expect(wgsl).toContain('if (triShadowCastDisabled(triIdx))');
+    expect(wgsl).not.toContain('if (traceTlasAny(ray, tMin, tMax))');
   });
 
   it('binds uploaded CWBVH buffers into the opt-in full-tier renderer group 3', () => {
