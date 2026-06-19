@@ -98,7 +98,7 @@ const mocks = vi.hoisted(() => {
     khrMeshoptHookIssue,
     makeAsset,
     createEngine: vi.fn(async () => ({
-      backendId: 'pt-webgpu',
+      backendId: state.selectedBackend,
       dispose: vi.fn(),
       renderFrame: vi.fn(),
       setScene: vi.fn(),
@@ -118,10 +118,13 @@ const mocks = vi.hoisted(() => {
           asset,
           options: factoryOptions,
         });
+      const actualBackend = (
+        engine as { readonly backendId?: 'pt-webgpu' | 'pt-webgl2' | 'walkaround-hybrid' } | undefined
+      )?.backendId ?? state.selectedBackend;
       return {
         asset,
-        backend: state.selectedBackend,
-        profileId: state.selectedBackend === 'pt-webgpu' ? 'pt-webgpu' : state.selectedBackend,
+        backend: actualBackend,
+        profileId: actualBackend === 'pt-webgpu' ? 'pt-webgpu' : actualBackend,
         ...(engine != null ? { engine } : {}),
         controller: { warnings: [], attachEngine },
         attached: engine != null,
@@ -152,6 +155,36 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('@vitrum/gltf-adapter', () => ({
+  GltfCompatibilityError: class GltfCompatibilityError extends Error {
+    readonly code: string;
+    readonly backend?: string;
+    readonly profileId?: string;
+    readonly runtimeProfile?: string;
+    readonly compatibilityMode?: string;
+    readonly label?: string;
+    readonly failures: readonly string[];
+
+    constructor(init: {
+      readonly code: string;
+      readonly message: string;
+      readonly backend?: string;
+      readonly profileId?: string;
+      readonly runtimeProfile?: string;
+      readonly compatibilityMode?: string;
+      readonly label?: string;
+      readonly failures?: readonly string[];
+    }) {
+      super(init.message);
+      this.name = 'GltfCompatibilityError';
+      this.code = init.code;
+      if (init.backend !== undefined) this.backend = init.backend;
+      if (init.profileId !== undefined) this.profileId = init.profileId;
+      if (init.runtimeProfile !== undefined) this.runtimeProfile = init.runtimeProfile;
+      if (init.compatibilityMode !== undefined) this.compatibilityMode = init.compatibilityMode;
+      if (init.label !== undefined) this.label = init.label;
+      this.failures = [...(init.failures ?? [])];
+    }
+  },
   loadGltfForEngine: mocks.loadGltfForEngine,
 }));
 
@@ -220,6 +253,43 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
 
     expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
     expect(mocks.createEngine).not.toHaveBeenCalled();
+  });
+
+  it('honors explicit pt-webgpu-lite runtimeProfile without probing', async () => {
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        runtimeProfile: 'pt-webgpu-lite',
+        compatibilityMode: 'reject-unsupported',
+      }),
+    ).rejects.toMatchObject({
+      code: 'GLTF_COMPATIBILITY_REJECTED',
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      runtimeProfile: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      failures: [
+        'material:baseColorMap=unsupported at materials[0].pbrMetallicRoughness.baseColorTexture',
+      ],
+    });
+
+    expect(mocks.probeAdapterProfile).not.toHaveBeenCalled();
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+  });
+
+  it('reports explicit pt-webgpu-lite runtimeProfile on best-effort loads without probing', async () => {
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        runtimeProfile: 'pt-webgpu-lite',
+        compatibilityMode: 'best-effort',
+      }),
+    ).resolves.toMatchObject({
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      attached: true,
+    });
+
+    expect(mocks.probeAdapterProfile).not.toHaveBeenCalled();
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
   });
 
   it('rejects existing pt-webgpu engines before controller attachment when runtime tier is degraded', async () => {
@@ -383,6 +453,34 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
 
     expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
     expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+  });
+
+  it('revalidates actual pt-webgpu fallback engines against the runtime lite profile', async () => {
+    mocks.state.selectedBackend = 'walkaround-hybrid';
+    const dispose = vi.fn();
+    mocks.createEngine.mockResolvedValueOnce({
+      backendId: 'pt-webgpu',
+      dispose,
+      renderFrame: vi.fn(),
+      setScene: vi.fn(),
+    });
+
+    await expect(
+      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
+    ).rejects.toMatchObject({
+      code: 'GLTF_COMPATIBILITY_REJECTED',
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      failures: [
+        'material:baseColorMap=unsupported at materials[0].pbrMetallicRoughness.baseColorTexture',
+      ],
+    });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+    expect(dispose).toHaveBeenCalledTimes(1);
+    expect(mocks.attachEngine).not.toHaveBeenCalled();
   });
 
   it('does not probe adapter tier for strict non-pt-webgpu selections', async () => {

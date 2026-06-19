@@ -232,6 +232,12 @@ const vitrumCanvasSource = await readText("packages/engine/src/react/VitrumCanva
 for (const needle of [
   "try { onAttachErrorRef.current?.(err); } catch",
   "onErrorRef.current?.(err, { phase: 'attach:initial', recoverable: false });",
+  "advancedBackend?: CreateEngineOptions['advancedBackend'];",
+  "advancedByBackend?: CreateEngineOptions['advancedByBackend'];",
+  "onWarning?: (warning: EngineWarning) => void;",
+  "onAdapterProfile?: (profile: AdapterProfile) => void;",
+  "onWarning: (warning) => { try { onWarningRef.current?.(warning); } catch",
+  "onAdapterProfile: (profile) => { try { onAdapterProfileRef.current?.(profile); } catch",
 ]) {
   if (!vitrumCanvasSource.includes(needle)) {
     fail(`VitrumCanvas must retain guarded initial attach error routing: ${needle}`);
@@ -243,9 +249,74 @@ for (const needle of [
   "reports initial attach failures through guarded React callbacks",
   "phase: 'attach:initial'",
   "host structured callback failed",
+  "advancedBackend: 'pt-webgl2'",
+  "host adapter-profile callback failed",
 ]) {
   if (!vitrumCanvasTest.includes(needle)) {
     fail(`VitrumCanvas attach-error regression test must retain source proof: ${needle}`);
+  }
+}
+
+const engineGltfBridge = await readText("packages/engine/src/gltf.ts");
+for (const needle of [
+  "export { GltfCompatibilityError, loadGltfForEngine }",
+  "if (backend !== 'pt-webgpu' && engine.backendId === 'pt-webgpu')",
+  "disposeEngineAfterRejectedGltfRuntimeProfile(engine);",
+  "if (options.runtimeProfile !== undefined)",
+  "throw new GltfCompatibilityError({",
+]) {
+  if (!engineGltfBridge.includes(needle)) {
+    fail(`engine glTF bridge must retain runtime-profile/fallback compatibility guard: ${needle}`);
+  }
+}
+
+const engineGltfTierTest = await readText("packages/engine/src/__tests__/gltfStrictPtWebgpuTier.test.ts");
+for (const needle of [
+  "honors explicit pt-webgpu-lite runtimeProfile without probing",
+  "reports explicit pt-webgpu-lite runtimeProfile on best-effort loads without probing",
+  "revalidates actual pt-webgpu fallback engines against the runtime lite profile",
+]) {
+  if (!engineGltfTierTest.includes(needle)) {
+    fail(`engine glTF strict-tier tests must retain runtime-profile/fallback regression: ${needle}`);
+  }
+}
+
+const gltfErrors = await readText("packages/gltf-adapter/src/errors.ts");
+for (const needle of [
+  "export class GltfCompatibilityError extends GltfAdapterError",
+  "readonly compatibilityMode?: string;",
+  "readonly failures: readonly string[];",
+]) {
+  if (!gltfErrors.includes(needle)) {
+    fail(`gltf-adapter must retain structured compatibility error surface: ${needle}`);
+  }
+}
+
+const gltfEngineBridge = await readText("packages/gltf-adapter/src/engineBridge.ts");
+for (const needle of [
+  "import { GltfCompatibilityError } from './errors.js';",
+  "code: 'GLTF_COMPATIBILITY_REJECTED'",
+  "code: 'GLTF_COMPATIBILITY_PROFILE_MISSING'",
+  "code: 'GLTF_RUNTIME_PROFILE_MISMATCH'",
+]) {
+  if (!gltfEngineBridge.includes(needle)) {
+    fail(`gltf-adapter engine bridge must throw structured compatibility errors: ${needle}`);
+  }
+}
+
+const gltfIndex = await readText("packages/gltf-adapter/src/index.ts");
+if (!gltfIndex.includes("GltfCompatibilityError")) {
+  fail("gltf-adapter package root must export GltfCompatibilityError");
+}
+
+const gltfAssetApiTest = await readText("packages/gltf-adapter/src/gltfAssetApi.test.ts");
+for (const needle of [
+  "GltfCompatibilityError",
+  "code: 'GLTF_COMPATIBILITY_REJECTED'",
+  "code: 'GLTF_RUNTIME_PROFILE_MISMATCH'",
+]) {
+  if (!gltfAssetApiTest.includes(needle)) {
+    fail(`gltf-adapter tests must retain structured compatibility error assertions: ${needle}`);
   }
 }
 

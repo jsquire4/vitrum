@@ -13,6 +13,7 @@ import {
   decodeSceneTextures,
   evaluateGltfBackendCompatibility,
   evaluateGltfBackendProfileCompatibility,
+  GltfCompatibilityError,
   GltfFetchFailed,
   GltfParseFailed,
   GltfResourceDecodeFailed,
@@ -2875,14 +2876,24 @@ describe('loadGltfForEngine', () => {
     const { gltf, buffers } = makeInlineVertexColorGltf();
     const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    const promise = loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgpu-lite',
       compatibilityMode: 'reject-unsupported',
       createEngine,
-    })).rejects.toThrow(
+    });
+
+    await expect(promise).rejects.toThrow(
       'Selected backend "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: primitive:vertexColors=unsupported',
     );
+    await expect(promise).rejects.toBeInstanceOf(GltfCompatibilityError);
+    await expect(promise).rejects.toMatchObject({
+      code: 'GLTF_COMPATIBILITY_REJECTED',
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      failures: ['primitive:vertexColors=unsupported at meshes[0].primitives[0].attributes.COLOR_0'],
+    });
 
     expect(createEngine).not.toHaveBeenCalled();
   });
@@ -2928,14 +2939,23 @@ describe('loadGltfForEngine', () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
+    const promise = loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
       runtimeProfile: 'pt-webgpu-lite',
       createEngine,
-    })).rejects.toThrow(
+    });
+
+    await expect(promise).rejects.toThrow(
       'runtimeProfile "pt-webgpu" profile "pt-webgpu-lite" does not match selected backend "pt-webgl2"',
     );
+    await expect(promise).rejects.toBeInstanceOf(GltfCompatibilityError);
+    await expect(promise).rejects.toMatchObject({
+      code: 'GLTF_RUNTIME_PROFILE_MISMATCH',
+      backend: 'pt-webgl2',
+      profileId: 'pt-webgl2',
+      runtimeProfile: 'pt-webgpu-lite',
+    });
 
     expect(createEngine).not.toHaveBeenCalled();
   });

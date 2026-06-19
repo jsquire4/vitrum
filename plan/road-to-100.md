@@ -265,6 +265,13 @@
 > helper callbacks are now guarded, matching the factory's error/warning
 > callback policy and preventing host callback throws from breaking best-effort
 > setup paths.
+> Same-day glTF predictable-API follow-up: `<VitrumCanvas>` now forwards
+> `advancedBackend`, `advancedByBackend`, `onWarning`, and `onAdapterProfile`
+> through both the glTF engine bridge and `attachVitrum`; `loadGltfWithEngine()`
+> honors explicit `runtimeProfile`, revalidates actual pt-webgpu fallback engines
+> against the runtime full/lite profile before attachment, disposes rejected
+> fallback engines, and strict compatibility failures are structured
+> `GltfCompatibilityError`s while preserving existing messages.
 > Same-day GI-state import follow-up: `importGIState()` grid-layout mismatch
 > rejection now emits structured
 > `walkaround-hybrid.import-gi-state-grid-mismatch` warnings with snapshot/current

@@ -27,6 +27,7 @@ import {
   type GltfScenePatchTarget,
 } from './sceneController.js';
 import type { GltfBackendProfileId, GltfCompatibilityIssue } from './featureReport.js';
+import { GltfCompatibilityError } from './errors.js';
 
 export type GltfEngineSelection = GltfBackendProfileId | 'recommended';
 export type GltfCompatibilityMode = 'best-effort' | 'reject-unsupported' | 'reject-degraded';
@@ -257,10 +258,15 @@ function resolveRuntimeProfile(
   if (runtimeProfile === undefined) return selectedProfileId;
   const runtimeBackend = backendFromProfileId(runtimeProfile);
   if (runtimeBackend !== selectedBackend) {
-    throw new Error(
-      `[vitrum/gltf-adapter] runtimeProfile ${formatBackendProfile(runtimeBackend, runtimeProfile)} ` +
+    throw new GltfCompatibilityError({
+      code: 'GLTF_RUNTIME_PROFILE_MISMATCH',
+      message:
+        `[vitrum/gltf-adapter] runtimeProfile ${formatBackendProfile(runtimeBackend, runtimeProfile)} ` +
         `does not match selected backend ${formatBackendProfile(selectedBackend, selectedProfileId)}.`,
-    );
+      backend: selectedBackend,
+      profileId: selectedProfileId,
+      runtimeProfile,
+    });
   }
   return runtimeProfile;
 }
@@ -285,9 +291,15 @@ function enforceCompatibility<
     entry.backend === backend && entry.profileId === profileId,
   );
   if (!selected) {
-    throw new Error(
-      `[vitrum/gltf-adapter] No compatibility entry found for ${formatBackendProfile(backend, profileId)}.`,
-    );
+    throw new GltfCompatibilityError({
+      code: 'GLTF_COMPATIBILITY_PROFILE_MISSING',
+      message:
+        `[vitrum/gltf-adapter] No compatibility entry found for ${formatBackendProfile(backend, profileId)}.`,
+      backend,
+      profileId,
+      compatibilityMode: mode,
+      label,
+    });
   }
   const effectiveIssues = selected.issues.filter((issue) =>
     !isSatisfiedCompatibilityIssue(issue, options, asset, backend)
@@ -309,10 +321,17 @@ function enforceCompatibility<
 
   const issues = failures
     .join(', ');
-  throw new Error(
-    `[vitrum/gltf-adapter] ${label} ${formatBackendProfile(backend, profileId)} does not satisfy ` +
+  throw new GltfCompatibilityError({
+    code: 'GLTF_COMPATIBILITY_REJECTED',
+    message:
+      `[vitrum/gltf-adapter] ${label} ${formatBackendProfile(backend, profileId)} does not satisfy ` +
       `${mode}: ${issues || 'unknown compatibility issue'}.`,
-  );
+    backend,
+    profileId,
+    compatibilityMode: mode,
+    label,
+    failures,
+  });
 }
 
 function formatBackendProfile(backend: BackendId, profileId: GltfBackendProfileId): string {

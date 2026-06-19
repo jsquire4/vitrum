@@ -29,6 +29,7 @@ export type {
 } from './assetLoader.js';
 export {
   GltfAdapterError,
+  GltfCompatibilityError,
   GltfFetchFailed,
   GltfParseFailed,
   GltfResourceDecodeFailed,
@@ -36,6 +37,8 @@ export {
 } from './errors.js';
 export type {
   GltfAssetResourceKind,
+  GltfCompatibilityErrorCode,
+  GltfCompatibilityErrorInit,
   GltfParseFailedInit,
   GltfParseFailureReason,
   GltfParseFormat,

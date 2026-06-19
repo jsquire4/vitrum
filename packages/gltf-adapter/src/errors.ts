@@ -133,3 +133,43 @@ export class GltfParseFailed extends GltfAdapterError {
     if (init.version !== undefined) this.version = init.version;
   }
 }
+
+export type GltfCompatibilityErrorCode =
+  | 'GLTF_COMPATIBILITY_REJECTED'
+  | 'GLTF_COMPATIBILITY_PROFILE_MISSING'
+  | 'GLTF_RUNTIME_PROFILE_MISMATCH';
+
+export interface GltfCompatibilityErrorInit {
+  readonly code: GltfCompatibilityErrorCode;
+  readonly message: string;
+  readonly backend?: string;
+  readonly profileId?: string;
+  readonly runtimeProfile?: string;
+  readonly compatibilityMode?: string;
+  readonly label?: string;
+  readonly failures?: readonly string[];
+  readonly cause?: unknown;
+}
+
+export class GltfCompatibilityError extends GltfAdapterError {
+  readonly backend?: string;
+  readonly profileId?: string;
+  readonly runtimeProfile?: string;
+  readonly compatibilityMode?: string;
+  readonly label?: string;
+  readonly failures: readonly string[];
+
+  constructor(init: GltfCompatibilityErrorInit) {
+    super(
+      init.code,
+      init.message,
+      init.cause === undefined ? undefined : { cause: init.cause },
+    );
+    if (init.backend !== undefined) this.backend = init.backend;
+    if (init.profileId !== undefined) this.profileId = init.profileId;
+    if (init.runtimeProfile !== undefined) this.runtimeProfile = init.runtimeProfile;
+    if (init.compatibilityMode !== undefined) this.compatibilityMode = init.compatibilityMode;
+    if (init.label !== undefined) this.label = init.label;
+    this.failures = [...(init.failures ?? [])];
+  }
+}

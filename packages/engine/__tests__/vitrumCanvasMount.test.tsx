@@ -340,7 +340,16 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     const loadSpy = vi.spyOn(gltfModule, 'loadGltfWithEngine').mockResolvedValue(bridgeResult);
     const decodePixels = vi.fn();
     const advanced = { denoiser: 'atrous-variance' as const };
+    const advancedByBackend = {
+      'pt-webgl2': { maxBounces: 8 },
+    };
     const onGltfLoaded = vi.fn();
+    const onWarning = vi.fn((_warning: unknown) => {
+      throw new Error('host warning callback failed');
+    });
+    const onAdapterProfile = vi.fn((_profile: unknown) => {
+      throw new Error('host adapter-profile callback failed');
+    });
 
     const container = happyWindow.document.createElement('div') as unknown as Element;
     happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
@@ -357,9 +366,13 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
       camera: CAMERA,
       prefer: 'quality',
       advanced,
+      advancedBackend: 'pt-webgl2',
+      advancedByBackend,
       debug: true,
       gltfPlayback: { loop: false },
       onGltfLoaded,
+      onWarning,
+      onAdapterProfile,
     }));
     await happyWindow.happyDOM.waitUntilComplete();
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -378,12 +391,37 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
         engineOptions: expect.objectContaining({
           prefer: 'quality',
           advanced,
+          advancedBackend: 'pt-webgl2',
+          advancedByBackend,
           debug: true,
         }),
       }),
     );
     const bridgeOptions = loadSpy.mock.calls[0]![1]!;
     expect(bridgeOptions.engineOptions?.canvas).toBeInstanceOf(Object);
+    const warning = {
+      code: 'vitrum-canvas.test-warning',
+      backend: 'createEngine',
+      phase: 'construction',
+      method: 'VitrumCanvas.test',
+      message: 'test warning',
+    };
+    const profile = {
+      hasWebGPU: true,
+      hasWebGL2: true,
+      hybridCapable: true,
+      hybridLiteCapable: true,
+      ptWebgpuTier: 'full',
+      recommendedRealtimeTier: 'ultra',
+      recommendedHeroBackend: 'pt-webgpu-full',
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      maxStorageBuffersPerStage: 64,
+      maxStorageTexturesPerStage: 8,
+      limits: {},
+    };
+    expect(() => bridgeOptions.engineOptions?.onWarning?.(warning)).not.toThrow();
+    expect(() => bridgeOptions.engineOptions?.onAdapterProfile?.(profile as never)).not.toThrow();
     expect(attachSpy).toHaveBeenCalledTimes(1);
     const opts = attachSpy.mock.calls[0]![0];
     expect(opts.scene).toBe(importedScene);
@@ -394,7 +432,13 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     expect(opts.gltfAsset?.recommendedBackend?.backend).toBe('pt-webgl2');
     expect(opts.prefer).toBe('quality');
     expect(opts.advanced).toBe(advanced);
+    expect(opts.advancedBackend).toBe('pt-webgl2');
+    expect(opts.advancedByBackend).toBe(advancedByBackend);
     expect(opts.debug).toBe(true);
+    expect(() => opts.onWarning?.(warning)).not.toThrow();
+    expect(() => opts.onAdapterProfile?.(profile as never)).not.toThrow();
+    expect(onWarning).toHaveBeenCalledTimes(2);
+    expect(onAdapterProfile).toHaveBeenCalledTimes(2);
 
     root.unmount();
   });

@@ -5,7 +5,7 @@
 // subpath only injects @vitrum/engine's createEngine facade for hosts that want
 // a single import path.
 
-import { loadGltfForEngine } from '@vitrum/gltf-adapter';
+import { GltfCompatibilityError, loadGltfForEngine } from '@vitrum/gltf-adapter';
 import type {
   GltfAssetInput,
   GltfAssetResult,
@@ -34,10 +34,12 @@ import type {
   EngineWithBackendId,
 } from './createEngine.js';
 
-export { loadGltfForEngine } from '@vitrum/gltf-adapter';
+export { GltfCompatibilityError, loadGltfForEngine } from '@vitrum/gltf-adapter';
 export type {
   DecodeSceneTextureDiagnostic,
   DecodeSceneTextureDiagnosticCode,
+  GltfCompatibilityErrorCode,
+  GltfCompatibilityErrorInit,
   GltfBackendTextureStatus,
   GltfAssetResult,
   GltfCompatibilityMode,
@@ -131,12 +133,26 @@ export async function loadGltfWithEngine(
         asset,
         adapterOptions,
       );
-      return await createEngine({
+      const engine = await createEngine({
         ...createOptions,
         scene,
         gltfAsset: asset,
         prefer: preferForSelectedBackend(backend, createOptions.prefer),
       });
+      if (backend !== 'pt-webgpu' && engine.backendId === 'pt-webgpu') {
+        try {
+          runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
+            engine.backendId,
+            adapterOptions.compatibilityMode ?? 'best-effort',
+            asset,
+            adapterOptions,
+          );
+        } catch (err) {
+          disposeEngineAfterRejectedGltfRuntimeProfile(engine);
+          throw err;
+        }
+      }
+      return engine;
     },
   });
   return loaded.backend === 'pt-webgpu' && runtimeProfileId != null
@@ -186,33 +202,89 @@ async function resolvePtWebgpuRuntimeProfile(
 ): Promise<GltfBackendProfileId | undefined> {
   if (backend !== 'pt-webgpu') return undefined;
 
+  if (options.runtimeProfile !== undefined) {
+    const runtimeBackend = backendFromProfileId(options.runtimeProfile);
+    if (runtimeBackend !== 'pt-webgpu') {
+      throw new GltfCompatibilityError({
+        code: 'GLTF_RUNTIME_PROFILE_MISMATCH',
+        message:
+          `[vitrum/engine/gltf] runtimeProfile ${formatBackendProfile(runtimeBackend, options.runtimeProfile)} ` +
+          `does not match selected backend "pt-webgpu".`,
+        backend: 'pt-webgpu',
+        profileId: 'pt-webgpu',
+        runtimeProfile: options.runtimeProfile,
+      });
+    }
+    validatePtWebgpuRuntimeProfile(
+      options.runtimeProfile,
+      'explicit',
+      compatibilityMode,
+      asset,
+      options,
+    );
+    return options.runtimeProfile;
+  }
+
   const profile = await probeAdapterProfile();
   if (profile.ptWebgpuTier === 'full') return 'pt-webgpu';
 
   const profileId = profile.ptWebgpuTier === 'lite' ? 'pt-webgpu-lite' : 'pt-webgpu';
-  if (compatibilityMode === 'best-effort') return profileId;
+  validatePtWebgpuRuntimeProfile(
+    profileId,
+    profile.ptWebgpuTier,
+    compatibilityMode,
+    asset,
+    options,
+  );
+  return profileId;
+}
+
+function validatePtWebgpuRuntimeProfile(
+  profileId: GltfBackendProfileId,
+  traceTier: string,
+  compatibilityMode: GltfCompatibilityMode,
+  asset: GltfAssetResult,
+  options: LoadGltfWithEngineOptions,
+): void {
+  if (compatibilityMode === 'best-effort') return;
   const selected = asset.backendCompatibility.find((entry) => entry.profileId === profileId);
   if (selected != null) {
     const effectiveIssues = selected.issues.filter((issue) =>
       !isSatisfiedRuntimeCompatibilityIssue(issue, options, asset)
     );
     const rejectedIssues = rejectedIssuesForMode(effectiveIssues, compatibilityMode);
-    if (rejectedIssues.length === 0) return profileId;
+    if (rejectedIssues.length === 0) return;
+    const failures = rejectedIssues.map(formatRuntimeCompatibilityIssue);
 
-    throw new Error(
-      `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +
-        `"${profile.ptWebgpuTier}" trace tier, which does not satisfy ` +
-        `${compatibilityMode}: ${formatRuntimeCompatibilityIssues(rejectedIssues)}. ` +
+    throw new GltfCompatibilityError({
+      code: 'GLTF_COMPATIBILITY_REJECTED',
+      message:
+        `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +
+        `"${traceTier}" trace tier, which does not satisfy ` +
+        `${compatibilityMode}: ${failures.join(', ')}. ` +
         `Use compatibilityMode:"best-effort", select "pt-webgl2", or run on a full-tier WebGPU adapter.`,
-    );
+      backend: 'pt-webgpu',
+      profileId,
+      runtimeProfile: profileId,
+      compatibilityMode,
+      label: 'Selected backend',
+      failures,
+    });
   }
 
-  throw new Error(
-    `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +
-      `"${profile.ptWebgpuTier}" trace tier, but the glTF asset has no compatibility row ` +
+  throw new GltfCompatibilityError({
+    code: 'GLTF_COMPATIBILITY_PROFILE_MISSING',
+    message:
+      `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +
+      `"${traceTier}" trace tier, but the glTF asset has no compatibility row ` +
       `for runtime profile "${profileId}". ` +
       `Use compatibilityMode:"best-effort", select "pt-webgl2", or run on a full-tier WebGPU adapter.`,
-  );
+    backend: 'pt-webgpu',
+    profileId,
+    runtimeProfile: profileId,
+    compatibilityMode,
+    label: 'Selected backend',
+  });
 }
 
 function rejectedIssuesForMode(
@@ -225,10 +297,26 @@ function rejectedIssuesForMode(
   return issues.filter((issue) => issue.support !== 'native');
 }
 
-function formatRuntimeCompatibilityIssues(issues: readonly GltfCompatibilityIssue[]): string {
-  return issues
-    .map((issue) => `${issue.category}:${issue.name}=${issue.support} at ${issue.path}`)
-    .join(', ');
+function formatRuntimeCompatibilityIssue(issue: GltfCompatibilityIssue): string {
+  return `${issue.category}:${issue.name}=${issue.support} at ${issue.path}`;
+}
+
+function backendFromProfileId(profileId: GltfBackendProfileId): CreateEngineBackendId {
+  return profileId === 'pt-webgpu-lite' ? 'pt-webgpu' : profileId;
+}
+
+function formatBackendProfile(backend: CreateEngineBackendId, profileId: GltfBackendProfileId): string {
+  return profileId === backend
+    ? `"${backend}"`
+    : `"${backend}" profile "${profileId}"`;
+}
+
+function disposeEngineAfterRejectedGltfRuntimeProfile(engine: EngineWithBackendId): void {
+  try {
+    engine.dispose();
+  } catch {
+    // Strict glTF validation is already failing; dispose is best-effort cleanup.
+  }
 }
 
 function isSatisfiedRuntimeCompatibilityIssue(

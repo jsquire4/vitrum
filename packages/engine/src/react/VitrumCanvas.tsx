@@ -20,7 +20,15 @@
 // hosts never pay the cost.
 
 import * as React from 'react';
-import type { EngineError, Scene, FrameInput, FrameStats, ProgressStats } from '@vitrum/core';
+import type {
+  AdapterProfile,
+  EngineError,
+  EngineWarning,
+  Scene,
+  FrameInput,
+  FrameStats,
+  ProgressStats,
+} from '@vitrum/core';
 import {
   type GltfAssetInput,
   type GltfAssetResult,
@@ -88,8 +96,16 @@ export interface VitrumCanvasProps {
   pauseOnHidden?: boolean;
   /** Backend-specific createEngine overrides. */
   advanced?: CreateEngineOptions['advanced'];
+  /** Explicit backend target for legacy `advanced` overrides. */
+  advancedBackend?: CreateEngineOptions['advancedBackend'];
+  /** Backend-keyed createEngine overrides for deterministic auto/fallback paths. */
+  advancedByBackend?: CreateEngineOptions['advancedByBackend'];
   /** Enable backend debug surfaces. */
   debug?: boolean;
+  /** Called for nonfatal create/attach/backend capability warnings. */
+  onWarning?: (warning: EngineWarning) => void;
+  /** Called with the probed WebGPU adapter profile before walkaround device creation. */
+  onAdapterProfile?: (profile: AdapterProfile) => void;
   /** Called for recoverable create/attach/runtime engine errors. */
   onError?: (error: unknown, event: CreateEngineErrorEvent) => void;
   /** GPU/runtime engine errors forwarded from the engine's onError subscription
@@ -118,6 +134,8 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     const qualityRef = React.useRef<VitrumCanvasProps['quality']>(props.quality);
     const onFrameRef = React.useRef<VitrumCanvasProps['onFrame']>(props.onFrame);
     const onProgressRef = React.useRef<VitrumCanvasProps['onProgress']>(props.onProgress);
+    const onWarningRef = React.useRef<VitrumCanvasProps['onWarning']>(props.onWarning);
+    const onAdapterProfileRef = React.useRef<VitrumCanvasProps['onAdapterProfile']>(props.onAdapterProfile);
     const onErrorRef = React.useRef<VitrumCanvasProps['onError']>(props.onError);
     const onEngineErrorRef = React.useRef<VitrumCanvasProps['onEngineError']>(props.onEngineError);
     const onGltfLoadedRef = React.useRef<VitrumCanvasProps['onGltfLoaded']>(props.onGltfLoaded);
@@ -131,6 +149,8 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     React.useEffect(() => { qualityRef.current = props.quality; },         [props.quality]);
     React.useEffect(() => { onFrameRef.current = props.onFrame; },         [props.onFrame]);
     React.useEffect(() => { onProgressRef.current = props.onProgress; },   [props.onProgress]);
+    React.useEffect(() => { onWarningRef.current = props.onWarning; },      [props.onWarning]);
+    React.useEffect(() => { onAdapterProfileRef.current = props.onAdapterProfile; }, [props.onAdapterProfile]);
     React.useEffect(() => { onErrorRef.current = props.onError; },         [props.onError]);
     React.useEffect(() => { onEngineErrorRef.current = props.onEngineError; }, [props.onEngineError]);
     React.useEffect(() => { onGltfLoadedRef.current = props.onGltfLoaded; }, [props.onGltfLoaded]);
@@ -158,7 +178,11 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
                 canvas,
                 ...(props.prefer ? { prefer: props.prefer } : {}),
                 ...(props.advanced != null ? { advanced: props.advanced } : {}),
+                ...(props.advancedBackend != null ? { advancedBackend: props.advancedBackend } : {}),
+                ...(props.advancedByBackend != null ? { advancedByBackend: props.advancedByBackend } : {}),
                 ...(props.debug != null ? { debug: props.debug } : {}),
+                onWarning: (warning) => { try { onWarningRef.current?.(warning); } catch { /* host callback must not propagate — ignore */ } },
+                onAdapterProfile: (profile) => { try { onAdapterProfileRef.current?.(profile); } catch { /* host callback must not propagate — ignore */ } },
                 onError: (error, event) => { onErrorRef.current?.(error, event); },
               },
             })
@@ -189,6 +213,8 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           ...(props.prefer ? { prefer: props.prefer } : {}),
           ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
           ...(props.advanced != null ? { advanced: props.advanced } : {}),
+          ...(props.advancedBackend != null ? { advancedBackend: props.advancedBackend } : {}),
+          ...(props.advancedByBackend != null ? { advancedByBackend: props.advancedByBackend } : {}),
           ...(props.debug != null ? { debug: props.debug } : {}),
           ...(props.autoRecreateOnDeviceLoss != null
             ? { autoRecreateOnDeviceLoss: props.autoRecreateOnDeviceLoss }
@@ -199,6 +225,8 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           quality: () => qualityRef.current,
           onFrame: (stats) => { onFrameRef.current?.(stats); },
           onProgress: (progress) => { onProgressRef.current?.(progress); },
+          onWarning: (warning) => { try { onWarningRef.current?.(warning); } catch { /* host callback must not propagate — ignore */ } },
+          onAdapterProfile: (profile) => { try { onAdapterProfileRef.current?.(profile); } catch { /* host callback must not propagate — ignore */ } },
           onError: (error, event) => { onErrorRef.current?.(error, event); },
           onEngineError: (err) => { try { onEngineErrorRef.current?.(err); } catch { /* host callback must not propagate — ignore */ } },
         });
@@ -240,6 +268,8 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
       props.prefer,
       props.pauseOnHidden,
       props.advanced,
+      props.advancedBackend,
+      props.advancedByBackend,
       props.debug,
       props.autoRecreateOnDeviceLoss,
     ]);
