@@ -91,6 +91,22 @@ const items = await readText("items_to_fix.md");
 if (!items.includes("OPEN ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONCILIATION")) {
   fail("items_to_fix.md must retain the current open-items/provenance markers");
 }
+for (const [stalePhrase, message] of [
+  ["What may still be broken is the input-packing layout", "stale B3 neural input-packing uncertainty"],
+  ["runtime layout \"is not the interleaved per-pixel layout", "stale B3 legacy planar-layout quote"],
+  ["dispatches 0 workgroups", "stale C1 PPG no-op dispatch text"],
+  ["pre-alpha prototype", "stale C1 pt-webgpu maturity text"],
+]) {
+  if (items.includes(stalePhrase)) {
+    fail(`items_to_fix.md contains ${message}`);
+  }
+}
+if (!items.includes("### B3. Neural denoiser layout — closed/source-verified")) {
+  fail("items_to_fix.md must retain the reconciled B3 neural input-pack heading");
+}
+if (!items.includes("Remaining neural Road work is production checkpoint + quality A/B, not input layout.")) {
+  fail("items_to_fix.md must retain the reconciled B3 residual boundary");
+}
 if (items.includes("point+rect direct lighting with no spot/mesh-area/env/indirect terms")) {
   fail("items_to_fix.md contains the stale H14 adjoint-lighting residual");
 }
@@ -122,6 +138,59 @@ for (const needle of [
 ]) {
   if (!adjointHarnessTest.includes(needle)) {
     fail(`pt-webgpu adjoint harness test must pin ${needle}`);
+  }
+}
+
+const inferenceGraph = await readText("packages/walkaround-hybrid/src/neural/InferenceGraph.ts");
+for (const needle of [
+  "this._runInputPack(enc, noisyColorBuf, albedoBuf, normalsBuf);",
+  "per-pixel INTERLEAVED layout",
+  "{ binding: 0, resource: { buffer: noisyColorBuf } }",
+  "{ binding: 1, resource: { buffer: albedoBuf } }",
+  "{ binding: 2, resource: { buffer: normalsBuf } }",
+  "{ binding: 3, resource: { buffer: encInputTensor.buf } }",
+  "{ binding: 4, resource: { buffer: this._inputPackUniformBuf } }",
+  "pass.dispatchWorkgroups(Math.ceil(pixelCount / 256), 1, 1);",
+]) {
+  if (!inferenceGraph.includes(needle)) {
+    fail(`walkaround neural InferenceGraph must retain input-pack wiring: ${needle}`);
+  }
+}
+
+const inputPacker = await readText("packages/walkaround-hybrid/src/neural/inputPacker.ts");
+for (const needle of [
+  "export const INPUT_PACKER_WGSL",
+  "encInput[outBase + 0u] = noisyColor[inBase + 0u];",
+  "encInput[outBase + 3u] = albedo[inBase + 0u];",
+  "encInput[outBase + 6u] = normals[inBase + 0u];",
+  "export const INPUT_PACKER_ENTRY = 'inputPackMain';",
+]) {
+  if (!inputPacker.includes(needle)) {
+    fail(`walkaround neural input packer must retain interleaved shader wiring: ${needle}`);
+  }
+}
+
+const layerResourceAllocator = await readText("packages/walkaround-hybrid/src/neural/layerResourceAllocator.ts");
+for (const needle of [
+  "import { INPUT_PACKER_WGSL, INPUT_PACKER_ENTRY } from './inputPacker.js';",
+  "code: INPUT_PACKER_WGSL",
+  "label: 'neural-pipeline-inputPack'",
+  "entryPoint: INPUT_PACKER_ENTRY",
+  "label: 'neural-uniform-inputPack'",
+]) {
+  if (!layerResourceAllocator.includes(needle)) {
+    fail(`walkaround neural allocator must retain input-pack pipeline wiring: ${needle}`);
+  }
+}
+
+const unetArchitecture = await readText("packages/walkaround-hybrid/src/neural/unetArchitecture.ts");
+for (const needle of [
+  "pack       → enc_input",
+  "output: 'enc_input'",
+  "inputs: ['enc_input']",
+]) {
+  if (!unetArchitecture.includes(needle)) {
+    fail(`walkaround neural UNet architecture must retain enc_input graph wiring: ${needle}`);
   }
 }
 

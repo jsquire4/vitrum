@@ -95,12 +95,9 @@ during the items-to-fix landings. Descriptions kept below for posterity.
   - **(b)** Move the entire `rc/` subtree to `examples/standalone-rc/` (since the README claims it's available "for standalone dispatch") and delete it from `walkaround-hybrid`'s public exports. Update the package README to remove the "RC" entries from the algorithm list — keep them only if (a) is the plan.
 - **Acceptance:** Either `HybridEngine` runs a Cornell scene with `denoiser: 'atrous-variance'`, RC enabled, and visibly produces a higher-quality first-bounce indirect than DDGI-only; or `packages/walkaround-hybrid/src/rc/` is gone.
 
-### B3. Neural denoiser layout — inputPacker module imported but may not match U-Net packing
+### B3. Neural denoiser layout — closed/source-verified
 
-- **Where:** `packages/walkaround-hybrid/src/neural/InferenceGraph.ts:271` references `inputPacker.ts`; line 631 says "The `inputPacker.ts` module provides the proper GPU packing shader"; line 653 says the runtime layout "is not the interleaved per-pixel layout. A production pack shader is in inputPacker.ts."
-- **What to verify before fixing:** Read `InferenceGraph.ts:_runInputPack` (or equivalent — the 05-17 sweep cited the method name) and confirm whether it actually calls into `inputPacker.ts` or still does the legacy `copyBufferToBuffer` planar layout. If it's still planar, the `'neural'` mode is unusable; if it's now interleaved via `inputPacker.ts`, this item is closed.
-- **Fix (only if confirmed broken):** swap `_runInputPack` to dispatch `inputPacker.ts`'s compute shader, matching the interleaved layout `unetArchitecture.ts` expects.
-- **Acceptance:** `HybridEngine` with `denoiser: 'neural'` and supplied weights produces a denoised output that beats `atrous-variance` on a Cornell-with-noise test scene. The same dispose path no longer leaks weight buffers (the 05-17 finding F4).
+- **Closed/source-verified 2026-06-19:** the old "inputPacker imported but not used" concern is stale. `packages/walkaround-hybrid/src/neural/unetArchitecture.ts` declares the first graph tensor as `enc_input` (`H x W x 9`); `layerResourceAllocator.ts` imports `INPUT_PACKER_WGSL` / `INPUT_PACKER_ENTRY`, compiles `neural-pipeline-inputPack`, and allocates `neural-uniform-inputPack`; `InferenceGraph.run()` calls `_runInputPack(enc, noisyColorBuf, albedoBuf, normalsBuf)` before layer dispatch; `_runInputPack()` binds noisy/albedo/normals/enc_input/params at bindings 0-4 and dispatches `Math.ceil(pixelCount / 256)` workgroups; `inputPacker.ts` writes per-pixel interleaved channels 0-2 noisy, 3-5 albedo, and 6-8 normals. Remaining neural Road work is production checkpoint + quality A/B, not input layout.
 
 ### B4. OIDN bridge has zero non-test consumers
 
@@ -121,9 +118,9 @@ reconciliation. Descriptions kept below for posterity.
   - "DDGI receiver double-applies albedo and 1/π" — **fixed** per A1 of the old sweep (probeUpdateRays.wgsl.ts:549 no longer premultiplies).
   - "DDGI atlas border padding is allocated but never written" — **fixed**; `borderIrrPipeline` and `borderVisPipeline` exist (`probeUpdatePass.ts:133-135, 317-379`).
   - "What ships as SVGF is à-trous + a variance scalar lookup" — **fixed**; `svgfReprojection.wgsl.ts`, `svgfVarianceFromMoments.wgsl.ts`, `svgf7x7SpatialFallback.wgsl.ts` exist in `packages/shared-denoisers/src/wgsl/` and `svgfRealWebGPU.ts` uses dedicated `r32float` depth textures.
-  - "PPG enable hard-throws at pipeline compile" — **fixed** (PPG no longer throws; it now compiles cleanly and dispatches 0 workgroups — see B1 above).
-  - "`pt-webgpu` glossy BSDF" — still likely real, but `pt-webgpu` is explicitly labeled pre-alpha prototype; the documentation should clarify it's not the production PT.
-  - "Neural denoiser is decorative scaffolding (no 'neural' mode)" — **partially stale**; the `'neural'` mode is in the `HybridEngineOptions.denoiser` union (`HybridEngine.ts:176`). What may still be broken is the input-packing layout (B3 above).
+  - "PPG enable hard-throws at pipeline compile" — **closed/source-verified**; PPG now flows through `PPGUpdatePass`, computes a positive `wgCount`, and dispatches `dispatchWorkgroups(wgCount, 1, 1)`.
+  - "`pt-webgpu` glossy BSDF" — **closed/source-verified**; the path-trace BSDF uses Heitz 2018 VNDF sampling/PDFs and the remaining pt-webgpu work is fidelity promotion/evidence, not this old glossy mismatch.
+  - "Neural denoiser is decorative scaffolding (no 'neural' mode)" — **closed/source-verified for runtime wiring**; `'neural'` is a real opt-in denoiser mode, B3 verifies the interleaved input pack, and the remaining neural Road tail is production checkpoint + quality A/B.
 - **Fix:** Rewrite the "What's done" section to reflect M7 (DDGI coherent physical model), the new SVGF-real pipeline, the shipped `HybridEngine.updateLighting()` and `HybridEngine.setSize()` methods (lines 813, 882). Rewrite the "Where things actually stand" bullet list to only contain bugs that survive re-verification (the A/B sections of this file).
 
 ### C2. `memory/in-flight-sweep.md` is mostly stale and misleading
