@@ -344,6 +344,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('binding: 17, resource: sb.materialTextureSampler');
     expect(ADJOINT_PASS_TS).toContain('binding: 18, resource: { buffer: sb.colorsBuffer }');
     expect(ADJOINT_PASS_TS).toContain('binding: 19, resource: sb.materialLinearTextureView');
+    expect(ADJOINT_PASS_TS).toContain("case 'baseColor':");
+    expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_BASECOLOR;');
+    expect(ADJOINT_PASS_TS).toContain('unsupported material adjoint field');
     expect(ADJOINT_PASS_TS).toContain("case 'iridescenceIor':");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_IRIDESCENCE_IOR;');
     expect(ADJOINT_PASS_TS).toContain("case 'iridescenceThicknessRange':");
@@ -360,9 +363,13 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_ANISOTROPY_ROTATION;');
     expect(ADJOINT_PASS_TS).toContain("if (p.domain === 'emitters')");
     expect(ADJOINT_PASS_TS).toContain('fieldCode = ADJOINT_FIELD_EMITTER_COLOR;');
+    expect(ADJOINT_PASS_TS).toContain('unsupported emitter adjoint field');
     expect(ADJOINT_PASS_TS).toContain('adjointEmitterTargetForScene(scene, p.id)');
     expect(ADJOINT_PASS_TS).toContain('kind: ADJOINT_EMITTER_TARGET_POINT');
     expect(ADJOINT_PASS_TS).toContain('kind: ADJOINT_EMITTER_TARGET_RECT');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain(
+      'adjointScatter(gradOffset, gRough * invReplaySamples);',
+    );
   });
 
   it('path-replay adjoint shader samples light maps for primary-hit intensity gradients', () => {

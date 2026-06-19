@@ -289,7 +289,9 @@ function enforceCompatibility<
       `[vitrum/gltf-adapter] No compatibility entry found for ${formatBackendProfile(backend, profileId)}.`,
     );
   }
-  const effectiveIssues = selected.issues.filter((issue) => !isSatisfiedCompatibilityIssue(issue, options, asset));
+  const effectiveIssues = selected.issues.filter((issue) =>
+    !isSatisfiedCompatibilityIssue(issue, options, asset, backend)
+  );
   const rejectedIssues = effectiveIssues
     .filter((issue) => {
       if (mode === 'reject-unsupported') return issue.support === 'unsupported';
@@ -503,7 +505,15 @@ function isSatisfiedCompatibilityIssue<
   issue: GltfCompatibilityIssue,
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
   asset: GltfAssetResult | GltfDecodedAssetResult,
+  backend: BackendId,
 ): boolean {
+  if (
+    issue.category === 'texture' &&
+    issue.name.startsWith('texture-readiness:') &&
+    issue.support === 'requires-hook'
+  ) {
+    return opaqueTextureHandlesReadyForBackend(options, backend);
+  }
   if (issue.support === 'requires-hook') {
     if (issue.name === 'KHR_draco_mesh_compression') return typeof options.dracoDecode === 'function';
     if (issue.name === 'EXT_meshopt_compression' || issue.name === 'KHR_meshopt_compression') {

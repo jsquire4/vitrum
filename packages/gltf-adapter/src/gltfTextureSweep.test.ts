@@ -506,7 +506,7 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
       expect.objectContaining({
         severity: 'warning',
         code: 'disabled-texture-source-extension',
-        path: 'textures[0].extensions',
+        path: 'textures[0].extensions.MSFT_texture_dds',
         textureIndex: 0,
         textureSourceExtensions: ['MSFT_texture_dds'],
         message: expect.stringContaining('textures[0]'),

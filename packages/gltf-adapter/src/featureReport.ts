@@ -148,7 +148,7 @@ export interface GltfFeatureReport {
 }
 
 export interface GltfCompatibilityIssue {
-  readonly category: 'extension' | 'primitive' | 'material' | 'scene';
+  readonly category: 'extension' | 'primitive' | 'material' | 'scene' | 'texture';
   readonly name: string;
   readonly support: BackendSupportMode | 'requires-hook' | 'unknown';
   readonly path: string;

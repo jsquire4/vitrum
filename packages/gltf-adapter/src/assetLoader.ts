@@ -25,6 +25,7 @@ import {
   type DecodeGltfTexturePixelsFn,
   type DecodeSceneTextureDiagnostic,
   type DecodeSceneTexturesOptions,
+  type GltfBackendTextureStatus,
   type GltfTextureDecodeReport,
 } from './texturePipeline.js';
 import {
@@ -113,10 +114,11 @@ export async function loadGltfAsset(
   await resolveExternalBuffers(parsed.gltf, buffers, parsed.baseUri, options);
   const imageBytes = await resolveExternalImages(parsed.gltf, parsed.baseUri, options);
 
+  const backendPolicy = options.backendPolicy ?? 'fidelity';
   const featureReport = analyzeGltfAsset(parsed.gltf, {
     ...(options.textureSourceExtensions ? { textureSourceExtensions: options.textureSourceExtensions } : {}),
   });
-  const staticBackendCompatibility = rankGltfBackends(featureReport, options.backendPolicy ?? 'fidelity');
+  const staticBackendCompatibility = rankGltfBackends(featureReport, backendPolicy);
   const sceneIndex = options.sceneIndex ?? parsed.gltf.scene ?? 0;
   const sceneOptions: GltfToSceneOptions = {
     buffers,
@@ -131,9 +133,13 @@ export async function loadGltfAsset(
   };
   const sceneResult = await gltfToScene(parsed.gltf, sceneOptions);
   const textureDecodeReport = buildTextureDecodeReport(sceneResult.scene);
-  const backendCompatibility = reconcileBackendCompatibilityAfterSceneImport(
-    staticBackendCompatibility,
-    sceneResult.scene,
+  const backendCompatibility = rerankBackendCompatibility(
+    reconcileBackendCompatibilityAfterSceneImport(
+      staticBackendCompatibility,
+      sceneResult.scene,
+      textureDecodeReport,
+    ),
+    backendPolicy,
   );
 
   return {
@@ -185,6 +191,7 @@ export async function loadGltfAndDecodeTextures(
     asset.backendCompatibility,
     textureDecodeReport,
     textureDecodeDiagnostics,
+    options.backendPolicy ?? 'fidelity',
   );
   return {
     ...asset,
@@ -224,6 +231,7 @@ const preserveRawImageForTextureDecode: DecodeImageFn = (
 
 const SPEC_GLOSS_ALPHA_ISSUE =
   'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha';
+const TEXTURE_READINESS_ISSUE_PREFIX = 'texture-readiness:';
 const TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES = new Set([
   'KHR_texture_basisu',
   'EXT_texture_webp',
@@ -233,17 +241,21 @@ const TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES = new Set([
 function reconcileBackendCompatibilityAfterSceneImport(
   compatibility: readonly GltfBackendCompatibility[],
   scene: Scene,
+  textureDecodeReport: GltfTextureDecodeReport,
 ): readonly GltfBackendCompatibility[] {
   const liteVertexColorsBakeable = sceneHasOnlyPtWebgpuLiteBakeableVertexColors(scene);
 
   return compatibility.map((candidate) => {
     if (candidate.profileId !== 'pt-webgpu-lite' || !liteVertexColorsBakeable) {
-      return candidate;
+      return compatibilityWithTextureReadiness(candidate, textureDecodeReport);
     }
     const issues = candidate.issues.filter((issue) =>
       !(issue.category === 'primitive' && issue.name === 'vertexColors')
     );
-    return issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues);
+    return compatibilityWithTextureReadiness(
+      issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues),
+      textureDecodeReport,
+    );
   });
 }
 
@@ -293,6 +305,7 @@ function reconcileBackendCompatibilityAfterTextureDecode(
   compatibility: readonly GltfBackendCompatibility[],
   report: GltfTextureDecodeReport,
   diagnostics: readonly DecodeSceneTextureDiagnostic[],
+  backendPolicy: GltfBackendPolicy,
 ): readonly GltfBackendCompatibility[] {
   const bakeUnavailable = diagnostics.some((diagnostic) =>
     diagnostic.code === 'spec-gloss-alpha-bake-unavailable'
@@ -301,8 +314,9 @@ function reconcileBackendCompatibilityAfterTextureDecode(
     entry.materialField === 'roughnessMap' && entry.handleKind === 'pixel-data'
   );
 
-  return compatibility.map((candidate) => {
+  const reconciled = compatibility.map((candidate) => {
     const issues = candidate.issues.filter((issue) => {
+      if (isTextureReadinessIssue(issue)) return false;
       if (
         issue.name === SPEC_GLOSS_ALPHA_ISSUE &&
         bakedRoughnessMap &&
@@ -313,8 +327,12 @@ function reconcileBackendCompatibilityAfterTextureDecode(
       if (textureSourceHookIssueSatisfiedByDecode(issue, report)) return false;
       return true;
     });
-    return issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues);
+    return compatibilityWithTextureReadiness(
+      issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues),
+      report,
+    );
   });
+  return rerankBackendCompatibility(reconciled, backendPolicy);
 }
 
 function textureSourceHookIssueSatisfiedByDecode(
@@ -328,6 +346,102 @@ function textureSourceHookIssueSatisfiedByDecode(
   return entries.length > 0 && entries.every((entry) =>
     entry.handleKind === 'pixel-data' || entry.handleKind === 'data-texture'
   );
+}
+
+function compatibilityWithTextureReadiness(
+  candidate: GltfBackendCompatibility,
+  report: GltfTextureDecodeReport,
+): GltfBackendCompatibility {
+  const baseIssues = candidate.issues.filter((issue) => !isTextureReadinessIssue(issue));
+  const textureIssues = textureReadinessIssuesForCandidate(
+    issuesMatch(candidate.issues, baseIssues) ? candidate : compatibilityWithIssues(candidate, baseIssues),
+    report,
+  );
+  if (textureIssues.length === 0 && issuesMatch(candidate.issues, baseIssues)) return candidate;
+  return compatibilityWithIssues(candidate, [...baseIssues, ...textureIssues]);
+}
+
+function textureReadinessIssuesForCandidate(
+  candidate: GltfBackendCompatibility,
+  report: GltfTextureDecodeReport,
+): GltfCompatibilityIssue[] {
+  const key = textureReadinessKey(candidate);
+  if (key == null) return [];
+
+  const unsupportedMaterialFields = new Set(
+    candidate.issues
+      .filter((issue) => issue.category === 'material' && issue.support === 'unsupported')
+      .map((issue) => issue.name),
+  );
+
+  const issues: GltfCompatibilityIssue[] = [];
+  for (const entry of report.entries) {
+    if (unsupportedMaterialFields.has(entry.materialField)) continue;
+    const status = entry.backendReadiness[key];
+    const support = textureReadinessSupport(status);
+    if (support == null) continue;
+    issues.push({
+      category: 'texture',
+      name: `${TEXTURE_READINESS_ISSUE_PREFIX}${entry.materialField}`,
+      support,
+      path: entry.path,
+      message:
+        support === 'requires-hook'
+          ? `Backend profile ${candidate.profileId} needs a decoded or backend-native texture handle for ` +
+            `"${entry.materialField}" at ${entry.path}; current handle is ${entry.handleKind}.`
+          : `Backend profile ${candidate.profileId} does not consume "${entry.materialField}" texture data ` +
+            `at ${entry.path}; current handle is ${entry.handleKind}.`,
+    });
+  }
+  return issues;
+}
+
+function textureReadinessKey(
+  candidate: GltfBackendCompatibility,
+): keyof GltfTextureDecodeReport['entries'][number]['backendReadiness'] | undefined {
+  if (candidate.backend === 'pt-webgl2') return 'ptWebgl2';
+  if (candidate.backend === 'pt-webgpu') return 'ptWebgpu';
+  if (candidate.backend === 'walkaround-hybrid') return 'walkaroundHybrid';
+  return undefined;
+}
+
+function textureReadinessSupport(status: GltfBackendTextureStatus): GltfCompatibilityIssue['support'] | null {
+  if (status === 'ready') return null;
+  if (status === 'opaque') return 'requires-hook';
+  return 'unsupported';
+}
+
+function isTextureReadinessIssue(issue: GltfCompatibilityIssue): boolean {
+  return issue.category === 'texture' && issue.name.startsWith(TEXTURE_READINESS_ISSUE_PREFIX);
+}
+
+function issuesMatch(
+  a: readonly GltfCompatibilityIssue[],
+  b: readonly GltfCompatibilityIssue[],
+): boolean {
+  return a.length === b.length && a.every((issue, index) => issue === b[index]);
+}
+
+function rerankBackendCompatibility(
+  compatibility: readonly GltfBackendCompatibility[],
+  policy: GltfBackendPolicy,
+): readonly GltfBackendCompatibility[] {
+  const preferred = policy === 'realtime'
+    ? ['walkaround-hybrid', 'pt-webgpu', 'pt-webgpu-lite', 'pt-webgl2']
+    : ['pt-webgl2', 'pt-webgpu', 'pt-webgpu-lite', 'walkaround-hybrid'];
+  const order = new Map(preferred.map((profileId, index) => [profileId, index]));
+  return [...compatibility].sort((a, b) => {
+    if (policy === 'strict') {
+      const aBad = a.unsupportedCount + a.approximateCount + a.requiresHookCount;
+      const bBad = b.unsupportedCount + b.approximateCount + b.requiresHookCount;
+      if (aBad !== bBad) return aBad - bBad;
+    } else {
+      if (a.unsupportedCount !== b.unsupportedCount) return a.unsupportedCount - b.unsupportedCount;
+      if (a.requiresHookCount !== b.requiresHookCount) return a.requiresHookCount - b.requiresHookCount;
+      if (a.approximateCount !== b.approximateCount) return a.approximateCount - b.approximateCount;
+    }
+    return (order.get(a.profileId) ?? 99) - (order.get(b.profileId) ?? 99);
+  });
 }
 
 function compatibilityWithIssues(

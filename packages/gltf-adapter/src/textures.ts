@@ -386,10 +386,13 @@ function resolveTextureImageSource(
     if (texture.extensions?.[extName]?.source !== undefined) available.push(extName);
   }
   if (texture.source === undefined && available.length > 0) {
+    const path = available.length === 1
+      ? `textures[${textureIndex}].extensions.${available[0]}`
+      : `textures[${textureIndex}].extensions`;
     emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
       severity: 'warning',
       code: 'disabled-texture-source-extension',
-      path: `textures[${textureIndex}].extensions`,
+      path,
       textureIndex,
       textureSourceExtensions: available,
       message:

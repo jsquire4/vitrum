@@ -820,6 +820,17 @@ describe('loadGltfAsset', () => {
       }),
     ]));
     expect(result.recommendedBackend.backend).toBe('pt-webgl2');
+    expect(result.recommendedBackend).toMatchObject({
+      requiresHookCount: 1,
+      issues: expect.arrayContaining([
+        expect.objectContaining({
+          category: 'texture',
+          name: 'texture-readiness:baseColorMap',
+          support: 'requires-hook',
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        }),
+      ]),
+    });
   });
 
   it('forwards pointLineFallbackRadius into generated point/line meshes', async () => {
@@ -3790,7 +3801,7 @@ describe('loadGltfForEngine', () => {
       entry.backend === 'pt-webgl2' && entry.profileId === 'pt-webgl2'
     );
     expect(preDecodePtWebgl2).toMatchObject({
-      requiresHookCount: 1,
+      requiresHookCount: 2,
     });
     expect(postDecodePtWebgl2).toMatchObject({
       requiresHookCount: 0,

@@ -1578,7 +1578,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         );
         adjointScatter(gradOffset, gIntensity * invReplaySamples);
       } else {
-        adjointScatter(gradOffset, gRough * invReplaySamples);
+        // Unknown field codes are rejected before descriptor upload.
       }
     }
   }

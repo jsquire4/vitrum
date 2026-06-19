@@ -1270,6 +1270,15 @@ CPU-linear atlas payloads. The old `createImageBitmap` sRGB footgun is therefore
 closed for the adapter decode bridge and preserved only as an explicit host
 contract boundary for opaque browser handles.
 
+✅ **FOLLOW-UP (2026-06-18):** `loadGltfAsset()` now reconciles
+`backendCompatibility` / `recommendedBackend` against the actual
+`textureDecodeReport`, not just the static JSON feature scan. Opaque or ignored
+map handles become structured `texture:texture-readiness:*` issues, backend
+ranking is re-run after import and after decode, and `loadGltfForEngine()` treats
+those issues consistently with its existing `opaqueTextureHandlesReady` strict
+mode escape hatch. Disabled texture-source-extension diagnostics also point to
+the exact extension path when only one source extension is present.
+
 #### 4D — Animation + temporal GI
 
 | Concern | Code | Footgun |

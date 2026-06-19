@@ -5,7 +5,7 @@
  *   1. render N samples with a FROZEN frame seed/index,
  *   2. read the accum texture back to CPU (reuses `readOidnInputsFromTextures`),
  *   3. compute the image-space loss vs the target,
- *   4. estimate the gradient by ±ε perturbing each parameter and re-rendering,
+ *   4. estimate the gradient by +epsilon perturbing each parameter and re-rendering,
  *   5. Adam-step the tiny flat parameter vector,
  *   6. push the updated params into the scene via updatePrimitive/updateEmitter.
  *

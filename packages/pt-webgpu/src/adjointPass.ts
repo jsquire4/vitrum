@@ -161,8 +161,17 @@ export class AdjointPass {
             `computeAdjointGradient: emitter "${p.id}" is outside the scoped adjoint direct-light target domain.`,
           );
         }
-        let fieldCode = ADJOINT_FIELD_EMITTER_INTENSITY;
-        if (p.field === 'color') fieldCode = ADJOINT_FIELD_EMITTER_COLOR;
+        let fieldCode: number;
+        switch (p.field) {
+          case 'intensity':
+            fieldCode = ADJOINT_FIELD_EMITTER_INTENSITY;
+            break;
+          case 'color':
+            fieldCode = ADJOINT_FIELD_EMITTER_COLOR;
+            break;
+          default:
+            throw new Error(`computeAdjointGradient: unsupported emitter adjoint field "${String(p.field)}".`);
+        }
         const descBase = i * 8;
         descs[descBase + 0] = target.slot >>> 0;
         descs[descBase + 1] = fieldCode;
@@ -178,8 +187,11 @@ export class AdjointPass {
       if (matId == null) {
         throw new Error(`computeAdjointGradient: no material index for primitive "${p.id}".`);
       }
-      let fieldCode = ADJOINT_FIELD_BASECOLOR;
+      let fieldCode: number;
       switch (p.field) {
+        case 'baseColor':
+          fieldCode = ADJOINT_FIELD_BASECOLOR;
+          break;
         case 'roughness':
           fieldCode = ADJOINT_FIELD_ROUGHNESS;
           break;
@@ -238,7 +250,7 @@ export class AdjointPass {
           fieldCode = ADJOINT_FIELD_SPECULAR_INTENSITY;
           break;
         default:
-          break;
+          throw new Error(`computeAdjointGradient: unsupported material adjoint field "${String(p.field)}".`);
       }
       const descBase = i * 8;
       descs[descBase + 0] = matId >>> 0;
