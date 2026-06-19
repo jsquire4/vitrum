@@ -15,7 +15,14 @@
  * of the AdjointPass instance (engine-owned; freed via dispose()).
  */
 
-import { asMat4, type FrameInput, type Scene, type ScenePrimitive } from '@vitrum/core';
+import {
+  analyticPrimitiveToMesh,
+  asMat4,
+  type AnalyticPrimitive,
+  type FrameInput,
+  type Scene,
+  type ScenePrimitive,
+} from '@vitrum/core';
 import {
   expandIndicesToStride4,
   mergeUv1FromCore,
@@ -440,13 +447,20 @@ export function buildAdjointWorldSpaceGeometryOverride(
   supportedAnalyticShapes: ReadonlySet<string>,
   materialIndexForPrimitive: (scene: Scene, id: string, shapes: ReadonlySet<string>) => number | null,
 ): AdjointWorldSpaceGeometry | null {
-  const replayable = scene.primitives.filter(isAdjointReplayMeshPrimitive);
-  if (replayable.length !== scene.primitives.length) return null;
-  if (!replayable.some(needsAdjointWorldSpaceGeometryOverride)) {
+  const replayPrimitives: ScenePrimitive[] = [];
+  let needsOverride = false;
+  for (const primitive of scene.primitives) {
+    const replayPrimitive = adjointReplayPrimitive(primitive, supportedAnalyticShapes);
+    if (replayPrimitive == null) return null;
+    replayPrimitives.push(replayPrimitive);
+    needsOverride ||= primitive.kind === 'analytic' || needsAdjointWorldSpaceGeometryOverride(replayPrimitive);
+  }
+  if (!needsOverride) {
     return null;
   }
 
-  const merged = mergeWorldSpaceFromCore(scene, {
+  const replayScene: Scene = { ...scene, primitives: replayPrimitives };
+  const merged = mergeWorldSpaceFromCore(replayScene, {
     positionStride: 4,
     filter: isAdjointReplayMeshPrimitive,
   });
@@ -468,7 +482,7 @@ export function buildAdjointWorldSpaceGeometryOverride(
     triMaterialIds[tri] = mergedTriMaterialIds[mergedTri] ?? 0;
   }
 
-  const uv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount);
+  const uv1 = mergeUv1FromCore(replayScene, merged.meshVertexRanges, merged.vertexCount);
   const uvs = new Float32Array(merged.vertexCount * 4);
   for (let vertex = 0; vertex < merged.vertexCount; vertex += 1) {
     uvs[vertex * 4] = merged.uvs[vertex * 2] ?? 0;
@@ -489,6 +503,18 @@ export function buildAdjointWorldSpaceGeometryOverride(
     triMaterialIds,
     triangleCount: merged.triangleCount,
   };
+}
+
+function adjointReplayPrimitive(
+  primitive: ScenePrimitive,
+  supportedAnalyticShapes: ReadonlySet<string>,
+): Extract<ScenePrimitive, { kind: 'mesh' | 'skinned-mesh' | 'instanced-mesh' }> | null {
+  if (isAdjointReplayMeshPrimitive(primitive)) return primitive;
+  if (primitive.kind === 'analytic') {
+    if (!supportedAnalyticShapes.has(primitive.shape)) return null;
+    return analyticPrimitiveToMesh(primitive as AnalyticPrimitive);
+  }
+  return null;
 }
 
 function isAdjointReplayMeshPrimitive(

@@ -43,6 +43,7 @@
  */
 
 import type {
+  AnalyticPrimitive,
   InverseSession,
   InverseSessionOptions,
   InverseStepResult,
@@ -54,6 +55,7 @@ import type {
   SceneEmitter,
   MaterialSpec,
 } from '@vitrum/core';
+import { analyticPrimitiveToMesh } from '@vitrum/core';
 import type { Vec2, Vec3 } from '@vitrum/core';
 import {
   Adam,
@@ -96,6 +98,14 @@ export interface InverseEngineHooks {
    */
   getPathReplayRenderContext?(): InversePathReplayRenderContext;
   /**
+   * Optional geometry facts for deciding whether the scoped path-replay adjoint
+   * can build a temporary triangle replay stream. Omitted means analytic
+   * primitives remain finite-difference. The real pt-webgpu engine supplies this
+   * so full-tier supported analytics can replay via deterministic tessellation
+   * while lite-tier unsupported analytics stay fail-closed.
+   */
+  getPathReplayGeometryCapabilities?(): InversePathReplayGeometryCapabilities;
+  /**
    * OPTIONAL Phase-1 path-replay adjoint. When present, the engine dispatches a
    * single-bounce adjoint compute pass over its scene buffers — re-tracing the
    * frozen-seed primary path + NEE, evaluating the analytic BSDF partials
@@ -126,6 +136,10 @@ export interface InversePathReplayRenderContext {
   readonly bdpt?: boolean;
   readonly restirPtReuse?: boolean;
   readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
+}
+
+export interface InversePathReplayGeometryCapabilities {
+  readonly supportedAnalyticShapes?: ReadonlySet<string>;
 }
 
 /** One optimized parameter, located for the engine's adjoint scatter. */
@@ -421,11 +435,13 @@ export class PtWebgpuInverseSession implements InverseSession {
         .map((s) => s.target.id),
     );
     const pathReplayRenderContext = hooks.getPathReplayRenderContext?.() ?? {};
+    const pathReplayGeometryCapabilities = hooks.getPathReplayGeometryCapabilities?.() ?? {};
     const pathReplayDiagnostics = requestedMethod === 'path-replay'
       ? collectPathReplayDiagnostics(scene, this.#slots, {
           hasHook: hooks.computeAdjointGradient != null,
           iridescenceOptimizedPrimitiveIds,
           renderContext: pathReplayRenderContext,
+          geometryCapabilities: pathReplayGeometryCapabilities,
         })
       : [];
     this.#diagnostics = pathReplayDiagnostics;
@@ -443,7 +459,12 @@ export class PtWebgpuInverseSession implements InverseSession {
       pathReplayRenderRegimeIssue(pathReplayRenderContext) == null;
     this.#pathReplaySlotEligible = canUseScopedAdjoint
       ? this.#slots.map((slot) =>
-          diagnosePathReplaySlot(scene, slot, iridescenceOptimizedPrimitiveIds).length === 0,
+          diagnosePathReplaySlot(
+            scene,
+            slot,
+            iridescenceOptimizedPrimitiveIds,
+            pathReplayGeometryCapabilities,
+          ).length === 0,
         )
       : this.#slots.map(() => false);
     this.#usesPartialPathReplay =
@@ -638,6 +659,7 @@ function collectPathReplayDiagnostics(
     readonly hasHook: boolean;
     readonly iridescenceOptimizedPrimitiveIds: ReadonlySet<string>;
     readonly renderContext: InversePathReplayRenderContext;
+    readonly geometryCapabilities: InversePathReplayGeometryCapabilities;
   },
 ): InverseSessionDiagnostic[] {
   const diagnostics: InverseSessionDiagnostic[] = [];
@@ -664,7 +686,12 @@ function collectPathReplayDiagnostics(
   }
 
   for (const slot of slots) {
-    diagnostics.push(...diagnosePathReplaySlot(scene, slot, options.iridescenceOptimizedPrimitiveIds));
+    diagnostics.push(...diagnosePathReplaySlot(
+      scene,
+      slot,
+      options.iridescenceOptimizedPrimitiveIds,
+      options.geometryCapabilities,
+    ));
   }
   return diagnostics;
 }
@@ -709,11 +736,12 @@ function diagnosePathReplaySlot(
   scene: Scene,
   slot: ParamSlot,
   iridescenceOptimizedPrimitiveIds: ReadonlySet<string>,
+  geometryCapabilities: InversePathReplayGeometryCapabilities,
 ): InverseSessionDiagnostic[] {
   const path = slot.param.path;
   const target = slot.target;
   if (target.domain !== 'materials') {
-    return diagnosePathReplayEmitterSlot(scene, slot);
+    return diagnosePathReplayEmitterSlot(scene, slot, geometryCapabilities);
   }
   if (!ADJOINT_ELIGIBLE_FIELDS.has(target.field)) {
     const finiteDifferenceOnlyIssue = pathReplayFiniteDifferenceOnlyFieldIssue(target.field);
@@ -742,7 +770,7 @@ function diagnosePathReplaySlot(
 
   const prim = findPrimitive(scene, target.id);
   if (prim == null) return [];
-  const primitiveIssue = pathReplayPrimitiveIssue(prim);
+  const primitiveIssue = pathReplayPrimitiveIssue(prim, geometryCapabilities);
   if (primitiveIssue != null) {
     return [{
       severity: 'info',
@@ -754,7 +782,7 @@ function diagnosePathReplaySlot(
       details: primitiveIssue.details,
     }];
   }
-  const sceneGeometryIssue = pathReplaySceneGeometryIssue(scene);
+  const sceneGeometryIssue = pathReplaySceneGeometryIssue(scene, geometryCapabilities);
   if (sceneGeometryIssue != null) {
     return [{
       severity: 'info',
@@ -849,6 +877,7 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
 function diagnosePathReplayEmitterSlot(
   scene: Scene,
   slot: ParamSlot,
+  geometryCapabilities: InversePathReplayGeometryCapabilities,
 ): InverseSessionDiagnostic[] {
   const path = slot.param.path;
   const target = slot.target;
@@ -893,7 +922,7 @@ function diagnosePathReplayEmitterSlot(
     }];
   }
 
-  const receiverIssue = pathReplayEmitterReceiverSceneIssue(scene);
+  const receiverIssue = pathReplayEmitterReceiverSceneIssue(scene, geometryCapabilities);
   if (receiverIssue != null) {
     return [{
       severity: 'info',
@@ -910,11 +939,16 @@ function diagnosePathReplayEmitterSlot(
 
 function pathReplayPrimitiveIssue(
   primitive: ScenePrimitive,
+  geometryCapabilities: InversePathReplayGeometryCapabilities,
 ): { message: string; details: Record<string, string | number | boolean> } | null {
+  if (primitive.kind === 'analytic') {
+    return pathReplayAnalyticPrimitiveIssue(primitive, geometryCapabilities);
+  }
   if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh' && primitive.kind !== 'instanced-mesh') {
+    const primitiveKind = (primitive as { readonly kind: string }).kind;
     return {
-      message: `primitive kind "${primitive.kind}" is not triangle-backed for path-replay`,
-      details: { primitiveKind: primitive.kind },
+      message: `primitive kind "${primitiveKind}" is not triangle-backed for path-replay`,
+      details: { primitiveKind },
     };
   }
   if (primitive.kind === 'instanced-mesh' && primitive.instances.length === 0) {
@@ -928,13 +962,70 @@ function pathReplayPrimitiveIssue(
 
 function pathReplaySceneGeometryIssue(
   scene: Scene,
+  geometryCapabilities: InversePathReplayGeometryCapabilities,
 ): { message: string; details: Record<string, string | number | boolean> } | null {
   for (const primitive of scene.primitives) {
     if (primitive.kind === 'mesh' || primitive.kind === 'skinned-mesh') continue;
     if (primitive.kind === 'instanced-mesh') continue;
+    if (primitive.kind === 'analytic') {
+      const analyticIssue = pathReplayAnalyticPrimitiveIssue(primitive, geometryCapabilities);
+      if (analyticIssue == null) continue;
+      return {
+        message:
+          `scene primitive "${primitive.id}" has analytic shape "${primitive.shape}", ` +
+          analyticIssue.message,
+        details: { primitiveId: primitive.id, primitiveKind: primitive.kind, ...analyticIssue.details },
+      };
+    }
+    const primitiveId = (primitive as { readonly id: string }).id;
+    const primitiveKind = (primitive as { readonly kind: string }).kind;
     return {
-      message: `scene primitive "${primitive.id}" has kind "${primitive.kind}", outside the flat triangle replay domain`,
-      details: { primitiveId: primitive.id, primitiveKind: primitive.kind },
+      message: `scene primitive "${primitiveId}" has kind "${primitiveKind}", outside the flat triangle replay domain`,
+      details: { primitiveId, primitiveKind },
+    };
+  }
+  return null;
+}
+
+function pathReplayAnalyticPrimitiveIssue(
+  primitive: AnalyticPrimitive,
+  geometryCapabilities: InversePathReplayGeometryCapabilities,
+): { message: string; details: Record<string, string | number | boolean> } | null {
+  const supportedAnalyticShapes = geometryCapabilities.supportedAnalyticShapes;
+  if (supportedAnalyticShapes == null || !supportedAnalyticShapes.has(primitive.shape)) {
+    return {
+      message:
+        `analytic shape "${primitive.shape}" is not available for path-replay tessellation on this engine tier`,
+      details: {
+        primitiveKind: primitive.kind,
+        analyticShape: primitive.shape,
+        finiteDifferenceReason: 'analytic-shape-capability',
+      },
+    };
+  }
+
+  try {
+    const mesh = analyticPrimitiveToMesh(primitive);
+    const vertexCount = Math.floor(mesh.positions.length / 3);
+    const triangleCount = Math.floor((mesh.indices?.length ?? vertexCount) / 3);
+    if (triangleCount <= 0) {
+      return {
+        message: `analytic shape "${primitive.shape}" tessellated to zero triangles`,
+        details: {
+          primitiveKind: primitive.kind,
+          analyticShape: primitive.shape,
+          finiteDifferenceReason: 'analytic-tessellation-empty',
+        },
+      };
+    }
+  } catch {
+    return {
+      message: `analytic shape "${primitive.shape}" could not be tessellated for path-replay`,
+      details: {
+        primitiveKind: primitive.kind,
+        analyticShape: primitive.shape,
+        finiteDifferenceReason: 'analytic-tessellation-failed',
+      },
     };
   }
   return null;
@@ -1000,9 +1091,10 @@ function meshAreaEmitterMappedEmissionIssue(
 
 function pathReplayEmitterReceiverSceneIssue(
   scene: Scene,
+  geometryCapabilities: InversePathReplayGeometryCapabilities,
 ): PathReplayMaterialIssue | null {
   for (const primitive of scene.primitives) {
-    const primitiveIssue = pathReplayPrimitiveIssue(primitive);
+    const primitiveIssue = pathReplayPrimitiveIssue(primitive, geometryCapabilities);
     if (primitiveIssue != null) {
       return {
         message: `receiver primitive "${primitive.id}" ${primitiveIssue.message}`,

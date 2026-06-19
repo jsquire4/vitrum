@@ -2987,6 +2987,77 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay for supported analytic scene geometry via tessellated replay', () => {
+    const fake = makeFakeEngine();
+    const baseMesh = fake.scene.primitives[0]!;
+    if (baseMesh.kind !== 'mesh') throw new Error('test fixture expected a mesh primitive');
+    fake.scene = {
+      ...fake.scene,
+      primitives: [
+        baseMesh,
+        {
+          kind: 'analytic',
+          id: 'sphere-occluder',
+          shape: 'sphere',
+          params: new Float32Array([0, 0, 0, 1]),
+          material: baseMesh.material,
+        },
+      ],
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayGeometryCapabilities: () => ({ supportedAnalyticShapes: new Set(['sphere']) }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-scene-geometry',
+      path: 'materials.panel.baseColor',
+    }));
+    session.dispose();
+  });
+
+  it('keeps path-replay for supported analytic material targets via tessellated replay', () => {
+    const fake = makeFakeEngine();
+    const baseMesh = fake.scene.primitives[0]!;
+    if (baseMesh.kind !== 'mesh') throw new Error('test fixture expected a mesh primitive');
+    fake.scene = {
+      ...fake.scene,
+      primitives: [{
+        kind: 'analytic',
+        id: 'panel',
+        shape: 'box',
+        params: new Float32Array([0, 0, 0, 1, 1, 1]),
+        material: baseMesh.material,
+      }],
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayGeometryCapabilities: () => ({ supportedAnalyticShapes: new Set(['box']) }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-primitive',
+      path: 'materials.panel.baseColor',
+    }));
+    session.dispose();
+  });
+
   it('passes specular adjoint params to the hook with the expected flat offsets', async () => {
     const fake = makeFakeEngine();
     let captured: AdjointGradientRequest | null = null;

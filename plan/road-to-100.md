@@ -54,8 +54,11 @@
 > live material IDs), so non-identity mesh transforms no longer force a path-replay
 > downgrade. Follow-up: non-empty `instanced-mesh` primitives now use that same
 > transient world-space stream, baking every instance into the adjoint replay geometry;
-> zero-instance targets and analytic scene geometry remain structured finite-difference
-> downgrades because the adjoint pass still does not trace analytic shapes.
+> zero-instance targets remain structured finite-difference downgrades. **2026-06-19
+> follow-up:** full-tier supported analytic primitives now feed the same replay stream
+> through deterministic core analytic-to-mesh tessellation, with lite/unsupported
+> analytic shapes still failing closed to finite difference instead of pretending to
+> native analytic-intersection adjoint parity.
 > **2026-06-18 source-verified follow-up:** pt-webgpu primary-hit path replay now keeps
 > unlit emissive fits, emissive/light-map primary terms with normal-only maps, and
 > unlit AO map intensity with irrelevant BRDF lobe flags on the analytic route;

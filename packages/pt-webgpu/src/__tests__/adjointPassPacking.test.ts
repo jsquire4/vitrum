@@ -375,6 +375,55 @@ describe('AdjointPass host packing', () => {
     expect(triangles.sort()).toEqual(['0,1,2', '3,4,5']);
   });
 
+  it('builds a tessellated replay override for supported analytic geometry', () => {
+    const scene = makeScene();
+    const base = scene.primitives[0]!;
+    if (base.kind !== 'mesh') throw new Error('test fixture expected a mesh');
+    const analyticScene: Scene = {
+      ...scene,
+      primitives: [{
+        kind: 'analytic',
+        id: base.id,
+        shape: 'box',
+        params: new Float32Array([0, 0, 0, 1, 1, 1]),
+        material: base.material,
+      }],
+    };
+
+    const override = buildAdjointWorldSpaceGeometryOverride(
+      analyticScene,
+      new Set(['box']),
+      (_scene, id) => (id === 'panel' ? 9 : null),
+    );
+
+    expect(override).not.toBeNull();
+    expect(override!.triangleCount).toBe(12);
+    expect(override!.positions.length).toBeGreaterThan(0);
+    expect(Array.from(override!.triMaterialIds)).toEqual(new Array(12).fill(9));
+  });
+
+  it('does not build an analytic replay override for unsupported analytic shapes', () => {
+    const scene = makeScene();
+    const base = scene.primitives[0]!;
+    if (base.kind !== 'mesh') throw new Error('test fixture expected a mesh');
+    const analyticScene: Scene = {
+      ...scene,
+      primitives: [{
+        kind: 'analytic',
+        id: base.id,
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 1]),
+        material: base.material,
+      }],
+    };
+
+    expect(buildAdjointWorldSpaceGeometryOverride(
+      analyticScene,
+      new Set(['box']),
+      (_scene, id) => (id === 'panel' ? 9 : null),
+    )).toBeNull();
+  });
+
   it('packs replay sample count and swaps mesh-area emitter adjoint replay buffers into bindings', async () => {
     const restoreWebGpuConstants = installWebGpuConstants();
     try {

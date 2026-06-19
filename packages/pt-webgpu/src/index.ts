@@ -556,6 +556,7 @@ class PTEngineWebGPU implements Engine {
   static readonly #SUPPORTED_ANALYTIC_SHAPES = new Set(
     PT_WEBGPU_ANALYTIC_SHAPES.slice(1),
   );
+  static readonly #NO_ANALYTIC_SHAPES = new Set<string>();
 
   constructor(opts: PTEngineWebGPUOptions, slot: StateSlot, traceTier: PtWebgpuTraceTier) {
     this.#slot = slot;
@@ -894,7 +895,9 @@ class PTEngineWebGPU implements Engine {
   /** Supported analytic shapes (id > 0) — passed to the pure incrementalPatch
    *  resolvers so they reproduce buildPackedScene's material/analytic ordering. */
   #supportedAnalyticShapes(): ReadonlySet<string> {
-    return PTEngineWebGPU.#SUPPORTED_ANALYTIC_SHAPES;
+    return this.#traceTier === 'lite'
+      ? PTEngineWebGPU.#NO_ANALYTIC_SHAPES
+      : PTEngineWebGPU.#SUPPORTED_ANALYTIC_SHAPES;
   }
 
   // ── Debug introspection (T3.G followup + #30 pickPrimitive) ──────────────
@@ -2049,6 +2052,9 @@ class PTEngineWebGPU implements Engine {
         bdpt: this.#bdpt && this.#traceTier === 'full',
         restirPtReuse: this.#restirPtReuse,
         causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
+      }),
+      getPathReplayGeometryCapabilities: () => ({
+        supportedAnalyticShapes: this.#supportedAnalyticShapes(),
       }),
       computeAdjointGradient: (req) => this.#computeAdjointGradient(req),
     };
