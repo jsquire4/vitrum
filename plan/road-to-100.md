@@ -1800,8 +1800,9 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
 2. Compressed wide BVH traversal (`WBVH-01`): the shared substrate is now
    partially landed: `shared-bvh` exports CWBVH-style 8-wide packing, quantized
    child bounds, deterministic packed metadata, conservative dequantized bounds
-   checks, explicit u16→u32 WGSL upload packing, a CPU first-hit traversal oracle
-   compared against brute force, and WGSL closest/any-hit traversal helpers
+   checks, explicit u16→u32 WGSL upload packing, reordered triangle-payload
+   overlay helpers, CPU first-hit/any-hit traversal oracles compared against
+   brute force, and WGSL closest/any-hit traversal helpers
    covered by the WebGPU shader/pipeline gate. Remaining work is backend opt-in
    capability flags, binary-BVH fallback policy, GPU traversal parity tests, and
    real equal-scene throughput/memory proof.
@@ -1884,9 +1885,11 @@ documented in `lightTree.ts:33-35`).
 **Landed implementation slices:** `shared-bvh` now has a CWBVH-style CPU packer
 and oracle: binary SAH nodes collapse into 8-wide slots with parent-relative
 u16 child bounds, explicit child kind/offset/count metadata, deterministic
-outputs, empty-scene handling, conservative dequantized bounds tests, and
-first-hit CPU traversal checked against brute-force triangle intersection. The
-shared WGSL side is also started: child bounds have an explicit u16→u32 upload
+outputs, empty-scene handling, conservative dequantized bounds tests,
+first-hit/any-hit CPU traversal checked against brute-force triangle
+intersection, reordered triangle-payload overlay for stride-4 `.w` data, and
+CPU/WGSL parity for the glass-skip transmission-nibble filter when payloads are
+supplied. The shared WGSL side is also started: child bounds have an explicit u16→u32 upload
 packer, and `CWBVH_INTERSECT_WGSL` exposes closest-hit and any-hit traversal
 helpers over the packed wide-node buffers. Shader-gate compiles a concrete
 CWBVH harness pipeline through the same Naga ptr-parameter compatibility layer

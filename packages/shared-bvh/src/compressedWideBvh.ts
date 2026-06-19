@@ -61,6 +61,11 @@ export interface CwbvhTraverseOptions {
   readonly triEps?: number;
   readonly tMin?: number;
   readonly tMax?: number;
+  /**
+   * Mirror the WGSL glass-skip filter: when true, stride-4 triangle payloads
+   * whose transmission nibble `(payload >> 4) & 0xf` exceeds 4 do not occlude.
+   */
+  readonly skipGlass?: boolean;
 }
 
 interface BinaryNodeInfo {
@@ -307,6 +312,28 @@ export function packCwbvhBuildBoundsForWgsl(
   return packed;
 }
 
+/**
+ * Overlay per-source-triangle payload words onto a BVH-reordered stride-4 index
+ * buffer. `buildArrayBvh` deliberately zero-fills padding lanes; consumers that
+ * need a material/visibility payload in `.w` can call this with the source
+ * triangle payload stream after the BVH reorder is known.
+ */
+export function reorderCwbvhTrianglePayloads(
+  cwbvh: Pick<CompressedWideBvhBuildResult, 'reorderedIndices' | 'reorderedToSourceTriangle'>,
+  sourcePayloads: Uint32Array,
+  indexStride = 4,
+): Uint32Array {
+  if (indexStride < 4) {
+    throw new Error(`CWBVH triangle payloads require indexStride >= 4; got ${indexStride}`);
+  }
+  const withPayloads = new Uint32Array(cwbvh.reorderedIndices);
+  for (let tri = 0; tri < cwbvh.reorderedToSourceTriangle.length; tri += 1) {
+    const sourceTri = cwbvh.reorderedToSourceTriangle[tri] ?? tri;
+    withPayloads[tri * indexStride + 3] = sourcePayloads[sourceTri] ?? 0;
+  }
+  return withPayloads;
+}
+
 export function cwbvhChildBounds(
   cwbvh: Pick<CompressedWideBvhBuildResult, 'cwbvhNodeBounds' | 'cwbvhChildBounds'>,
   nodeIndex: number,
@@ -417,6 +444,18 @@ function intersectAabb(
   return tMin;
 }
 
+function shouldSkipGlassTriangle(
+  reorderedIndices: Uint32Array,
+  tri: number,
+  indexStride: number,
+  skipGlass: boolean,
+): boolean {
+  if (!skipGlass || indexStride < 4) return false;
+  const payload = reorderedIndices[tri * indexStride + 3] ?? 0;
+  const trans4 = (payload >>> 4) & 0xf;
+  return trans4 > 4;
+}
+
 export function intersectCompressedWideBvhFirstHit(
   cwbvh: CompressedWideBvhBuildResult,
   positions: Float32Array,
@@ -428,6 +467,7 @@ export function intersectCompressedWideBvhFirstHit(
   const triEps = opts.triEps ?? 1e-5;
   const tMin = opts.tMin ?? triEps;
   let closest = opts.tMax ?? Number.POSITIVE_INFINITY;
+  const skipGlass = opts.skipGlass ?? false;
   let hitTriangle = -1;
   let hitSourceTriangle = -1;
   let hitBary: readonly [number, number, number] = [0, 0, 0];
@@ -471,6 +511,7 @@ export function intersectCompressedWideBvhFirstHit(
         const triCount = cwbvh.cwbvhChildMeta[mb + 2] ?? 0;
         for (let i = 0; i < triCount; i += 1) {
           const tri = triOffset + i;
+          if (shouldSkipGlassTriangle(cwbvh.reorderedIndices, tri, indexStride, skipGlass)) continue;
           const ib = tri * indexStride;
           const i0 = cwbvh.reorderedIndices[ib] ?? 0;
           const i1 = cwbvh.reorderedIndices[ib + 1] ?? 0;
@@ -497,4 +538,70 @@ export function intersectCompressedWideBvhFirstHit(
     sourceTriangleIndex: hitSourceTriangle,
     bary: hitBary,
   };
+}
+
+export function intersectCompressedWideBvhAnyHit(
+  cwbvh: CompressedWideBvhBuildResult,
+  positions: Float32Array,
+  ray: CwbvhRay,
+  opts: CwbvhTraverseOptions = {},
+): boolean {
+  const positionStride = opts.positionStride ?? 4;
+  const indexStride = opts.indexStride ?? 4;
+  const triEps = opts.triEps ?? 1e-5;
+  const tMin = opts.tMin ?? 1e-4;
+  const tMax = opts.tMax ?? Number.POSITIVE_INFINITY;
+  const skipGlass = opts.skipGlass ?? false;
+
+  if (cwbvh.cwbvhNodeCount === 0) return false;
+
+  const rootMin: [number, number, number] = [
+    cwbvh.cwbvhNodeBounds[0] ?? 0,
+    cwbvh.cwbvhNodeBounds[1] ?? 0,
+    cwbvh.cwbvhNodeBounds[2] ?? 0,
+  ];
+  const rootMax: [number, number, number] = [
+    cwbvh.cwbvhNodeBounds[3] ?? 0,
+    cwbvh.cwbvhNodeBounds[4] ?? 0,
+    cwbvh.cwbvhNodeBounds[5] ?? 0,
+  ];
+  if (intersectAabb(ray, rootMin, rootMax, tMin, tMax) == null) return false;
+
+  const stack: number[] = [0];
+  while (stack.length > 0) {
+    const nodeIndex = stack.pop()!;
+    const count = Math.min(CWBVH_CHILDREN, cwbvh.cwbvhChildCount[nodeIndex] ?? 0);
+    for (let slot = 0; slot < count; slot += 1) {
+      const mb = nodeIndex * CWBVH_CHILDREN * CWBVH_CHILD_META_WORDS + slot * CWBVH_CHILD_META_WORDS;
+      const kind = cwbvh.cwbvhChildMeta[mb] ?? CWBVH_CHILD_EMPTY;
+      if (kind === CWBVH_CHILD_EMPTY) continue;
+      const bounds = cwbvhChildBounds(cwbvh, nodeIndex, slot);
+      if (intersectAabb(ray, bounds.min, bounds.max, tMin, tMax) == null) continue;
+
+      if (kind === CWBVH_CHILD_NODE) {
+        stack.push(cwbvh.cwbvhChildMeta[mb + 1] ?? 0);
+        continue;
+      }
+
+      if (kind === CWBVH_CHILD_LEAF) {
+        const triOffset = cwbvh.cwbvhChildMeta[mb + 1] ?? 0;
+        const triCount = cwbvh.cwbvhChildMeta[mb + 2] ?? 0;
+        for (let i = 0; i < triCount; i += 1) {
+          const tri = triOffset + i;
+          if (shouldSkipGlassTriangle(cwbvh.reorderedIndices, tri, indexStride, skipGlass)) continue;
+          const ib = tri * indexStride;
+          const i0 = cwbvh.reorderedIndices[ib] ?? 0;
+          const i1 = cwbvh.reorderedIndices[ib + 1] ?? 0;
+          const i2 = cwbvh.reorderedIndices[ib + 2] ?? 0;
+          const a = positionAt(positions, i0, positionStride);
+          const b = positionAt(positions, i1, positionStride);
+          const c = positionAt(positions, i2, positionStride);
+          const hit = intersectTriangle(ray, a, b, c, triEps);
+          if (hit != null && hit.t > tMin && hit.t < tMax) return true;
+        }
+      }
+    }
+  }
+
+  return false;
 }

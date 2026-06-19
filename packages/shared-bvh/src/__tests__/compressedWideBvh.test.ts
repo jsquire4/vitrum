@@ -8,9 +8,11 @@ import {
   CWBVH_CHILD_BOUNDS_PACKED_U32,
   buildCompressedWideBvh,
   cwbvhChildBounds,
+  intersectCompressedWideBvhAnyHit,
   intersectCompressedWideBvhFirstHit,
   packCwbvhBuildBoundsForWgsl,
   packCwbvhChildBoundsForWgsl,
+  reorderCwbvhTrianglePayloads,
   type CwbvhRay,
 } from '../index.js';
 
@@ -111,6 +113,14 @@ function bruteForceFirstHit(
     }
   }
   return { didHit: sourceTriangleIndex >= 0, dist: best, sourceTriangleIndex };
+}
+
+function bruteForceAnyHit(
+  positions: Float32Array,
+  indices: Uint32Array,
+  ray: CwbvhRay,
+): boolean {
+  return bruteForceFirstHit(positions, indices, ray).didHit;
 }
 
 function growBounds(
@@ -282,5 +292,51 @@ describe('compressedWideBvh', () => {
         expect(wide.sourceTriangleIndex).toBe(brute.sourceTriangleIndex);
       }
     }
+  });
+
+  it('matches brute-force any-hit results across hit and miss rays', () => {
+    const mesh = makeGrid(5);
+    const built = buildCompressedWideBvh(mesh.positions, mesh.indices, mesh.triMaterialIds, { maxLeafTriangles: 1 });
+    const rays: CwbvhRay[] = [
+      { origin: [0.25, 0.75, 3], direction: [0, 0, -1] },
+      { origin: [2.25, 4.75, 3], direction: [0, 0, -1] },
+      { origin: [5.5, 2, 3], direction: [0, 0, -1] },
+      { origin: [2, -0.5, 3], direction: [0, 0, -1] },
+    ];
+
+    for (const ray of rays) {
+      expect(intersectCompressedWideBvhAnyHit(built, mesh.positions, ray)).toBe(
+        bruteForceAnyHit(mesh.positions, mesh.indices, ray),
+      );
+    }
+  });
+
+  it('mirrors the WGSL skipGlass transmission-nibble filter', () => {
+    const positions = new Float32Array([
+      0, 0, 0, 0,
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+    ]);
+    const glassPayload = 5 << 4;
+    const built = buildCompressedWideBvh(
+      positions,
+      new Uint32Array([0, 1, 2, glassPayload]),
+      new Uint32Array([0]),
+    );
+    const withPayload = {
+      ...built,
+      reorderedIndices: reorderCwbvhTrianglePayloads(built, new Uint32Array([glassPayload])),
+    };
+    const ray: CwbvhRay = { origin: [0.25, 0.25, 1], direction: [0, 0, -1] };
+
+    expect(built.reorderedIndices[3]).toBe(0);
+    expect(withPayload.reorderedIndices[3]).toBe(glassPayload);
+    expect(intersectCompressedWideBvhAnyHit(withPayload, positions, ray)).toBe(true);
+    expect(intersectCompressedWideBvhAnyHit(withPayload, positions, ray, { skipGlass: true })).toBe(false);
+    expect(intersectCompressedWideBvhFirstHit(withPayload, positions, ray).didHit).toBe(true);
+    expect(intersectCompressedWideBvhFirstHit(withPayload, positions, ray, { skipGlass: true }).didHit).toBe(false);
+    expect(() => reorderCwbvhTrianglePayloads(built, new Uint32Array([glassPayload]), 3)).toThrow(
+      /indexStride >= 4/,
+    );
   });
 });
