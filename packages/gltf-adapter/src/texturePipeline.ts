@@ -9,7 +9,12 @@ import type {
   TextureRef,
   TextureWrapMode,
 } from '@vitrum/core';
-import { gltfTextureRefSource, type GltfTextureSourceExtension, type RawImageHandle } from './textures.js';
+import {
+  gltfTextureRefSource,
+  type GltfTextureRefSource,
+  type GltfTextureSourceExtension,
+  type RawImageHandle,
+} from './textures.js';
 
 export type GltfMaterialTextureField =
   | 'baseColorMap'
@@ -147,6 +152,12 @@ export type DecodeGltfTexturePixelsFn = (
     readonly colorSpace: GltfTextureColorSpace;
     readonly primitiveId: string;
     readonly primitiveIndex: number;
+    readonly textureIndex?: number;
+    readonly imageIndex?: number;
+    readonly samplerIndex?: number;
+    readonly imageUri?: string;
+    readonly imageMimeType?: string;
+    readonly textureSourceExtension?: GltfTextureSourceExtension;
   },
 ) => Promise<GltfDecodedTexturePixels> | GltfDecodedTexturePixels;
 
@@ -176,6 +187,12 @@ export interface DecodeSceneTextureDiagnostic {
   readonly resizedHeight?: number;
   readonly wrapS?: TextureWrapMode;
   readonly wrapT?: TextureWrapMode;
+  readonly textureIndex?: number;
+  readonly imageIndex?: number;
+  readonly samplerIndex?: number;
+  readonly imageUri?: string;
+  readonly imageMimeType?: string;
+  readonly textureSourceExtension?: GltfTextureSourceExtension;
 }
 
 export interface DecodeSceneTexturesOptions {
@@ -430,10 +447,12 @@ export async function decodeSceneTextures(
       const ref = material[field] as TextureRef | undefined;
       if (!ref) continue;
       const scenePath = `scene.primitives[${primitiveIndex}].material.${field}`;
-      const path = gltfTextureRefSource(ref)?.path ?? scenePath;
+      const source = gltfTextureRefSource(ref);
+      const path = source?.path ?? scenePath;
       const nextRef = await decodeTextureRef(ref, {
         field,
         path,
+        ...(source !== undefined ? { source } : {}),
         primitiveId: String(primitive.id),
         primitiveIndex,
         options,
@@ -500,11 +519,47 @@ function backendReadinessForHandle(
   };
 }
 
+function textureSourceDiagnosticFields(
+  source: GltfTextureRefSource | undefined,
+): Pick<
+  DecodeSceneTextureDiagnostic,
+  'textureIndex' | 'imageIndex' | 'samplerIndex' | 'imageUri' | 'imageMimeType' | 'textureSourceExtension'
+> {
+  return {
+    ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
+    ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
+    ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
+    ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
+    ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
+    ...(source?.textureSourceExtension !== undefined
+      ? { textureSourceExtension: source.textureSourceExtension }
+      : {}),
+  };
+}
+
+function rawImageDecoderMissingMessage(context: {
+  readonly path: string;
+  readonly source?: GltfTextureRefSource;
+  readonly options: DecodeSceneTexturesOptions;
+}): string {
+  const extension = context.source?.textureSourceExtension;
+  if (extension === 'KHR_texture_basisu' || extension === 'MSFT_texture_dds') {
+    return `[vitrum/gltf-adapter] ${context.path} selects ${extension}` +
+      `${context.source?.imageMimeType ? ` (${context.source.imageMimeType})` : ''}, ` +
+      'but this compressed texture-source extension has no built-in pixel decoder. Supply decodePixels ' +
+      `for decodeSceneTextures(target:"${context.options.target}") or choose an asset fallback. Texture left unchanged.`;
+  }
+  return `[vitrum/gltf-adapter] ${context.path} is a raw-image texture but no decodePixels hook was supplied ` +
+    `and this host has no browser image/canvas readback path for decodeSceneTextures(target:"${context.options.target}"). ` +
+    'Texture left unchanged.';
+}
+
 async function decodeTextureRef(
   ref: TextureRef,
   context: {
     readonly field: GltfMaterialTextureField;
     readonly path: string;
+    readonly source?: GltfTextureRefSource;
     readonly primitiveId: string;
     readonly primitiveIndex: number;
     readonly options: DecodeSceneTexturesOptions;
@@ -523,6 +578,7 @@ async function decodeTextureRef(
       primitiveId: context.primitiveId,
       primitiveIndex: context.primitiveIndex,
       handleKind,
+      ...textureSourceDiagnosticFields(context.source),
       message: `[vitrum/gltf-adapter] ${context.path} has ${handleKind} texture handle; ` +
         `decodeSceneTextures(target:"${context.options.target}") can only normalize raw-image handles. ` +
         'Texture left unchanged.',
@@ -550,10 +606,8 @@ async function decodeTextureRef(
       primitiveId: context.primitiveId,
       primitiveIndex: context.primitiveIndex,
       handleKind,
-      message:
-        `[vitrum/gltf-adapter] ${context.path} is a raw-image texture but no decodePixels hook was supplied ` +
-        `and this host has no browser image/canvas readback path for decodeSceneTextures(target:"${context.options.target}"). ` +
-        'Texture left unchanged.',
+      ...textureSourceDiagnosticFields(context.source),
+      message: rawImageDecoderMissingMessage(context),
     });
     return ref;
   }
@@ -576,6 +630,7 @@ async function decodeTextureRef(
         colorSpace,
         primitiveId: context.primitiveId,
         primitiveIndex: context.primitiveIndex,
+        ...textureSourceDiagnosticFields(context.source),
       });
     } catch (err) {
       if (err instanceof PlatformTextureDecodeError) {
@@ -587,6 +642,7 @@ async function decodeTextureRef(
           primitiveId: context.primitiveId,
           primitiveIndex: context.primitiveIndex,
           handleKind,
+          ...textureSourceDiagnosticFields(context.source),
           message: err.message,
         });
         return ref;
@@ -1070,6 +1126,7 @@ function emitDecodedTextureDiagnostics(
   context: {
     readonly field: GltfMaterialTextureField;
     readonly path: string;
+    readonly source?: GltfTextureRefSource;
     readonly primitiveId: string;
     readonly primitiveIndex: number;
     readonly options: DecodeSceneTexturesOptions;
@@ -1092,6 +1149,7 @@ function emitDecodedTextureDiagnostics(
       maxTextureSize,
       resizedWidth: handle.width,
       resizedHeight: handle.height,
+      ...textureSourceDiagnosticFields(context.source),
       message: `[vitrum/gltf-adapter] ${context.path} decoded to ${entry.originalWidth}x${entry.originalHeight}, ` +
         `which exceeds maxTextureSize=${maxTextureSize}. Texture was resized to ${handle.width}x${handle.height} ` +
         `during ${context.options.target} decode before backend upload.`,
@@ -1113,6 +1171,7 @@ function emitDecodedTextureDiagnostics(
       height: handle.height,
       wrapS,
       wrapT,
+      ...textureSourceDiagnosticFields(context.source),
       message: `[vitrum/gltf-adapter] ${context.path} decoded to NPOT ${handle.width}x${handle.height} ` +
         `with wrapS=${wrapS} wrapT=${wrapT}. WebGL2/WebGPU can sample NPOT textures, but exact mip/border ` +
         'parity depends on backend upload policy; pre-resize to power-of-two if this asset needs strict parity.',

@@ -26,6 +26,7 @@ export function generateTangents(
   const tanAccum = new Float32Array(vertexCount * 3);
   const bitanAccum = new Float32Array(vertexCount * 3);
   const triCount = indices ? Math.floor(indices.length / 3) : Math.floor(vertexCount / 3);
+  let validTriangleCount = 0;
 
   for (let t = 0; t < triCount; t += 1) {
     const i0 = indices ? (indices[t * 3] ?? 0) : t * 3;
@@ -52,6 +53,7 @@ export function generateTangents(
 
     const denom = du1 * dv2 - du2 * dv1;
     if (Math.abs(denom) < 1e-12) continue;
+    validTriangleCount += 1;
     const r = 1 / denom;
     const tx = (dv2 * e1x - dv1 * e2x) * r;
     const ty = (dv2 * e1y - dv1 * e2y) * r;
@@ -69,6 +71,8 @@ export function generateTangents(
       bitanAccum[vi * 3 + 2] = (bitanAccum[vi * 3 + 2] ?? 0) + bz;
     }
   }
+
+  if (validTriangleCount === 0) return undefined;
 
   for (let v = 0; v < vertexCount; v += 1) {
     const nx = normals[v * 3] ?? 0;

@@ -476,6 +476,43 @@ describe('minimal triangle', () => {
     ]);
   });
 
+  it('drops malformed COLOR_0 accessors instead of forwarding invalid vertex-color buffers', async () => {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const colorBuf = f32Buffer([
+      1, 0,
+      0, 1,
+      0, 0,
+    ]);
+    const packed = concatBuffers(posBuf, colorBuf);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [{ mesh: 0 }],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0, COLOR_0: 1 } }] }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: posBuf.byteLength },
+        { buffer: 0, byteOffset: posBuf.byteLength, byteLength: colorBuf.byteLength },
+      ],
+      buffers: [{ byteLength: packed.byteLength }],
+    };
+
+    const { scene, diagnostics } = await gltfToScene(gltf, { buffers: new Map([[0, packed]]) });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(prim.colors).toBeUndefined();
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'invalid-primitive-attribute',
+      path: 'meshes[0].primitives[0].attributes.COLOR_0',
+      message: expect.stringContaining('COLOR_0 accessor must be VEC3 or VEC4'),
+    }));
+  });
+
   it('warns when secondary vertex color sets are ignored', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const color0Buf = f32Buffer([
@@ -663,6 +700,64 @@ describe('minimal triangle', () => {
       code: 'generated-tangents',
       path: 'meshes[0].primitives[0].attributes.TANGENT',
       message: expect.stringContaining('generated per-vertex tangents'),
+    }));
+  });
+
+  it('drops malformed authored TANGENT and regenerates when the material needs a tangent frame', async () => {
+    const { gltf, buffers } = makeNormalMappedTriangleGltf([
+      1, 0, 0,
+      1, 0, 0,
+      1, 0, 0,
+    ]);
+    gltf.accessors![3] = {
+      ...gltf.accessors![3]!,
+      type: 'VEC3',
+    };
+
+    const { scene, diagnostics } = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-normal' }),
+    });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(prim.tangents).toBeInstanceOf(Float32Array);
+    expect(prim.tangents).toHaveLength(12);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'invalid-primitive-attribute',
+      path: 'meshes[0].primitives[0].attributes.TANGENT',
+      message: expect.stringContaining('TANGENT accessor must be VEC4'),
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'generated-tangents',
+      path: 'meshes[0].primitives[0].attributes.TANGENT',
+    }));
+  });
+
+  it('does not report clean generated tangents when every UV triangle is degenerate', async () => {
+    const { gltf, buffers } = makeNormalMappedTriangleGltf();
+    const source = new Uint8Array(buffers.get(0)!);
+    const next = source.slice();
+    const uvView = gltf.bufferViews![2]!;
+    next.fill(0, uvView.byteOffset ?? 0, (uvView.byteOffset ?? 0) + uvView.byteLength);
+    buffers.set(0, next.buffer);
+
+    const { scene, diagnostics } = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-normal' }),
+    });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect(prim.tangents).toBeUndefined();
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'tangent-generation-failed',
+      path: 'meshes[0].primitives[0].attributes.TANGENT',
+    }));
+    expect(diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'generated-tangents',
+      path: 'meshes[0].primitives[0].attributes.TANGENT',
     }));
   });
 

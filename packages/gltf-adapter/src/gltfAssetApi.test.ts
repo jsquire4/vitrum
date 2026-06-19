@@ -1070,6 +1070,9 @@ describe('loadGltfAsset', () => {
       colorSpace: 'srgb',
       primitiveId: 'gltf-prim-0',
       primitiveIndex: 0,
+      textureIndex: 0,
+      imageIndex: 0,
+      imageMimeType: 'image/png',
     });
     expect(result.decodedTextureCount).toBe(1);
     expect(result.unchangedTextureCount).toBe(0);
@@ -1701,6 +1704,48 @@ describe('decodeSceneTextures', () => {
     expect(warnings[0]).toContain('materials[0].pbrMetallicRoughness.baseColorTexture');
     expect((after.material.baseColorMap as TextureRef).handle).toBe((before.material.baseColorMap as TextureRef).handle);
     expect(result.report.rawImageCount).toBe(1);
+  });
+
+  it('reports selected compressed texture-source provenance when no pixel decoder is supplied', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const ktx = bytes([0xab, 0x4b, 0x54, 0x58, 0x20]);
+    const bufferIndex = gltf.buffers!.length;
+    const bufferViewIndex = gltf.bufferViews!.length;
+    const imageIndex = gltf.images!.length;
+    buffers.set(bufferIndex, ktx);
+    gltf.buffers!.push({ byteLength: ktx.byteLength });
+    gltf.bufferViews!.push({ buffer: bufferIndex, byteOffset: 0, byteLength: ktx.byteLength });
+    gltf.images!.push({ bufferView: bufferViewIndex, mimeType: 'image/ktx2' });
+    gltf.extensionsUsed = ['KHR_texture_basisu'];
+    gltf.textures![0] = {
+      ...gltf.textures![0]!,
+      extensions: { KHR_texture_basisu: { source: imageIndex } },
+    };
+
+    const asset = await loadGltfAsset(gltf, {
+      buffers,
+      textureSourceExtensions: ['KHR_texture_basisu'],
+    });
+    const result = await decodeSceneTextures(asset.scene, { target: 'cpu-linear' });
+
+    expect(result.decodedCount).toBe(0);
+    expect(result.unchangedCount).toBe(1);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'raw-image-decoder-missing',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        materialField: 'baseColorMap',
+        primitiveId: 'gltf-prim-0',
+        primitiveIndex: 0,
+        handleKind: 'raw-image',
+        textureIndex: 0,
+        imageIndex,
+        imageMimeType: 'image/ktx2',
+        textureSourceExtension: 'KHR_texture_basisu',
+        message: expect.stringContaining('KHR_texture_basisu'),
+      }),
+    ]);
   });
 
   it('resizes decoded textures to maxTextureSize before backend upload', async () => {

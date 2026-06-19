@@ -60,6 +60,7 @@ import {
   type TextureRef,
 } from '@vitrum/core';
 import type {
+  GltfAccessor,
   GltfJson,
   GltfNode,
   GltfPrimitive,
@@ -383,6 +384,7 @@ export type GltfImportDiagnosticCode =
   | 'missing-position'
   | 'unreadable-position'
   | 'unreadable-indices'
+  | 'invalid-primitive-attribute'
   | 'ignored-vertex-color-set'
   | 'ignored-primitive-attribute'
   | 'empty-triangulated-primitive'
@@ -732,6 +734,8 @@ export async function gltfToScene(
         continue;
       }
 
+      const vertexCount = Math.floor(positions.length / 3);
+
       // Indices (optional).
       let indices: Uint32Array | undefined;
       if (prim.indices !== undefined) {
@@ -818,22 +822,48 @@ export async function gltfToScene(
       );
 
       // Tangents — optional (xyzw per vertex).
-      let tangents = _tryUnpackFloat(
-        gltf, buffers, prim.attributes['TANGENT'],
-        `TANGENT for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-        diagnostics,
-        'unreadable-optional-attribute',
+      const tangentIdx = prim.attributes['TANGENT'];
+      let tangents = _validatePrimitiveAttributeAccessor(
+        gltf,
+        tangentIdx,
+        ['VEC4'],
+        vertexCount,
+        'TANGENT',
+        `${mesh.name ?? node.mesh}`,
         `${primitivePath}.attributes.TANGENT`,
-      );
+        warnings,
+        diagnostics,
+      )
+        ? _tryUnpackFloat(
+            gltf, buffers, tangentIdx,
+            `TANGENT for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+            diagnostics,
+            'unreadable-optional-attribute',
+            `${primitivePath}.attributes.TANGENT`,
+          )
+        : undefined;
 
       // Vertex colors — optional (COLOR_0).
-      let colors = _tryUnpackFloat(
-        gltf, buffers, prim.attributes['COLOR_0'],
-        `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-        diagnostics,
-        'unreadable-optional-attribute',
+      const color0Idx = prim.attributes['COLOR_0'];
+      let colors = _validatePrimitiveAttributeAccessor(
+        gltf,
+        color0Idx,
+        ['VEC3', 'VEC4'],
+        vertexCount,
+        'COLOR_0',
+        `${mesh.name ?? node.mesh}`,
         `${primitivePath}.attributes.COLOR_0`,
-      );
+        warnings,
+        diagnostics,
+      )
+        ? _tryUnpackFloat(
+            gltf, buffers, color0Idx,
+            `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+            diagnostics,
+            'unreadable-optional-attribute',
+            `${primitivePath}.attributes.COLOR_0`,
+          )
+        : undefined;
       for (const attrName of Object.keys(prim.attributes).sort()) {
         if (/^COLOR_[1-9][0-9]*$/.test(attrName)) {
           emitImportDiagnostic(warnings, diagnostics, {
@@ -1549,6 +1579,33 @@ function _tryUnpackFloat(
     }
     return undefined;
   }
+}
+
+function _validatePrimitiveAttributeAccessor(
+  gltf: GltfJson,
+  accessorIndex: number | undefined,
+  allowedTypes: readonly GltfAccessor['type'][],
+  expectedCount: number,
+  attributeName: string,
+  meshLabel: string,
+  path: string,
+  warnings: string[],
+  diagnostics: GltfImportDiagnostic[],
+): boolean {
+  if (accessorIndex === undefined) return true;
+  const accessor = gltf.accessors?.[accessorIndex];
+  if (!accessor) return true;
+  if (allowedTypes.includes(accessor.type) && accessor.count === expectedCount) return true;
+  emitImportDiagnostic(warnings, diagnostics, {
+    severity: 'warning',
+    code: 'invalid-primitive-attribute',
+    path,
+    message:
+      `[vitrum/gltf-adapter] Mesh "${meshLabel}" ${attributeName} accessor must be ` +
+      `${allowedTypes.join(' or ')} with count ${expectedCount}, but accessor ${accessorIndex} ` +
+      `is ${accessor.type} with count ${accessor.count}. Attribute ignored.`,
+  });
+  return false;
 }
 
 interface SkinData {
