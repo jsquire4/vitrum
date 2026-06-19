@@ -3450,8 +3450,17 @@ describe('loadGltfForEngine', () => {
 
   it('allows glTF cameras in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
-    gltf.cameras = [{ type: 'perspective' }];
-    gltf.nodes![0] = { ...gltf.nodes![0]!, camera: 0 };
+    gltf.cameras = [{
+      type: 'orthographic',
+      name: 'Ortho Preview',
+      orthographic: { xmag: 2, ymag: 1, znear: 0.01, zfar: 20 },
+    }];
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      name: 'Preview Camera Node',
+      camera: 0,
+      translation: [0, 4, 8],
+    };
 
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
     const accepted = await loadGltfForEngine(gltf, {
@@ -3467,6 +3476,24 @@ describe('loadGltfForEngine', () => {
         path: 'cameras[0]',
       }),
     ]));
+    expect(accepted.asset.cameras).toEqual([
+      expect.objectContaining({
+        cameraIndex: 0,
+        nodeIndex: 0,
+        type: 'orthographic',
+        name: 'Ortho Preview',
+        nodeName: 'Preview Camera Node',
+        orthographic: {
+          xmag: 2,
+          ymag: 1,
+          znear: 0.01,
+          zfar: 20,
+        },
+      }),
+    ]);
+    expect(accepted.controller.cameras).toHaveLength(1);
+    expect(accepted.controller.cameras[0]!.worldMatrix[13]).toBeCloseTo(4);
+    expect(accepted.controller.cameras[0]!.worldMatrix[14]).toBeCloseTo(8);
     expect(createEngine).toHaveBeenCalledTimes(1);
 
     const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));

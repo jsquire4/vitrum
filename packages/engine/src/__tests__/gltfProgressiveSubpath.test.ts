@@ -139,7 +139,7 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     ]);
     expect(result.warnings).toEqual(expect.arrayContaining([
       expect.stringContaining('exceeds maxTextureSize=2'),
-      expect.stringContaining('Camera nodes are present but ignored'),
+      expect.stringContaining('reported on result.cameras'),
     ]));
     expect(result.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({

@@ -12,6 +12,7 @@ export type {
   GltfImportDiagnosticCode,
   GltfInstancingBinding,
   GltfMaterialVariantBinding,
+  GltfSceneCamera,
   GltfToSceneOptions,
   GltfToSceneResult,
 } from './gltfToScene.js';

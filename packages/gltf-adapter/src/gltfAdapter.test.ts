@@ -1598,10 +1598,19 @@ describe('out-of-scope feature warnings', () => {
 
   it('surfaces ignored cameras as structured import diagnostics', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
-    gltf.cameras = [{ type: 'perspective' }];
-    gltf.nodes![0] = { ...gltf.nodes![0]!, camera: 0 };
-    const { warnings, diagnostics } = await gltfToScene(gltf, { buffers });
-    expect(warnings.some(w => w.includes('Camera nodes are present but ignored'))).toBe(true);
+    gltf.cameras = [{
+      type: 'perspective',
+      name: 'Hero Camera',
+      perspective: { yfov: 0.7, znear: 0.1, zfar: 250, aspectRatio: 1.5 },
+    }];
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      name: 'Camera Rig',
+      camera: 0,
+      translation: [1, 2, 3],
+    };
+    const { warnings, diagnostics, cameras } = await gltfToScene(gltf, { buffers });
+    expect(warnings.some(w => w.includes('reported on result.cameras'))).toBe(true);
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         severity: 'warning',
@@ -1609,6 +1618,25 @@ describe('out-of-scope feature warnings', () => {
         path: 'cameras[0]',
       }),
     ]));
+    expect(cameras).toHaveLength(1);
+    expect(cameras[0]).toEqual(expect.objectContaining({
+      cameraIndex: 0,
+      nodeIndex: 0,
+      path: 'cameras[0]',
+      nodePath: 'nodes[0]',
+      type: 'perspective',
+      name: 'Hero Camera',
+      nodeName: 'Camera Rig',
+      perspective: {
+        yfov: 0.7,
+        znear: 0.1,
+        zfar: 250,
+        aspectRatio: 1.5,
+      },
+    }));
+    expect(cameras[0]!.worldMatrix[12]).toBeCloseTo(1);
+    expect(cameras[0]!.worldMatrix[13]).toBeCloseTo(2);
+    expect(cameras[0]!.worldMatrix[14]).toBeCloseTo(3);
   });
 });
 

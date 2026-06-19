@@ -36,7 +36,8 @@
 //     when present (Draco fallback accessors / meshopt fallback buffer);
 //     extensionsRequired without a hook or fallback throws. See compression.ts.
 //
-// Out of scope: cameras,
+// Cameras are reported as metadata for host inspection, but are not injected
+// into @vitrum/core Scene because Vitrum render cameras are frame-owned.
 //
 // Primitive modes: TRIANGLES (4) is converted directly; TRIANGLE_STRIP (5) and
 // TRIANGLE_FAN (6) are triangulated into indexed triangle lists (winding per
@@ -62,6 +63,7 @@ import {
 } from '@vitrum/core';
 import type {
   GltfAccessor,
+  GltfCamera,
   GltfJson,
   GltfNode,
   GltfPrimitive,
@@ -282,6 +284,13 @@ export interface GltfToSceneOptions {
 export interface GltfToSceneResult {
   readonly scene: Scene;
   /**
+   * glTF cameras reachable from the selected scene, one entry per camera node.
+   * These are metadata only: @vitrum/core Scene has no render-camera field, so
+   * hosts that want to honor an authored camera should translate one of these
+   * records into per-frame `FrameInput` view/projection matrices.
+   */
+  readonly cameras: ReadonlyArray<GltfSceneCamera>;
+  /**
    * glTF animations converted to core `AnimationClip`s (empty when the file
    * has none).
    *
@@ -367,6 +376,33 @@ export interface GltfInstancingBinding {
   readonly primitiveId: string;
   readonly nodeIndex: number;
   readonly localInstanceTransforms: ReadonlyArray<Mat4>;
+}
+
+export interface GltfPerspectiveCameraProjection {
+  readonly yfov?: number;
+  readonly znear?: number;
+  readonly zfar?: number;
+  readonly aspectRatio?: number;
+}
+
+export interface GltfOrthographicCameraProjection {
+  readonly xmag?: number;
+  readonly ymag?: number;
+  readonly znear?: number;
+  readonly zfar?: number;
+}
+
+export interface GltfSceneCamera {
+  readonly cameraIndex: number;
+  readonly nodeIndex: number;
+  readonly path: string;
+  readonly nodePath: string;
+  readonly type: 'perspective' | 'orthographic' | 'unknown';
+  readonly worldMatrix: Mat4;
+  readonly name?: string;
+  readonly nodeName?: string;
+  readonly perspective?: GltfPerspectiveCameraProjection;
+  readonly orthographic?: GltfOrthographicCameraProjection;
 }
 
 export type GltfImportDiagnosticCode =
@@ -552,8 +588,8 @@ export async function gltfToScene(
         code: 'ignored-camera',
         path: `cameras[${cameraIndex}]`,
         message:
-          '[vitrum/gltf-adapter] Camera nodes are present but ignored (cameras are not part of the ' +
-          '@vitrum/core Scene contract; pass camera data via FrameInput instead).',
+          '[vitrum/gltf-adapter] Camera nodes are present and reported on result.cameras, but are not ' +
+          'injected into the @vitrum/core Scene contract; pass camera data via FrameInput instead.',
       });
     }
   }
@@ -659,6 +695,8 @@ export async function gltfToScene(
 
   // ── 7. Build world transforms for all nodes ────────────────────────────────
   const worldTransforms = buildWorldTransforms(gltf, rootNodes);
+
+  const cameras = _collectSceneCameras(gltf, worldTransforms);
 
   // ── 8. Flatten node → mesh → primitives ───────────────────────────────────
   const primitives: ScenePrimitive[] = [];
@@ -1271,6 +1309,7 @@ export async function gltfToScene(
 
   return {
     scene,
+    cameras,
     animations,
     animationTargets,
     convertedMaterials: coreMaterials,
@@ -1279,6 +1318,90 @@ export async function gltfToScene(
     warnings,
     diagnostics,
   };
+}
+
+function _collectSceneCameras(
+  gltf: GltfJson,
+  worldTransforms: ReadonlyMap<number, Mat4>,
+): GltfSceneCamera[] {
+  const cameras = gltf.cameras ?? [];
+  const nodes = gltf.nodes ?? [];
+  const result: GltfSceneCamera[] = [];
+  for (const [nodeIndex, worldMatrix] of worldTransforms) {
+    const node = nodes[nodeIndex];
+    if (!node) continue;
+    const candidateCameraIndex = node.camera;
+    if (
+      candidateCameraIndex === undefined ||
+      !Number.isInteger(candidateCameraIndex) ||
+      candidateCameraIndex < 0
+    ) {
+      continue;
+    }
+    const cameraIndex = candidateCameraIndex;
+    const camera = cameras[cameraIndex];
+    if (!camera) continue;
+    const type = camera.type === 'perspective'
+      ? 'perspective'
+      : camera.type === 'orthographic'
+        ? 'orthographic'
+        : 'unknown';
+    result.push({
+      cameraIndex,
+      nodeIndex,
+      path: `cameras[${cameraIndex}]`,
+      nodePath: `nodes[${nodeIndex}]`,
+      type,
+      worldMatrix: asMat4(new Float32Array(worldMatrix)),
+      ...(typeof camera.name === 'string' ? { name: camera.name } : {}),
+      ...(typeof node.name === 'string' ? { nodeName: node.name } : {}),
+      ...(type === 'perspective'
+        ? { perspective: _extractPerspectiveCameraProjection(camera) }
+        : {}),
+      ...(type === 'orthographic'
+        ? { orthographic: _extractOrthographicCameraProjection(camera) }
+        : {}),
+    });
+  }
+  return result;
+}
+
+function _extractPerspectiveCameraProjection(
+  camera: GltfCamera,
+): GltfPerspectiveCameraProjection {
+  const source = isRecord(camera.perspective) ? camera.perspective : {};
+  return {
+    ...finiteField(source, 'yfov'),
+    ...finiteField(source, 'znear'),
+    ...finiteField(source, 'zfar'),
+    ...finiteField(source, 'aspectRatio'),
+  };
+}
+
+function _extractOrthographicCameraProjection(
+  camera: GltfCamera,
+): GltfOrthographicCameraProjection {
+  const source = isRecord(camera.orthographic) ? camera.orthographic : {};
+  return {
+    ...finiteField(source, 'xmag'),
+    ...finiteField(source, 'ymag'),
+    ...finiteField(source, 'znear'),
+    ...finiteField(source, 'zfar'),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function finiteField<TName extends string>(
+  source: Record<string, unknown>,
+  name: TName,
+): Partial<Record<TName, number>> {
+  const value = source[name];
+  return typeof value === 'number' && Number.isFinite(value)
+    ? { [name]: value } as Partial<Record<TName, number>>
+    : {};
 }
 
 // ── Private helpers ──────────────────────────────────────────────────────────

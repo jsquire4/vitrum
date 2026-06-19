@@ -19,7 +19,7 @@ export interface GltfJson {
   samplers?: GltfSampler[];
   skins?: GltfSkin[];
   animations?: GltfAnimation[];
-  cameras?: unknown[];
+  cameras?: GltfCamera[];
   extensions?: {
     KHR_materials_variants?: {
       variants?: Array<{ name?: string }>;
@@ -29,6 +29,48 @@ export interface GltfJson {
   extensionsUsed?: string[];
   extensionsRequired?: string[];
 }
+
+export interface GltfPerspectiveCamera {
+  type: 'perspective';
+  name?: string;
+  perspective?: {
+    yfov?: number;
+    znear?: number;
+    zfar?: number;
+    aspectRatio?: number;
+    [key: string]: unknown;
+  };
+  extensions?: Record<string, unknown>;
+  extras?: unknown;
+  [key: string]: unknown;
+}
+
+export interface GltfOrthographicCamera {
+  type: 'orthographic';
+  name?: string;
+  orthographic?: {
+    xmag?: number;
+    ymag?: number;
+    znear?: number;
+    zfar?: number;
+    [key: string]: unknown;
+  };
+  extensions?: Record<string, unknown>;
+  extras?: unknown;
+  [key: string]: unknown;
+}
+
+export interface GltfUnknownCamera {
+  type?: string;
+  name?: string;
+  perspective?: Record<string, unknown>;
+  orthographic?: Record<string, unknown>;
+  extensions?: Record<string, unknown>;
+  extras?: unknown;
+  [key: string]: unknown;
+}
+
+export type GltfCamera = GltfPerspectiveCamera | GltfOrthographicCamera | GltfUnknownCamera;
 
 /** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
 export interface GltfScene {

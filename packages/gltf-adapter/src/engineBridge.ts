@@ -150,6 +150,7 @@ export async function loadGltfForEngine<
     gltf: asset.gltf,
     sceneIndex: asset.sceneIndex,
     scene: asset.scene,
+    cameras: asset.cameras,
     warnings: asset.warnings,
     diagnostics: asset.diagnostics,
     animations: asset.animations,

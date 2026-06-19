@@ -25,6 +25,7 @@ import type {
   GltfInstancingBinding,
   GltfMaterialVariantBinding,
   GltfMaterialVariantPrimitivePatch,
+  GltfSceneCamera,
   GltfToSceneResult,
 } from './gltfToScene.js';
 import { GLTF_DEFAULT_MATERIAL } from './materials.js';
@@ -42,9 +43,10 @@ export interface GltfScenePatchTarget {
   reset?(): void;
 }
 
-export interface GltfSceneControllerInput extends GltfToSceneResult {
+export interface GltfSceneControllerInput extends Omit<GltfToSceneResult, 'cameras'> {
   readonly gltf: GltfJson;
   readonly sceneIndex?: number;
+  readonly cameras?: readonly GltfSceneCamera[];
 }
 
 export interface GltfSceneControllerOptions {
@@ -200,6 +202,7 @@ export function createGltfSceneController(
 
 export class GltfSceneController {
   readonly gltf: GltfJson;
+  readonly cameras: readonly GltfSceneCamera[];
   readonly animations: readonly AnimationClip[];
   readonly animationTargets: Readonly<Record<string, readonly string[]>>;
 
@@ -222,6 +225,7 @@ export class GltfSceneController {
 
   constructor(input: GltfSceneControllerInput, options: GltfSceneControllerOptions = {}) {
     this.gltf = input.gltf;
+    this.cameras = input.cameras ?? [];
     this.animations = input.animations;
     this.animationTargets = input.animationTargets;
     this.#scene = input.scene;
