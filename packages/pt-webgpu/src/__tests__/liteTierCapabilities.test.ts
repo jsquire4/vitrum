@@ -405,6 +405,66 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
+  it('full tier updatePrimitive warns with primitive-scoped details for scalar displacement fields', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    try {
+      engine.setScene({
+        primitives: [
+          {
+            kind: 'mesh',
+            id: 'm',
+            positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+            normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+            material: { baseColor: [0.8, 0.2, 0.1], roughness: 0.3, metallic: 0 },
+          },
+        ],
+        emitters: [],
+        environment: { kind: 'none' },
+      });
+
+      expect(engine.updatePrimitive).toBeTypeOf('function');
+      engine.updatePrimitive!('m', {
+        material: {
+          roughness: 0.42,
+          displacementScale: 0.2,
+          displacementBias: -0.1,
+        },
+      } as never);
+    } catch {
+      /* GPU stubs may throw after the warn — that's expected */
+    }
+
+    const displacementWarnings = structured.filter((w) =>
+      w.code === 'pt-webgpu.unsupported-displacement-material'
+    );
+    expect(displacementWarnings).toHaveLength(1);
+    expect(displacementWarnings[0]).toMatchObject({
+      backend: 'pt-webgpu',
+      phase: 'mutation',
+      method: 'updatePrimitive',
+      details: {
+        id: 'm',
+        fields: ['displacementBias', 'displacementScale'],
+        primitiveIds: ['m'],
+        primitiveFields: [{
+          primitiveId: 'm',
+          fields: ['displacementBias', 'displacementScale'],
+        }],
+      },
+    });
+    expect(warn.mock.calls.flat().map(String).some((m) =>
+      m.includes('displacementBias') && m.includes('displacementScale')
+    )).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
   it('full tier photon-map honors castShadow:false emitter source treatment without approximation warning', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

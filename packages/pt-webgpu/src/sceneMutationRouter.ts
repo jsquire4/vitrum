@@ -73,7 +73,7 @@ function collectUnsupportedDisplacementPatchFields(
   for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
     if (material[field] != null) fields.push(field);
   }
-  return fields;
+  return fields.sort();
 }
 
 // CAP-01 — matrix-driven list of the remaining material fields pt-webgpu
@@ -590,7 +590,12 @@ export class SceneMutationRouter {
             message:
               `[vitrum/pt-webgpu] updatePrimitive("${id}"): displacement material fields are supplied ` +
               `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
-            details: { id, fields: unsupportedDisplacementFields },
+            details: {
+              id,
+              fields: unsupportedDisplacementFields,
+              primitiveIds: [id],
+              primitiveFields: [{ primitiveId: id, fields: unsupportedDisplacementFields }],
+            },
           });
         }
         // CAP-01 — same matrix-driven warning for the remaining dropped fields.
