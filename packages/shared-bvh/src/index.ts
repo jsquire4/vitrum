@@ -8,10 +8,18 @@ export {
   v3Normalize,
   type V3,
 } from './mathUtils.js';
-export { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.js';
+export {
+  BVH_NODE_FLOATS,
+  VERTEX_STRIDE_F32,
+  MAT4_STRIDE_F32,
+  CWBVH_CHILDREN,
+  CWBVH_CHILD_BOUNDS_U16,
+  CWBVH_CHILD_META_WORDS,
+} from './strides.js';
 export { pickPrimitiveCpu, type PickCamera } from './pickPrimitiveCpu.js';
 export { refitBvhBounds } from './refitBvhBounds.js';
 export * from './buildArrayBvh.js';
+export * from './compressedWideBvh.js';
 export { validateBvhEncoding } from './validateBvhEncoding.js';
 export * from './sceneBvh.js';
 export * from './materialEntry.js';

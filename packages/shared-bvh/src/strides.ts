@@ -78,3 +78,22 @@ export const VERTEX_STRIDE_F32 = 4 as const;
  * (16 floats × N analytics).
  */
 export const MAT4_STRIDE_F32 = 16 as const;
+
+/** Number of child slots in the compressed wide-BVH prototype node. */
+export const CWBVH_CHILDREN = 8 as const;
+
+/**
+ * Quantized bounds words per CWBVH child:
+ * `[minX, minY, minZ, maxX, maxY, maxZ]`, each u16 relative to the parent node
+ * bounds. This is the CPU/oracle-side packed form that the future WGSL traversal
+ * will mirror.
+ */
+export const CWBVH_CHILD_BOUNDS_U16 = 6 as const;
+
+/**
+ * Metadata words per CWBVH child:
+ * `[kind, nodeIndexOrTriOffset, triCount]`.
+ *
+ * kind = 0 empty, 1 child wide-node, 2 leaf triangle range.
+ */
+export const CWBVH_CHILD_META_WORDS = 3 as const;

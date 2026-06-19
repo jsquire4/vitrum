@@ -1797,9 +1797,12 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    capability/warning. Remaining work is Owen/blue-noise scrambling,
    per-dimension assignment audit, shader/adapter gate breadth for the Sobol
    WebGPU variants, and equal-time RMSE convergence proof.
-2. Compressed wide BVH traversal (`WBVH-01`): opt-in CWBVH-style builder,
-   packed node layout, WGSL traversal, CPU brute-force oracle, backend
-   capability flag, and binary-BVH fallback until parity/perf are proven.
+2. Compressed wide BVH traversal (`WBVH-01`): the shared CPU/oracle substrate is
+   now partially landed: `shared-bvh` exports CWBVH-style 8-wide packing,
+   quantized child bounds, deterministic packed metadata, conservative
+   dequantized bounds checks, and a CPU first-hit traversal oracle compared
+   against brute force. Remaining work is WGSL traversal, backend opt-in
+   capability flags, binary-BVH fallback policy, and real parity/perf proof.
 
 ### Execution dependency
 
@@ -1876,11 +1879,18 @@ Binary SAH + stack traversal is solid but compute-shader SOTA is 8-wide
 compressed BVH (CWBVH-style): ~2× traversal throughput, smaller memory
 footprint. Light tree is median-split, not full adaptive Estévez-Kulla (already
 documented in `lightTree.ts:33-35`).
-**Work:** CWBVH build + traversal kernels in `shared-bvh` behind the existing
-single-sourced stride/WGSL contract pattern; CPU brute-force oracles like the
-existing T1 set; per-backend opt-in until parity proven. Becomes decisive if/when
-a WebGPU ray-tracing extension ships (whole-field handicap today: no RT cores
-in the browser for anyone).
+**Landed implementation slice:** `shared-bvh` now has a CWBVH-style CPU packer
+and oracle: binary SAH nodes collapse into 8-wide slots with parent-relative
+u16 child bounds, explicit child kind/offset/count metadata, deterministic
+outputs, empty-scene handling, conservative dequantized bounds tests, and
+first-hit CPU traversal checked against brute-force triangle intersection.
+
+**Remaining work:** WGSL traversal kernels behind the existing single-sourced
+stride/WGSL contract pattern; per-backend opt-in flags and binary-BVH fallback
+policy; GPU parity tests; and equal-scene throughput/memory A/B before any
+renderer default promotion. Becomes decisive if/when a WebGPU ray-tracing
+extension ships (whole-field handicap today: no RT cores in the browser for
+anyone).
 
 ### F3 — Shipped denoiser weights (out-of-the-box UX)
 
