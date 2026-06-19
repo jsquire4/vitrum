@@ -100,6 +100,7 @@ for (const [stalePhrase, message] of [
   ["stubPass.dispatchWorkgroups(0, 0, 0)", "stale B1 PPG stub snippet"],
   ["### B2. RC subsystem ships 1500+ LOC but is unwired", "stale B2 RC unwired heading"],
   ["### B4. OIDN bridge has zero non-test consumers", "stale B4 OIDN zero-consumer heading"],
+  ["PPGGuidePass", "stale PPGGuidePass closure citation"],
   ["What may still be broken is the input-packing layout", "stale B3 neural input-packing uncertainty"],
   ["runtime layout \"is not the interleaved per-pixel layout", "stale B3 legacy planar-layout quote"],
   ["dispatches 0 workgroups", "stale C1 PPG no-op dispatch text"],
