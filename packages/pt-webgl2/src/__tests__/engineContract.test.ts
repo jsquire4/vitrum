@@ -695,33 +695,49 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('surfaces nested material texture-map fields when material patches fallback-rebuild', async () => {
+  it('refreshes the material atlas for new readable material texture-map patches without scene fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
     try {
       const e = await createPTEngine_WebGL2({
-        ...opts(),
+        device: gl,
         onWarning: (w) => structured.push(w),
       });
       e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
+      const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
+      const handle = { image: { data: new Float32Array([0.2, 0.4, 0.6, 1]), width: 1, height: 1 } };
 
       e.updatePrimitive?.('tri', {
         material: {
           roughness: 0.45,
-          baseColorMap: { handle: { id: 'base-map' } },
+          baseColorMap: { handle },
         },
       } as never);
 
       const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
-      expect(fallbackWarnings).toHaveLength(1);
-      expect(fallbackWarnings[0]?.details).toEqual({
-        primitiveId: 'tri',
-        fields: ['material'],
-        materialFields: ['baseColorMap', 'roughness'],
-        materialTextureFields: ['baseColorMap'],
-        fallbackReason: 'texture-map-material-patch',
-        nativePatchMissing: 'targeted-material-atlas-texture-update',
-      });
+      expect(fallbackWarnings).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
+      expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+      expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.45);
+      expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(handle);
+      expect(structured.some((w) => w.code === 'pt-webgl2.texture-unreadable')).toBe(false);
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-mutation-fallback-rebuild') ||
+        m.includes('texture-map-material-patch'),
+      )).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }
@@ -774,6 +790,54 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(handle);
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.texCoord).toBe(1);
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.wrapS).toBe('clamp-to-edge');
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-mutation-fallback-rebuild') ||
+        m.includes('texture-map-material-patch'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('routes unreadable new material texture-map patches as structured warnings without scene fallback', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
+      const opaqueHandle = { id: 'opaque-base-map' };
+
+      e.updatePrimitive?.('tri', {
+        material: {
+          roughness: 0.5,
+          baseColorMap: { handle: opaqueHandle },
+        },
+      } as never);
+
+      expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toHaveLength(0);
+      const textureWarnings = structured.filter((w) => w.code === 'pt-webgl2.texture-unreadable');
+      expect(textureWarnings).toHaveLength(1);
+      expect(textureWarnings[0]?.phase).toBe('mutation');
+      expect(textureWarnings[0]?.method).toBe('updatePrimitive');
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(0);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
+      expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.5);
+      expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(opaqueHandle);
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('primitive-mutation-fallback-rebuild') ||
         m.includes('texture-map-material-patch'),
