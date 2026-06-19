@@ -1921,13 +1921,17 @@ beside the binary BVH during scene packing: one CWBVH tree per concatenated BLAS
 subtree, packed child-bound/metadata/count buffers, TLAS BLAS-root remapping
 from binary node roots to wide-node roots, GPU upload/destroy/memory accounting,
 and CWBVH mirror refresh on geometry/TLAS mutation paths. Tests pin multi-BLAS
-root remapping and CWBVH mirror writes for BLAS/TLAS updates. The path tracer
-still traces the binary BVH; these buffers are deliberate opt-in traversal
-plumbing, not a default promotion.
+root remapping and CWBVH mirror writes for BLAS/TLAS updates. Same-day
+root-routing follow-up: `CWBVH_INTERSECT_WGSL` now exposes
+`cwbvhIntersectFirstHitFromRoot` / `cwbvhIntersectAnyFromRoot` while keeping the
+old root-zero wrappers, so pt-webgpu's uploaded multi-BLAS CWBVH forest can be
+addressed by the remapped TLAS BLAS roots instead of being limited to node 0.
+The path tracer still traces the binary BVH; these buffers are deliberate
+opt-in traversal plumbing, not a default promotion.
 
-**Remaining work:** per-backend opt-in flags; shader binding/traversal
-selection; binary-BVH fallback policy; renderer binary-vs-CWBVH traversal parity
-tests; and
+**Remaining work:** per-backend opt-in flags; shader bindings; renderer-side
+traversal selection/wrappers; binary-BVH fallback policy; renderer
+binary-vs-CWBVH traversal parity tests; and
 equal-scene throughput/memory A/B before any renderer default promotion. Becomes
 decisive if/when a WebGPU ray-tracing extension ships (whole-field handicap
 today: no RT cores in the browser for anyone).

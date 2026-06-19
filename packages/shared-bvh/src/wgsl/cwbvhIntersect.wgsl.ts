@@ -138,7 +138,7 @@ fn cwbvhAabbEntry(
   return tNear;
 }
 
-fn cwbvhIntersectFirstHit(
+fn cwbvhIntersectFirstHitFromRoot(
   cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
   cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
   cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
@@ -148,16 +148,17 @@ fn cwbvhIntersectFirstHit(
   ray: CwbvhRay,
   triEps: f32,
   nodeCount: u32,
+  rootNode: u32,
   skipGlass: bool,
 ) -> CwbvhIntersectionResult {
   var best = cwbvhMiss();
-  if (nodeCount == 0u) {
+  if (nodeCount == 0u || rootNode >= nodeCount) {
     return best;
   }
 
   var stack: array<u32, ${CWBVH_INTERSECT_STACK_DEPTH}>;
   var stackPtr = 0u;
-  stack[stackPtr] = 0u;
+  stack[stackPtr] = rootNode;
   stackPtr = stackPtr + 1u;
 
   let invDir = safeInvDir(ray.direction);
@@ -226,7 +227,34 @@ fn cwbvhIntersectFirstHit(
   return best;
 }
 
-fn cwbvhIntersectAny(
+fn cwbvhIntersectFirstHit(
+  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
+  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
+  cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
+  cwbvhChildCount: ptr<storage, array<u32>, read>,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  ray: CwbvhRay,
+  triEps: f32,
+  nodeCount: u32,
+  skipGlass: bool,
+) -> CwbvhIntersectionResult {
+  return cwbvhIntersectFirstHitFromRoot(
+    cwbvhNodeBounds,
+    cwbvhChildBoundsPacked,
+    cwbvhChildMeta,
+    cwbvhChildCount,
+    bvh_index,
+    bvh_position,
+    ray,
+    triEps,
+    nodeCount,
+    0u,
+    skipGlass,
+  );
+}
+
+fn cwbvhIntersectAnyFromRoot(
   cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
   cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
   cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
@@ -238,15 +266,16 @@ fn cwbvhIntersectAny(
   tMax: f32,
   triEps: f32,
   nodeCount: u32,
+  rootNode: u32,
   skipGlass: bool,
 ) -> bool {
-  if (nodeCount == 0u) {
+  if (nodeCount == 0u || rootNode >= nodeCount) {
     return false;
   }
 
   var stack: array<u32, ${CWBVH_INTERSECT_STACK_DEPTH}>;
   var stackPtr = 0u;
-  stack[stackPtr] = 0u;
+  stack[stackPtr] = rootNode;
   stackPtr = stackPtr + 1u;
 
   let invDir = safeInvDir(dir);
@@ -306,5 +335,36 @@ fn cwbvhIntersectAny(
   }
 
   return false;
+}
+
+fn cwbvhIntersectAny(
+  cwbvhNodeBounds: ptr<storage, array<CwbvhNodeBounds>, read>,
+  cwbvhChildBoundsPacked: ptr<storage, array<u32>, read>,
+  cwbvhChildMeta: ptr<storage, array<CwbvhChildMeta>, read>,
+  cwbvhChildCount: ptr<storage, array<u32>, read>,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  origin: vec3f,
+  dir: vec3f,
+  tMax: f32,
+  triEps: f32,
+  nodeCount: u32,
+  skipGlass: bool,
+) -> bool {
+  return cwbvhIntersectAnyFromRoot(
+    cwbvhNodeBounds,
+    cwbvhChildBoundsPacked,
+    cwbvhChildMeta,
+    cwbvhChildCount,
+    bvh_index,
+    bvh_position,
+    origin,
+    dir,
+    tMax,
+    triEps,
+    nodeCount,
+    0u,
+    skipGlass,
+  );
 }
 `;

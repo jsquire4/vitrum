@@ -8,10 +8,21 @@ import {
 
 describe('CWBVH_INTERSECT_WGSL', () => {
   it('exports closest-hit and any-hit traversal entry points', () => {
+    expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectFirstHitFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectFirstHit(');
+    expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectAnyFromRoot(');
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhIntersectAny(');
     expect(CWBVH_INTERSECT_WGSL).toContain('struct CwbvhIntersectionResult');
     expect(CWBVH_INTERSECT_WGSL).toContain('struct CwbvhChildMeta');
+  });
+
+  it('supports explicit forest roots while preserving root-zero wrappers', () => {
+    expect(CWBVH_INTERSECT_WGSL).toContain('rootNode: u32');
+    expect(CWBVH_INTERSECT_WGSL).toContain('nodeCount == 0u || rootNode >= nodeCount');
+    expect(CWBVH_INTERSECT_WGSL).toContain('stack[stackPtr] = rootNode;');
+    expect(CWBVH_INTERSECT_WGSL).toContain('return cwbvhIntersectFirstHitFromRoot(');
+    expect(CWBVH_INTERSECT_WGSL).toContain('return cwbvhIntersectAnyFromRoot(');
+    expect(CWBVH_INTERSECT_WGSL).toMatch(/nodeCount,\s+0u,\s+skipGlass,/);
   });
 
   it('pins WGSL constants to the TypeScript CWBVH layout constants', () => {
