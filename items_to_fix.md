@@ -25,44 +25,21 @@ These affected any consumer of `@vitrum/engine`'s top-level facade. All four
 items shipped during the post-audit cleanup session — see Section D.0 for the
 commit map. The descriptions are kept below for posterity.
 
-### A1. `createEngine` proxy drops `updateEnvironment` pass-through
+### A1. `createEngine` proxy optional-method forwarding — closed/source-verified
 
-- **Where:** `packages/engine/src/createEngine.ts:269-334` — the `wrapWithIdempotentDispose` proxy forwards `setScene`, `updatePrimitive`, `updateEmitter`, `renderFrame`, `reset`, `pause`, `resume`, `dispose`, `onFrame`, `onProgress`, and `debug`. It does NOT forward `updateEnvironment`, even though `Engine.updateEnvironment?` exists on the contract (`packages/core/src/engine.ts:130`) and `PTEngineWebGL2.updateEnvironment` is implemented (`packages/pt-webgl/src/ptEngineWebGL2.ts:651`).
-- **Symptom:** Any host using `createEngine()` / `attachVitrum()` cannot push an IBL/environment swap without a full `setScene` — even though the underlying engine supports the fast path. Hosts that bypass the facade (like stainedGlass, which uses `createPTEngine_WebGL2` directly) are unaffected.
-- **Fix:**
-  ```ts
-  ...(engine.updateEnvironment
-    ? { updateEnvironment: (env: ...) => { if (!disposed) engine.updateEnvironment!(env); } }
-    : {}),
-  ```
-  Add to the `wrapWithIdempotentDispose` proxy alongside the existing optional-method forwarders.
-- **Acceptance:** add a unit test in `packages/engine/__tests__/createEngine.test.ts` that creates a PT engine via `createEngine`, asserts `typeof handle.updateEnvironment === 'function'`, calls it with a fake env, and verifies the underlying engine's `updateEnvironment` was called.
+- **Closed/source-verified 2026-06-19:** `wrapWithIdempotentDispose` is the createEngine facade's optional-method proxy and its `OPTIONAL_METHOD_PROXIES` table includes `updateEnvironment`, `setSize`, `updateLighting`, primitive/emitter mutation, add/remove, frame/progress/error subscriptions, and other backend-specific methods. `wrapIdempotentDispose.test.ts`, `optionalMethodConformance.test.ts`, and `idempotentDisposeTable.test.ts` pin forwarding and disposed no-op behavior. The old A1 missing-`updateEnvironment` facade gap is closed.
 
-### A2. `attachVitrum` never plumbs `swapChainView` into `FrameInput`
+### A2. `attachVitrum` WebGPU swap-chain plumbing — closed/source-verified
 
-- **Where:** `packages/engine/src/lifecycle/vanilla.ts:118-128` builds the per-frame `FrameInput` object. There is no `swapChainView` field.
-- **Symptom:** `HybridEngine.renderFrame` reads `input.swapChainView` at `HybridEngine.ts:963` and again at line 976, 1094. When undefined, the WebGPU path takes a skip branch. A WebGPU host using `attachVitrum` (the top-level documented entry point) gets a black canvas.
-- **Fix:** detect the WebGPU backend in `attachVitrum`, acquire `context.getCurrentTexture().createView()` inside the RAF tick, and pass it as `input.swapChainView`. For WebGL hosts, leave the field undefined.
-- **Acceptance:** an end-to-end test that drives one frame via `attachVitrum` against a `HybridEngine` and confirms a non-zero canvas readback. (Or a unit test that pins the FrameInput shape contains `swapChainView` when the underlying engine is WebGPU.)
+- **Closed/source-verified 2026-06-19:** `attachVitrum` acquires `context.getCurrentTexture().createView()` inside the RAF tick, passes it through `composeAttachVitrumFrameInput`, and brands it as `FrameInput.swapChainView`; `swapChainFormat` is forwarded when known. `swapChainPlumbing.test.ts` and `attachVitrumAutoRecreate.test.ts` pin the frame-input shape and recoverable swapchain failure path. The old WebGPU black-canvas `swapChainView` omission is closed.
 
-### A3. `HybridEngine.updatePrimitive` / `updateEmitter` are `never`
+### A3. `HybridEngine.updatePrimitive` / `updateEmitter` — closed/source-verified
 
-- **Where:** `packages/walkaround-hybrid/src/HybridEngine.ts:785-786`:
-  ```ts
-  updatePrimitive?: never;
-  updateEmitter?: never;
-  ```
-- **Symptom:** Any walkaround consumer who wants to edit a material or light without tearing down DDGI + the temporal accumulator has to call `setScene` (which calls `_teardownPipeline()` + `_initPipeline()` synchronously) or recreate the engine entirely. This is the gap stainedGlass calls out at `VitrumWalkaroundStage.tsx:42-50` as the reason no walkaround SceneSync exists.
-- **Fix:** implement one of:
-  - **Option (a):** `updatePrimitive(id, patch)` — re-upload one slot in the materials texture and (if topology changed) re-build only the affected BVH leaf, otherwise leave BVH alone.
-  - **Option (b):** non-teardown `setScene(scene)` that diffs against the previous scene and only re-uploads what changed; document the diff contract.
-- **Acceptance:** stainedGlass's `useVitrumWalkaroundEngine` can wire a `VitrumWalkaroundSceneSync` analogous to the PT version, and a Playwright test of a material-color edit shows the new color within 2 frames in walkaround mode (no engine recreation observable via a pipeline-compile counter).
+- **Closed/source-verified 2026-06-19:** `HybridEngine` implements `updatePrimitive(id, patch)` and `updateEmitter(id, patch)` as real methods. Primitive patches route through `HybridEnginePrimitiveUpdates.ts` for transform/geometry/material/skin/morph paths with structured warnings and reset/propagation hooks; emitter patches rebuild emitter/light-tree slices, update the pipeline, invalidate RC bindings, resync DDGI lights, and reset accumulation. `mutationMatrix.test.ts` covers the main mutation paths. Remaining Road mutation work is promotion/performance coverage for topology/list edges, not the old `never` API gap.
 
-### A4. `HybridEngine` ignores `FrameInput.viewport`
+### A4. `HybridEngine` viewport/setSize contract — closed/source-verified
 
-- **Where:** `grep viewport packages/walkaround-hybrid/src/HybridEngine.ts` returns zero hits — the file does not read `input.viewport`.
-- **Symptom:** Engine size is set at construction via `HybridEngineOptions.width/height` and mutated only via `setSize()` (which exists, at `HybridEngine.ts:882`). A host using `attachVitrum` may push a new size via `FrameInput.viewport` (the documented field) and see it silently ignored.
-- **Fix:** Either (a) honor `input.viewport.width/height` per frame (treating constructor values as initial), or (b) document explicitly in `Engine`/`FrameInput` JSDoc that `viewport` is informational only for `HybridEngine` and the host must call `setSize()` directly. (Recommend (b) — `setSize()` is already the cleaner API; the host needs to know.)
+- **Closed/source-verified 2026-06-19:** `FrameInput.viewport` JSDoc explicitly states that generic PT engines honor viewport every frame while `HybridEngine` uses `setSize(width,height)` for canvas-size changes; `attachVitrum` calls `engine.setSize?.(...)` from its resize path. `HybridEngine.setSize()` resizes the pipeline without teardown, and `renderFrame()` emits a one-shot `walkaround-hybrid.viewport-ignored` warning if a host changes `FrameInput.viewport` instead of calling `setSize`. The old silent viewport ambiguity is closed; per-frame internal resolution changes are handled through `FrameInput.quality.resolutionFactor`.
 
 ---
 

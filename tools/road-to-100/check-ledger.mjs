@@ -92,6 +92,10 @@ if (!items.includes("OPEN ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONC
   fail("items_to_fix.md must retain the current open-items/provenance markers");
 }
 for (const [stalePhrase, message] of [
+  ["### A1. `createEngine` proxy drops `updateEnvironment` pass-through", "stale A1 updateEnvironment facade heading"],
+  ["### A2. `attachVitrum` never plumbs `swapChainView` into `FrameInput`", "stale A2 swapChainView heading"],
+  ["### A3. `HybridEngine.updatePrimitive` / `updateEmitter` are `never`", "stale A3 mutation-never heading"],
+  ["### A4. `HybridEngine` ignores `FrameInput.viewport`", "stale A4 viewport heading"],
   ["### B1. PPG GPU dispatch is `dispatchWorkgroups(0, 0, 0)`", "stale B1 PPG zero-dispatch heading"],
   ["stubPass.dispatchWorkgroups(0, 0, 0)", "stale B1 PPG stub snippet"],
   ["### B2. RC subsystem ships 1500+ LOC but is unwired", "stale B2 RC unwired heading"],
@@ -112,6 +116,20 @@ if (!items.includes("Remaining neural Road work is production checkpoint + quali
   fail("items_to_fix.md must retain the reconciled B3 residual boundary");
 }
 for (const needle of [
+  "### A1. `createEngine` proxy optional-method forwarding — closed/source-verified",
+  "The old A1 missing-`updateEnvironment` facade gap is closed.",
+  "### A2. `attachVitrum` WebGPU swap-chain plumbing — closed/source-verified",
+  "The old WebGPU black-canvas `swapChainView` omission is closed.",
+  "### A3. `HybridEngine.updatePrimitive` / `updateEmitter` — closed/source-verified",
+  "not the old `never` API gap.",
+  "### A4. `HybridEngine` viewport/setSize contract — closed/source-verified",
+  "The old silent viewport ambiguity is closed",
+]) {
+  if (!items.includes(needle)) {
+    fail(`items_to_fix.md must retain reconciled Section A source summary: ${needle}`);
+  }
+}
+for (const needle of [
   "### B1. PPG GPU dispatch — closed/source-verified",
   "Remaining PPG Road work is broad favorable-scene A/B and tuning, not no-op dispatch.",
   "### B2. RC subsystem wiring — closed/source-verified",
@@ -128,6 +146,56 @@ if (items.includes("point+rect direct lighting with no spot/mesh-area/env/indire
 }
 if (!items.includes("point, spot, rect/disc, mesh-area, and HDRI/environment direct-light replay")) {
   fail("items_to_fix.md must retain the reconciled H14 adjoint-lighting source summary");
+}
+
+const idempotentDispose = await readText("packages/engine/src/idempotentDispose.ts");
+for (const needle of [
+  "{ method: 'updateEnvironment', disposedBehavior: 'noop' }",
+  "{ method: 'setSize', disposedBehavior: 'noop' }",
+  "{ method: 'updateLighting', disposedBehavior: 'noop' }",
+]) {
+  if (!idempotentDispose.includes(needle)) {
+    fail(`engine facade must retain optional-method forwarding row: ${needle}`);
+  }
+}
+
+const swapChainVanilla = await readText("packages/engine/src/lifecycle/vanilla.ts");
+for (const needle of [
+  "const swapChainView = acquireSwapChainView(webgpuSwapChain.context",
+  "swapChainView: asBackendTexture<'webgpu', GPUTextureView>(opts.swapChainView)",
+  "swapChainFormat: asBackendTextureFormat<'webgpu', GPUTextureFormat>",
+  "swapChainView,",
+  "swapChainFormat: webgpuSwapChain.format",
+  "engine.setSize?.(viewportW, viewportH);",
+]) {
+  if (!swapChainVanilla.includes(needle)) {
+    fail(`attachVitrum must retain swap-chain/setSize plumbing: ${needle}`);
+  }
+}
+
+const frameContract = await readText("packages/core/src/frame.ts");
+for (const needle of [
+  "Generic PT engines",
+  "`HybridEngine` (`@vitrum/walkaround-hybrid`) does NOT honour",
+  "Hosts driving `HybridEngine` directly MUST call `engine.setSize()`",
+]) {
+  if (!frameContract.includes(needle)) {
+    fail(`FrameInput viewport contract must retain HybridEngine setSize wording: ${needle}`);
+  }
+}
+
+const hybridEngineSource = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
+for (const needle of [
+  "updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void",
+  "updateEmitter(id: string, patch: Partial<SceneEmitter>): void",
+  "this._pipeline?.updateEmitters(this._bvhBuffers);",
+  "this._rc?.invalidateBindings();",
+  "setSize(width: number, height: number): void",
+  "code: 'walkaround-hybrid.viewport-ignored'",
+]) {
+  if (!hybridEngineSource.includes(needle)) {
+    fail(`HybridEngine must retain A3/A4 public API closure seam: ${needle}`);
+  }
 }
 
 const ppgUpdatePass = await readText("packages/walkaround-hybrid/src/pipeline/passes/PPGUpdatePass.ts");
