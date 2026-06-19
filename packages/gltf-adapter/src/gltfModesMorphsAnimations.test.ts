@@ -216,6 +216,7 @@ describe('TRIANGLE_STRIP / TRIANGLE_FAN import (GLTF-05)', () => {
 const MORPH_BASE_POSITIONS = [0, 0, 0, 1, 0, 0, 0, 1, 0];
 const MORPH_BASE_NORMALS = [0, 0, 1, 0, 0, 1, 0, 0, 1];
 const MORPH_BASE_UVS = [0, 0, 1, 0, 0, 1];
+const MORPH_BASE_UVS_2 = [0.2, 0.3, 1.2, 0.3, 0.2, 1.3];
 
 interface MorphTargetSpec {
   position?: number[]; // 9 floats (3 verts × 3)
@@ -223,6 +224,7 @@ interface MorphTargetSpec {
   tangent?: number[];  // 9 floats (glTF morph target TANGENT is a VEC3 delta)
   texcoord0?: number[]; // 6 floats (3 verts × 2)
   texcoord1?: number[]; // 6 floats (3 verts × 2)
+  texcoord2?: number[]; // 6 floats (3 verts × 2)
 }
 
 /**
@@ -233,6 +235,7 @@ function makeMorphGltf(opts: {
   targets: MorphTargetSpec[];
   meshWeights?: number[];
   nodeWeights?: number[];
+  materialTexCoord2?: boolean;
 }): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const chunks: ArrayBuffer[] = [
     f32Buffer(MORPH_BASE_POSITIONS),
@@ -246,6 +249,12 @@ function makeMorphGltf(opts: {
     { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' }, // TEXCOORD_0
     { bufferView: 3, componentType: 5126, count: 3, type: 'VEC2' }, // TEXCOORD_1
   ];
+  const attributes: Record<string, number> = { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2, TEXCOORD_1: 3 };
+  if (opts.materialTexCoord2 || opts.targets.some((target) => target.texcoord2 !== undefined)) {
+    attributes.TEXCOORD_2 = accessors.length;
+    accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC2' });
+    chunks.push(f32Buffer(MORPH_BASE_UVS_2));
+  }
   const targets: Array<Record<string, number>> = [];
 
   for (const spec of opts.targets) {
@@ -275,6 +284,11 @@ function makeMorphGltf(opts: {
       accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC2' });
       chunks.push(f32Buffer(spec.texcoord1));
     }
+    if (spec.texcoord2) {
+      target['TEXCOORD_2'] = accessors.length;
+      accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC2' });
+      chunks.push(f32Buffer(spec.texcoord2));
+    }
     targets.push(target);
   }
 
@@ -285,9 +299,24 @@ function makeMorphGltf(opts: {
     scene: 0,
     nodes: [{ mesh: 0, ...(opts.nodeWeights ? { weights: opts.nodeWeights } : {}) }],
     meshes: [{
-      primitives: [{ attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2, TEXCOORD_1: 3 }, targets }],
+      primitives: [{
+        attributes,
+        targets,
+        ...(opts.materialTexCoord2 ? { material: 0 } : {}),
+      }],
       ...(opts.meshWeights ? { weights: opts.meshWeights } : {}),
     }],
+    ...(opts.materialTexCoord2
+      ? {
+          materials: [{
+            pbrMetallicRoughness: {
+              baseColorTexture: { index: 0, texCoord: 2 },
+            },
+          }],
+          textures: [{ source: 0 }],
+          images: [{ uri: 'data:image/png;base64,AQID', mimeType: 'image/png' }],
+        }
+      : {}),
     accessors,
     bufferViews,
     buffers: [{ byteLength: buffer.byteLength }],
@@ -418,6 +447,29 @@ describe('morph targets (GLTF-04)', () => {
       0.25, 0.35,
       1.25, 0.35,
       0.25, 1.35,
+    ])));
+  });
+
+  it('remaps high TEXCOORD_N morph deltas into uv1 when the material UV set is losslessly remapped', async () => {
+    const uv2Delta = [0, 0.4, 0, 0.4, 0, 0.4];
+    const { gltf, buffers } = makeMorphGltf({
+      targets: [{ position: POS_DELTA_1, texcoord2: uv2Delta }],
+      meshWeights: [0.5],
+      materialTexCoord2: true,
+    });
+    const { scene, diagnostics } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+
+    expect(Array.from(prim.uv1 ?? [])).toEqual(Array.from(new Float32Array(MORPH_BASE_UVS_2)));
+    expect(prim.morphTargetUv1s).toHaveLength(1);
+    expect(Array.from(prim.morphTargetUv1s![0]!)).toEqual(Array.from(new Float32Array(uv2Delta)));
+    expect(diagnostics.some((d) => d.code === 'ignored-morph-target-texcoord')).toBe(false);
+
+    const solved = solveSkin(prim);
+    expect(Array.from(solved.uv1 ?? [])).toEqual(Array.from(new Float32Array([
+      0.2, 0.5,
+      1.2, 0.5,
+      0.2, 1.5,
     ])));
   });
 

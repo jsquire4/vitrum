@@ -353,9 +353,15 @@ function addSecondaryVertexColorSet(
 function addMorphTargetTexcoord(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
-  opts: { semantic?: 'TEXCOORD_0' | 'TEXCOORD_2'; includeBaseUv?: boolean } = {},
+  opts: {
+    semantic?: 'TEXCOORD_0' | 'TEXCOORD_2';
+    baseSemantic?: 'TEXCOORD_0' | 'TEXCOORD_2';
+    includeBaseUv?: boolean;
+    materialTexCoord?: number;
+  } = {},
 ): void {
   const semantic = opts.semantic ?? 'TEXCOORD_0';
+  const baseSemantic = opts.baseSemantic ?? 'TEXCOORD_0';
   const includeBaseUv = opts.includeBaseUv ?? true;
   const baseUv = f32Buffer([
     0, 0,
@@ -385,10 +391,20 @@ function addMorphTargetTexcoord(
     ...gltf.meshes![0]!.primitives[0]!,
     attributes: {
       ...gltf.meshes![0]!.primitives[0]!.attributes,
-      ...(includeBaseUv ? { TEXCOORD_0: baseUvAccessor } : {}),
+      ...(includeBaseUv ? { [baseSemantic]: baseUvAccessor } : {}),
     },
+    ...(opts.materialTexCoord !== undefined ? { material: 0 } : {}),
     targets: [{ POSITION: positionAccessor, [semantic]: uvAccessor }],
   };
+  if (opts.materialTexCoord !== undefined) {
+    gltf.materials = [{
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0, texCoord: opts.materialTexCoord },
+      },
+    }];
+    gltf.textures = [{ source: 0 }];
+    gltf.images = [{ uri: 'data:image/png;base64,AQID', mimeType: 'image/png' }];
+  }
   gltf.meshes![0] = {
     ...gltf.meshes![0]!,
     weights: [1],
@@ -2456,6 +2472,34 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(compatibility.issues.some((issue) => issue.name === 'morphTargetTexcoords')).toBe(false);
   });
 
+  it('treats morph TEXCOORD_2 deltas as supported when the matching material UV set remaps into uv1', () => {
+    const report = analyzeGltfAsset({
+      asset: { version: '2.0' },
+      materials: [{
+        pbrMetallicRoughness: {
+          baseColorTexture: { index: 0, texCoord: 2 },
+        },
+      }],
+      textures: [{ source: 0 }],
+      images: [{ uri: 'base-color.png' }],
+      meshes: [{
+        primitives: [{
+          material: 0,
+          attributes: { POSITION: 0, TEXCOORD_2: 1 },
+          targets: [{ TEXCOORD_2: 2 }],
+        }],
+      }],
+    });
+
+    expect(report.primitives.hasMorphTargetTexcoords).toBe(true);
+    expect(report.primitives.hasUnsupportedMorphTargetTexcoords).toBe(false);
+    expect(report.primitives.issuePaths.morphTargetTexcoords).toEqual([
+      'meshes[0].primitives[0].targets[0].TEXCOORD_2',
+    ]);
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues.some((issue) => issue.name === 'morphTargetTexcoords')).toBe(false);
+  });
+
   it('reports morph TEXCOORD_2 deltas as an unsupported primitive compatibility issue', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
@@ -3011,6 +3055,25 @@ describe('loadGltfForEngine', () => {
     );
 
     expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('accepts remappable high morph-target TEXCOORD diagnostics in reject-unsupported mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addMorphTargetTexcoord(gltf, buffers, {
+      semantic: 'TEXCOORD_2',
+      baseSemantic: 'TEXCOORD_2',
+      materialTexCoord: 2,
+    });
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).resolves.toBeDefined();
+
+    expect(createEngine).toHaveBeenCalledOnce();
   });
 
   it('rejects malformed animation diagnostics in reject-unsupported mode', async () => {

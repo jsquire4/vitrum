@@ -16,8 +16,9 @@
 //     converted into the skinned mesh node's local space).
 //   - Morph targets → SkinnedMeshPrimitive.morphTargets / morphTargetNormals /
 //     morphTargetTangents / morphTargetUvs / morphTargetUv1s / morphWeights
-//     (POSITION + NORMAL + TANGENT + TEXCOORD_0/1 deltas; node/mesh weights;
-//     unskinned morphed meshes are promoted with a synthesized identity skeleton).
+//     (POSITION + NORMAL + TANGENT + TEXCOORD_0 plus the glTF UV semantic mapped
+//     to core uv1 deltas; node/mesh weights; unskinned morphed meshes are promoted
+//     with a synthesized identity skeleton).
 //   - Animations → core AnimationClip[] on the result (LINEAR / STEP /
 //     CUBICSPLINE; translation / rotation / scale / weights channels; channel
 //     node ids are `gltf-node-<i>`, resolved to primitives via
@@ -957,12 +958,6 @@ export async function gltfToScene(
         }
       }
 
-      // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT/TEXCOORD_0/1 deltas + node/mesh weights.
-      let morph = _extractMorphTargets(
-        gltf, buffers, prim.targets, node.weights ?? mesh.weights,
-        positions.length / 3, uvs, uv1, `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics, onAccessorDiagnostic,
-      );
-
       // Material.
       const materialIndex = _resolvePrimitiveMaterialIndex(
         gltf,
@@ -991,6 +986,14 @@ export async function gltfToScene(
         onAccessorDiagnostic,
       );
       uv1 = uvResolvedMaterial.uv1;
+
+      // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT/TEXCOORD_0 plus the
+      // glTF UV semantic currently carried in core uv1 + node/mesh weights.
+      let morph = _extractMorphTargets(
+        gltf, buffers, prim.targets, node.weights ?? mesh.weights,
+        positions.length / 3, uvs, uv1, uvResolvedMaterial.uv1SourceTexCoord,
+        `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics, onAccessorDiagnostic,
+      );
       if (isPointLineMode(mode)) {
         const originalVertexCount = Math.floor(positions.length / 3);
         const fallback = buildPointLineFallbackGeometry(
@@ -1694,6 +1697,10 @@ function _extractSkinData(
 interface PrimitiveUvMaterialResolution {
   readonly material: MaterialSpec;
   readonly uv1?: Float32Array;
+  /** glTF TEXCOORD_N semantic assigned to core `uv1`.
+   *  Usually 1, but a single high material UV set can be losslessly remapped
+   *  into core uv1. Morph-target UV deltas must follow this same source. */
+  readonly uv1SourceTexCoord?: number;
 }
 
 function _isTextureRef(value: unknown): value is TextureRef {
@@ -1748,7 +1755,9 @@ function _resolvePrimitiveUvMaterial(
     }
   }
 
-  if (highFields.length === 0) return { material, ...(uv1 ? { uv1 } : {}) };
+  if (highFields.length === 0) {
+    return { material, ...(uv1 ? { uv1, uv1SourceTexCoord: 1 } : {}) };
+  }
 
   if (highTexCoords.size === 1 && !usesUv1) {
     const texCoord = [...highTexCoords][0]!;
@@ -1769,7 +1778,7 @@ function _resolvePrimitiveUvMaterial(
       for (const { field, ref } of highFields) {
         remapped = _cloneMaterialWithTextureRef(remapped, field, { ...ref, texCoord: 1 });
       }
-      return { material: remapped, uv1: remapUv };
+      return { material: remapped, uv1: remapUv, uv1SourceTexCoord: texCoord };
     }
   }
 
@@ -1792,7 +1801,7 @@ function _resolvePrimitiveUvMaterial(
         'for this primitive instead of being sampled with the wrong UV channel.',
     });
   }
-  return { material: dropped, ...(uv1 ? { uv1 } : {}) };
+  return { material: dropped, ...(uv1 ? { uv1, uv1SourceTexCoord: 1 } : {}) };
 }
 
 function remapVec2Attribute(
@@ -1963,8 +1972,8 @@ interface MorphData {
   /** Per-target TEXCOORD_0 deltas. Present only when at least one target
    *  carries TEXCOORD_0 and the primitive has a base UV0 stream. */
   morphTargetUvs?: Float32Array[];
-  /** Per-target TEXCOORD_1 deltas. Present only when at least one target
-   *  carries TEXCOORD_1 and the primitive has a base UV1 stream. */
+  /** Per-target deltas for the glTF TEXCOORD_N semantic assigned to core uv1.
+   *  Usually TEXCOORD_1, or a remapped single high UV set such as TEXCOORD_2. */
   morphTargetUv1s?: Float32Array[];
   /** Initial per-target weights from `node.weights ?? mesh.weights` (zeros
    *  when neither is authored). */
@@ -1977,9 +1986,10 @@ interface MorphData {
  * glTF §3.7.2.2: each target maps attribute names to accessors carrying
  * DELTAS from the base attribute (sparse accessors are common here and are
  * handled by `unpackAccessorFloat`). POSITION, NORMAL, TANGENT, TEXCOORD_0,
- * and TEXCOORD_1 deltas map onto the matching `SkinnedMeshPrimitive` morph
- * arrays. Higher TEXCOORD_N sets remain unsupported because core carries only
- * UV0/UV1 streams.
+ * and the glTF TEXCOORD_N semantic currently assigned to core uv1 map onto the
+ * matching `SkinnedMeshPrimitive` morph arrays. Higher TEXCOORD_N sets are
+ * supported only when the matching base high UV stream was losslessly remapped
+ * into core uv1 for this primitive.
  *
  * Returns `undefined` when the primitive has no targets.
  */
@@ -1991,6 +2001,7 @@ function _extractMorphTargets(
   vertexCount: number,
   baseUvs: Float32Array | undefined,
   baseUv1: Float32Array | undefined,
+  uv1SourceTexCoord: number | undefined,
   meshLabel: string,
   primitivePath: string,
   warnings: string[],
@@ -2111,21 +2122,22 @@ function _extractMorphTargets(
     if (uvDelta) anyUvs = true;
     uvDeltas.push(uvDelta ?? null);
 
+    const uv1TargetSemantic = uv1SourceTexCoord != null ? `TEXCOORD_${uv1SourceTexCoord}` : 'TEXCOORD_1';
     let uv1Delta = _tryUnpackFloat(
-      gltf, buffers, target['TEXCOORD_1'],
-      `morph target ${t} TEXCOORD_1 for "${meshLabel}"`, warnings, onAccessorDiagnostic,
+      gltf, buffers, target[uv1TargetSemantic],
+      `morph target ${t} ${uv1TargetSemantic} for "${meshLabel}"`, warnings, onAccessorDiagnostic,
       diagnostics,
       'unreadable-optional-attribute',
-      `${primitivePath}.targets[${t}].TEXCOORD_1`,
+      `${primitivePath}.targets[${t}].${uv1TargetSemantic}`,
     );
     if (uv1Delta && baseUv1 == null) {
       emitImportDiagnostic(warnings, diagnostics, {
         severity: 'warning',
         code: 'ignored-morph-target-texcoord',
-        path: `${primitivePath}.targets[${t}].TEXCOORD_1`,
+        path: `${primitivePath}.targets[${t}].${uv1TargetSemantic}`,
         message:
-          `[vitrum/gltf-adapter] Morph target ${t} TEXCOORD_1 delta in mesh ` +
-          `"${meshLabel}" is ignored because the primitive has no base TEXCOORD_1 stream.`,
+          `[vitrum/gltf-adapter] Morph target ${t} ${uv1TargetSemantic} delta in mesh ` +
+          `"${meshLabel}" is ignored because the primitive has no matching base ${uv1TargetSemantic} stream.`,
       });
       uv1Delta = undefined;
     }
@@ -2133,9 +2145,9 @@ function _extractMorphTargets(
       emitImportDiagnostic(warnings, diagnostics, {
         severity: 'warning',
         code: 'invalid-morph-target-delta-length',
-        path: `${primitivePath}.targets[${t}].TEXCOORD_1`,
+        path: `${primitivePath}.targets[${t}].${uv1TargetSemantic}`,
         message:
-          `[vitrum/gltf-adapter] Morph target ${t} TEXCOORD_1 delta length ${uv1Delta.length} ` +
+          `[vitrum/gltf-adapter] Morph target ${t} ${uv1TargetSemantic} delta length ${uv1Delta.length} ` +
           `!= ${vertexCount * 2} for "${meshLabel}". Using zero deltas for this target.`,
       });
       uv1Delta = undefined;
@@ -2144,7 +2156,7 @@ function _extractMorphTargets(
     uv1Deltas.push(uv1Delta ?? null);
 
     for (const attr of Object.keys(target)) {
-      if (attr !== 'POSITION' && attr !== 'NORMAL' && attr !== 'TANGENT' && attr !== 'TEXCOORD_0' && attr !== 'TEXCOORD_1') {
+      if (attr !== 'POSITION' && attr !== 'NORMAL' && attr !== 'TANGENT' && attr !== 'TEXCOORD_0' && attr !== uv1TargetSemantic) {
         if (/^TEXCOORD_\d+$/.test(attr)) {
           emitImportDiagnostic(warnings, diagnostics, {
             severity: 'warning',
@@ -2152,8 +2164,8 @@ function _extractMorphTargets(
             path: `${primitivePath}.targets[${t}].${attr}`,
             message:
               `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
-              `"${meshLabel}" is ignored because @vitrum/core carries morph UV deltas ` +
-              'only for TEXCOORD_0 and TEXCOORD_1.',
+              `"${meshLabel}" is ignored because @vitrum/core carries morph UV deltas only for ` +
+              `TEXCOORD_0 and ${uv1TargetSemantic} on this primitive.`,
           });
         } else {
           emitImportDiagnostic(warnings, diagnostics, {

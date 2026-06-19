@@ -486,9 +486,9 @@ export function evaluateGltfBackendProfileCompatibility(
       support: 'unsupported',
       path: firstSourcePath(report.primitives.issuePaths, 'unsupportedMorphTargetTexcoords', 'meshes'),
       message:
-        'glTF morph-target TEXCOORD_0/1 deltas require matching base UV streams, and TEXCOORD_2+ ' +
-        'morph deltas are not represented in the core Scene contract. The adapter imports supported ' +
-        'animated UV lanes and reports unsupported lanes explicitly.',
+        'glTF morph-target UV deltas require the matching base UV stream assigned to core uv/uv1. ' +
+        'TEXCOORD_2+ morph deltas are supported only when that high UV set is losslessly remapped ' +
+        'into core uv1 for this primitive; unsupported lanes are reported explicitly.',
     });
   }
 
@@ -1024,8 +1024,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
               hasMorphTargetTexcoords = true;
               addSourcePath(issuePaths, 'morphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
               const uvIndex = Number(attr.slice('TEXCOORD_'.length));
-              const baseSemantic = `TEXCOORD_${uvIndex}`;
-              if (uvIndex > 1 || primitive.attributes?.[baseSemantic] === undefined) {
+              if (!primitiveMorphTexcoordIsRepresentable(gltf, primitive, uvIndex)) {
                 hasUnsupportedMorphTargetTexcoords = true;
                 addSourcePath(issuePaths, 'unsupportedMorphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
               }
@@ -1125,6 +1124,41 @@ function primitiveMaterialIndices(primitive: GltfPrimitive): readonly number[] {
     if (Number.isInteger(mapping.material) && mapping.material >= 0) indices.add(mapping.material);
   }
   return [...indices];
+}
+
+function primitiveMorphTexcoordIsRepresentable(
+  gltf: GltfJson,
+  primitive: GltfPrimitive,
+  uvIndex: number,
+): boolean {
+  const baseSemantic = `TEXCOORD_${uvIndex}`;
+  if (primitive.attributes?.[baseSemantic] === undefined) return false;
+  if (uvIndex <= 1) return true;
+
+  for (const materialIndex of primitiveMaterialIndices(primitive)) {
+    const material = gltf.materials?.[materialIndex];
+    if (material == null) continue;
+    const uvSets = materialTextureUvSets(material);
+    const highUvSets = [...uvSets].filter((uvSet) => uvSet > 1);
+    if (highUvSets.length === 1 && highUvSets[0] === uvIndex && !uvSets.has(1)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function materialTextureUvSets(material: GltfMaterial): ReadonlySet<number> {
+  const uvSets = new Set<number>();
+  const visit = (value: unknown): void => {
+    if (value == null || typeof value !== 'object' || Array.isArray(value)) return;
+    const object = value as Record<string, unknown>;
+    if (typeof object.index === 'number') {
+      uvSets.add(textureInfoUvSet(object as unknown as GltfTextureInfo));
+    }
+    for (const child of Object.values(object)) visit(child);
+  };
+  visit(material);
+  return uvSets;
 }
 
 function analyzeMaterials(gltf: GltfJson): GltfMaterialFeatureReport {
