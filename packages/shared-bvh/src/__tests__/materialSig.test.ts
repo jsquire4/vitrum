@@ -81,6 +81,54 @@ describe('materialSig — Beer-Lambert fields (H33)', () => {
     } as MaterialSpec & { meshEmitterCastShadowDisabled: true };
     expect(materialSig(caster)).not.toBe(materialSig(shadowless));
   });
+
+  it('includes alpha/coverage controls that affect atlas traversal metadata', () => {
+    const opaque: MaterialSpec = { ...BASE, alphaMode: 'opaque', opacity: 1, alphaCutoff: 0.5 };
+    const masked: MaterialSpec = { ...BASE, alphaMode: 'mask', opacity: 0.75, alphaCutoff: 0.9 };
+    expect(materialSig(opaque)).not.toBe(materialSig(masked));
+  });
+
+  it('includes every packed texture-map handle identity', () => {
+    const handleA = { name: 'alpha-a' };
+    const handleB = { name: 'alpha-b' };
+    const a: MaterialSpec = { ...BASE, alphaMap: { handle: handleA } };
+    const b: MaterialSpec = { ...BASE, alphaMap: { handle: handleB } };
+    expect(materialSig(a)).not.toBe(materialSig(b));
+  });
+
+  it('includes texture UV channel, transform, wrap, and filter metadata', () => {
+    const handle = { name: 'roughness' };
+    const a: MaterialSpec = {
+      ...BASE,
+      roughnessMap: {
+        handle,
+        texCoord: 0,
+        transform: { offset: [0, 0], scale: [1, 1], rotation: 0 },
+        wrapS: 'repeat',
+        wrapT: 'repeat',
+      },
+    };
+    const b: MaterialSpec = {
+      ...BASE,
+      roughnessMap: {
+        handle,
+        texCoord: 1,
+        transform: { offset: [0.25, 0], scale: [0.5, 1], rotation: 0.5 },
+        wrapS: 'clamp-to-edge',
+        wrapT: 'mirrored-repeat',
+        magFilter: 'nearest',
+        minFilter: 'linear',
+        mipFilter: 'nearest',
+      },
+    };
+    expect(materialSig(a)).not.toBe(materialSig(b));
+  });
+
+  it('includes extension lobe scalar controls packed by renderer material payloads', () => {
+    const lowClearcoat: MaterialSpec = { ...BASE, clearcoat: 0.1, clearcoatRoughness: 0.2 };
+    const highClearcoat: MaterialSpec = { ...BASE, clearcoat: 0.8, clearcoatRoughness: 0.2 };
+    expect(materialSig(lowClearcoat)).not.toBe(materialSig(highClearcoat));
+  });
 });
 
 describe('mergeWorldSpaceFromCore material slots', () => {
@@ -120,6 +168,29 @@ describe('mergeWorldSpaceFromCore material slots', () => {
     };
   }
 
+  function sceneWithMaterials(a: MaterialSpec, b: MaterialSpec): Scene {
+    return {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'mat-a',
+          positions: TRI_POS,
+          normals: TRI_NORM,
+          material: a,
+        },
+        {
+          kind: 'mesh',
+          id: 'mat-b',
+          positions: TRI_POS,
+          normals: TRI_NORM,
+          material: b,
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+  }
+
   it('keeps historical material dedup unless cast-shadow splitting is requested', () => {
     const merged = mergeWorldSpaceFromCore(sceneWithMixedCastShadow());
     expect(merged.materials.length).toBe(1);
@@ -143,5 +214,38 @@ describe('mergeWorldSpaceFromCore material slots', () => {
     expect(Array.from(bvh.buffers?.triMaterialId ?? [])).toEqual([0, 1]);
     expect((bvh.buffers?.materials[0] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(true);
     expect((bvh.buffers?.materials[1] as MaterialSpec & { castShadow?: boolean }).castShadow).toBe(false);
+  });
+
+  it('does not collapse materials that differ only by atlas-consumed texture metadata', () => {
+    const handle = { name: 'shared-lightmap' };
+    const scene = sceneWithMaterials(
+      {
+        ...BASE,
+        lightMap: { handle, texCoord: 0 },
+      },
+      {
+        ...BASE,
+        lightMap: {
+          handle,
+          texCoord: 1,
+          transform: { offset: [0.5, 0], scale: [0.5, 0.5], rotation: 0.25 },
+          wrapS: 'clamp-to-edge',
+          wrapT: 'mirrored-repeat',
+        },
+      },
+    );
+    const merged = mergeWorldSpaceFromCore(scene);
+    expect(merged.materials.length).toBe(2);
+    expect(Array.from(merged.mergedTriMaterialId)).toEqual([0, 1]);
+  });
+
+  it('does not collapse materials that differ only by non-base packed map fields', () => {
+    const scene = sceneWithMaterials(
+      { ...BASE, clearcoatMap: { handle: { name: 'coat-a' } } },
+      { ...BASE, clearcoatMap: { handle: { name: 'coat-b' } } },
+    );
+    const merged = mergeWorldSpaceFromCore(scene);
+    expect(merged.materials.length).toBe(2);
+    expect(Array.from(merged.mergedTriMaterialId)).toEqual([0, 1]);
   });
 });

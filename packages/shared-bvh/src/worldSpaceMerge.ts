@@ -34,7 +34,7 @@
  *
  */
 
-import type { Mat4, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
+import type { Mat4, MaterialSpec, Scene, ScenePrimitive, TextureRef } from '@vitrum/core';
 import type { PlainAabb } from './aabb.js';
 import { buildArrayBvh } from './buildArrayBvh.js';
 
@@ -407,13 +407,93 @@ function determinant4(m: ArrayLike<number>): number {
 // Material dedup — mirrors snapshotPreBuildMaterials' value-dedup signature
 // ──────────────────────────────────────────────────────────────────────────
 
+type TextureMapField = Extract<{
+  [K in keyof MaterialSpec]: MaterialSpec[K] extends TextureRef | undefined ? K : never;
+}[keyof MaterialSpec], string>;
+
+const TEXTURE_MAP_FIELDS: readonly TextureMapField[] = [
+  'baseColorMap',
+  'normalMap',
+  'roughnessMap',
+  'metallicMap',
+  'transmissionMap',
+  'thicknessMap',
+  'emissiveMap',
+  'alphaMap',
+  'aoMap',
+  'clearcoatMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap',
+  'specularColorMap',
+  'specularIntensityMap',
+  'bumpMap',
+  'displacementMap',
+  'lightMap',
+];
+
+function finiteSig(value: number | undefined, fallback: number): string {
+  return Number.isFinite(value) ? (value ?? fallback).toFixed(4) : fallback.toFixed(4);
+}
+
+function vecSig(
+  value: readonly number[] | undefined,
+  fallback: readonly number[],
+  count: 2 | 3,
+): string {
+  const parts: string[] = [];
+  for (let i = 0; i < count; i += 1) {
+    parts.push(finiteSig(value?.[i], fallback[i] ?? 0));
+  }
+  return parts.join(',');
+}
+
+function textureRefSig(ref: TextureRef | undefined): string {
+  if (ref?.handle == null) return '';
+  const transform = ref.transform;
+  return [
+    handleId(ref.handle),
+    `uv${Number.isFinite(ref.texCoord) ? ref.texCoord ?? 0 : 0}`,
+    `off=${vecSig(transform?.offset, [0, 0], 2)}`,
+    `scale=${vecSig(transform?.scale, [1, 1], 2)}`,
+    `rot=${finiteSig(transform?.rotation, 0)}`,
+    `wrap=${ref.wrapS ?? 'repeat'},${ref.wrapT ?? 'repeat'}`,
+    `filter=${ref.magFilter ?? ''},${ref.minFilter ?? ''},${ref.mipFilter ?? ''}`,
+  ].join(';');
+}
+
+function textureMapSig(m: MaterialSpec): string {
+  return TEXTURE_MAP_FIELDS
+    .map((field) => `${field}=${textureRefSig(m[field] as TextureRef | undefined)}`)
+    .join('|');
+}
+
+function stableJsonSig(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(4) : String(value);
+  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableJsonSig).join(',')}]`;
+  if (typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJsonSig((value as Record<string, unknown>)[key])}`)
+      .join(',')}}`;
+  }
+  return String(value);
+}
+
 /**
  * Structural material signature — the core `MaterialSpec` counterpart to
- * `legacy/bvhCommon.ts:snapshotPreBuildMaterials`'s `matSig`. Hashes only the fields
- * the GI/PT consumers read (baseColor, emissive, emissiveIntensity, roughness,
- * metallic, transmission, ior, Beer-Lambert attenuation fields, base/normal
- * map handle identity, and pt-webgl2's folded mesh-emitter shadow flag), with
- * the SAME `toFixed(4)` quantisation, so two primitives
+ * `legacy/bvhCommon.ts:snapshotPreBuildMaterials`'s `matSig`. Hashes the fields
+ * the merged-BVH GI/PT consumers read: base PBR/alpha/transmission scalars,
+ * lobe-extension scalars, Beer-Lambert fields, all packed texture-map refs
+ * including handle identity + UV transform/sampler metadata, and pt-webgl2's
+ * folded mesh-emitter shadow flag. Numeric fields retain the historical
+ * `toFixed(4)` quantisation, so two primitives
  * carrying structurally-equal materials collapse to one LUT slot — exactly as the
  * THREE value-dedup does for React/R3F material churn. Map identity uses the opaque
  * `TextureRef.handle` (the core analogue of THREE's `texture.uuid`).
@@ -424,37 +504,42 @@ function determinant4(m: ArrayLike<number>): number {
  * a stable string (JSON.stringify of Infinity produces `null`).
  */
 export function materialSig(m: MaterialSpec): string {
-  const col = m.baseColor;
-  const colS = col
-    ? `${(col[0] ?? 0).toFixed(4)},${(col[1] ?? 0).toFixed(4)},${(col[2] ?? 0).toFixed(4)}`
-    : '';
-  const em = m.emissive;
-  const emS = em
-    ? `${(em[0] ?? 0).toFixed(4)},${(em[1] ?? 0).toFixed(4)},${(em[2] ?? 0).toFixed(4)}`
-    : '';
-  const r = (m.roughness ?? 0.5).toFixed(4);
-  const mt = (m.metallic ?? 0).toFixed(4);
-  const ei = (m.emissiveIntensity ?? 1).toFixed(4);
-  const tr = (m.transmission ?? 0).toFixed(4);
-  const ior = (m.ior ?? 1.5).toFixed(4);
-  const mapU = handleId(m.baseColorMap?.handle);
-  const nmU = handleId(m.normalMap?.handle);
+  const colS = vecSig(m.baseColor, [0, 0, 0], 3);
+  const emS = vecSig(m.emissive, [0, 0, 0], 3);
   // Beer-Lambert fields — must match materialSetHashFloats in sceneBvh.ts.
-  const ac = m.attenuationColor;
-  const acS = ac
-    ? `${(ac[0] ?? 1).toFixed(4)},${(ac[1] ?? 1).toFixed(4)},${(ac[2] ?? 1).toFixed(4)}`
-    : '1.0000,1.0000,1.0000';
+  const acS = vecSig(m.attenuationColor, [1, 1, 1], 3);
   const adRaw = m.attenuationDistance;
   const adS = adRaw == null
     ? 'Inf'
     : !isFinite(adRaw)
       ? 'Inf'
       : adRaw.toFixed(4);
-  const thS = (m.thickness ?? 0).toFixed(4);
   const meshEmitterShadow = (m as MaterialSpec & {
     meshEmitterCastShadowDisabled?: boolean;
   }).meshEmitterCastShadowDisabled === true ? '1' : '0';
-  return `${colS}|${emS}|${ei}|${r}|${mt}|${tr}|${ior}|${mapU}|${nmU}|${acS}|${adS}|${thS}|${meshEmitterShadow}`;
+  return [
+    `base=${colS}`,
+    `em=${emS}`,
+    `emI=${finiteSig(m.emissiveIntensity, 1)}`,
+    `rough=${finiteSig(m.roughness, 0.5)}`,
+    `metal=${finiteSig(m.metallic, 0)}`,
+    `shade=${m.shadingModel ?? 'pbr'}`,
+    `alpha=${m.alphaMode ?? 'opaque'},${finiteSig(m.alphaCutoff, 0.5)},${finiteSig(m.opacity, 1)}`,
+    `trans=${finiteSig(m.transmission, 0)}`,
+    `ior=${finiteSig(m.ior, 1.5)}`,
+    `beer=${acS},${adS},${finiteSig(m.thickness, 0)}`,
+    `mapScalar=${finiteSig(m.normalScale, 1)},${finiteSig(m.clearcoatNormalScale, 1)},${finiteSig(m.aoMapIntensity, 1)},${finiteSig(m.bumpScale, 1)},${finiteSig(m.lightMapIntensity, 1)},${finiteSig(m.envMapIntensity, 1)}`,
+    `spec=${vecSig(m.specularColor, [1, 1, 1], 3)},${finiteSig(m.specularIntensity, 1)}`,
+    `coatSheen=${finiteSig(m.clearcoat, 0)},${finiteSig(m.clearcoatRoughness, 0)},${finiteSig(m.sheen, 0)},${vecSig(m.sheenColor, [0, 0, 0], 3)},${finiteSig(m.sheenRoughness, 0)}`,
+    `aniso=${finiteSig(m.anisotropy, 0)},${finiteSig(m.anisotropyRotation, 0)}`,
+    `iridescence=${finiteSig(m.iridescence, 0)},${finiteSig(m.iridescenceIor, 1.3)},${vecSig(m.iridescenceThicknessRange, [100, 400], 2)}`,
+    `reservedDisp=${textureRefSig(m.displacementMap)},${finiteSig(m.displacementScale, 1)},${finiteSig(m.displacementBias, 0)}`,
+    `volume=${finiteSig(m.scatteringCoefficient, 0)},${finiteSig(m.scatteringAnisotropy, 0)},${vecSig(m.scatteringCoefficientRGB, [0, 0, 0], 3)}`,
+    `spectral=${stableJsonSig(m.spectralAttenuation)},${finiteSig(m.dispersionAbbeNumber, 0)}`,
+    `layers=${stableJsonSig(m.frontLayer)},${stableJsonSig(m.backLayer)},${stableJsonSig(m.thinFilmStack)}`,
+    `maps=${textureMapSig(m)}`,
+    `meshEmitterShadow=${meshEmitterShadow}`,
+  ].join('|');
 }
 
 /**
