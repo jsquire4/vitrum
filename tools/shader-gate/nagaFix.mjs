@@ -42,6 +42,10 @@ const BVH_BINDING_NAMES = [
   "tlasBlasRoots",
   "tlasInstanceWorldToLocal",
   "tlasInstanceLocalToWorld",
+  "cwbvhNodeBounds",
+  "cwbvhChildBoundsPacked",
+  "cwbvhChildMeta",
+  "cwbvhChildCount",
 ];
 
 /** GRIS per-pass prefixes used in spatialGiGris / temporalGiGris. */

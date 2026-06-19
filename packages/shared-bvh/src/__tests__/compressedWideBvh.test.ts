@@ -5,9 +5,12 @@ import {
   CWBVH_CHILD_META_WORDS,
   CWBVH_CHILD_NODE,
   CWBVH_CHILDREN,
+  CWBVH_CHILD_BOUNDS_PACKED_U32,
   buildCompressedWideBvh,
   cwbvhChildBounds,
   intersectCompressedWideBvhFirstHit,
+  packCwbvhBuildBoundsForWgsl,
+  packCwbvhChildBoundsForWgsl,
   type CwbvhRay,
 } from '../index.js';
 
@@ -189,6 +192,27 @@ describe('compressedWideBvh', () => {
     expect(Array.from(a.cwbvhChildBounds)).toEqual(Array.from(b.cwbvhChildBounds));
     expect(Array.from(a.cwbvhChildMeta)).toEqual(Array.from(b.cwbvhChildMeta));
     expect(Array.from(a.cwbvhChildCount)).toEqual(Array.from(b.cwbvhChildCount));
+  });
+
+  it('packs child bounds into explicit u32 words for WGSL storage reads', () => {
+    const mesh = makeGrid(3);
+    const built = buildCompressedWideBvh(mesh.positions, mesh.indices, mesh.triMaterialIds, { maxLeafTriangles: 1 });
+    const packed = packCwbvhBuildBoundsForWgsl(built);
+
+    expect(packed.length).toBe(built.cwbvhNodeCount * CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_PACKED_U32);
+    for (let i = 0; i < packed.length; i += 1) {
+      const lo = built.cwbvhChildBounds[i * 2] ?? 0;
+      const hi = built.cwbvhChildBounds[i * 2 + 1] ?? 0;
+      expect(packed[i]).toBe((lo | (hi << 16)) >>> 0);
+      expect(packed[i]! & 0xffff).toBe(lo);
+      expect((packed[i]! >>> 16) & 0xffff).toBe(hi);
+    }
+  });
+
+  it('rejects malformed odd-length child-bound arrays for WGSL packing', () => {
+    expect(() => packCwbvhChildBoundsForWgsl(new Uint16Array([1, 2, 3]))).toThrow(
+      /must be even/,
+    );
   });
 
   it('keeps quantized child bounds conservative after dequantization', () => {

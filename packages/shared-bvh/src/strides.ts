@@ -91,6 +91,14 @@ export const CWBVH_CHILDREN = 8 as const;
 export const CWBVH_CHILD_BOUNDS_U16 = 6 as const;
 
 /**
+ * WGSL storage buffers do not expose a `u16` scalar type for portable storage
+ * reads, so CWBVH child bounds are uploaded as three packed u32 words per child
+ * (`lo16 | hi16 << 16`). This is byte-equivalent to the six-u16 CPU oracle
+ * form, but explicit packing avoids relying on host endianness.
+ */
+export const CWBVH_CHILD_BOUNDS_PACKED_U32 = 3 as const;
+
+/**
  * Metadata words per CWBVH child:
  * `[kind, nodeIndexOrTriOffset, triCount]`.
  *

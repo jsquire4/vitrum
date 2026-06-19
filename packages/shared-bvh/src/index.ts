@@ -14,6 +14,7 @@ export {
   MAT4_STRIDE_F32,
   CWBVH_CHILDREN,
   CWBVH_CHILD_BOUNDS_U16,
+  CWBVH_CHILD_BOUNDS_PACKED_U32,
   CWBVH_CHILD_META_WORDS,
 } from './strides.js';
 export { pickPrimitiveCpu, type PickCamera } from './pickPrimitiveCpu.js';
@@ -54,6 +55,7 @@ export {
 export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';
 export * from './wgsl/bvhIntersect.wgsl.js';
+export * from './wgsl/cwbvhIntersect.wgsl.js';
 export * from './wgsl/tlasTraversal.wgsl.js';
 export * from './wgsl/tlasSceneHitTraversal.wgsl.js';
 export * from './wgsl/bvhCastShadowMask.wgsl.js';

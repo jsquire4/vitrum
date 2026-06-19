@@ -6,6 +6,7 @@ import {
 } from './buildArrayBvh.js';
 import {
   CWBVH_CHILDREN,
+  CWBVH_CHILD_BOUNDS_PACKED_U32,
   CWBVH_CHILD_BOUNDS_U16,
   CWBVH_CHILD_META_WORDS,
 } from './strides.js';
@@ -276,6 +277,34 @@ export function buildCompressedWideBvh(
   return buildCompressedWideBvhFromArrayBvh(
     buildArrayBvh(positions, indices, triMaterialIds, opts),
   );
+}
+
+/**
+ * Pack the CPU oracle's six-u16 child bounds into the three-u32 layout consumed
+ * by WGSL storage buffers. Each output word is `lo16 | (hi16 << 16)`.
+ */
+export function packCwbvhChildBoundsForWgsl(childBounds: Uint16Array): Uint32Array {
+  if ((childBounds.length & 1) !== 0) {
+    throw new Error(`CWBVH child bounds length must be even; got ${childBounds.length}`);
+  }
+  const packed = new Uint32Array(childBounds.length / 2);
+  for (let i = 0; i < packed.length; i += 1) {
+    const lo = childBounds[i * 2] ?? 0;
+    const hi = childBounds[i * 2 + 1] ?? 0;
+    packed[i] = (lo | (hi << 16)) >>> 0;
+  }
+  return packed;
+}
+
+export function packCwbvhBuildBoundsForWgsl(
+  cwbvh: Pick<CompressedWideBvhBuildResult, 'cwbvhChildBounds' | 'cwbvhNodeCount'>,
+): Uint32Array {
+  const expected = cwbvh.cwbvhNodeCount * CWBVH_CHILDREN * CWBVH_CHILD_BOUNDS_PACKED_U32;
+  const packed = packCwbvhChildBoundsForWgsl(cwbvh.cwbvhChildBounds);
+  if (packed.length !== expected) {
+    throw new Error(`CWBVH packed child bounds length mismatch: got ${packed.length}, expected ${expected}`);
+  }
+  return packed;
 }
 
 export function cwbvhChildBounds(

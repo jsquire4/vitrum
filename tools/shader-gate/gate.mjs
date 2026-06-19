@@ -446,7 +446,67 @@ const shaders = [];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SECTION 4: walkaround-rc
+// SECTION 4: shared-bvh standalone WGSL strings
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  const { CWBVH_INTERSECT_WGSL } = await import(
+    "../../packages/shared-bvh/src/index.ts"
+  );
+
+  const cwbvhGateWgsl = `${CWBVH_INTERSECT_WGSL}
+
+@group(0) @binding(0) var<storage, read> cwbvhNodeBounds: array<CwbvhNodeBounds>;
+@group(0) @binding(1) var<storage, read> cwbvhChildBoundsPacked: array<u32>;
+@group(0) @binding(2) var<storage, read> cwbvhChildMeta: array<CwbvhChildMeta>;
+@group(0) @binding(3) var<storage, read> cwbvhChildCount: array<u32>;
+@group(0) @binding(4) var<storage, read> bvh_index: array<vec4u>;
+@group(0) @binding(5) var<storage, read> bvh_position: array<vec4f>;
+@group(0) @binding(6) var<storage, read_write> cwbvhGateOut: array<u32>;
+
+@compute @workgroup_size(1)
+fn cwbvhGateMain() {
+  var ray: CwbvhRay;
+  ray.origin = vec3f(0.0, 0.0, 1.0);
+  ray.direction = vec3f(0.0, 0.0, -1.0);
+  let anyHit = cwbvhIntersectAny(
+    &cwbvhNodeBounds,
+    &cwbvhChildBoundsPacked,
+    &cwbvhChildMeta,
+    &cwbvhChildCount,
+    &bvh_index,
+    &bvh_position,
+    ray.origin,
+    ray.direction,
+    1.0e20,
+    1.0e-5,
+    0u,
+    false,
+  );
+  let closest = cwbvhIntersectFirstHit(
+    &cwbvhNodeBounds,
+    &cwbvhChildBoundsPacked,
+    &cwbvhChildMeta,
+    &cwbvhChildCount,
+    &bvh_index,
+    &bvh_position,
+    ray,
+    1.0e-5,
+    0u,
+    false,
+  );
+  cwbvhGateOut[0] = select(0u, 1u, anyHit || closest.didHit);
+}
+`;
+
+  shaders.push({
+    name: "shared-bvh/cwbvhIntersect",
+    wgsl: applyNagaFix(cwbvhGateWgsl),
+    entryPoint: "cwbvhGateMain",
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SECTION 5: walkaround-rc
 //
 // The RC probe-ray-cast shader uses ptr<storage> TLAS params from
 // TLAS_TRAVERSAL_WGSL and RC-prefixed binding names (rc_tlas_nodes etc.).
