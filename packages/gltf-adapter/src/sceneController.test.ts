@@ -80,6 +80,55 @@ function animatedHierarchyGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBu
   };
 }
 
+function animatedCameraGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const packed = packF32([
+    [0, 1],
+    [0, 0, 0, 2, 0, 0],
+    [0, 0, 0, 0, 4, 0],
+  ]);
+  return {
+    buffers: new Map([[0, packed.buffer]]),
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [
+        { name: 'CameraParent', children: [1] },
+        { name: 'CameraNode', camera: 0, translation: [0, 1, 3] },
+      ],
+      cameras: [{
+        name: 'HeroCam',
+        type: 'perspective',
+        perspective: {
+          yfov: 0.75,
+          znear: 0.1,
+          zfar: 100,
+          aspectRatio: 1.5,
+        },
+      }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'VEC3' },
+        { bufferView: 2, componentType: 5126, count: 2, type: 'VEC3' },
+      ],
+      bufferViews: packed.views,
+      buffers: [{ byteLength: packed.buffer.byteLength }],
+      animations: [
+        {
+          name: 'camera-parent-slide',
+          samplers: [{ input: 0, output: 1, interpolation: 'LINEAR' }],
+          channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+        },
+        {
+          name: 'camera-parent-lift',
+          samplers: [{ input: 0, output: 2, interpolation: 'LINEAR' }],
+          channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+        },
+      ],
+    },
+  };
+}
+
 function animatedInstancedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const packed = packF32([
     [0, 0, 0, 1, 0, 0, 0, 1, 0],
@@ -391,6 +440,51 @@ describe('GltfSceneController', () => {
     const patch = frame.primitivePatches[0]!.patch as { transform: Float32Array };
     expect(patch.transform[12]).toBeCloseTo(1);
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(1);
+  });
+
+  it('updates camera metadata when an authored camera ancestor is animated', async () => {
+    const { gltf, buffers } = animatedCameraGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    expect(result.scene.primitives).toHaveLength(0);
+    expect(result.cameras).toHaveLength(1);
+    expect(result.cameras[0]!.name).toBe('HeroCam');
+    expect(result.cameras[0]!.nodeName).toBe('CameraNode');
+    expect(result.cameras[0]!.worldMatrix[12]).toBeCloseTo(0);
+    expect(result.cameras[0]!.worldMatrix[13]).toBeCloseTo(1);
+    expect(result.cameras[0]!.worldMatrix[14]).toBeCloseTo(3);
+
+    const frame = controller.applyAnimation('camera-parent-slide', 1);
+
+    expect(frame.primitivePatches).toHaveLength(0);
+    expect(frame.cameras).toHaveLength(1);
+    expect(frame.cameras[0]!.worldMatrix[12]).toBeCloseTo(2);
+    expect(frame.cameras[0]!.worldMatrix[13]).toBeCloseTo(1);
+    expect(frame.cameras[0]!.worldMatrix[14]).toBeCloseTo(3);
+    expect(frame.cameras[0]!.perspective?.yfov).toBeCloseTo(0.75);
+    expect(frame.cameras[0]!.perspective?.aspectRatio).toBeCloseTo(1.5);
+    expect(controller.cameras[0]!.worldMatrix[12]).toBeCloseTo(2);
+
+    controller.resetPose();
+    expect(controller.cameras[0]!.worldMatrix[12]).toBeCloseTo(0);
+    expect(controller.cameras[0]!.worldMatrix[13]).toBeCloseTo(1);
+  });
+
+  it('returns blended camera metadata after blending authored camera animations', async () => {
+    const { gltf, buffers } = animatedCameraGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.blend(['camera-parent-slide', 'camera-parent-lift'], [0.25, 0.75], 1);
+
+    expect(frame.primitivePatches).toHaveLength(0);
+    expect(frame.cameras).toHaveLength(1);
+    expect(frame.cameras[0]!.worldMatrix[12]).toBeCloseTo(0.5);
+    expect(frame.cameras[0]!.worldMatrix[13]).toBeCloseTo(4);
+    expect(frame.cameras[0]!.worldMatrix[14]).toBeCloseTo(3);
+    expect(controller.cameras[0]!.worldMatrix[12]).toBeCloseTo(0.5);
+    expect(controller.cameras[0]!.worldMatrix[13]).toBeCloseTo(4);
   });
 
   it('falls back to setScene when the target has no updatePrimitive method', async () => {

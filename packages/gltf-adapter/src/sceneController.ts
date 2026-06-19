@@ -29,6 +29,7 @@ import type {
   GltfToSceneResult,
 } from './gltfToScene.js';
 import { GLTF_DEFAULT_MATERIAL } from './materials.js';
+import { collectSceneCameras } from './cameraMetadata.js';
 import {
   IDENTITY_MAT4,
   composeTrsMat4,
@@ -119,6 +120,7 @@ export interface GltfAnimationApplyResult {
   readonly requestedTime: number;
   readonly localTime: number;
   readonly primitivePatches: readonly GltfPrimitivePatchRecord[];
+  readonly cameras: readonly GltfSceneCamera[];
   readonly scene: Scene;
   readonly warnings: readonly string[];
   readonly diagnostics: readonly GltfSceneControllerDiagnostic[];
@@ -131,6 +133,7 @@ export interface GltfBlendApplyResult {
   readonly localTimes: readonly number[];
   readonly weights: readonly number[];
   readonly primitivePatches: readonly GltfPrimitivePatchRecord[];
+  readonly cameras: readonly GltfSceneCamera[];
   readonly scene: Scene;
   readonly warnings: readonly string[];
   readonly diagnostics: readonly GltfSceneControllerDiagnostic[];
@@ -202,11 +205,12 @@ export function createGltfSceneController(
 
 export class GltfSceneController {
   readonly gltf: GltfJson;
-  readonly cameras: readonly GltfSceneCamera[];
   readonly animations: readonly AnimationClip[];
   readonly animationTargets: Readonly<Record<string, readonly string[]>>;
 
   #scene: Scene;
+  readonly #baseCameras: readonly GltfSceneCamera[];
+  #cameras: readonly GltfSceneCamera[];
   #engine: GltfScenePatchTarget | undefined;
   #activeClip: AnimationClip | undefined;
   #clock = 0;
@@ -225,12 +229,17 @@ export class GltfSceneController {
 
   constructor(input: GltfSceneControllerInput, options: GltfSceneControllerOptions = {}) {
     this.gltf = input.gltf;
-    this.cameras = input.cameras ?? [];
     this.animations = input.animations;
     this.animationTargets = input.animationTargets;
     this.#scene = input.scene;
     this.#sceneIndex = input.sceneIndex ?? input.gltf.scene ?? 0;
     this.#baseLocals = (input.gltf.nodes ?? []).map(baseLocalState);
+    this.#baseCameras = input.cameras
+      ?? collectSceneCameras(
+        input.gltf,
+        buildWorldTransformsForLocals(input.gltf, this.#rootNodes(), this.#baseLocals),
+      );
+    this.#cameras = this.#baseCameras;
     this.#nodeToPrimitiveIds = parseAnimationTargets(input.animationTargets);
     this.#basePrimitiveById = new Map(input.scene.primitives.map((p) => [String(p.id), p]));
     this.#convertedMaterials = input.convertedMaterials ?? [];
@@ -247,6 +256,10 @@ export class GltfSceneController {
 
   get scene(): Scene {
     return this.#scene;
+  }
+
+  get cameras(): readonly GltfSceneCamera[] {
+    return this.#cameras;
   }
 
   get warnings(): readonly string[] {
@@ -347,6 +360,7 @@ export class GltfSceneController {
       requestedTime: time,
       localTime,
       primitivePatches: applied.primitivePatches,
+      cameras: applied.cameras,
       scene: applied.scene,
       warnings: frameWarnings,
       diagnostics: frameDiagnostics,
@@ -399,6 +413,7 @@ export class GltfSceneController {
       localTimes,
       weights: positiveWeights,
       primitivePatches: applied.primitivePatches,
+      cameras: applied.cameras,
       scene: applied.scene,
       warnings: frameWarnings,
       diagnostics: frameDiagnostics,
@@ -559,6 +574,7 @@ export class GltfSceneController {
         this.#basePrimitiveById.get(String(primitive.id)) ?? primitive,
       ),
     };
+    this.#cameras = this.#baseCameras;
     if (target) target.setScene(this.#scene);
   }
 
@@ -637,6 +653,7 @@ export class GltfSceneController {
     frame: GltfSceneControllerDiagnosticFrame,
   ): {
     primitivePatches: readonly GltfPrimitivePatchRecord[];
+    cameras: readonly GltfSceneCamera[];
     scene: Scene;
     usedSetScene: boolean;
   } {
@@ -648,6 +665,9 @@ export class GltfSceneController {
     }
 
     const worldTransforms = buildWorldTransformsForLocals(this.gltf, this.#rootNodes(), locals);
+    const cameras = (this.gltf.cameras?.length ?? 0) > 0
+      ? collectSceneCameras(this.gltf, worldTransforms)
+      : this.#baseCameras;
     const patchMap = new Map<string, Partial<ScenePrimitive>>();
 
     for (const [nodeIndex, primitiveIds] of this.#nodeToPrimitiveIds) {
@@ -722,11 +742,13 @@ export class GltfSceneController {
     }
 
     this.#scene = nextScene;
+    this.#cameras = cameras;
     if (frame.warnings.length > 0) this.#warnings.push(...frame.warnings);
     if (frame.diagnostics.length > 0) this.#diagnostics.push(...frame.diagnostics);
 
     return {
       primitivePatches,
+      cameras,
       scene: this.#scene,
       usedSetScene,
     };
