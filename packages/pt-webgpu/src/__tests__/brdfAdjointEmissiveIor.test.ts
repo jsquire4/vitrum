@@ -317,7 +317,7 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     session.dispose();
   });
 
-  it('a mixed emissive + ior request degrades the WHOLE step to FD (ior is the holdout)', () => {
+  it('a mixed emissive + ior request keeps the public method on FD for the ior holdout', () => {
     const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
       target,
       parameters: [
@@ -326,9 +326,9 @@ describe('inverseSession — emissive/ior field-set widening', () => {
       ],
       method: 'path-replay',
     });
-    // emissive IS eligible now, but ior is not — path-replay requires EVERY param
-    // eligible, so the whole step degrades to FD on the ior holdout (the all-or-
-    // nothing method-resolution contract: no mixed analytic/FD gradient).
+    // emissive IS eligible now, but ior is not — the public method remains
+    // finite-difference until every requested slot is path-replay-covered.
+    // `inverseSession.test.ts` pins the internal mixed adjoint/FD routing.
     expect(session.method).toBe('finite-difference');
     session.dispose();
   });

@@ -867,6 +867,46 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('uses adjoint for eligible slots and FD only for unsupported holdouts', async () => {
+    const fake = makeFakeEngine();
+    let captured: AdjointGradientRequest | null = null;
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async (req) => {
+        captured = req;
+        return new Float32Array([0.25, -0.5, 0.75, 999]);
+      },
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.baseColor', kind: 'rgb' },
+        { path: 'materials.panel.ior', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-transport',
+      path: 'materials.panel.ior',
+    }));
+
+    const result = await session.step();
+    expect(captured).not.toBeNull();
+    expect(captured!.params).toEqual([
+      { domain: 'materials', id: 'panel', field: 'baseColor', offset: 0, length: 3 },
+    ]);
+    // Baseline render + one FD probe for the ior holdout. The baseColor slot
+    // came from the adjoint hook instead of three more render probes.
+    expect(fake.renderCount).toBe(2);
+    expect(result.gradient).toEqual([
+      [expect.closeTo(0.25, 6), expect.closeTo(-0.5, 6), expect.closeTo(0.75, 6)],
+      [expect.closeTo(0, 6)],
+    ]);
+    session.dispose();
+  });
+
   it('keeps path-replay for deterministic point emitter color/intensity and passes hook offsets', async () => {
     const fake = makeFakeEngine();
     let captured: AdjointGradientRequest | null = null;

@@ -29,8 +29,11 @@
  * readable local map factors); any
  * shortfall (no hook, an unsupported emitter/material target, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
- * silent wrong-gradient path. An engine providing the hook vouches that its
- * re-trace dispatch is hardware-validated.
+ * silent wrong-gradient path. Mixed sessions may still route individually
+ * eligible slots through the adjoint hook and finite-difference only the
+ * holdouts; the public method stays conservative until every slot is replayed.
+ * An engine providing the hook vouches that its re-trace dispatch is
+ * hardware-validated.
  *
  * The host owns the cadence: each `step()` is one optimizer iteration. The
  * session never schedules itself.
@@ -110,6 +113,9 @@ export interface InverseEngineHooks {
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
    * only graduates to path-replay once its end-to-end inverse fit converges.
+   * Mixed sessions keep `session.method === 'finite-difference'`, but the
+   * session may call this hook for eligible slots and use finite-difference for
+   * unsupported holdouts.
    */
   computeAdjointGradient?(args: AdjointGradientRequest): Promise<Float32Array>;
 }
@@ -331,6 +337,8 @@ export class PtWebgpuInverseSession implements InverseSession {
   readonly #lossKind: 'l2' | 'l1';
   readonly #method: InverseGradientMethod;
   readonly #diagnostics: readonly InverseSessionDiagnostic[];
+  readonly #pathReplaySlotEligible: readonly boolean[];
+  readonly #usesPartialPathReplay: boolean;
   readonly #samplesPerStep: number;
   readonly #fdEpsilon: number;
   readonly #slots: ParamSlot[];
@@ -380,19 +388,21 @@ export class PtWebgpuInverseSession implements InverseSession {
     this.#flat = new Float32Array(offset);
 
     // Resolve the EFFECTIVE gradient method from the request + backend capability
-    // (InverseSessionOptions.method contract). 'path-replay' requires the engine
-    // to provide the adjoint hook, every parameter to be in the
+    // (InverseSessionOptions.method contract). Public 'path-replay' requires the
+    // engine to provide the adjoint hook, every parameter to be in the
     // adjoint-differentiable set, and every target material to stay in the
     // compatible direct-light domain, or a mapped/unmapped unlit baseColor primary-hit
     // fit (`ADJOINT_ELIGIBLE_FIELDS`: material
     // baseColor / roughness / metallic / aoMapIntensity / lightMapIntensity / emissive /
     // emissiveIntensity / specularColor / specularIntensity / clearcoat / sheen /
     // iridescence / iridescenceThicknessRange / anisotropy slices — see its doc
-    // for scoped map coverage and exclusions). Any shortfall
-    // degrades to finite-difference and is reported via `method`, so the host
-    // never receives a silently-wrong gradient. The two adjoint stages
-    // the hook relies on (partials; chain rule + accumulation) are GPU-validated
-    // on lavapipe (V24); an engine exposing the hook vouches for the re-trace.
+    // for scoped map coverage and exclusions). Any shortfall degrades the public
+    // `method` to finite-difference, so the host never receives a silently-wrong
+    // all-adjoint promise. When the hook/render regime are valid but only some
+    // slots are supported, the step still replays the eligible slots and FD-probes
+    // only the holdouts. The two adjoint stages the hook relies on (partials;
+    // chain rule + accumulation) are GPU-validated on lavapipe (V24); an engine
+    // exposing the hook vouches for the re-trace.
     const iridescenceOptimizedPrimitiveIds = new Set(
       this.#slots
         .filter(
@@ -406,11 +416,12 @@ export class PtWebgpuInverseSession implements InverseSession {
         )
         .map((s) => s.target.id),
     );
+    const pathReplayRenderContext = hooks.getPathReplayRenderContext?.() ?? {};
     const pathReplayDiagnostics = requestedMethod === 'path-replay'
       ? collectPathReplayDiagnostics(scene, this.#slots, {
           hasHook: hooks.computeAdjointGradient != null,
           iridescenceOptimizedPrimitiveIds,
-          renderContext: hooks.getPathReplayRenderContext?.() ?? {},
+          renderContext: pathReplayRenderContext,
         })
       : [];
     this.#diagnostics = pathReplayDiagnostics;
@@ -422,6 +433,19 @@ export class PtWebgpuInverseSession implements InverseSession {
       requestedMethod === 'path-replay' && hooks.computeAdjointGradient != null && allEligible
         ? 'path-replay'
         : 'finite-difference';
+    const canUseScopedAdjoint =
+      requestedMethod === 'path-replay' &&
+      hooks.computeAdjointGradient != null &&
+      pathReplayRenderRegimeIssue(pathReplayRenderContext) == null;
+    this.#pathReplaySlotEligible = canUseScopedAdjoint
+      ? this.#slots.map((slot) =>
+          diagnosePathReplaySlot(scene, slot, iridescenceOptimizedPrimitiveIds).length === 0,
+        )
+      : this.#slots.map(() => false);
+    this.#usesPartialPathReplay =
+      this.#method === 'finite-difference' &&
+      canUseScopedAdjoint &&
+      this.#pathReplaySlotEligible.some((eligible) => eligible);
 
     // Seed the flat vector from the parameter `initial` override or the current
     // scene value.
@@ -477,18 +501,23 @@ export class PtWebgpuInverseSession implements InverseSession {
 
     // 2. Gradient.
     let grad: Float32Array;
-    if (this.#method === 'path-replay') {
+    if (this.#method === 'path-replay' || this.#usesPartialPathReplay) {
       // Phase 1: ONE adjoint pass replaces the N-render FD probe loop. The engine
       // re-traces the frozen-seed primary path + NEE and accumulates ∂loss/∂θ from
       // the per-pixel `dLoss_dRendered` through the GPU-validated BSDF partials.
-      // (Method resolution already guaranteed the hook + adjoint-eligibility.)
-      grad = await this.#hooks.computeAdjointGradient!({
+      // (Method resolution already guaranteed the hook + adjoint-eligibility for
+      // every slot included in `replaySlots`.)
+      grad = new Float32Array(this.#flat.length);
+      const replaySlots = this.#method === 'path-replay'
+        ? this.#slots
+        : this.#slots.filter((_slot, index) => this.#pathReplaySlotEligible[index] === true);
+      const adjointGrad = await this.#hooks.computeAdjointGradient!({
         dLoss_dRendered,
         channels: base.channels,
         width,
         height,
         samples: this.#samplesPerStep,
-        params: this.#slots.map((s) => ({
+        params: replaySlots.map((s) => ({
           domain: s.target.domain,
           id: s.target.id,
           field: s.target.field,
@@ -497,10 +526,22 @@ export class PtWebgpuInverseSession implements InverseSession {
         })),
         gradientLength: this.#flat.length,
       });
-      if (grad.length !== this.#flat.length) {
+      if (adjointGrad.length !== this.#flat.length) {
         throw new Error(
-          `InverseSession.step: adjoint gradient length ${grad.length} ≠ ` +
+          `InverseSession.step: adjoint gradient length ${adjointGrad.length} ≠ ` +
             `parameter length ${this.#flat.length}.`,
+        );
+      }
+      for (const slot of replaySlots) {
+        grad.set(adjointGrad.subarray(slot.offset, slot.offset + slot.length), slot.offset);
+      }
+      if (this.#usesPartialPathReplay) {
+        await this.#fillFiniteDifferenceGradient(
+          grad,
+          loss,
+          width,
+          height,
+          (slotIndex) => this.#pathReplaySlotEligible[slotIndex] !== true,
         );
       }
     } else {
@@ -510,16 +551,7 @@ export class PtWebgpuInverseSession implements InverseSession {
       // allocation-free `lossValue` (dLoss_dRendered is the Phase-1 input).
       void dLoss_dRendered;
       grad = new Float32Array(this.#flat.length);
-      const eps = this.#fdEpsilon;
-      for (let i = 0; i < this.#flat.length; i++) {
-        const original = this.#flat[i]!;
-        this.#flat[i] = original + eps;
-        this.#applyFlatToScene();
-        const probe = await this.#hooks.renderAndReadback(width, height, this.#samplesPerStep);
-        const probeLoss = lossValue(probe.rgb, probe.channels, this.#target, this.#lossKind);
-        grad[i] = (probeLoss - loss) / eps;
-        this.#flat[i] = original; // restore before the next probe
-      }
+      await this.#fillFiniteDifferenceGradient(grad, loss, width, height, () => true);
     }
 
     // 3. Adam step + clamp, then push the updated params back to the scene.
@@ -559,6 +591,30 @@ export class PtWebgpuInverseSession implements InverseSession {
 
   /** Push every parameter slot's current flat value into the scene via the
    *  engine's incremental-update hooks. */
+  async #fillFiniteDifferenceGradient(
+    grad: Float32Array,
+    baselineLoss: number,
+    width: number,
+    height: number,
+    shouldProbeSlot: (slotIndex: number) => boolean,
+  ): Promise<void> {
+    const eps = this.#fdEpsilon;
+    for (let slotIndex = 0; slotIndex < this.#slots.length; slotIndex++) {
+      if (!shouldProbeSlot(slotIndex)) continue;
+      const slot = this.#slots[slotIndex]!;
+      for (let local = 0; local < slot.length; local++) {
+        const flatIndex = slot.offset + local;
+        const original = this.#flat[flatIndex]!;
+        this.#flat[flatIndex] = original + eps;
+        this.#applyFlatToScene();
+        const probe = await this.#hooks.renderAndReadback(width, height, this.#samplesPerStep);
+        const probeLoss = lossValue(probe.rgb, probe.channels, this.#target, this.#lossKind);
+        grad[flatIndex] = (probeLoss - baselineLoss) / eps;
+        this.#flat[flatIndex] = original; // restore before the next probe
+      }
+    }
+  }
+
   #applyFlatToScene(): void {
     for (const slot of this.#slots) {
       const value = Array.from(this.#flat.subarray(slot.offset, slot.offset + slot.length));
