@@ -74,35 +74,21 @@ closed via the W8 sprint (2026-05-18, see CLAUDE.md "Where things actually
 stand"); B3 (neural inputPacker) and B4 (OIDN bridge consumers) both closed
 during the items-to-fix landings. Descriptions kept below for posterity.
 
-### B1. PPG GPU dispatch is `dispatchWorkgroups(0, 0, 0)`
+### B1. PPG GPU dispatch — closed/source-verified
 
-- **Where:** `packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts:829`:
-  ```ts
-  stubPass.dispatchWorkgroups(0, 0, 0); // no-op until sTree GPU buffer is wired
-  ```
-  The comment at lines 819-826 explicitly calls it a "skeleton GPU path" with no sTree producer.
-- **Symptom:** `HybridEngineOptions.ppgEnabled = true` compiles the pipeline but produces zero PPG samples. A user who reads the docs and turns the option on gets nothing.
-- **Fix:** Pick one:
-  - **(a)** Wire the GPU-side sTree/dTree producer per `plan/sprint-ppg-rebuild-future.md`. This is a separate sprint of work.
-  - **(b)** Remove `ppgEnabled` from `HybridEngineOptions`, delete the `ppg/` subtree (~1019 LOC per the 05-17 sweep, verify the LOC stat fresh), and update the walkaround README/capability matrix to stop advertising it.
-- **Acceptance:** Either a Cornell-box walkaround render with `ppgEnabled: true` shows path-guiding gain over pure NEE (numerical or visual), or `grep -rn ppg packages/walkaround-hybrid/src` returns zero hits and the README no longer mentions PPG.
+- **Closed/source-verified 2026-06-19:** the old zero-workgroup stub is gone. `packages/walkaround-hybrid/src/pipeline/passes/PPGUpdatePass.ts` computes a positive half-resolution sample count, derives `wgCount = Math.max(1, Math.ceil(sampleCount / 64))`, and dispatches `dispatchWorkgroups(wgCount, 1, 1)`. `WalkaroundGPUPipeline` registers `PPGUpdatePass`, and `packages/walkaround-hybrid/__tests__/ppg-dispatch.test.ts` pins the positive-workgroup dispatch behavior. Remaining PPG Road work is broad favorable-scene A/B and tuning, not no-op dispatch.
 
-### B2. RC subsystem ships 1500+ LOC but is unwired
+### B2. RC subsystem wiring — closed/source-verified
 
-- **Where:** `grep -rn "from '../rc\|from \"../rc" packages/walkaround-hybrid/src --include="*.ts"` returns zero hits outside `rc/` itself. The walkaround README at line 9 + 18 is honest about it ("not currently added to the HybridEngine combined shading sum"), so the documentation rot here is minor. But shipping unused code is its own problem.
-- **Fix:** Pick one:
-  - **(a)** Wire RC into `HybridEngine`'s combined shading sum per `plan/walkaround-without-three.md`. Requires composition with DDGI + ReSTIR-DI without double-counting indirect.
-  - **(b)** Move the entire `rc/` subtree to `examples/standalone-rc/` (since the README claims it's available "for standalone dispatch") and delete it from `walkaround-hybrid`'s public exports. Update the package README to remove the "RC" entries from the algorithm list — keep them only if (a) is the plan.
-- **Acceptance:** Either `HybridEngine` runs a Cornell scene with `denoiser: 'atrous-variance'`, RC enabled, and visibly produces a higher-quality first-bounce indirect than DDGI-only; or `packages/walkaround-hybrid/src/rc/` is gone.
+- **Closed/source-verified 2026-06-19:** RC is no longer unused code. `HybridEngine` instantiates `RCSubsystem` when `rcEnabled === true` and stores a bounded `rcWeight`; `HybridEngineFrameOrchestrator` calls `rc.dispatchFrame(...)`, forwards emitter/environment/material-atlas bindings, then publishes `rc.buildRCInputs(rcWeight)` through `pipeline.setRCInputs(...)`; the off path calls `setRCInputs(null)`. `WalkaroundGPUPipeline.setRCInputs` forwards the cascade buffer + packed params into the DDGI binding state. `rcAcceptance.gpu.test.ts` and the WSL T1 RC merged-mode oracle cover the host/gpu wiring. Remaining RC Road work is promotion/evidence and scene-tuning, not an unwired subsystem.
 
 ### B3. Neural denoiser layout — closed/source-verified
 
 - **Closed/source-verified 2026-06-19:** the old "inputPacker imported but not used" concern is stale. `packages/walkaround-hybrid/src/neural/unetArchitecture.ts` declares the first graph tensor as `enc_input` (`H x W x 9`); `layerResourceAllocator.ts` imports `INPUT_PACKER_WGSL` / `INPUT_PACKER_ENTRY`, compiles `neural-pipeline-inputPack`, and allocates `neural-uniform-inputPack`; `InferenceGraph.run()` calls `_runInputPack(enc, noisyColorBuf, albedoBuf, normalsBuf)` before layer dispatch; `_runInputPack()` binds noisy/albedo/normals/enc_input/params at bindings 0-4 and dispatches `Math.ceil(pixelCount / 256)` workgroups; `inputPacker.ts` writes per-pixel interleaved channels 0-2 noisy, 3-5 albedo, and 6-8 normals. Remaining neural Road work is production checkpoint + quality A/B, not input layout.
 
-### B4. OIDN bridge has zero non-test consumers
+### B4. OIDN bridge consumers — closed/source-verified
 
-- **Where:** `packages/shared-denoisers/src/` exports `denoiseFinal` / `preloadOIDNModel` / `clearOIDNCache` (per 05-17 finding F7). Verify with `grep -rn "denoiseFinal\|preloadOIDNModel" packages --include="*.ts" | grep -v __tests__ | grep -v packages/shared-denoisers`. If zero non-test hits, this is dead public API.
-- **Fix:** Either expose it through `HybridEngine.denoiser = 'oidn'` (or a PT-side capture hook) with a documented integration path, or delete it. ONNX runtime peer dep should not ship if nothing uses it.
+- **Closed/source-verified 2026-06-19:** the OIDN bridge has real engine consumers. Walkaround registers `denoiser: 'oidn-final'`, requires an OIDN model URL before enabling it, reads color/albedo/normal aux buffers, and calls `denoiseFinal(...)` from `packages/walkaround-hybrid/src/pipeline/denoisers/oidnFinal.ts`. `pt-webgl2` accepts `denoiser: 'oidn-final'` with `oidn.modelUrl`, constructs `OIDNFinalDispatcher`, and exposes async final-pass results. Tests pin both paths (`oidnFinalDenoiser.test.ts`, `pt-webgl2/src/__tests__/oidnFinal.test.ts`, and `engineContract.test.ts`). Remaining OIDN posture is host provisioning/quality evidence, not zero consumers.
 
 ---
 

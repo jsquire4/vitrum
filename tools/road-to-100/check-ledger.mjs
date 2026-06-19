@@ -92,6 +92,10 @@ if (!items.includes("OPEN ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONC
   fail("items_to_fix.md must retain the current open-items/provenance markers");
 }
 for (const [stalePhrase, message] of [
+  ["### B1. PPG GPU dispatch is `dispatchWorkgroups(0, 0, 0)`", "stale B1 PPG zero-dispatch heading"],
+  ["stubPass.dispatchWorkgroups(0, 0, 0)", "stale B1 PPG stub snippet"],
+  ["### B2. RC subsystem ships 1500+ LOC but is unwired", "stale B2 RC unwired heading"],
+  ["### B4. OIDN bridge has zero non-test consumers", "stale B4 OIDN zero-consumer heading"],
   ["What may still be broken is the input-packing layout", "stale B3 neural input-packing uncertainty"],
   ["runtime layout \"is not the interleaved per-pixel layout", "stale B3 legacy planar-layout quote"],
   ["dispatches 0 workgroups", "stale C1 PPG no-op dispatch text"],
@@ -107,11 +111,99 @@ if (!items.includes("### B3. Neural denoiser layout — closed/source-verified")
 if (!items.includes("Remaining neural Road work is production checkpoint + quality A/B, not input layout.")) {
   fail("items_to_fix.md must retain the reconciled B3 residual boundary");
 }
+for (const needle of [
+  "### B1. PPG GPU dispatch — closed/source-verified",
+  "Remaining PPG Road work is broad favorable-scene A/B and tuning, not no-op dispatch.",
+  "### B2. RC subsystem wiring — closed/source-verified",
+  "Remaining RC Road work is promotion/evidence and scene-tuning, not an unwired subsystem.",
+  "### B4. OIDN bridge consumers — closed/source-verified",
+  "Remaining OIDN posture is host provisioning/quality evidence, not zero consumers.",
+]) {
+  if (!items.includes(needle)) {
+    fail(`items_to_fix.md must retain reconciled Section B source summary: ${needle}`);
+  }
+}
 if (items.includes("point+rect direct lighting with no spot/mesh-area/env/indirect terms")) {
   fail("items_to_fix.md contains the stale H14 adjoint-lighting residual");
 }
 if (!items.includes("point, spot, rect/disc, mesh-area, and HDRI/environment direct-light replay")) {
   fail("items_to_fix.md must retain the reconciled H14 adjoint-lighting source summary");
+}
+
+const ppgUpdatePass = await readText("packages/walkaround-hybrid/src/pipeline/passes/PPGUpdatePass.ts");
+for (const needle of [
+  "const sampleCount = Math.max(1, Math.floor(width / 2)) * Math.max(1, Math.floor(height / 2));",
+  "const wgCount = Math.max(1, Math.ceil(sampleCount / 64));",
+  "pass.dispatchWorkgroups(wgCount, 1, 1);",
+]) {
+  if (!ppgUpdatePass.includes(needle)) {
+    fail(`walkaround PPGUpdatePass must retain positive dispatch wiring: ${needle}`);
+  }
+}
+
+const ppgDispatchTest = await readText("packages/walkaround-hybrid/__tests__/ppg-dispatch.test.ts");
+for (const needle of [
+  "PPGUpdatePass dispatches a positive 1-D workgroup count",
+  "expect(captured.length).toBe(1)",
+]) {
+  if (!ppgDispatchTest.includes(needle)) {
+    fail(`walkaround PPG dispatch test must retain positive-dispatch proof: ${needle}`);
+  }
+}
+
+const hybridEngine = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
+for (const needle of [
+  "if (opts.rcEnabled === true)",
+  "new RCSubsystem(this._device",
+  "this._rcWeight = Math.max(0, Math.min(1, opts.rcWeight ?? 0.5));",
+]) {
+  if (!hybridEngine.includes(needle)) {
+    fail(`HybridEngine must retain RCSubsystem opt-in wiring: ${needle}`);
+  }
+}
+
+const hybridFrameOrchestrator = await readText("packages/walkaround-hybrid/src/HybridEngineFrameOrchestrator.ts");
+for (const needle of [
+  "deps.subsystems.rc.dispatchFrame({",
+  "pipeline.setRCInputs(deps.subsystems.rc.buildRCInputs(deps.flags.rcWeight));",
+  "pipeline.setRCInputs(null);",
+]) {
+  if (!hybridFrameOrchestrator.includes(needle)) {
+    fail(`HybridEngineFrameOrchestrator must retain RC frame wiring: ${needle}`);
+  }
+}
+
+const walkaroundPipeline = await readText("packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts");
+for (const needle of [
+  "registry.register(new PPGUpdatePass(compiled.ppgUpdatePipeline));",
+  "registerBuiltinDenoisers(this._denoiserRegistry",
+  "this._ddgi.setRCInputs(inputs);",
+]) {
+  if (!walkaroundPipeline.includes(needle)) {
+    fail(`WalkaroundGPUPipeline must retain PPG/RC/OIDN registry wiring: ${needle}`);
+  }
+}
+
+const walkaroundOidn = await readText("packages/walkaround-hybrid/src/pipeline/denoisers/oidnFinal.ts");
+for (const needle of [
+  "readonly id = 'oidn-final' as const;",
+  "const denoised = await denoiseFinal(inputs, {",
+  "modelUrl: this._modelUrl",
+]) {
+  if (!walkaroundOidn.includes(needle)) {
+    fail(`walkaround OIDN final denoiser must retain bridge consumption: ${needle}`);
+  }
+}
+
+const ptWebgl2Index = await readText("packages/pt-webgl2/src/index.ts");
+for (const needle of [
+  "if (opts.denoiser === 'oidn-final')",
+  "const modelUrl = opts.oidn?.modelUrl;",
+  "this.#postDenoiser = new OIDNFinalDispatcher(",
+]) {
+  if (!ptWebgl2Index.includes(needle)) {
+    fail(`pt-webgl2 must retain oidn-final engine consumer: ${needle}`);
+  }
 }
 
 const adjointPass = await readText("packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts");
