@@ -26,6 +26,38 @@ function triangle(id: string, xOffset: number, mat: MaterialSpec): MeshPrimitive
   };
 }
 
+function emissiveRows(cpuData: ArrayBuffer): [number, number, number, number][] {
+  const data = new Float32Array(cpuData);
+  const rows: [number, number, number, number][] = [];
+  for (let i = 0; i < data.length; i += 4) {
+    rows.push([data[i]!, data[i + 1]!, data[i + 2]!, data[i + 3]!]);
+  }
+  return rows;
+}
+
+function expectOnlyMaterialSlotEmissive(
+  buffers: ReturnType<typeof buildReSTIRSceneBVHForCoreScene>,
+  materialSlot: number,
+  expected: readonly [number, number, number],
+): void {
+  const triMaterialIds = [...new Uint32Array(buffers.triangleMaterialIds.cpuData)];
+  const rows = emissiveRows(buffers.bvhEmissiveLe.cpuData);
+  let matchedRows = 0;
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i]!;
+    if (triMaterialIds[i] === materialSlot) {
+      matchedRows += 1;
+      expect(row[0]).toBeCloseTo(expected[0], 6);
+      expect(row[1]).toBeCloseTo(expected[1], 6);
+      expect(row[2]).toBeCloseTo(expected[2], 6);
+      expect(row[3]).toBe(0);
+    } else {
+      expect(row).toEqual([0, 0, 0, 0]);
+    }
+  }
+  expect(matchedRows).toBeGreaterThan(0);
+}
+
 function scene(primitives: MeshPrimitive[]): Scene {
   return {
     primitives,
@@ -125,4 +157,61 @@ describe('ReSTIR bvhCore material resolver', () => {
       warnSpy.mockRestore();
     },
   );
+
+  it('routes mesh-area Le overrides by full material signatures when maps differ', () => {
+    const handleA = { name: 'alpha-a' };
+    const handleB = { name: 'alpha-b' };
+    const matA: MaterialSpec = { ...material([1, 1, 1]), alphaMap: { handle: handleA } };
+    const matB: MaterialSpec = { ...material([1, 1, 1]), alphaMap: { handle: handleB } };
+    const sourceScene: Scene = {
+      primitives: [
+        triangle('alpha-a-panel', 0, matA),
+        triangle('alpha-b-panel', 2, matB),
+      ],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'alpha-b-emitter',
+        meshId: 'alpha-b-panel',
+        color: [0.25, 0.5, 1],
+        intensity: 4,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const buffers = buildReSTIRSceneBVHForCoreScene(sourceScene, { bvhMode: 'merged' });
+    const slotB = buffers.coreMaterials.findIndex((m) => m.alphaMap === matB.alphaMap);
+
+    expect(slotB).toBeGreaterThanOrEqual(0);
+    expectOnlyMaterialSlotEmissive(buffers, slotB, [1, 2, 4]);
+  });
+
+  it('routes mesh-area Le overrides to the castShadow-split material slot', () => {
+    const shared = material([1, 1, 1]);
+    const shadowless = {
+      ...triangle('shadowless-panel', 2, shared),
+      castShadow: false,
+    } satisfies MeshPrimitive;
+    const sourceScene: Scene = {
+      primitives: [
+        triangle('caster-panel', 0, shared),
+        shadowless,
+      ],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'shadowless-emitter',
+        meshId: 'shadowless-panel',
+        color: [1, 0.25, 0.5],
+        intensity: 3,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const buffers = buildReSTIRSceneBVHForCoreScene(sourceScene, { bvhMode: 'merged' });
+    const shadowlessSlot = buffers.coreMaterials.findIndex((m) =>
+      (m as MaterialSpec & { readonly castShadow?: boolean }).castShadow === false,
+    );
+
+    expect(shadowlessSlot).toBeGreaterThanOrEqual(0);
+    expectOnlyMaterialSlotEmissive(buffers, shadowlessSlot, [3, 0.75, 1.5]);
+  });
 });

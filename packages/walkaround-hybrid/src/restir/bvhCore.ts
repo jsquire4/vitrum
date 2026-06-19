@@ -10,6 +10,7 @@
 import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import {
   collapseIndicesToStride3,
+  materialSig,
   mergeUv1FromCore,
   mergeWorldSpaceFromCore,
   packSceneFromCore,
@@ -56,6 +57,8 @@ interface CoreBvhBuildOptions {
   warningMethod?: string;
   suppressMeshAreaMissingReferenceWarnings?: boolean;
 }
+
+type MaterialWithCastShadow = MaterialSpec & { readonly castShadow?: boolean };
 
 function sceneHasCoreMeshes(scene: Scene): boolean {
   return scene.primitives.some(
@@ -204,8 +207,8 @@ function makeMergedGeometry(
  * material emissive is a style hint, not the physical source.
  *
  * Caveats documented:
- *  - Dedup collision: if two primitives share the same material (by structural
- *    signature), the override applies to ALL triangles with that material slot. This
+ *  - Dedup collision: if two primitives share the same renderer-visible material
+ *    signature, the override applies to ALL triangles with that material slot. This
  *    is an accepted edge case — mesh-area emitters are typically unique materials.
  *  - Missing reference: a meshId that matches no primitive is warned and skipped.
  *
@@ -220,32 +223,28 @@ function buildMeshAreaLeOverrides(
   const meshAreaEmitters = scene.emitters.filter((e) => e.kind === 'mesh-area');
   if (meshAreaEmitters.length === 0) return new Map();
 
-  // Build material-signature → slot index in O(M) using a Map.
-  // The signature is the same 6-field JSON key used by the old inner loop;
-  // hashing it once per material rather than per-primitive-per-material
-  // reduces the matching work from O(P×M) to O(P+M).
-  function matSig(m: MaterialSpec): string {
-    return JSON.stringify({
-      emissive: m.emissive,
-      emissiveIntensity: m.emissiveIntensity,
-      baseColor: m.baseColor,
-      roughness: m.roughness,
-      metallic: m.metallic,
-      transmission: m.transmission,
-    });
-  }
+  const materialSlotSig = (m: MaterialSpec, castShadow?: boolean): string =>
+    `${materialSig(m)}|castShadow=${(castShadow ?? (m as MaterialWithCastShadow).castShadow ?? true) ? 1 : 0}`;
+
+  // Build material-signature → slot index in O(M) using the same materialSig
+  // family as mergeWorldSpaceFromCore. The bare key covers default merged
+  // material dedup; the castShadow-suffixed key covers callers that split
+  // otherwise-identical material slots by shadow participation.
   const sigToSlot = new Map<string, number>();
   for (let s = 0; s < mergedMaterials.length; s++) {
-    const sig = matSig(mergedMaterials[s]!);
-    if (!sigToSlot.has(sig)) sigToSlot.set(sig, s);
+    const material = mergedMaterials[s]!;
+    const bare = materialSig(material);
+    const shadowAware = materialSlotSig(material);
+    if (!sigToSlot.has(bare)) sigToSlot.set(bare, s);
+    if (!sigToSlot.has(shadowAware)) sigToSlot.set(shadowAware, s);
   }
 
   // Build primitive-id → material slot via one O(P) pass.
   const primitiveIdToMaterialSlot = new Map<string, number>();
   for (const p of scene.primitives) {
     if (p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh') {
-      const sig = matSig(p.material);
-      const s = sigToSlot.get(sig);
+      const shadowAware = materialSlotSig(p.material, p.castShadow ?? true);
+      const s = sigToSlot.get(shadowAware) ?? sigToSlot.get(materialSig(p.material));
       if (s !== undefined) {
         primitiveIdToMaterialSlot.set(String(p.id), s);
       }
