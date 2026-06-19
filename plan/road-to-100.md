@@ -1912,10 +1912,19 @@ CWBVH harness pipeline through the same Naga ptr-parameter compatibility layer
 used by the existing shared BVH traversal. `tools/behavioral-gate/cwbvh-parity-oracle.mjs`
 also runs the CWBVH WGSL traversal on WebGPU and compares closest-hit, any-hit,
 and glass-skip results against the CPU oracle; the committed
-`cwbvh-parity-status.json` pins that proof.
+`cwbvh-parity-status.json` pins that proof. 2026-06-19 renderer-routing
+follow-up: `pt-webgpu` now builds a renderer-shaped CWBVH prototype forest
+beside the binary BVH during scene packing: one CWBVH tree per concatenated BLAS
+subtree, packed child-bound/metadata/count buffers, TLAS BLAS-root remapping
+from binary node roots to wide-node roots, GPU upload/destroy/memory accounting,
+and CWBVH mirror refresh on geometry/TLAS mutation paths. Tests pin multi-BLAS
+root remapping and CWBVH mirror writes for BLAS/TLAS updates. The path tracer
+still traces the binary BVH; these buffers are deliberate opt-in traversal
+plumbing, not a default promotion.
 
-**Remaining work:** per-backend opt-in flags and upload routing; binary-BVH
-fallback policy; renderer binary-vs-CWBVH traversal parity tests; and
+**Remaining work:** per-backend opt-in flags; shader binding/traversal
+selection; binary-BVH fallback policy; renderer binary-vs-CWBVH traversal parity
+tests; and
 equal-scene throughput/memory A/B before any renderer default promotion. Becomes
 decisive if/when a WebGPU ray-tracing extension ships (whole-field handicap
 today: no RT cores in the browser for anyone).

@@ -89,6 +89,7 @@ describe('uploadScenePackTlasOnly', () => {
       queue: { writeBuffer, writeTexture: vi.fn() },
       createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
         label: desc.label,
+        size: desc.size,
         destroy: vi.fn(),
       })),
       ...textureStubMethods(),
@@ -135,10 +136,12 @@ describe('uploadScenePackTlasOnly', () => {
       primitiveTlasBindings: sb.primitiveTlasBindings,
     });
 
-    expect(writeBuffer).toHaveBeenCalledTimes(5);
+    // 5 binary TLAS writes + the CWBVH TLAS-root mirror.
+    expect(writeBuffer).toHaveBeenCalledTimes(6);
     const labels = writeBuffer.mock.calls.map((c) => (c[0] as GPUBuffer).label ?? '');
     expect(labels.some((l) => l.includes('positions'))).toBe(false);
     expect(labels.some((l) => l.includes('bvhNodes'))).toBe(false);
     expect(labels.some((l) => l.includes('tlas'))).toBe(true);
+    expect(labels.some((l) => l === 'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots')).toBe(true);
   });
 });

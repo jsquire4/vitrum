@@ -48,6 +48,7 @@ describe('uploadScenePackBlasOnly', () => {
       queue: { writeBuffer, writeTexture: vi.fn() },
       createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({
         label: desc.label,
+        size: desc.size,
         destroy: vi.fn(),
       })),
       ...textureStubMethods(),
@@ -78,15 +79,21 @@ describe('uploadScenePackBlasOnly', () => {
 
     uploadScenePackBlasOnly(device, sb, rebuilt.pack);
 
-    // 8 BLAS writes: positions, normals, uvs (P2), tangents, colors, indices,
-    // triMaterialIds, bvhNodes.
-    expect(writeBuffer).toHaveBeenCalledTimes(8);
+    // 13 writes: 8 binary BLAS writes (positions, normals, uvs, tangents,
+    // colors, indices, triMaterialIds, bvhNodes) plus the 5 CWBVH mirror
+    // buffers. Binary TLAS buffers are still untouched.
+    expect(writeBuffer).toHaveBeenCalledTimes(13);
     const labels = writeBuffer.mock.calls.map((c) => String((c[0] as GPUBuffer).label ?? ''));
-    expect(labels.some((l) => l.includes('tlas'))).toBe(false);
+    expect(labels.some((l) => l === 'vitrum.pt-webgpu.scene.tlasNodes')).toBe(false);
+    expect(labels.some((l) => l === 'vitrum.pt-webgpu.scene.tlasInstanceIndices')).toBe(false);
+    expect(labels.some((l) => l === 'vitrum.pt-webgpu.scene.tlasBlasRoots')).toBe(false);
+    expect(labels.some((l) => l === 'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal')).toBe(false);
+    expect(labels.some((l) => l === 'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld')).toBe(false);
     expect(labels.some((l) => l.includes('positions'))).toBe(true);
     expect(labels.some((l) => l.includes('uvs'))).toBe(true);
     expect(labels.some((l) => l.includes('tangents'))).toBe(true);
     expect(labels.some((l) => l.includes('colors'))).toBe(true);
     expect(labels.some((l) => l.includes('bvhNodes'))).toBe(true);
+    expect(labels.some((l) => l.includes('cwbvhNodeBounds'))).toBe(true);
   });
 });

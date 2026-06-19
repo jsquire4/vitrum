@@ -12,8 +12,12 @@ import {
 } from '@vitrum/core';
 import {
   BVH_NODE_FLOATS,
+  CWBVH_CHILD_META_WORDS,
+  CWBVH_CHILD_NODE,
+  buildCompressedWideBvhFromArrayBvh,
   mergeUv1FromCore,
   mergeWorldSpaceFromCore,
+  packCwbvhBuildBoundsForWgsl,
   packSceneFromCore,
   refitTlasTransforms,
   type PrimitiveTlasBinding,
@@ -83,6 +87,19 @@ interface PackedSceneData {
   readonly triMaterialIds: Uint32Array;
   readonly materials: Float32Array; // MATERIAL_VEC4_STRIDE * vec4f per material
   readonly bvhNodes: Float32Array; // 8 floats (32 bytes) per node
+  /** CWBVH prototype forest: parent wide-node bounds, 6 f32 per node. */
+  readonly cwbvhNodeBounds: Float32Array;
+  /** CWBVH prototype forest: child bounds as packed u16 pairs (3 u32 / child). */
+  readonly cwbvhChildBoundsPacked: Uint32Array;
+  /** CWBVH prototype forest: child kind / wide-node-or-triangle offset / count. */
+  readonly cwbvhChildMeta: Uint32Array;
+  /** CWBVH prototype forest: number of live child slots per wide node. */
+  readonly cwbvhChildCount: Uint32Array;
+  /** TLAS instance BLAS roots remapped from binary BVH node roots to CWBVH roots. */
+  readonly cwbvhTlasBlasRoots: Uint32Array;
+  /** Sparse CPU mirror: binary-BLAS root index -> CWBVH wide-node root index. */
+  readonly cwbvhBinaryRootToWideRoot: Uint32Array;
+  readonly cwbvhNodeCount: number;
   readonly tlasNodes: Uint32Array; // 8 u32 words (32 bytes) per node
   readonly tlasInstanceIndices: Uint32Array;
   readonly tlasBlasRoots: Uint32Array;
@@ -169,6 +186,11 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly triMaterialIdsBuffer: GPUBuffer;
   readonly materialsBuffer: GPUBuffer;
   readonly bvhNodesBuffer: GPUBuffer;
+  readonly cwbvhNodeBoundsBuffer: GPUBuffer;
+  readonly cwbvhChildBoundsPackedBuffer: GPUBuffer;
+  readonly cwbvhChildMetaBuffer: GPUBuffer;
+  readonly cwbvhChildCountBuffer: GPUBuffer;
+  readonly cwbvhTlasBlasRootsBuffer: GPUBuffer;
   readonly analyticHeadersBuffer: GPUBuffer;
   readonly analyticParamsBuffer: GPUBuffer;
   readonly analyticLocalToWorldBuffer: GPUBuffer;
@@ -230,8 +252,8 @@ export type { PrimitiveTlasBinding };
  * `label`       — the label string passed to `createStorageBuffer` (and visible in GPU
  *                 debuggers as `vitrum.pt-webgpu.scene.<name>`).
  *
- * **Group-0/1 sync invariant** — any change to the buffer set here must be reflected
- * in the bind-group layout declarations in `gpuResources.ts`:
+ * **Binding sync invariant** — render-consumed buffers in this registry must be
+ * reflected in the bind-group layout declarations in `gpuResources.ts`:
  *   - Group 0 (bindings 0–13): `#makeGroup0LayoutEntries()` / `#buildSharedPipelineLayout()`
  *   - Group 1 (bindings 0–10): analytic + env + area-light buffers in
  *     `#buildSharedPipelineLayout()` → `bindGroupLayout1`
@@ -239,13 +261,13 @@ export type { PrimitiveTlasBinding };
  *     `bindGroupLayout2`
  *   - Group 3 (bindings 0–10): light-tree + P2 textures/descriptors + SPPM in
  *     `#buildSharedPipelineLayout()` → `bindGroupLayout3`
- *   - `buildBindGroups` and `buildReservoirBindGroups` in `gpuResources.ts` must bind
- *     ALL buffers listed here.
+ *   - `buildBindGroups` and `buildReservoirBindGroups` in `gpuResources.ts` bind
+ *     the render-consumed subset. Prototype CWBVH buffers are uploaded here as
+ *     opt-in traversal plumbing but remain unbound until the traversal-selection
+ *     shader slice lands.
  *
- * The registry drives the creation loop in `uploadPackedScene`. The TLAS entries
- * (indices 20–24) must remain contiguous at the END so the texture-array creation
- * block that sits between the non-TLAS and TLAS buffers can be inserted at the
- * natural split point.
+ * The TLAS entries must remain contiguous at the END so realloc/registry tests
+ * can keep the TLAS table as one tail block.
  */
 export const SCENE_BUFFER_REGISTRY = [
   // ── BLAS geometry ─────────────────────────────────────────────────────────
@@ -255,6 +277,11 @@ export const SCENE_BUFFER_REGISTRY = [
   { key: 'triMaterialIds',     bufferField: 'triMaterialIdsBuffer',     label: 'vitrum.pt-webgpu.scene.triMaterialIds' },
   { key: 'materials',          bufferField: 'materialsBuffer',          label: 'vitrum.pt-webgpu.scene.materials' },
   { key: 'bvhNodes',           bufferField: 'bvhNodesBuffer',           label: 'vitrum.pt-webgpu.scene.bvhNodes' },
+  { key: 'cwbvhNodeBounds',         bufferField: 'cwbvhNodeBoundsBuffer',         label: 'vitrum.pt-webgpu.scene.cwbvhNodeBounds' },
+  { key: 'cwbvhChildBoundsPacked',  bufferField: 'cwbvhChildBoundsPackedBuffer',  label: 'vitrum.pt-webgpu.scene.cwbvhChildBoundsPacked' },
+  { key: 'cwbvhChildMeta',          bufferField: 'cwbvhChildMetaBuffer',          label: 'vitrum.pt-webgpu.scene.cwbvhChildMeta' },
+  { key: 'cwbvhChildCount',         bufferField: 'cwbvhChildCountBuffer',         label: 'vitrum.pt-webgpu.scene.cwbvhChildCount' },
+  { key: 'cwbvhTlasBlasRoots',      bufferField: 'cwbvhTlasBlasRootsBuffer',      label: 'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots' },
   // ── Analytic primitives ───────────────────────────────────────────────────
   { key: 'analyticHeaders',         bufferField: 'analyticHeadersBuffer',         label: 'vitrum.pt-webgpu.scene.analyticHeaders' },
   { key: 'analyticParams',          bufferField: 'analyticParamsBuffer',          label: 'vitrum.pt-webgpu.scene.analyticParams' },
@@ -663,6 +690,117 @@ function sceneCenterRadiusFromPack(
   return bounds ?? { center: [0, 0, 0], radius: 1 };
 }
 
+interface PackedCwbvhSceneData {
+  readonly cwbvhNodeBounds: Float32Array;
+  readonly cwbvhChildBoundsPacked: Uint32Array;
+  readonly cwbvhChildMeta: Uint32Array;
+  readonly cwbvhChildCount: Uint32Array;
+  readonly cwbvhTlasBlasRoots: Uint32Array;
+  readonly cwbvhBinaryRootToWideRoot: Uint32Array;
+  readonly cwbvhNodeCount: number;
+}
+
+function identityTriangleMap(triangleCount: number): Uint32Array {
+  const out = new Uint32Array(Math.max(0, triangleCount));
+  for (let i = 0; i < out.length; i += 1) out[i] = i;
+  return out;
+}
+
+function sortedBlasRootSpans(pack: Pick<ScenePackResult, 'bvhNodes' | 'primitiveTlasBindings'>): readonly {
+  readonly binaryRoot: number;
+  readonly binaryEnd: number;
+}[] {
+  const totalNodes = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
+  if (totalNodes === 0) return [];
+  const roots = Array.from(new Set(pack.primitiveTlasBindings.map((binding) => binding.blasRoot)))
+    .filter((root) => Number.isFinite(root) && root >= 0 && root < totalNodes)
+    .sort((a, b) => a - b);
+  if (roots.length === 0) return [{ binaryRoot: 0, binaryEnd: totalNodes }];
+  return roots.map((binaryRoot, i) => ({
+    binaryRoot,
+    binaryEnd: roots[i + 1] ?? totalNodes,
+  }));
+}
+
+function remapCwbvhTlasBlasRoots(
+  tlasBlasRoots: Uint32Array,
+  binaryRootToWideRoot: Uint32Array,
+): Uint32Array {
+  const out = new Uint32Array(tlasBlasRoots.length);
+  for (let i = 0; i < tlasBlasRoots.length; i += 1) {
+    const binaryRoot = tlasBlasRoots[i] ?? 0;
+    out[i] = binaryRootToWideRoot[binaryRoot] ?? 0;
+  }
+  return out;
+}
+
+/**
+ * Build the pt-webgpu CWBVH prototype forest beside the canonical binary BVH.
+ *
+ * The renderer still traces the binary BVH today. This pack is deliberately
+ * renderer-shaped, though: full-tier TLAS scenes concatenate one CWBVH tree per
+ * BLAS subtree and remap `tlasBlasRoots` to wide-node roots, while merged/lite
+ * scenes produce a single root-0 wide tree. Leaf metadata keeps the existing
+ * global triangle offsets, so the future traversal can read the same `indices`,
+ * `positions`, material ids, and cast/visibility payloads as the binary path.
+ */
+function buildPackedCwbvhSceneData(pack: Pick<
+  ScenePackResult,
+  | 'positions'
+  | 'indices'
+  | 'triMaterialIds'
+  | 'bvhNodes'
+  | 'triangleCount'
+  | 'tlasBlasRoots'
+  | 'primitiveTlasBindings'
+>): PackedCwbvhSceneData {
+  const nodeBounds: number[] = [];
+  const childBoundsPacked: number[] = [];
+  const childMeta: number[] = [];
+  const childCount: number[] = [];
+  const totalBinaryNodes = Math.floor(pack.bvhNodes.length / BVH_NODE_FLOATS);
+  const binaryRootToWideRoot = new Uint32Array(totalBinaryNodes);
+  const sourceTriangles = identityTriangleMap(pack.triangleCount);
+
+  for (const span of sortedBlasRootSpans(pack)) {
+    if (span.binaryEnd <= span.binaryRoot) continue;
+    const wideBase = Math.floor(nodeBounds.length / 6);
+    binaryRootToWideRoot[span.binaryRoot] = wideBase;
+    const binaryNodeWords = pack.bvhNodes.subarray(
+      span.binaryRoot * BVH_NODE_FLOATS,
+      span.binaryEnd * BVH_NODE_FLOATS,
+    );
+    const cwbvh = buildCompressedWideBvhFromArrayBvh({
+      bvhNodes: new Float32Array(binaryNodeWords),
+      reorderedIndices: pack.indices,
+      reorderedTriMaterialIds: pack.triMaterialIds,
+      reorderedToSourceTriangle: sourceTriangles,
+    });
+    for (const word of cwbvh.cwbvhNodeBounds) nodeBounds.push(word);
+    for (const word of packCwbvhBuildBoundsForWgsl(cwbvh)) childBoundsPacked.push(word);
+    for (let i = 0; i < cwbvh.cwbvhChildMeta.length; i += CWBVH_CHILD_META_WORDS) {
+      const kind = cwbvh.cwbvhChildMeta[i] ?? 0;
+      childMeta.push(
+        kind,
+        kind === CWBVH_CHILD_NODE ? (cwbvh.cwbvhChildMeta[i + 1] ?? 0) + wideBase : cwbvh.cwbvhChildMeta[i + 1] ?? 0,
+        cwbvh.cwbvhChildMeta[i + 2] ?? 0,
+      );
+    }
+    for (const count of cwbvh.cwbvhChildCount) childCount.push(count);
+  }
+
+  const rootMap = binaryRootToWideRoot;
+  return {
+    cwbvhNodeBounds: new Float32Array(nodeBounds),
+    cwbvhChildBoundsPacked: new Uint32Array(childBoundsPacked),
+    cwbvhChildMeta: new Uint32Array(childMeta),
+    cwbvhChildCount: new Uint32Array(childCount),
+    cwbvhTlasBlasRoots: remapCwbvhTlasBlasRoots(pack.tlasBlasRoots, rootMap),
+    cwbvhBinaryRootToWideRoot: rootMap,
+    cwbvhNodeCount: childCount.length,
+  };
+}
+
 export function buildPackedScene(
   inputScene: Scene,
   options: BuildPackedSceneOptions = {},
@@ -836,6 +974,7 @@ export function buildPackedScene(
     lightTreeNodeCount = nodes.length;
     lightTreeEnabled = true;
   }
+  const cwbvh = buildPackedCwbvhSceneData(geo);
 
   return {
     positions: geo.positions,
@@ -846,6 +985,13 @@ export function buildPackedScene(
     indices: geo.indices,
     triMaterialIds: geo.triMaterialIds,
     materials: new Float32Array(materials),
+    cwbvhNodeBounds: cwbvh.cwbvhNodeBounds,
+    cwbvhChildBoundsPacked: cwbvh.cwbvhChildBoundsPacked,
+    cwbvhChildMeta: cwbvh.cwbvhChildMeta,
+    cwbvhChildCount: cwbvh.cwbvhChildCount,
+    cwbvhTlasBlasRoots: cwbvh.cwbvhTlasBlasRoots,
+    cwbvhBinaryRootToWideRoot: cwbvh.cwbvhBinaryRootToWideRoot,
+    cwbvhNodeCount: cwbvh.cwbvhNodeCount,
     materialTexDescriptors: texCollection.descriptors,
     materialTextureSources: texCollection.sources,
     materialTextureSourceInfos: texCollection.sourceInfos,
@@ -953,6 +1099,7 @@ export function uploadScenePackGeometry(
   sb.tlasBlasRoots.set(pack.tlasBlasRoots);
   sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
   sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
+  rebuildCwbvhFromPack(device, sb, pack);
   applyScenePackCounts(sb, pack);
 }
 
@@ -990,6 +1137,15 @@ export function uploadScenePackBlasOnly(
   sb.indices.set(pack.indices);
   sb.triMaterialIds.set(pack.triMaterialIds);
   sb.bvhNodes.set(pack.bvhNodes);
+  rebuildCwbvhFromPack(device, sb, {
+    positions: pack.positions,
+    indices: pack.indices,
+    triMaterialIds: pack.triMaterialIds,
+    bvhNodes: pack.bvhNodes,
+    triangleCount: pack.triangleCount,
+    tlasBlasRoots: sb.tlasBlasRoots,
+    primitiveTlasBindings: pack.primitiveTlasBindings,
+  });
   applyScenePackCounts(sb, pack);
 }
 
@@ -1066,6 +1222,7 @@ export function uploadScenePackTlasRealloc(
   buffers.tlasBlasRoots = new Uint32Array(pack.tlasBlasRoots);
   buffers.tlasInstanceWorldToLocal = new Float32Array(pack.tlasInstanceWorldToLocal);
   buffers.tlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
+  updateCwbvhTlasRootMirror(device, sb, buffers.tlasBlasRoots);
 
   applyScenePackCounts(sb, pack);
 }
@@ -1152,6 +1309,7 @@ export function uploadScenePackGeometryRealloc(
   handles.tlasBlasRoots = new Uint32Array(pack.tlasBlasRoots);
   handles.tlasInstanceWorldToLocal = new Float32Array(pack.tlasInstanceWorldToLocal);
   handles.tlasInstanceLocalToWorld = new Float32Array(pack.tlasInstanceLocalToWorld);
+  rebuildCwbvhFromPack(device, sb, pack);
 
   applyScenePackCounts(sb, pack);
 }
@@ -1181,6 +1339,7 @@ export function uploadScenePackTlasOnly(
   sb.tlasBlasRoots.set(pack.tlasBlasRoots);
   sb.tlasInstanceWorldToLocal.set(pack.tlasInstanceWorldToLocal);
   sb.tlasInstanceLocalToWorld.set(pack.tlasInstanceLocalToWorld);
+  updateCwbvhTlasRootMirror(device, sb, sb.tlasBlasRoots);
   applyScenePackCounts(sb, pack);
 }
 
@@ -1206,6 +1365,7 @@ export function uploadScenePackTlasOnly(
 interface MutableSceneBuffers {
   // ── Geometry-pack derived counts ─────────────────────────────────────────
   bvhNodeCount: number;
+  cwbvhNodeCount: number;
   tlasNodeCount: number;
   triangleCount: number;
   primitiveTlasBindings: readonly PrimitiveTlasBinding[];
@@ -1233,6 +1393,11 @@ interface MutableSceneBuffers {
   indicesBuffer: GPUBuffer;
   triMaterialIdsBuffer: GPUBuffer;
   bvhNodesBuffer: GPUBuffer;
+  cwbvhNodeBoundsBuffer: GPUBuffer;
+  cwbvhChildBoundsPackedBuffer: GPUBuffer;
+  cwbvhChildMetaBuffer: GPUBuffer;
+  cwbvhChildCountBuffer: GPUBuffer;
+  cwbvhTlasBlasRootsBuffer: GPUBuffer;
   positions: Float32Array;
   normals: Float32Array;
   uvs: Float32Array;
@@ -1241,6 +1406,12 @@ interface MutableSceneBuffers {
   indices: Uint32Array;
   triMaterialIds: Uint32Array;
   bvhNodes: Float32Array;
+  cwbvhNodeBounds: Float32Array;
+  cwbvhChildBoundsPacked: Uint32Array;
+  cwbvhChildMeta: Uint32Array;
+  cwbvhChildCount: Uint32Array;
+  cwbvhTlasBlasRoots: Uint32Array;
+  cwbvhBinaryRootToWideRoot: Uint32Array;
 
   // ── Emitter buffer handles + CPU mirrors (realloc'd on array-size change) ─
   directionalLightsBuffer: GPUBuffer;
@@ -1294,6 +1465,135 @@ interface MutableSceneBuffers {
  */
 function asMutableSceneBuffers(sb: UploadedSceneBuffers): MutableSceneBuffers {
   return sb;
+}
+
+function replaceCwbvhBuffers(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  cwbvh: PackedCwbvhSceneData,
+): void {
+  if (
+    sb.cwbvhNodeBoundsBuffer == null ||
+    sb.cwbvhChildBoundsPackedBuffer == null ||
+    sb.cwbvhChildMetaBuffer == null ||
+    sb.cwbvhChildCountBuffer == null ||
+    sb.cwbvhTlasBlasRootsBuffer == null
+  ) {
+    return;
+  }
+  const mutable = asMutableSceneBuffers(sb);
+  const updateBuffer = (
+    current: GPUBuffer | undefined,
+    label: string,
+    data: ArrayBufferView,
+    previousData: ArrayBufferView | undefined,
+    assign: (buffer: GPUBuffer) => void,
+  ): void => {
+    const targetSize = Math.max(data.byteLength, MIN_STORAGE_BUFFER_BYTES_BY_LABEL[label] ?? 16);
+    const currentSize = current?.size ?? Math.max(previousData?.byteLength ?? -1, MIN_STORAGE_BUFFER_BYTES_BY_LABEL[label] ?? 16);
+    if (current != null && currentSize === targetSize) {
+      writeBufferIfNonEmpty(current, data, device);
+      return;
+    }
+    current?.destroy();
+    assign(createStorageBuffer(device, label, data));
+  };
+  updateBuffer(
+    sb.cwbvhNodeBoundsBuffer,
+    'vitrum.pt-webgpu.scene.cwbvhNodeBounds',
+    cwbvh.cwbvhNodeBounds,
+    sb.cwbvhNodeBounds,
+    (buffer) => {
+      mutable.cwbvhNodeBoundsBuffer = buffer;
+    },
+  );
+  updateBuffer(
+    sb.cwbvhChildBoundsPackedBuffer,
+    'vitrum.pt-webgpu.scene.cwbvhChildBoundsPacked',
+    cwbvh.cwbvhChildBoundsPacked,
+    sb.cwbvhChildBoundsPacked,
+    (buffer) => {
+      mutable.cwbvhChildBoundsPackedBuffer = buffer;
+    },
+  );
+  updateBuffer(
+    sb.cwbvhChildMetaBuffer,
+    'vitrum.pt-webgpu.scene.cwbvhChildMeta',
+    cwbvh.cwbvhChildMeta,
+    sb.cwbvhChildMeta,
+    (buffer) => {
+      mutable.cwbvhChildMetaBuffer = buffer;
+    },
+  );
+  updateBuffer(
+    sb.cwbvhChildCountBuffer,
+    'vitrum.pt-webgpu.scene.cwbvhChildCount',
+    cwbvh.cwbvhChildCount,
+    sb.cwbvhChildCount,
+    (buffer) => {
+      mutable.cwbvhChildCountBuffer = buffer;
+    },
+  );
+  updateBuffer(
+    sb.cwbvhTlasBlasRootsBuffer,
+    'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots',
+    cwbvh.cwbvhTlasBlasRoots,
+    sb.cwbvhTlasBlasRoots,
+    (buffer) => {
+      mutable.cwbvhTlasBlasRootsBuffer = buffer;
+    },
+  );
+  mutable.cwbvhNodeBounds = cwbvh.cwbvhNodeBounds;
+  mutable.cwbvhChildBoundsPacked = cwbvh.cwbvhChildBoundsPacked;
+  mutable.cwbvhChildMeta = cwbvh.cwbvhChildMeta;
+  mutable.cwbvhChildCount = cwbvh.cwbvhChildCount;
+  mutable.cwbvhTlasBlasRoots = cwbvh.cwbvhTlasBlasRoots;
+  mutable.cwbvhBinaryRootToWideRoot = cwbvh.cwbvhBinaryRootToWideRoot;
+  mutable.cwbvhNodeCount = cwbvh.cwbvhNodeCount;
+}
+
+function updateCwbvhTlasRootMirror(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  tlasBlasRoots: Uint32Array,
+): void {
+  if (sb.cwbvhBinaryRootToWideRoot == null || sb.cwbvhTlasBlasRootsBuffer == null) {
+    return;
+  }
+  const roots = remapCwbvhTlasBlasRoots(tlasBlasRoots, sb.cwbvhBinaryRootToWideRoot);
+  const mutable = asMutableSceneBuffers(sb);
+  const label = 'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots';
+  const expectedSize = Math.max(roots.byteLength, MIN_STORAGE_BUFFER_BYTES_BY_LABEL[label] ?? 16);
+  const currentSize = sb.cwbvhTlasBlasRootsBuffer.size
+    ?? Math.max(sb.cwbvhTlasBlasRoots?.byteLength ?? -1, MIN_STORAGE_BUFFER_BYTES_BY_LABEL[label] ?? 16);
+  if (currentSize !== expectedSize) {
+    sb.cwbvhTlasBlasRootsBuffer.destroy();
+    mutable.cwbvhTlasBlasRootsBuffer = createStorageBuffer(
+      device,
+      label,
+      roots,
+    );
+  } else {
+    writeBufferIfNonEmpty(sb.cwbvhTlasBlasRootsBuffer, roots, device);
+  }
+  mutable.cwbvhTlasBlasRoots = roots;
+}
+
+function rebuildCwbvhFromPack(
+  device: GPUDevice,
+  sb: UploadedSceneBuffers,
+  pack: Pick<
+    ScenePackResult,
+    | 'positions'
+    | 'indices'
+    | 'triMaterialIds'
+    | 'bvhNodes'
+    | 'triangleCount'
+    | 'tlasBlasRoots'
+    | 'primitiveTlasBindings'
+  >,
+): void {
+  replaceCwbvhBuffers(device, sb, buildPackedCwbvhSceneData(pack));
 }
 
 /**
@@ -1665,6 +1965,19 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const triMaterialIdsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.triMaterialIds', packed.triMaterialIds);
   const materialsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.materials', packed.materials);
   const bvhNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.bvhNodes', packed.bvhNodes);
+  const cwbvhNodeBoundsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.cwbvhNodeBounds', packed.cwbvhNodeBounds);
+  const cwbvhChildBoundsPackedBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.cwbvhChildBoundsPacked',
+    packed.cwbvhChildBoundsPacked,
+  );
+  const cwbvhChildMetaBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.cwbvhChildMeta', packed.cwbvhChildMeta);
+  const cwbvhChildCountBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.cwbvhChildCount', packed.cwbvhChildCount);
+  const cwbvhTlasBlasRootsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots',
+    packed.cwbvhTlasBlasRoots,
+  );
   const analyticHeadersBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticHeaders', packed.analyticHeaders);
   const analyticParamsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticParams', packed.analyticParams);
   const analyticLocalToWorldBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticLocalToWorld', packed.analyticLocalToWorld);
@@ -1750,6 +2063,11 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     triMaterialIdsBuffer,
     materialsBuffer,
     bvhNodesBuffer,
+    cwbvhNodeBoundsBuffer,
+    cwbvhChildBoundsPackedBuffer,
+    cwbvhChildMetaBuffer,
+    cwbvhChildCountBuffer,
+    cwbvhTlasBlasRootsBuffer,
     analyticHeadersBuffer,
     analyticParamsBuffer,
     analyticLocalToWorldBuffer,
@@ -1791,6 +2109,11 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       uploaded.triMaterialIdsBuffer.destroy();
       materialsBuffer.destroy();
       uploaded.bvhNodesBuffer.destroy();
+      uploaded.cwbvhNodeBoundsBuffer.destroy();
+      uploaded.cwbvhChildBoundsPackedBuffer.destroy();
+      uploaded.cwbvhChildMetaBuffer.destroy();
+      uploaded.cwbvhChildCountBuffer.destroy();
+      uploaded.cwbvhTlasBlasRootsBuffer.destroy();
       analyticHeadersBuffer.destroy();
       analyticParamsBuffer.destroy();
       analyticLocalToWorldBuffer.destroy();
@@ -1833,6 +2156,9 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       const buffers: readonly GPUBuffer[] = [
         uploaded.positionsBuffer, uploaded.normalsBuffer, uploaded.indicesBuffer,
         uploaded.triMaterialIdsBuffer, uploaded.materialsBuffer, uploaded.bvhNodesBuffer,
+        uploaded.cwbvhNodeBoundsBuffer, uploaded.cwbvhChildBoundsPackedBuffer,
+        uploaded.cwbvhChildMetaBuffer, uploaded.cwbvhChildCountBuffer,
+        uploaded.cwbvhTlasBlasRootsBuffer,
         uploaded.analyticHeadersBuffer, uploaded.analyticParamsBuffer,
         uploaded.analyticLocalToWorldBuffer, uploaded.analyticWorldToLocalBuffer,
         uploaded.environmentMapTexelsBuffer, uploaded.environmentMapCdfBuffer,

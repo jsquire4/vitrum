@@ -510,7 +510,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     });
 
     expect(createBuffer.mock.calls.length).toBe(buffersBefore);
-    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 6);
   });
 
   it('lite tier accepts transform-only mesh patches via fallback merged-BLAS repack', async () => {
@@ -573,7 +573,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     });
 
     expect(createBuffer.mock.calls.length).toBe(buffersBefore);
-    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 6);
   });
 
   it('lite tier accepts instanced topology patches via fallback merged-BLAS repack', async () => {
@@ -641,8 +641,9 @@ describe('pt-webgpu incremental primitive updates', () => {
     const created = labelsCreatedSince(createBuffer, buffersBefore);
     expect(created.every((l) => TLAS_LABELS.some((t) => l.includes(t)))).toBe(true);
     expect(created.some((l) => BLAS_LABELS.some((b) => l.includes(b)))).toBe(false);
-    // The 5 new TLAS buffers are written once each on (re)creation.
-    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 5);
+    // The 5 TLAS buffers are written once each, and the CWBVH TLAS-root mirror
+    // refreshes in-place when the byte size remains inside the 16-byte minimum.
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 6);
   });
 
   it('grows TLAS instance buffers correctly when instanced count increases', async () => {
