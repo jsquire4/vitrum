@@ -986,10 +986,15 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  // B12 — HDRI environments no longer warn (supported via texture packing).
-  it('lite tier: setScene does NOT warn for hdri environment (B12 supported)', async () => {
+  // B12 — HDRI environments are supported via texture packing; unreadable opaque
+  // handles are a payload-readability fallback, not an unsupported-environment warning.
+  it('lite tier: setScene emits structured unreadable-HDRI fallback without unsupported warning', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const engine = await createPTEngine_WebGPU({ device: makeLiteDeviceForSetScene() });
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
     warn.mockClear();
     const scene: Scene = {
       primitives: [
@@ -1012,6 +1017,26 @@ describe('H12: lite-tier capabilities truth', () => {
     const calls = warn.mock.calls.map((c) => c.join(' '));
     // Must NOT warn that hdri is unsupported.
     expect(calls.some((c) => c.includes('hdri') && c.toLowerCase().includes('unsupported'))).toBe(false);
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.hdri-unreadable',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        details: expect.objectContaining({
+          fallback: 'no-environment',
+          warning: expect.stringContaining('lacks CPU pixel data'),
+        }),
+      }),
+    ]));
+    expect(
+      structured.some(
+        (w) =>
+          w.code === 'pt-webgpu.scene-pack-warning' &&
+          typeof w.details?.warning === 'string' &&
+          w.details.warning.includes('HDRI environment'),
+      ),
+    ).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });

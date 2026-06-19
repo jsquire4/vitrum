@@ -183,6 +183,9 @@ if (items.includes("point+rect direct lighting with no spot/mesh-area/env/indire
 if (!items.includes("point, spot, rect/disc, mesh-area, and HDRI/environment direct-light replay")) {
   fail("items_to_fix.md must retain the reconciled H14 adjoint-lighting source summary");
 }
+if (!items.includes("pt-webgpu.hdri-unreadable") || !items.includes("pt-webgpu.hdri-zero-luminance")) {
+  fail("items_to_fix.md must retain the pt-webgpu structured HDRI fallback boundary");
+}
 
 const idempotentDispose = await readText("packages/engine/src/idempotentDispose.ts");
 for (const needle of [
@@ -334,6 +337,41 @@ for (const needle of [
 ]) {
   if (!adjointHarnessTest.includes(needle)) {
     fail(`pt-webgpu adjoint harness test must pin ${needle}`);
+  }
+}
+
+const ptWebgpuUploadSceneBuffers = await readText("packages/pt-webgpu/src/scene/uploadSceneBuffers.ts");
+for (const needle of [
+  "structuredWarnings: readonly EngineWarning[]",
+  "function structuredEnvironmentWarnings",
+  "pt-webgpu.hdri-unreadable",
+  "pt-webgpu.hdri-zero-luminance",
+  "fallback: 'no-environment'",
+]) {
+  if (!ptWebgpuUploadSceneBuffers.includes(needle)) {
+    fail(`pt-webgpu scene pack must retain structured HDRI fallback diagnostics: ${needle}`);
+  }
+}
+
+const ptWebgpuIndex = await readText("packages/pt-webgpu/src/index.ts");
+for (const needle of [
+  "for (const warning of packed.structuredWarnings)",
+  "const structuredScenePackWarnings = new Set",
+  "if (structuredScenePackWarnings.has(warning)) continue;",
+]) {
+  if (!ptWebgpuIndex.includes(needle)) {
+    fail(`pt-webgpu engine must drain structured scene-pack warnings without generic duplicates: ${needle}`);
+  }
+}
+
+const ptWebgpuScenePackEmittersTest = await readText("packages/pt-webgpu/src/__tests__/scenePack.emitters.test.ts");
+for (const needle of [
+  "pt-webgpu.hdri-unreadable",
+  "pt-webgpu.hdri-zero-luminance",
+  "fallback: 'no-environment'",
+]) {
+  if (!ptWebgpuScenePackEmittersTest.includes(needle)) {
+    fail(`pt-webgpu scene-pack tests must pin structured HDRI warnings: ${needle}`);
   }
 }
 

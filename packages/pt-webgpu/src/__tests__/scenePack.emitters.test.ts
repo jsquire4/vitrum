@@ -321,6 +321,42 @@ describe('buildPackedScene emitter + environment packing', () => {
     const packed = buildPackedScene(scene);
     expect(packed.hasEnvironmentMap).toBe(false);
     expect(packed.warnings.some((w) => w.includes('HDRI environment'))).toBe(true);
+    expect(packed.structuredWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.hdri-unreadable',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        details: expect.objectContaining({
+          fallback: 'no-environment',
+          warning: expect.stringContaining('lacks CPU pixel data'),
+        }),
+      }),
+    ]));
+  });
+
+  it('emits a structured zero-luminance HDRI fallback warning', () => {
+    const scene: Scene = {
+      ...baseScene(),
+      environment: {
+        kind: 'hdri',
+        hdri: { width: 2, height: 2, data: new Float32Array(12) },
+      },
+    };
+    const packed = buildPackedScene(scene);
+    expect(packed.hasEnvironmentMap).toBe(false);
+    expect(packed.structuredWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.hdri-zero-luminance',
+        backend: 'pt-webgpu',
+        details: expect.objectContaining({
+          fallback: 'no-environment',
+          width: 2,
+          height: 2,
+          dataLength: 12,
+        }),
+      }),
+    ]));
   });
 });
 

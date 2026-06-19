@@ -88,6 +88,7 @@ interface PackedSceneData {
   readonly triangleCount: number;
   readonly analyticCount: number;
   readonly warnings: readonly string[];
+  readonly structuredWarnings: readonly EngineWarning[];
   readonly directionalLight: readonly [number, number, number];
   readonly directionalIrradiance: readonly [number, number, number];
   /** D3 — soft-sun angular diameter (radians); 0 = exact delta directional. */
@@ -509,6 +510,74 @@ function emitSolveSkinFallbackWarning(
   console.warn(message);
 }
 
+function hdriHandleDiagnostics(scene: Scene): Record<string, unknown> {
+  if (scene.environment.kind !== 'hdri') return {};
+  const handle = scene.environment.hdri;
+  const record =
+    handle != null && typeof handle === 'object'
+      ? handle as { width?: unknown; height?: unknown; data?: unknown; source?: unknown }
+      : undefined;
+  const data = record?.data;
+  const dataLength =
+    data != null && typeof data === 'object' && 'length' in data
+      ? Number((data as { length?: unknown }).length)
+      : undefined;
+  const handleType =
+    handle == null
+      ? String(handle)
+      : ArrayBuffer.isView(handle)
+        ? handle.constructor.name
+        : typeof handle;
+  const dataType =
+    data == null
+      ? undefined
+      : ArrayBuffer.isView(data)
+        ? data.constructor.name
+        : typeof data;
+  return {
+    width: record?.width,
+    height: record?.height,
+    dataLength: Number.isFinite(dataLength) ? dataLength : undefined,
+    handleType,
+    dataType,
+    sourceType: record?.source == null ? undefined : typeof record.source,
+  };
+}
+
+function structuredEnvironmentWarnings(
+  scene: Scene,
+  environment: ReturnType<typeof environmentParams>,
+  warningOptions: BuildPackedSceneOptions,
+): EngineWarning[] {
+  if (scene.environment.kind !== 'hdri' || environment.hasHdri) return [];
+  const structured: EngineWarning[] = [];
+  for (const warning of environment.warnings) {
+    const isUnreadable = warning.includes('lacks CPU pixel data');
+    const isZeroLuminance = warning.includes('zero total luminance');
+    if (!isUnreadable && !isZeroLuminance) continue;
+    const code = isUnreadable
+      ? 'pt-webgpu.hdri-unreadable'
+      : 'pt-webgpu.hdri-zero-luminance';
+    const message = isUnreadable
+      ? '[vitrum/pt-webgpu] HDRI environment is present but has no usable CPU pixel data; ' +
+        'pt-webgpu requires a raw {width, height, data} RGB/RGBA payload and will use a black no-environment fallback.'
+      : '[vitrum/pt-webgpu] HDRI environment has zero total luminance; using black no-environment fallback.';
+    structured.push({
+      code,
+      backend: 'pt-webgpu',
+      phase: warningOptions.warningPhase ?? 'setScene',
+      method: warningOptions.warningMethod ?? 'setScene',
+      message,
+      details: {
+        warning,
+        fallback: 'no-environment',
+        ...hdriHandleDiagnostics(scene),
+      },
+    });
+  }
+  return structured;
+}
+
 function padTriangleIndicesToVec4(indices: Uint32Array): Uint32Array {
   const triCount = Math.floor(indices.length / 3);
   const out = new Uint32Array(triCount * 4);
@@ -723,6 +792,7 @@ export function buildPackedScene(
   const texCollection = collectMaterialTextures(materialSpecs);
   const emitArrays = packEmitterArrays(scene);
   const environment = environmentParams(scene);
+  const structuredWarnings = structuredEnvironmentWarnings(scene, environment, options);
   const sceneBounds = sceneCenterRadiusFromPack(geo);
   warnings.push(...environment.warnings);
   warnings.push(...emitArrays.warnings);
@@ -782,6 +852,7 @@ export function buildPackedScene(
     triangleCount: geo.triangleCount,
     analyticCount: Math.floor(analyticHeaders.length / 4),
     warnings,
+    structuredWarnings,
     directionalLight: defaultDirectionalLight(scene),
     directionalIrradiance: defaultDirectionalIrradiance(scene),
     directionalAngularDiameter: defaultDirectionalAngularDiameter(scene),
@@ -1603,6 +1674,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const uploaded: UploadedSceneBuffers = {
     ...packed,
     warnings: [...packed.warnings, ...materialTextureWarnings],
+    structuredWarnings: packed.structuredWarnings,
     bvhNodeCount: Math.floor(packed.bvhNodes.length / BVH_NODE_FLOATS),
     tlasNodeCount: Math.floor(packed.tlasNodes.length / BVH_NODE_FLOATS),
     materialCount: Math.floor(packed.materials.length / MATERIAL_FLOAT_STRIDE),

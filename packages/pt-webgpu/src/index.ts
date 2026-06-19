@@ -1376,7 +1376,16 @@ class PTEngineWebGPU implements Engine {
         });
       }
     }
+    for (const warning of packed.structuredWarnings) {
+      this.#warn(warning);
+    }
+    const structuredScenePackWarnings = new Set(
+      packed.structuredWarnings
+        .map((warning) => warning.details?.warning)
+        .filter((warning): warning is string => typeof warning === 'string'),
+    );
     for (const warning of packed.warnings) {
+      if (structuredScenePackWarnings.has(warning)) continue;
       this.#warn({
         code: 'pt-webgpu.scene-pack-warning',
         backend: 'pt-webgpu',
