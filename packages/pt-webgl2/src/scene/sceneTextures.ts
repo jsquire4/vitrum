@@ -73,6 +73,9 @@ export interface UploadedSceneTextures {
   readonly envHeight: number;
   // material texture atlas (optional)
   readonly textures2DArray: WebGLTexture | null;
+  readonly materialAtlasDim: number;
+  readonly materialAtlasLayerCount: number;
+  readonly materialAtlasLayerCapacity: number;
   /** Role-aware TextureRef handle -> atlas layer map used to repack material scalar
    *  slots without rebuilding the texture atlas. Null when no readable atlas exists. */
   readonly materialLayerMap: TextureAtlasLayerMap | null;

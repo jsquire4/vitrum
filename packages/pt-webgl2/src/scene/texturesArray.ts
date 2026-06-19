@@ -87,6 +87,15 @@ export interface TextureAtlas {
   readonly layerOfByColorSpace: TextureAtlasLayerMap;
 }
 
+export function textureAtlasLayerCapacity(layerCount: number, maxLayers: number): number {
+  const count = Math.max(0, Math.floor(layerCount));
+  const limit = Math.max(0, Math.floor(maxLayers));
+  if (count === 0 || limit === 0) return 0;
+  let capacity = 1;
+  while (capacity < count + 1) capacity *= 2;
+  return Math.min(limit, Math.max(count, capacity));
+}
+
 export interface TextureAtlasBuildOptions {
   readonly onWarning?: (warning: EngineWarning) => void;
   readonly warningPhase?: string;
@@ -338,7 +347,11 @@ export function packTextureAtlas(
 }
 
 /** Upload the atlas as an RGBA32F TEXTURE_2D_ARRAY (NEAREST, ClampToEdge). */
-export function uploadTextureAtlas(gl: WebGL2RenderingContext, atlas: TextureAtlas): WebGLTexture {
+export function uploadTextureAtlas(
+  gl: WebGL2RenderingContext,
+  atlas: TextureAtlas,
+  opts?: { readonly layerCapacity?: number },
+): WebGLTexture {
   // Size guards: exceed MAX_TEXTURE_SIZE or MAX_ARRAY_TEXTURE_LAYERS and the
   // texImage3D silently fails on most drivers — throw an actionable error first.
   if (gl.isContextLost()) {
@@ -358,6 +371,13 @@ export function uploadTextureAtlas(gl: WebGL2RenderingContext, atlas: TextureAtl
         `${maxLayers} — reduce the number of unique material textures in the scene.`,
     );
   }
+  const layerCapacity = opts?.layerCapacity ?? textureAtlasLayerCapacity(atlas.layerCount, maxLayers);
+  if (layerCapacity < atlas.layerCount || layerCapacity > maxLayers) {
+    throw new Error(
+      `pt-webgl2: material texture atlas allocation requested ${layerCapacity} layers for ` +
+        `${atlas.layerCount} live layers on a device with ${maxLayers} maximum layers.`,
+    );
+  }
   const tex = gl.createTexture();
   if (tex == null) throw new Error('pt-webgl2: WebGL context lost — cannot create material texture atlas');
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
@@ -365,9 +385,37 @@ export function uploadTextureAtlas(gl: WebGL2RenderingContext, atlas: TextureAtl
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const uploadData = layerCapacity === atlas.layerCount
+    ? atlas.data
+    : (() => {
+        const expanded = new Float32Array(atlas.dim * atlas.dim * 4 * layerCapacity);
+        expanded.set(atlas.data);
+        return expanded;
+      })();
   gl.texImage3D(
-    gl.TEXTURE_2D_ARRAY, 0, gl.RGBA32F, atlas.dim, atlas.dim, atlas.layerCount,
-    0, gl.RGBA, gl.FLOAT, atlas.data,
+    gl.TEXTURE_2D_ARRAY, 0, gl.RGBA32F, atlas.dim, atlas.dim, layerCapacity,
+    0, gl.RGBA, gl.FLOAT, uploadData,
   );
   return tex;
+}
+
+export function updateTextureAtlasLayers(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  atlas: TextureAtlas,
+): void {
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+  gl.texSubImage3D(
+    gl.TEXTURE_2D_ARRAY,
+    0,
+    0,
+    0,
+    0,
+    atlas.dim,
+    atlas.dim,
+    atlas.layerCount,
+    gl.RGBA,
+    gl.FLOAT,
+    atlas.data,
+  );
 }

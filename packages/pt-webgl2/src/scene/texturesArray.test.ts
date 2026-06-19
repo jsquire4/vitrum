@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
-import { packTextureAtlas, type TextureHandleHint } from './texturesArray.js';
+import { packTextureAtlas, textureAtlasLayerCapacity, type TextureHandleHint } from './texturesArray.js';
 
 // packTextureAtlas gathers material-map handles into a sampler2DArray + a
 // handle→layer map. These pin the duck-typed pixel read (raw + DataTexture forms),
@@ -71,6 +71,20 @@ describe('packTextureAtlas', () => {
     expect(atlas!.layerOfByColorSpace.linear.get(front)).toBe(0);
     expect(atlas!.layerOfByColorSpace.linear.get(back)).toBe(1);
     expect(atlas!.layerOfByColorSpace.srgb.size).toBe(0);
+  });
+});
+
+describe('textureAtlasLayerCapacity', () => {
+  it('keeps spare power-of-two capacity when the device limit allows it', () => {
+    expect(textureAtlasLayerCapacity(0, 256)).toBe(0);
+    expect(textureAtlasLayerCapacity(1, 256)).toBe(2);
+    expect(textureAtlasLayerCapacity(2, 256)).toBe(4);
+    expect(textureAtlasLayerCapacity(3, 256)).toBe(4);
+  });
+
+  it('clamps spare capacity to the device layer limit without rejecting exact fits', () => {
+    expect(textureAtlasLayerCapacity(3, 3)).toBe(3);
+    expect(textureAtlasLayerCapacity(4, 6)).toBe(6);
   });
 });
 

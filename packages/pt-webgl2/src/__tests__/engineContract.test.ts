@@ -729,11 +729,79 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(fallbackWarnings).toHaveLength(0);
       expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
       expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
+      expect(texImage3D.mock.calls.at(-1)?.[3]).toBe(1);
+      expect(texImage3D.mock.calls.at(-1)?.[5]).toBe(2);
       expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
       expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
       expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.45);
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(handle);
       expect(structured.some((w) => w.code === 'pt-webgl2.texture-unreadable')).toBe(false);
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-mutation-fallback-rebuild') ||
+        m.includes('texture-map-material-patch'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('extends a preallocated material atlas in place for same-dimension map insertions', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texSubImage3D = vi.fn();
+    const texImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
+    try {
+      const baseMap = { image: { data: new Float32Array([1, 0, 0, 1]), width: 1, height: 1 } };
+      const roughnessMap = { image: { data: new Float32Array([0.25, 0.25, 0.25, 1]), width: 1, height: 1 } };
+      const baseScene = triScene();
+      const prim = baseScene.primitives[0];
+      if (prim?.kind !== 'mesh') throw new Error('expected mesh fixture');
+      const scene: Scene = {
+        ...baseScene,
+        primitives: [{
+          ...prim,
+          material: {
+            ...prim.material,
+            baseColorMap: { handle: baseMap },
+          },
+        }],
+      };
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(scene);
+      expect(texImage3D.mock.calls.some((call) => call[5] === 2)).toBe(true);
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const initialSubImage3D = texSubImage3D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
+
+      e.updatePrimitive?.('tri', {
+        material: {
+          roughness: 0.4,
+          baseColorMap: { handle: baseMap },
+          roughnessMap: { handle: roughnessMap },
+        },
+      } as never);
+
+      expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(0);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      expect(texSubImage3D.mock.calls.at(-1)?.[7]).toBe(2);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
+      expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(baseMap);
+      expect(e._debugGeoPack?.materials[0]?.roughnessMap?.handle).toBe(roughnessMap);
+      expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.4);
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('primitive-mutation-fallback-rebuild') ||
         m.includes('texture-map-material-patch'),

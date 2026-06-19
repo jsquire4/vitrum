@@ -30,7 +30,7 @@ import { allocGlTexture } from '../gl/texAlloc.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { packAttributesArray } from './attributesTextureArray.js';
 import { packMaterialsTexture } from './materialsTexture.js';
-import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
+import { packTextureAtlas, textureAtlasLayerCapacity, uploadTextureAtlas } from './texturesArray.js';
 import { packLightsTexture } from './lightsTexture.js';
 import { packMeshAreaLights } from './meshAreaLights.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
@@ -290,7 +290,12 @@ export function buildSceneTextures(
   // (4a) material-map atlas — gather every readable map texture into a sampler2DArray
   //      and a handle→layer map (null when the scene has no usable textures).
   const atlas = packTextureAtlas(merged.materials, warningOptions);
-  const textures2DArray = atlas != null ? uploadTextureAtlas(gl, atlas) : null;
+  const materialAtlasLayerCapacity = atlas != null
+    ? textureAtlasLayerCapacity(atlas.layerCount, gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number)
+    : 0;
+  const textures2DArray = atlas != null
+    ? uploadTextureAtlas(gl, atlas, { layerCapacity: materialAtlasLayerCapacity })
+    : null;
 
   // (4b) materials — the merged result already dedups the scene's unique
   //      MaterialSpecs in first-seen order (triMaterialId indexes into it), so it
@@ -353,6 +358,9 @@ export function buildSceneTextures(
     envWidth: env.map?.width ?? 0,
     envHeight: env.map?.height ?? 0,
     textures2DArray,
+    materialAtlasDim: atlas?.dim ?? 0,
+    materialAtlasLayerCount: atlas?.layerCount ?? 0,
+    materialAtlasLayerCapacity,
     materialLayerMap: atlas?.layerOfByColorSpace ?? null,
     vertexColorMaterialIds,
     triangleCount: merged.triangleCount,

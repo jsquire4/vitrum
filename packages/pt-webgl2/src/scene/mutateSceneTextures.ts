@@ -15,7 +15,12 @@ import {
   uploadRgba32f,
   uploadRgba32fRect,
 } from './uploadSceneTextures.js';
-import { packTextureAtlas, uploadTextureAtlas } from './texturesArray.js';
+import {
+  packTextureAtlas,
+  textureAtlasLayerCapacity,
+  updateTextureAtlasLayers,
+  uploadTextureAtlas,
+} from './texturesArray.js';
 import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesArray.js';
 import { squareDim } from './bvhTextureAdapter.js';
 
@@ -279,6 +284,28 @@ function withTextureReplacementsForGl(
   return next;
 }
 
+function uploadAtlasWithCapacity(
+  gl: WebGL2RenderingContext,
+  atlas: NonNullable<ReturnType<typeof packTextureAtlas>>,
+): { texture: WebGLTexture; capacity: number } {
+  const capacity = textureAtlasLayerCapacity(
+    atlas.layerCount,
+    gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number,
+  );
+  return {
+    texture: uploadTextureAtlas(gl, atlas, { layerCapacity: capacity }),
+    capacity,
+  };
+}
+
+function canUpdateAtlasInPlace(current: UploadedSceneTextures, atlas: NonNullable<ReturnType<typeof packTextureAtlas>>): boolean {
+  return (
+    current.textures2DArray != null &&
+    current.materialAtlasDim === atlas.dim &&
+    atlas.layerCount <= current.materialAtlasLayerCapacity
+  );
+}
+
 export function tryFastPathMaterialMutation(
   gl: WebGL2RenderingContext,
   current: UploadedSceneTextures | null,
@@ -335,7 +362,31 @@ export function tryFastPathMaterialMutation(
         warningMethod: 'updatePrimitive',
       })
     : null;
-  const atlasTexture = atlasRefreshNeeded && atlas != null ? uploadTextureAtlas(gl, atlas) : null;
+  let atlasTexture = current.textures2DArray;
+  let materialAtlasDim = current.materialAtlasDim;
+  let materialAtlasLayerCount = current.materialAtlasLayerCount;
+  let materialAtlasLayerCapacity = current.materialAtlasLayerCapacity;
+  let deleteOldAtlas = false;
+  if (atlasRefreshNeeded) {
+    if (atlas == null) {
+      atlasTexture = null;
+      materialAtlasDim = 0;
+      materialAtlasLayerCount = 0;
+      materialAtlasLayerCapacity = 0;
+      deleteOldAtlas = current.textures2DArray != null;
+    } else if (canUpdateAtlasInPlace(current, atlas)) {
+      updateTextureAtlasLayers(gl, current.textures2DArray as WebGLTexture, atlas);
+      materialAtlasDim = atlas.dim;
+      materialAtlasLayerCount = atlas.layerCount;
+    } else {
+      const uploadedAtlas = uploadAtlasWithCapacity(gl, atlas);
+      atlasTexture = uploadedAtlas.texture;
+      materialAtlasDim = atlas.dim;
+      materialAtlasLayerCount = atlas.layerCount;
+      materialAtlasLayerCapacity = uploadedAtlas.capacity;
+      deleteOldAtlas = current.textures2DArray != null;
+    }
+  }
   const materialLayerMap = atlasRefreshNeeded ? atlas?.layerOfByColorSpace ?? null : current.materialLayerMap;
   const materialData = packMaterialsTexture(
     nextMaterials,
@@ -356,6 +407,9 @@ export function tryFastPathMaterialMutation(
       ...(atlasRefreshNeeded
         ? {
             textures2DArray: atlasTexture,
+            materialAtlasDim,
+            materialAtlasLayerCount,
+            materialAtlasLayerCapacity,
             materialLayerMap,
           }
         : {}),
@@ -370,7 +424,7 @@ export function tryFastPathMaterialMutation(
     }),
     geoPack: nextGeoPack,
     deleteOldTextures: [
-      ...(atlasRefreshNeeded ? [current.textures2DArray] : []),
+      ...(deleteOldAtlas ? [current.textures2DArray] : []),
       ...(meshLightsData != null ? [current.meshLights] : []),
     ],
     ...(structuredWarnings.length > 0 ? { structuredWarnings } : {}),
@@ -557,7 +611,8 @@ export function tryFastPathPrimitiveListMutation(
     warningPhase: 'mutation',
     warningMethod: opts.method,
   });
-  const textures2DArray = atlas != null ? uploadTextureAtlas(gl, atlas) : null;
+  const uploadedAtlas = atlas != null ? uploadAtlasWithCapacity(gl, atlas) : null;
+  const textures2DArray = uploadedAtlas?.texture ?? null;
   const materialsData = packMaterialsTexture(
     built.merged.materials,
     atlas?.layerOfByColorSpace,
@@ -576,6 +631,9 @@ export function tryFastPathPrimitiveListMutation(
       attributesArray: built.attributesArray,
       meshLights: built.meshLights,
       textures2DArray,
+      materialAtlasDim: atlas?.dim ?? 0,
+      materialAtlasLayerCount: atlas?.layerCount ?? 0,
+      materialAtlasLayerCapacity: uploadedAtlas?.capacity ?? 0,
       materialLayerMap: atlas?.layerOfByColorSpace ?? null,
       meshLightCount: built.meshLightCount,
       totalEmissiveArea: built.totalEmissiveArea,
