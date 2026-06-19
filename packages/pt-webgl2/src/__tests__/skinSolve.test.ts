@@ -230,12 +230,24 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
         1, 0, 0, 1,
         1, 0, 0, 1,
       ]),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      uv1: new Float32Array([0.25, 0.25, 1.25, 0.25, 0.25, 1.25]),
       morphTargets: [new Float32Array(9)],
       morphWeights: new Float32Array([1]),
       morphTargetTangents: [new Float32Array([
         0, 1, 0,
         0, 1, 0,
         0, 1, 0,
+      ])],
+      morphTargetUvs: [new Float32Array([
+        0.2, 0.1,
+        0.2, 0.1,
+        0.2, 0.1,
+      ])],
+      morphTargetUv1s: [new Float32Array([
+        0, 0.5,
+        0, 0.5,
+        0, 0.5,
       ])],
     };
     const scene: Scene = {
@@ -255,6 +267,12 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
       Array.from(expected!, (v) => expect.closeTo(v, 6)),
     );
     expect(posed.tangents![1]).toBeGreaterThan(0);
+    expect(Array.from(posed.uvs ?? [])).toEqual(
+      Array.from(solveSkin(prim).uvs!, (v) => expect.closeTo(v, 6)),
+    );
+    expect(Array.from(posed.uv1 ?? [])).toEqual(
+      Array.from(solveSkin(prim).uv1!, (v) => expect.closeTo(v, 6)),
+    );
   });
 
   it('routes empty-bones rest-pose fallback through structured warnings when provided', () => {

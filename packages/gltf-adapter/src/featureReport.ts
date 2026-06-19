@@ -69,6 +69,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasMorphTargets: boolean;
   readonly hasMorphTargetTangents: boolean;
   readonly hasMorphTargetTexcoords: boolean;
+  readonly hasUnsupportedMorphTargetTexcoords: boolean;
   readonly hasSkins: boolean;
   readonly hasInstancedSkinnedOrMorphed: boolean;
   readonly hasIgnoredSkinAttributes: boolean;
@@ -478,15 +479,16 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
-  if (report.primitives.hasMorphTargetTexcoords) {
+  if (report.primitives.hasUnsupportedMorphTargetTexcoords) {
     addIssue({
       category: 'primitive',
       name: 'morphTargetTexcoords',
       support: 'unsupported',
-      path: firstSourcePath(report.primitives.issuePaths, 'morphTargetTexcoords', 'meshes'),
+      path: firstSourcePath(report.primitives.issuePaths, 'unsupportedMorphTargetTexcoords', 'meshes'),
       message:
-        'glTF morph-target TEXCOORD deltas are not represented in the core Scene contract; ' +
-        'the adapter keeps rest-pose UVs and reports the unsupported animated-UV path explicitly.',
+        'glTF morph-target TEXCOORD_0/1 deltas require matching base UV streams, and TEXCOORD_2+ ' +
+        'morph deltas are not represented in the core Scene contract. The adapter imports supported ' +
+        'animated UV lanes and reports unsupported lanes explicitly.',
     });
   }
 
@@ -939,6 +941,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
   let hasMorphTargets = false;
   let hasMorphTargetTangents = false;
   let hasMorphTargetTexcoords = false;
+  let hasUnsupportedMorphTargetTexcoords = false;
   let hasVertexColors = false;
   const ignoredVertexColorSets = new Set<string>();
   let hasUv1 = false;
@@ -1020,6 +1023,12 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
             if (/^TEXCOORD_\d+$/.test(attr)) {
               hasMorphTargetTexcoords = true;
               addSourcePath(issuePaths, 'morphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
+              const uvIndex = Number(attr.slice('TEXCOORD_'.length));
+              const baseSemantic = `TEXCOORD_${uvIndex}`;
+              if (uvIndex > 1 || primitive.attributes?.[baseSemantic] === undefined) {
+                hasUnsupportedMorphTargetTexcoords = true;
+                addSourcePath(issuePaths, 'unsupportedMorphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
+              }
             }
           }
         }
@@ -1061,6 +1070,7 @@ function analyzePrimitives(gltf: GltfJson): GltfPrimitiveFeatureReport {
     hasMorphTargets,
     hasMorphTargetTangents,
     hasMorphTargetTexcoords,
+    hasUnsupportedMorphTargetTexcoords,
     hasSkins,
     hasInstancedSkinnedOrMorphed,
     hasIgnoredSkinAttributes,

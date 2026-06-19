@@ -235,7 +235,7 @@ export class SceneMutationRouter {
     // rewrite the patch as a { positions, normals } geometry update so the
     // existing geometry fast paths (in-place BLAS refit or topology-resize)
     // handle the upload. This is the same pattern walkaround-hybrid uses in
-    // applyGpuSkinnedRefit: solveSkin → updatePrimitive({ positions, normals }).
+    // applyGpuSkinnedRefit: solveSkin → updatePrimitive({ positions, normals, ...posed attributes }).
     //
     // A patch containing `bones` (or `boneInverses` or `morphWeights`) triggers
     // the resolution. The solved positions/normals are merged INTO the patch
@@ -265,6 +265,8 @@ export class SceneMutationRouter {
           positions: solved.positions,
           normals: solved.normals,
           ...(solved.tangents ? { tangents: solved.tangents } : {}),
+          ...(solved.uvs ? { uvs: solved.uvs } : {}),
+          ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
         };
       } catch (err) {
         warnHost(host, {

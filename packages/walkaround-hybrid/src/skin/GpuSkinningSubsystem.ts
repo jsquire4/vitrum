@@ -150,7 +150,8 @@ export class GpuSkinningSubsystem {
 
   /**
    * CPU skinning fallback: solve the skin on the CPU and push the solved
-   * positions + normals through the standard incremental geometry update.
+   * positions + normals plus any morph-animated attributes through the standard
+   * incremental geometry update.
    *
    * Used when: preferGpu is false, the mesh has active morph targets or authored
    * tangents, the bind matrix is non-identity, the pipeline is unavailable, or
@@ -159,11 +160,13 @@ export class GpuSkinningSubsystem {
    * clearcoat-normal maps do not sample stale rest-pose tangents.
    */
   #cpuFallback(host: GpuSkinningHost, prim: SkinnedMeshPrimitive, id: string): void {
-    const { positions, normals, tangents } = solveSkin(prim);
+    const { positions, normals, tangents, uvs, uv1 } = solveSkin(prim);
     host.updatePrimitive(id, {
       positions,
       normals,
       ...(tangents ? { tangents } : {}),
+      ...(uvs ? { uvs } : {}),
+      ...(uv1 ? { uv1 } : {}),
     });
   }
 

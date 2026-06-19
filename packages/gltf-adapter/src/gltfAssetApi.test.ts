@@ -353,7 +353,15 @@ function addSecondaryVertexColorSet(
 function addMorphTargetTexcoord(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
+  opts: { semantic?: 'TEXCOORD_0' | 'TEXCOORD_2'; includeBaseUv?: boolean } = {},
 ): void {
+  const semantic = opts.semantic ?? 'TEXCOORD_0';
+  const includeBaseUv = opts.includeBaseUv ?? true;
+  const baseUv = f32Buffer([
+    0, 0,
+    1, 0,
+    0, 1,
+  ]);
   const positionDelta = f32Buffer([
     0, 0, 0.1,
     0, 0, 0.1,
@@ -365,14 +373,21 @@ function addMorphTargetTexcoord(
     0.1, 0,
   ]);
   const positionAccessor = gltf.accessors?.length ?? 0;
-  const uvAccessor = positionAccessor + 1;
+  const baseUvAccessor = includeBaseUv ? positionAccessor + 1 : -1;
+  const uvAccessor = includeBaseUv ? positionAccessor + 2 : positionAccessor + 1;
   const positionBufferView = gltf.bufferViews?.length ?? 0;
-  const uvBufferView = positionBufferView + 1;
+  const baseUvBufferView = includeBaseUv ? positionBufferView + 1 : -1;
+  const uvBufferView = includeBaseUv ? positionBufferView + 2 : positionBufferView + 1;
   const positionBuffer = gltf.buffers?.length ?? 0;
-  const uvBuffer = positionBuffer + 1;
+  const baseUvBuffer = includeBaseUv ? positionBuffer + 1 : -1;
+  const uvBuffer = includeBaseUv ? positionBuffer + 2 : positionBuffer + 1;
   gltf.meshes![0]!.primitives[0] = {
     ...gltf.meshes![0]!.primitives[0]!,
-    targets: [{ POSITION: positionAccessor, TEXCOORD_0: uvAccessor }],
+    attributes: {
+      ...gltf.meshes![0]!.primitives[0]!.attributes,
+      ...(includeBaseUv ? { TEXCOORD_0: baseUvAccessor } : {}),
+    },
+    targets: [{ POSITION: positionAccessor, [semantic]: uvAccessor }],
   };
   gltf.meshes![0] = {
     ...gltf.meshes![0]!,
@@ -381,19 +396,27 @@ function addMorphTargetTexcoord(
   gltf.accessors = [
     ...(gltf.accessors ?? []),
     { bufferView: positionBufferView, componentType: 5126, count: 3, type: 'VEC3' },
+    ...(includeBaseUv
+      ? [{ bufferView: baseUvBufferView, componentType: 5126, count: 3, type: 'VEC2' as const }]
+      : []),
     { bufferView: uvBufferView, componentType: 5126, count: 3, type: 'VEC2' },
   ];
   gltf.bufferViews = [
     ...(gltf.bufferViews ?? []),
     { buffer: positionBuffer, byteOffset: 0, byteLength: positionDelta.byteLength },
+    ...(includeBaseUv
+      ? [{ buffer: baseUvBuffer, byteOffset: 0, byteLength: baseUv.byteLength }]
+      : []),
     { buffer: uvBuffer, byteOffset: 0, byteLength: uvDelta.byteLength },
   ];
   gltf.buffers = [
     ...(gltf.buffers ?? []),
     { byteLength: positionDelta.byteLength },
+    ...(includeBaseUv ? [{ byteLength: baseUv.byteLength }] : []),
     { byteLength: uvDelta.byteLength },
   ];
   buffers.set(positionBuffer, positionDelta);
+  if (includeBaseUv) buffers.set(baseUvBuffer, baseUv);
   buffers.set(uvBuffer, uvDelta);
 }
 
@@ -2413,27 +2436,48 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     )).toBe(true);
   });
 
-  it('reports morph texcoord deltas as an unsupported primitive compatibility issue', () => {
+  it('treats morph TEXCOORD_0 deltas with a matching base UV stream as supported', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },
       meshes: [{
         primitives: [{
-          attributes: { POSITION: 0 },
+          attributes: { POSITION: 0, TEXCOORD_0: 1 },
           targets: [{ TEXCOORD_0: 1 }],
         }],
       }],
     });
 
     expect(report.primitives.hasMorphTargetTexcoords).toBe(true);
+    expect(report.primitives.hasUnsupportedMorphTargetTexcoords).toBe(false);
     expect(report.primitives.issuePaths.morphTargetTexcoords).toEqual([
       'meshes[0].primitives[0].targets[0].TEXCOORD_0',
+    ]);
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues.some((issue) => issue.name === 'morphTargetTexcoords')).toBe(false);
+  });
+
+  it('reports morph TEXCOORD_2 deltas as an unsupported primitive compatibility issue', () => {
+    const report = analyzeGltfAsset({
+      asset: { version: '2.0' },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0, TEXCOORD_0: 1 },
+          targets: [{ TEXCOORD_2: 2 }],
+        }],
+      }],
+    });
+
+    expect(report.primitives.hasMorphTargetTexcoords).toBe(true);
+    expect(report.primitives.hasUnsupportedMorphTargetTexcoords).toBe(true);
+    expect(report.primitives.issuePaths.unsupportedMorphTargetTexcoords).toEqual([
+      'meshes[0].primitives[0].targets[0].TEXCOORD_2',
     ]);
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(compatibility.issues).toContainEqual(expect.objectContaining({
       category: 'primitive',
       name: 'morphTargetTexcoords',
       support: 'unsupported',
-      path: 'meshes[0].primitives[0].targets[0].TEXCOORD_0',
+      path: 'meshes[0].primitives[0].targets[0].TEXCOORD_2',
     }));
   });
 
@@ -2937,7 +2981,7 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
-  it('rejects ignored morph-target TEXCOORD diagnostics in reject-unsupported mode', async () => {
+  it('accepts supported morph-target TEXCOORD_0 diagnostics in reject-unsupported mode', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphTargetTexcoord(gltf, buffers);
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
@@ -2947,8 +2991,23 @@ describe('loadGltfForEngine', () => {
       backend: 'pt-webgl2',
       compatibilityMode: 'reject-unsupported',
       createEngine,
+    })).resolves.toBeDefined();
+
+    expect(createEngine).toHaveBeenCalledOnce();
+  });
+
+  it('rejects unsupported high morph-target TEXCOORD diagnostics in reject-unsupported mode', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addMorphTargetTexcoord(gltf, buffers, { semantic: 'TEXCOORD_2' });
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
     })).rejects.toThrow(
-      'import:ignored-morph-target-texcoord=unsupported at meshes[0].primitives[0].targets[0].TEXCOORD_0',
+      'import:ignored-morph-target-texcoord=unsupported at meshes[0].primitives[0].targets[0].TEXCOORD_2',
     );
 
     expect(createEngine).not.toHaveBeenCalled();

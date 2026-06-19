@@ -198,6 +198,8 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
     const morphDelta = new Float32Array([2, 0, 0, 0, 0, 0, 0, 0, 0]);
     const morphNormalDelta = new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 0]);
     const morphTangentDelta = new Float32Array([0, 1, 0, 0, 0, 0, 0, 0, 0]);
+    const morphUvDelta = new Float32Array([0.2, 0.1, 0, 0, 0, 0]);
+    const morphUv1Delta = new Float32Array([0, 0.25, 0, 0, 0, 0]);
     const vCount = restPositions.length / 3;
     const skinIndices = new Uint32Array(vCount * 4);
     const skinWeights = new Float32Array(vCount * 4);
@@ -211,10 +213,14 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
       skinWeights,
       bones: ident4(),
       boneInverses: ident4(),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      uv1: new Float32Array([0.5, 0.5, 1.5, 0.5, 0.5, 1.5]),
       tangents: restTangents,
       morphTargets: [morphDelta],
       morphTargetNormals: [morphNormalDelta],
       morphTargetTangents: [morphTangentDelta],
+      morphTargetUvs: [morphUvDelta],
+      morphTargetUv1s: [morphUv1Delta],
       morphWeights: new Float32Array([1.0]),
       material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
     };
@@ -235,6 +241,12 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
     expect(packed.tangents[2]).toBeCloseTo(expected.tangents![2]!, 4);
     expect(packed.tangents[3]).toBeCloseTo(1, 4);
     expect(packed.tangents[1]).toBeGreaterThan(0);
+    expect(expected.uvs).toBeDefined();
+    expect(expected.uv1).toBeDefined();
+    expect(packed.uvs[0]).toBeCloseTo(expected.uvs![0]!, 4);
+    expect(packed.uvs[1]).toBeCloseTo(expected.uvs![1]!, 4);
+    expect(packed.uvs[2]).toBeCloseTo(expected.uv1![0]!, 4);
+    expect(packed.uvs[3]).toBeCloseTo(expected.uv1![1]!, 4);
   });
 });
 

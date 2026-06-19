@@ -101,6 +101,8 @@ const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
   'morphTargets',
   'morphTargetNormals',
   'morphTargetTangents',
+  'morphTargetUvs',
+  'morphTargetUv1s',
   'morphWeights',
 ]);
 

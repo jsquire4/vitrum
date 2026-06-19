@@ -392,6 +392,40 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(morphWeights) with morph UV deltas refreshes topology attributes', () => {
+    const prim: SkinnedMeshPrimitive = {
+      ...skinnedMesh('skin-uv', 0, [0.8, 0.2, 0.2]),
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      uv1: new Float32Array([0.25, 0.25, 1.25, 0.25, 0.25, 1.25]),
+      morphTargets: [new Float32Array(9)],
+      morphTargetUvs: [new Float32Array([0.1, 0.2, 0.1, 0.2, 0.1, 0.2])],
+      morphTargetUv1s: [new Float32Array([0, 0.5, 0, 0.5, 0, 0.5])],
+      morphWeights: new Float32Array([0]),
+    };
+    const scene: Scene = {
+      primitives: [prim],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { engine, pipeline } = seedEngine(scene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('skin-uv', { morphWeights: new Float32Array([1]) } as Partial<ScenePrimitive>);
+
+      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhRefit).not.toHaveBeenCalled();
+      const updated = storedScene(engine).primitives[0];
+      expect(updated?.kind).toBe('skinned-mesh');
+      if (updated?.kind === 'skinned-mesh') {
+        expect(updated.uvs?.[0]).toBeCloseTo(0.1, 5);
+        expect(updated.uvs?.[1]).toBeCloseTo(0.2, 5);
+        expect(updated.uv1?.[0]).toBeCloseTo(0.25, 5);
+        expect(updated.uv1?.[1]).toBeCloseTo(0.75, 5);
+      }
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) refreshes DDGI material snapshots without geometry GI propagation', () => {
     const { engine, pipeline, ddgi, rc } = seedEngine(baseScene(), { bvhMode: 'tlas', rc: true });
     try {

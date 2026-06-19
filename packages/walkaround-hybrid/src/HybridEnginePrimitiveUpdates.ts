@@ -26,7 +26,9 @@
  *    upload normals when provided.
  *  - skinned pose patches (`bones`, `boneInverses`, `morphWeights`) → call
  *    {@link skinnedPosePatch}: solve the pose, then reuse the positions/normals
- *    refit path while preserving the pose fields in scene state.
+ *    refit path when only geometry moved, or the topology rebuild path when
+ *    morph-animated tangents/UVs need attribute-texture refresh, while preserving
+ *    the pose fields in scene state.
  *  - material-only patches → {@link materialPatch}: re-pack bvhIndex and
  *    bvhBeerColors slices and partial GPU upload (no setScene).
  *
@@ -241,7 +243,7 @@ function transformPoint(
  * in both files reference the same list.
  */
 export const TOPOLOGY_PATCH_FIELDS = [
-  'normals', 'uvs', 'tangents', 'indices',
+  'normals', 'uvs', 'uv1', 'tangents', 'indices',
   'instances', 'params', 'shape', 'fallbackMesh', 'kind',
 ] as const;
 
@@ -477,9 +479,11 @@ export function skinnedPosePatch(
     positions: solved.positions,
     normals: solved.normals,
     ...(solved.tangents ? { tangents: solved.tangents } : {}),
+    ...(solved.uvs ? { uvs: solved.uvs } : {}),
+    ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
   } as Partial<ScenePrimitive>;
 
-  if (solved.tangents != null) {
+  if (solved.tangents != null || solved.uvs != null || solved.uv1 != null) {
     return topologyRebuild(id, resolvedPatch, ctx);
   }
 
@@ -652,7 +656,7 @@ export function transformRefit(
  * Positions-only refit fast path (A3 — 2026-05-18).
  *
  * When `patch.positions` is the ONLY geometry field touched (no
- * `normals` / `uvs` / `tangents` / `indices` / `instances` / `params` /
+ * `normals` / `uvs` / `uv1` / `tangents` / `indices` / `instances` / `params` /
  * `shape` / `fallbackMesh` / `kind`) AND the new positions match the
  * cached vertex count, BVH topology is preserved — only the AABB bounds
  * need to refit against the new vertex positions.
@@ -978,6 +982,7 @@ export function topologyRebuild(
     positions?: ArrayLike<number>;
     normals?: ArrayLike<number>;
     uvs?: ArrayLike<number>;
+    uv1?: ArrayLike<number>;
     tangents?: ArrayLike<number>;
     indices?: ArrayLike<number>;
     instances?: unknown;

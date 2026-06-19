@@ -735,6 +735,8 @@ export class GltfSceneController {
       positions: solved.positions,
       normals: solved.normals,
       ...(solved.tangents ? { tangents: solved.tangents } : {}),
+      ...(solved.uvs ? { uvs: solved.uvs } : {}),
+      ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
     } as Partial<ScenePrimitive>;
   }
 
@@ -803,6 +805,8 @@ export class GltfSceneController {
       positions: solved.positions,
       normals: solved.normals,
       ...(solved.tangents ? { tangents: solved.tangents } : {}),
+      ...(solved.uvs ? { uvs: solved.uvs } : {}),
+      ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
     } as Partial<ScenePrimitive>;
   }
 }

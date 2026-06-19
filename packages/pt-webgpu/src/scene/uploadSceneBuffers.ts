@@ -448,12 +448,12 @@ export function packFoldedMaterialEntry(
  *
  * morphTargets ARE handled by solveSkin (morph-blend is applied before LBS when
  * morphTargets + morphWeights are present). solveSkin handles position, normal,
- * and tangent morph deltas; solved tangents are preserved for tangent-space
- * material maps.
+ * tangent, and UV morph deltas; solved tangents/UVs are preserved for
+ * tangent-space and texture-space material maps.
  *
  * Returns a new scene whose skinned-mesh primitives carry solved
- * positions/normals/tangents so that packSceneFromCore uses the correct
- * deformed geometry and tangent frame.
+ * positions/normals/tangents/uvs so that packSceneFromCore uses the correct
+ * deformed geometry, tangent frame, and texture coordinates.
  */
 function applySolveSkinToScene(scene: Scene, warningOptions: BuildPackedSceneOptions): Scene {
   let anyChanged = false;
@@ -472,6 +472,8 @@ function applySolveSkinToScene(scene: Scene, warningOptions: BuildPackedSceneOpt
         positions: solved.positions,
         normals: solved.normals,
         ...(solved.tangents ? { tangents: solved.tangents } : {}),
+        ...(solved.uvs ? { uvs: solved.uvs } : {}),
+        ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
       };
     } catch (err) {
       emitSolveSkinFallbackWarning(p.id, err, warningOptions);

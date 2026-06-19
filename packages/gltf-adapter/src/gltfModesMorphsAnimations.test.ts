@@ -215,12 +215,14 @@ describe('TRIANGLE_STRIP / TRIANGLE_FAN import (GLTF-05)', () => {
 // Base triangle for morph fixtures.
 const MORPH_BASE_POSITIONS = [0, 0, 0, 1, 0, 0, 0, 1, 0];
 const MORPH_BASE_NORMALS = [0, 0, 1, 0, 0, 1, 0, 0, 1];
+const MORPH_BASE_UVS = [0, 0, 1, 0, 0, 1];
 
 interface MorphTargetSpec {
   position?: number[]; // 9 floats (3 verts × 3)
   normal?: number[];   // 9 floats
   tangent?: number[];  // 9 floats (glTF morph target TANGENT is a VEC3 delta)
   texcoord0?: number[]; // 6 floats (3 verts × 2)
+  texcoord1?: number[]; // 6 floats (3 verts × 2)
 }
 
 /**
@@ -232,10 +234,17 @@ function makeMorphGltf(opts: {
   meshWeights?: number[];
   nodeWeights?: number[];
 }): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
-  const chunks: ArrayBuffer[] = [f32Buffer(MORPH_BASE_POSITIONS), f32Buffer(MORPH_BASE_NORMALS)];
+  const chunks: ArrayBuffer[] = [
+    f32Buffer(MORPH_BASE_POSITIONS),
+    f32Buffer(MORPH_BASE_NORMALS),
+    f32Buffer(MORPH_BASE_UVS),
+    f32Buffer(MORPH_BASE_UVS.map((v) => v + 0.25)),
+  ];
   const accessors: NonNullable<GltfJson['accessors']> = [
     { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }, // POSITION
     { bufferView: 1, componentType: 5126, count: 3, type: 'VEC3' }, // NORMAL
+    { bufferView: 2, componentType: 5126, count: 3, type: 'VEC2' }, // TEXCOORD_0
+    { bufferView: 3, componentType: 5126, count: 3, type: 'VEC2' }, // TEXCOORD_1
   ];
   const targets: Array<Record<string, number>> = [];
 
@@ -261,6 +270,11 @@ function makeMorphGltf(opts: {
       accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC2' });
       chunks.push(f32Buffer(spec.texcoord0));
     }
+    if (spec.texcoord1) {
+      target['TEXCOORD_1'] = accessors.length;
+      accessors.push({ bufferView: chunks.length, componentType: 5126, count: 3, type: 'VEC2' });
+      chunks.push(f32Buffer(spec.texcoord1));
+    }
     targets.push(target);
   }
 
@@ -271,7 +285,7 @@ function makeMorphGltf(opts: {
     scene: 0,
     nodes: [{ mesh: 0, ...(opts.nodeWeights ? { weights: opts.nodeWeights } : {}) }],
     meshes: [{
-      primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, targets }],
+      primitives: [{ attributes: { POSITION: 0, NORMAL: 1, TEXCOORD_0: 2, TEXCOORD_1: 3 }, targets }],
       ...(opts.meshWeights ? { weights: opts.meshWeights } : {}),
     }],
     accessors,
@@ -376,23 +390,35 @@ describe('morph targets (GLTF-04)', () => {
     expect(Array.from(prim.morphTargetTangents![0]!)).toEqual(Array.from(new Float32Array(tangentDelta)));
   });
 
-  it('reports TEXCOORD morph deltas as ignored because core has no UV-delta morph lane', async () => {
+  it('TEXCOORD_0/1 morph deltas are preserved and blended by solveSkin', async () => {
     const uvDelta = [0.1, 0, 0.1, 0, 0.1, 0];
+    const uv1Delta = [0, 0.2, 0, 0.2, 0, 0.2];
     const { gltf, buffers } = makeMorphGltf({
-      targets: [{ position: POS_DELTA_1, texcoord0: uvDelta }],
-      meshWeights: [1],
+      targets: [{ position: POS_DELTA_1, texcoord0: uvDelta, texcoord1: uv1Delta }],
+      meshWeights: [0.5],
     });
     const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
     const prim = scene.primitives[0] as SkinnedMeshPrimitive;
 
     expect(prim.morphTargets).toHaveLength(1);
-    expect('morphTargetUvs' in prim).toBe(false);
-    expect(warnings.some((warning) => warning.includes('morph UV-delta lane'))).toBe(true);
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      severity: 'warning',
-      code: 'ignored-morph-target-texcoord',
-      path: 'meshes[0].primitives[0].targets[0].TEXCOORD_0',
-    }));
+    expect(prim.morphTargetUvs).toHaveLength(1);
+    expect(prim.morphTargetUv1s).toHaveLength(1);
+    expect(Array.from(prim.morphTargetUvs![0]!)).toEqual(Array.from(new Float32Array(uvDelta)));
+    expect(Array.from(prim.morphTargetUv1s![0]!)).toEqual(Array.from(new Float32Array(uv1Delta)));
+    expect(warnings.some((warning) => warning.includes('TEXCOORD_0') && warning.includes('ignored'))).toBe(false);
+    expect(diagnostics.some((d) => d.code === 'ignored-morph-target-texcoord')).toBe(false);
+
+    const solved = solveSkin(prim);
+    expect(Array.from(solved.uvs ?? [])).toEqual(Array.from(new Float32Array([
+      0.05, 0,
+      1.05, 0,
+      0.05, 1,
+    ])));
+    expect(Array.from(solved.uv1 ?? [])).toEqual(Array.from(new Float32Array([
+      0.25, 0.35,
+      1.25, 0.35,
+      0.25, 1.35,
+    ])));
   });
 
   it('morphWeights defaults to zeros when no weights are authored', async () => {

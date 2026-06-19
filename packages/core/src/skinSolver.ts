@@ -12,6 +12,7 @@
  *   morphedPos[v]    = restPos[v]    + Σ_t morphWeights[t] · morphTargets[t][v]
  *   morphedNormal[v] = restNormal[v] + Σ_t morphWeights[t] · morphTargetNormals[t][v]
  *   morphedTangent[v]= restTangent[v]+ Σ_t morphWeights[t] · morphTargetTangents[t][v]
+ *   morphedUv[v]     = restUv[v]     + Σ_t morphWeights[t] · morphTargetUvs[t][v]
  *   skinVertex[v]   = bindMatrix       · morphedPos[v]            (skip if bindMatrix omitted)
  *   skinMatrix[v]   = Σ_k weights[v,k] · ( bones[idx[v,k]] · boneInverses[idx[v,k]] )
  *   skinnedWorld[v] = skinMatrix[v]    · skinVertex[v]            (w=1 transform)
@@ -145,7 +146,15 @@ export function solveSkin(
   outPositions?: Float32Array,
   outNormals?: Float32Array,
   outTangents?: Float32Array,
-): { positions: Float32Array; normals: Float32Array; tangents?: Float32Array } {
+  outUvs?: Float32Array,
+  outUv1?: Float32Array,
+): {
+  positions: Float32Array;
+  normals: Float32Array;
+  tangents?: Float32Array;
+  uvs?: Float32Array;
+  uv1?: Float32Array;
+} {
   const vertCount = prim.positions.length / 3;
   if (prim.normals.length !== vertCount * 3) {
     throw new Error(
@@ -206,6 +215,16 @@ export function solveSkin(
     );
   }
   const tangents = hasTangents ? (outTangents ?? new Float32Array(vertCount * 4)) : undefined;
+  if (prim.uvs != null && prim.uvs.length !== vertCount * 2) {
+    throw new Error(
+      `solveSkin: uvs length ${prim.uvs.length} expected ${vertCount * 2}.`,
+    );
+  }
+  if (prim.uv1 != null && prim.uv1.length !== vertCount * 2) {
+    throw new Error(
+      `solveSkin: uv1 length ${prim.uv1.length} expected ${vertCount * 2}.`,
+    );
+  }
   if (positions.length !== vertCount * 3) {
     throw new Error(`solveSkin: outPositions length ${positions.length} expected ${vertCount * 3}.`);
   }
@@ -214,6 +233,12 @@ export function solveSkin(
   }
   if (tangents != null && tangents.length !== vertCount * 4) {
     throw new Error(`solveSkin: outTangents length ${tangents.length} expected ${vertCount * 4}.`);
+  }
+  if (outUvs != null && outUvs.length !== vertCount * 2) {
+    throw new Error(`solveSkin: outUvs length ${outUvs.length} expected ${vertCount * 2}.`);
+  }
+  if (outUv1 != null && outUv1.length !== vertCount * 2) {
+    throw new Error(`solveSkin: outUv1 length ${outUv1.length} expected ${vertCount * 2}.`);
   }
 
   const combined = combineSkinMatrices(prim.bones, prim.boneInverses, boneCount);
@@ -225,6 +250,8 @@ export function solveSkin(
   let morphedPositions: Float32Array | null = null;
   let morphedNormals: Float32Array | null = null;
   let morphedTangents: Float32Array | null = null;
+  let morphedUvs: Float32Array | null = null;
+  let morphedUv1: Float32Array | null = null;
   if (prim.morphTargets != null && prim.morphWeights != null && prim.morphTargets.length > 0) {
     let anyActive = false;
     for (let t = 0; t < prim.morphWeights.length; t++) {
@@ -298,6 +325,56 @@ export function solveSkin(
           }
           for (let i = 0; i < mt.length; i++) {
             mt[i] = mt[i]! + w * delta[i]!;
+          }
+        }
+      }
+      if (prim.morphTargetUvs != null) {
+        if (prim.uvs == null) {
+          throw new Error('solveSkin: morphTargetUvs supplied but primitive has no uvs stream.');
+        }
+        if (prim.morphTargetUvs.length !== tCount) {
+          throw new Error(
+            `solveSkin: morphTargetUvs length ${prim.morphTargetUvs.length} != morphTargets ${tCount}.`,
+          );
+        }
+        const mu = new Float32Array(prim.uvs);
+        morphedUvs = mu;
+        for (let t = 0; t < tCount; t++) {
+          const w = prim.morphWeights[t]!;
+          if (w === 0) continue;
+          const delta = prim.morphTargetUvs[t]!;
+          if (delta.length !== mu.length) {
+            throw new Error(
+              `solveSkin: morphTargetUvs[${t}] length ${delta.length} != uvs ${mu.length}.`,
+            );
+          }
+          for (let i = 0; i < mu.length; i++) {
+            mu[i] = mu[i]! + w * delta[i]!;
+          }
+        }
+      }
+      if (prim.morphTargetUv1s != null) {
+        if (prim.uv1 == null) {
+          throw new Error('solveSkin: morphTargetUv1s supplied but primitive has no uv1 stream.');
+        }
+        if (prim.morphTargetUv1s.length !== tCount) {
+          throw new Error(
+            `solveSkin: morphTargetUv1s length ${prim.morphTargetUv1s.length} != morphTargets ${tCount}.`,
+          );
+        }
+        const mu1 = new Float32Array(prim.uv1);
+        morphedUv1 = mu1;
+        for (let t = 0; t < tCount; t++) {
+          const w = prim.morphWeights[t]!;
+          if (w === 0) continue;
+          const delta = prim.morphTargetUv1s[t]!;
+          if (delta.length !== mu1.length) {
+            throw new Error(
+              `solveSkin: morphTargetUv1s[${t}] length ${delta.length} != uv1 ${mu1.length}.`,
+            );
+          }
+          for (let i = 0; i < mu1.length; i++) {
+            mu1[i] = mu1[i]! + w * delta[i]!;
           }
         }
       }
@@ -456,5 +533,22 @@ export function solveSkin(
     }
   }
 
-  return tangents != null ? { positions, normals, tangents } : { positions, normals };
+  const result: {
+    positions: Float32Array;
+    normals: Float32Array;
+    tangents?: Float32Array;
+    uvs?: Float32Array;
+    uv1?: Float32Array;
+  } = tangents != null ? { positions, normals, tangents } : { positions, normals };
+  if (morphedUvs != null) {
+    const uvs = outUvs ?? morphedUvs;
+    if (uvs !== morphedUvs) uvs.set(morphedUvs);
+    result.uvs = uvs;
+  }
+  if (morphedUv1 != null) {
+    const uv1 = outUv1 ?? morphedUv1;
+    if (uv1 !== morphedUv1) uv1.set(morphedUv1);
+    result.uv1 = uv1;
+  }
+  return result;
 }

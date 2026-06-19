@@ -269,6 +269,34 @@ describe('solveSkin', () => {
     expect(tangents![3]).toBe(1);
   });
 
+  it('applies morphTargetUvs and morphTargetUv1s without skin-transforming texture coordinates', () => {
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+        bonesMatrix: new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          5, 7, 9, 1,
+        ]),
+      }),
+      uvs: new Float32Array([0, 0, 0.5, 0.5]),
+      uv1: new Float32Array([0.25, 0.25, 0.75, 0.75]),
+      morphTargets: [new Float32Array([0, 0, 0, 0, 0, 0])],
+      morphTargetUvs: [new Float32Array([0.1, 0.2, -0.2, 0.1])],
+      morphTargetUv1s: [new Float32Array([0.5, 0, 0, -0.25])],
+      morphWeights: new Float32Array([0.5]),
+    };
+
+    const { positions, uvs, uv1 } = solveSkin(prim);
+
+    expect(positions[0]).toBeCloseTo(5);
+    expect(positions[1]).toBeCloseTo(7);
+    expect(Array.from(uvs ?? [])).toEqual(Array.from(new Float32Array([0.05, 0.1, 0.4, 0.55])));
+    expect(Array.from(uv1 ?? [])).toEqual(Array.from(new Float32Array([0.5, 0.25, 0.75, 0.625])));
+  });
+
   it('throws when morphTargetNormals count does not match morphTargets for active morphs', () => {
     const prim: SkinnedMeshPrimitive = {
       ...singleBonePrim({
@@ -329,6 +357,56 @@ describe('solveSkin', () => {
         new Float32Array([0, 0, 0]),
       ],
     })).toThrow(/morphTargetTangents\[0\] length 2 != tangents 3/);
+  });
+
+  it('throws when morph UV target counts or lengths do not match active morphs', () => {
+    const base: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 1, 0]),
+        bonesMatrix: IDENT4(),
+      }),
+      uvs: new Float32Array([0, 0]),
+      morphTargets: [
+        new Float32Array([1, 0, 0]),
+        new Float32Array([0, 1, 0]),
+      ],
+      morphWeights: new Float32Array([1, 0]),
+    };
+
+    expect(() => solveSkin({
+      ...base,
+      morphTargetUvs: [new Float32Array([0, 0])],
+    })).toThrow(/morphTargetUvs length 1 != morphTargets 2/);
+
+    expect(() => solveSkin({
+      ...base,
+      morphTargetUvs: [
+        new Float32Array([0]),
+        new Float32Array([0, 0]),
+      ],
+    })).toThrow(/morphTargetUvs\[0\] length 1 != uvs 2/);
+
+    const withoutUvs: SkinnedMeshPrimitive = {
+      kind: 'skinned-mesh',
+      id: 'test-without-uvs',
+      positions: base.positions,
+      normals: base.normals,
+      skinIndices: base.skinIndices,
+      skinWeights: base.skinWeights,
+      bones: base.bones,
+      boneInverses: base.boneInverses,
+      morphTargets: base.morphTargets!,
+      morphWeights: base.morphWeights!,
+      material: base.material,
+    };
+    expect(() => solveSkin({
+      ...withoutUvs,
+      morphTargetUvs: [
+        new Float32Array([0, 0]),
+        new Float32Array([0, 0]),
+      ],
+    })).toThrow(/morphTargetUvs supplied but primitive has no uvs stream/);
   });
 
   it('bindMatrix is honored — non-identity bind round-trips to identity skinning', () => {

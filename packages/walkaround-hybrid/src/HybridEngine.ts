@@ -1454,6 +1454,7 @@ export class HybridEngine implements Engine {
     }
     let positions = localPositions;
     let normals = localNormals;
+    let solvedAttributes: Partial<ScenePrimitive> | null = null;
     if (positions == null) {
       const prim = this._lastScene?.primitives.find(
         (p) => String(p.id) === id && p.kind === 'skinned-mesh',
@@ -1464,6 +1465,19 @@ export class HybridEngine implements Engine {
       const solved = solveSkin(prim);
       positions = solved.positions;
       normals = solved.normals;
+      if (solved.tangents != null || solved.uvs != null || solved.uv1 != null) {
+        solvedAttributes = {
+          positions,
+          normals,
+          ...(solved.tangents ? { tangents: solved.tangents } : {}),
+          ...(solved.uvs ? { uvs: solved.uvs } : {}),
+          ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
+        } as Partial<ScenePrimitive>;
+      }
+    }
+    if (solvedAttributes != null) {
+      this.updatePrimitive(id, solvedAttributes);
+      return;
     }
     const result = refitSkinnedMeshAfterGpuWrite(
       id,

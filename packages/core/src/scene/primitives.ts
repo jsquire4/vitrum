@@ -182,12 +182,15 @@ export interface SkinnedMeshPrimitive {
    * deltas at extract time. Optional `morphTargetNormals` carries
    * matching normal deltas; optional `morphTargetTangents` carries glTF
    * TANGENT direction deltas (xyz only; tangent handedness stays on the base
-   * `tangents` stream). `solveSkin()` applies these tangent deltas when rest
-   * tangents exist. Omit for position-only morphs.
+   * `tangents` stream); optional `morphTargetUvs` / `morphTargetUv1s` carry
+   * glTF TEXCOORD_0 / TEXCOORD_1 deltas. `solveSkin()` applies these deltas
+   * when the corresponding rest stream exists. Omit for position-only morphs.
    */
   readonly morphTargets?: ReadonlyArray<Float32Array>;
   readonly morphTargetNormals?: ReadonlyArray<Float32Array>;
   readonly morphTargetTangents?: ReadonlyArray<Float32Array>;
+  readonly morphTargetUvs?: ReadonlyArray<Float32Array>;
+  readonly morphTargetUv1s?: ReadonlyArray<Float32Array>;
   /** Per-target influence weights, length = morphTargets.length. */
   readonly morphWeights?: Float32Array;
   readonly material: MaterialSpec;

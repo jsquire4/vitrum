@@ -86,6 +86,8 @@ const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([
   'morphTargets',
   'morphTargetNormals',
   'morphTargetTangents',
+  'morphTargetUvs',
+  'morphTargetUv1s',
   'morphWeights',
 ]);
 
@@ -102,6 +104,8 @@ const ANIMATION_REBUILD_PATCH_FIELDS = new Set([
   'morphTargets',
   'morphTargetNormals',
   'morphTargetTangents',
+  'morphTargetUvs',
+  'morphTargetUv1s',
   'morphWeights',
 ]);
 

@@ -1,11 +1,11 @@
 // solveSkinPrimitives.ts — pre-pass that replaces skinned-mesh rest-pose
-// positions/normals/tangents with CPU-solved posed geometry before scene ingestion.
+// positions/normals/tangents/uvs with CPU-solved posed geometry before scene ingestion.
 //
 // WHY here, not in shared-bvh:
 //   `mergeWorldSpaceFromCore` reads `primitive.positions` and `primitive.normals`
 //   directly without awareness of the skinning solver.  The cleanest seam is a
 //   pre-pass that produces a new Scene whose skinned-mesh primitives carry SOLVED
-//   positions/normals/tangents so the rest of the pipeline
+//   positions/normals/tangents/uvs so the rest of the pipeline
 //   (mergeWorldSpaceFromCore, BVH packers, attribute packers) is
 //   skinning-agnostic.
 //
@@ -26,8 +26,9 @@
 //   solve — no special incremental path needed.
 //
 // morphTargets:
-//   `solveSkin` fully handles morph-target + normal blending when the primitive
-//   carries `morphTargets` / `morphWeights` / `morphTargetNormals`.  No gap here
+//   `solveSkin` fully handles morph-target + normal/UV blending when the primitive
+//   carries `morphTargets` / `morphWeights` / `morphTargetNormals` /
+//   `morphTargetUvs`.  No gap here
 //   — morph application is part of the solver's pre-LBS step.
 
 import type { EngineWarning, Scene, ScenePrimitive } from '@vitrum/core';
@@ -40,8 +41,9 @@ export interface SolveSkinPrimitivesWarningOptions {
 }
 
 /**
- * Replace each `skinned-mesh` primitive's rest-pose `positions`, `normals`, and
- * optional `tangents` with the CPU-solved posed values from {@link solveSkin}.
+ * Replace each `skinned-mesh` primitive's rest-pose `positions`, `normals`,
+ * optional `tangents`, and morph-animated `uvs`/`uv1` with the CPU-solved posed
+ * values from {@link solveSkin}.
  * All other primitives and all scene-level fields are returned unchanged.
  *
  * The returned primitives still carry `kind: 'skinned-mesh'` so downstream
@@ -62,7 +64,7 @@ export function solveSkinPrimitives(scene: Scene, warningOptions: SolveSkinPrimi
       return prim;
     }
 
-    const { positions, normals, tangents } = solveSkin(prim);
+    const { positions, normals, tangents, uvs, uv1 } = solveSkin(prim);
     anyResolved = true;
     // Return a new object that shares every field except solved geometry arrays.
     // Core solveSkin() now handles tangent morphing + skinning, so preserve its
@@ -72,6 +74,8 @@ export function solveSkinPrimitives(scene: Scene, warningOptions: SolveSkinPrimi
       positions,
       normals,
       ...(tangents != null ? { tangents } : {}),
+      ...(uvs != null ? { uvs } : {}),
+      ...(uv1 != null ? { uv1 } : {}),
     };
   });
 
