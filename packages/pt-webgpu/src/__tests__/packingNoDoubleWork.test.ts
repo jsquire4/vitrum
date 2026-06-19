@@ -249,6 +249,7 @@ describe('packingNoDoubleWork — environmentParams call count', () => {
       spotLightsData: new Float32Array(0),
       rectAreaLightsData: new Float32Array(0),
       meshAreaLightsData: new Float32Array(0),
+      meshAreaLightSourceFactorsData: new Float32Array(0),
     };
     const withEmptyPacked = buildLightTreeInputForScene(scene, {
       packed: emptyPacked,

@@ -108,6 +108,7 @@ interface PackedSceneData {
   readonly spotLightsData: Float32Array;
   readonly rectAreaLightsData: Float32Array;
   readonly meshAreaLightsData: Float32Array;
+  readonly meshAreaLightSourceFactorsData: Float32Array;
   readonly environmentTint: readonly [number, number, number];
   readonly environmentSunDirection: readonly [number, number, number];
   readonly environmentSunStrength: number;
@@ -168,6 +169,7 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly spotLightsBuffer: GPUBuffer;
   readonly rectAreaLightsBuffer: GPUBuffer;
   readonly meshAreaLightsBuffer: GPUBuffer;
+  readonly meshAreaLightSourceFactorsBuffer: GPUBuffer;
   readonly tlasNodesBuffer: GPUBuffer;
   readonly tlasInstanceIndicesBuffer: GPUBuffer;
   readonly tlasBlasRootsBuffer: GPUBuffer;
@@ -255,6 +257,7 @@ export const SCENE_BUFFER_REGISTRY = [
   { key: 'spotLightsData',        bufferField: 'spotLightsBuffer',        label: 'vitrum.pt-webgpu.scene.spotLights' },
   { key: 'rectAreaLightsData',    bufferField: 'rectAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.rectAreaLights' },
   { key: 'meshAreaLightsData',    bufferField: 'meshAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.meshAreaLights' },
+  { key: 'meshAreaLightSourceFactorsData', bufferField: 'meshAreaLightSourceFactorsBuffer', label: 'vitrum.pt-webgpu.scene.meshAreaLightSourceFactors' },
   // ── WS2 light tree ────────────────────────────────────────────────────────
   { key: 'lightTreeNodes', bufferField: 'lightTreeBuffer', label: 'vitrum.pt-webgpu.scene.lightTree' },
   // ── P2 per-vertex UVs/tangents/colors + material texture descriptors ─────
@@ -792,6 +795,7 @@ export function buildPackedScene(
     spotLightsData: emitArrays.spotLightsData,
     rectAreaLightsData: emitArrays.rectAreaLightsData,
     meshAreaLightsData: emitArrays.meshAreaLightsData,
+    meshAreaLightSourceFactorsData: emitArrays.meshAreaLightSourceFactorsData,
     environmentTint: environment.tint,
     environmentSunDirection: environment.sunDirection,
     environmentSunStrength: environment.sunStrength,
@@ -1158,11 +1162,13 @@ interface MutableSceneBuffers {
   spotLightsBuffer: GPUBuffer;
   rectAreaLightsBuffer: GPUBuffer;
   meshAreaLightsBuffer: GPUBuffer;
+  meshAreaLightSourceFactorsBuffer: GPUBuffer;
   directionalLightsData: Float32Array;
   pointLightsData: Float32Array;
   spotLightsData: Float32Array;
   rectAreaLightsData: Float32Array;
   meshAreaLightsData: Float32Array;
+  meshAreaLightSourceFactorsData: Float32Array;
 
   // ── Emitter counts + directional aggregate (incremental emitter patches) ──
   directionalLightCount: number;
@@ -1382,6 +1388,17 @@ export function uploadEmitterArrays(
       handles.meshAreaLightsData = data;
     },
   ) || reallocated;
+  reallocated = uploadOrReallocateEmitterBuffer(
+    device,
+    sb.meshAreaLightSourceFactorsBuffer,
+    sb.meshAreaLightSourceFactorsData,
+    packed.meshAreaLightSourceFactorsData,
+    'vitrum.pt-webgpu.scene.meshAreaLightSourceFactors',
+    (buffer, data) => {
+      handles.meshAreaLightSourceFactorsBuffer = buffer;
+      handles.meshAreaLightSourceFactorsData = data;
+    },
+  ) || reallocated;
   applyEmitterCountMutation(sb, {
     directionalLightCount: packed.directionalLightCount,
     pointLightCount: packed.pointLightCount,
@@ -1530,6 +1547,11 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const spotLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.spotLights', packed.spotLightsData);
   const rectAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData);
   const meshAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.meshAreaLights', packed.meshAreaLightsData);
+  const meshAreaLightSourceFactorsBuffer = createStorageBuffer(
+    device,
+    'vitrum.pt-webgpu.scene.meshAreaLightSourceFactors',
+    packed.meshAreaLightSourceFactorsData,
+  );
   const lightTreeBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.lightTree', packed.lightTreeNodes);
   // P2 — per-vertex UVs/tangents/colors + per-material texture descriptors + the baseColor
   // texture_2d_array (all group 3, full tier). A textureless scene gets a 1×1
@@ -1599,6 +1621,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
     spotLightsBuffer,
     rectAreaLightsBuffer,
     meshAreaLightsBuffer,
+    meshAreaLightSourceFactorsBuffer,
     lightTreeBuffer,
     tlasNodesBuffer,
     tlasInstanceIndicesBuffer,
@@ -1639,6 +1662,7 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
       uploaded.spotLightsBuffer.destroy();
       uploaded.rectAreaLightsBuffer.destroy();
       uploaded.meshAreaLightsBuffer.destroy();
+      uploaded.meshAreaLightSourceFactorsBuffer.destroy();
       // Light-tree buffer is realloc-swapped by rebuildLightTreeForScene when
       // the node count changes — resolve it late off `uploaded` like the
       // BLAS/TLAS handles, or the swapped-in buffer leaks (and the original

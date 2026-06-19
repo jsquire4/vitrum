@@ -179,10 +179,12 @@ struct AdjointParams {
 // uses record1.xyz for UNFACTORED emissive RGB so intensity=0 is differentiable.
 // emitter color/intensity use record1.xyz = unfactored emitter color and
 // record1.w = fixed intensity; emitterTargetMeta packs target kind in the low
-// 8 bits and a contiguous range count in the upper bits. Mesh-area emitter
-// targets use this only for uncapped explicit emitters whose packed triangles
-// remain contiguous; capped/reordered mesh lights and full stochastic sampling
-// stay on finite difference.
+// 8 bits and a contiguous range count in the upper bits. Mapped mesh-area
+// emitters read meshAreaLightSourceFactors, so zero authored color channels do
+// not require a packedRadiance/color quotient. Mesh-area emitter targets use
+// this only for uncapped explicit emitters whose packed triangles remain
+// contiguous; capped/reordered mesh lights and full stochastic sampling stay on
+// finite difference.
 @group(0) @binding(9) var<storage, read>       adjointParamDescs: array<vec4u>;
 // rect-area lights: per light {position, uAxis, vAxis, radiance} (4 vec4 stride).
 @group(0) @binding(10) var<storage, read>      rectAreaLights: array<vec4f>;
@@ -207,6 +209,10 @@ struct AdjointParams {
 // normalized CDF. Mirrors scene/uploadSceneBuffers.ts environment packing.
 @group(0) @binding(20) var<storage, read>       environmentMapTexels: array<vec4f>;
 @group(0) @binding(21) var<storage, read>       environmentMapCdf: array<f32>;
+// mesh-area source factors: per triangle {emissiveMapFactor.rgb, 0}.
+// Unmapped mesh-area lights store 1,1,1. This keeps emitter-color gradients
+// defined when an authored color channel is currently zero.
+@group(0) @binding(22) var<storage, read>       meshAreaLightSourceFactors: array<vec4f>;
 
 // ── BRDF primitives ──────────────────────────────────────────────────────────
 const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
@@ -933,7 +939,7 @@ fn scatterEmitterRadianceGradient(
   targetKind: u32,
   targetSlot: u32,
   dLoss_dPackedRadiance: vec3f,
-  packedRadiance: vec3f,
+  sourceFactor: vec3f,
   invReplaySamples: f32,
 ) {
   for (var k = 0u; k < params.paramCount; k = k + 1u) {
@@ -954,28 +960,13 @@ fn scatterEmitterRadianceGradient(
     let emitterIntensity = bitcast<f32>(payload.w);
     let gradOffset = d.z;
     if (d.y == ${ADJOINT_FIELD_EMITTER_COLOR}u) {
-      var dPackedRadiance_dColor = vec3f(emitterIntensity);
-      if (
-        targetKind == ${ADJOINT_EMITTER_TARGET_MESH}u &&
-        abs(emitterIntensity) > 1e-8 &&
-        abs(emitterColor.x) > 1e-8 &&
-        abs(emitterColor.y) > 1e-8 &&
-        abs(emitterColor.z) > 1e-8
-      ) {
-        // Mesh-area packed radiance may include source material emissive-map
-        // multipliers. For nonzero authored color, packedRadiance / color is
-        // the exact local d(packedRadiance)/d(color) for each channel.
-        dPackedRadiance_dColor = packedRadiance / emitterColor;
-      }
+      let dPackedRadiance_dColor = sourceFactor * emitterIntensity;
       let gColor = dLoss_dPackedRadiance * dPackedRadiance_dColor;
       adjointScatter(gradOffset, gColor.x * invReplaySamples);
       adjointScatter(gradOffset + 1u, gColor.y * invReplaySamples);
       adjointScatter(gradOffset + 2u, gColor.z * invReplaySamples);
     } else {
-      var dPackedRadiance_dIntensity = emitterColor;
-      if (targetKind == ${ADJOINT_EMITTER_TARGET_MESH}u && abs(emitterIntensity) > 1e-8) {
-        dPackedRadiance_dIntensity = packedRadiance / emitterIntensity;
-      }
+      let dPackedRadiance_dIntensity = sourceFactor * emitterColor;
       adjointScatter(gradOffset, dot(dLoss_dPackedRadiance, dPackedRadiance_dIntensity) * invReplaySamples);
     }
   }
@@ -1167,7 +1158,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u,
           di,
           dLoss_dR * brdfValue * nDotL,
-          vec3f(0.0),
+          vec3f(1.0),
           invReplaySamples,
         );
       }
@@ -1223,7 +1214,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_POINT}u,
           pi,
           dLoss_dR * brdfValue * (nDotL * attenuation),
-          vec3f(0.0),
+          vec3f(1.0),
           invReplaySamples,
         );
       }
@@ -1285,7 +1276,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_SPOT}u,
           si,
           dLoss_dR * brdfValue * (nDotL * softness * attenuation),
-          vec3f(0.0),
+          vec3f(1.0),
           invReplaySamples,
         );
       }
@@ -1363,7 +1354,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_RECT}u,
           ri,
           dLoss_dR * brdfValue * (nDotL * areaFactor),
-          vec3f(0.0),
+          vec3f(1.0),
           invReplaySamples,
         );
       }
@@ -1378,6 +1369,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let b = meshAreaLights[mb + 1u].xyz;
       let c = meshAreaLights[mb + 2u].xyz;
       let mr = meshAreaLights[mb + 3u];
+      var sourceFactor = vec3f(1.0);
+      if (mi < arrayLength(&meshAreaLightSourceFactors)) {
+        sourceFactor = meshAreaLightSourceFactors[mi].rgb;
+      }
       let r1 = rand_f32(&rng);
       let r2 = rand_f32(&rng);
       let su = sqrt(r1);
@@ -1434,7 +1429,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           ${ADJOINT_EMITTER_TARGET_MESH}u,
           mi,
           dLoss_dR * brdfValue * (nDotL * areaFactor),
-          mr.rgb,
+          sourceFactor,
           invReplaySamples,
         );
       }

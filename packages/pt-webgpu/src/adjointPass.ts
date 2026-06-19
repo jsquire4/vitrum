@@ -146,8 +146,11 @@ export class AdjointPass {
     // (bitcast f32). For an emissiveIntensity param, record1.xyz carries the
     // UNFACTORED material emissive RGB so intensity=0 remains differentiable.
     // Emitter color/intensity params use record1.xyz = unfactored color and
-    // record1.w = fixed intensity. emitterTargetMeta packs kind in the low 8
-    // bits and range count in the upper bits (1 for scalar light streams).
+    // record1.w = fixed intensity. Mapped mesh-area emitters recover their
+    // readable emissive-map multiplier from meshAreaLightSourceFactorsBuffer, so
+    // zero authored color channels remain differentiable. emitterTargetMeta
+    // packs kind in the low 8 bits and range count in the upper bits (1 for
+    // scalar light streams).
     // Lit BRDF fields leave payloads 0.
     // A Float32 view aliases the same buffer.
     const descs = new Uint32Array(Math.max(params.length, 1) * 8);
@@ -316,6 +319,7 @@ export class AdjointPass {
         { binding: 19, resource: sb.materialLinearTextureView },
         { binding: 20, resource: { buffer: sb.environmentMapTexelsBuffer } },
         { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
+        { binding: 22, resource: { buffer: sb.meshAreaLightSourceFactorsBuffer } },
       ],
     });
 

@@ -943,7 +943,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps mapped mesh-area emitter color/intensity on path-replay when packed-radiance ratios are defined', async () => {
+  it('keeps mapped mesh-area emitter color/intensity on path-replay through source-factor derivatives', async () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -998,7 +998,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps mapped mesh-area emitter color on finite-difference when packed-radiance ratios are undefined', () => {
+  it('keeps mapped mesh-area emitter color on path-replay when an authored color channel is zero', async () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1021,7 +1021,14 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         meshId: 'panel',
       }],
     };
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(4) };
+    let captured: AdjointGradientRequest | null = null;
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async (req) => {
+        captured = req;
+        return new Float32Array([0.1, 0.2, 0.3]);
+      },
+    };
     const session = new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [
@@ -1030,17 +1037,16 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-emitter',
-      path: 'emitters.mapped-mesh-light.color',
-      details: expect.objectContaining({
-        emitterKind: 'mesh-area',
-        meshId: 'panel',
-        unsupportedMaterialFields: ['emissiveMap'],
-        finiteDifferenceReason: 'zero-color-channel-mapped-emission',
-      }),
-    }));
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    const result = await session.step();
+    expect(captured).not.toBeNull();
+    expect(captured!.params).toEqual([
+      { domain: 'emitters', id: 'mapped-mesh-light', field: 'color', offset: 0, length: 3 },
+    ]);
+    expect(result.gradient).toEqual([
+      [expect.closeTo(0.1, 6), expect.closeTo(0.2, 6), expect.closeTo(0.3, 6)],
+    ]);
     session.dispose();
   });
 

@@ -169,6 +169,37 @@ describe('packEmitterArrays — H14-A implicit mesh-area synthesis', () => {
     expect(packed.meshAreaLightsData[14]).toBeCloseTo(0, 5);
   });
 
+  it('packs source factors for mapped explicit mesh-area emitters with zero authored color channels', () => {
+    const primitive = {
+      ...triMesh('mapped-zero-red-panel', [0, 0, 0], 0, {
+        emissiveMap: emissiveMap(new Float32Array([1, 0, 1, 1]), 1, 1),
+      }),
+      uvs: new Float32Array([0.5, 0.5, 0.5, 0.5, 0.5, 0.5]),
+    } as Scene['primitives'][number];
+    const scene: Scene = {
+      primitives: [primitive],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mapped-zero-red',
+        meshId: 'mapped-zero-red-panel',
+        color: [0, 0.5, 1],
+        intensity: 4,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packEmitterArrays(scene);
+
+    expect(packed.meshAreaLightCount).toBe(1);
+    expect(packed.meshAreaLightsData[12]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightsData[13]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightsData[14]).toBeCloseTo(4, 5);
+    expect(packed.meshAreaLightSourceFactorsData.length).toBe(4);
+    expect(packed.meshAreaLightSourceFactorsData[0]).toBeCloseTo(1, 5);
+    expect(packed.meshAreaLightSourceFactorsData[1]).toBeCloseTo(0, 5);
+    expect(packed.meshAreaLightSourceFactorsData[2]).toBeCloseTo(1, 5);
+  });
+
   it('does not synthesize an implicit emitter when a readable emissiveMap averages black', () => {
     const scene: Scene = {
       primitives: [

@@ -90,6 +90,12 @@ type PackedMeshAreaTriangle = {
   readonly triB: Vec3;
   readonly triC: Vec3;
   readonly radiance: Vec3;
+  /**
+   * Per-channel source multiplier before authored mesh-area emitter color and
+   * intensity are applied. `1` for scalar emitters; readable emissive-map
+   * texel/quadrature factors for mapped emitters.
+   */
+  readonly sourceFactor: Vec3;
   /** Emitted-power proxy used by the NEE cap and light tree: luminance(Le) · area. */
   readonly power: number;
   /** SHADOW-01 — true ⟺ source mesh-area emitter set castShadow:false.
@@ -141,6 +147,7 @@ export interface PackedEmitterArrays {
   readonly spotLightsData: Float32Array;
   readonly rectAreaLightsData: Float32Array;
   readonly meshAreaLightsData: Float32Array;
+  readonly meshAreaLightSourceFactorsData: Float32Array;
 }
 
 export interface MeshAreaEmitterAdjointRange {
@@ -473,6 +480,20 @@ function packMeshAreaTriangles(
           emissiveIntensity: 1,
         }
       : undefined);
+  const mappedSourceFactorMaterial: MaterialSpec | undefined = mappedRadianceMaterial == null
+    ? undefined
+    : {
+        ...mappedRadianceMaterial,
+        emissive: [1, 1, 1],
+        emissiveIntensity: 1,
+      };
+  const mappedBaseRadiance: Vec3 = implicitMaterial == null
+    ? radiance
+    : [
+        (implicitMaterial.emissive?.[0] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
+        (implicitMaterial.emissive?.[1] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
+        (implicitMaterial.emissive?.[2] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
+      ];
   // SHADOW-01 — carry the emitter's castShadow flag onto every packed triangle.
   const castShadowDisabled = emitter.castShadow === false;
   const packed: PackedMeshAreaTriangle[] = [];
@@ -522,13 +543,14 @@ function packMeshAreaTriangles(
         tuv1B: readonly [number, number],
         tuv1C: readonly [number, number],
         radianceOverride?: readonly [number, number, number],
+        sourceFactorOverride?: readonly [number, number, number],
       ): void => {
         const area = meshTriangleArea(triA, triB, triC);
         if (area < 1e-12) return;
-        const triangleRadiance = radianceOverride ?? (mappedRadianceMaterial == null
-          ? radiance
+        const sourceFactor = sourceFactorOverride ?? (mappedSourceFactorMaterial == null
+          ? [1, 1, 1] as Vec3
           : estimateMaterialSpecEmissiveLeOverTriangle(
-              mappedRadianceMaterial,
+              mappedSourceFactorMaterial,
               tuv0A,
               tuv0B,
               tuv0C,
@@ -536,6 +558,13 @@ function packMeshAreaTriangles(
               tuv1B,
               tuv1C,
             ));
+        const triangleRadiance = radianceOverride ?? (sourceFactor == null
+          ? null
+          : [
+              mappedBaseRadiance[0] * sourceFactor[0],
+              mappedBaseRadiance[1] * sourceFactor[1],
+              mappedBaseRadiance[2] * sourceFactor[2],
+            ]);
         if (
           triangleRadiance == null ||
           luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) <
@@ -548,22 +577,25 @@ function packMeshAreaTriangles(
           triB,
           triC,
           radiance: [triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]],
+          sourceFactor: sourceFactor == null
+            ? [1, 1, 1]
+            : [sourceFactor[0], sourceFactor[1], sourceFactor[2]],
           power: luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]) * area,
           castShadowDisabled,
         });
       };
 
-      const exactTexelHandled = mappedRadianceMaterial == null
+      const exactTexelHandled = mappedSourceFactorMaterial == null
         ? false
         : forEachEmissiveMapTexelSubTriangle(
-            mappedRadianceMaterial,
+            mappedSourceFactorMaterial,
             uv0A,
             uv0B,
             uv0C,
             uv1A,
             uv1B,
             uv1C,
-            (wa, wb, wc, texelRadiance) => {
+            (wa, wb, wc, sourceFactor) => {
               pushTriangle(
                 baryVec3(a, b, c, wa),
                 baryVec3(a, b, c, wb),
@@ -574,7 +606,12 @@ function packMeshAreaTriangles(
                 baryUv2(uv1A, uv1B, uv1C, wa),
                 baryUv2(uv1A, uv1B, uv1C, wb),
                 baryUv2(uv1A, uv1B, uv1C, wc),
-                texelRadiance,
+                [
+                  mappedBaseRadiance[0] * sourceFactor[0],
+                  mappedBaseRadiance[1] * sourceFactor[1],
+                  mappedBaseRadiance[2] * sourceFactor[2],
+                ],
+                sourceFactor,
               );
             },
           );
@@ -886,12 +923,14 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
   }
 
   const meshAreaLights: number[] = [];
+  const meshAreaLightSourceFactors: number[] = [];
   for (const tri of cappedTriangles) {
     pushVec4(meshAreaLights, tri.triA);
     pushVec4(meshAreaLights, tri.triB);
     pushVec4(meshAreaLights, tri.triC);
     // SHADOW-01 — radiance vec4 .w carries castShadowDisabled (0.0 default).
     pushVec4(meshAreaLights, tri.radiance, tri.castShadowDisabled ? 1 : 0);
+    pushVec4(meshAreaLightSourceFactors, tri.sourceFactor);
   }
   const meshAreaLightCount = cappedTriangles.length;
   const meshAreaLightsData = packedFloatData(
@@ -899,6 +938,12 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     meshAreaLightCount,
     MESH_AREA_LIGHT_FLOAT_STRIDE,
     'mesh-area-light',
+  );
+  const meshAreaLightSourceFactorsData = packedFloatData(
+    meshAreaLightSourceFactors,
+    meshAreaLightCount,
+    4,
+    'mesh-area-light-source-factor',
   );
 
   return {
@@ -913,6 +958,7 @@ export function packEmitterArrays(scene: Scene): PackedEmitterArrays {
     spotLightsData,
     rectAreaLightsData,
     meshAreaLightsData,
+    meshAreaLightSourceFactorsData,
   };
 }
 

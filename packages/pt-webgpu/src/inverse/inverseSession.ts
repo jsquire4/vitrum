@@ -924,20 +924,7 @@ function meshAreaEmitterMappedEmissionIssue(
     };
   }
   if (field === 'color') {
-    const hasZeroChannel = emitter.color.some((v) =>
-      !Number.isFinite(v) || Math.abs(v) <= ADJOINT_MAPPED_EMISSION_EPS,
-    );
-    if (!hasZeroChannel) return null;
-    return {
-      message:
-        'mesh-area emitter target uses material emissiveMap radiance with a zero/near-zero color channel; packed-radiance chain-rule ratio is undefined',
-      details: {
-        emitterKind: emitter.kind,
-        meshId: emitter.meshId,
-        unsupportedMaterialFields: ['emissiveMap'],
-        finiteDifferenceReason: 'zero-color-channel-mapped-emission',
-      },
-    };
+    return null;
   }
   return {
     message:

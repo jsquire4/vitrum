@@ -189,17 +189,16 @@ describe('path-replay adjoint emitter gradients — independent CPU oracle', () 
     }
   });
 
-  it('mapped mesh-area gradients use packedRadiance/color and packedRadiance/intensity quotients when nonzero', () => {
+  it('mapped mesh-area gradients use source factors and stay defined at zero color channels', () => {
     const mapScale: Vec3 = [0.35, 0.8, 1.6];
     const factor = Math.max(dot(normal, wi), 0) / 2.9;
-    const packedRadiance = mul(scale(color, intensity), mapScale);
     const dLossDPacked = mul(dLoss, scale(brdf, factor));
     const expectedColor: Vec3 = [
-      dLossDPacked[0] * (packedRadiance[0] / color[0]),
-      dLossDPacked[1] * (packedRadiance[1] / color[1]),
-      dLossDPacked[2] * (packedRadiance[2] / color[2]),
+      dLossDPacked[0] * intensity * mapScale[0],
+      dLossDPacked[1] * intensity * mapScale[1],
+      dLossDPacked[2] * intensity * mapScale[2],
     ];
-    const expectedIntensity = dot(dLossDPacked, scale(packedRadiance, 1 / intensity));
+    const expectedIntensity = dot(dLossDPacked, mul(color, mapScale));
 
     for (let c = 0; c < 3; c++) {
       const plus = perturb(color, c, H);
@@ -213,12 +212,22 @@ describe('path-replay adjoint emitter gradients — independent CPU oracle', () 
       meshEmitterLoss(color, intensity - H, mapScale, factor)
     ) / (2 * H);
     expect(fdIntensity).toBeCloseTo(expectedIntensity, 6);
+
+    const redZero: Vec3 = [0, color[1], color[2]];
+    const fdRedAtZero = (
+      meshEmitterLoss(perturb(redZero, 0, H), intensity, mapScale, factor) -
+      meshEmitterLoss(perturb(redZero, 0, -H), intensity, mapScale, factor)
+    ) / (2 * H);
+    expect(fdRedAtZero).toBeCloseTo(expectedColor[0], 6);
   });
 
   it('the production shader keeps emitter gradients on the closed-form radiance chain', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn scatterEmitterRadianceGradient');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dPackedRadiance_dColor = packedRadiance / emitterColor;');
-    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dPackedRadiance_dIntensity = packedRadiance / emitterIntensity;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('@group(0) @binding(22) var<storage, read>       meshAreaLightSourceFactors');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dPackedRadiance_dColor = sourceFactor * emitterIntensity;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let dPackedRadiance_dIntensity = sourceFactor * emitterColor;');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('packedRadiance / emitterColor');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('packedRadiance / emitterIntensity');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('if (dIrrMean.w <= 1e-6) { continue; }');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * attenuation)');
