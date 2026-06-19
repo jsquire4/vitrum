@@ -253,6 +253,9 @@
 > `navigator.gpu.requestAdapter` failures and no-WebGPU probe-update init
 > failures through structured `walkaround-hybrid.ddgi-*` warnings when an
 > `onWarning` sink is present, preserving console fallback for standalone tests.
+> Same-day DDGI sub-pass hardening: `DDGI` now routes `ProbeUpdatePass`
+> construction warnings through its guarded `_warn` wrapper, so a throwing
+> standalone host warning callback cannot break DDGI construction.
 > Same-day GI-state import follow-up: `importGIState()` grid-layout mismatch
 > rejection now emits structured
 > `walkaround-hybrid.import-gi-state-grid-mismatch` warnings with snapshot/current

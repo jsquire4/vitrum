@@ -34,6 +34,25 @@ afterEach(() => {
 });
 
 describe('DDGI structured error reporting', () => {
+  it('guards ProbeUpdatePass construction warnings from throwing host warning callbacks', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const hostError = new Error('host warning sink failed');
+    const onWarning = vi.fn(() => {
+      throw hostError;
+    });
+
+    expect(() => new DDGI({ maxMaterials: 0, onWarning }).dispose()).not.toThrow();
+
+    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'walkaround-hybrid.ddgi-invalid-max-materials',
+      backend: 'walkaround-hybrid',
+      phase: 'construction',
+      method: 'ProbeUpdatePass.constructor',
+      details: { requested: 0, clampedTo: 1 },
+    }));
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
   it('routes missing-device skips through the structured warning sink', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const warnings: EngineWarning[] = [];

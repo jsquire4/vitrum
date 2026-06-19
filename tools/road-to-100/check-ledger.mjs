@@ -294,6 +294,28 @@ for (const needle of [
   }
 }
 
+const ddgiSource = await readText("packages/walkaround-hybrid/src/ddgi/DDGI.ts");
+for (const needle of [
+  "onWarning: (warning) => this._warn(warning),",
+  "private _warn(warning: EngineWarning): void",
+]) {
+  if (!ddgiSource.includes(needle)) {
+    fail(`DDGI must retain guarded ProbeUpdatePass warning routing: ${needle}`);
+  }
+}
+
+const ddgiErrorReportingTest = await readText("packages/walkaround-hybrid/src/ddgi/__tests__/ddgiErrorReporting.test.ts");
+for (const needle of [
+  "guards ProbeUpdatePass construction warnings from throwing host warning callbacks",
+  "walkaround-hybrid.ddgi-invalid-max-materials",
+  "expect(() => new DDGI({ maxMaterials: 0, onWarning }).dispose()).not.toThrow();",
+  "expect(warnSpy).not.toHaveBeenCalled();",
+]) {
+  if (!ddgiErrorReportingTest.includes(needle)) {
+    fail(`DDGI warning-routing tests must pin guarded sub-pass warning behavior: ${needle}`);
+  }
+}
+
 const hybridFrameOrchestrator = await readText("packages/walkaround-hybrid/src/HybridEngineFrameOrchestrator.ts");
 for (const needle of [
   "deps.subsystems.rc.dispatchFrame({",

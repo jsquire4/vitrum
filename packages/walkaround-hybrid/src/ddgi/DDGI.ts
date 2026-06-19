@@ -138,7 +138,7 @@ export class DDGI {
     this._pass  = new ProbeUpdatePass(this._bvh, this._grid, {
       debug: this._debug,
       ...(opts.maxMaterials !== undefined ? { maxMaterials: opts.maxMaterials } : {}),
-      ...(this._onWarning !== undefined ? { onWarning: this._onWarning } : {}),
+      onWarning: (warning) => this._warn(warning),
     });
   }
 
