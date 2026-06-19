@@ -346,12 +346,11 @@ export function packTextureAtlas(
   return { data, dim, layerCount, layerOf, layerOfByColorSpace };
 }
 
-/** Upload the atlas as an RGBA32F TEXTURE_2D_ARRAY (NEAREST, ClampToEdge). */
-export function uploadTextureAtlas(
+function checkedTextureAtlasLayerCapacity(
   gl: WebGL2RenderingContext,
   atlas: TextureAtlas,
   opts?: { readonly layerCapacity?: number },
-): WebGLTexture {
+): number {
   // Size guards: exceed MAX_TEXTURE_SIZE or MAX_ARRAY_TEXTURE_LAYERS and the
   // texImage3D silently fails on most drivers — throw an actionable error first.
   if (gl.isContextLost()) {
@@ -378,13 +377,17 @@ export function uploadTextureAtlas(
         `${atlas.layerCount} live layers on a device with ${maxLayers} maximum layers.`,
     );
   }
-  const tex = gl.createTexture();
-  if (tex == null) throw new Error('pt-webgl2: WebGL context lost — cannot create material texture atlas');
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+  return layerCapacity;
+}
+
+function configureTextureAtlasParameters(gl: WebGL2RenderingContext): void {
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+}
+
+function textureAtlasUploadData(atlas: TextureAtlas, layerCapacity: number): Float32Array {
   const uploadData = layerCapacity === atlas.layerCount
     ? atlas.data
     : (() => {
@@ -392,11 +395,47 @@ export function uploadTextureAtlas(
         expanded.set(atlas.data);
         return expanded;
       })();
+  return uploadData;
+}
+
+function uploadTextureAtlasStorage(
+  gl: WebGL2RenderingContext,
+  atlas: TextureAtlas,
+  layerCapacity: number,
+): void {
+  const uploadData = textureAtlasUploadData(atlas, layerCapacity);
   gl.texImage3D(
     gl.TEXTURE_2D_ARRAY, 0, gl.RGBA32F, atlas.dim, atlas.dim, layerCapacity,
     0, gl.RGBA, gl.FLOAT, uploadData,
   );
+}
+
+/** Upload the atlas as an RGBA32F TEXTURE_2D_ARRAY (NEAREST, ClampToEdge). */
+export function uploadTextureAtlas(
+  gl: WebGL2RenderingContext,
+  atlas: TextureAtlas,
+  opts?: { readonly layerCapacity?: number },
+): WebGLTexture {
+  const layerCapacity = checkedTextureAtlasLayerCapacity(gl, atlas, opts);
+  const tex = gl.createTexture();
+  if (tex == null) throw new Error('pt-webgl2: WebGL context lost — cannot create material texture atlas');
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
+  configureTextureAtlasParameters(gl);
+  uploadTextureAtlasStorage(gl, atlas, layerCapacity);
   return tex;
+}
+
+export function refreshTextureAtlasStorage(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  atlas: TextureAtlas,
+  opts?: { readonly layerCapacity?: number },
+): number {
+  const layerCapacity = checkedTextureAtlasLayerCapacity(gl, atlas, opts);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+  configureTextureAtlasParameters(gl);
+  uploadTextureAtlasStorage(gl, atlas, layerCapacity);
+  return layerCapacity;
 }
 
 export function updateTextureAtlasLayers(

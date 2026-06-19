@@ -883,7 +883,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       } as never);
 
       expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
       expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
       expect(texImage3D.mock.calls.at(-1)?.[3]).toBe(2);
       expect(texImage3D.mock.calls.at(-1)?.[5]).toBe(2);
@@ -962,7 +962,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       } as never);
 
       expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
       expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
       expect(texImage3D.mock.calls.at(-1)?.[3]).toBe(1);
       expect(texImage3D.mock.calls.at(-1)?.[5]).toBe(4);

@@ -17,6 +17,7 @@ import {
 } from './uploadSceneTextures.js';
 import {
   packTextureAtlas,
+  refreshTextureAtlasStorage,
   textureAtlasLayerCapacity,
   updateTextureAtlasLayers,
   uploadTextureAtlas,
@@ -426,12 +427,25 @@ export function tryFastPathMaterialMutation(
       materialAtlasLayerCount = atlas.layerCount;
     } else {
       const reason = materialAtlasRefreshReason(current, atlas);
-      const uploadedAtlas = uploadAtlasWithCapacity(gl, atlas);
-      atlasTexture = uploadedAtlas.texture;
+      const refreshedCapacity = current.textures2DArray != null
+        ? refreshTextureAtlasStorage(
+            gl,
+            current.textures2DArray,
+            atlas,
+            {
+              layerCapacity: textureAtlasLayerCapacity(
+                atlas.layerCount,
+                gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number,
+              ),
+            },
+          )
+        : null;
+      const uploadedAtlas = refreshedCapacity == null ? uploadAtlasWithCapacity(gl, atlas) : null;
+      atlasTexture = current.textures2DArray ?? uploadedAtlas?.texture ?? null;
       materialAtlasDim = atlas.dim;
       materialAtlasLayerCount = atlas.layerCount;
-      materialAtlasLayerCapacity = uploadedAtlas.capacity;
-      deleteOldAtlas = current.textures2DArray != null;
+      materialAtlasLayerCapacity = refreshedCapacity ?? uploadedAtlas?.capacity ?? 0;
+      deleteOldAtlas = false;
       if (reason != null) {
         pushMaterialAtlasRefreshWarning(
           structuredWarnings,
@@ -439,7 +453,7 @@ export function tryFastPathMaterialMutation(
           current,
           atlas,
           reason,
-          uploadedAtlas.capacity,
+          materialAtlasLayerCapacity,
         );
       }
     }
