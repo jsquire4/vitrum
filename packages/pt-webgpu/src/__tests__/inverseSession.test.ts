@@ -803,7 +803,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([0.1, 0.2, 0.3, 1]) } },
       primitives: fake.scene.primitives.map((pr) =>
         pr.id === 'panel'
-          ? { ...pr, material: { ...pr.material, shadingModel: 'unlit' as const } }
+          ? { ...pr, material: { ...pr.material, shadingModel: 'unlit' as const, alphaMode: 'opaque' as const, opacity: 0.25 } }
           : pr,
       ),
     };
@@ -2270,6 +2270,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
+      emitters: [],
       environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
       primitives: fake.scene.primitives.map((pr) =>
         pr.id === 'panel'
@@ -2473,6 +2474,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
+      emitters: [],
       environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
     };
     const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
@@ -2483,7 +2485,34 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     });
     expect(session.method).toBe('path-replay');
     expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-lighting',
+      code: 'path-replay-unsupported-light-selection',
+    }));
+    session.dispose();
+  });
+
+  it('degrades material path-replay when multiple direct-light candidates require selection replay', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-light-selection',
+      path: 'materials.panel.baseColor',
+      details: expect.objectContaining({
+        candidateCount: 2,
+        candidates: expect.arrayContaining([
+          'emitter:lamp:point',
+          'environment:hdri',
+        ]),
+      }),
     }));
     session.dispose();
   });

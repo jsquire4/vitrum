@@ -1518,6 +1518,44 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('creates the first mesh-light texture during resident primitive list mutations', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triListScene(5));
+      const initialTextureUploads = createTexture.mock.calls.length;
+
+      e.addPrimitive?.({
+        ...tri('tri-5', 10),
+        material: {
+          ...GREY,
+          emissive: [1, 0.5, 0.25],
+          emissiveIntensity: 2,
+        },
+      });
+
+      expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild')).toHaveLength(0);
+      expect(e._debugSceneTex?.meshLightCount).toBe(2);
+      expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
+      expect(e._debugSceneTex?.totalEmissivePower).toBeGreaterThan(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBeGreaterThanOrEqual(1);
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-list-fallback-rebuild') ||
+        m.includes('targeted-primitive-list-splice'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('keeps atlas-backed dimension-stable primitive list mutations resident', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

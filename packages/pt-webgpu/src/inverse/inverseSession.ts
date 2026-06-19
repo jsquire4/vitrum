@@ -812,7 +812,7 @@ function diagnosePathReplaySlot(
     if (lightingIssue != null) {
       return [{
         severity: 'info',
-        code: 'path-replay-unsupported-lighting',
+        code: lightingIssue.code ?? 'path-replay-unsupported-lighting',
         path,
         message:
           `[vitrum/pt-webgpu] InverseSession path "${path}" needs the direct-light replay domain, ` +
@@ -899,7 +899,7 @@ function diagnosePathReplayEmitterSlot(
   if (lightingIssue != null) {
     return [{
       severity: 'info',
-      code: 'path-replay-unsupported-lighting',
+      code: lightingIssue.code ?? 'path-replay-unsupported-lighting',
       path,
       message:
         `[vitrum/pt-webgpu] InverseSession path "${path}" needs the direct-light replay domain, ` +
@@ -1433,7 +1433,11 @@ function pathReplayTargetRequiresLighting(field: string, material: MaterialSpec)
 
 function pathReplayLightingIssue(
   scene: Scene,
-): { message: string; details: Record<string, string | number | readonly string[]> } | null {
+): {
+  code?: InverseSessionDiagnostic['code'];
+  message: string;
+  details: Record<string, string | number | readonly string[]>;
+} | null {
   const unsupported = (scene.emitters as unknown as ReadonlyArray<{
     readonly id: string;
     readonly kind: string;
@@ -1446,23 +1450,76 @@ function pathReplayLightingIssue(
     e.kind !== 'disc-area' &&
     e.kind !== 'mesh-area'
   );
-  if (unsupported == null) return null;
-  return {
-    message: `emitter "${unsupported.id}" (${unsupported.kind}) is outside the deterministic direct-light replay domain`,
-    details: {
-      emitterId: unsupported.id,
-      emitterKind: unsupported.kind,
-      ...(unsupported.kind === 'directional' && unsupported.angularDiameter != null
-        ? { angularDiameter: unsupported.angularDiameter }
-        : {}),
-    },
-  };
+  if (unsupported != null) {
+    return {
+      message: `emitter "${unsupported.id}" (${unsupported.kind}) is outside the deterministic direct-light replay domain`,
+      details: {
+        emitterId: unsupported.id,
+        emitterKind: unsupported.kind,
+        ...(unsupported.kind === 'directional' && unsupported.angularDiameter != null
+          ? { angularDiameter: unsupported.angularDiameter }
+          : {}),
+      },
+    };
+  }
+
+  const candidates = directLightCandidateLabels(scene);
+  if (candidates.length > 1) {
+    return {
+      code: 'path-replay-unsupported-light-selection',
+      message:
+        'scene has multiple contributing direct-light candidates; the scoped adjoint sums the replay domain ' +
+        'and does not mirror the forward light-selection inverse-pdf/MIS choice yet',
+      details: {
+        candidateCount: candidates.length,
+        candidates,
+      },
+    };
+  }
+  return null;
+}
+
+function directLightCandidateLabels(scene: Scene): readonly string[] {
+  const candidates: string[] = [];
+  for (const emitter of scene.emitters as unknown as ReadonlyArray<{
+    readonly id?: string | number;
+    readonly kind: string;
+    readonly color?: readonly number[];
+    readonly intensity?: number;
+  }>) {
+    if (!directEmitterContributes(emitter)) continue;
+    candidates.push(`emitter:${String(emitter.id ?? '(unnamed)')}:${emitter.kind}`);
+  }
+  if (environmentContributesDirectLight(scene.environment as unknown as {
+    readonly kind?: string;
+    readonly intensity?: number;
+  } | undefined)) {
+    candidates.push(`environment:${scene.environment.kind}`);
+  }
+  return candidates;
+}
+
+function directEmitterContributes(emitter: {
+  readonly color?: readonly number[];
+  readonly intensity?: number;
+}): boolean {
+  const intensity = emitter.intensity ?? 1;
+  if (!(intensity > 0)) return false;
+  const color = emitter.color ?? [1, 1, 1];
+  return (color[0] ?? 0) > 0 || (color[1] ?? 0) > 0 || (color[2] ?? 0) > 0;
+}
+
+function environmentContributesDirectLight(environment: {
+  readonly kind?: string;
+  readonly intensity?: number;
+} | undefined): boolean {
+  if (environment == null || environment.kind == null || environment.kind === 'none') return false;
+  return (environment.intensity ?? 1) > 0;
 }
 
 function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean {
   if (m.shadingModel !== 'unlit') return false;
-  if (m.alphaMode != null && m.alphaMode !== 'opaque') return false;
-  if (m.opacity != null && m.opacity < 1) return false;
+  if ((m.alphaMode ?? 'opaque') !== 'opaque') return false;
   if ((m.transmission ?? 0) > 1e-6) return false;
   if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
   if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;

@@ -207,6 +207,32 @@ function sameNumberSet(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean 
   return true;
 }
 
+function updateResidentMeshLightTexture(
+  gl: WebGL2RenderingContext,
+  current: UploadedSceneTextures,
+  nextMeshLightsData: ReturnType<typeof packMeshAreaLights>,
+  deleteOldTextures: (WebGLTexture | null)[],
+): WebGLTexture | null {
+  if (nextMeshLightsData.data == null) {
+    if (current.meshLights != null) {
+      deleteOldTextures.push(current.meshLights);
+    }
+    return null;
+  }
+
+  const currentMeshLightDim = squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS);
+  if (current.meshLights != null && currentMeshLightDim === nextMeshLightsData.dim) {
+    updateRgba32f(gl, current.meshLights, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
+    return current.meshLights;
+  }
+
+  const meshLights = uploadRgba32f(gl, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
+  if (current.meshLights != null) {
+    deleteOldTextures.push(current.meshLights);
+  }
+  return meshLights;
+}
+
 function materialWithCastShadow(primitive: Extract<ScenePrimitive, { material: MaterialSpec }>): MaterialSpec {
   return {
     ...primitive.material,
@@ -392,12 +418,10 @@ function canUpdateAtlasInPlace(
 }
 
 function canRewriteMeshLightsResident(
-  current: UploadedSceneTextures,
-  meshLightsData: ReturnType<typeof packMeshAreaLights>,
+  _current: UploadedSceneTextures,
+  _meshLightsData: ReturnType<typeof packMeshAreaLights>,
 ): boolean {
-  if (current.meshLights == null) return meshLightsData.data == null;
-  if (meshLightsData.data == null) return true;
-  return squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS) === meshLightsData.dim;
+  return true;
 }
 
 function bvhStorageDimsMatch(currentMerged: WorldSpaceMergeResult, nextBvh: BvhTextureData): boolean {
@@ -660,21 +684,9 @@ export function tryFastPathGeometryMutation(
         updateRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
       }
 
-      const nextMeshLightsData = refit.meshLightsData;
-      const currentMeshLightDim = squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS);
-      let meshLights = current.meshLights;
       const deleteOldTextures: (WebGLTexture | null)[] = [];
-      if (nextMeshLightsData.data == null) {
-        if (current.meshLights != null) {
-          meshLights = null;
-          deleteOldTextures.push(current.meshLights);
-        }
-      } else if (current.meshLights != null && currentMeshLightDim === nextMeshLightsData.dim) {
-        updateRgba32f(gl, current.meshLights, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
-      } else {
-        meshLights = uploadRgba32f(gl, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
-        deleteOldTextures.push(current.meshLights);
-      }
+      const nextMeshLightsData = refit.meshLightsData;
+      const meshLights = updateResidentMeshLightTexture(gl, current, nextMeshLightsData, deleteOldTextures);
 
       return {
         textures: withTextureReplacementsForGl(gl, current, {
@@ -741,14 +753,8 @@ export function tryFastPathGeometryMutation(
         'vertex attributes',
       );
 
-      let meshLights = current.meshLights;
       const deleteOldTextures: (WebGLTexture | null)[] = [];
-      if (current.meshLights != null && built.meshLightsData.data == null) {
-        meshLights = null;
-        deleteOldTextures.push(current.meshLights);
-      } else if (current.meshLights != null && built.meshLightsData.data != null) {
-        updateRgba32f(gl, current.meshLights, built.meshLightsData.data, built.meshLightsData.dim, 'mesh-area lights');
-      }
+      const meshLights = updateResidentMeshLightTexture(gl, current, built.meshLightsData, deleteOldTextures);
 
       return {
         textures: withTextureReplacementsForGl(gl, current, {
@@ -911,13 +917,7 @@ export function tryFastPathPrimitiveListMutation(
       built.attrData.layers,
       'vertex attributes',
     );
-    let meshLights = current.meshLights;
-    if (current.meshLights != null && built.meshLightsData.data == null) {
-      meshLights = null;
-      deleteOldTextures.push(current.meshLights);
-    } else if (current.meshLights != null && built.meshLightsData.data != null) {
-      updateRgba32f(gl, current.meshLights, built.meshLightsData.data, built.meshLightsData.dim, 'mesh-area lights');
-    }
+    const meshLights = updateResidentMeshLightTexture(gl, current, built.meshLightsData, deleteOldTextures);
 
     let textures2DArray = current.textures2DArray;
     let materialAtlasDim = 0;
