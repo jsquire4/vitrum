@@ -136,6 +136,7 @@ export interface InversePathReplayRenderContext {
   readonly bdpt?: boolean;
   readonly restirPtReuse?: boolean;
   readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
+  readonly directLighting?: 'sampled-selection' | 'summed-expectation';
 }
 
 export interface InversePathReplayGeometryCapabilities {
@@ -463,6 +464,7 @@ export class PtWebgpuInverseSession implements InverseSession {
             slot,
             iridescenceOptimizedPrimitiveIds,
             pathReplayGeometryCapabilities,
+            pathReplayRenderContext,
           ).length === 0,
         )
       : this.#slots.map(() => false);
@@ -690,6 +692,7 @@ function collectPathReplayDiagnostics(
       slot,
       options.iridescenceOptimizedPrimitiveIds,
       options.geometryCapabilities,
+      options.renderContext,
     ));
   }
   return diagnostics;
@@ -736,11 +739,12 @@ function diagnosePathReplaySlot(
   slot: ParamSlot,
   iridescenceOptimizedPrimitiveIds: ReadonlySet<string>,
   geometryCapabilities: InversePathReplayGeometryCapabilities,
+  renderContext: InversePathReplayRenderContext,
 ): InverseSessionDiagnostic[] {
   const path = slot.param.path;
   const target = slot.target;
   if (target.domain !== 'materials') {
-    return diagnosePathReplayEmitterSlot(scene, slot, geometryCapabilities);
+    return diagnosePathReplayEmitterSlot(scene, slot, geometryCapabilities, renderContext);
   }
   if (!ADJOINT_ELIGIBLE_FIELDS.has(target.field)) {
     const finiteDifferenceOnlyIssue = pathReplayFiniteDifferenceOnlyFieldIssue(target.field);
@@ -808,7 +812,7 @@ function diagnosePathReplaySlot(
   }
 
   if (pathReplayTargetRequiresLighting(target.field, prim.material)) {
-    const lightingIssue = pathReplayLightingIssue(scene);
+    const lightingIssue = pathReplayLightingIssue(scene, renderContext);
     if (lightingIssue != null) {
       return [{
         severity: 'info',
@@ -864,6 +868,7 @@ function diagnosePathReplayEmitterSlot(
   scene: Scene,
   slot: ParamSlot,
   geometryCapabilities: InversePathReplayGeometryCapabilities,
+  renderContext: InversePathReplayRenderContext,
 ): InverseSessionDiagnostic[] {
   const path = slot.param.path;
   const target = slot.target;
@@ -895,7 +900,7 @@ function diagnosePathReplayEmitterSlot(
     }];
   }
 
-  const lightingIssue = pathReplayLightingIssue(scene);
+  const lightingIssue = pathReplayLightingIssue(scene, renderContext);
   if (lightingIssue != null) {
     return [{
       severity: 'info',
@@ -1433,6 +1438,7 @@ function pathReplayTargetRequiresLighting(field: string, material: MaterialSpec)
 
 function pathReplayLightingIssue(
   scene: Scene,
+  context: InversePathReplayRenderContext,
 ): {
   code?: InverseSessionDiagnostic['code'];
   message: string;
@@ -1464,15 +1470,17 @@ function pathReplayLightingIssue(
   }
 
   const candidates = directLightCandidateLabels(scene);
-  if (candidates.length > 1) {
+  if (candidates.length > 1 && context.directLighting !== 'summed-expectation') {
     return {
       code: 'path-replay-unsupported-light-selection',
       message:
-        'scene has multiple contributing direct-light candidates; the scoped adjoint sums the replay domain ' +
-        'and does not mirror the forward light-selection inverse-pdf/MIS choice yet',
+        'scene has multiple contributing direct-light candidates, but the forward context uses sampled ' +
+        'light selection; the scoped adjoint sums the replay domain and only matches baselines that also ' +
+        'sum direct-light expectations',
       details: {
         candidateCount: candidates.length,
         candidates,
+        directLighting: context.directLighting ?? 'sampled-selection',
       },
     };
   }

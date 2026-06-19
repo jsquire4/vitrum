@@ -2000,6 +2000,7 @@ class PTEngineWebGPU implements Engine {
         bdpt: this.#bdpt && this.#traceTier === 'full',
         restirPtReuse: this.#restirPtReuse,
         causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
+        directLighting: 'sampled-selection',
       }),
       getPathReplayGeometryCapabilities: () => ({
         supportedAnalyticShapes: this.#supportedAnalyticShapes(),

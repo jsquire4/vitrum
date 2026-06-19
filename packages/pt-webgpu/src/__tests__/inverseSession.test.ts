@@ -2508,11 +2508,35 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       path: 'materials.panel.baseColor',
       details: expect.objectContaining({
         candidateCount: 2,
+        directLighting: 'sampled-selection',
         candidates: expect.arrayContaining([
           'emitter:lamp:point',
           'environment:hdri',
         ]),
       }),
+    }));
+    session.dispose();
+  });
+
+  it('keeps material path-replay for multiple direct-light candidates when the forward context sums expectations', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayRenderContext: () => ({ directLighting: 'summed-expectation' }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-light-selection',
     }));
     session.dispose();
   });
