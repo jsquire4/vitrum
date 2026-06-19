@@ -231,6 +231,7 @@ const preserveRawImageForTextureDecode: DecodeImageFn = (
 
 const SPEC_GLOSS_ALPHA_ISSUE =
   'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha';
+const EMISSIVE_MAP_TEXEL_PDF_ISSUE = 'emissiveMap.texelPdf';
 const TEXTURE_READINESS_ISSUE_PREFIX = 'texture-readiness:';
 const TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES = new Set([
   'KHR_texture_basisu',
@@ -324,6 +325,7 @@ function reconcileBackendCompatibilityAfterTextureDecode(
       ) {
         return false;
       }
+      if (emissiveTexelPdfIssueSatisfiedByDecode(issue, candidate, report)) return false;
       if (textureSourceHookIssueSatisfiedByDecode(issue, report)) return false;
       return true;
     });
@@ -333,6 +335,28 @@ function reconcileBackendCompatibilityAfterTextureDecode(
     );
   });
   return rerankBackendCompatibility(reconciled, backendPolicy);
+}
+
+function emissiveTexelPdfIssueSatisfiedByDecode(
+  issue: GltfCompatibilityIssue,
+  candidate: GltfBackendCompatibility,
+  report: GltfTextureDecodeReport,
+): boolean {
+  if (
+    issue.name !== EMISSIVE_MAP_TEXEL_PDF_ISSUE ||
+    issue.support !== 'approximate' ||
+    (candidate.profileId !== 'pt-webgl2' && candidate.profileId !== 'pt-webgpu')
+  ) {
+    return false;
+  }
+  const entries = report.entries.filter((entry) => entry.materialField === 'emissiveMap');
+  if (entries.length === 0) return false;
+  const key = textureReadinessKey(candidate);
+  if (key == null) return false;
+  return entries.every((entry) =>
+    (entry.handleKind === 'pixel-data' || entry.handleKind === 'data-texture') &&
+    entry.backendReadiness[key] === 'ready'
+  );
 }
 
 function textureSourceHookIssueSatisfiedByDecode(

@@ -2203,6 +2203,58 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
   });
 
+  it('clears emissiveTexture texel-PDF degradation for PT backends after CPU texture decode', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.materials![0] = {
+      emissiveFactor: [1, 1, 1],
+      emissiveTexture: { index: 0 },
+    };
+    const preDecode = await loadGltfAsset(gltf, { buffers });
+    const preDecodePtWebgl2 = preDecode.backendCompatibility.find((entry) =>
+      entry.profileId === 'pt-webgl2'
+    );
+    expect(preDecodePtWebgl2?.issues.some((issue) => issue.name === 'emissiveMap.texelPdf')).toBe(true);
+
+    const decodePixelsImpl: DecodeGltfTexturePixelsFn = () => ({
+      width: 2,
+      height: 2,
+      data: new Uint8Array([
+        255, 0, 0, 255,
+        0, 255, 0, 255,
+        0, 0, 255, 255,
+        255, 255, 255, 255,
+      ]),
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: 'srgb',
+    });
+    const decodePixels = vi.fn(decodePixelsImpl);
+
+    const decoded = await loadGltfAndDecodeTextures(gltf, { buffers, decodePixels });
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(decoded.textureDecodeReport.entries).toContainEqual(expect.objectContaining({
+      materialField: 'emissiveMap',
+      handleKind: 'pixel-data',
+      backendReadiness: {
+        ptWebgl2: 'ready',
+        ptWebgpu: 'ready',
+        walkaroundHybrid: 'ready',
+      },
+    }));
+
+    const ptWebgl2 = decoded.backendCompatibility.find((entry) => entry.profileId === 'pt-webgl2');
+    const ptWebgpu = decoded.backendCompatibility.find((entry) => entry.profileId === 'pt-webgpu');
+    const walkaround = decoded.backendCompatibility.find((entry) => entry.profileId === 'walkaround-hybrid');
+    expect(ptWebgl2?.issues.some((issue) => issue.name === 'emissiveMap.texelPdf')).toBe(false);
+    expect(ptWebgpu?.issues.some((issue) => issue.name === 'emissiveMap.texelPdf')).toBe(false);
+    expect(walkaround?.issues).toContainEqual(expect.objectContaining({
+      category: 'material',
+      name: 'emissiveMap.texelPdf',
+      support: 'approximate',
+    }));
+    expect((ptWebgl2?.approximateCount ?? 0)).toBeLessThan(preDecodePtWebgl2?.approximateCount ?? 0);
+  });
+
   it('reports material textures that require UV sets beyond the core Scene contract', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.materials![0]!.pbrMetallicRoughness!.baseColorTexture = { index: 0, texCoord: 2 };
