@@ -91,6 +91,39 @@ const items = await readText("items_to_fix.md");
 if (!items.includes("OPEN ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONCILIATION")) {
   fail("items_to_fix.md must retain the current open-items/provenance markers");
 }
+if (items.includes("point+rect direct lighting with no spot/mesh-area/env/indirect terms")) {
+  fail("items_to_fix.md contains the stale H14 adjoint-lighting residual");
+}
+if (!items.includes("point, spot, rect/disc, mesh-area, and HDRI/environment direct-light replay")) {
+  fail("items_to_fix.md must retain the reconciled H14 adjoint-lighting source summary");
+}
+
+const adjointPass = await readText("packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts");
+for (const needle of [
+  "spotLights",
+  "meshAreaLights",
+  "rectAreaLights",
+  "sampleAdjointEnvironmentImportance",
+  "ADJOINT_FIELD_ENV_MAP_INTENSITY",
+  "ADJOINT_EMITTER_TARGET_MESH",
+]) {
+  if (!adjointPass.includes(needle)) {
+    fail(`pt-webgpu adjoint pass must retain ${needle} while H14 is reconciled`);
+  }
+}
+
+const adjointHarnessTest = await readText("packages/pt-webgpu/src/__tests__/adjointHarness.test.ts");
+for (const needle of [
+  "spotLights",
+  "meshAreaLights",
+  "sampleAdjointEnvironmentImportance",
+  "envMapIntensity",
+  "ADJOINT_EMITTER_TARGET_MESH",
+]) {
+  if (!adjointHarnessTest.includes(needle)) {
+    fail(`pt-webgpu adjoint harness test must pin ${needle}`);
+  }
+}
 
 const packageJson = JSON.parse(await readText(PACKAGE_PATH));
 const scripts = packageJson.scripts ?? {};
