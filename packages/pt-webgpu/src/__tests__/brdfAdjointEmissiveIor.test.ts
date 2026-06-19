@@ -231,6 +231,18 @@ function makeScene(): Scene {
   };
 }
 
+function makeSceneWithoutIridescence(): Scene {
+  const scene = makeScene();
+  return {
+    ...scene,
+    primitives: scene.primitives.map((primitive) =>
+      primitive.id === 'panel'
+        ? { ...primitive, material: { ...primitive.material, iridescence: 0 } }
+        : primitive,
+    ),
+  };
+}
+
 function makeHooks(scene: Scene, withAdjoint: boolean): InverseEngineHooks {
   let live = scene;
   const hooks: InverseEngineHooks = {
@@ -378,7 +390,7 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     session.dispose();
   });
 
-  it('keeps extension-lobe params on finite-difference even when path-replay is requested', () => {
+  it('keeps non-iridescence BRDF params on finite-difference when the material has a coupled iridescence lobe', () => {
     const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
       target,
       parameters: [
@@ -389,6 +401,28 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     });
 
     expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-material',
+      path: 'materials.panel.clearcoat',
+      details: expect.objectContaining({ field: 'iridescence', value: 0.2 }),
+    }));
+    session.dispose();
+  });
+
+  it('keeps clean extension-lobe BRDF params on path-replay when no coupled iridescence lobe is present', () => {
+    const session = new PtWebgpuInverseSession(makeHooks(makeSceneWithoutIridescence(), true), {
+      target,
+      parameters: [
+        { path: 'materials.panel.clearcoat', kind: 'scalar' },
+        { path: 'materials.panel.specularColor', kind: 'rgb' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-material',
+    }));
     session.dispose();
   });
 });

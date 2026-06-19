@@ -160,6 +160,11 @@ const shaders = [];
     wgsl: composePtWebgpuCompositeTraceWgsl(false, { sampling: "sobol" }),
     entryPoint: "main",
   });
+  shaders.push({
+    name: "pt-webgpu/composite-trace-bdpt-sobol",
+    wgsl: composePtWebgpuCompositeTraceWgsl(true, { sampling: "sobol" }),
+    entryPoint: "main",
+  });
 
   // Seed-blit kernel (progressive walkaround→PT handoff)
   shaders.push({

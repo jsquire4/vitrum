@@ -131,11 +131,13 @@
 > directional, point, spot, rect-area, disc-area, and uncapped explicit mesh-area
 > lights by scattering through the scoped direct-light BRDF and the matching
 > light attenuation/geometric factors; the finite-area replay now samples
-> rect/disc/mesh surfaces with area PDFs instead of center points. Soft-sun,
-> capped/reordered or unmapped mesh-area emitter targets, exact texel-PDF mesh
-> emission, forward light-selection MIS parity, environment/indirect transport,
-> and unreplayed receiver material domains still downgrade with structured
-> diagnostics. Latest diagnostic cleanup: finite-
+> rect/disc/mesh surfaces with area PDFs instead of center points, and source
+> tests keep soft directional, mapped mesh-area, zero-channel mapped mesh-area,
+> and capped mesh-area targets on path replay. Remaining scoped inverse tails
+> are exact texel-PDF mesh emission, forward light-selection MIS parity under
+> sampled multi-light selection, environment/indirect transport, and unreplayed
+> receiver material domains, which still downgrade with structured diagnostics.
+> Latest diagnostic cleanup: finite-
 > difference-only inverse fields now distinguish transport tails
 > (`ior`/`transmission`/`thickness`/`attenuationColor`/`attenuationDistance`/
 > `dispersionAbbeNumber`/`scatteringCoefficient`/`scatteringAnisotropy`/

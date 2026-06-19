@@ -3,6 +3,8 @@ import type { EngineWarning } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { GpuResources } from '../gpuResources.js';
 import {
+  composePtWebgpuCompositeTraceWgsl,
+  composeSppmPhotonPassWgsl,
   composePtWebgpuTraceWgsl,
 } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import {
@@ -59,13 +61,16 @@ describe('pt-webgpu sampling options', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('ptSobolNextU32');
   });
 
-  it('composes the binding-free Sobol RNG for full, lite, and ReSTIR-PT paths when requested', () => {
+  it('composes the binding-free Sobol RNG for full, lite, composite, SPPM, and ReSTIR-PT paths when requested', () => {
     const full = composePtWebgpuTraceWgsl(false, { sampling: 'sobol' });
     const lite = composePtWebgpuTraceLiteWgsl({ sampling: 'sobol' });
+    const compositeSss = composePtWebgpuCompositeTraceWgsl(false, { sampling: 'sobol' });
+    const compositeBdpt = composePtWebgpuCompositeTraceWgsl(true, { sampling: 'sobol' });
+    const sppmPhoton = composeSppmPhotonPassWgsl({ sampling: 'sobol' });
     const restirProducer = composeRestirPtProducerWgsl({ sampling: 'sobol' });
     const restirCombined = composePtWebgpuReuseWgsl({ sampling: 'sobol' });
 
-    for (const wgsl of [full, lite, restirProducer, restirCombined]) {
+    for (const wgsl of [full, lite, compositeSss, compositeBdpt, sppmPhoton, restirProducer, restirCombined]) {
       expect(wgsl).toContain('fn ptSobolNextU32(state: ptr<function, u32>) -> u32');
       expect(wgsl).toContain('fn ptSobolNestedUniformScrambleBase2(x: u32, seed: u32) -> u32');
       expect(wgsl).toContain('fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32');

@@ -4,6 +4,7 @@ import { RESTIR_CAST_PRIMARY_WGSL } from '../shaders/restirCastPrimary.wgsl.js';
 import { RIS_WGSL } from '../shaders/ris.wgsl.js';
 import { RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
 import { buildRisGiNrcModule } from '../shaders/risGiNrc.wgsl.js';
+import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shaders/shadingTerms.wgsl.js';
 
 const nrcGiModule = buildRisGiNrcModule({
@@ -22,6 +23,7 @@ describe('transparent alpha transport contract', () => {
       ['ris-di', RIS_WGSL],
       ['ris-gi', RIS_GI_WGSL],
       ['ris-gi-nrc', nrcGiModule.source],
+      ['shade-primary', SHADE_WGSL],
     ] as const) {
       expect(shader, name).toContain('traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(');
       expect(shader, name).not.toMatch(/\btraceSceneFirstHitAlphaMaskTextured\(/);
