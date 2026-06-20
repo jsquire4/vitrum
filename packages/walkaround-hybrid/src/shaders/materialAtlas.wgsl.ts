@@ -142,7 +142,7 @@ fn sampleMaterialScalarMap(triIndex: u32, slot: u32, channel: u32, uv0: vec2f, u
   if (texelColor.x < 0.0) {
     return fallback;
   }
-  return clamp(materialMapChannel(texelColor, channel), 0.0, 1.0);
+  return clamp(fallback * materialMapChannel(texelColor, channel), 0.0, 1.0);
 }
 
 fn sampleAoMapFactor(triIndex: u32, materialWord: u32, uv0: vec2f, uv1: vec2f) -> f32 {

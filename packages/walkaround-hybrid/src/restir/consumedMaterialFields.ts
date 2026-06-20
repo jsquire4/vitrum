@@ -69,11 +69,11 @@
  *  bumpScale              stored in bump-map atlas metadata and applied to the
  *                           finite-difference height gradient.
  *  roughnessMap           same material atlas + metadata path; shade.wgsl
- *                           samples the glTF G channel and overrides the
- *                           scalar roughness for visible BRDF terms.
+ *                           samples the glTF G channel and multiplies the
+ *                           scalar roughness factor for visible BRDF terms.
  *  metallicMap            same material atlas + metadata path; shade.wgsl
- *                           samples the glTF B channel and overrides the
- *                           scalar metallic value for visible BRDF terms.
+ *                           samples the glTF B channel and multiplies the
+ *                           scalar metallic factor for visible BRDF terms.
  *  aoMap                  same material atlas + metadata path; shade.wgsl
  *                           samples the glTF R channel and multiplies it into
  *                           the runtime GTAO factor for diffuse lighting.

@@ -630,7 +630,7 @@ fn ddgiSampleMaterialScalarMap(
   if (texel.x < 0.0) {
     return fallback;
   }
-  return clamp(ddgiMaterialMapChannel(texel, channel), 0.0, 1.0);
+  return clamp(fallback * ddgiMaterialMapChannel(texel, channel), 0.0, 1.0);
 }
 
 fn ddgiSampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32) -> f32 {

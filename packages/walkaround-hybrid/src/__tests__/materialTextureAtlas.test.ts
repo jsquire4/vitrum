@@ -1034,6 +1034,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEmissiveMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleTransmissionMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleLightMap(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fallback * materialMapChannel(texelColor, channel)');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleSpecularControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleClearcoatControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleSheenControls(');
