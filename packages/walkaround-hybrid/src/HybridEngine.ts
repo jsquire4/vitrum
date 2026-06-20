@@ -117,9 +117,11 @@ import {
   categorizeUnconsumedMaterialFields,
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
+  collectApproximateLightMapPrimitiveIds,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
   EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
+  LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
@@ -228,6 +230,8 @@ export class HybridEngine implements Engine {
   private _warnedAlphaBlendApproximationIds = new Set<string>();
   /** Tracks which emissive-map texel-PDF approximation primitive sets have warned. */
   private _warnedEmissiveMapTexelPdfApproximationIds = new Set<string>();
+  /** Tracks which light-map camera-visible approximation primitive sets have warned. */
+  private _warnedLightMapApproximationIds = new Set<string>();
   /** Tracks atlas-backed material texture drops already reported to hosts. */
   private _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
   /** Tracks invalid setSize dimensions already reported to hosts. */
@@ -955,6 +959,30 @@ export class HybridEngine implements Engine {
     });
   }
 
+  private _warnApproximateLightMapPrimitiveIds(
+    primitiveIds: readonly string[],
+    method: 'setScene' | 'updatePrimitive',
+  ): void {
+    if (primitiveIds.length === 0) return;
+    const key = primitiveIds.join(',');
+    if (this._warnedLightMapApproximationIds.has(key)) return;
+    this._warnedLightMapApproximationIds.add(key);
+    this._warn({
+      code: 'walkaround-hybrid.light-map-camera-visible-approximation',
+      backend: 'walkaround-hybrid',
+      phase: method,
+      method,
+      message:
+        `[vitrum/walkaround-hybrid] ${method}: lightMap is consumed as camera-visible baked ` +
+        `outgoing radiance, but it is not sampled as a scene light and is not propagated ` +
+        `through ReSTIR-GI, DDGI, or RC transport; primitives: ${primitiveIds.join(', ')}.`,
+      details: {
+        primitiveIds,
+        ...LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
+      },
+    });
+  }
+
   private _warnReservedReceiveShadowPrimitiveIds(
     primitiveIds: readonly string[],
     method: 'setScene' | 'updatePrimitive',
@@ -1120,6 +1148,15 @@ export class HybridEngine implements Engine {
       scene.emitters,
     );
     this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(emissiveMapTexelPdfApproxIds, 'setScene');
+
+    const lightMapApproxIds = collectApproximateLightMapPrimitiveIds(
+      scene.primitives as unknown as ReadonlyArray<{
+        readonly id?: string;
+        readonly kind: string;
+        readonly material?: Record<string, unknown>;
+      }>,
+    );
+    this._warnApproximateLightMapPrimitiveIds(lightMapApproxIds, 'setScene');
 
     // SHADOW-01 — receiveShadow is reserved/unsupported: a "receiver ignores
     // occlusion" toggle is non-physical for this GI renderer. castShadow rows
@@ -1363,6 +1400,14 @@ export class HybridEngine implements Engine {
       }], this._lastScene?.emitters ?? []),
       'updatePrimitive',
     );
+    this._warnApproximateLightMapPrimitiveIds(
+      collectApproximateLightMapPrimitiveIds([{
+        id,
+        kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
+        material,
+      }]),
+      'updatePrimitive',
+    );
   }
 
   private _warnUnknownPrimitivePatchFields(
@@ -1535,6 +1580,9 @@ export class HybridEngine implements Engine {
       },
       warnApproximateEmissiveMapTexelPdfPrimitiveIds: (primitiveIds) => {
         this._warnApproximateEmissiveMapTexelPdfPrimitiveIds(primitiveIds, 'updatePrimitive');
+      },
+      warnApproximateLightMapPrimitiveIds: (primitiveIds) => {
+        this._warnApproximateLightMapPrimitiveIds(primitiveIds, 'updatePrimitive');
       },
       onWarning: (warning) => {
         this._warn(warning);

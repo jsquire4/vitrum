@@ -23,9 +23,11 @@ import {
   CONSUMED_MATERIAL_FIELDS,
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
+  collectApproximateLightMapPrimitiveIds,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
   EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
+  LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
 } from '../restir/consumedMaterialFields.js';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
@@ -342,6 +344,18 @@ describe('collectUnconsumedMaterialFields', () => {
       { id: 'panel-light', kind: 'mesh-area', meshId: 'mesh-panel', color: [1, 1, 1], intensity: 4 },
       { id: 'dark-panel-light', kind: 'mesh-area', meshId: 'dark-mesh-panel', color: [1, 1, 1], intensity: 0 },
     ])).toEqual(['mapped-emitter', 'mesh-panel']);
+  });
+
+  it('reports only positive light-map materials for the camera-visible warning', () => {
+    const prims: ReadonlyArray<PrimLike> = [
+      { id: 'none', kind: 'mesh', material: { baseColor: [1, 1, 1] } },
+      { id: 'zero', kind: 'mesh', material: { lightMap: { handle: 'lm' }, lightMapIntensity: 0 } },
+      { id: 'mapped', kind: 'mesh', material: { lightMap: { handle: 'lm' } } },
+      { id: 'scaled', kind: 'mesh', material: { lightMap: { handle: 'lm' }, lightMapIntensity: 0.25 } },
+      { id: 'point', kind: 'point', material: { lightMap: { handle: 'lm' } } },
+    ];
+
+    expect(collectApproximateLightMapPrimitiveIds(prims)).toEqual(['mapped', 'scaled']);
   });
 
   it('documents exact direct-emitter texel support separately from residual all-path approximation', () => {
@@ -717,6 +731,52 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
         w.code === 'walkaround-hybrid.directional-angular-diameter-partial-support',
       );
       expect(warnings).toHaveLength(0);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('emits a structured warning for camera-visible-only light maps', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const lightMappedScene: Scene = {
+        ...consumedOnlyScene(),
+        primitives: [
+          {
+            ...consumedOnlyScene().primitives[0]!,
+            id: 'baked-panel',
+            material: {
+              ...consumedOnlyScene().primitives[0]!.material,
+              lightMap: { handle: { width: 1, height: 1, data: new Uint8Array([32, 64, 96, 255]) } },
+              lightMapIntensity: 0.75,
+            },
+          },
+        ],
+      };
+
+      engine.setScene(lightMappedScene);
+      engine.setScene(lightMappedScene);
+
+      const lightMapWarnings = structured.filter((w) =>
+        w.code === 'walkaround-hybrid.light-map-camera-visible-approximation',
+      );
+      expect(lightMapWarnings).toHaveLength(1);
+      expect(lightMapWarnings[0]).toMatchObject({
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'setScene',
+        details: {
+          primitiveIds: ['baked-panel'],
+          ...LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
+        },
+      });
+      expect(warnSpy.mock.calls.flat().map(String).some((m) =>
+        m.includes('camera-visible baked') && m.includes('baked-panel'),
+      )).toBe(true);
     } finally {
       engine.dispose();
     }

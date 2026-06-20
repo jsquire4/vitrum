@@ -103,6 +103,7 @@ import {
 import {
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
+  collectApproximateLightMapPrimitiveIds,
   collectUnconsumedMaterialFieldsForMaterial,
 } from './restir/consumedMaterialFields.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
@@ -403,6 +404,8 @@ export interface PrimitiveUpdateContext {
   readonly warnApproximateAlphaBlendPrimitiveIds?: (primitiveIds: readonly string[]) => void;
   /** Emits backend-honesty warnings for emissive-map texel-PDF approximations. */
   readonly warnApproximateEmissiveMapTexelPdfPrimitiveIds?: (primitiveIds: readonly string[]) => void;
+  /** Emits backend-honesty warnings for camera-visible-only light-map approximations. */
+  readonly warnApproximateLightMapPrimitiveIds?: (primitiveIds: readonly string[]) => void;
   /** Structured warning sink for BVH/emitter rebuild compatibility issues. */
   readonly onWarning?: (warning: EngineWarning) => void;
   /** Optional pack-mode override from engine extensions. */
@@ -1374,6 +1377,13 @@ export function materialPatch(
       kind: prevPrim?.kind ?? 'mesh',
       material: nextMaterial as unknown as Record<string, unknown>,
     }], ctx.lastScene.emitters),
+  );
+  ctx.warnApproximateLightMapPrimitiveIds?.(
+    collectApproximateLightMapPrimitiveIds([{
+      id,
+      kind: prevPrim?.kind ?? 'mesh',
+      material: nextMaterial as unknown as Record<string, unknown>,
+    }]),
   );
 
   const range = bvh.meshVertexRanges.find((r) => r.name === id);

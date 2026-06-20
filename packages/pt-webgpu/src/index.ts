@@ -1128,12 +1128,13 @@ class PTEngineWebGPU implements Engine {
           message:
             `[vitrum/pt-webgpu] Lite tier: scene contains ${analyticPrimitives.length} analytic primitive(s) — ` +
             'analytic shape rendering requires the full tier (group-1 bindings are absent on lite). ' +
-            'These will be silently ignored.',
+            'They are ignored by the lite renderer after this structured warning.',
           details: {
             count: analyticPrimitives.length,
             primitiveIds,
             primitiveKinds: ['analytic'],
             requiredTier: 'full',
+            fallback: 'ignore-unsupported-lite-primitive',
           },
         });
       }
@@ -1156,13 +1157,14 @@ class PTEngineWebGPU implements Engine {
           message:
             `[vitrum/pt-webgpu] Lite tier: scene contains emitters of kind(s) [${kinds}] — ` +
             'mesh-area emitters are not supported on the lite tier (no NEE path in lite kernel). ' +
-            'These will be silently ignored.',
+            'They are ignored by the lite renderer after this structured warning.',
           details: {
             kinds,
             count: unsupportedEmitters.length,
             emitterIds,
             emitterKinds,
             requiredTier: 'full',
+            fallback: 'ignore-unsupported-lite-emitter',
           },
         });
       }

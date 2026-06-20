@@ -150,6 +150,8 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(sd.materials.envMapIntensity).toBe('unsupported');
     expect(sd.materials.anisotropy).toBe('unsupported');
     expect(sd.materials.anisotropyRotation).toBe('unsupported');
+    expect(sd.materials.frontLayer).toBe('approximate');
+    expect(sd.materials.backLayer).toBe('approximate');
     expect(sd.materials.displacementMap).toBe('unsupported');
     expect(sd.materials.displacementScale).toBe('unsupported');
     expect(sd.materials.displacementBias).toBe('unsupported');
@@ -280,9 +282,11 @@ describe('H12: lite-tier capabilities truth', () => {
           primitiveIds: ['a'],
           primitiveKinds: ['analytic'],
           requiredTier: 'full',
+          fallback: 'ignore-unsupported-lite-primitive',
         }),
       }),
     ]));
+    expect(calls.some((c) => c.includes('silently ignored'))).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });
@@ -1014,9 +1018,11 @@ describe('H12: lite-tier capabilities truth', () => {
           emitterIds: ['ma'],
           emitterKinds: ['mesh-area'],
           requiredTier: 'full',
+          fallback: 'ignore-unsupported-lite-emitter',
         }),
       }),
     ]));
+    expect(calls.some((c) => c.includes('silently ignored'))).toBe(false);
     engine.dispose();
     warn.mockRestore();
   });

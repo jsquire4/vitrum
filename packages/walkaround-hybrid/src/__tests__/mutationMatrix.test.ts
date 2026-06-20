@@ -863,6 +863,40 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning for camera-visible-only light maps', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      const lightMappedMaterial = {
+        baseColor: [0.6, 0.6, 0.6] as [number, number, number],
+        roughness: 0.35,
+        metallic: 0,
+        lightMap: {
+          handle: baseColorMapHandle(32),
+        },
+        lightMapIntensity: 1.5,
+      };
+
+      engine.updatePrimitive('mesh-a', { material: lightMappedMaterial });
+      engine.updatePrimitive('mesh-a', { material: lightMappedMaterial });
+
+      const lightMapWarnings = warnings.filter((w) =>
+        w.code === 'walkaround-hybrid.light-map-camera-visible-approximation',
+      );
+      expect(lightMapWarnings).toHaveLength(1);
+      expect(lightMapWarnings[0]?.method).toBe('updatePrimitive');
+      expect(lightMapWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+      expect(lightMapWarnings[0]?.details).toMatchObject({
+        lightMapUsage: 'camera-visible-baked-outgoing-radiance',
+        directLighting: 'not-sampled-as-scene-light',
+        giPropagation: 'not-injected-into-restir-gi-ddgi-rc',
+        residualApproximation: 'first-hit-baked-light',
+        missing: 'global-transport-light-map-participation',
+      });
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) emits a structured warning when an atlas-backed map is unreadable', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     const baseColorMap = {

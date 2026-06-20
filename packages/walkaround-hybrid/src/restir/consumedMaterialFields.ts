@@ -234,6 +234,15 @@ export const EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS = {
   ],
 } as const;
 
+/** Structured payload for the camera-visible-only light-map approximation. */
+export const LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS = {
+  lightMapUsage: 'camera-visible-baked-outgoing-radiance',
+  directLighting: 'not-sampled-as-scene-light',
+  giPropagation: 'not-injected-into-restir-gi-ddgi-rc',
+  residualApproximation: 'first-hit-baked-light',
+  missing: 'global-transport-light-map-participation',
+} as const;
+
 function materialBearingPrimitiveKind(kind: string): boolean {
   return (
     kind === 'mesh' ||
@@ -407,6 +416,31 @@ export function collectApproximateEmissiveMapTexelPdfPrimitiveIds(
     }
   }
   return [...ids].sort();
+}
+
+/**
+ * Return primitive ids whose light map is rendered only as a camera-visible baked
+ * outgoing-radiance term. This is consumed, but deliberately approximate: the
+ * map is not treated as a scene light source and is not propagated through GI.
+ */
+export function collectApproximateLightMapPrimitiveIds(
+  primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+): string[] {
+  const ids: string[] = [];
+  for (const prim of primitives) {
+    if (!materialBearingPrimitiveKind(prim.kind)) continue;
+    const mat = prim.material;
+    if (!mat || mat.lightMap == null) continue;
+    const intensity = typeof mat.lightMapIntensity === 'number' && Number.isFinite(mat.lightMapIntensity)
+      ? Math.max(0, mat.lightMapIntensity)
+      : 1;
+    if (intensity > 0) ids.push(prim.id ?? '(unnamed)');
+  }
+  return ids.sort();
 }
 
 function collectLitMeshAreaEmitterMeshIds(

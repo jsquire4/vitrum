@@ -73,6 +73,10 @@ export const PT_WEBGPU_LITE_MATERIALS = Object.freeze({
       [field, 'unsupported' as BackendSupportMode],
     ),
   ),
+  // Lite still packs scalar layered-lobe controls inherited from the full tier,
+  // but it omits the group-3 texture bindings used by layer normal maps/scales.
+  frontLayer: 'approximate' as BackendSupportMode,
+  backLayer:  'approximate' as BackendSupportMode,
 });
 
 export function collectUnsupportedLayerNormalFields(
