@@ -119,6 +119,9 @@ if (!road.includes("Remaining work is\n   cross-workload/cross-adapter default-p
 if (!road.includes("fidelity matrix tracks the active `pt-webgl2` / `pt-webgpu` columns and records")) {
   fail("road-to-100.md must retain the reconciled C5 renderer-matrix summary");
 }
+if (!road.includes("attachVitrum.auto-recreate-scene-snapshot-unavailable")) {
+  fail("road-to-100.md must retain the attachVitrum no-live-scene-snapshot warning follow-up");
+}
 
 const ptWebgpuSource = await readText("packages/pt-webgpu/src/index.ts");
 if (ptWebgpuSource.includes("blue-noise rotation, broader dimension audits")) {
@@ -292,6 +295,27 @@ for (const needle of [
 ]) {
   if (!swapChainVanilla.includes(needle)) {
     fail(`attachVitrum must retain swap-chain/setSize plumbing: ${needle}`);
+  }
+}
+for (const needle of [
+  "attachVitrum.auto-recreate-scene-snapshot-unavailable",
+  "the current engine does not implement getScene()",
+  "fallback: 'tracked-scene'",
+]) {
+  if (!swapChainVanilla.includes(needle)) {
+    fail(`attachVitrum must retain auto-recreate no-snapshot warning: ${needle}`);
+  }
+}
+
+const attachVitrumAutoRecreateTest = await readText("packages/engine/src/__tests__/attachVitrumAutoRecreate.test.ts");
+for (const needle of [
+  "recreates with the backend-retained live scene when fast paths bypass lifecycle setScene tracking",
+  "warns and falls back to the tracked scene when backend scene snapshot throws",
+  "warns and falls back to the tracked scene when a supplied engine cannot expose a live scene snapshot",
+  "attachVitrum.auto-recreate-scene-snapshot-unavailable",
+]) {
+  if (!attachVitrumAutoRecreateTest.includes(needle)) {
+    fail(`attachVitrum auto-recreate tests must retain scene-retention regressions: ${needle}`);
   }
 }
 

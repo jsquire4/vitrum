@@ -13,7 +13,7 @@
 //     out-of-box (a host that omits these silently degrades to no-temporal).
 //   - Idempotent dispose.
 
-import type { CapturedFrame, CaptureFrameOptions, Engine, EngineError, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
+import type { CapturedFrame, CaptureFrameOptions, Engine, EngineError, EngineWarning, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
 import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
 import type { GIStatePersistable } from '../idempotentDispose.js';
@@ -368,6 +368,12 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       opts.onError?.(error, event);
     } catch { /* host error callback must not propagate — ignore */ }
   };
+  const reportWarning = (warning: EngineWarning): void => {
+    console.warn(warning.message);
+    try {
+      opts.onWarning?.(warning);
+    } catch { /* host warning callback must not propagate — ignore */ }
+  };
 
   // ── Resize state ─────────────────────────────────────────────────────────
   //
@@ -597,8 +603,24 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     // primitive/controller fast paths can mutate the backend scene through
     // add/remove/update routes without passing through that wrapper.
     try {
-      const liveScene = typeof engine.getScene === 'function' ? engine.getScene() : null;
-      if (liveScene != null) currentScene = liveScene;
+      if (typeof engine.getScene === 'function') {
+        const liveScene = engine.getScene();
+        if (liveScene != null) currentScene = liveScene;
+      } else {
+        reportWarning({
+          code: 'attachVitrum.auto-recreate-scene-snapshot-unavailable',
+          backend: engine.backendId,
+          phase: 'lifecycle',
+          method: 'attachVitrum',
+          message:
+            '[attachVitrum] auto-recreate could not snapshot the backend-retained live scene because ' +
+            'the current engine does not implement getScene(); recreating from the latest scene seen by attachVitrum.',
+          details: {
+            backendId: engine.backendId,
+            fallback: 'tracked-scene',
+          },
+        });
+      }
     } catch (err) {
       reportError(err, {
         phase: 'attach:auto-recreate',

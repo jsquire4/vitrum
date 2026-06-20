@@ -48,6 +48,7 @@ function makeMockEngine(options?: {
       experimentalFeatures: new Set(),
     },
     setScene: vi.fn(),
+    getScene: vi.fn(() => null),
     renderFrame(input: FrameInput): FrameOutput {
       return options?.renderOverride
         ? options.renderOverride(input)

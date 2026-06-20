@@ -47,7 +47,11 @@ function makeCamera() {
   };
 }
 
-function makeEngine(backendId = 'pt-webgl2', retainedScene: Scene | null = null) {
+function makeEngine(
+  backendId = 'pt-webgl2',
+  retainedScene: Scene | null = null,
+  options?: { readonly omitGetScene?: boolean },
+) {
   const errorCallbacks: Array<(err: EngineError) => void> = [];
   const setScene = vi.fn();
   const getScene = vi.fn(() => retainedScene);
@@ -67,6 +71,9 @@ function makeEngine(backendId = 'pt-webgl2', retainedScene: Scene | null = null)
       return vi.fn();
     }),
   } as unknown as Engine;
+  if (options?.omitGetScene === true) {
+    delete (engine as unknown as Record<string, unknown>).getScene;
+  }
   return { engine, errorCallbacks, setScene, getScene };
 }
 
@@ -189,6 +196,48 @@ describe('attachVitrum auto-recreate scene tracking', () => {
     expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneB);
 
     handle.dispose();
+  });
+
+  it('warns and falls back to the tracked scene when a supplied engine cannot expose a live scene snapshot', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = makeEngine('custom-engine', null, { omitGetScene: true });
+    const second = makeEngine();
+    const structuredWarnings: unknown[] = [];
+    createEngineMock
+      .mockResolvedValueOnce(second.engine);
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      onWarning: (warning) => structuredWarnings.push(warning),
+    });
+
+    handle.engine.setScene(sceneB);
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    } as EngineError);
+
+    await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(1));
+    expect(createEngineMock.mock.calls[0]![0].scene).toBe(sceneB);
+    expect(structuredWarnings).toContainEqual(expect.objectContaining({
+      code: 'attachVitrum.auto-recreate-scene-snapshot-unavailable',
+      backend: 'custom-engine',
+      phase: 'lifecycle',
+      method: 'attachVitrum',
+      details: {
+        backendId: 'custom-engine',
+        fallback: 'tracked-scene',
+      },
+    }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not snapshot the backend-retained live scene'));
+
+    handle.dispose();
+    warn.mockRestore();
   });
 
   it('exposes the selected backend id through the stable attach handle', async () => {
