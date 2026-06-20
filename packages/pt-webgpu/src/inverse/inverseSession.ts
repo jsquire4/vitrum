@@ -1495,8 +1495,11 @@ function directLightCandidateLabels(scene: Scene): readonly string[] {
     readonly kind: string;
     readonly color?: readonly number[];
     readonly intensity?: number;
+    readonly meshId?: string;
+    readonly normal?: readonly number[];
+    readonly radius?: number;
   }>) {
-    if (!directEmitterContributes(emitter)) continue;
+    if (!directEmitterContributes(scene, emitter)) continue;
     candidates.push(`emitter:${String(emitter.id ?? '(unnamed)')}:${emitter.kind}`);
   }
   if (environmentContributesDirectLight(scene.environment as unknown as {
@@ -1508,14 +1511,28 @@ function directLightCandidateLabels(scene: Scene): readonly string[] {
   return candidates;
 }
 
-function directEmitterContributes(emitter: {
+function directEmitterContributes(scene: Scene, emitter: {
+  readonly id?: string | number;
+  readonly kind?: string;
   readonly color?: readonly number[];
   readonly intensity?: number;
+  readonly normal?: readonly number[];
+  readonly radius?: number;
 }): boolean {
   const intensity = emitter.intensity ?? 1;
   if (!(intensity > 0)) return false;
   const color = emitter.color ?? [1, 1, 1];
-  return (color[0] ?? 0) > 0 || (color[1] ?? 0) > 0 || (color[2] ?? 0) > 0;
+  if (!((color[0] ?? 0) > 0 || (color[1] ?? 0) > 0 || (color[2] ?? 0) > 0)) return false;
+  if (emitter.kind === 'mesh-area') {
+    return meshAreaEmitterAdjointRangeForScene(scene, String(emitter.id ?? '')) != null;
+  }
+  if (emitter.kind === 'disc-area') {
+    if (!Number.isFinite(emitter.radius) || (emitter.radius ?? 0) < 1e-8) return false;
+    const n = emitter.normal ?? [0, 0, 0];
+    const nLen = Math.hypot(n[0] ?? 0, n[1] ?? 0, n[2] ?? 0);
+    if (!Number.isFinite(nLen) || nLen < 1e-8) return false;
+  }
+  return true;
 }
 
 function environmentContributesDirectLight(environment: {

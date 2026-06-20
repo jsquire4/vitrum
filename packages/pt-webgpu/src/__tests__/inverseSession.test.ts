@@ -2697,6 +2697,54 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it.each([
+    ['zero-radius disc', {
+      kind: 'disc-area' as const,
+      id: 'empty-disc',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      position: [0, 1, 0] as [number, number, number],
+      normal: [0, -1, 0] as [number, number, number],
+      radius: 0,
+    }],
+    ['degenerate-normal disc', {
+      kind: 'disc-area' as const,
+      id: 'empty-disc-normal',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      position: [0, 1, 0] as [number, number, number],
+      normal: [0, 0, 0] as [number, number, number],
+      radius: 1,
+    }],
+    ['missing mesh-area target', {
+      kind: 'mesh-area' as const,
+      id: 'missing-mesh-light',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      meshId: 'does-not-exist',
+    }],
+  ])('keeps path-replay when a %s cannot contribute direct light', (_label, emitter) => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [
+        ...fake.scene.emitters,
+        emitter,
+      ],
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-light-selection',
+    }));
+    session.dispose();
+  });
+
   it('keeps path-replay for rect-area direct-light scenes', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -2718,6 +2766,41 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
     expect(session.method).toBe('path-replay');
+    session.dispose();
+  });
+
+  it('still degrades material path-replay when a valid mesh-area emitter joins another direct light', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [
+        ...fake.scene.emitters,
+        {
+          kind: 'mesh-area',
+          id: 'mesh-light',
+          color: [1, 1, 1],
+          intensity: 1,
+          meshId: 'panel',
+        },
+      ],
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-light-selection',
+      details: expect.objectContaining({
+        candidateCount: 2,
+        candidates: expect.arrayContaining([
+          'emitter:lamp:point',
+          'emitter:mesh-light:mesh-area',
+        ]),
+      }),
+    }));
     session.dispose();
   });
 
