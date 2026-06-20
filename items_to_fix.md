@@ -103,22 +103,13 @@ merge-race loss as a fresh finding that needs direct source-read evidence.
 
 ### E1. W3-D7 FrameOutput discriminated union — closed (re-landed)
 
-- **Where:** `packages/core/src/frame.ts`. Commit `40cd837` (W3-D7, 2026-05-17) introduced `FrameOutput = FrameSkipped | FrameRendered` with a `kind` discriminant. Commit `9ea12c9` (W3-D18, ~50 min later) branched from `80c2388` (D17, pre-D7) instead of from D7, and when its frame.ts changes merged they overwrote D7's. The net result: D7's code is unreachable from HEAD even though the commit is in the history.
-- **Symptom:** the `FrameOutput` contract is back to `primaryRadiance: BackendTexture | null` + `samplesAccumulated === 0` skip sentinel — the exact pattern D7 was supposed to eliminate. Hosts that didn't check `samplesAccumulated > 0` before reading `primaryRadiance` would silently dereference null; the type system can't catch them.
-- **Verification:** `git show HEAD:packages/core/src/frame.ts | grep -c FrameRendered` → 0. `grep -rn "FrameRendered\|FrameSkipped\|kind: 'rendered'" packages --include="*.ts"` → 0 consumers anywhere.
-- **Fix:** re-apply D7's contract change, then propagate to:
-  - producers: `walkaround-hybrid/src/HybridEngine.ts`, `pt-webgl/src/ptEngineWebGL2.ts`, `pt-webgpu/src/index.ts` (and any examples returning FrameOutput from a stub).
-  - consumers: `engine/src/createEngine.ts` (the post-dispose stub at the `disposed` guard), examples (`cornell-box`, `two-engines-one-scene`, `hero-product-viz`), tests that fake `renderFrame()`.
-  - new test: re-add `packages/engine/__tests__/frameOutputShape.test.ts` pinning the union.
-- **Closure note (2026-05-24):** re-landed in the single-wave contract migration; producers and test stubs now emit `kind: 'rendered' | 'skipped'`.
+- **Historical finding:** the May 2026 merge-race audit temporarily found the D7 union missing after a branch-order overwrite.
+- **Current source-verified closure (2026-06-20):** `packages/core/src/frame.ts` now exports `FrameSkipped`, `FrameRendered`, and `FrameOutput = FrameSkipped | FrameRendered`; `FrameRendered.primaryRadiance` is non-null and the skip case is the separate `kind: 'skipped'` variant. Current producers such as `packages/pt-webgl2/src/index.ts` construct typed `FrameRendered` objects, and engine tests import the branded frame helpers. Do not reopen this row from the historical symptom text.
 
 ### E2. W3-D6 Mat4 brand — closed (re-landed)
 
-- **Where:** `packages/core/src/scene/math.ts:10`. Commit `e845cc5` (W3-D6, 2026-05-17) brand-typed `Mat4` as `Float32Array & __mat4Brand` and added an `asMat4(arr): Mat4` constructor that throws on length ≠ 16. Commit `cead5ab` (2026-05-18) split the monolithic `scene.ts` into 6 sibling files (`scene/{math,emitters,environment,primitives,material,index}.ts`). The split was done against a pre-D6 working copy, and the new `scene/math.ts` was created with the unbranded `Mat4 = Float32Array` form.
-- **Symptom:** any `Float32Array` of any length silently satisfies the `Mat4` type. The D6 motivation — preventing 9-element upper-3×3 normal matrices from being passed as 16-element Mat4 — is gone. `asMat4` doesn't exist; callers that should have routed through it for length validation just `as Mat4` cast.
-- **Verification:** `grep -c "__mat4Brand" packages/core/src/scene/math.ts` → 0; `grep -rn "asMat4" packages/*/src --include="*.ts"` → 0 callers.
-- **Fix:** re-port the D6 changes to `scene/math.ts` (brand + asMat4), then re-update the 21 implicit-cast construction sites that D6 originally fixed (three-bindings, pt-webgpu, engine).
-- **Closure note (2026-05-24):** re-landed with `asMat4`/`isMat4`, and callsites migrated across packages/examples.
+- **Historical finding:** the May 2026 merge-race audit temporarily found the post-split `scene/math.ts` file back on an unbranded `Mat4 = Float32Array` shape.
+- **Current source-verified closure (2026-06-20):** `packages/core/src/scene/math.ts` declares `MAT4_BRAND`, exports branded `Mat4`, and provides `asMat4()` / `isMat4()` with a 16-element runtime check. `packages/core/src/__tests__/engineContract.test.ts` asserts the 9-element rejection path, and current engine/backend callsites import `asMat4` from `@vitrum/core`.
 
 ### E7. W7-G5 shared-bvh export hygiene — superseded/source-verified
 
@@ -126,34 +117,23 @@ The original May 2026 export-hygiene note said `validateBvhEncoding` should leav
 
 ### E6. W6-E6 ForkAccess indirection — closed (re-landed)
 
-- **Where:** `packages/pt-webgl/src/`. Commit `a6a3c90` (W6-E6, 2026-05-17) added `forkAccess.ts` (static `ForkAccess` class with `getMaterial(tracer)` + `getRenderTexture(tracer)`) and migrated `forkUniformBridge.ts` + `ptEngineWebGL2.ts` off direct `tracer._pathTracer.material.uniforms` reach-throughs.
-- **Symptom:** if the upstream three-gpu-pathtracer fork renames `_pathTracer` (or upstreams an official accessor), `forkUniformBridge.ts` and `ptEngineWebGL2.ts` break in lockstep and have to be hand-patched at every reach-through site — the exact problem the indirection was meant to solve.
-- **Verification:** `packages/pt-webgl/src/forkAccess.ts` is missing. `grep -n "_pathTracer" packages/pt-webgl/src/forkUniformBridge.ts` returns the pre-E6 direct-cast form: `const tracer = pathTracer as { _pathTracer?: { material?: PathTracerMaterialLike } }; const material = tracer._pathTracer?.material ?? null;`.
-- **Fix:** re-apply `a6a3c90`. Test-only helper `makeForkPathTracerStubForTests` also needs re-adding (the original commit added it).
-- **Closure note (2026-05-24):** `forkAccess.ts` restored and pt-webgl bridge/engine callers now route through it.
+- **Historical finding:** the May 2026 audit tracked a direct private-field reach-through in the former fork-backed `packages/pt-webgl` backend.
+- **Current source-verified closure (2026-06-20):** the fork-backed package is no longer present; `packages/pt-webgl2` is the native WebGL2 backend and the retired `packages/pt-webgl/src/forkAccess.ts` path is not a live implementation target. Treat this row as superseded by the fork removal plus native `pt-webgl2` work, not as a missing file bug.
 
 ### E5. W6-E1 reuseSharedWebGpuDevice default flip — closed (re-landed)
 
-- **Where:** `packages/shared-denoisers/src/{atrousVarianceWebGPU,hdrLuminanceBilateralWebGPU,svgfRealWebGPU}.ts`. Commit `3dbe11a` (W6-E1, 2026-05-17) was a breaking change: flipped `reuseSharedWebGpuDevice`'s effective default from `true` to `false` so callers without an explicit `device` would error rather than silently reuse a process-wide singleton (a design-principle violation — host-owns-lifecycle). The diff changed `opts.reuseSharedWebGpuDevice !== false` to `opts.reuseSharedWebGpuDevice === true` in all three dispatchers.
-- **Symptom:** the pre-E1 implicit-singleton behaviour is back. Callers without a `device` arg silently reuse the global, masking the host-ownership contract violation E1 was meant to surface.
-- **Verification:** `grep -n "reuseSharedWebGpuDevice !== false" packages/shared-denoisers/src/*.ts` returns 3 hits (the pre-E1 form). The post-E1 form (`=== true`) is not in HEAD.
-- **Fix:** re-apply `3dbe11a` and update any test that called the dispatchers without `device` (those would have been updated in the original commit).
-- **Closure note (2026-05-24):** denoiser dispatchers now require explicit opt-in (`reuseSharedWebGpuDevice === true`) when no device is supplied.
+- **Historical finding:** the May 2026 audit temporarily saw the denoiser dispatchers back on implicit shared-device reuse.
+- **Current source-verified closure (2026-06-20):** `packages/shared-denoisers/src/sharedWebGpuDevice.ts` gates the process-shared fallback with `opts.reuseSharedWebGpuDevice === true && opts.device == null`; the WebGPU denoiser dispatchers forward the option into that helper. The default path allocates/owns an ephemeral device or uses the supplied host device instead of silently reusing a singleton.
 
 ### E4. W2-C6 shared-samplers WGSL primitives — closed (re-landed)
 
-- **Where:** `packages/shared-samplers/src/wgsl/`. Commit `da286d7` (W2-C6, 2026-05-17) introduced `pcg.wgsl.ts` (80 LOC: `pcgInit`, `pcgNext`, `rand_f32`, `rand_f32_2`, `rand_f32_3`) and `bsdfPrimitives.wgsl.ts` (108 LOC: `buildONB`, `sampleCosineHemisphere`, `cosineHemispherePdf`, `fresnelSchlick`) as canonical sources, and migrated walkaround-hybrid + pt-webgpu off their local copies. Neither file is in HEAD; both local copies are back. Verified 2026-05-19: `ls packages/shared-samplers/src/wgsl/` returns only `hammersley.wgsl.ts`, `luminance.wgsl.ts`, `octahedralCore.wgsl.ts`. `grep -A5 "fn pcgInit" packages/pt-webgpu/src/wgsl/common.wgsl.ts packages/walkaround-hybrid/src/shaders/common.wgsl.ts` returns byte-identical 6-line definitions in both files.
-- **Symptom:** parallel WGSL primitives evolving in two places. The original C6 motivation — capitalisation drift (`buildONB` vs `buildOnb`) and arg-order drift (`sampleCosineHemisphere(n, rng)` vs `cosineHemisphereSample(rng, n)`) — has had time to re-accumulate.
-- **Fix:** re-apply `da286d7` cleanly. The original commit's stat: `pcg.wgsl.ts` +80, `bsdfPrimitives.wgsl.ts` +108, walkaround-hybrid common -75 LOC, pt-webgpu common -35 LOC, pathTraceBruteforce -38 LOC.
-- **Closure note (2026-05-24):** canonical `pcg.wgsl.ts` + `bsdfPrimitives.wgsl.ts` restored in shared-samplers; duplicated local copies removed from walkaround-hybrid/pt-webgpu common modules.
+- **Historical finding:** the May 2026 audit temporarily found the shared WGSL primitive modules missing after a merge race.
+- **Current source-verified closure (2026-06-20):** `packages/shared-samplers/src/wgsl/pcg.wgsl.ts` and `packages/shared-samplers/src/wgsl/bsdfPrimitives.wgsl.ts` both exist as canonical shared modules. Any future drift finding should compare current shader imports and generated WGSL directly, not this retired symptom.
 
 ### E3. W3-D19 BackendTexture brand — closed (re-landed)
 
-- **Where:** `packages/core/src/frame.ts:193`. Commit `5863cda` (W3-D19, 2026-05-17) replaced `export type BackendTexture = unknown` with `BackendTexture<TBackend>` + `BackendTextureFormat<TBackend>` nominal brands keyed by `unique symbol`. The D17/D18 merge race that dropped D7 (see E1) also overwrote D19 because D19 was branched off D7.
-- **Symptom:** WebGPU `swapChainView` can be silently set to a WebGL `WebGLTexture` and vice versa — the type system can't catch it. `as*BackendTexture` constructors + `narrowTo*` helpers in `walkaround-hybrid` / `pt-webgpu` / `pt-webgl` are also gone (verified 2026-05-19: `grep -rn "asWebGPUBackendTexture\|narrowToWebGPU\|asWebGLBackendTexture" packages/*/src` → 0).
-- **Verification:** `packages/core/src/frame.ts:193` reads `export type BackendTexture = unknown;` — the pre-D19 form.
-- **Fix:** re-apply D19 (5 of the original commit's files: core types + 3 backend brand helpers + 1 example). Companion test `packages/engine/__tests__/backendTextureBrand.test.ts` also needs re-adding.
-- **Closure note (2026-05-24):** backend texture/format brand helpers restored in `core/frame.ts`, with helpers consumed at backend boundaries.
+- **Historical finding:** the May 2026 merge-race audit temporarily saw `BackendTexture` collapse back to `unknown`.
+- **Current source-verified closure (2026-06-20):** `packages/core/src/frame.ts` declares `BACKEND_TEXTURE_BRAND` / `BACKEND_TEXTURE_FORMAT_BRAND`, exports generic branded `BackendTexture` and `BackendTextureFormat`, and provides `asBackendTexture`, `asBackendTextureFormat`, `narrowToBackendTexture`, and `narrowToBackendTextureFormat`. `packages/core/src/__tests__/engineContract.test.ts` pins the helper behavior, and `attachVitrum` brands WebGPU swap-chain handles at the boundary.
 
 ---
 

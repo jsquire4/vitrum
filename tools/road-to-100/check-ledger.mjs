@@ -113,6 +113,12 @@ for (const [stalePhrase, message] of [
   ["validateBvhEncoding` leaves the public surface", "stale E7 validateBvhEncoding un-export claim"],
   ["un-exported `validateBvhEncoding` from `shared-bvh/index.ts`", "stale AGENTS/shared-bvh validateBvhEncoding export claim"],
   ["have not been comprehensively audited", "stale Section E unaudited-wave note"],
+  ["the `FrameOutput` contract is back to", "stale E1 live FrameOutput regression wording"],
+  ["any `Float32Array` of any length silently satisfies the `Mat4` type", "stale E2 live Mat4 regression wording"],
+  ["`packages/pt-webgl/src/forkAccess.ts` is missing", "stale E6 retired pt-webgl missing-file wording"],
+  ["the pre-E1 implicit-singleton behaviour is back", "stale E5 live shared-device regression wording"],
+  ["Neither file is in HEAD; both local copies are back", "stale E4 live shared-WGSL regression wording"],
+  ["`packages/core/src/frame.ts:193` reads `export type BackendTexture = unknown;`", "stale E3 live backend-texture regression wording"],
 ]) {
   if (items.includes(stalePhrase)) {
     fail(`items_to_fix.md contains ${message}`);
@@ -120,6 +126,24 @@ for (const [stalePhrase, message] of [
 }
 if (!items.includes("### C1-C4. Documentation truthfulness sweep — closed/source-verified")) {
   fail("items_to_fix.md must retain the reconciled Section C source summary");
+}
+for (const needle of [
+  "### E1. W3-D7 FrameOutput discriminated union — closed (re-landed)",
+  "`packages/core/src/frame.ts` now exports `FrameSkipped`, `FrameRendered`, and `FrameOutput = FrameSkipped | FrameRendered`",
+  "### E2. W3-D6 Mat4 brand — closed (re-landed)",
+  "`packages/core/src/scene/math.ts` declares `MAT4_BRAND`",
+  "### E6. W6-E6 ForkAccess indirection — closed (re-landed)",
+  "the fork-backed package is no longer present; `packages/pt-webgl2` is the native WebGL2 backend",
+  "### E5. W6-E1 reuseSharedWebGpuDevice default flip — closed (re-landed)",
+  "gates the process-shared fallback with `opts.reuseSharedWebGpuDevice === true && opts.device == null`",
+  "### E4. W2-C6 shared-samplers WGSL primitives — closed (re-landed)",
+  "`packages/shared-samplers/src/wgsl/pcg.wgsl.ts` and `packages/shared-samplers/src/wgsl/bsdfPrimitives.wgsl.ts` both exist",
+  "### E3. W3-D19 BackendTexture brand — closed (re-landed)",
+  "`packages/core/src/frame.ts` declares `BACKEND_TEXTURE_BRAND` / `BACKEND_TEXTURE_FORMAT_BRAND`",
+]) {
+  if (!items.includes(needle)) {
+    fail(`items_to_fix.md must retain reconciled Section E source summary: ${needle}`);
+  }
 }
 
 const agentBrief = await readText("AGENTS.md");
