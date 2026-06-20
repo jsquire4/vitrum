@@ -306,6 +306,11 @@
 > reports as `category:"animation"` / `support:"unsupported"` issues, so strict
 > one-call loaders can reject extension/pointer animation channels before import
 > instead of discovering the skipped channel only after engine construction.
+> Same-day sampler bridge follow-up: `loadGltfForEngine()` now classifies
+> post-import `material-texture-sampler-not-found` and
+> `invalid-material-texture-sampler` diagnostics as approximate degraded imports
+> for `reject-degraded`, while `reject-unsupported` still accepts the asset and
+> returns the structured diagnostics for host policy/UI.
 > Same-scene import alignment follow-up: `gltfToScene()` now scopes animation
 > conversion to the selected scene's reachable node set, matching
 > `analyzeGltfAsset({ sceneIndex })` and selected-scene resource fetching. Unused

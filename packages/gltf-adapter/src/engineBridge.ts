@@ -425,6 +425,8 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'invalid-material-dispersion',
   'material-texture-not-found',
   'material-texture-unresolved',
+  'material-texture-sampler-not-found',
+  'invalid-material-texture-sampler',
   'unsupported-material-extension',
   'unknown-material-extension',
 ]);

@@ -5550,6 +5550,40 @@ describe('loadGltfForEngine', () => {
     expect(baseColor.minFilter).toBeUndefined();
   });
 
+  it('keeps malformed sampler diagnostics visible while reject-unsupported accepts the approximation', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
+    gltf.samplers = [{
+      wrapS: 123 as never,
+      minFilter: 222 as never,
+    }];
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    });
+
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'invalid-material-texture-sampler',
+        path: 'samplers[0].wrapS',
+        samplerProperty: 'wrapS',
+        samplerValue: 123,
+      }),
+      expect.objectContaining({
+        code: 'invalid-material-texture-sampler',
+        path: 'samplers[0].minFilter',
+        samplerProperty: 'minFilter',
+        samplerValue: 222,
+      }),
+    ]));
+  });
+
   it('rejects malformed texture sampler policies before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
