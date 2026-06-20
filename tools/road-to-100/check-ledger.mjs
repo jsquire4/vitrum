@@ -86,6 +86,28 @@ if (!road.includes('For this ledger, "100%" = everything fully implemented')) {
 if (!road.includes("Still OPEN for full-path parity")) {
   fail("road-to-100.md must retain explicit open full-path parity language while active");
 }
+if (road.includes("blue-noise rotation, broader") || road.includes("blue-noise/per-dimension-audited")) {
+  fail("road-to-100.md contains stale Sobol blue-noise-rotation pending wording");
+}
+if (!road.includes("pt-webgpu Sobol now carries a binding-free 8x8 ranked tiled")) {
+  fail("road-to-100.md must retain the reconciled pt-webgpu Sobol rotation summary");
+}
+
+const ptWebgpuSource = await readText("packages/pt-webgpu/src/index.ts");
+if (ptWebgpuSource.includes("blue-noise rotation, broader dimension audits")) {
+  fail("pt-webgpu sampling option docs contain stale Sobol blue-noise pending wording");
+}
+if (!ptWebgpuSource.includes("with a tiled ranked rotation; broader dimension audits")) {
+  fail("pt-webgpu sampling option docs must retain the Sobol rotation boundary");
+}
+
+const behavioralGateReadme = await readText("tools/behavioral-gate/README.md");
+if (behavioralGateReadme.includes("blue-noise rotation, dimension-assignment audit")) {
+  fail("behavioral-gate README contains stale Sobol blue-noise pending wording");
+}
+if (!behavioralGateReadme.includes("variants with the tiled ranked Sobol rotation")) {
+  fail("behavioral-gate README must retain the Sobol rotation proof boundary");
+}
 
 const items = await readText("items_to_fix.md");
 if (!items.includes("OPEN ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONCILIATION")) {

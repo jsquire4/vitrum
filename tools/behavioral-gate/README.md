@@ -74,8 +74,8 @@ radiometric proof work. The ReSTIR-PT lane is a full-tier boot/render proof for
 off-default `pt/restirPtReuse`; equal-spp variance and specialty radiometric
 promotion remain separate proof work. The Sobol lanes prove adapter-backed
 boot/render health for the opt-in `sampling:'sobol'` full, lite, BDPT, and
-ReSTIR-PT variants; blue-noise rotation, dimension-assignment audit, and
-equal-time RMSE promotion remain separate proof work. The caustic/photon lanes prove full-tier
+ReSTIR-PT variants with the tiled ranked Sobol rotation; dimension-assignment
+audit and equal-time RMSE promotion remain separate proof work. The caustic/photon lanes prove full-tier
 boot/render health for `pt/caustic-manifold`, `pt/caustic-photon`, and
 `pt/spectral+photon`; caustic radiometric convergence remains a separate A/B
 proof. The light, directional, HDRI, and procedural-sky lanes pin dzn execution

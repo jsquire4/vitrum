@@ -305,9 +305,9 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    * Primary path-sampling sequence. Default `'pcg'` preserves the historical random
    * stream. `'sobol'` compiles the opt-in pt-webgpu WGSL Sobol RNG module across
    * the megakernel plus SPPM/ReSTIR-PT/BDPT auxiliary pipelines. This is
-   * hash-based Owen-scrambled Sobol over the first-four direction-table set;
-   * blue-noise rotation, broader dimension audits, and RMSE promotion evidence
-   * remain tracked in the Road ledger.
+   * hash-based Owen-scrambled Sobol over the first-four direction-table set
+   * with a tiled ranked rotation; broader dimension audits and RMSE promotion
+   * evidence remain tracked in the Road ledger.
    */
   readonly sampling?: 'pcg' | 'sobol';
   /**
