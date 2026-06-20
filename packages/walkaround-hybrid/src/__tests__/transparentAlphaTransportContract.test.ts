@@ -6,6 +6,7 @@ import { RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
 import { buildRisGiNrcModule } from '../shaders/risGiNrc.wgsl.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shaders/shadingTerms.wgsl.js';
+import { TRANSPARENT_OIT_WGSL } from '../shaders/transparentOit.wgsl.js';
 
 const nrcGiModule = buildRisGiNrcModule({
   levels: 1,
@@ -32,5 +33,14 @@ describe('transparent alpha transport contract', () => {
 
   it('keeps shade-side direct-light visibility on alpha-aware transmittance predicates', () => {
     expect(SHADING_TERMS_WGSL).toContain('traceSceneAnyAlphaMaskTextured(');
+  });
+
+  it('keeps transparent OIT lighting local instead of coupling it to ReSTIR reservoirs', () => {
+    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAreaEmitterNEE(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('sampleEmitterLeAtXi(e, xi)');
+    expect(TRANSPARENT_OIT_WGSL).not.toMatch(/var<storage,\s*(read|read_write)>[^;]*reservoir/i);
+    expect(TRANSPARENT_OIT_WGSL).not.toMatch(/\b(load|store|update|resolve)\w*Reservoir\b/);
+    expect(TRANSPARENT_OIT_WGSL).not.toContain('selectedEmitter');
+    expect(TRANSPARENT_OIT_WGSL).not.toContain('risFinal');
   });
 });
