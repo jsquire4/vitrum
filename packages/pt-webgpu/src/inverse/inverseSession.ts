@@ -1483,7 +1483,7 @@ function materialMapIssue(maps: readonly string[]): PathReplayMaterialIssue {
         details.finiteDifferenceReason = 'geometry';
         details.affectedTerms = ['micro-displacement', 'bvh-geometry', 'visibility'];
         return {
-          code: 'path-replay-unsupported-material',
+          code: 'path-replay-unsupported-geometry',
           message: `geometry maps are not replayed: ${maps.join(', ')}`,
           details,
         };

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu inverse diagnostic specificity, 2026-06-20)
+
+- **Geometry-domain inverse replay blockers now have their own diagnostic code:** `@vitrum/core` exposes `path-replay-unsupported-geometry`, and `@vitrum/pt-webgpu` uses it for displacement-map path-replay downgrades instead of collapsing the case into generic material support. Hosts can now route displacement/BVH-geometry limitations separately from BRDF/material-domain inverse limitations.
+
 ### Fixed (pt-webgpu inverse alpha truthfulness, 2026-06-20)
 
 - **Scoped inverse path replay no longer downgrades inert scalar alpha modes:** `@vitrum/pt-webgpu` now distinguishes non-opaque alpha metadata from actual visibility-changing alpha. Path replay stays enabled for map-free `alphaMode:'mask'` when scalar opacity is at or above `alphaCutoff`, and for map-free `alphaMode:'blend'` at full scalar opacity. Active alpha coverage from base-color texture alpha, `alphaMap`, non-opaque `COLOR_0.a`, mask opacity below cutoff, or fractional blend opacity still reports `path-replay-unsupported-visibility` and routes to finite difference.
