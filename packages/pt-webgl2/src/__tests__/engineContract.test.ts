@@ -948,7 +948,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       }
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('primitive-mutation-fallback-rebuild') ||
-        m.includes('targeted-geometry-bvh-refit'),
+        m.includes('targeted-primitive-geometry-splice'),
       )).toHaveLength(0);
     } finally {
       warn.mockRestore();
@@ -1012,7 +1012,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         primitiveId: 'tri',
         fields: ['indices', 'normals', 'positions', 'uvs'],
         fallbackReason: 'geometry-bvh-texture-rebuild',
-        nativePatchMissing: 'targeted-geometry-bvh-refit',
+        nativePatchMissing: 'targeted-primitive-geometry-splice',
         textureRefreshMode: 'resident-storage-respecify',
       });
       expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);

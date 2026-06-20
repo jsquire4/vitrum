@@ -941,7 +941,7 @@ export function tryFastPathGeometryMutation(
     structuredWarnings,
     mutationFallback: {
       fallbackReason: 'geometry-bvh-texture-rebuild',
-      nativePatchMissing: 'targeted-geometry-bvh-refit',
+      nativePatchMissing: 'targeted-primitive-geometry-splice',
       textureRefreshMode: 'resident-storage-respecify',
     },
   };

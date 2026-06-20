@@ -140,7 +140,7 @@ function primitiveFallbackReason(fields: readonly string[]): {
     }
     return {
       fallbackReason: 'geometry-bvh-texture-rebuild',
-      nativePatchMissing: 'targeted-geometry-bvh-refit',
+      nativePatchMissing: 'targeted-primitive-geometry-splice',
     };
   }
   return null;

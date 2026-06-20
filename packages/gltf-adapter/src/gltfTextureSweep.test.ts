@@ -517,6 +517,33 @@ describe('KHR extension texture sweep (GLTF-06)', () => {
     )).toHaveLength(1);
   });
 
+  it('reports selected source-extension missing images at the extension source path', async () => {
+    const { gltf, buffers } = makeTextureSourceExtensionGltf('MSFT_texture_dds');
+    gltf.extensionsUsed = ['MSFT_texture_dds'];
+    gltf.textures![0]!.extensions = {
+      MSFT_texture_dds: { source: 99 },
+    };
+
+    const result = await gltfToScene(gltf, {
+      buffers,
+      textureSourceExtensions: ['MSFT_texture_dds'],
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+    });
+
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    expect(material.baseColorMap).toBeUndefined();
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'image-not-found',
+        path: 'textures[0].extensions.MSFT_texture_dds.source',
+        textureIndex: 0,
+        imageIndex: 99,
+        textureSourceExtensions: ['MSFT_texture_dds'],
+      }),
+    ]));
+  });
+
   it('scalar companions still map (normalScale, aoMapIntensity, clearcoatNormalScale)', async () => {
     const { mat } = await importSweepMaterial();
     expect(mat.normalScale).toBeCloseTo(0.5);

@@ -427,6 +427,27 @@ for (const needle of [
   }
 }
 
+const gltfTextures = await readText("packages/gltf-adapter/src/textures.ts");
+for (const needle of [
+  "interface SelectedTextureImageSource",
+  "path: `textures[${textureIndex}].extensions.${extName}.source`",
+  "path: selectedSource?.path ?? `textures[${textureIndex}].source`",
+]) {
+  if (!gltfTextures.includes(needle)) {
+    fail(`gltf texture acquisition diagnostics must retain selected source-extension paths: ${needle}`);
+  }
+}
+
+const gltfTextureSweepTest = await readText("packages/gltf-adapter/src/gltfTextureSweep.test.ts");
+for (const needle of [
+  "reports selected source-extension missing images at the extension source path",
+  "path: 'textures[0].extensions.MSFT_texture_dds.source'",
+]) {
+  if (!gltfTextureSweepTest.includes(needle)) {
+    fail(`gltf texture sweep must pin selected source-extension missing-image diagnostics: ${needle}`);
+  }
+}
+
 const walkaroundBackendConstructor = await readText("packages/engine/src/backends/walkaround.ts");
 for (const needle of [
   "opts.onAdapterProfile?.(profile);",
@@ -605,6 +626,7 @@ for (const needle of [
   "textures2DArray = current.textures2DArray;",
   "pushMaterialAtlasRefreshWarning(",
   "textureRefreshMode: 'resident-storage-respecify'",
+  "nativePatchMissing: 'targeted-primitive-geometry-splice'",
   "key === 'material' || key === 'castShadow'",
   "materialWithCastShadow(primitive)",
 ]) {
@@ -617,6 +639,7 @@ const ptWebgl2EngineContractTest = await readText("packages/pt-webgl2/src/__test
 for (const needle of [
   "keeps the atlas texture object resident during dimension-changing primitive list fallbacks",
   "updatePrimitive castShadow patches update the material lane without rebuilding BVH geometry",
+  "nativePatchMissing: 'targeted-primitive-geometry-splice'",
   "expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);",
   "reason: 'capacity-exhausted'",
   "nextLayerCapacity: 8",

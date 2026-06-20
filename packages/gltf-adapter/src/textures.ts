@@ -112,6 +112,12 @@ type GltfTextureRefWithSource = TextureRef & {
   readonly [GLTF_TEXTURE_REF_SOURCE]?: GltfTextureRefSource;
 };
 
+interface SelectedTextureImageSource {
+  readonly imageIndex?: number;
+  readonly path?: string;
+  readonly textureSourceExtension?: GltfTextureSourceExtension;
+}
+
 export function attachGltfTextureRefSource(ref: TextureRef, source: GltfTextureRefSource | undefined): TextureRef {
   if (source === undefined) return ref;
   return {
@@ -137,15 +143,19 @@ function getImageBytes(
   warnings: string[],
   onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
   externalImages?: ReadonlyMap<number, GltfImageBytes>,
+  selectedSource?: SelectedTextureImageSource,
 ): { bytes: Uint8Array; mimeType: string } | undefined {
   const image = gltf.images?.[imageIndex];
   if (!image) {
     emitTextureAcquisitionDiagnostic(warnings, onDiagnostic, {
       severity: 'warning',
       code: 'image-not-found',
-      path: `textures[${textureIndex}].source`,
+      path: selectedSource?.path ?? `textures[${textureIndex}].source`,
       textureIndex,
       imageIndex,
+      ...(selectedSource?.textureSourceExtension !== undefined
+        ? { textureSourceExtensions: [selectedSource.textureSourceExtension] }
+        : {}),
       message:
         `[vitrum/gltf-adapter] Texture at textures[${textureIndex}] references missing image index ` +
         `${imageIndex}. Texture skipped.`,
@@ -340,17 +350,27 @@ export async function buildTextureHandleMap(
 ): Promise<Map<number, unknown>> {
   const textures = gltf.textures ?? [];
   const imageHandles = new Map<number, Promise<unknown>>();
-  const textureImageSources = new Map<number, number | undefined>();
+  const textureImageSources = new Map<number, SelectedTextureImageSource>();
   const externalImageMap = normalizeImageBytesMap(externalImages);
   const sourceExtensions = new Set(textureSourceExtensions);
 
   // Kick off unique image decodes in parallel.
   for (const [textureIndex, tex] of textures.entries()) {
     if (textureIndices !== undefined && !textureIndices.has(textureIndex)) continue;
-    const imageIdx = resolveTextureImageSource(tex, textureIndex, sourceExtensions, warnings, onDiagnostic);
-    textureImageSources.set(textureIndex, imageIdx);
+    const selectedSource = resolveTextureImageSource(tex, textureIndex, sourceExtensions, warnings, onDiagnostic);
+    textureImageSources.set(textureIndex, selectedSource);
+    const imageIdx = selectedSource.imageIndex;
     if (imageIdx !== undefined && !imageHandles.has(imageIdx)) {
-      const imgData = getImageBytes(gltf, buffers, imageIdx, textureIndex, warnings, onDiagnostic, externalImageMap);
+      const imgData = getImageBytes(
+        gltf,
+        buffers,
+        imageIdx,
+        textureIndex,
+        warnings,
+        onDiagnostic,
+        externalImageMap,
+        selectedSource,
+      );
       if (imgData) {
         imageHandles.set(
           imageIdx,
@@ -364,7 +384,7 @@ export async function buildTextureHandleMap(
   const resolved = new Map<number, unknown>();
   for (const [texIdx] of textures.entries()) {
     if (textureIndices !== undefined && !textureIndices.has(texIdx)) continue;
-    const imageIdx = textureImageSources.get(texIdx);
+    const imageIdx = textureImageSources.get(texIdx)?.imageIndex;
     if (imageIdx !== undefined) {
       const p = imageHandles.get(imageIdx);
       if (p) resolved.set(texIdx, await p);
@@ -380,9 +400,9 @@ function resolveTextureImageSource(
   enabledExtensions: ReadonlySet<string>,
   warnings: string[],
   onDiagnostic?: GltfTextureAcquisitionDiagnosticSink,
-): number | undefined {
-  const selected = selectTextureImageSource(texture, enabledExtensions);
-  if (selected.imageIndex !== undefined) return selected.imageIndex;
+): SelectedTextureImageSource {
+  const selected = selectTextureImageSource(texture, textureIndex, enabledExtensions);
+  if (selected.imageIndex !== undefined) return selected;
 
   const available: GltfTextureSourceExtension[] = [];
   for (const extName of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
@@ -404,7 +424,9 @@ function resolveTextureImageSource(
         'an alternate image source. Texture skipped.',
     });
   }
-  return texture.source;
+  return texture.source !== undefined
+    ? { imageIndex: texture.source, path: `textures[${textureIndex}].source` }
+    : {};
 }
 
 function emitTextureAcquisitionDiagnostic(
@@ -418,17 +440,23 @@ function emitTextureAcquisitionDiagnostic(
 
 function selectTextureImageSource(
   texture: GltfTexture,
+  textureIndex: number,
   enabledExtensions: ReadonlySet<string>,
-): {
-  readonly imageIndex?: number;
-  readonly textureSourceExtension?: GltfTextureSourceExtension;
-} {
+): SelectedTextureImageSource {
   for (const extName of GLTF_TEXTURE_SOURCE_EXTENSIONS) {
     if (!enabledExtensions.has(extName)) continue;
     const source = texture.extensions?.[extName]?.source;
-    if (source !== undefined) return { imageIndex: source, textureSourceExtension: extName };
+    if (source !== undefined) {
+      return {
+        imageIndex: source,
+        path: `textures[${textureIndex}].extensions.${extName}.source`,
+        textureSourceExtension: extName,
+      };
+    }
   }
-  return texture.source !== undefined ? { imageIndex: texture.source } : {};
+  return texture.source !== undefined
+    ? { imageIndex: texture.source, path: `textures[${textureIndex}].source` }
+    : {};
 }
 
 function normalizeImageBytesMap(
@@ -519,7 +547,7 @@ export function resolveTextureRef(
   const magFilter = textureMagFilterMode(sampler?.magFilter);
   const { minFilter, mipFilter } = textureMinFilterModes(sampler?.minFilter);
   const selectedSource = texture !== undefined
-    ? selectTextureImageSource(texture, new Set(textureSourceExtensions))
+    ? selectTextureImageSource(texture, info.index, new Set(textureSourceExtensions))
     : {};
   const image = selectedSource.imageIndex !== undefined
     ? gltf?.images?.[selectedSource.imageIndex]
