@@ -1322,7 +1322,7 @@ function materialIssueCommon(
   if (!options.allowAnisotropy && (material.anisotropy ?? 0) > 1e-6) {
     return { message: 'anisotropy is coupled to the optimized BRDF field', details: { field: 'anisotropy', value: material.anisotropy ?? 0 } };
   }
-  if (material.frontLayer != null || material.backLayer != null || material.thinFilmStack != null) {
+  if (pathReplayLayeredMaterialAffectsBrdf(material)) {
     return {
       code: 'path-replay-unsupported-transport',
       message: 'layered/thin-film material stacks are not replayed',
@@ -1529,7 +1529,7 @@ function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean 
   if (m.shadingModel !== 'unlit') return false;
   if ((m.alphaMode ?? 'opaque') !== 'opaque') return false;
   if ((m.transmission ?? 0) > 1e-6) return false;
-  if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
+  if (pathReplayLayeredMaterialAffectsBrdf(m)) return false;
   if (pathReplaySpectralOrDispersionAffectsTransport(m)) return false;
   if (pathReplayScatteringAffectsTransport(m)) return false;
   if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
@@ -1576,6 +1576,23 @@ function pathReplayScatteringAffectsTransport(m: MaterialSpec): boolean {
   if ((m.scatteringCoefficient ?? 0) > 0) return true;
   const rgb = m.scatteringCoefficientRGB;
   return rgb != null && ((rgb[0] ?? 0) > 0 || (rgb[1] ?? 0) > 0 || (rgb[2] ?? 0) > 0);
+}
+
+function pathReplayLayeredMaterialAffectsBrdf(m: MaterialSpec): boolean {
+  return pathReplayLayerAffectsBrdf(m.frontLayer) ||
+    pathReplayLayerAffectsBrdf(m.backLayer) ||
+    ((m.thinFilmStack?.layers.length ?? 0) > 0);
+}
+
+function pathReplayLayerAffectsBrdf(layer: MaterialSpec['frontLayer']): boolean {
+  if (layer == null) return false;
+  const tx = layer.transmission;
+  return Math.abs((tx[0] ?? 1) - 1) > 1e-6 ||
+    Math.abs((tx[1] ?? 1) - 1) > 1e-6 ||
+    Math.abs((tx[2] ?? 1) - 1) > 1e-6 ||
+    layer.roughness != null ||
+    layer.normalMap != null ||
+    layer.normalScale != null;
 }
 
 function pathReplayAlphaMapAffectsVisibility(m: MaterialSpec): boolean {
