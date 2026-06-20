@@ -711,6 +711,88 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning for texture-driven alpha blend approximation', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [0.6, 0.6, 0.6],
+          roughness: 0.35,
+          metallic: 0,
+          alphaMode: 'blend',
+          opacity: 1,
+          baseColorMap: {
+            handle: {
+              width: 1,
+              height: 1,
+              data: new Uint8Array([255, 255, 255, 96]),
+              __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+            },
+          },
+          alphaMap: {
+            handle: {
+              width: 1,
+              height: 1,
+              data: new Uint8Array([128, 255, 255, 255]),
+              __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+            },
+          },
+        },
+      });
+
+      const alphaWarnings = warnings.filter((w) =>
+        w.code === 'walkaround-hybrid.alpha-blend-approximation',
+      );
+      expect(alphaWarnings).toHaveLength(1);
+      expect(alphaWarnings[0]?.method).toBe('updatePrimitive');
+      expect(alphaWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material partial) computes alpha blend warnings from the merged material', () => {
+    const sourceScene = baseScene();
+    const first = sourceScene.primitives[0] as Extract<ScenePrimitive, { kind: 'mesh' }>;
+    const scene: Scene = {
+      ...sourceScene,
+      primitives: [
+        {
+          ...first,
+          material: {
+            ...first.material,
+            alphaMode: 'blend',
+            opacity: 1,
+            baseColorMap: {
+              handle: {
+                width: 1,
+                height: 1,
+                data: new Uint8Array([255, 255, 255, 96]),
+                __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+              },
+            },
+          },
+        },
+        ...sourceScene.primitives.slice(1),
+      ],
+    };
+    const { engine, warnings } = seedEngine(scene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: { roughness: 0.2 },
+      } as unknown as Partial<ScenePrimitive>);
+
+      const alphaWarnings = warnings.filter((w) =>
+        w.code === 'walkaround-hybrid.alpha-blend-approximation',
+      );
+      expect(alphaWarnings).toHaveLength(1);
+      expect(alphaWarnings[0]?.method).toBe('updatePrimitive');
+      expect(alphaWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) emits a structured warning for emissive-map texel-PDF approximation', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {
