@@ -370,7 +370,7 @@ export function collectApproximateAlphaBlendPrimitiveIds(
     const mat = prim.material;
     if (!mat || mat.alphaMode !== 'blend') continue;
     const opacity = effectiveScalarBlendOpacity(mat);
-    const hasTextureAlphaSource = mat.baseColorMap != null || mat.alphaMap != null;
+    const hasTextureAlphaSource = baseColorMapCanReduceAlpha(mat.baseColorMap) || mat.alphaMap != null;
     const hasVertexAlphaSource = hasFractionalVertexAlpha(prim.positions, prim.colors);
     if (opacity > 0 && (opacity < 1 || hasTextureAlphaSource || hasVertexAlphaSource)) {
       ids.push(prim.id ?? '(unnamed)');
@@ -467,6 +467,80 @@ function effectiveScalarBlendOpacity(material: Record<string, unknown>): number 
     ? unitAlpha(baseColor[3], 1)
     : 1;
   return Math.min(1, Math.max(0, opacity * baseAlpha));
+}
+
+function asTextureHandle(value: unknown): unknown | null {
+  if (value == null) return null;
+  if (typeof value === 'object' && 'handle' in value) {
+    return (value as { readonly handle?: unknown }).handle ?? null;
+  }
+  return value;
+}
+
+function textureHint(handle: unknown): {
+  readonly channels?: number;
+  readonly dataType?: string;
+} | undefined {
+  if (handle == null || typeof handle !== 'object') return undefined;
+  const h = handle as {
+    readonly __vitrum_hint__?: { readonly channels?: number; readonly dataType?: string };
+    readonly channels?: number;
+    readonly dataType?: string;
+  };
+  return h.__vitrum_hint__ ?? (
+    h.channels != null || h.dataType != null
+      ? {
+          ...(h.channels != null ? { channels: h.channels } : {}),
+          ...(h.dataType != null ? { dataType: h.dataType } : {}),
+        }
+      : undefined
+  );
+}
+
+function halfToFloat(h: number): number {
+  const s = (h & 0x8000) >> 15;
+  const e = (h & 0x7c00) >> 10;
+  const f = h & 0x03ff;
+  if (e === 0) return (s ? -1 : 1) * 2 ** -14 * (f / 1024);
+  if (e === 0x1f) return f ? NaN : (s ? -1 : 1) * Infinity;
+  return (s ? -1 : 1) * 2 ** (e - 15) * (1 + f / 1024);
+}
+
+function decodedTextureAlpha(value: number, src: ArrayLike<number>, hintDataType: string | undefined): number {
+  const isHalf = src instanceof Uint16Array;
+  const isFloat = src instanceof Float32Array;
+  const useHalf = hintDataType != null ? hintDataType === 'uint16' : isHalf;
+  const useFloat = hintDataType != null ? hintDataType === 'float32' : isFloat;
+  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+  const intMax = useHalf || useFloat ? 0 : 2 ** (8 * bpe) - 1;
+  return useHalf ? halfToFloat(value) : useFloat ? value : intMax > 0 ? value / intMax : value;
+}
+
+function baseColorMapCanReduceAlpha(value: unknown): boolean {
+  const handle = asTextureHandle(value);
+  if (handle == null || typeof handle !== 'object') return false;
+  const h = handle as {
+    readonly width?: number;
+    readonly height?: number;
+    readonly data?: ArrayLike<number>;
+    readonly image?: { readonly width?: number; readonly height?: number; readonly data?: ArrayLike<number> };
+  };
+  const src = h.data ?? h.image?.data;
+  const width = Number(h.width ?? h.image?.width ?? 0);
+  const height = Number(h.height ?? h.image?.height ?? 0);
+  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) return false;
+
+  const hint = textureHint(handle);
+  const pixelCount = Math.max(1, width * height);
+  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
+  const stride = hint?.channels ?? heuristicStride;
+  if (stride < 4) return false;
+
+  for (let p = 0; p < pixelCount; p += 1) {
+    const alpha = decodedTextureAlpha(Number(src[p * stride + 3] ?? 1), src, hint?.dataType);
+    if (Number.isFinite(alpha) && alpha < 0.999) return true;
+  }
+  return false;
 }
 
 function hasFractionalVertexAlpha(

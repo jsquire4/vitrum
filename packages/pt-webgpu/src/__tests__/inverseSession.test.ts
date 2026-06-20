@@ -2545,6 +2545,46 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps envMapIntensity on scoped path-replay for procedural sky baked through the environment CDF', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [],
+      environment: {
+        kind: 'procedural-sky',
+        sunDirection: [0, 1, 0],
+        turbidity: 2,
+        rayleigh: 1,
+        mieCoefficient: 0.005,
+        mieDirectionalG: 0.8,
+        intensity: 1,
+      },
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, envMapIntensity: 0.45 } }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.envMapIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.currentValues()).toEqual([[expect.closeTo(0.45, 6)]]);
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-environment',
+    }));
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-lighting',
+    }));
+    session.dispose();
+  });
+
   it('keeps envMapIntensity path-replay when the receiver uses iridescence maps', () => {
     const fake = makeFakeEngine();
     fake.scene = {

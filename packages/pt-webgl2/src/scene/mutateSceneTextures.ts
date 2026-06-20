@@ -131,14 +131,17 @@ function isMeshLikePrimitive(p: ScenePrimitive | undefined): p is Extract<
   return p?.kind === 'mesh' || p?.kind === 'instanced-mesh' || p?.kind === 'skinned-mesh';
 }
 
-function canFastPathMaterialPatch(
-  patch: Partial<ScenePrimitive>,
-): patch is Partial<ScenePrimitive> & { material: MaterialSpec } {
-  if (patch.material == null) return false;
+function canFastPathMaterialPatch(patch: Partial<ScenePrimitive>): boolean {
+  let sawMaterialLaneField = false;
   for (const key of Object.keys(patch)) {
-    if (key !== 'material' && key !== 'id' && key !== 'kind') return false;
+    if (key === 'id' || key === 'kind') continue;
+    if (key === 'material' || key === 'castShadow') {
+      sawMaterialLaneField = true;
+      continue;
+    }
+    return false;
   }
-  return true;
+  return sawMaterialLaneField;
 }
 
 function texturePatchNeedsAtlasRefresh(
@@ -586,8 +589,11 @@ export function tryFastPathMaterialMutation(
   if (!isMeshLikePrimitive(primitive)) return null;
   const slot = uniqueMaterialSlotForPrimitive(geoPack, primitiveId);
   if (slot == null || slot >= geoPack.materials.length) return null;
-  const atlasRefreshNeeded = texturePatchNeedsAtlasRefresh(patch, current.materialLayerMap) ||
-    texturePatchMayCompactAtlas(geoPack.materials[slot], patch);
+  const materialPatch = patch.material != null ? { material: patch.material } : null;
+  const atlasRefreshNeeded = materialPatch != null && (
+    texturePatchNeedsAtlasRefresh(materialPatch, current.materialLayerMap) ||
+    texturePatchMayCompactAtlas(geoPack.materials[slot], materialPatch)
+  );
 
   const unsupportedDisplacementFields = unsupportedDisplacementPatchFields(patch);
   const structuredWarnings: EngineWarning[] = unsupportedDisplacementFields.length > 0
@@ -1098,8 +1104,34 @@ export function tryFastPathPrimitiveListMutation(
   );
   const deleteOldTextures: (WebGLTexture | null)[] = [];
   const meshLights = updateResidentMeshLightTexture(gl, current, built.meshLightsData, deleteOldTextures);
-  const uploadedAtlas = atlas != null ? uploadAtlasWithCapacity(gl, atlas) : null;
-  const textures2DArray = uploadedAtlas?.texture ?? null;
+  let textures2DArray: WebGLTexture | null = null;
+  let materialAtlasLayerCapacity = 0;
+  if (atlas != null) {
+    if (current.textures2DArray != null) {
+      materialAtlasLayerCapacity = refreshTextureAtlasStorage(
+        gl,
+        current.textures2DArray,
+        atlas,
+        { layerCapacity: nextAtlasLayerCapacity },
+      );
+      textures2DArray = current.textures2DArray;
+    } else {
+      const uploadedAtlas = uploadAtlasWithCapacity(gl, atlas);
+      textures2DArray = uploadedAtlas.texture;
+      materialAtlasLayerCapacity = uploadedAtlas.capacity;
+    }
+  }
+  const atlasRefreshReason = materialAtlasRefreshReason(current, atlas, nextAtlasLayerCapacity);
+  if (atlasRefreshReason != null) {
+    pushMaterialAtlasRefreshWarning(
+      structuredWarnings,
+      { method: opts.method, primitiveId: opts.primitiveId },
+      current,
+      atlas,
+      atlasRefreshReason,
+      materialAtlasLayerCapacity,
+    );
+  }
   replaceRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
 
   return {
@@ -1108,7 +1140,7 @@ export function tryFastPathPrimitiveListMutation(
       textures2DArray,
       materialAtlasDim: atlas?.dim ?? 0,
       materialAtlasLayerCount: atlas?.layerCount ?? 0,
-      materialAtlasLayerCapacity: uploadedAtlas?.capacity ?? 0,
+      materialAtlasLayerCapacity,
       materialLayerMap: atlas?.layerOfByColorSpace ?? null,
       meshLightCount: built.meshLightsData.triLightCount,
       totalEmissiveArea: built.meshLightsData.totalEmissiveArea,
@@ -1120,7 +1152,7 @@ export function tryFastPathPrimitiveListMutation(
     scene: mutationScene,
     deleteOldTextures: [
       ...deleteOldTextures,
-      current.textures2DArray,
+      ...(atlas == null && current.textures2DArray != null ? [current.textures2DArray] : []),
     ],
     structuredWarnings,
     mutationFallback: {

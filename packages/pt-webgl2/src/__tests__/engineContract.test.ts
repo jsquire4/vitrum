@@ -809,6 +809,51 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(structured.some((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toBe(false);
   });
 
+  it('updatePrimitive castShadow patches update the material lane without rebuilding BVH geometry', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialSubImage2D = texSubImage2D.mock.calls.length;
+      const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
+      const beforePositions = e._debugGeoPack?.positions;
+
+      e.updatePrimitive?.('tri', { castShadow: false } as never);
+      e.updatePrimitive?.('tri', { castShadow: true, material: { roughness: 0.2 } } as never);
+
+      expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+      expect(e._debugGeoPack?.positions).toBe(beforePositions);
+      expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.2);
+      const scene = e.getScene?.();
+      const prim = scene?.primitives[0];
+      expect(prim?.kind).toBe('mesh');
+      if (prim?.kind === 'mesh') {
+        expect(prim.castShadow).toBe(true);
+        expect(prim.material.roughness).toBe(0.2);
+      }
+      expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toHaveLength(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBeGreaterThan(0);
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-mutation-fallback-rebuild') ||
+        m.includes('updatePrimitive("tri") fields [castShadow]'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('updates same-topology primitive geometry patches in place without fallback warnings', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
@@ -1873,6 +1918,65 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         m.includes('primitive-list-fallback-rebuild') ||
         m.includes('targeted-primitive-list-splice'),
       )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the atlas texture object resident during dimension-changing primitive list fallbacks', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const deleteTexture = vi.fn();
+    const texImage2D = vi.fn();
+    const texImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { deleteTexture: typeof deleteTexture }).deleteTexture = deleteTexture;
+    (gl as unknown as { texImage2D: typeof texImage2D }).texImage2D = texImage2D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(texturedTriListScene(1));
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialTextureDeletes = deleteTexture.mock.calls.length;
+      const initialImage2D = texImage2D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
+
+      e.addPrimitive?.(multiMapTri('tri-extra', 2));
+
+      expect(e.getScene?.()?.primitives.map((p) => String(p.id))).toEqual([
+        'tri-0',
+        'tri-extra',
+      ]);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(deleteTexture.mock.calls.length - initialTextureDeletes).toBe(0);
+      expect(texImage2D.mock.calls.length - initialImage2D).toBe(6);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(2);
+      const listWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild');
+      expect(listWarnings).toHaveLength(1);
+      expect(listWarnings[0]?.details).toMatchObject({
+        primitiveId: 'tri-extra',
+        fallbackReason: 'primitive-list-texture-refresh',
+        nativePatchMissing: 'targeted-primitive-list-splice',
+        textureRefreshMode: 'resident-storage-respecify',
+      });
+      const atlasWarnings = structured.filter((w) => w.code === 'pt-webgl2.material-atlas-texture-refresh');
+      expect(atlasWarnings).toHaveLength(1);
+      expect(atlasWarnings[0]?.details).toMatchObject({
+        primitiveId: 'tri-extra',
+        reason: 'capacity-exhausted',
+        previousDim: 1,
+        nextDim: 1,
+        previousLayerCount: 1,
+        nextLayerCount: 5,
+        previousLayerCapacity: 2,
+        nextLayerCapacity: 8,
+      });
     } finally {
       warn.mockRestore();
     }

@@ -302,7 +302,38 @@ describe('collectUnconsumedMaterialFields', () => {
       { id: 'transparent', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0 } },
       { id: 'fractional', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0.5 } },
       { id: 'base-alpha', kind: 'mesh', material: { baseColor: [1, 1, 1, 0.4], alphaMode: 'blend' } },
-      { id: 'base-map-alpha', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', baseColorMap: { handle: 'rgba' } } },
+      {
+        id: 'base-map-rgb',
+        kind: 'mesh',
+        material: {
+          baseColor: [1, 1, 1],
+          alphaMode: 'blend',
+          baseColorMap: {
+            handle: {
+              width: 1,
+              height: 1,
+              data: new Uint8Array([255, 255, 255]),
+              __vitrum_hint__: { channels: 3, dataType: 'uint8' },
+            },
+          },
+        },
+      },
+      {
+        id: 'base-map-alpha',
+        kind: 'mesh',
+        material: {
+          baseColor: [1, 1, 1],
+          alphaMode: 'blend',
+          baseColorMap: {
+            handle: {
+              width: 1,
+              height: 1,
+              data: new Uint8Array([255, 255, 255, 128]),
+              __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+            },
+          },
+        },
+      },
       { id: 'alpha-map', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', alphaMap: { handle: 'alpha' } } },
       { id: 'transparent-map', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 0, alphaMap: { handle: 'alpha' } } },
       { id: 'solid', kind: 'mesh', material: { baseColor: [1, 1, 1], alphaMode: 'blend', opacity: 1 } },
@@ -565,6 +596,44 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       );
       expect(alphaWarnings).toHaveLength(1);
       expect(alphaWarnings[0]?.details?.primitiveIds).toContain('blend-pane');
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('does not emit alpha approximation warning for RGB-only baseColorMap blend coverage', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const opaqueTextureBlendScene: Scene = {
+        ...consumedOnlyScene(),
+        primitives: [
+          {
+            ...consumedOnlyScene().primitives[0]!,
+            id: 'rgb-map-pane',
+            material: {
+              ...consumedOnlyScene().primitives[0]!.material,
+              alphaMode: 'blend',
+              opacity: 1,
+              baseColorMap: {
+                handle: {
+                  width: 1,
+                  height: 1,
+                  data: new Uint8Array([255, 255, 255]),
+                  __vitrum_hint__: { channels: 3, dataType: 'uint8' },
+                },
+              },
+            },
+          },
+        ],
+      };
+      engine.setScene(opaqueTextureBlendScene);
+      expect(structured.filter((w) =>
+        w.code === 'walkaround-hybrid.alpha-blend-approximation'
+      )).toHaveLength(0);
     } finally {
       engine.dispose();
     }

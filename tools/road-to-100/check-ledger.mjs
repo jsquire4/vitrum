@@ -599,6 +599,56 @@ for (const needle of [
   }
 }
 
+const ptWebgl2Mutations = await readText("packages/pt-webgl2/src/scene/mutateSceneTextures.ts");
+for (const needle of [
+  "materialAtlasLayerCapacity = refreshTextureAtlasStorage(",
+  "textures2DArray = current.textures2DArray;",
+  "pushMaterialAtlasRefreshWarning(",
+  "textureRefreshMode: 'resident-storage-respecify'",
+  "key === 'material' || key === 'castShadow'",
+  "materialWithCastShadow(primitive)",
+]) {
+  if (!ptWebgl2Mutations.includes(needle)) {
+    fail(`pt-webgl2 primitive-list fallbacks must retain resident atlas/storage refresh: ${needle}`);
+  }
+}
+
+const ptWebgl2EngineContractTest = await readText("packages/pt-webgl2/src/__tests__/engineContract.test.ts");
+for (const needle of [
+  "keeps the atlas texture object resident during dimension-changing primitive list fallbacks",
+  "updatePrimitive castShadow patches update the material lane without rebuilding BVH geometry",
+  "expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);",
+  "reason: 'capacity-exhausted'",
+  "nextLayerCapacity: 8",
+  "expect(prim.castShadow).toBe(true);",
+]) {
+  if (!ptWebgl2EngineContractTest.includes(needle)) {
+    fail(`pt-webgl2 engine contract tests must pin atlas/castShadow mutation residency: ${needle}`);
+  }
+}
+
+const walkaroundConsumedMaterialFields = await readText("packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts");
+for (const needle of [
+  "baseColorMapCanReduceAlpha(mat.baseColorMap) || mat.alphaMap != null",
+  "function baseColorMapCanReduceAlpha",
+  "if (stride < 4) return false;",
+]) {
+  if (!walkaroundConsumedMaterialFields.includes(needle)) {
+    fail(`walkaround alpha-blend warning collector must stay alpha-channel aware: ${needle}`);
+  }
+}
+
+const walkaroundConsumedMaterialFieldsTest = await readText("packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts");
+for (const needle of [
+  "id: 'base-map-rgb'",
+  "id: 'base-map-alpha'",
+  "does not emit alpha approximation warning for RGB-only baseColorMap blend coverage",
+]) {
+  if (!walkaroundConsumedMaterialFieldsTest.includes(needle)) {
+    fail(`walkaround alpha-blend tests must pin RGB-vs-RGBA warning precision: ${needle}`);
+  }
+}
+
 const adjointPass = await readText("packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts");
 for (const needle of [
   "spotLights",
@@ -623,6 +673,30 @@ for (const needle of [
 ]) {
   if (!adjointHarnessTest.includes(needle)) {
     fail(`pt-webgpu adjoint harness test must pin ${needle}`);
+  }
+}
+
+const ptWebgpuInverseSessionTest = await readText("packages/pt-webgpu/src/__tests__/inverseSession.test.ts");
+for (const needle of [
+  "keeps envMapIntensity on scoped path-replay for procedural sky baked through the environment CDF",
+  "environment: {",
+  "kind: 'procedural-sky'",
+  "code: 'path-replay-unsupported-environment'",
+]) {
+  if (!ptWebgpuInverseSessionTest.includes(needle)) {
+    fail(`pt-webgpu inverse tests must pin procedural-sky environment-CDF path replay: ${needle}`);
+  }
+}
+
+const ptWebgpuEnvironmentPacking = await readText("packages/pt-webgpu/src/scene/environmentPacking.ts");
+for (const needle of [
+  "bakePreethamSkyEquirect({",
+  "hasHdri: true",
+  "hdriTexels: texels",
+  "hdriCdf: cdf",
+]) {
+  if (!ptWebgpuEnvironmentPacking.includes(needle)) {
+    fail(`pt-webgpu procedural-sky must remain baked into environment-map CDF for adjoint replay: ${needle}`);
   }
 }
 
