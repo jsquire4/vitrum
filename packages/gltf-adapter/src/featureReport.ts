@@ -192,6 +192,7 @@ export interface GltfMaterialFeatureReport {
   readonly samplerPolicies: readonly GltfTextureSamplerPolicyUse[];
   readonly malformedSamplerPolicies: readonly GltfMalformedTextureSamplerPolicyUse[];
   readonly textureReferenceIssues: readonly GltfMaterialTextureReferenceIssue[];
+  readonly primitiveMaterialReferenceIssues: readonly GltfPrimitiveMaterialReferenceIssue[];
   readonly variantMappingIssues: readonly GltfMaterialVariantMappingIssue[];
   readonly extensions: readonly string[];
   readonly unsupportedKnownExtensions: readonly string[];
@@ -257,6 +258,14 @@ export interface GltfMaterialTextureReferenceIssue {
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
   readonly textureSourceExtensions?: readonly GltfTextureSourceExtensionName[];
+}
+
+export interface GltfPrimitiveMaterialReferenceIssue {
+  readonly kind: 'missing-material';
+  readonly path: string;
+  readonly meshIndex: number;
+  readonly primitiveIndex: number;
+  readonly materialIndex: number;
 }
 
 export type GltfMaterialVariantMappingIssueKind =
@@ -1009,6 +1018,16 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  for (const materialIssue of report.materials.primitiveMaterialReferenceIssues) {
+    addIssue({
+      category: 'material',
+      name: `primitive.material.${materialIssue.kind}`,
+      support: 'approximate',
+      path: materialIssue.path,
+      message: primitiveMaterialReferenceIssueMessage(materialIssue),
+    });
+  }
+
   for (const variantIssue of report.materials.variantMappingIssues) {
     addIssue({
       category: 'material',
@@ -1210,6 +1229,13 @@ function materialVariantMappingIssueMessage(issue: GltfMaterialVariantMappingIss
       ? 'a missing or malformed variants array'
       : `missing variant ${String(issue.variantIndex)}`) +
     '; strict backend selection rejects this broken variant route.'
+  );
+}
+
+function primitiveMaterialReferenceIssueMessage(issue: GltfPrimitiveMaterialReferenceIssue): string {
+  return (
+    `glTF mesh ${issue.meshIndex} primitive ${issue.primitiveIndex} references missing ` +
+    `material ${String(issue.materialIndex)}; the importer falls back to the default material.`
   );
 }
 
@@ -2587,6 +2613,7 @@ function analyzeMaterials(
   const samplerPolicies: GltfTextureSamplerPolicyUse[] = [];
   const malformedSamplerPolicies: GltfMalformedTextureSamplerPolicyUse[] = [];
   const textureReferenceIssues: GltfMaterialTextureReferenceIssue[] = [];
+  const primitiveMaterialReferenceIssues = collectPrimitiveMaterialReferenceIssues(gltf, sceneScope);
   const variantMappingIssues = materialVariantMappingIssues(gltf, sceneScope);
   const extensions = new Set<string>();
   const unsupportedKnownExtensions = new Set<string>();
@@ -2783,6 +2810,9 @@ function analyzeMaterials(
     textureReferenceIssues: textureReferenceIssues.sort((a, b) =>
       a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),
     ),
+    primitiveMaterialReferenceIssues: primitiveMaterialReferenceIssues.sort((a, b) =>
+      a.path.localeCompare(b.path),
+    ),
     variantMappingIssues: variantMappingIssues.sort((a, b) => a.path.localeCompare(b.path)),
     extensions: sorted(extensions),
     unsupportedKnownExtensions: sorted(unsupportedKnownExtensions),
@@ -2796,6 +2826,31 @@ function analyzeMaterials(
     doubleSidedCount,
     issuePaths: sourcePathRecord(issuePaths),
   };
+}
+
+function collectPrimitiveMaterialReferenceIssues(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): GltfPrimitiveMaterialReferenceIssue[] {
+  const issues: GltfPrimitiveMaterialReferenceIssue[] = [];
+  const materialCount = gltf.materials?.length ?? 0;
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
+      if (sceneScope !== undefined && !sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
+      const materialIndex = primitive.material;
+      if (materialIndex === undefined) continue;
+      if (!Number.isInteger(materialIndex) || materialIndex < 0 || materialIndex >= materialCount) {
+        issues.push({
+          kind: 'missing-material',
+          path: `meshes[${meshIndex}].primitives[${primitiveIndex}].material`,
+          meshIndex,
+          primitiveIndex,
+          materialIndex,
+        });
+      }
+    }
+  }
+  return issues;
 }
 
 function materialVariantMappingIssues(

@@ -462,6 +462,9 @@ for (const needle of [
 
 for (const needle of [
   "rejects degraded texture decode diagnostics before constructing an engine",
+  "rejects missing base primitive material indices in reject-degraded mode",
+  "primitive.material.missing-material",
+  "import:material-not-found=approximate at meshes[0].primitives[0].material",
   "promotes NPOT repeat-wrap decode diagnostics into degraded compatibility issues",
   "texture-decode:decoded-texture-exceeds-max-size:baseColorMap",
   "texture-decode:decoded-texture-npot-repeat-wrap:baseColorMap",
@@ -479,6 +482,17 @@ for (const needle of [
 ]) {
   if (!ptWebgl2TexturesArray.includes(needle)) {
     fail(`pt-webgl2 texture atlas must warn on ignored sampler filter/mip policy: ${needle}`);
+  }
+}
+
+const walkaroundMaterialTextureAtlas = await readText("packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts");
+for (const needle of [
+  "'material-texture-sampler-policy-approximation'",
+  "function hasAuthoredSamplerPolicy(",
+  "map remains atlas-backed with approximate filtering",
+]) {
+  if (!walkaroundMaterialTextureAtlas.includes(needle)) {
+    fail(`walkaround material texture atlas must diagnose sampler policy approximation: ${needle}`);
   }
 }
 
@@ -700,9 +714,12 @@ for (const needle of [
   "if (opts.denoiser === 'oidn-final')",
   "const modelUrl = opts.oidn?.modelUrl;",
   "this.#postDenoiser = new OIDNFinalDispatcher(",
+  "pt-webgl2.caustic-strategy-approximation",
+  "deterministic refraction-walk heuristic",
+  "deterministic cone-traced photon estimate",
 ]) {
   if (!ptWebgl2Index.includes(needle)) {
-    fail(`pt-webgl2 must retain oidn-final engine consumer: ${needle}`);
+    fail(`pt-webgl2 must retain OIDN and caustic-approximation runtime warnings: ${needle}`);
   }
 }
 

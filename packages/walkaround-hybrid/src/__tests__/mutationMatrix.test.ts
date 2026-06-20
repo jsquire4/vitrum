@@ -1019,6 +1019,55 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning when an atlas-backed map uses authored sampler policy', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    const baseColorMap = {
+      handle: baseColorMapHandle(192),
+      magFilter: 'nearest',
+      minFilter: 'nearest',
+      mipFilter: 'linear',
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture.sampler',
+        textureIndex: 7,
+        imageIndex: 8,
+        samplerIndex: 9,
+      },
+    } as TextureRef;
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap,
+        },
+      });
+
+      const warning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.material-texture-sampler-policy-approximation',
+      );
+      expect(warning?.method).toBe('updatePrimitive');
+      expect(warning?.details).toMatchObject({
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+        texCoord: 0,
+        magFilter: 'nearest',
+        minFilter: 'nearest',
+        mipFilter: 'linear',
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture.sampler',
+        textureIndex: 7,
+        imageIndex: 8,
+        samplerIndex: 9,
+        fallback: 'shared atlas sampler',
+      });
+      expect(warning?.message).toContain('requests sampler policy');
+      expect(warning?.message).toContain('map remains atlas-backed');
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) emits a structured warning when an atlas-backed map has an invalid transform', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     const baseColorMap = {

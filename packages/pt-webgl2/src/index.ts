@@ -1235,6 +1235,26 @@ export const createPTEngine_WebGL2: EngineFactory<
       `createPTEngine_WebGL2: materialLodDepth must be a finite number >= 0 (got ${opts.materialLodDepth})`,
     );
   }
+  if (opts.causticStrategy === 'manifold-nee' || opts.causticStrategy === 'photon-map') {
+    const approximation = opts.causticStrategy === 'manifold-nee'
+      ? 'deterministic refraction-walk heuristic'
+      : 'deterministic cone-traced photon estimate';
+    emitWebgl2Warning(opts, {
+      code: 'pt-webgl2.caustic-strategy-approximation',
+      backend: 'pt-webgl2',
+      phase: 'construction',
+      method: 'createPTEngine_WebGL2',
+      message:
+        `[vitrum/pt-webgl2] causticStrategy="${opts.causticStrategy}" is an approximate WebGL2 ` +
+        `${approximation}, not the promoted pt-webgpu MNEE/BDPT reference path. ` +
+        'Use it for compatibility captures or approximate caustic hints; use pt-webgpu full tier for promoted caustic evidence.',
+      details: {
+        requested: opts.causticStrategy,
+        approximation,
+        fallback: 'approximate caustic contribution',
+      },
+    });
+  }
   const bdptMaxLightBounces = opts.bdptOptions?.maxLightBounces;
   if (
     bdptMaxLightBounces !== undefined &&

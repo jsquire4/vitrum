@@ -422,6 +422,7 @@ export type GltfImportDiagnosticCode =
   | 'empty-triangulated-primitive'
   | 'material-variant-not-found'
   | 'material-variant-list-malformed'
+  | 'material-not-found'
   | 'material-variant-material-missing'
   | 'material-variant-mapping-malformed'
   | 'ignored-material-texcoord'
@@ -1022,6 +1023,19 @@ export async function gltfToScene(
         `${mesh.name ?? node.mesh}`,
         primitivePath,
       );
+      if (
+        materialIndex !== undefined &&
+        (!Number.isInteger(materialIndex) || materialIndex < 0 || materialIndex >= coreMaterials.length)
+      ) {
+        emitImportDiagnostic(warnings, diagnostics, {
+          severity: 'warning',
+          code: 'material-not-found',
+          path: `${primitivePath}.material`,
+          message:
+            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive references missing ` +
+            `material ${String(materialIndex)}. Default material is used.`,
+        });
+      }
       const material =
         materialIndex !== undefined && materialIndex < coreMaterials.length
           ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)

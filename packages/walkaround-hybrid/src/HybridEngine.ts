@@ -1048,12 +1048,14 @@ export class HybridEngine implements Engine {
         `${method}:${diagnostic.code}:${diagnostic.materialIndex}:${diagnostic.field}:` +
         `${diagnostic.colorSpace}:${sourcePath ?? ''}:${diagnostic.texCoord ?? ''}:` +
         `${diagnostic.transformComponents?.join(',') ?? ''}:` +
+        `${diagnostic.magFilter ?? ''}:${diagnostic.minFilter ?? ''}:${diagnostic.mipFilter ?? ''}:` +
         `${diagnostic.pixelStride ?? ''}:${diagnostic.valueCount ?? ''}`;
       if (this._warnedMaterialTextureAtlasDiagnostics.has(key)) continue;
       this._warnedMaterialTextureAtlasDiagnostics.add(key);
       const unsupportedTexCoord = diagnostic.code === 'unsupported-material-texture-texcoord';
       const ambiguousStride = diagnostic.code === 'ambiguous-material-texture-stride';
       const invalidTransform = diagnostic.code === 'invalid-material-texture-transform';
+      const samplerPolicy = diagnostic.code === 'material-texture-sampler-policy-approximation';
       this._warn({
         code: unsupportedTexCoord
           ? 'walkaround-hybrid.unsupported-material-texture-texcoord'
@@ -1061,7 +1063,9 @@ export class HybridEngine implements Engine {
             ? 'walkaround-hybrid.ambiguous-material-texture-stride'
             : invalidTransform
               ? 'walkaround-hybrid.invalid-material-texture-transform'
-              : 'walkaround-hybrid.unreadable-material-texture-map',
+              : samplerPolicy
+                ? 'walkaround-hybrid.material-texture-sampler-policy-approximation'
+                : 'walkaround-hybrid.unreadable-material-texture-map',
         backend: 'walkaround-hybrid',
         phase: method,
         method,
@@ -1082,6 +1086,13 @@ export class HybridEngine implements Engine {
                 `has non-finite texture transform component(s) ` +
                 `${diagnostic.transformComponents?.join(', ') ?? '(unknown)'}; invalid components are replaced ` +
                 `with the identity texture transform fallback and the map remains atlas-backed.`
+              : samplerPolicy
+                ? `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
+                  `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
+                  `requests sampler policy ` +
+                  `mag=${diagnostic.magFilter ?? 'default'}, min=${diagnostic.minFilter ?? 'default'}, ` +
+                  `mip=${diagnostic.mipFilter ?? 'default'}; the material atlas uses a shared atlas sampler, ` +
+                  `so the map remains atlas-backed with approximate filtering.`
           : `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
             `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
             `has a texture handle that is not CPU-readable; ` +
@@ -1099,6 +1110,9 @@ export class HybridEngine implements Engine {
           ...(diagnostic.transformComponents !== undefined
             ? { transformComponents: diagnostic.transformComponents }
             : {}),
+          ...(diagnostic.magFilter !== undefined ? { magFilter: diagnostic.magFilter } : {}),
+          ...(diagnostic.minFilter !== undefined ? { minFilter: diagnostic.minFilter } : {}),
+          ...(diagnostic.mipFilter !== undefined ? { mipFilter: diagnostic.mipFilter } : {}),
           ...(sourcePath !== undefined ? { sourcePath } : {}),
           ...(diagnostic.textureIndex !== undefined ? { textureIndex: diagnostic.textureIndex } : {}),
           ...(diagnostic.imageIndex !== undefined ? { imageIndex: diagnostic.imageIndex } : {}),
@@ -1112,7 +1126,9 @@ export class HybridEngine implements Engine {
             ? 'heuristic pixel stride'
             : invalidTransform
               ? 'identity texture transform fallback'
-              : 'map ignored',
+              : samplerPolicy
+                ? 'shared atlas sampler'
+                : 'map ignored',
         },
       });
     }

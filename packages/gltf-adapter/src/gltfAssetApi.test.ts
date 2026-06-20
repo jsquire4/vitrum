@@ -5314,6 +5314,42 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('reports and rejects missing base primitive material indices in reject-degraded mode', async () => {
+    const { gltf, buffers } = makeInlineNormalMappedGltf();
+    gltf.meshes![0]!.primitives[0]!.material = 99;
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.primitiveMaterialReferenceIssues).toEqual([
+      expect.objectContaining({
+        kind: 'missing-material',
+        path: 'meshes[0].primitives[0].material',
+        meshIndex: 0,
+        primitiveIndex: 0,
+        materialIndex: 99,
+      }),
+    ]);
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'material',
+        name: 'primitive.material.missing-material',
+        support: 'approximate',
+        path: 'meshes[0].primitives[0].material',
+      }),
+    ]));
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine,
+    })).rejects.toThrow(
+      'import:material-not-found=approximate at meshes[0].primitives[0].material',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('rejects ignored high-UV material texture diagnostics in reject-degraded mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineNormalMappedGltf({ texCoord: 2 });
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));

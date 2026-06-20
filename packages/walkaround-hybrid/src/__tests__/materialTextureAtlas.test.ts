@@ -299,6 +299,56 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.diagnostics[0]?.message).toContain('texCoord 2');
   });
 
+  it('reports authored sampler policies as approximate while keeping the map atlas-backed', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 255, 0, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+    };
+    const baseColorMap = {
+      handle,
+      magFilter: 'nearest',
+      minFilter: 'nearest',
+      mipFilter: 'linear',
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture.sampler',
+        textureIndex: 2,
+        imageIndex: 3,
+        samplerIndex: 4,
+      },
+    } as TextureRef;
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap,
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableBaseColorLayerCount).toBe(1);
+    expect(atlas.baseColorMetaData[0]).toBe(0);
+    expect(atlas.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'material-texture-sampler-policy-approximation',
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+        texCoord: 0,
+        magFilter: 'nearest',
+        minFilter: 'nearest',
+        mipFilter: 'linear',
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture.sampler',
+        textureIndex: 2,
+        imageIndex: 3,
+        samplerIndex: 4,
+      }),
+    ]);
+    expect(atlas.diagnostics[0]?.message).toContain('map remains atlas-backed');
+    expect(atlas.diagnostics[0]?.message).toContain('approximate filtering');
+  });
+
   it('packs roughnessMap and metallicMap as linear scalar atlas slots', () => {
     const handle = {
       width: 1,

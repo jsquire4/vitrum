@@ -1,4 +1,10 @@
-import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
+import type {
+  MaterialSpec,
+  TextureFilterMode,
+  TextureMipFilterMode,
+  TextureRef,
+  TextureWrapMode,
+} from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
 export const MATERIAL_MAP_META_TEXELS_PER_TRI = 53;
@@ -66,12 +72,16 @@ export interface MaterialTextureAtlasDiagnostic {
     | 'unreadable-material-texture-map'
     | 'unsupported-material-texture-texcoord'
     | 'ambiguous-material-texture-stride'
-    | 'invalid-material-texture-transform';
+    | 'invalid-material-texture-transform'
+    | 'material-texture-sampler-policy-approximation';
   readonly materialIndex: number;
   readonly field: AtlasMapField;
   readonly colorSpace: AtlasColorSpace;
   readonly texCoord?: number;
   readonly transformComponents?: readonly string[];
+  readonly magFilter?: TextureFilterMode;
+  readonly minFilter?: TextureFilterMode;
+  readonly mipFilter?: TextureMipFilterMode;
   readonly pixelStride?: number;
   readonly valueCount?: number;
   readonly width?: number;
@@ -249,6 +259,10 @@ function textureRefSourceMetadata(ref: TextureRef): TextureRefSourceMetadata | u
     };
   }
   return undefined;
+}
+
+function hasAuthoredSamplerPolicy(ref: TextureRef): boolean {
+  return ref.magFilter !== undefined || ref.minFilter !== undefined || ref.mipFilter !== undefined;
 }
 
 function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
@@ -452,6 +466,33 @@ export function packMaterialTextureAtlas(
           `${source?.path !== undefined ? ` at ${source.path}` : ''}; the map is ignored.`,
       });
       return;
+    }
+    if (hasAuthoredSamplerPolicy(ref)) {
+      const source = textureRefSourceMetadata(ref);
+      diagnostics.push({
+        code: 'material-texture-sampler-policy-approximation',
+        materialIndex,
+        field,
+        colorSpace,
+        texCoord,
+        ...(ref.magFilter !== undefined ? { magFilter: ref.magFilter } : {}),
+        ...(ref.minFilter !== undefined ? { minFilter: ref.minFilter } : {}),
+        ...(ref.mipFilter !== undefined ? { mipFilter: ref.mipFilter } : {}),
+        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
+        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
+        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
+        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
+        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
+        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
+        ...(source?.textureSourceExtension !== undefined
+          ? { textureSourceExtension: source.textureSourceExtension }
+          : {}),
+        message:
+          `${field} texture authors sampler filter/mip policy ` +
+          `(mag=${ref.magFilter ?? 'default'}, min=${ref.minFilter ?? 'default'}, mip=${ref.mipFilter ?? 'default'})` +
+          `${source?.path !== undefined ? ` at ${source.path}` : ''}; ` +
+          'walkaround material atlas uses a shared atlas sampler, so the map remains atlas-backed with approximate filtering.',
+      });
     }
     const pushInvalidTransformDiagnostic = (): void => {
       const transformComponents = invalidTextureTransformComponents(ref);

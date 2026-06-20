@@ -269,11 +269,33 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
   });
 
   it('surfaces caustic approximations without advertising native MNEE support', async () => {
-    for (const causticStrategy of ['manifold-nee', 'photon-map'] as const) {
-      const c = (await createPTEngine_WebGL2({ ...opts(), causticStrategy })).capabilities;
-      expect(c.causticStrategy).toBe(causticStrategy);
-      expect(c.experimentalFeatures?.has('pt-webgl2-manifold-nee')).not.toBe(true);
-      expect(c.experimentalFeatures?.has('pt-webgl2-photon-map')).not.toBe(true);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const causticStrategy of ['manifold-nee', 'photon-map'] as const) {
+        const warnings: EngineWarning[] = [];
+        const c = (await createPTEngine_WebGL2({
+          ...opts(),
+          causticStrategy,
+          onWarning: (warning) => warnings.push(warning),
+        })).capabilities;
+        expect(c.causticStrategy).toBe(causticStrategy);
+        expect(c.experimentalFeatures?.has('pt-webgl2-manifold-nee')).not.toBe(true);
+        expect(c.experimentalFeatures?.has('pt-webgl2-photon-map')).not.toBe(true);
+        expect(warnings).toEqual([
+          expect.objectContaining({
+            code: 'pt-webgl2.caustic-strategy-approximation',
+            backend: 'pt-webgl2',
+            phase: 'construction',
+            method: 'createPTEngine_WebGL2',
+            details: expect.objectContaining({
+              requested: causticStrategy,
+              fallback: 'approximate caustic contribution',
+            }),
+          }),
+        ]);
+      }
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 

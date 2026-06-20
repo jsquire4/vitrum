@@ -480,6 +480,7 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'skin-rest-pose',
   'unreadable-inverse-bind-matrices',
   'ignored-primitive-attribute',
+  'material-not-found',
   'material-variant-not-found',
   'material-variant-material-missing',
   'ignored-material-texcoord',
