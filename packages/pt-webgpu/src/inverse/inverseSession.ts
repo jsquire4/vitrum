@@ -1591,8 +1591,7 @@ function pathReplayLayerAffectsBrdf(layer: MaterialSpec['frontLayer']): boolean 
     Math.abs((tx[1] ?? 1) - 1) > 1e-6 ||
     Math.abs((tx[2] ?? 1) - 1) > 1e-6 ||
     layer.roughness != null ||
-    layer.normalMap != null ||
-    layer.normalScale != null;
+    layer.normalMap != null;
 }
 
 function pathReplayAlphaMapAffectsVisibility(m: MaterialSpec): boolean {

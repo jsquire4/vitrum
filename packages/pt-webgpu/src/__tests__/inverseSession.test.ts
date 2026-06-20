@@ -2529,8 +2529,8 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
               ...pr,
               material: {
                 ...pr.material,
-                frontLayer: { transmission: [1, 1, 1] },
-                backLayer: { transmission: [1, 1, 1] },
+                frontLayer: { transmission: [1, 1, 1], normalScale: 0.25 },
+                backLayer: { transmission: [1, 1, 1], normalScale: 2 },
                 thinFilmStack: { layers: [] },
               },
             }
