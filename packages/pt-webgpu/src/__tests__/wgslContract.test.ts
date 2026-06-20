@@ -285,8 +285,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-18: pt-webgpu sheen source sampling switched from the
     // documented cosine approximation to a matching Charlie half-vector sampler
     // and PDF.
-    expect(digest).toBe('e619a8112aebdfdf3beba7d2cf1fd405d43f272071b09ae4aaa6ba4aa00e40d7');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(389071);
+    // Re-pinned 2026-06-20: material texture sampling appended per-map mip
+    // policy lanes and applies `none` / nearest / linear mip LOD choices in the
+    // explicit-LOD full-tier sampler.
+    expect(digest).toBe('71c335cccde1ca36b8125c7a6fd901db387cf9e209e1b425d0fe7109f9b97bba');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(391921);
   });
 });
 

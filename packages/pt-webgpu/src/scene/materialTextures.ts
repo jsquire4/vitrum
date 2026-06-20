@@ -65,6 +65,13 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *  76: {frontLayerNormalUvFit.xy, backLayerNormalUvFit.xy}
  *  77: {frontLayerNormalWrap.xy, backLayerNormalWrap.xy}
  *  78-81: front/back layer normal UV metadata, 2 vec4s per map.
+ *  82-87: per-map mip policy, packed as one scalar per consumed map:
+ *     0 none / 1 nearest / 2 linear. Map order follows the UV metadata blocks:
+ *     baseColor, emissive, normal, roughnessMap, metallicMap, AO, lightMap,
+ *     bumpMap, anisotropyMap, alphaMap, transmissionMap, clearcoat,
+ *     clearcoatRoughness, sheenColor, sheenRoughness, iridescence,
+ *     iridescenceThickness, specularColor, specularIntensity, clearcoatNormal,
+ *     thickness, frontLayer.normalMap, backLayer.normalMap.
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -110,6 +117,10 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *     tangent-space normal maps with independent scales, UV metadata, wrap modes,
  *     and heterogeneous-layer UV-fit scales. Shaders face-select them ahead of
  *     the top-level normal map when the selected face has a layer normal.
+ *   - vec4 #82–#87: authored mip-filter policy for every map above. The
+ *     full-tier shader already uses explicit LOD in compute, so these lanes
+ *     let it honor `mipFilter:"none"` and nearest-vs-linear mip selection while
+ *     keeping the single shared linear mag/min sampler.
  */
 export const MATERIAL_TEX_UV_META_VEC4_OFFSET = 19;
 export const MATERIAL_TEX_UV_META_VEC4S_PER_MAP = 2;
@@ -130,9 +141,14 @@ export const MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET = 76;
 export const MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET = 77;
 export const MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET = 78;
 export const MATERIAL_TEX_LAYER_NORMAL_MAP_COUNT = 2;
-export const MATERIAL_TEX_VEC4_STRIDE =
+export const MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET =
   MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET +
   MATERIAL_TEX_LAYER_NORMAL_MAP_COUNT * MATERIAL_TEX_UV_META_VEC4S_PER_MAP;
+export const MATERIAL_TEX_MIP_POLICY_MAP_COUNT =
+  MATERIAL_TEX_UV_MAP_COUNT + MATERIAL_TEX_EXTENSION_MAP_COUNT + 1 + 1 + MATERIAL_TEX_LAYER_NORMAL_MAP_COUNT;
+export const MATERIAL_TEX_MIP_POLICY_VEC4_COUNT = Math.ceil(MATERIAL_TEX_MIP_POLICY_MAP_COUNT / 4);
+export const MATERIAL_TEX_VEC4_STRIDE =
+  MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET + MATERIAL_TEX_MIP_POLICY_VEC4_COUNT;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
@@ -145,6 +161,12 @@ const WRAP_MODE_INDEX: Readonly<Record<TextureWrapMode, number>> = {
   repeat: 0,
   'clamp-to-edge': 1,
   'mirrored-repeat': 2,
+};
+
+const MIP_FILTER_INDEX: Readonly<Record<TextureMipFilterMode, number>> = {
+  none: 0,
+  nearest: 1,
+  linear: 2,
 };
 
 export interface CollectedTextures {
@@ -218,6 +240,24 @@ function writeWrapPair(
 ): void {
   descriptors[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'];
   descriptors[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'];
+}
+
+function writeDefaultMipPolicies(descriptors: Float32Array, b: number): void {
+  const start = b + MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET * 4;
+  for (let i = 0; i < MATERIAL_TEX_MIP_POLICY_MAP_COUNT; i += 1) {
+    descriptors[start + i] = MIP_FILTER_INDEX.linear;
+  }
+}
+
+function writeMipPolicy(
+  descriptors: Float32Array,
+  b: number,
+  mapSlot: number,
+  ref: TextureRef | undefined,
+): void {
+  if (mapSlot < 0 || mapSlot >= MATERIAL_TEX_MIP_POLICY_MAP_COUNT) return;
+  descriptors[b + MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET * 4 + mapSlot] =
+    MIP_FILTER_INDEX[ref?.mipFilter ?? 'linear'];
 }
 
 function writeUvMeta(
@@ -442,6 +482,30 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeWrapPair(descriptors, b + MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET * 4, m.thicknessMap);
     writeWrapPair(descriptors, b + MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4, m.frontLayer?.normalMap);
     writeWrapPair(descriptors, b + MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4 + 2, m.backLayer?.normalMap);
+    writeDefaultMipPolicies(descriptors, b);
+    writeMipPolicy(descriptors, b, 0, bc);
+    writeMipPolicy(descriptors, b, 1, m.emissiveMap);
+    writeMipPolicy(descriptors, b, 2, m.normalMap);
+    writeMipPolicy(descriptors, b, 3, roughnessMap);
+    writeMipPolicy(descriptors, b, 4, metallicMap);
+    writeMipPolicy(descriptors, b, 5, m.aoMap);
+    writeMipPolicy(descriptors, b, 6, m.lightMap);
+    writeMipPolicy(descriptors, b, 7, m.bumpMap);
+    writeMipPolicy(descriptors, b, 8, m.anisotropyMap);
+    writeMipPolicy(descriptors, b, 9, m.alphaMap);
+    writeMipPolicy(descriptors, b, 10, m.transmissionMap);
+    writeMipPolicy(descriptors, b, 11, m.clearcoatMap);
+    writeMipPolicy(descriptors, b, 12, m.clearcoatRoughnessMap);
+    writeMipPolicy(descriptors, b, 13, m.sheenColorMap);
+    writeMipPolicy(descriptors, b, 14, m.sheenRoughnessMap);
+    writeMipPolicy(descriptors, b, 15, m.iridescenceMap);
+    writeMipPolicy(descriptors, b, 16, m.iridescenceThicknessMap);
+    writeMipPolicy(descriptors, b, 17, m.specularColorMap);
+    writeMipPolicy(descriptors, b, 18, m.specularIntensityMap);
+    writeMipPolicy(descriptors, b, 19, m.clearcoatNormalMap);
+    writeMipPolicy(descriptors, b, 20, m.thicknessMap);
+    writeMipPolicy(descriptors, b, 21, m.frontLayer?.normalMap);
+    writeMipPolicy(descriptors, b, 22, m.backLayer?.normalMap);
     writeUvMeta(descriptors, b, 0, bc);
     writeUvMeta(descriptors, b, 1, m.emissiveMap);
     writeUvMeta(descriptors, b, 2, m.normalMap);

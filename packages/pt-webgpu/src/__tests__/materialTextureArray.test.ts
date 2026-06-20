@@ -248,7 +248,7 @@ describe('createMaterialTextureArray', () => {
       expect.objectContaining({
         code: 'texture-sampler-policy-approximation',
         layer: 0,
-        fallback: 'shared-linear-mipmapped-sampler',
+        fallback: 'shared-linear-filter-per-map-mip-policy',
         requestedSamplerPolicies: [{
           materialIndex: 2,
           field: 'baseColorMap',
@@ -259,7 +259,83 @@ describe('createMaterialTextureArray', () => {
       }),
     ]);
     expect(array.warnings).toContain(
-      "[materialTextureArray] source 0 requests sampler policy outside pt-webgpu's shared linear/linear/mipmap-linear material texture sampler for fields baseColorMap; the texture remains uploadable, but filtering/mipmap behavior is approximate.",
+      "[materialTextureArray] source 0 requests sampler policy outside pt-webgpu's shared linear mag/min material texture sampler for fields baseColorMap; the texture remains uploadable, but filtering behavior is approximate.",
     );
+  });
+
+  it('accepts authored mip policies when mag/min filtering stays linear', () => {
+    installGpuConstStubs();
+    const { device } = makeDevice();
+    const array = createMaterialTextureArray(
+      device,
+      [rawImage(1, 1), rawImage(1, 1)],
+      'rgba8unorm-srgb',
+      [
+        {
+          layer: 0,
+          uses: [{
+            materialIndex: 0,
+            field: 'baseColorMap',
+            colorSpace: 'srgb',
+            texCoord: 0,
+            magFilter: 'linear',
+            minFilter: 'linear',
+            mipFilter: 'none',
+          }],
+        },
+        {
+          layer: 1,
+          uses: [{
+            materialIndex: 1,
+            field: 'emissiveMap',
+            colorSpace: 'srgb',
+            texCoord: 0,
+            magFilter: 'linear',
+            minFilter: 'linear',
+            mipFilter: 'nearest',
+          }],
+        },
+      ],
+    );
+
+    expect(array.structuredWarnings.filter((warning) =>
+      warning.code === 'texture-sampler-policy-approximation',
+    )).toEqual([]);
+  });
+
+  it('keeps explicit mipmapped bump policies approximate because bump gradients sample base texels', () => {
+    installGpuConstStubs();
+    const { device } = makeDevice();
+    const array = createMaterialTextureArray(
+      device,
+      [rawImage(1, 1)],
+      'rgba8unorm',
+      [{
+        layer: 0,
+        uses: [{
+          materialIndex: 4,
+          field: 'bumpMap',
+          colorSpace: 'linear',
+          texCoord: 0,
+          magFilter: 'linear',
+          minFilter: 'linear',
+          mipFilter: 'linear',
+        }],
+      }],
+    );
+
+    expect(array.structuredWarnings).toEqual([
+      expect.objectContaining({
+        code: 'texture-sampler-policy-approximation',
+        layer: 0,
+        requestedSamplerPolicies: [{
+          materialIndex: 4,
+          field: 'bumpMap',
+          magFilter: 'linear',
+          minFilter: 'linear',
+          mipFilter: 'linear',
+        }],
+      }),
+    ]);
   });
 });

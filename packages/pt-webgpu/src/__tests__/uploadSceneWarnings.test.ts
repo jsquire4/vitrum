@@ -127,7 +127,7 @@ describe('uploadPackedScene warning propagation', () => {
           layer: 0,
           fields: ['baseColorMap'],
           materialIndices: [0],
-          fallback: 'shared-linear-mipmapped-sampler',
+          fallback: 'shared-linear-filter-per-map-mip-policy',
           requestedSamplerPolicies: [{
             materialIndex: 0,
             field: 'baseColorMap',

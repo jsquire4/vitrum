@@ -1111,7 +1111,13 @@ function samplerPolicySupport(
   }
   if ((policy.magFilter ?? 'linear') !== 'linear') return 'approximate';
   if ((policy.minFilter ?? 'linear') !== 'linear') return 'approximate';
-  if ((policy.mipFilter ?? 'linear') !== 'linear') return 'approximate';
+  if (
+    policy.materialField === 'bumpMap' &&
+    policy.mipFilter !== undefined &&
+    policy.mipFilter !== 'none'
+  ) {
+    return 'approximate';
+  }
   return 'native';
 }
 

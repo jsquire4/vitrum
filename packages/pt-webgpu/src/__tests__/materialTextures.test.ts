@@ -17,6 +17,8 @@ import {
   MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET,
   MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET,
+  MATERIAL_TEX_MIP_POLICY_MAP_COUNT,
+  MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET,
   MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_THICKNESS_VEC4_OFFSET,
   MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET,
@@ -231,6 +233,40 @@ describe('collectMaterialTextures (P2 host)', () => {
     };
     expectCloseArray(uvMeta(3), [1, 0.1, 0.2, 0.3, 1.1, 1.2, 0, 0]);
     expectCloseArray(uvMeta(4), [0, 0.4, 0.5, 0.6, 1.4, 1.5, 0, 0]);
+  });
+
+  it('packs per-map mip policies without shifting existing descriptor fields', () => {
+    const baseTex = { id: 'base' };
+    const roughnessTex = { id: 'roughness' };
+    const sheenTex = { id: 'sheen' };
+    const frontNormal = { id: 'front-normal' };
+    const backNormal = { id: 'back-normal' };
+    const { descriptors } = collectMaterialTextures([
+      mat({
+        baseColorMap: { handle: baseTex, mipFilter: 'none' },
+        roughnessMap: { handle: roughnessTex, mipFilter: 'nearest' },
+        sheenColorMap: { handle: sheenTex, mipFilter: 'none' },
+        frontLayer: {
+          transmission: [1, 1, 1],
+          normalMap: { handle: frontNormal, mipFilter: 'nearest' },
+        },
+        backLayer: {
+          transmission: [1, 1, 1],
+          normalMap: { handle: backNormal, mipFilter: 'none' },
+        },
+      }),
+    ]);
+    const mipBase = MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET * 4;
+    const mipPolicy = (slot: number): number => descriptors[mipBase + slot] ?? Number.NaN;
+
+    expect(MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET).toBe(82);
+    expect(MATERIAL_TEX_MIP_POLICY_MAP_COUNT).toBe(23);
+    expect(mipPolicy(0)).toBe(0);  // baseColorMap: no mip lookup
+    expect(mipPolicy(2)).toBe(2);  // normalMap absent/default: linear
+    expect(mipPolicy(3)).toBe(1);  // roughnessMap: nearest mip selection
+    expect(mipPolicy(13)).toBe(0); // sheenColorMap: no mip lookup
+    expect(mipPolicy(21)).toBe(1); // frontLayer.normalMap
+    expect(mipPolicy(22)).toBe(0); // backLayer.normalMap
   });
 
   it('packs normalScale in the normal-map descriptor lane', () => {
@@ -797,6 +833,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
       MATERIAL_TEX_LAYER_NORMAL: MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET,
       MATERIAL_TEX_LAYER_NORMAL_UV_FIT: MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET,
       MATERIAL_TEX_LAYER_NORMAL_WRAP: MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET,
+      MATERIAL_TEX_MIP_POLICY: MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET,
     };
 
     expect(
@@ -860,6 +897,8 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('materialTexDescriptors[base + 8u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 11u].zw');
     expect(wgsl).toContain('fn wrapTextureCoord(coord: f32, mode: f32) -> f32');
+    expect(wgsl).toContain('fn materialTextureMipPolicy(base: u32, slot: u32) -> f32');
+    expect(wgsl).toContain('fn materialTexturePolicyLod(lod: f32, mipCount: f32, mipPolicy: f32) -> f32');
     expect(wgsl).toContain('materialTexDescriptors[base + 12u].xy');
     expect(wgsl).toContain('materialTexDescriptors[base + 13u].zw');
     expect(wgsl).toContain('materialTexDescriptors[base + 16u].zw');
@@ -905,11 +944,13 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
     expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTextures));');
     expect(wgsl).toContain('let mipCount = f32(textureNumLevels(materialTexturesLinear));');
-    expect(wgsl).toContain('textureSampleLevel(materialTextures, materialTexSampler, fittedUv, layerIdx, lod)');
-    expect(wgsl).toContain('textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, lod)');
+    expect(wgsl).toContain('let policyLod = materialTexturePolicyLod(lod, mipCount, materialTextureMipPolicy(base, mipPolicySlot));');
+    expect(wgsl).toContain('textureSampleLevel(materialTextures, materialTexSampler, fittedUv, layerIdx, policyLod)');
+    expect(wgsl).toContain('textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod)');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE');
     expect(wgsl).toContain('sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, normalUvMetaOffset, normalUvFitScale, normalWrapMode');
+    expect(wgsl).toContain('normalMipPolicySlot = select(MATERIAL_TEX_MIP_BACK_LAYER_NORMAL, MATERIAL_TEX_MIP_FRONT_LAYER_NORMAL, isFrontFace);');
     expect(wgsl).toContain('MATERIAL_TEX_UV_ROUGHNESS');
     expect(wgsl).toContain('MATERIAL_TEX_UV_METALLIC');
     expect(wgsl).toContain('sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_AO');

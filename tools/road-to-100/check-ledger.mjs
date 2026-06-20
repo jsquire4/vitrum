@@ -487,6 +487,8 @@ for (const needle of [
   "readonly magFilter?: TextureFilterMode;",
   "readonly minFilter?: TextureFilterMode;",
   "readonly mipFilter?: TextureMipFilterMode;",
+  "export const MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET",
+  "function writeMipPolicy(",
 ]) {
   if (!ptWebgpuMaterialTextures.includes(needle)) {
     fail(`pt-webgpu material texture layer uses must retain sampler policy metadata: ${needle}`);
@@ -496,11 +498,24 @@ for (const needle of [
 const ptWebgpuMaterialTextureArray = await readText("packages/pt-webgpu/src/scene/materialTextureArray.ts");
 for (const needle of [
   "'texture-sampler-policy-approximation'",
-  "fallback: 'shared-linear-mipmapped-sampler'",
+  "fallback: 'shared-linear-filter-per-map-mip-policy'",
+  "use.field === 'bumpMap'",
   "appendSamplerPolicyWarnings(warnings, structuredWarnings, layerInfos);",
 ]) {
   if (!ptWebgpuMaterialTextureArray.includes(needle)) {
     fail(`pt-webgpu material texture array must warn on shared-sampler approximations: ${needle}`);
+  }
+}
+
+const ptWebgpuMaterialWgsl = await readText("packages/pt-webgpu/src/wgsl/pathTrace/material.wgsl.ts");
+for (const needle of [
+  "const MATERIAL_TEX_MIP_POLICY = ${MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET}u;",
+  "fn materialTextureMipPolicy(base: u32, slot: u32) -> f32",
+  "fn materialTexturePolicyLod(lod: f32, mipCount: f32, mipPolicy: f32) -> f32",
+  "textureSampleLevel(${texArray}, materialTexSampler, fittedUv, layerIdx, policyLod)",
+]) {
+  if (!ptWebgpuMaterialWgsl.includes(needle)) {
+    fail(`pt-webgpu WGSL material sampler must consume per-map mip policy: ${needle}`);
   }
 }
 

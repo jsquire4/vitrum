@@ -674,6 +674,41 @@ describe('glTF common extension policy', () => {
     );
   });
 
+  it('treats pt-webgpu linear mag/min sampler policies with none or nearest mip filters as native', () => {
+    const { gltf } = minimalMaterialGltf({
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0 },
+        metallicRoughnessTexture: { index: 1 },
+      },
+    });
+    gltf.textures = [{ source: 0, sampler: 0 }, { source: 1, sampler: 1 }];
+    gltf.images = [
+      { uri: 'albedo.png', mimeType: 'image/png' },
+      { uri: 'orm.png', mimeType: 'image/png' },
+    ];
+    gltf.samplers = [
+      { magFilter: 9729, minFilter: 9729 },
+      { magFilter: 9729, minFilter: 9985 },
+    ];
+
+    const report = analyzeGltfAsset(gltf);
+    const ptWebgpuIssues = evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues;
+
+    expect(report.materials.samplerPolicies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        minFilter: 'linear',
+        mipFilter: 'none',
+      }),
+      expect.objectContaining({
+        materialField: 'roughnessMap',
+        minFilter: 'linear',
+        mipFilter: 'nearest',
+      }),
+    ]));
+    expect(ptWebgpuIssues.some((issue) => issue.name.endsWith('.samplerPolicy'))).toBe(false);
+  });
+
   it('treats nearest non-mip sampler policy as exact on pt-webgl2 but approximate on pt-webgpu full', () => {
     const { gltf } = minimalMaterialGltf({
       pbrMetallicRoughness: {

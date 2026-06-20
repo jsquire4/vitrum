@@ -11,6 +11,7 @@ import {
   MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET,
   MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET,
+  MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET,
   MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_THICKNESS_VEC4_OFFSET,
   MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET,
@@ -270,7 +271,7 @@ function materialLayerSamplerWgsl(
   preXformLines: string,
   xformSuffix: string,
 ): string {
-  return `fn ${name}(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f) -> vec4f {
+  return `fn ${name}(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
   if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
@@ -327,7 +328,8 @@ function materialLayerSamplerWgsl(
   let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
   let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
   let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
-  return textureSampleLevel(${texArray}, materialTexSampler, fittedUv, layerIdx, lod);
+  let policyLod = materialTexturePolicyLod(lod, mipCount, materialTextureMipPolicy(base, mipPolicySlot));
+  return textureSampleLevel(${texArray}, materialTexSampler, fittedUv, layerIdx, policyLod);
 }`;
 }
 
@@ -415,6 +417,8 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //  76: {frontLayerNormalUvFit.xy, backLayerNormalUvFit.xy}
 //  77: {frontLayerNormalWrap.xy, backLayerNormalWrap.xy}
 //  78-81: front/back layer-normal UV metadata
+//  82-87: per-map mip policy, one scalar per map:
+//     0 none / 1 nearest / 2 linear
 const MATERIAL_TEX_VEC4_STRIDE = ${MATERIAL_TEX_VEC4_STRIDE}u;
 const MATERIAL_TEX_UV_BASE_COLOR = ${MATERIAL_TEX_UV_META_VEC4_OFFSET}u;
 const MATERIAL_TEX_UV_EMISSIVE = ${MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP}u;
@@ -449,6 +453,30 @@ const MATERIAL_TEX_LAYER_NORMAL_UV_FIT = ${MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4
 const MATERIAL_TEX_LAYER_NORMAL_WRAP = ${MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET}u;
 const MATERIAL_TEX_UV_FRONT_LAYER_NORMAL = ${MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET}u;
 const MATERIAL_TEX_UV_BACK_LAYER_NORMAL = ${MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP}u;
+const MATERIAL_TEX_MIP_POLICY = ${MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET}u;
+const MATERIAL_TEX_MIP_BASE_COLOR = 0u;
+const MATERIAL_TEX_MIP_EMISSIVE = 1u;
+const MATERIAL_TEX_MIP_NORMAL = 2u;
+const MATERIAL_TEX_MIP_ROUGHNESS = 3u;
+const MATERIAL_TEX_MIP_METALLIC = 4u;
+const MATERIAL_TEX_MIP_AO = 5u;
+const MATERIAL_TEX_MIP_LIGHT = 6u;
+const MATERIAL_TEX_MIP_BUMP = 7u;
+const MATERIAL_TEX_MIP_ANISOTROPY = 8u;
+const MATERIAL_TEX_MIP_ALPHA = 9u;
+const MATERIAL_TEX_MIP_TRANSMISSION = 10u;
+const MATERIAL_TEX_MIP_CLEARCOAT = 11u;
+const MATERIAL_TEX_MIP_CLEARCOAT_ROUGHNESS = 12u;
+const MATERIAL_TEX_MIP_SHEEN_COLOR = 13u;
+const MATERIAL_TEX_MIP_SHEEN_ROUGHNESS = 14u;
+const MATERIAL_TEX_MIP_IRIDESCENCE = 15u;
+const MATERIAL_TEX_MIP_IRIDESCENCE_THICKNESS = 16u;
+const MATERIAL_TEX_MIP_SPECULAR_COLOR = 17u;
+const MATERIAL_TEX_MIP_SPECULAR_INTENSITY = 18u;
+const MATERIAL_TEX_MIP_CLEARCOAT_NORMAL = 19u;
+const MATERIAL_TEX_MIP_THICKNESS = 20u;
+const MATERIAL_TEX_MIP_FRONT_LAYER_NORMAL = 21u;
+const MATERIAL_TEX_MIP_BACK_LAYER_NORMAL = 22u;
 
 fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
   let m = u32(mode);
@@ -461,6 +489,28 @@ fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
     return min(max(mirrored, 0.0), 0.999999);
   }
   return fract(coord);
+}
+
+fn materialTextureMipPolicy(base: u32, slot: u32) -> f32 {
+  let vecIdx = base + MATERIAL_TEX_MIP_POLICY + slot / 4u;
+  if (vecIdx >= arrayLength(&materialTexDescriptors)) { return 2.0; }
+  let packed = materialTexDescriptors[vecIdx];
+  let lane = slot - (slot / 4u) * 4u;
+  if (lane == 0u) { return packed.x; }
+  if (lane == 1u) { return packed.y; }
+  if (lane == 2u) { return packed.z; }
+  return packed.w;
+}
+
+fn materialTexturePolicyLod(lod: f32, mipCount: f32, mipPolicy: f32) -> f32 {
+  let maxLod = max(mipCount - 1.0, 0.0);
+  if (mipPolicy < 0.5) {
+    return 0.0;
+  }
+  if (mipPolicy < 1.5) {
+    return clamp(floor(lod + 0.5), 0.0, maxLod);
+  }
+  return clamp(lod, 0.0, maxLod);
 }
 
 // Sample array layer \`layerIdx\` for material \`base\` (= matId·stride) at the hit:
@@ -478,7 +528,7 @@ ${_SAMPLE_MAT_LAYER_WGSL}
 fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR, materialTexDescriptors[base + 7u].xy, materialTexDescriptors[base + 13u].xy);
+  return sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR, materialTexDescriptors[base + 7u].xy, materialTexDescriptors[base + 13u].xy, MATERIAL_TEX_MIP_BASE_COLOR);
 }
 
 fn sampleVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f {
@@ -497,7 +547,7 @@ fn sampleVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f {
 fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE, materialTexDescriptors[base + 7u].zw, materialTexDescriptors[base + 13u].zw);
+  return sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE, materialTexDescriptors[base + 7u].zw, materialTexDescriptors[base + 13u].zw, MATERIAL_TEX_MIP_EMISSIVE);
 }
 
 // As sampleMaterialLayer, but samples the LINEAR array (materialTexturesLinear)
@@ -538,6 +588,7 @@ fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
     MATERIAL_TEX_UV_ROUGHNESS,
     materialTexDescriptors[base + 8u].zw,
     materialTexDescriptors[base + 14u].zw,
+    MATERIAL_TEX_MIP_ROUGHNESS,
   ).g;
   let metallic = sampleMaterialLayerLinear(
     i32(materialTexDescriptors[base + 6u].z),
@@ -547,6 +598,7 @@ fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
     MATERIAL_TEX_UV_METALLIC,
     materialTexDescriptors[base + 9u].xy,
     materialTexDescriptors[base + 15u].xy,
+    MATERIAL_TEX_MIP_METALLIC,
   ).b;
   return vec4f(1.0, roughness, metallic, 1.0);
 }
@@ -649,6 +701,7 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
   var normalUvMetaOffset: u32 = MATERIAL_TEX_UV_NORMAL;
   var normalUvFitScale = materialTexDescriptors[base + 8u].xy;
   var normalWrapMode = materialTexDescriptors[base + 14u].xy;
+  var normalMipPolicySlot = MATERIAL_TEX_MIP_NORMAL;
   var normalScale = materialTexDescriptors[base + 5u].w;
   if (base + MATERIAL_TEX_UV_BACK_LAYER_NORMAL + 1u < arrayLength(&materialTexDescriptors)) {
     let layerNormal = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL];
@@ -657,6 +710,7 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
       normalIdx = layerIdx;
       normalScale = select(layerNormal.w, layerNormal.y, isFrontFace);
       normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);
+      normalMipPolicySlot = select(MATERIAL_TEX_MIP_BACK_LAYER_NORMAL, MATERIAL_TEX_MIP_FRONT_LAYER_NORMAL, isFrontFace);
       let layerUvFit = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL_UV_FIT];
       normalUvFitScale = select(layerUvFit.zw, layerUvFit.xy, isFrontFace);
       let layerWrap = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL_WRAP];
@@ -664,7 +718,7 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
     }
   }
   if (normalIdx < 0) { return geomNormal; }
-  let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, normalUvMetaOffset, normalUvFitScale, normalWrapMode).xyz;
+  let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, normalUvMetaOffset, normalUvFitScale, normalWrapMode, normalMipPolicySlot).xyz;
   var tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
   tn.x = tn.x * normalScale;
   tn.y = tn.y * normalScale;
@@ -697,6 +751,7 @@ fn applyClearcoatNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, clearcoatNo
     MATERIAL_TEX_UV_CLEARCOAT_NORMAL,
     materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].zw,
     materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP].xy,
+    MATERIAL_TEX_MIP_CLEARCOAT_NORMAL,
   ).xyz;
   var tn = ts * 2.0 - vec3f(1.0);
   let clearcoatNormalScale = materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].y;
@@ -727,7 +782,7 @@ fn sampleAoFactor(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   let aoIdx = i32(materialTexDescriptors[base + 3u].y);
   if (aoIdx < 0) { return 1.0; }
   let intensity = clamp(materialTexDescriptors[base + 4u].x, 0.0, 1.0);
-  let r = sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_AO, materialTexDescriptors[base + 9u].zw, materialTexDescriptors[base + 15u].zw).r;
+  let r = sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_AO, materialTexDescriptors[base + 9u].zw, materialTexDescriptors[base + 15u].zw, MATERIAL_TEX_MIP_AO).r;
   return clamp(mix(1.0, r, intensity), 0.0, 1.0);
 }
 
@@ -746,7 +801,7 @@ fn sampleLightMapRadiance(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
   let lmIdx = i32(materialTexDescriptors[base + 3u].z);
   if (lmIdx < 0) { return vec3f(0.0); }
   let intensity = max(materialTexDescriptors[base + 4u].y, 0.0);
-  return sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_LIGHT, materialTexDescriptors[base + 10u].xy, materialTexDescriptors[base + 16u].xy).rgb * intensity;
+  return sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_LIGHT, materialTexDescriptors[base + 10u].xy, materialTexDescriptors[base + 16u].xy, MATERIAL_TEX_MIP_LIGHT).rgb * intensity;
 }
 
 // Per-material environment-map intensity scale — descriptor vec4[4].w (default 1).
@@ -765,7 +820,7 @@ fn materialAnisotropy(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   var a = clamp(materialTexDescriptors[base + 5u].x, 0.0, 1.0);
   let anisoIdx = i32(materialTexDescriptors[base + 5u].z);
   if (anisoIdx >= 0) {
-    a = a * sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy).b;
+    a = a * sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY).b;
   }
   return clamp(a, 0.0, 1.0);
 }
@@ -779,7 +834,7 @@ fn materialAnisotropyRotation(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   var rot = materialTexDescriptors[base + 5u].y;
   let anisoIdx = i32(materialTexDescriptors[base + 5u].z);
   if (anisoIdx >= 0) {
-    let rg = sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy).rg * 2.0 - vec2f(1.0);
+    let rg = sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY).rg * 2.0 - vec2f(1.0);
     rot = rot + atan2(rg.y, rg.x);
   }
   return rot;
@@ -844,7 +899,7 @@ fn sampleAlphaTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   if (base + 17u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let alphaIdx = i32(materialTexDescriptors[base + 6u].x);
   if (alphaIdx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ALPHA, materialTexDescriptors[base + 11u].zw, materialTexDescriptors[base + 17u].zw).r, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_ALPHA, materialTexDescriptors[base + 11u].zw, materialTexDescriptors[base + 17u].zw, MATERIAL_TEX_MIP_ALPHA).r, 0.0, 1.0);
 }
 
 // Transmission map (LINEAR scalar data) — descriptor vec4[6].y.
@@ -855,7 +910,7 @@ fn sampleTransmissionTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   if (base + 18u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let transmissionIdx = i32(materialTexDescriptors[base + 6u].y);
   if (transmissionIdx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_TRANSMISSION, materialTexDescriptors[base + 12u].xy, materialTexDescriptors[base + 18u].xy).r, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_TRANSMISSION, materialTexDescriptors[base + 12u].xy, materialTexDescriptors[base + 18u].xy, MATERIAL_TEX_MIP_TRANSMISSION).r, 0.0, 1.0);
 }
 
 // KHR_materials_volume thicknessTexture (LINEAR scalar data) — descriptor
@@ -866,7 +921,7 @@ fn sampleVolumeThicknessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32
   if (base + MATERIAL_TEX_UV_THICKNESS + 1u >= arrayLength(&materialTexDescriptors)) { return -1.0; }
   let thicknessIdx = i32(materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].x);
   if (thicknessIdx < 0) { return -1.0; }
-  return clamp(sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_THICKNESS, materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].yz, materialTexDescriptors[base + MATERIAL_TEX_THICKNESS_WRAP].xy).g, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, MATERIAL_TEX_UV_THICKNESS, materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].yz, materialTexDescriptors[base + MATERIAL_TEX_THICKNESS_WRAP].xy, MATERIAL_TEX_MIP_THICKNESS).g, 0.0, 1.0);
 }
 
 // Extension-lobe map samplers. Mirrors pt-webgl2/glTF channel conventions:
@@ -877,7 +932,7 @@ fn sampleClearcoatTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].x);
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP].xy).r, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP].xy, MATERIAL_TEX_MIP_CLEARCOAT).r, 0.0, 1.0);
 }
 
 fn sampleClearcoatRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
@@ -885,7 +940,7 @@ fn sampleClearcoatRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> 
   if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].y);
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP].zw).g, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP].zw, MATERIAL_TEX_MIP_CLEARCOAT_ROUGHNESS).g, 0.0, 1.0);
 }
 
 fn sampleSheenColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
@@ -893,7 +948,7 @@ fn sampleSheenColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
   if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return vec3f(1.0); }
   let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].z);
   if (idx < 0) { return vec3f(1.0); }
-  return clamp(sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_COLOR, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 1u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 1u].xy).rgb, vec3f(0.0), vec3f(1.0));
+  return clamp(sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_COLOR, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 1u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 1u].xy, MATERIAL_TEX_MIP_SHEEN_COLOR).rgb, vec3f(0.0), vec3f(1.0));
 }
 
 fn sampleSheenRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
@@ -901,7 +956,7 @@ fn sampleSheenRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 
   if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].w);
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_ROUGHNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 1u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 1u].zw).a, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SHEEN_ROUGHNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 1u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 1u].zw, MATERIAL_TEX_MIP_SHEEN_ROUGHNESS).a, 0.0, 1.0);
 }
 
 fn sampleIridescenceTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
@@ -909,7 +964,7 @@ fn sampleIridescenceTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
   if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].x);
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_IRIDESCENCE, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 2u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 2u].xy).r, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_IRIDESCENCE, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 2u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 2u].xy, MATERIAL_TEX_MIP_IRIDESCENCE).r, 0.0, 1.0);
 }
 
 fn sampleIridescenceThicknessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
@@ -917,7 +972,7 @@ fn sampleIridescenceThicknessTexture(matId: u32, triIndex: u32, baryVW: vec2f) -
   if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return -1.0; }
   let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].y);
   if (idx < 0) { return -1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 2u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 2u].zw).g, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 2u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 2u].zw, MATERIAL_TEX_MIP_IRIDESCENCE_THICKNESS).g, 0.0, 1.0);
 }
 
 fn sampleSpecularColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f {
@@ -925,7 +980,7 @@ fn sampleSpecularColorTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec3f
   if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return vec3f(1.0); }
   let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].z);
   if (idx < 0) { return vec3f(1.0); }
-  return clamp(sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_COLOR, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 3u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 3u].xy).rgb, vec3f(0.0), vec3f(1.0));
+  return clamp(sampleMaterialLayer(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_COLOR, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 3u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 3u].xy, MATERIAL_TEX_MIP_SPECULAR_COLOR).rgb, vec3f(0.0), vec3f(1.0));
 }
 
 fn sampleSpecularIntensityTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f32 {
@@ -933,7 +988,7 @@ fn sampleSpecularIntensityTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> f
   if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
   let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].w);
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_INTENSITY, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 3u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 3u].zw).a, 0.0, 1.0);
+  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, MATERIAL_TEX_UV_SPECULAR_INTENSITY, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 3u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 3u].zw, MATERIAL_TEX_MIP_SPECULAR_INTENSITY).a, 0.0, 1.0);
 }
 
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes
