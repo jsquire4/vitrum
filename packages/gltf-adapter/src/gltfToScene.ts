@@ -1359,7 +1359,9 @@ function _resolvePrimitiveMaterialIndex(
 ): number | undefined {
   if (selectedVariantIndex === undefined) return baseMaterialIndex;
   const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
-  const mapping = mappings.find((candidate) => candidate.variants.includes(selectedVariantIndex));
+  const mapping = mappings.find((candidate) =>
+    Array.isArray(candidate.variants) && candidate.variants.includes(selectedVariantIndex)
+  );
   if (!mapping) return baseMaterialIndex;
   if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
     emitImportDiagnostic(warnings, diagnostics, {
@@ -1460,6 +1462,7 @@ function _buildPrimitiveMaterialVariantPatches(
   const patches = new Map<number, GltfMaterialVariantPatch>();
   const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
   for (const mapping of mappings) {
+    if (!Array.isArray(mapping.variants)) continue;
     for (const variantIndex of mapping.variants) {
       if (patches.has(variantIndex)) continue;
       const materialIndex = _resolvePrimitiveMaterialIndex(

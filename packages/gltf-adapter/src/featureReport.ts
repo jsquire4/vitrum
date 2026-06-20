@@ -192,6 +192,7 @@ export interface GltfMaterialFeatureReport {
   readonly samplerPolicies: readonly GltfTextureSamplerPolicyUse[];
   readonly malformedSamplerPolicies: readonly GltfMalformedTextureSamplerPolicyUse[];
   readonly textureReferenceIssues: readonly GltfMaterialTextureReferenceIssue[];
+  readonly variantMappingIssues: readonly GltfMaterialVariantMappingIssue[];
   readonly extensions: readonly string[];
   readonly unsupportedKnownExtensions: readonly string[];
   readonly alphaModes: readonly string[];
@@ -256,6 +257,21 @@ export interface GltfMaterialTextureReferenceIssue {
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
   readonly textureSourceExtensions?: readonly GltfTextureSourceExtensionName[];
+}
+
+export type GltfMaterialVariantMappingIssueKind =
+  | 'missing-material'
+  | 'missing-variant-list'
+  | 'missing-variant';
+
+export interface GltfMaterialVariantMappingIssue {
+  readonly kind: GltfMaterialVariantMappingIssueKind;
+  readonly path: string;
+  readonly meshIndex: number;
+  readonly primitiveIndex: number;
+  readonly mappingIndex: number;
+  readonly materialIndex?: number;
+  readonly variantIndex?: number;
 }
 
 export interface GltfAnimationFeatureReport {
@@ -988,6 +1004,16 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  for (const variantIssue of report.materials.variantMappingIssues) {
+    addIssue({
+      category: 'material',
+      name: `KHR_materials_variants.mapping.${variantIssue.kind}`,
+      support: 'unsupported',
+      path: variantIssue.path,
+      message: materialVariantMappingIssueMessage(variantIssue),
+    });
+  }
+
   if (report.materials.textureFields.includes('emissiveMap')) {
     const support = profile.materialOverrides?.emissiveMap ?? ledger.supportDetails.materials.emissiveMap ?? 'unknown';
     if (support === 'native' || support === 'approximate') {
@@ -1150,6 +1176,23 @@ function materialTextureReferenceIssueMessage(
     `glTF material texture "${String(issue.materialField)}" resolves to image ${String(issue.imageIndex)}, ` +
     `but image bufferView ${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)} at ${issue.path}; ` +
     `backend profile ${profileId} imports the material without that texture.`
+  );
+}
+
+function materialVariantMappingIssueMessage(issue: GltfMaterialVariantMappingIssue): string {
+  const label = `glTF mesh ${issue.meshIndex} primitive ${issue.primitiveIndex}`;
+  if (issue.kind === 'missing-material') {
+    return (
+      `${label} KHR_materials_variants mapping ${issue.mappingIndex} references ` +
+      `missing material ${String(issue.materialIndex)}; selecting that variant falls back to the base material.`
+    );
+  }
+  return (
+    `${label} KHR_materials_variants mapping ${issue.mappingIndex} references ` +
+    (issue.kind === 'missing-variant-list'
+      ? 'a missing or malformed variants array'
+      : `missing variant ${String(issue.variantIndex)}`) +
+    '; strict backend selection rejects this broken variant route.'
   );
 }
 
@@ -2527,6 +2570,7 @@ function analyzeMaterials(
   const samplerPolicies: GltfTextureSamplerPolicyUse[] = [];
   const malformedSamplerPolicies: GltfMalformedTextureSamplerPolicyUse[] = [];
   const textureReferenceIssues: GltfMaterialTextureReferenceIssue[] = [];
+  const variantMappingIssues = materialVariantMappingIssues(gltf, sceneScope);
   const extensions = new Set<string>();
   const unsupportedKnownExtensions = new Set<string>();
   const alphaModes = new Set<string>();
@@ -2722,6 +2766,7 @@ function analyzeMaterials(
     textureReferenceIssues: textureReferenceIssues.sort((a, b) =>
       a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),
     ),
+    variantMappingIssues: variantMappingIssues.sort((a, b) => a.path.localeCompare(b.path)),
     extensions: sorted(extensions),
     unsupportedKnownExtensions: sorted(unsupportedKnownExtensions),
     alphaModes: sorted(alphaModes),
@@ -2734,6 +2779,59 @@ function analyzeMaterials(
     doubleSidedCount,
     issuePaths: sourcePathRecord(issuePaths),
   };
+}
+
+function materialVariantMappingIssues(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): GltfMaterialVariantMappingIssue[] {
+  const issues: GltfMaterialVariantMappingIssue[] = [];
+  const materialCount = gltf.materials?.length ?? 0;
+  const variantCount = gltf.extensions?.KHR_materials_variants?.variants?.length ?? 0;
+
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
+      if (sceneScope !== undefined && !sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
+      const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
+      for (const [mappingIndex, mapping] of mappings.entries()) {
+        const mappingPath = `meshes[${meshIndex}].primitives[${primitiveIndex}].extensions.KHR_materials_variants.mappings[${mappingIndex}]`;
+        if (!Number.isInteger(mapping.material) || mapping.material < 0 || mapping.material >= materialCount) {
+          issues.push({
+            kind: 'missing-material',
+            path: `${mappingPath}.material`,
+            meshIndex,
+            primitiveIndex,
+            mappingIndex,
+            materialIndex: mapping.material,
+          });
+        }
+        if (!Array.isArray(mapping.variants)) {
+          issues.push({
+            kind: 'missing-variant-list',
+            path: `${mappingPath}.variants`,
+            meshIndex,
+            primitiveIndex,
+            mappingIndex,
+          });
+          continue;
+        }
+        for (const [variantSlot, variantIndex] of mapping.variants.entries()) {
+          if (!Number.isInteger(variantIndex) || variantIndex < 0 || variantIndex >= variantCount) {
+            issues.push({
+              kind: 'missing-variant',
+              path: `${mappingPath}.variants[${variantSlot}]`,
+              meshIndex,
+              primitiveIndex,
+              mappingIndex,
+              variantIndex,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  return issues;
 }
 
 function textureSamplerPolicyUse(

@@ -987,7 +987,9 @@ function resolvePrimitiveMaterialIndex(
 ): number | undefined {
   if (selectedVariantIndex === undefined) return baseMaterialIndex;
   const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
-  const mapping = mappings.find((candidate) => candidate.variants.includes(selectedVariantIndex));
+  const mapping = mappings.find((candidate) =>
+    Array.isArray(candidate.variants) && candidate.variants.includes(selectedVariantIndex)
+  );
   if (!mapping) return baseMaterialIndex;
   if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
     emitControllerDiagnostic(frame, {

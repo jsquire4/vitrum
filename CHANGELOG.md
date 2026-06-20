@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (glTF texture bridge truthfulness, 2026-06-20)
 
+- **Broken `KHR_materials_variants` mappings now fail compatibility preflight before fallback rendering:** `@vitrum/gltf-adapter` records variant mappings that point at missing material indices, missing/malformed variant lists, or missing root variant indices with exact `meshes[*].primitives[*].extensions.KHR_materials_variants.mappings[*]` paths. Backend compatibility reports those routes as `category:"material"` / `support:"unsupported"`, matching the importer/controller behavior that falls back to the base material when a selected variant cannot resolve its mapped material.
 - **CPU-readable glTF texture handles now honor decode target policy:** `decodeSceneTextures()` no longer skips existing `pixel-data` / `data-texture` handles. They are normalized through the same color-space, max-size, and NPOT diagnostic path as decoded raw images, so `target:"cpu-linear"` cannot leave an sRGB base-color CPU payload looking backend-ready but unconverted.
 - **Engine glTF runtime spec-gloss satisfaction is source-path scoped:** `@vitrum/engine/gltf` now mirrors the adapter bridge when checking whether decoded roughness bakes satisfy `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha`. An unrelated decoded roughness map no longer clears the strict runtime compatibility issue.
 

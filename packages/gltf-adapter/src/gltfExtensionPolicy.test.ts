@@ -326,6 +326,73 @@ describe('glTF common extension policy', () => {
     expect(report.materials.unsupportedKnownExtensions).not.toContain('KHR_materials_variants');
   });
 
+  it('reports broken KHR_materials_variants mappings before a selected variant silently falls back', async () => {
+    const { gltf, buffers } = minimalMaterialGltf({
+      name: 'base red',
+      pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] },
+    });
+    gltf.extensionsUsed = ['KHR_materials_variants'];
+    gltf.extensionsRequired = ['KHR_materials_variants'];
+    gltf.extensions = {
+      KHR_materials_variants: {
+        variants: [{ name: 'blue' }],
+      },
+    };
+    gltf.meshes![0]!.primitives[0]!.extensions = {
+      KHR_materials_variants: {
+        mappings: [
+          { material: 99, variants: [0] },
+          { material: 0, variants: [7] },
+          { material: 0 } as unknown as { material: number; variants: number[] },
+        ],
+      },
+    };
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.variantMappingIssues).toEqual([
+      expect.objectContaining({
+        kind: 'missing-material',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[0].material',
+        materialIndex: 99,
+      }),
+      expect.objectContaining({
+        kind: 'missing-variant',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[1].variants[0]',
+        variantIndex: 7,
+      }),
+      expect.objectContaining({
+        kind: 'missing-variant-list',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[2].variants',
+      }),
+    ]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'material',
+        name: 'KHR_materials_variants.mapping.missing-material',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[0].material',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'KHR_materials_variants.mapping.missing-variant',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[1].variants[0]',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'KHR_materials_variants.mapping.missing-variant-list',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[2].variants',
+      }),
+    ]));
+
+    const selected = await gltfToScene(gltf, { buffers, materialVariant: 'blue' });
+    expect(((selected.scene.primitives[0] as MeshPrimitive).material.baseColor)).toEqual([1, 0, 0]);
+    expect(selected.warnings.some((w) => w.includes('references missing material 99'))).toBe(true);
+  });
+
   it('requires opt-in before a required texture-source extension can override texture.source', async () => {
     const { gltf, buffers, extensionBytes } = textureSourceGltf('KHR_texture_basisu');
     gltf.extensionsRequired = ['KHR_texture_basisu'];
