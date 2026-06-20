@@ -2286,6 +2286,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     });
     expect(report.animations.interpolations).toEqual(['BEZIER']);
     expect(report.animations.degradedInterpolations).toEqual(['BEZIER']);
+    expect(report.animations.malformedChannels).toEqual([]);
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(compatibility.issues.some((issue) =>
@@ -2330,6 +2331,93 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       support: 'unsupported',
       path: 'materials[0].extensions.KHR_materials_dispersion.dispersion',
     }));
+  });
+
+  it('reports malformed animation channels with compatibility source paths', () => {
+    const gltf = makeExternalTexturedGltf();
+    const timeAccessor = gltf.accessors!.length;
+    const outputAccessor = timeAccessor + 1;
+    gltf.accessors = [
+      ...gltf.accessors!,
+      { bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: 0, componentType: 5126, count: 1, type: 'VEC3' },
+    ];
+    gltf.animations = [{
+      samplers: [{ input: timeAccessor, output: outputAccessor }],
+      channels: [
+        { sampler: 7, target: { node: 0, path: 'translation' } },
+        { sampler: 0, target: { path: 'rotation' } },
+        { sampler: 0, target: { node: 99, path: 'scale' } },
+        { sampler: 0, target: { node: 0, path: 'translation' } },
+      ],
+    }];
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.animations.malformedChannels).toEqual([
+      {
+        kind: 'missing-target-node',
+        path: 'animations[0].channels[1].target.node',
+        animationIndex: 0,
+        channelIndex: 1,
+        targetPath: 'rotation',
+      },
+      {
+        kind: 'target-node-not-found',
+        path: 'animations[0].channels[2].target.node',
+        animationIndex: 0,
+        channelIndex: 2,
+        targetPath: 'scale',
+        nodeIndex: 99,
+      },
+      {
+        kind: 'invalid-output-count',
+        path: 'animations[0].channels[3].sampler',
+        animationIndex: 0,
+        channelIndex: 3,
+        targetPath: 'translation',
+        samplerIndex: 0,
+        nodeIndex: 0,
+        expectedOutputFloats: 6,
+        actualOutputFloats: 3,
+      },
+      {
+        kind: 'missing-sampler',
+        path: 'animations[0].samplers[7]',
+        animationIndex: 0,
+        channelIndex: 0,
+        targetPath: 'translation',
+        samplerIndex: 7,
+        nodeIndex: 0,
+      },
+    ]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.missing-target-node',
+        support: 'unsupported',
+        path: 'animations[0].channels[1].target.node',
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.target-node-not-found',
+        support: 'unsupported',
+        path: 'animations[0].channels[2].target.node',
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.invalid-output-count',
+        support: 'unsupported',
+        path: 'animations[0].channels[3].sampler',
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.missing-sampler',
+        support: 'unsupported',
+        path: 'animations[0].samplers[7]',
+      }),
+    ]));
   });
 
   it('uses the backend promise ledger to rank textured assets by fidelity tier', () => {

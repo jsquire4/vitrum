@@ -266,21 +266,26 @@ function skinMorphAnimation(): GltfJson {
       samplers: [
         { input: 13, output: 14, interpolation: 'LINEAR' },
         { input: 13, output: 15, interpolation: 'CUBICSPLINE' },
+        { input: 13, output: 16, interpolation: 'LINEAR' },
       ],
       channels: [
         { sampler: 0, target: { node: 0, path: 'translation' } },
-        { sampler: 0, target: { node: 1, path: 'rotation' } },
+        { sampler: 2, target: { node: 1, path: 'rotation' } },
         { sampler: 1, target: { node: 0, path: 'weights' } },
       ],
     }],
-    accessors: Array.from({ length: 16 }, (_, index) => ({
+    accessors: Array.from({ length: 17 }, (_, index) => ({
       bufferView: index,
       componentType: 5126,
       count: 3,
-      type: index === 9 ? 'MAT4' : index === 3 || index === 4 ? 'VEC2' : 'VEC3',
+      type: index === 9 ? 'MAT4' : index === 3 || index === 4 ? 'VEC2' : index === 16 ? 'VEC4' : 'VEC3',
     })),
-    bufferViews: Array.from({ length: 16 }, (_, index) => ({ buffer: 0, byteOffset: index * 16, byteLength: 16 })),
-    buffers: [{ byteLength: 256 }],
+    bufferViews: Array.from({ length: 17 }, (_, index) => ({
+      buffer: 0,
+      byteOffset: index * 16,
+      byteLength: index === 16 ? 48 : 16,
+    })),
+    buffers: [{ byteLength: 304 }],
   };
 }
 
@@ -642,6 +647,7 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       channelCount: 3,
       paths: ['rotation', 'translation', 'weights'],
       interpolations: ['CUBICSPLINE', 'LINEAR'],
+      malformedChannels: [],
       targetNodeCount: 2,
     });
     expect(webgl2.unsupportedCount).toBe(0);

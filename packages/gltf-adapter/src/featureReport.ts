@@ -11,7 +11,10 @@ import {
   type BackendSupportMode,
   type MaterialSpec,
 } from '@vitrum/core';
+import { typeComponentCount } from './accessors.js';
 import type {
+  GltfAnimationChannel,
+  GltfAnimationSampler,
   GltfImage,
   GltfJson,
   GltfMaterial,
@@ -126,8 +129,27 @@ export interface GltfAnimationFeatureReport {
   readonly unsupportedTargetPaths: readonly string[];
   readonly interpolations: readonly string[];
   readonly degradedInterpolations: readonly string[];
+  readonly malformedChannels: readonly GltfAnimationMalformedChannelIssue[];
   readonly targetNodeCount: number;
   readonly issuePaths: Readonly<Record<string, readonly string[]>>;
+}
+
+export type GltfAnimationMalformedChannelKind =
+  | 'missing-sampler'
+  | 'missing-target-node'
+  | 'target-node-not-found'
+  | 'invalid-output-count';
+
+export interface GltfAnimationMalformedChannelIssue {
+  readonly kind: GltfAnimationMalformedChannelKind;
+  readonly path: string;
+  readonly animationIndex: number;
+  readonly channelIndex: number;
+  readonly targetPath?: string;
+  readonly samplerIndex?: number;
+  readonly nodeIndex?: number;
+  readonly expectedOutputFloats?: number;
+  readonly actualOutputFloats?: number;
 }
 
 export interface GltfSceneGraphFeatureReport {
@@ -636,6 +658,16 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  for (const malformed of report.animations.malformedChannels) {
+    addIssue({
+      category: 'animation',
+      name: `channel.${malformed.kind}`,
+      support: 'unsupported',
+      path: malformed.path,
+      message: animationMalformedChannelMessage(malformed),
+    });
+  }
+
   if (report.materials.specularGlossinessMaterialCount > 0) {
     addIssue({
       category: 'material',
@@ -802,6 +834,23 @@ function samplerPolicySupport(
   if ((policy.minFilter ?? 'linear') !== 'linear') return 'approximate';
   if ((policy.mipFilter ?? 'linear') !== 'linear') return 'approximate';
   return 'native';
+}
+
+function animationMalformedChannelMessage(issue: GltfAnimationMalformedChannelIssue): string {
+  if (issue.kind === 'missing-sampler') {
+    return `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ${String(issue.samplerIndex)} which does not exist; the importer skips the channel.`;
+  }
+  if (issue.kind === 'missing-target-node') {
+    return `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} has no target node; extension-targeted animation channels are not imported.`;
+  }
+  if (issue.kind === 'target-node-not-found') {
+    return `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} targets node ${String(issue.nodeIndex)} which does not exist; the importer skips the channel.`;
+  }
+  return (
+    `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} has ` +
+    `${String(issue.actualOutputFloats)} output floats but the target path expects ` +
+    `${String(issue.expectedOutputFloats)} for the authored keyframes; the importer skips the channel.`
+  );
 }
 
 function analyzeExtensions(
@@ -1539,6 +1588,7 @@ function analyzeAnimations(
   const unsupportedTargetPaths = new Set<string>();
   const interpolations = new Set<string>();
   const degradedInterpolations = new Set<string>();
+  const malformedChannels: GltfAnimationMalformedChannelIssue[] = [];
   const targetNodes = new Set<number>();
   const animationIndices = new Set<number>();
   const issuePaths: SourcePathMap = new Map();
@@ -1563,8 +1613,52 @@ function analyzeAnimations(
           `unsupportedTargetPath:${targetPath}`,
           `animations[${animationIndex}].channels[${channelIndex}].target.path`,
         );
+        if (channel.target.node !== undefined) targetNodes.add(channel.target.node);
+        continue;
       }
-      if (channel.target.node !== undefined) targetNodes.add(channel.target.node);
+      if (channel.target.node === undefined) {
+        malformedChannels.push({
+          kind: 'missing-target-node',
+          path: `animations[${animationIndex}].channels[${channelIndex}].target.node`,
+          animationIndex,
+          channelIndex,
+          targetPath,
+        });
+        continue;
+      }
+      if (!gltf.nodes?.[channel.target.node]) {
+        malformedChannels.push({
+          kind: 'target-node-not-found',
+          path: `animations[${animationIndex}].channels[${channelIndex}].target.node`,
+          animationIndex,
+          channelIndex,
+          targetPath,
+          nodeIndex: channel.target.node,
+        });
+        continue;
+      }
+      const sampler = animation.samplers?.[channel.sampler];
+      if (sampler == null) {
+        malformedChannels.push({
+          kind: 'missing-sampler',
+          path: `animations[${animationIndex}].samplers[${channel.sampler}]`,
+          animationIndex,
+          channelIndex,
+          targetPath,
+          samplerIndex: channel.sampler,
+          nodeIndex: channel.target.node,
+        });
+        continue;
+      }
+      const outputCountIssue = animationOutputCountIssue(
+        gltf,
+        animationIndex,
+        channelIndex,
+        channel,
+        sampler,
+      );
+      if (outputCountIssue !== undefined) malformedChannels.push(outputCountIssue);
+      targetNodes.add(channel.target.node);
     }
     if (!animationHasReachableChannel) continue;
     animationIndices.add(animationIndex);
@@ -1588,9 +1682,71 @@ function analyzeAnimations(
     unsupportedTargetPaths: sorted(unsupportedTargetPaths),
     interpolations: sorted(interpolations),
     degradedInterpolations: sorted(degradedInterpolations),
+    malformedChannels: malformedChannels.sort((a, b) =>
+      a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind)
+    ),
     targetNodeCount: targetNodes.size,
     issuePaths: sourcePathRecord(issuePaths),
   };
+}
+
+function animationOutputCountIssue(
+  gltf: GltfJson,
+  animationIndex: number,
+  channelIndex: number,
+  channel: GltfAnimationChannel,
+  sampler: GltfAnimationSampler,
+): GltfAnimationMalformedChannelIssue | undefined {
+  const inputAccessor = gltf.accessors?.[sampler.input];
+  const outputAccessor = gltf.accessors?.[sampler.output];
+  if (inputAccessor == null || outputAccessor == null) return undefined;
+  const cubicFactor = sampler.interpolation === 'CUBICSPLINE' ? 3 : 1;
+  const actualOutputFloats = animationAccessorFloatCount(outputAccessor);
+  if (actualOutputFloats === undefined) return undefined;
+  const targetPath = channel.target.path;
+  const trsCount = animationTargetTrsComponentCount(targetPath);
+  if (trsCount !== undefined) {
+    const expectedOutputFloats = inputAccessor.count * trsCount * cubicFactor;
+    if (actualOutputFloats === expectedOutputFloats) return undefined;
+    return {
+      kind: 'invalid-output-count',
+      path: `animations[${animationIndex}].channels[${channelIndex}].sampler`,
+      animationIndex,
+      channelIndex,
+      targetPath,
+      samplerIndex: channel.sampler,
+      ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
+      expectedOutputFloats,
+      actualOutputFloats,
+    };
+  }
+  const expectedStride = inputAccessor.count * cubicFactor;
+  if (expectedStride <= 0 || actualOutputFloats % expectedStride === 0) return undefined;
+  return {
+    kind: 'invalid-output-count',
+    path: `animations[${animationIndex}].channels[${channelIndex}].sampler`,
+    animationIndex,
+    channelIndex,
+    targetPath,
+    samplerIndex: channel.sampler,
+    ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
+    expectedOutputFloats: expectedStride,
+    actualOutputFloats,
+  };
+}
+
+function animationTargetTrsComponentCount(path: string): number | undefined {
+  if (path === 'rotation') return 4;
+  if (path === 'translation' || path === 'scale') return 3;
+  return undefined;
+}
+
+function animationAccessorFloatCount(accessor: NonNullable<GltfJson['accessors']>[number]): number | undefined {
+  try {
+    return accessor.count * typeComponentCount(accessor.type);
+  } catch {
+    return undefined;
+  }
 }
 
 function textureInfoUvSet(info: GltfTextureInfo): number {
