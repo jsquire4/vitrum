@@ -1653,6 +1653,8 @@ function directEmitterContributes(scene: Scene, emitter: {
   readonly intensity?: number;
   readonly normal?: readonly number[];
   readonly radius?: number;
+  readonly uAxis?: readonly number[];
+  readonly vAxis?: readonly number[];
 }): boolean {
   const intensity = emitter.intensity ?? 1;
   if (!(intensity > 0)) return false;
@@ -1666,6 +1668,15 @@ function directEmitterContributes(scene: Scene, emitter: {
     const n = emitter.normal ?? [0, 0, 0];
     const nLen = Math.hypot(n[0] ?? 0, n[1] ?? 0, n[2] ?? 0);
     if (!Number.isFinite(nLen) || nLen < 1e-8) return false;
+  }
+  if (emitter.kind === 'rect-area') {
+    const u = emitter.uAxis ?? [0, 0, 0];
+    const v = emitter.vAxis ?? [0, 0, 0];
+    const cx = (u[1] ?? 0) * (v[2] ?? 0) - (u[2] ?? 0) * (v[1] ?? 0);
+    const cy = (u[2] ?? 0) * (v[0] ?? 0) - (u[0] ?? 0) * (v[2] ?? 0);
+    const cz = (u[0] ?? 0) * (v[1] ?? 0) - (u[1] ?? 0) * (v[0] ?? 0);
+    const area = 4 * Math.hypot(cx, cy, cz);
+    if (!Number.isFinite(area) || area < 1e-8) return false;
   }
   return true;
 }

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround material texture diagnostics, 2026-06-20)
+
+- **Invalid walkaround texture transforms now warn truthfully:** `@vitrum/walkaround-hybrid` reports non-finite material texture-transform components as `walkaround-hybrid.invalid-material-texture-transform` with an identity-transform fallback, instead of collapsing the sanitized atlas-backed map into the unreadable/ignored-map warning path.
+
 ### Fixed (glTF variant diagnostics, 2026-06-20)
 
 - **Malformed root `KHR_materials_variants.variants` lists now fail truthfully instead of throwing or silently falling through:** `@vitrum/gltf-adapter` reports malformed root variant lists as exact `extensions.KHR_materials_variants.variants` compatibility/import/controller diagnostics, strict `loadGltfForEngine(..., compatibilityMode:'reject-unsupported')` rejects before engine construction, and missing selected variant materials now point at the exact `mappings[*].material` source path.

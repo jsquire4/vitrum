@@ -3132,6 +3132,24 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       intensity: 1,
       meshId: 'does-not-exist',
     }],
+    ['zero-area rect', {
+      kind: 'rect-area' as const,
+      id: 'empty-rect',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      position: [0, 1, 0] as [number, number, number],
+      uAxis: [0, 0, 0] as [number, number, number],
+      vAxis: [0, 0, 1] as [number, number, number],
+    }],
+    ['parallel-axis rect', {
+      kind: 'rect-area' as const,
+      id: 'parallel-rect',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 1,
+      position: [0, 1, 0] as [number, number, number],
+      uAxis: [1, 0, 0] as [number, number, number],
+      vAxis: [2, 0, 0] as [number, number, number],
+    }],
   ])('keeps path-replay when a %s cannot contribute direct light', (_label, emitter) => {
     const fake = makeFakeEngine();
     fake.scene = {

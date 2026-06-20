@@ -11,13 +11,15 @@
  * resolves the effective method to 'path-replay' (NOT finite-difference)
  * whenever the engine supplies the `computeAdjointGradient` hook AND every
  * optimized parameter is in the currently differentiable set (baseColor,
- * roughness, metallic, aoMapIntensity, emissive, specularColor,
+ * roughness, metallic, aoMapIntensity, lightMapIntensity, envMapIntensity,
+ * emissive, specularColor,
  * specularIntensity, clearcoat, clearcoatRoughness, sheen, sheenColor,
  * sheenRoughness, iridescence, iridescenceIor, iridescenceThicknessRange,
- * anisotropy, anisotropyRotation, normalScale, bumpScale). The normal/bump-scale
- * derivatives are replay-local in `adjointPass.wgsl.ts` because they chain
- * through sampled normal/height maps and the direct-light contribution, not
- * through a standalone BRDF partial here.
+ * anisotropy, anisotropyRotation, normalScale, bumpScale,
+ * clearcoatNormalScale). The env/light-map and normal/bump/clearcoat-normal
+ * scale derivatives are replay-local in `adjointPass.wgsl.ts` because they
+ * chain through the direct-light/environment contribution and sampled normal /
+ * height / clearcoat-normal maps, not through standalone BRDF partials here.
  * GPU-validated on lavapipe for the original V24 path: the baseColor/roughness
  * partials match the FD oracle to f32 precision, the chain rule + fixed-point
  * accumulation match an on-device finite-difference, and
@@ -53,15 +55,17 @@
  * the two are hand-verified line-for-line and the codegen-shape tests pin that
  * they keep emitting the same arithmetic.
  *
- * Path-replay (Vicini 2021): the adjoint re-traces the forward path with the
- * SAME RNG seed (`params.frameSeed ^ params.frameIndex`) so the hit point, the
- * frozen light/BSDF sample direction, and the visibility term are bit-identical
- * to the forward render. Only the continuous shading is differentiated — the
- * sampled direction is held constant, so there is NO differentiation through
- * sampling and the visibility / lobe-choice discontinuities never enter the
- * gradient. With Phase-1's single-bounce scope the per-pixel replay state is a
- * single hit record, far under the `GpuResources.BDPT_EYE_STACK_MAX_BYTES`
- * (384 MiB) ceiling that forced path-replay over a stored adjoint graph.
+ * Path-replay (Vicini 2021): the adjoint re-traces the primary hit with the
+ * SAME RNG seed (`params.frameSeed ^ params.frameIndex`) so the target surface
+ * and material state match the baseline. The direct-light adjoint then sums or
+ * samples the supported direct-light expectation under the inverse render
+ * context; ordinary sampled one-of-N light selection, environment BSDF escapes,
+ * indirect transport, and visibility / lobe-choice discontinuities stay outside
+ * this scoped pass and are gated in `inverseSession.ts`. Only continuous local
+ * shading terms are differentiated. With Phase-1's single-bounce scope the
+ * per-pixel replay state is a single hit record, far under the
+ * `GpuResources.BDPT_EYE_STACK_MAX_BYTES` (384 MiB) ceiling that forced
+ * path-replay over a stored adjoint graph.
  *
  * The gradient of the image-space L2 loss w.r.t. a parameter θ is
  *   dLoss/dθ = Σ_pixels  2·(rendered_p − target_p) · dRendered_p/dθ,

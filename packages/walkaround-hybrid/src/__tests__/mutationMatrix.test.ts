@@ -949,6 +949,56 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning when an atlas-backed map has an invalid transform', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    const baseColorMap = {
+      handle: baseColorMapHandle(192),
+      transform: {
+        offset: [Number.NaN, 0.25],
+        scale: [2, Number.POSITIVE_INFINITY],
+        rotation: Number.NEGATIVE_INFINITY,
+      },
+      [GLTF_TEXTURE_REF_SOURCE]: {
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform',
+        textureIndex: 7,
+        imageIndex: 8,
+        samplerIndex: 9,
+      },
+    } as TextureRef;
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap,
+        },
+      });
+
+      const warning = warnings.find((w) =>
+        w.code === 'walkaround-hybrid.invalid-material-texture-transform',
+      );
+      expect(warning?.method).toBe('updatePrimitive');
+      expect(warning?.details).toMatchObject({
+        materialIndex: 0,
+        field: 'baseColorMap',
+        colorSpace: 'srgb',
+        sourcePath: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform',
+        textureIndex: 7,
+        imageIndex: 8,
+        samplerIndex: 9,
+        transformComponents: ['offset.x', 'scale.y', 'rotation'],
+        fallback: 'identity texture transform fallback',
+      });
+      expect(warning?.message).toContain(
+        'non-finite texture transform component(s) offset.x, scale.y, rotation',
+      );
+      expect(warning?.message).toContain('map remains atlas-backed');
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) emits a structured warning when an atlas-backed map has ambiguous raw stride', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     const baseColorMap = {
