@@ -274,12 +274,19 @@ function skinMorphAnimation(): GltfJson {
         { sampler: 1, target: { node: 0, path: 'weights' } },
       ],
     }],
-    accessors: Array.from({ length: 17 }, (_, index) => ({
-      bufferView: index,
-      componentType: 5126,
-      count: 3,
-      type: index === 9 ? 'MAT4' : index === 3 || index === 4 ? 'VEC2' : index === 16 ? 'VEC4' : 'VEC3',
-    })),
+    accessors: Array.from({ length: 17 }, (_, index) => {
+      if (index === 6) return { bufferView: index, componentType: 5121, count: 3, type: 'VEC4' as const };
+      if (index === 7) return { bufferView: index, componentType: 5126, count: 3, type: 'VEC4' as const };
+      if (index === 9) return { bufferView: index, componentType: 5126, count: 1, type: 'MAT4' as const };
+      if (index === 13) return { bufferView: index, componentType: 5126, count: 3, type: 'SCALAR' as const };
+      if (index === 15) return { bufferView: index, componentType: 5126, count: 9, type: 'SCALAR' as const };
+      return {
+        bufferView: index,
+        componentType: 5126,
+        count: 3,
+        type: index === 3 || index === 4 ? 'VEC2' as const : index === 16 ? 'VEC4' as const : 'VEC3' as const,
+      };
+    }),
     bufferViews: Array.from({ length: 17 }, (_, index) => ({
       buffer: 0,
       byteOffset: index * 16,

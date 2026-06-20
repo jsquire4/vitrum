@@ -3489,6 +3489,105 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     ]));
   });
 
+  it('reports malformed auxiliary primitive accessors before import drops or downgrades them', () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addUnboundSkinAttributes(gltf, buffers);
+    const colorAccessor = gltf.accessors!.length;
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      attributes: {
+        ...gltf.meshes![0]!.primitives[0]!.attributes,
+        COLOR_0: colorAccessor,
+      },
+    };
+    gltf.accessors!.push({ bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' });
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.primitives.accessorImportIssues).toContainEqual(expect.objectContaining({
+      kind: 'invalid-accessor-type',
+      support: 'approximate',
+      semantic: 'attributes.COLOR_0',
+      accessorIndex: colorAccessor,
+      path: `accessors[${colorAccessor}].type`,
+      expectedTypes: ['VEC3', 'VEC4'],
+      accessorType: 'VEC2',
+      meshIndex: 0,
+      primitiveIndex: 0,
+    }));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'accessor.attributes.COLOR_0.invalid-accessor-type',
+      support: 'approximate',
+      path: `accessors[${colorAccessor}].type`,
+    }));
+  });
+
+  it('reports malformed bound skin and instancing accessors as unsupported primitive fallbacks', () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addUnboundSkinAttributes(gltf, buffers);
+    const jointsAccessor = gltf.meshes![0]!.primitives[0]!.attributes.JOINTS_0!;
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      skin: 0,
+      extensions: {
+        EXT_mesh_gpu_instancing: {
+          attributes: { ROTATION: 1 },
+        },
+      },
+    };
+    gltf.nodes!.push({ name: 'joint' });
+    gltf.skins = [{ joints: [1] }];
+    gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+    gltf.accessors![jointsAccessor] = {
+      ...gltf.accessors![jointsAccessor]!,
+      componentType: 5126,
+    };
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.primitives.accessorImportIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'invalid-accessor-component-type',
+        support: 'unsupported',
+        semantic: 'attributes.JOINTS_0',
+        accessorIndex: jointsAccessor,
+        path: `accessors[${jointsAccessor}].componentType`,
+        componentType: 5126,
+        meshIndex: 0,
+        primitiveIndex: 0,
+      }),
+      expect.objectContaining({
+        kind: 'invalid-accessor-type',
+        support: 'unsupported',
+        semantic: 'instancing.ROTATION',
+        accessorIndex: 1,
+        path: 'accessors[1].type',
+        expectedTypes: ['VEC4'],
+        accessorType: 'VEC3',
+        nodeIndex: 0,
+      }),
+    ]));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'accessor.attributes.JOINTS_0.invalid-accessor-component-type',
+        support: 'unsupported',
+        path: `accessors[${jointsAccessor}].componentType`,
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'accessor.instancing.ROTATION.invalid-accessor-type',
+        support: 'unsupported',
+        path: 'accessors[1].type',
+      }),
+    ]));
+  });
+
   it('reports malformed sparse animation storage before backend selection', () => {
     const { gltf } = makeInlineTriangleGltf();
     const inputAccessor = gltf.accessors!.length;

@@ -85,6 +85,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasIncompleteSkinAttributes: boolean;
   readonly malformedPrimitives: readonly GltfMalformedPrimitiveIssue[];
   readonly accessorStorageIssues: readonly GltfPrimitiveAccessorStorageIssue[];
+  readonly accessorImportIssues: readonly GltfPrimitiveAccessorImportIssue[];
   readonly hasVertexColors: boolean;
   readonly ignoredVertexColorSets: readonly string[];
   readonly hasUv1: boolean;
@@ -137,6 +138,34 @@ export interface GltfPrimitiveAccessorStorageIssue {
   readonly targetIndex?: number;
   readonly nodeIndex?: number;
   readonly skinIndex?: number;
+  readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
+  readonly componentType?: number;
+}
+
+export type GltfPrimitiveAccessorImportIssueKind =
+  | 'missing-accessor'
+  | 'invalid-accessor-type'
+  | 'invalid-accessor-count'
+  | 'invalid-accessor-component-type'
+  | 'missing-buffer-view'
+  | 'missing-buffer';
+
+export interface GltfPrimitiveAccessorImportIssue {
+  readonly kind: GltfPrimitiveAccessorImportIssueKind;
+  readonly support: 'approximate' | 'unsupported';
+  readonly path: string;
+  readonly semantic: string;
+  readonly accessorIndex: number;
+  readonly meshIndex?: number;
+  readonly primitiveIndex?: number;
+  readonly targetIndex?: number;
+  readonly nodeIndex?: number;
+  readonly skinIndex?: number;
+  readonly expectedTypes?: readonly string[];
+  readonly accessorType?: string;
+  readonly expectedCount?: number;
+  readonly actualCount?: number;
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
   readonly componentType?: number;
@@ -650,6 +679,16 @@ export function evaluateGltfBackendProfileCompatibility(
       support: 'approximate',
       path: storageIssue.path,
       message: primitiveAccessorStorageIssueMessage(storageIssue),
+    });
+  }
+
+  for (const importIssue of report.primitives.accessorImportIssues) {
+    addIssue({
+      category: 'primitive',
+      name: `accessor.${importIssue.semantic}.${importIssue.kind}`,
+      support: importIssue.support,
+      path: importIssue.path,
+      message: primitiveAccessorImportIssueMessage(importIssue),
     });
   }
 
@@ -1235,6 +1274,51 @@ function primitiveAccessorStorageIssueMessage(issue: GltfPrimitiveAccessorStorag
   );
 }
 
+function primitiveAccessorImportIssueMessage(issue: GltfPrimitiveAccessorImportIssue): string {
+  const location = issue.meshIndex !== undefined && issue.primitiveIndex !== undefined
+    ? `glTF mesh ${issue.meshIndex} primitive ${issue.primitiveIndex}`
+    : issue.nodeIndex !== undefined
+      ? `glTF node ${issue.nodeIndex}`
+      : issue.skinIndex !== undefined
+        ? `glTF skin ${issue.skinIndex}`
+        : 'glTF primitive input';
+  const consequence = issue.support === 'unsupported'
+    ? 'strict backend selection rejects this because the importer falls back to a less capable primitive representation.'
+    : 'backend selection reports this as an approximate import because the importer drops or substitutes that auxiliary stream.';
+  if (issue.kind === 'missing-accessor') {
+    return `${location} ${issue.semantic} references missing accessor ${issue.accessorIndex}; ${consequence}`;
+  }
+  if (issue.kind === 'invalid-accessor-type') {
+    return (
+      `${location} ${issue.semantic} accessor ${issue.accessorIndex} has type ` +
+      `${String(issue.accessorType)}, expected ${issue.expectedTypes?.join(' or ') ?? 'a supported type'}; ` +
+      consequence
+    );
+  }
+  if (issue.kind === 'invalid-accessor-count') {
+    return (
+      `${location} ${issue.semantic} accessor ${issue.accessorIndex} has count ` +
+      `${String(issue.actualCount)}, expected ${String(issue.expectedCount)}; ${consequence}`
+    );
+  }
+  if (issue.kind === 'invalid-accessor-component-type') {
+    return (
+      `${location} ${issue.semantic} accessor ${issue.accessorIndex} has unsupported ` +
+      `componentType ${String(issue.componentType)}; ${consequence}`
+    );
+  }
+  if (issue.kind === 'missing-buffer-view') {
+    return (
+      `${location} ${issue.semantic} accessor ${issue.accessorIndex} references missing ` +
+      `bufferView ${String(issue.bufferViewIndex)}; ${consequence}`
+    );
+  }
+  return (
+    `${location} ${issue.semantic} accessor ${issue.accessorIndex} uses bufferView ` +
+    `${String(issue.bufferViewIndex)} referencing missing buffer ${String(issue.bufferIndex)}; ${consequence}`
+  );
+}
+
 function analyzeExtensions(
   gltf: GltfJson,
   selectedTextureSourceExtensions: ReadonlySet<string>,
@@ -1491,6 +1575,7 @@ function analyzePrimitives(
   let hasIncompleteSkinAttributes = false;
   const malformedPrimitives: GltfMalformedPrimitiveIssue[] = [];
   const accessorStorageIssues: GltfPrimitiveAccessorStorageIssue[] = [];
+  const accessorImportIssues: GltfPrimitiveAccessorImportIssue[] = [];
   const meshNodesWithSkin = new Map<number, string[]>();
   const meshNodesWithoutSkin = new Map<number, string[]>();
   for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
@@ -1524,12 +1609,27 @@ function analyzePrimitives(
           ...primitiveImportBlockers(gltf, meshIndex, primitiveIndex, primitive, primitivePath, mode),
         );
       }
+      const primitiveVertexCount = primitive.attributes?.POSITION !== undefined
+        ? gltf.accessors?.[primitive.attributes.POSITION]?.count
+        : undefined;
+      const meshHasSkinnedNode = meshNodesWithSkin.has(meshIndex);
+      const meshHasUnskinnedNode = meshNodesWithoutSkin.has(meshIndex);
       for (const [semantic, accessorIndex] of Object.entries(primitive.attributes ?? {})) {
         attributeSemantics.add(semantic);
         if (semantic !== 'POSITION' && accessorIndex !== undefined) {
           addPrimitiveAccessorStorageIssue(gltf, accessorStorageIssues, {
             semantic: `attributes.${semantic}`,
             accessorIndex,
+            meshIndex,
+            primitiveIndex,
+          });
+          addPrimitiveAccessorImportIssueForAttribute(gltf, accessorImportIssues, {
+            semantic,
+            accessorIndex,
+            expectedCount: primitiveVertexCount,
+            support: meshHasSkinnedNode && (semantic === 'JOINTS_0' || semantic === 'WEIGHTS_0')
+              ? 'unsupported'
+              : 'approximate',
             meshIndex,
             primitiveIndex,
           });
@@ -1546,8 +1646,6 @@ function analyzePrimitives(
       }
       const hasJoints = primitive.attributes?.JOINTS_0 !== undefined;
       const hasWeights = primitive.attributes?.WEIGHTS_0 !== undefined;
-      const meshHasSkinnedNode = meshNodesWithSkin.has(meshIndex);
-      const meshHasUnskinnedNode = meshNodesWithoutSkin.has(meshIndex);
       if (meshHasSkinnedNode) {
         if (hasJoints && hasWeights) {
           hasBoundSkinAttrs = true;
@@ -1584,6 +1682,14 @@ function analyzePrimitives(
               primitiveIndex,
               targetIndex,
             });
+            addPrimitiveAccessorImportIssueForMorphTarget(gltf, accessorImportIssues, {
+              semantic: attr,
+              accessorIndex,
+              expectedCount: primitiveVertexCount,
+              meshIndex,
+              primitiveIndex,
+              targetIndex,
+            });
             if (/^TEXCOORD_\d+$/.test(attr)) {
               hasMorphTargetTexcoords = true;
               addSourcePath(issuePaths, 'morphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
@@ -1604,6 +1710,7 @@ function analyzePrimitives(
     hasInstancing = true;
     const instancingPath = `nodes[${nodeIndex}].extensions.EXT_mesh_gpu_instancing`;
     addSourcePath(issuePaths, 'kind:instanced-mesh', instancingPath);
+    let instancingCount: number | undefined;
     for (const [attr, accessorIndex] of Object.entries(node.extensions.EXT_mesh_gpu_instancing.attributes ?? {})) {
       if (accessorIndex === undefined) continue;
       addPrimitiveAccessorStorageIssue(gltf, accessorStorageIssues, {
@@ -1611,6 +1718,14 @@ function analyzePrimitives(
         accessorIndex,
         nodeIndex,
       });
+      addPrimitiveAccessorImportIssueForInstancing(gltf, accessorImportIssues, {
+        semantic: attr,
+        accessorIndex,
+        expectedCount: instancingCount,
+        nodeIndex,
+      });
+      const accessor = gltf.accessors?.[accessorIndex];
+      if (accessor !== undefined && instancingCount === undefined) instancingCount = accessor.count;
     }
     const mesh = gltf.meshes?.[node.mesh];
     const meshHasMorphTargets = (mesh?.primitives ?? []).some((primitive) =>
@@ -1627,6 +1742,15 @@ function analyzePrimitives(
     addPrimitiveAccessorStorageIssue(gltf, accessorStorageIssues, {
       semantic: 'skin.inverseBindMatrices',
       accessorIndex: skin.inverseBindMatrices,
+      skinIndex,
+    });
+    addPrimitiveAccessorImportIssue(gltf, accessorImportIssues, {
+      semantic: 'skin.inverseBindMatrices',
+      accessorIndex: skin.inverseBindMatrices,
+      sourcePath: `skins[${skinIndex}].inverseBindMatrices`,
+      expectedTypes: ['MAT4'],
+      expectedCount: skin.joints.length,
+      support: 'approximate',
       skinIndex,
     });
   }
@@ -1660,6 +1784,11 @@ function analyzePrimitives(
       a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind)
     ),
     accessorStorageIssues: accessorStorageIssues.sort((a, b) =>
+      a.path.localeCompare(b.path) ||
+      a.semantic.localeCompare(b.semantic) ||
+      a.accessorIndex - b.accessorIndex
+    ),
+    accessorImportIssues: accessorImportIssues.sort((a, b) =>
       a.path.localeCompare(b.path) ||
       a.semantic.localeCompare(b.semantic) ||
       a.accessorIndex - b.accessorIndex
@@ -1979,6 +2108,203 @@ function addPrimitiveAccessorStorageIssue(
     ...(input.skinIndex !== undefined ? { skinIndex: input.skinIndex } : {}),
     ...sparseIssueDetails(sparseIssue),
   });
+}
+
+function addPrimitiveAccessorImportIssueForAttribute(
+  gltf: GltfJson,
+  issues: GltfPrimitiveAccessorImportIssue[],
+  input: {
+    readonly semantic: string;
+    readonly accessorIndex: number;
+    readonly expectedCount?: number | undefined;
+    readonly support: 'approximate' | 'unsupported';
+    readonly meshIndex: number;
+    readonly primitiveIndex: number;
+  },
+): void {
+  const expectation = primitiveAttributeAccessorExpectation(input.semantic);
+  if (expectation === undefined) return;
+  addPrimitiveAccessorImportIssue(gltf, issues, {
+    semantic: `attributes.${input.semantic}`,
+    accessorIndex: input.accessorIndex,
+    sourcePath: `meshes[${input.meshIndex}].primitives[${input.primitiveIndex}].attributes.${input.semantic}`,
+    expectedTypes: expectation.expectedTypes,
+    expectedCount: input.expectedCount,
+    support: input.support,
+    meshIndex: input.meshIndex,
+    primitiveIndex: input.primitiveIndex,
+    componentTypes: expectation.componentTypes,
+  });
+}
+
+function addPrimitiveAccessorImportIssueForMorphTarget(
+  gltf: GltfJson,
+  issues: GltfPrimitiveAccessorImportIssue[],
+  input: {
+    readonly semantic: string;
+    readonly accessorIndex: number;
+    readonly expectedCount?: number | undefined;
+    readonly meshIndex: number;
+    readonly primitiveIndex: number;
+    readonly targetIndex: number;
+  },
+): void {
+  const expectedTypes = morphTargetAccessorTypes(input.semantic);
+  if (expectedTypes === undefined) return;
+  addPrimitiveAccessorImportIssue(gltf, issues, {
+    semantic: `targets.${input.semantic}`,
+    accessorIndex: input.accessorIndex,
+    sourcePath: `meshes[${input.meshIndex}].primitives[${input.primitiveIndex}].targets[${input.targetIndex}].${input.semantic}`,
+    expectedTypes,
+    expectedCount: input.expectedCount,
+    support: 'approximate',
+    meshIndex: input.meshIndex,
+    primitiveIndex: input.primitiveIndex,
+    targetIndex: input.targetIndex,
+  });
+}
+
+function addPrimitiveAccessorImportIssueForInstancing(
+  gltf: GltfJson,
+  issues: GltfPrimitiveAccessorImportIssue[],
+  input: {
+    readonly semantic: string;
+    readonly accessorIndex: number;
+    readonly expectedCount?: number | undefined;
+    readonly nodeIndex: number;
+  },
+): void {
+  const expectedTypes = instancingAccessorTypes(input.semantic);
+  if (expectedTypes === undefined) return;
+  addPrimitiveAccessorImportIssue(gltf, issues, {
+    semantic: `instancing.${input.semantic}`,
+    accessorIndex: input.accessorIndex,
+    sourcePath: `nodes[${input.nodeIndex}].extensions.EXT_mesh_gpu_instancing.attributes.${input.semantic}`,
+    expectedTypes,
+    expectedCount: input.expectedCount,
+    support: 'unsupported',
+    nodeIndex: input.nodeIndex,
+  });
+}
+
+function addPrimitiveAccessorImportIssue(
+  gltf: GltfJson,
+  issues: GltfPrimitiveAccessorImportIssue[],
+  input: {
+    readonly semantic: string;
+    readonly accessorIndex: number;
+    readonly sourcePath: string;
+    readonly expectedTypes: readonly string[];
+    readonly expectedCount?: number | undefined;
+    readonly support: 'approximate' | 'unsupported';
+    readonly meshIndex?: number;
+    readonly primitiveIndex?: number;
+    readonly targetIndex?: number;
+    readonly nodeIndex?: number;
+    readonly skinIndex?: number;
+    readonly componentTypes?: readonly number[] | undefined;
+  },
+): void {
+  const base = {
+    semantic: input.semantic,
+    accessorIndex: input.accessorIndex,
+    support: input.support,
+    ...(input.meshIndex !== undefined ? { meshIndex: input.meshIndex } : {}),
+    ...(input.primitiveIndex !== undefined ? { primitiveIndex: input.primitiveIndex } : {}),
+    ...(input.targetIndex !== undefined ? { targetIndex: input.targetIndex } : {}),
+    ...(input.nodeIndex !== undefined ? { nodeIndex: input.nodeIndex } : {}),
+    ...(input.skinIndex !== undefined ? { skinIndex: input.skinIndex } : {}),
+  } satisfies Omit<GltfPrimitiveAccessorImportIssue, 'kind' | 'path'>;
+
+  const accessor = gltf.accessors?.[input.accessorIndex];
+  if (accessor == null) {
+    issues.push({
+      ...base,
+      kind: 'missing-accessor',
+      path: input.sourcePath,
+    });
+    return;
+  }
+  if (!input.expectedTypes.includes(accessor.type)) {
+    issues.push({
+      ...base,
+      kind: 'invalid-accessor-type',
+      path: `accessors[${input.accessorIndex}].type`,
+      expectedTypes: input.expectedTypes,
+      accessorType: String(accessor.type),
+    });
+    return;
+  }
+  const componentTypes = input.componentTypes ?? FLOAT_ACCESSOR_COMPONENT_TYPES;
+  if (!componentTypes.includes(accessor.componentType)) {
+    issues.push({
+      ...base,
+      kind: 'invalid-accessor-component-type',
+      path: `accessors[${input.accessorIndex}].componentType`,
+      componentType: accessor.componentType,
+    });
+    return;
+  }
+  if (input.expectedCount !== undefined && accessor.count !== input.expectedCount) {
+    issues.push({
+      ...base,
+      kind: 'invalid-accessor-count',
+      path: `accessors[${input.accessorIndex}].count`,
+      expectedCount: input.expectedCount,
+      actualCount: accessor.count,
+    });
+    return;
+  }
+  if (accessor.bufferView === undefined) return;
+  const bufferView = gltf.bufferViews?.[accessor.bufferView];
+  if (bufferView == null) {
+    issues.push({
+      ...base,
+      kind: 'missing-buffer-view',
+      path: `accessors[${input.accessorIndex}].bufferView`,
+      bufferViewIndex: accessor.bufferView,
+    });
+    return;
+  }
+  if (gltf.buffers?.[bufferView.buffer] == null) {
+    issues.push({
+      ...base,
+      kind: 'missing-buffer',
+      path: `bufferViews[${accessor.bufferView}].buffer`,
+      bufferViewIndex: accessor.bufferView,
+      bufferIndex: bufferView.buffer,
+    });
+  }
+}
+
+const FLOAT_ACCESSOR_COMPONENT_TYPES = [5120, 5121, 5122, 5123, 5125, 5126] as const;
+const JOINTS_ACCESSOR_COMPONENT_TYPES = [5121, 5123] as const;
+
+function primitiveAttributeAccessorExpectation(semantic: string): {
+  readonly expectedTypes: readonly string[];
+  readonly componentTypes?: readonly number[];
+} | undefined {
+  if (semantic === 'NORMAL') return { expectedTypes: ['VEC3'] };
+  if (semantic === 'TANGENT') return { expectedTypes: ['VEC4'] };
+  if (semantic === 'COLOR_0') return { expectedTypes: ['VEC3', 'VEC4'] };
+  if (semantic === 'JOINTS_0') {
+    return { expectedTypes: ['VEC4'], componentTypes: JOINTS_ACCESSOR_COMPONENT_TYPES };
+  }
+  if (semantic === 'WEIGHTS_0') return { expectedTypes: ['VEC4'] };
+  if (/^TEXCOORD_\d+$/.test(semantic)) return { expectedTypes: ['VEC2'] };
+  return undefined;
+}
+
+function morphTargetAccessorTypes(semantic: string): readonly string[] | undefined {
+  if (semantic === 'POSITION' || semantic === 'NORMAL' || semantic === 'TANGENT') return ['VEC3'];
+  if (/^TEXCOORD_\d+$/.test(semantic)) return ['VEC2'];
+  return undefined;
+}
+
+function instancingAccessorTypes(semantic: string): readonly string[] | undefined {
+  if (semantic === 'TRANSLATION' || semantic === 'SCALE') return ['VEC3'];
+  if (semantic === 'ROTATION') return ['VEC4'];
+  return undefined;
 }
 
 function sparseIndexComponentTypeIsReadableByImporter(componentType: number): boolean {
