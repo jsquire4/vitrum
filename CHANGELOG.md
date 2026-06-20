@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgpu inverse alpha truthfulness, 2026-06-20)
+
+- **Scoped inverse path replay no longer downgrades inert scalar alpha modes:** `@vitrum/pt-webgpu` now distinguishes non-opaque alpha metadata from actual visibility-changing alpha. Path replay stays enabled for map-free `alphaMode:'mask'` when scalar opacity is at or above `alphaCutoff`, and for map-free `alphaMode:'blend'` at full scalar opacity. Active alpha coverage from base-color texture alpha, `alphaMap`, non-opaque `COLOR_0.a`, mask opacity below cutoff, or fractional blend opacity still reports `path-replay-unsupported-visibility` and routes to finite difference.
+
 ### Fixed (glTF browser proof truthfulness, 2026-06-20)
 
 - **Scene-scoped glTF feature reports now preserve bufferView meshopt and mesh-quantization telemetry:** `@vitrum/gltf-adapter` inspects selected-scene bufferView extensions when computing scoped reports, keeps reachable `KHR_mesh_quantization` accessors in the extension set, and marks meshopt compressed source buffers as reachable for external loading. The pt-webgl2 real-browser proof harness now captures via Playwright canvas screenshot and its refreshed fail-closed status proves `MeshoptCubeTest` reaches readiness with `KHR_mesh_quantization`, `KHR_meshopt_compression`, and the browser meshopt decode hook intact; PNG readback remains host-blocked on this WSL browser stack.
