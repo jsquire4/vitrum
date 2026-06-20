@@ -563,13 +563,20 @@ function isSatisfiedCompatibilityIssue<
     issue.name === 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha' &&
     isDecodedAsset(asset)
   ) {
-    const bakeUnavailable = asset.textureDecodeDiagnostics.some((diagnostic) =>
-      diagnostic.code === 'spec-gloss-alpha-bake-unavailable'
+    const paths = asset.featureReport.materials.issuePaths.specGlossGlossinessAlpha;
+    const requiredPaths = paths !== undefined && paths.length > 0 ? paths : [issue.path];
+    return requiredPaths.every((path) =>
+      !asset.textureDecodeDiagnostics.some((diagnostic) =>
+        diagnostic.code === 'spec-gloss-alpha-bake-unavailable' &&
+        diagnostic.path === path
+      ) &&
+      asset.textureDecodeReport.entries.some((entry) =>
+        entry.materialField === 'roughnessMap' &&
+        entry.path === path &&
+        entry.handleKind === 'pixel-data' &&
+        entry.handleColorSpace === 'linear'
+      )
     );
-    const bakedRoughnessMap = asset.textureDecodeReport.entries.some((entry) =>
-      entry.materialField === 'roughnessMap' && entry.handleKind === 'pixel-data'
-    );
-    return bakedRoughnessMap && !bakeUnavailable;
   }
   return false;
 }

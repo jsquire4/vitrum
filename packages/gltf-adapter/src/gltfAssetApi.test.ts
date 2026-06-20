@@ -1521,6 +1521,53 @@ describe('loadGltfAsset', () => {
       1,
     ]);
   });
+
+  it('keeps spec-gloss alpha degradation until every authored spec-gloss texture path is baked', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+    gltf.meshes![0]!.primitives.push({ attributes: { POSITION: 0 }, material: 1 });
+    gltf.materials!.push({
+      extensions: {
+        KHR_materials_pbrSpecularGlossiness: {
+          diffuseFactor: [1, 1, 1, 1],
+          specularFactor: [1, 1, 1],
+          glossinessFactor: 0.25,
+          specularGlossinessTexture: { index: 99 },
+        },
+      },
+    });
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 128]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      decodePixels,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.textureDecodeReport.entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        materialField: 'roughnessMap',
+        path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+        handleKind: 'pixel-data',
+        handleColorSpace: 'linear',
+      }),
+    ]));
+    expect(result.textureDecodeReport.entries.some((entry) =>
+      entry.materialField === 'roughnessMap' &&
+      entry.path === 'materials[1].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture'
+    )).toBe(false);
+    expect(result.backendCompatibility.flatMap((candidate) => candidate.issues)).toContainEqual(
+      expect.objectContaining({
+        name: 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha',
+      }),
+    );
+  });
 });
 
 describe('decodeSceneTextures', () => {
@@ -4064,6 +4111,41 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
     expect(message).toContain('material:KHR_materials_pbrSpecularGlossiness=approximate');
     expect(message).not.toContain('specularGlossinessTexture.glossinessAlpha');
+  });
+
+  it('does not satisfy spec-gloss alpha degradation with an unrelated decoded roughnessMap', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
+    const specGloss = gltf.materials![0]!.extensions!.KHR_materials_pbrSpecularGlossiness!;
+    specGloss.specularGlossinessTexture = { index: 99 };
+    gltf.meshes![0]!.primitives.push({ attributes: { POSITION: 0 }, material: 1 });
+    gltf.materials!.push({
+      pbrMetallicRoughness: {
+        baseColorFactor: [1, 1, 1, 1],
+        metallicRoughnessTexture: { index: 0 },
+      },
+    });
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 128]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      decodePixels,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow(
+      'material:KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha=approximate',
+    );
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(createEngine).not.toHaveBeenCalled();
   });
 
   it('attaches the decoded spec-gloss roughness bake to the engine scene in best-effort mode', async () => {

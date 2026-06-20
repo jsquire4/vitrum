@@ -216,6 +216,7 @@ export async function loadGltfAndDecodeTextures(
     asset.backendCompatibility,
     textureDecodeReport,
     textureDecodeDiagnostics,
+    asset.featureReport,
     options.backendPolicy ?? 'fidelity',
   );
   return {
@@ -331,25 +332,13 @@ function reconcileBackendCompatibilityAfterTextureDecode(
   compatibility: readonly GltfBackendCompatibility[],
   report: GltfTextureDecodeReport,
   diagnostics: readonly DecodeSceneTextureDiagnostic[],
+  featureReport: GltfFeatureReport,
   backendPolicy: GltfBackendPolicy,
 ): readonly GltfBackendCompatibility[] {
-  const bakeUnavailable = diagnostics.some((diagnostic) =>
-    diagnostic.code === 'spec-gloss-alpha-bake-unavailable'
-  );
-  const bakedRoughnessMap = report.entries.some((entry) =>
-    entry.materialField === 'roughnessMap' && entry.handleKind === 'pixel-data'
-  );
-
   const reconciled = compatibility.map((candidate) => {
     const issues = candidate.issues.filter((issue) => {
       if (isTextureReadinessIssue(issue)) return false;
-      if (
-        issue.name === SPEC_GLOSS_ALPHA_ISSUE &&
-        bakedRoughnessMap &&
-        !bakeUnavailable
-      ) {
-        return false;
-      }
+      if (specGlossAlphaIssueSatisfiedByDecode(issue, report, diagnostics, featureReport)) return false;
       if (emissiveTexelPdfIssueSatisfiedByDecode(issue, candidate, report)) return false;
       if (textureSourceHookIssueSatisfiedByDecode(issue, report)) return false;
       return true;
@@ -360,6 +349,29 @@ function reconcileBackendCompatibilityAfterTextureDecode(
     );
   });
   return rerankBackendCompatibility(reconciled, backendPolicy);
+}
+
+function specGlossAlphaIssueSatisfiedByDecode(
+  issue: GltfCompatibilityIssue,
+  report: GltfTextureDecodeReport,
+  diagnostics: readonly DecodeSceneTextureDiagnostic[],
+  featureReport: GltfFeatureReport,
+): boolean {
+  if (issue.name !== SPEC_GLOSS_ALPHA_ISSUE) return false;
+  const paths = featureReport.materials.issuePaths.specGlossGlossinessAlpha;
+  const requiredPaths = paths !== undefined && paths.length > 0 ? paths : [issue.path];
+  return requiredPaths.every((path) =>
+    !diagnostics.some((diagnostic) =>
+      diagnostic.code === 'spec-gloss-alpha-bake-unavailable' &&
+      diagnostic.path === path
+    ) &&
+    report.entries.some((entry) =>
+      entry.materialField === 'roughnessMap' &&
+      entry.path === path &&
+      entry.handleKind === 'pixel-data' &&
+      entry.handleColorSpace === 'linear'
+    )
+  );
 }
 
 function emissiveTexelPdfIssueSatisfiedByDecode(
