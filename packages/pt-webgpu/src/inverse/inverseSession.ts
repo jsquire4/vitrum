@@ -1431,7 +1431,7 @@ function pathReplayAlphaVisibilityIssue(
   const opacity = material.opacity ?? 1;
   const alphaCutoff = material.alphaCutoff ?? 0.5;
   const alphaInputs: string[] = [];
-  if (material.baseColorMap != null) alphaInputs.push('baseColorMap.a');
+  if (baseColorMapCanReduceAlpha(material.baseColorMap)) alphaInputs.push('baseColorMap.a');
   if (material.alphaMap != null) alphaInputs.push('alphaMap');
   if (primitiveHasNonOpaqueVertexAlpha(primitive)) alphaInputs.push('COLOR_0.a');
   if (alphaMode === 'mask' && opacity < alphaCutoff) alphaInputs.push('opacity<alphaCutoff');
@@ -1452,6 +1452,76 @@ function pathReplayAlphaVisibilityIssue(
       affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
     },
   };
+}
+
+function asTextureHandle(value: unknown): unknown | null {
+  if (value == null) return null;
+  if (typeof value === 'object' && 'handle' in value) {
+    return (value as { readonly handle?: unknown }).handle ?? null;
+  }
+  return value;
+}
+
+function textureHint(handle: unknown): {
+  readonly channels?: number;
+  readonly dataType?: string;
+} | undefined {
+  if (handle == null || typeof handle !== 'object') return undefined;
+  const h = handle as {
+    readonly __vitrum_hint__?: { readonly channels?: number; readonly dataType?: string };
+    readonly channels?: number;
+    readonly dataType?: string;
+  };
+  return h.__vitrum_hint__ ?? (
+    h.channels != null || h.dataType != null
+      ? {
+          ...(h.channels != null ? { channels: h.channels } : {}),
+          ...(h.dataType != null ? { dataType: h.dataType } : {}),
+        }
+      : undefined
+  );
+}
+
+function decodedUnitAlpha(value: number, src: ArrayLike<number>, hintDataType: string | undefined): number {
+  if (hintDataType === 'float32' || src instanceof Float32Array || src instanceof Float64Array) return value;
+  if (hintDataType === 'uint16' || src instanceof Uint16Array) return value / 65535;
+  if (hintDataType === 'uint8' || src instanceof Uint8Array || src instanceof Uint8ClampedArray) return value / 255;
+  if (src instanceof Uint32Array) return value / 4294967295;
+  if (src instanceof Int16Array) return value / 32767;
+  if (src instanceof Int32Array) return value / 2147483647;
+  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
+  const max = 2 ** (8 * bpe) - 1;
+  return max > 0 ? value / max : value;
+}
+
+function baseColorMapCanReduceAlpha(value: unknown): boolean {
+  if (value == null) return false;
+  const handle = asTextureHandle(value);
+  if (handle == null || typeof handle !== 'object') return true;
+  const h = handle as {
+    readonly width?: number;
+    readonly height?: number;
+    readonly data?: ArrayLike<number>;
+    readonly image?: { readonly width?: number; readonly height?: number; readonly data?: ArrayLike<number> };
+  };
+  const src = h.data ?? h.image?.data;
+  const width = Math.floor(Number(h.width ?? h.image?.width ?? 0));
+  const height = Math.floor(Number(h.height ?? h.image?.height ?? 0));
+  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) return true;
+
+  const pixelCount = width * height;
+  if (pixelCount <= 0 || src.length < pixelCount) return true;
+  const hint = textureHint(handle);
+  const heuristicStride = src.length / pixelCount;
+  const stride = hint?.channels ?? heuristicStride;
+  if (!Number.isInteger(stride) || stride <= 0 || stride > 4) return true;
+  if (stride < 4) return false;
+
+  for (let p = 0; p < pixelCount; p += 1) {
+    const alpha = decodedUnitAlpha(Number(src[p * stride + 3] ?? 1), src, hint?.dataType);
+    if (!Number.isFinite(alpha) || alpha < 0.999) return true;
+  }
+  return false;
 }
 
 function primitiveHasNonOpaqueVertexAlpha(primitive: ScenePrimitive): boolean {

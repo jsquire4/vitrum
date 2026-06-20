@@ -243,6 +243,28 @@ export const LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS = {
   missing: 'global-transport-light-map-participation',
 } as const;
 
+/** Structured payload for consumed-but-still-promoted-by-proof rich material rows. */
+export const RICH_MATERIAL_GI_APPROXIMATION_DETAILS = {
+  consumedBy: [
+    'shade-owned-direct-light',
+    'ReSTIR-DI-candidate-and-resolve-BRDF',
+    'ReSTIR-GI-suffix-and-receiver-lobe-targets',
+    'DDGI/RC-probe-hit-compact-BRDF',
+  ],
+  approximation: 'compact-rich-material-lobe-response',
+  missing: 'material-furnace-reference-ab-and-full-rich-material-gi-promotion',
+  proofTail: [
+    'GPU-material-furnace',
+    'rich-material-GI-A/B',
+    'reference-render-sweep',
+  ],
+} as const;
+
+export interface ApproximateRichMaterialPrimitiveFields {
+  readonly primitiveId: string;
+  readonly fields: readonly string[];
+}
+
 function materialBearingPrimitiveKind(kind: string): boolean {
   return (
     kind === 'mesh' ||
@@ -441,6 +463,89 @@ export function collectApproximateLightMapPrimitiveIds(
     if (intensity > 0) ids.push(prim.id ?? '(unnamed)');
   }
   return ids.sort();
+}
+
+/**
+ * Return material-bearing primitives that exercise rich-material lobes that are
+ * consumed by walkaround but still approximate pending material-furnace /
+ * rich-GI reference promotion. Default scalar metadata does not warn; maps and
+ * non-default active lobes do.
+ */
+export function collectApproximateRichMaterialPrimitiveFields(
+  primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+): ApproximateRichMaterialPrimitiveFields[] {
+  const out: ApproximateRichMaterialPrimitiveFields[] = [];
+  for (const prim of primitives) {
+    if (!materialBearingPrimitiveKind(prim.kind)) continue;
+    const fields = collectApproximateRichMaterialFieldsForMaterial(prim.material);
+    if (fields.length > 0) {
+      out.push({ primitiveId: prim.id ?? '(unnamed)', fields });
+    }
+  }
+  return out.sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
+}
+
+export function collectApproximateRichMaterialFieldsForMaterial(
+  material: Record<string, unknown> | undefined,
+): string[] {
+  if (!material) return [];
+  const fields = new Set<string>();
+  const has = (key: string): boolean => material[key] !== undefined && material[key] !== null;
+  const scalar = (key: string, fallback: number): number => {
+    const value = material[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  };
+  const rgbDiffers = (key: string, fallback: readonly [number, number, number]): boolean => {
+    const value = material[key];
+    if (!Array.isArray(value)) return false;
+    return Math.abs(Number(value[0] ?? fallback[0]) - fallback[0]) > 1e-6 ||
+      Math.abs(Number(value[1] ?? fallback[1]) - fallback[1]) > 1e-6 ||
+      Math.abs(Number(value[2] ?? fallback[2]) - fallback[2]) > 1e-6;
+  };
+  const vec2Differs = (key: string, fallback: readonly [number, number]): boolean => {
+    const value = material[key];
+    if (!Array.isArray(value)) return false;
+    return Math.abs(Number(value[0] ?? fallback[0]) - fallback[0]) > 1e-6 ||
+      Math.abs(Number(value[1] ?? fallback[1]) - fallback[1]) > 1e-6;
+  };
+
+  if (rgbDiffers('specularColor', [1, 1, 1])) fields.add('specularColor');
+  if (has('specularColorMap')) fields.add('specularColorMap');
+  if (Math.abs(scalar('specularIntensity', 1) - 1) > 1e-6) fields.add('specularIntensity');
+  if (has('specularIntensityMap')) fields.add('specularIntensityMap');
+
+  const clearcoatActive = scalar('clearcoat', 0) > 1e-6 || has('clearcoatMap');
+  if (scalar('clearcoat', 0) > 1e-6) fields.add('clearcoat');
+  if (has('clearcoatMap')) fields.add('clearcoatMap');
+  if (clearcoatActive && Math.abs(scalar('clearcoatRoughness', 0) - 0) > 1e-6) fields.add('clearcoatRoughness');
+  if (has('clearcoatRoughnessMap')) fields.add('clearcoatRoughnessMap');
+  if (has('clearcoatNormalMap')) fields.add('clearcoatNormalMap');
+  if (has('clearcoatNormalMap') && Math.abs(scalar('clearcoatNormalScale', 1) - 1) > 1e-6) fields.add('clearcoatNormalScale');
+
+  const sheenActive = scalar('sheen', 0) > 1e-6 || has('sheenColorMap') || has('sheenRoughnessMap');
+  if (scalar('sheen', 0) > 1e-6) fields.add('sheen');
+  if (sheenActive && rgbDiffers('sheenColor', [0, 0, 0])) fields.add('sheenColor');
+  if (sheenActive && Math.abs(scalar('sheenRoughness', 0) - 0) > 1e-6) fields.add('sheenRoughness');
+  if (has('sheenColorMap')) fields.add('sheenColorMap');
+  if (has('sheenRoughnessMap')) fields.add('sheenRoughnessMap');
+
+  const anisotropyActive = Math.abs(scalar('anisotropy', 0)) > 1e-6 || has('anisotropyMap');
+  if (Math.abs(scalar('anisotropy', 0)) > 1e-6) fields.add('anisotropy');
+  if (anisotropyActive && Math.abs(scalar('anisotropyRotation', 0)) > 1e-6) fields.add('anisotropyRotation');
+  if (has('anisotropyMap')) fields.add('anisotropyMap');
+
+  const iridescenceActive = scalar('iridescence', 0) > 1e-6 || has('iridescenceMap') || has('iridescenceThicknessMap');
+  if (scalar('iridescence', 0) > 1e-6) fields.add('iridescence');
+  if (iridescenceActive && Math.abs(scalar('iridescenceIor', 1.3) - 1.3) > 1e-6) fields.add('iridescenceIor');
+  if (iridescenceActive && vec2Differs('iridescenceThicknessRange', [100, 400])) fields.add('iridescenceThicknessRange');
+  if (has('iridescenceMap')) fields.add('iridescenceMap');
+  if (has('iridescenceThicknessMap')) fields.add('iridescenceThicknessMap');
+
+  return [...fields].sort();
 }
 
 function collectLitMeshAreaEmitterMeshIds(

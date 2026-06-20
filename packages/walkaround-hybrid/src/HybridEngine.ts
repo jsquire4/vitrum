@@ -118,10 +118,13 @@ import {
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectApproximateLightMapPrimitiveIds,
+  collectApproximateRichMaterialPrimitiveFields,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
   EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
   LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
+  RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
+  type ApproximateRichMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
@@ -232,6 +235,8 @@ export class HybridEngine implements Engine {
   private _warnedEmissiveMapTexelPdfApproximationIds = new Set<string>();
   /** Tracks which light-map camera-visible approximation primitive sets have warned. */
   private _warnedLightMapApproximationIds = new Set<string>();
+  /** Tracks which rich-material approximation primitive/field sets have warned. */
+  private _warnedRichMaterialApproximationIds = new Set<string>();
   /** Tracks atlas-backed material texture drops already reported to hosts. */
   private _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
   /** Tracks invalid setSize dimensions already reported to hosts. */
@@ -983,6 +988,39 @@ export class HybridEngine implements Engine {
     });
   }
 
+  private _warnApproximateRichMaterialPrimitiveFields(
+    primitiveFields: readonly ApproximateRichMaterialPrimitiveFields[],
+    method: 'setScene' | 'updatePrimitive',
+  ): void {
+    if (primitiveFields.length === 0) return;
+    const normalized = primitiveFields
+      .map((entry) => ({
+        primitiveId: entry.primitiveId,
+        fields: [...entry.fields].sort(),
+      }))
+      .sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
+    const key = normalized.map((entry) => `${entry.primitiveId}:${entry.fields.join('|')}`).join(',');
+    if (this._warnedRichMaterialApproximationIds.has(key)) return;
+    this._warnedRichMaterialApproximationIds.add(key);
+    const fieldSet = [...new Set(normalized.flatMap((entry) => entry.fields))].sort();
+    this._warn({
+      code: 'walkaround-hybrid.rich-material-gi-approximation',
+      backend: 'walkaround-hybrid',
+      phase: method,
+      method,
+      message:
+        `[vitrum/walkaround-hybrid] ${method}: rich material lobes are consumed ` +
+        `by the realtime material path, but specular/clearcoat/sheen/anisotropy/` +
+        `iridescence GI remains approximate pending material-furnace/reference A/B; ` +
+        `primitives: ${normalized.map((entry) => entry.primitiveId).join(', ')}.`,
+      details: {
+        primitiveFields: normalized,
+        fields: fieldSet,
+        ...RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
+      },
+    });
+  }
+
   private _warnReservedReceiveShadowPrimitiveIds(
     primitiveIds: readonly string[],
     method: 'setScene' | 'updatePrimitive',
@@ -1157,6 +1195,15 @@ export class HybridEngine implements Engine {
       }>,
     );
     this._warnApproximateLightMapPrimitiveIds(lightMapApproxIds, 'setScene');
+
+    const richMaterialApproxFields = collectApproximateRichMaterialPrimitiveFields(
+      scene.primitives as unknown as ReadonlyArray<{
+        readonly id?: string;
+        readonly kind: string;
+        readonly material?: Record<string, unknown>;
+      }>,
+    );
+    this._warnApproximateRichMaterialPrimitiveFields(richMaterialApproxFields, 'setScene');
 
     // SHADOW-01 — receiveShadow is reserved/unsupported: a "receiver ignores
     // occlusion" toggle is non-physical for this GI renderer. castShadow rows
@@ -1408,6 +1455,14 @@ export class HybridEngine implements Engine {
       }]),
       'updatePrimitive',
     );
+    this._warnApproximateRichMaterialPrimitiveFields(
+      collectApproximateRichMaterialPrimitiveFields([{
+        id,
+        kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
+        material,
+      }]),
+      'updatePrimitive',
+    );
   }
 
   private _warnUnknownPrimitivePatchFields(
@@ -1583,6 +1638,9 @@ export class HybridEngine implements Engine {
       },
       warnApproximateLightMapPrimitiveIds: (primitiveIds) => {
         this._warnApproximateLightMapPrimitiveIds(primitiveIds, 'updatePrimitive');
+      },
+      warnApproximateRichMaterialPrimitiveFields: (primitiveFields) => {
+        this._warnApproximateRichMaterialPrimitiveFields(primitiveFields, 'updatePrimitive');
       },
       onWarning: (warning) => {
         this._warn(warning);

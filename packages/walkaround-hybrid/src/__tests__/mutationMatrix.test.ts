@@ -897,6 +897,42 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) emits a structured warning for rich-material GI approximation', () => {
+    const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
+    try {
+      const richMaterial = {
+        baseColor: [0.6, 0.6, 0.6] as [number, number, number],
+        roughness: 0.35,
+        metallic: 0,
+        specularColor: [0.8, 0.7, 0.6] as [number, number, number],
+        clearcoat: 0.5,
+        clearcoatNormalMap: { handle: baseColorMapHandle(96) },
+        sheen: 0.3,
+        anisotropy: 0.4,
+        iridescenceMap: { handle: baseColorMapHandle(128) },
+      };
+
+      engine.updatePrimitive('mesh-a', { material: richMaterial });
+      engine.updatePrimitive('mesh-a', { material: richMaterial });
+
+      const richWarnings = warnings.filter((w) =>
+        w.code === 'walkaround-hybrid.rich-material-gi-approximation',
+      );
+      expect(richWarnings).toHaveLength(1);
+      expect(richWarnings[0]?.method).toBe('updatePrimitive');
+      expect(richWarnings[0]?.details?.primitiveFields).toEqual([{
+        primitiveId: 'mesh-a',
+        fields: ['anisotropy', 'clearcoat', 'clearcoatNormalMap', 'iridescenceMap', 'sheen', 'specularColor'],
+      }]);
+      expect(richWarnings[0]?.details).toMatchObject({
+        approximation: 'compact-rich-material-lobe-response',
+        missing: 'material-furnace-reference-ab-and-full-rich-material-gi-promotion',
+      });
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(material) emits a structured warning when an atlas-backed map is unreadable', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     const baseColorMap = {

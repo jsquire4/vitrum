@@ -104,7 +104,9 @@ import {
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectApproximateLightMapPrimitiveIds,
+  collectApproximateRichMaterialPrimitiveFields,
   collectUnconsumedMaterialFieldsForMaterial,
+  type ApproximateRichMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
 import type { DDGI } from './ddgi/DDGI.js';
@@ -406,6 +408,10 @@ export interface PrimitiveUpdateContext {
   readonly warnApproximateEmissiveMapTexelPdfPrimitiveIds?: (primitiveIds: readonly string[]) => void;
   /** Emits backend-honesty warnings for camera-visible-only light-map approximations. */
   readonly warnApproximateLightMapPrimitiveIds?: (primitiveIds: readonly string[]) => void;
+  /** Emits backend-honesty warnings for rich-material GI approximation rows. */
+  readonly warnApproximateRichMaterialPrimitiveFields?: (
+    primitiveFields: readonly ApproximateRichMaterialPrimitiveFields[],
+  ) => void;
   /** Structured warning sink for BVH/emitter rebuild compatibility issues. */
   readonly onWarning?: (warning: EngineWarning) => void;
   /** Optional pack-mode override from engine extensions. */
@@ -1380,6 +1386,13 @@ export function materialPatch(
   );
   ctx.warnApproximateLightMapPrimitiveIds?.(
     collectApproximateLightMapPrimitiveIds([{
+      id,
+      kind: prevPrim?.kind ?? 'mesh',
+      material: nextMaterial as unknown as Record<string, unknown>,
+    }]),
+  );
+  ctx.warnApproximateRichMaterialPrimitiveFields?.(
+    collectApproximateRichMaterialPrimitiveFields([{
       id,
       kind: prevPrim?.kind ?? 'mesh',
       material: nextMaterial as unknown as Record<string, unknown>,

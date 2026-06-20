@@ -2933,6 +2933,41 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when active alphaMode uses an RGB-only baseColor texture', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'mask',
+                baseColorMap: {
+                  handle: {
+                    width: 1,
+                    height: 1,
+                    data: new Uint8Array([255, 255, 255]),
+                    __vitrum_hint__: { channels: 3, dataType: 'uint8' },
+                  },
+                },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it('degrades path-replay when active alphaMode can read vertex-color alpha', () => {
     const fake = makeFakeEngine();
     fake.scene = {

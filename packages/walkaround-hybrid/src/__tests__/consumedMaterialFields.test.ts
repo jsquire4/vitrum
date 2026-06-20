@@ -24,10 +24,12 @@ import {
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectApproximateLightMapPrimitiveIds,
+  collectApproximateRichMaterialPrimitiveFields,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
   EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
   LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
+  RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
 } from '../restir/consumedMaterialFields.js';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
@@ -419,6 +421,73 @@ describe('collectUnconsumedMaterialFields', () => {
   });
 });
 
+describe('collectApproximateRichMaterialPrimitiveFields', () => {
+  it('reports active consumed rich-material fields without flagging default scalar metadata', () => {
+    const scene = consumedOnlyScene();
+    const base = scene.primitives[0]!;
+    const richScene: Scene = {
+      ...scene,
+      primitives: [
+        {
+          ...base,
+          id: 'rich-defaults',
+          material: {
+            ...base.material,
+            specularColor: [1, 1, 1],
+            specularIntensity: 1,
+            clearcoat: 0,
+            clearcoatRoughness: 0,
+            sheen: 0,
+            sheenColor: [0, 0, 0],
+            iridescence: 0,
+            iridescenceIor: 1.3,
+            iridescenceThicknessRange: [100, 400],
+          },
+        },
+        {
+          ...base,
+          id: 'active-rich',
+          material: {
+            ...base.material,
+            specularColor: [0.8, 0.7, 0.6],
+            specularIntensity: 0.4,
+            clearcoat: 0.5,
+            clearcoatRoughness: 0.2,
+            clearcoatNormalMap: { handle: 'cc-normal' },
+            clearcoatNormalScale: 0.5,
+            sheen: 0.3,
+            sheenColorMap: { handle: 'sheen' },
+            anisotropy: 0.4,
+            anisotropyRotation: 0.25,
+            iridescence: 0.6,
+            iridescenceThicknessMap: { handle: 'thin-film' },
+          },
+        },
+      ],
+    };
+
+    expect(collectApproximateRichMaterialPrimitiveFields(
+      richScene.primitives as unknown as ReadonlyArray<PrimLike>,
+    )).toEqual([{
+      primitiveId: 'active-rich',
+      fields: [
+        'anisotropy',
+        'anisotropyRotation',
+        'clearcoat',
+        'clearcoatNormalMap',
+        'clearcoatNormalScale',
+        'clearcoatRoughness',
+        'iridescence',
+        'iridescenceThicknessMap',
+        'sheen',
+        'sheenColorMap',
+        'specularColor',
+        'specularIntensity',
+      ],
+    }]);
+  });
+});
+
 // ── Layer 2 — engine-level setScene wiring ───────────────────────────────────
 
 describe('HybridEngine.setScene unconsumed-field warning', () => {
@@ -713,6 +782,49 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
         missing: 'global-exact-texel-alias-pdf',
       });
       expect(texelPdfWarnings[0]?.message).toContain('exact texel-cell sub-triangles');
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('emits a structured warning for rich-material GI approximation', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const scene = consumedOnlyScene();
+      const prim = scene.primitives[0]!;
+      const richScene: Scene = {
+        ...scene,
+        primitives: [
+          {
+            ...prim,
+            id: 'rich-panel',
+            material: {
+              ...prim.material,
+              specularColor: [0.8, 0.7, 0.6],
+              clearcoat: 0.5,
+              clearcoatNormalMap: { handle: 'cc-normal' },
+              sheen: 0.3,
+              anisotropy: 0.4,
+              iridescenceMap: { handle: 'iridescence' },
+            },
+          },
+        ],
+      };
+      engine.setScene(richScene);
+      engine.setScene(richScene);
+      const richWarnings = structured.filter((w) =>
+        w.code === 'walkaround-hybrid.rich-material-gi-approximation',
+      );
+      expect(richWarnings).toHaveLength(1);
+      expect(richWarnings[0]?.details?.primitiveFields).toEqual([{
+        primitiveId: 'rich-panel',
+        fields: ['anisotropy', 'clearcoat', 'clearcoatNormalMap', 'iridescenceMap', 'sheen', 'specularColor'],
+      }]);
+      expect(richWarnings[0]?.details).toMatchObject(RICH_MATERIAL_GI_APPROXIMATION_DETAILS);
     } finally {
       engine.dispose();
     }

@@ -632,9 +632,32 @@ for (const needle of [
   "baseColorMapCanReduceAlpha(mat.baseColorMap) || mat.alphaMap != null",
   "function baseColorMapCanReduceAlpha",
   "if (stride < 4) return false;",
+  "collectApproximateRichMaterialPrimitiveFields",
+  "RICH_MATERIAL_GI_APPROXIMATION_DETAILS",
 ]) {
   if (!walkaroundConsumedMaterialFields.includes(needle)) {
     fail(`walkaround alpha-blend warning collector must stay alpha-channel aware: ${needle}`);
+  }
+}
+
+const walkaroundHybridEngine = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
+for (const needle of [
+  "walkaround-hybrid.rich-material-gi-approximation",
+  "collectApproximateRichMaterialPrimitiveFields",
+  "_warnApproximateRichMaterialPrimitiveFields",
+]) {
+  if (!walkaroundHybridEngine.includes(needle)) {
+    fail(`walkaround rich-material approximation warning must stay wired through HybridEngine: ${needle}`);
+  }
+}
+
+const walkaroundPrimitiveUpdates = await readText("packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts");
+for (const needle of [
+  "warnApproximateRichMaterialPrimitiveFields",
+  "collectApproximateRichMaterialPrimitiveFields",
+]) {
+  if (!walkaroundPrimitiveUpdates.includes(needle)) {
+    fail(`walkaround rich-material approximation warning must stay wired through material patch fast paths: ${needle}`);
   }
 }
 
@@ -643,9 +666,21 @@ for (const needle of [
   "id: 'base-map-rgb'",
   "id: 'base-map-alpha'",
   "does not emit alpha approximation warning for RGB-only baseColorMap blend coverage",
+  "collectApproximateRichMaterialPrimitiveFields",
+  "emits a structured warning for rich-material GI approximation",
 ]) {
   if (!walkaroundConsumedMaterialFieldsTest.includes(needle)) {
     fail(`walkaround alpha-blend tests must pin RGB-vs-RGBA warning precision: ${needle}`);
+  }
+}
+
+const walkaroundMutationMatrixTest = await readText("packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts");
+for (const needle of [
+  "updatePrimitive(material) emits a structured warning for rich-material GI approximation",
+  "walkaround-hybrid.rich-material-gi-approximation",
+]) {
+  if (!walkaroundMutationMatrixTest.includes(needle)) {
+    fail(`walkaround mutation matrix must pin rich-material approximation warnings: ${needle}`);
   }
 }
 
@@ -679,12 +714,24 @@ for (const needle of [
 const ptWebgpuInverseSessionTest = await readText("packages/pt-webgpu/src/__tests__/inverseSession.test.ts");
 for (const needle of [
   "keeps envMapIntensity on scoped path-replay for procedural sky baked through the environment CDF",
+  "keeps path-replay when active alphaMode uses an RGB-only baseColor texture",
   "environment: {",
   "kind: 'procedural-sky'",
   "code: 'path-replay-unsupported-environment'",
 ]) {
   if (!ptWebgpuInverseSessionTest.includes(needle)) {
     fail(`pt-webgpu inverse tests must pin procedural-sky environment-CDF path replay: ${needle}`);
+  }
+}
+
+const ptWebgpuInverseSession = await readText("packages/pt-webgpu/src/inverse/inverseSession.ts");
+for (const needle of [
+  "baseColorMapCanReduceAlpha(material.baseColorMap)",
+  "function baseColorMapCanReduceAlpha",
+  "if (stride < 4) return false;",
+]) {
+  if (!ptWebgpuInverseSession.includes(needle)) {
+    fail(`pt-webgpu inverse alpha-visibility diagnostics must stay baseColor-alpha aware: ${needle}`);
   }
 }
 
