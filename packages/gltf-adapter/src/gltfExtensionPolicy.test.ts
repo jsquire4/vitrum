@@ -391,6 +391,12 @@ describe('glTF common extension policy', () => {
     const selected = await gltfToScene(gltf, { buffers, materialVariant: 'blue' });
     expect(((selected.scene.primitives[0] as MeshPrimitive).material.baseColor)).toEqual([1, 0, 0]);
     expect(selected.warnings.some((w) => w.includes('references missing material 99'))).toBe(true);
+    expect(selected.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'material-variant-mapping-malformed',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[2].variants',
+      }),
+    ]));
   });
 
   it('requires opt-in before a required texture-source extension can override texture.source', async () => {

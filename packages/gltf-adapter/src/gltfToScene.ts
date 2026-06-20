@@ -422,6 +422,7 @@ export type GltfImportDiagnosticCode =
   | 'empty-triangulated-primitive'
   | 'material-variant-not-found'
   | 'material-variant-material-missing'
+  | 'material-variant-mapping-malformed'
   | 'ignored-material-texcoord'
   | 'ignored-morph-target-texcoord'
   | 'ignored-morph-target-attribute'
@@ -1461,8 +1462,18 @@ function _buildPrimitiveMaterialVariantPatches(
 ): GltfMaterialVariantPatch[] {
   const patches = new Map<number, GltfMaterialVariantPatch>();
   const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
-  for (const mapping of mappings) {
-    if (!Array.isArray(mapping.variants)) continue;
+  for (const [mappingIndex, mapping] of mappings.entries()) {
+    if (!Array.isArray(mapping.variants)) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'material-variant-mapping-malformed',
+        path: `${primitivePath}.extensions.KHR_materials_variants.mappings[${mappingIndex}].variants`,
+        message:
+          `[vitrum/gltf-adapter] Mesh "${meshLabel}" KHR_materials_variants mapping ` +
+          `${mappingIndex} has a missing or malformed variants array. Mapping skipped.`,
+      });
+      continue;
+    }
     for (const variantIndex of mapping.variants) {
       if (patches.has(variantIndex)) continue;
       const materialIndex = _resolvePrimitiveMaterialIndex(

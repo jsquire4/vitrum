@@ -95,6 +95,7 @@ export type GltfSceneControllerDiagnosticCode =
   | 'variant-bindings-missing'
   | 'variant-converted-materials-missing'
   | 'variant-material-index-missing'
+  | 'variant-mapping-malformed'
   | 'variant-mapping-material-missing'
   | 'variant-primitive-missing-in-scene'
   | 'variant-provenance-missing-primitive'
@@ -987,6 +988,19 @@ function resolvePrimitiveMaterialIndex(
 ): number | undefined {
   if (selectedVariantIndex === undefined) return baseMaterialIndex;
   const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
+  for (const [mappingIndex, mapping] of mappings.entries()) {
+    if (Array.isArray(mapping.variants)) continue;
+    emitControllerDiagnostic(frame, {
+      code: 'variant-mapping-malformed',
+      path: `meshes[${meshIndex}].primitives[${primitiveIndex}].extensions.KHR_materials_variants.mappings[${mappingIndex}].variants`,
+      message:
+        `[vitrum/gltf-adapter] GltfSceneController.setVariant: mesh "${meshLabel}" ` +
+        `KHR_materials_variants mapping ${mappingIndex} has a missing or malformed variants array. ` +
+        'Mapping skipped.',
+      meshIndex,
+      primitiveIndex,
+    });
+  }
   const mapping = mappings.find((candidate) =>
     Array.isArray(candidate.variants) && candidate.variants.includes(selectedVariantIndex)
   );
