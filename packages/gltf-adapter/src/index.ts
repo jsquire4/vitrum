@@ -20,6 +20,7 @@ export { loadGltfAndDecodeTextures, loadGltfAsset } from './assetLoader.js';
 export type {
   GltfAssetCache,
   GltfAssetCacheKey,
+  GltfAssetCompatibilityPreflight,
   GltfAssetFetch,
   GltfAssetFetchResponse,
   GltfAssetInput,

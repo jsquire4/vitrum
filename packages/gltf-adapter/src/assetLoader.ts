@@ -69,6 +69,13 @@ export interface LoadGltfAssetOptions extends GltfToSceneOptions {
   readonly signal?: AbortSignal;
   readonly backendPolicy?: GltfBackendPolicy;
   readonly cache?: GltfAssetCache;
+  /**
+   * Optional static compatibility preflight, invoked after parsing/resource
+   * resolution and before scene conversion. The high-level engine bridge uses
+   * this to reject known strict-mode blockers with a canonical compatibility
+   * error before lower-level import code can throw a raw conversion failure.
+   */
+  readonly compatibilityPreflight?: (preflight: GltfAssetCompatibilityPreflight) => void;
 }
 
 export interface GltfAssetResult extends GltfToSceneResult {
@@ -78,6 +85,14 @@ export interface GltfAssetResult extends GltfToSceneResult {
   readonly backendCompatibility: readonly GltfBackendCompatibility[];
   readonly recommendedBackend: GltfBackendCompatibility;
   readonly textureDecodeReport: GltfTextureDecodeReport;
+}
+
+export interface GltfAssetCompatibilityPreflight {
+  readonly gltf: GltfJson;
+  readonly sceneIndex: number;
+  readonly featureReport: GltfFeatureReport;
+  readonly backendCompatibility: readonly GltfBackendCompatibility[];
+  readonly recommendedBackend: GltfBackendCompatibility;
 }
 
 export interface LoadGltfAndDecodeTexturesOptions extends LoadGltfAssetOptions {
@@ -133,6 +148,13 @@ export async function loadGltfAsset(
     sceneIndex,
   });
   const staticBackendCompatibility = rankGltfBackends(featureReport, backendPolicy);
+  options.compatibilityPreflight?.({
+    gltf: parsed.gltf,
+    sceneIndex,
+    featureReport,
+    backendCompatibility: staticBackendCompatibility,
+    recommendedBackend: staticBackendCompatibility[0]!,
+  });
   const sceneOptions: GltfToSceneOptions = {
     buffers,
     imageBytes,

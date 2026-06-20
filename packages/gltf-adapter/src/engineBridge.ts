@@ -9,6 +9,7 @@ import type { BackendId, Scene } from '@vitrum/core';
 import {
   loadGltfAndDecodeTextures,
   loadGltfAsset,
+  type GltfAssetCompatibilityPreflight,
   type GltfAssetInput,
   type GltfAssetResult,
   type GltfDecodedAssetResult,
@@ -137,13 +138,29 @@ export async function loadGltfForEngine<
   input: GltfAssetInput,
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions> = {},
 ): Promise<GltfForEngineResult<TEngine>> {
-  const asset = shouldDecodeTextures(options)
-    ? await loadGltfAndDecodeTextures(input, options)
-    : await loadGltfAsset(input, options);
+  const compatibilityMode = options.compatibilityMode ?? 'best-effort';
+  const loadOptions: LoadGltfForEngineOptions<TEngine, TFactoryOptions> =
+    compatibilityMode === 'best-effort'
+      ? options
+      : {
+        ...options,
+        compatibilityPreflight: (preflight) => {
+          options.compatibilityPreflight?.(preflight);
+          enforceStaticPreImportCompatibility(
+            preflight,
+            options.backend ?? 'recommended',
+            options.runtimeProfile,
+            compatibilityMode,
+            options,
+          );
+        },
+      };
+  const asset = shouldDecodeTextures(loadOptions)
+    ? await loadGltfAndDecodeTextures(input, loadOptions)
+    : await loadGltfAsset(input, loadOptions);
   const selected = selectBackendTarget(asset, options.backend ?? 'recommended');
   const selectedBackend = selected.backend;
   let selectedProfileId = resolveRuntimeProfile(selectedBackend, selected.profileId, options.runtimeProfile);
-  const compatibilityMode = options.compatibilityMode ?? 'best-effort';
   enforceCompatibility(asset, selectedBackend, selectedProfileId, compatibilityMode, options);
 
   const controller = createGltfSceneController({
@@ -240,7 +257,7 @@ function textureDecodeWarnings(asset: GltfAssetResult | GltfDecodedAssetResult):
 }
 
 function selectBackendTarget(
-  asset: GltfAssetResult,
+  asset: Pick<GltfAssetResult, 'recommendedBackend'>,
   selection: GltfEngineSelection,
 ): { readonly backend: BackendId; readonly profileId: GltfBackendProfileId } {
   if (selection === 'recommended') {
@@ -253,6 +270,41 @@ function selectBackendTarget(
     return { backend: 'pt-webgpu', profileId: 'pt-webgpu-lite' };
   }
   return { backend: selection, profileId: selection };
+}
+
+function enforceStaticPreImportCompatibility<
+  TEngine extends GltfScenePatchTarget,
+  TFactoryOptions extends object,
+>(
+  preflight: GltfAssetCompatibilityPreflight,
+  selection: GltfEngineSelection,
+  runtimeProfile: GltfBackendProfileId | undefined,
+  mode: GltfCompatibilityMode,
+  options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
+): void {
+  if (mode === 'best-effort') return;
+  const selected = selectBackendTarget(preflight, selection);
+  const profileId = resolveRuntimeProfile(selected.backend, selected.profileId, runtimeProfile);
+  const candidate = preflight.backendCompatibility.find((entry) =>
+    entry.backend === selected.backend && entry.profileId === profileId,
+  );
+  if (candidate == null) {
+    throw new GltfCompatibilityError({
+      code: 'GLTF_COMPATIBILITY_PROFILE_MISSING',
+      message:
+        `[vitrum/gltf-adapter] No compatibility entry found for ${formatBackendProfile(selected.backend, profileId)}.`,
+      backend: selected.backend,
+      profileId,
+      compatibilityMode: mode,
+      label: 'Selected backend',
+    });
+  }
+
+  const failures = candidate.issues
+    .filter((issue) => isPreImportBlockingCompatibilityIssue(issue, preflight, options))
+    .map(formatCompatibilityIssue);
+  if (failures.length === 0) return;
+  throwCompatibilityRejected(selected.backend, profileId, mode, 'Selected backend', failures);
 }
 
 function resolveRuntimeProfile(
@@ -325,6 +377,16 @@ function enforceCompatibility<
   ];
   if (failures.length === 0) return;
 
+  throwCompatibilityRejected(backend, profileId, mode, label, failures);
+}
+
+function throwCompatibilityRejected(
+  backend: BackendId,
+  profileId: GltfBackendProfileId,
+  mode: GltfCompatibilityMode,
+  label: string,
+  failures: readonly string[],
+): never {
   const issues = failures
     .join(', ');
   throw new GltfCompatibilityError({
@@ -338,6 +400,25 @@ function enforceCompatibility<
     label,
     failures,
   });
+}
+
+function isPreImportBlockingCompatibilityIssue<
+  TEngine extends GltfScenePatchTarget,
+  TFactoryOptions extends object,
+>(
+  issue: GltfCompatibilityIssue,
+  preflight: GltfAssetCompatibilityPreflight,
+  options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
+): boolean {
+  return issue.category === 'extension' &&
+    issue.support === 'requires-hook' &&
+    isTextureSourceExtensionIssue(issue.name) &&
+    preflight.featureReport.extensions.required.includes(issue.name) &&
+    !(options.textureSourceExtensions ?? []).some((ext) => ext === issue.name);
+}
+
+function isTextureSourceExtensionIssue(name: string): boolean {
+  return name === 'KHR_texture_basisu' || name === 'EXT_texture_webp' || name === 'MSFT_texture_dds';
 }
 
 function formatBackendProfile(backend: BackendId, profileId: GltfBackendProfileId): string {

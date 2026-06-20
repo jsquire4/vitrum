@@ -567,10 +567,14 @@ function firstSourcePath(
 
 function requiresHookIssuePath(report: GltfFeatureReport, ext: string): string {
   const fallback = firstSourcePath(report.extensions.sourcePaths, ext, 'extensionsUsed');
+  const textureSourcePath = TEXTURE_SOURCE_EXTENSIONS.has(ext)
+    ? report.extensions.sourcePaths[ext]?.find((path) =>
+      path.startsWith('textures[') && path.endsWith(`extensions.${ext}`),
+    )
+    : undefined;
+  if (textureSourcePath !== undefined) return textureSourcePath;
   if (report.extensions.required.includes(ext) || !TEXTURE_SOURCE_EXTENSIONS.has(ext)) return fallback;
-  return report.extensions.sourcePaths[ext]?.find((path) =>
-    path.startsWith('textures[') && path.endsWith(`extensions.${ext}`),
-  ) ?? fallback;
+  return fallback;
 }
 
 export function analyzeGltfAsset(

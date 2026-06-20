@@ -15,6 +15,7 @@ import {
   evaluateGltfBackendProfileCompatibility,
   GltfCompatibilityError,
   GltfFetchFailed,
+  GltfImportError,
   GltfParseFailed,
   GltfResourceDecodeFailed,
   GltfResourceNotFound,
@@ -6105,6 +6106,42 @@ describe('loadGltfForEngine', () => {
       backend: 'pt-webgl2',
       attached: true,
     });
+  });
+
+  it('rejects unselected required texture-source extensions with a canonical compatibility error', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.extensionsUsed = ['KHR_texture_basisu'];
+    gltf.extensionsRequired = ['KHR_texture_basisu'];
+    gltf.textures![0] = {
+      ...gltf.textures![0]!,
+      extensions: { KHR_texture_basisu: { source: 0 } },
+    };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    let error: unknown;
+    try {
+      await loadGltfForEngine(gltf, {
+        buffers,
+        backend: 'pt-webgl2',
+        compatibilityMode: 'reject-degraded',
+        createEngine,
+      });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(GltfCompatibilityError);
+    expect(error).not.toBeInstanceOf(GltfImportError);
+    expect(error).toMatchObject({
+      code: 'GLTF_COMPATIBILITY_REJECTED',
+      backend: 'pt-webgl2',
+      profileId: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      failures: [
+        'extension:KHR_texture_basisu=requires-hook at textures[0].extensions.KHR_texture_basisu',
+      ],
+    });
+    expect(createEngine).not.toHaveBeenCalled();
   });
 
   it('rejects selected optional texture-source extensions without an image decode hook', async () => {

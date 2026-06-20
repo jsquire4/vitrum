@@ -466,6 +466,16 @@ describe('glTF common extension policy', () => {
         mimeType: 'image/ktx2',
       },
     ]);
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: 'extension',
+          name: 'KHR_texture_basisu',
+          support: 'requires-hook',
+          path: 'textures[0].extensions.KHR_texture_basisu',
+        }),
+      ]),
+    );
     await expect(gltfToScene(gltf, { buffers })).rejects.toThrow('KHR_texture_basisu');
 
     const decodeImage = vi.fn(async (bytes: Uint8Array, mimeType: string) => {
