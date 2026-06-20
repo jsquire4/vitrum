@@ -448,12 +448,14 @@
 > HDRI/procedural-sky, lite point/HDRI, and walkaround directional-sun/HDRI lanes
 > boot/render finite non-black with zero GPU errors. This is execution proof, not
 > a replacement for reference-quality radiometric sweeps.
-> **2026-06-18 walkaround dzn follow-up:** the broad
-> `behavioral-gate:dzn -- --filter wh/ --require-full-tier` lane now passes all
-> ten walkaround behavioral rows with zero GPU errors. That run exposed and
+> **2026-06-18/20 walkaround dzn follow-up:** the original broad
+> `behavioral-gate:dzn -- --filter wh/ --require-full-tier` run exposed and
 > closed an RC validation bug: `rc_materialTextureAtlas` / `rc_materialMapMeta`
 > are `rgba32float` textures read with `textureLoad`, so their bind-group layout
-> entries must be `unfilterable-float`, not filterable `float`.
+> entries must be `unfilterable-float`, not filterable `float`. The broad run is
+> now host-blocked by timeout on this WSL/dzn runner, so the durable proof is the
+> ten committed per-label dzn PASS artifacts verified by
+> `npm run behavioral-gate:dzn-status-check`.
 > **2026-06-18 baseline/lite/spectral/skinned/analytic dzn follow-up:** focused
 > dzn status artifacts for `--filter default`, `--filter lite-tier`,
 > `--filter spectral`, `--filter skinned`, and `--filter analytic` now prove
