@@ -316,6 +316,10 @@
 > through `analyzeGltfAsset()` before backend selection when sparse indices or
 > values bufferViews are missing, their bufferViews reference missing buffers,
 > or sparse index component types are invalid.
+> Sparse resource-scope follow-up: selected-scene reachability now collects
+> sparse indices/values bufferViews for reachable animation sampler accessors
+> and skin inverse-bind accessors, so external sparse patch buffers are fetched
+> before animation conversion instead of silently producing incomplete clips.
 > Unknown animation sampler interpolation strings now appear as
 > `degradedInterpolations` with exact `animations[*].samplers[*].interpolation`
 > source paths and `support:"approximate"` compatibility issues, matching the

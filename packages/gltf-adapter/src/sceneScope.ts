@@ -74,10 +74,7 @@ export function collectGltfSceneReachability(
     if (node.skin !== undefined) {
       skinIndices.add(node.skin);
       const inverseBindMatrices = gltf.skins?.[node.skin]?.inverseBindMatrices;
-      const bufferView = inverseBindMatrices === undefined
-        ? undefined
-        : gltf.accessors?.[inverseBindMatrices]?.bufferView;
-      if (bufferView !== undefined) bufferViewIndices.add(bufferView);
+      collectAccessorBufferViews(gltf, inverseBindMatrices, bufferViewIndices);
     }
     if (node.camera !== undefined) cameraIndices.add(node.camera);
     const lightRef = node.extensions?.KHR_lights_punctual;
@@ -98,14 +95,8 @@ export function collectGltfSceneReachability(
       const targetNode = channel.target.node;
       if (targetNode === undefined || !nodeIndices.has(targetNode)) continue;
       const sampler = animation.samplers?.[channel.sampler];
-      const inputBufferView = sampler?.input === undefined
-        ? undefined
-        : gltf.accessors?.[sampler.input]?.bufferView;
-      const outputBufferView = sampler?.output === undefined
-        ? undefined
-        : gltf.accessors?.[sampler.output]?.bufferView;
-      if (inputBufferView !== undefined) bufferViewIndices.add(inputBufferView);
-      if (outputBufferView !== undefined) bufferViewIndices.add(outputBufferView);
+      collectAccessorBufferViews(gltf, sampler?.input, bufferViewIndices);
+      collectAccessorBufferViews(gltf, sampler?.output, bufferViewIndices);
     }
   }
 
@@ -157,21 +148,30 @@ function collectPrimitiveBufferViews(
   primitive: GltfPrimitive,
   out: Set<number>,
 ): void {
-  const addAccessor = (accessorIndex: number | undefined): void => {
-    if (accessorIndex === undefined) return;
-    const accessor = gltf.accessors?.[accessorIndex];
-    const bufferView = accessor?.bufferView;
-    if (bufferView !== undefined) out.add(bufferView);
-    if (accessor?.sparse?.indices.bufferView !== undefined) out.add(accessor.sparse.indices.bufferView);
-    if (accessor?.sparse?.values.bufferView !== undefined) out.add(accessor.sparse.values.bufferView);
-  };
-  for (const accessorIndex of Object.values(primitive.attributes ?? {})) addAccessor(accessorIndex);
-  addAccessor(primitive.indices);
+  for (const accessorIndex of Object.values(primitive.attributes ?? {})) {
+    collectAccessorBufferViews(gltf, accessorIndex, out);
+  }
+  collectAccessorBufferViews(gltf, primitive.indices, out);
   for (const target of primitive.targets ?? []) {
-    for (const accessorIndex of Object.values(target)) addAccessor(accessorIndex);
+    for (const accessorIndex of Object.values(target)) {
+      collectAccessorBufferViews(gltf, accessorIndex, out);
+    }
   }
   const draco = primitive.extensions?.KHR_draco_mesh_compression;
   if (isRecord(draco) && typeof draco.bufferView === 'number') out.add(draco.bufferView);
+}
+
+function collectAccessorBufferViews(
+  gltf: GltfJson,
+  accessorIndex: number | undefined,
+  out: Set<number>,
+): void {
+  if (accessorIndex === undefined) return;
+  const accessor = gltf.accessors?.[accessorIndex];
+  const bufferView = accessor?.bufferView;
+  if (bufferView !== undefined) out.add(bufferView);
+  if (accessor?.sparse?.indices.bufferView !== undefined) out.add(accessor.sparse.indices.bufferView);
+  if (accessor?.sparse?.values.bufferView !== undefined) out.add(accessor.sparse.values.bufferView);
 }
 
 function meshoptCompressedBufferIndex(extensions: Record<string, unknown> | undefined): number | undefined {
@@ -188,12 +188,7 @@ function collectInstancingBufferViews(
   const attributes = node.extensions?.EXT_mesh_gpu_instancing?.attributes;
   if (attributes == null) return;
   for (const accessorIndex of Object.values(attributes)) {
-    if (accessorIndex === undefined) continue;
-    const accessor = gltf.accessors?.[accessorIndex];
-    const bufferView = accessor?.bufferView;
-    if (bufferView !== undefined) out.add(bufferView);
-    if (accessor?.sparse?.indices.bufferView !== undefined) out.add(accessor.sparse.indices.bufferView);
-    if (accessor?.sparse?.values.bufferView !== undefined) out.add(accessor.sparse.values.bufferView);
+    collectAccessorBufferViews(gltf, accessorIndex, out);
   }
 }
 

@@ -33,6 +33,23 @@ function f32Buffer(values: number[]): ArrayBuffer {
   return buf;
 }
 
+function u16Buffer(values: number[]): ArrayBuffer {
+  const buf = new ArrayBuffer(values.length * 2);
+  const view = new DataView(buf);
+  values.forEach((v, i) => view.setUint16(i * 2, v, true));
+  return buf;
+}
+
+function concatArrayBuffers(chunks: readonly ArrayBuffer[]): ArrayBuffer {
+  const out = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0));
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(new Uint8Array(chunk), offset);
+    offset += chunk.byteLength;
+  }
+  return out.buffer;
+}
+
 function bytes(values: number[]): ArrayBuffer {
   return new Uint8Array(values).buffer;
 }
@@ -3944,6 +3961,77 @@ describe('loadGltfForEngine', () => {
     expect(result.diagnostics.some((diagnostic) =>
       diagnostic.path.startsWith('animations[0]') ||
       diagnostic.code === 'unreadable-animation-sampler' ||
+      diagnostic.code === 'dropped-animation',
+    )).toBe(false);
+  });
+
+  it('fetches selected-scene sparse animation patch buffers before conversion', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const originalBuffer = buffers.get(0)!;
+    const times = f32Buffer([0, 1]);
+    const baseValues = f32Buffer([0, 0, 0, 0, 0, 0]);
+    const baseBuffer = concatArrayBuffers([originalBuffer, times, baseValues]);
+    const timeOffset = originalBuffer.byteLength;
+    const valueOffset = timeOffset + times.byteLength;
+    const sparseIndices = u16Buffer([1]);
+    const sparseValues = f32Buffer([2, 3, 4]);
+    const sparseBuffer = concatArrayBuffers([sparseIndices, sparseValues]);
+    buffers.set(0, baseBuffer);
+    gltf.accessors = [
+      ...(gltf.accessors ?? []),
+      { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+      {
+        bufferView: 3,
+        componentType: 5126,
+        count: 2,
+        type: 'VEC3',
+        sparse: {
+          count: 1,
+          indices: { bufferView: 4, componentType: 5123 },
+          values: { bufferView: 5 },
+        },
+      },
+    ];
+    gltf.bufferViews = [
+      ...(gltf.bufferViews ?? []),
+      { buffer: 0, byteOffset: timeOffset, byteLength: times.byteLength },
+      { buffer: 0, byteOffset: valueOffset, byteLength: baseValues.byteLength },
+      { buffer: 1, byteOffset: 0, byteLength: sparseIndices.byteLength },
+      { buffer: 1, byteOffset: sparseIndices.byteLength, byteLength: sparseValues.byteLength },
+    ];
+    gltf.buffers = [
+      { byteLength: baseBuffer.byteLength },
+      { uri: 'selected-animation-sparse.bin', byteLength: sparseBuffer.byteLength },
+    ];
+    gltf.animations = [{
+      name: 'selected-sparse-motion',
+      samplers: [{ input: 2, output: 3 }],
+      channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+    }];
+    const fetch = vi.fn(async (url: string) => {
+      if (!url.endsWith('/selected-animation-sparse.bin')) {
+        throw new Error(`unexpected fetch: ${url}`);
+      }
+      return response(sparseBuffer);
+    });
+
+    const result = await loadGltfAsset(gltf, {
+      buffers,
+      sceneIndex: 0,
+      baseUri: 'https://assets.example/model.gltf',
+      fetch,
+    });
+
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      'https://assets.example/selected-animation-sparse.bin',
+    ]);
+    expect(result.animations).toHaveLength(1);
+    expect(Array.from(result.animations[0]!.channels[0]!.sampler.values)).toEqual([
+      0, 0, 0,
+      2, 3, 4,
+    ]);
+    expect(result.diagnostics.some((diagnostic) =>
+      diagnostic.code === 'sparse-values-buffer-unavailable' ||
       diagnostic.code === 'dropped-animation',
     )).toBe(false);
   });
