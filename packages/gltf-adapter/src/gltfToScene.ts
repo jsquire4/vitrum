@@ -953,7 +953,7 @@ export async function gltfToScene(
       if (skinData && bones && boneInverses) {
         if (jointsIdx !== undefined && weightsIdx !== undefined) {
           try {
-            skinIndices = _unpackJoints(gltf, buffers, jointsIdx);
+            skinIndices = _unpackJoints(gltf, buffers, jointsIdx, onAccessorDiagnostic);
           } catch (e) {
             emitImportDiagnostic(warnings, diagnostics, {
               severity: 'warning',
@@ -2532,6 +2532,7 @@ function _unpackJoints(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   accessorIndex: number,
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): Uint32Array {
   const accessor = gltf.accessors?.[accessorIndex];
   if (!accessor) {
@@ -2553,33 +2554,182 @@ function _unpackJoints(
   const count = accessor.count;
   const result = new Uint32Array(count * 4);
 
-  if (accessor.bufferView === undefined) return result; // zero-initialized
-
-  const bvIdx = accessor.bufferView;
-  const bv = gltf.bufferViews?.[bvIdx];
-  if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);
-
-  const buf = buffers.get(bv.buffer);
-  if (!buf) {
-    throw new Error(
-      `[vitrum/gltf-adapter] Buffer ${bv.buffer} is not available (JOINTS_0).`,
-    );
-  }
-
   const compSize = ct === GltfComponentType.UNSIGNED_BYTE ? 1 : 2;
-  const bvOffset = bv.byteOffset ?? 0;
-  const accOffset = accessor.byteOffset ?? 0;
-  const stride = bv.byteStride ?? compSize * 4;
-  const dataView = new DataView(buf, bvOffset + accOffset);
 
-  for (let i = 0; i < count; i++) {
-    const base = i * stride;
-    for (let c = 0; c < 4; c++) {
-      result[i * 4 + c] = ct === GltfComponentType.UNSIGNED_BYTE
-        ? (dataView.getUint8(base + c))
-        : (dataView.getUint16(base + c * 2, true));
+  if (accessor.bufferView !== undefined) {
+    const bvIdx = accessor.bufferView;
+    const bv = gltf.bufferViews?.[bvIdx];
+    if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);
+
+    const buf = buffers.get(bv.buffer);
+    if (!buf) {
+      throw new Error(
+        `[vitrum/gltf-adapter] Buffer ${bv.buffer} is not available (JOINTS_0).`,
+      );
+    }
+
+    const bvOffset = bv.byteOffset ?? 0;
+    const accOffset = accessor.byteOffset ?? 0;
+    const stride = bv.byteStride ?? compSize * 4;
+    const dataView = new DataView(buf, bvOffset + accOffset);
+
+    for (let i = 0; i < count; i++) {
+      const base = i * stride;
+      for (let c = 0; c < 4; c++) {
+        result[i * 4 + c] = readJointComponent(dataView, base + c * compSize, ct);
+      }
     }
   }
 
+  if (accessor.sparse) {
+    applySparseJointPatch(gltf, buffers, accessorIndex, accessor, result, onAccessorDiagnostic);
+  }
+
   return result;
+}
+
+function applySparseJointPatch(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+  accessorIndex: number,
+  accessor: GltfAccessor,
+  result: Uint32Array,
+  onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+): void {
+  const sparse = accessor.sparse!;
+  onAccessorDiagnostic({
+    severity: 'warning',
+    code: 'sparse-accessor-applied',
+    path: `accessors[${accessorIndex}].sparse`,
+    message: `[vitrum/gltf-adapter] Accessor uses sparse storage (count=${sparse.count}); applying patch.`,
+    accessorIndex,
+  });
+
+  const indicesBufferView = gltf.bufferViews?.[sparse.indices.bufferView];
+  if (!indicesBufferView) {
+    onAccessorDiagnostic({
+      severity: 'warning',
+      code: 'sparse-indices-buffer-view-not-found',
+      path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
+      message: '[vitrum/gltf-adapter] Sparse indices bufferView not found; patch skipped.',
+      accessorIndex,
+      bufferViewIndex: sparse.indices.bufferView,
+    });
+    return;
+  }
+  const indicesBuffer = buffers.get(indicesBufferView.buffer);
+  if (!indicesBuffer) {
+    onAccessorDiagnostic({
+      severity: 'warning',
+      code: 'sparse-indices-buffer-unavailable',
+      path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
+      message: `[vitrum/gltf-adapter] Sparse indices buffer ${indicesBufferView.buffer} unavailable; patch skipped.`,
+      accessorIndex,
+      bufferViewIndex: sparse.indices.bufferView,
+      bufferIndex: indicesBufferView.buffer,
+    });
+    return;
+  }
+
+  const valuesBufferView = gltf.bufferViews?.[sparse.values.bufferView];
+  if (!valuesBufferView) {
+    onAccessorDiagnostic({
+      severity: 'warning',
+      code: 'sparse-values-buffer-view-not-found',
+      path: `accessors[${accessorIndex}].sparse.values.bufferView`,
+      message: '[vitrum/gltf-adapter] Sparse values bufferView not found; patch skipped.',
+      accessorIndex,
+      bufferViewIndex: sparse.values.bufferView,
+    });
+    return;
+  }
+  const valuesBuffer = buffers.get(valuesBufferView.buffer);
+  if (!valuesBuffer) {
+    onAccessorDiagnostic({
+      severity: 'warning',
+      code: 'sparse-values-buffer-unavailable',
+      path: `accessors[${accessorIndex}].sparse.values.bufferView`,
+      message: `[vitrum/gltf-adapter] Sparse values buffer ${valuesBufferView.buffer} unavailable; patch skipped.`,
+      accessorIndex,
+      bufferViewIndex: sparse.values.bufferView,
+      bufferIndex: valuesBufferView.buffer,
+    });
+    return;
+  }
+
+  const sparseIndexComponentType = sparse.indices.componentType;
+  if (
+    sparseIndexComponentType !== GltfComponentType.UNSIGNED_BYTE &&
+    sparseIndexComponentType !== GltfComponentType.UNSIGNED_SHORT &&
+    sparseIndexComponentType !== GltfComponentType.UNSIGNED_INT
+  ) {
+    onAccessorDiagnostic({
+      severity: 'warning',
+      code: 'invalid-sparse-indices-component-type',
+      path: `accessors[${accessorIndex}].sparse.indices.componentType`,
+      message:
+        `[vitrum/gltf-adapter] Sparse indices componentType ${sparseIndexComponentType} is invalid; ` +
+        'expected UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT. Patch skipped.',
+      accessorIndex,
+      componentType: sparseIndexComponentType,
+    });
+    return;
+  }
+
+  const indexCompSize = sparseIndexComponentType === GltfComponentType.UNSIGNED_BYTE
+    ? 1
+    : sparseIndexComponentType === GltfComponentType.UNSIGNED_SHORT
+      ? 2
+      : 4;
+  const valueCompSize = accessor.componentType === GltfComponentType.UNSIGNED_BYTE ? 1 : 2;
+  const indexView = new DataView(
+    indicesBuffer,
+    (indicesBufferView.byteOffset ?? 0) + (sparse.indices.byteOffset ?? 0),
+  );
+  const valueView = new DataView(
+    valuesBuffer,
+    (valuesBufferView.byteOffset ?? 0) + (sparse.values.byteOffset ?? 0),
+  );
+
+  for (let s = 0; s < sparse.count; s += 1) {
+    const jointIndex = readSparseIndexComponent(indexView, s * indexCompSize, sparseIndexComponentType);
+    if (jointIndex < 0 || jointIndex >= accessor.count) {
+      onAccessorDiagnostic({
+        severity: 'warning',
+        code: 'sparse-index-out-of-range',
+        path: `accessors[${accessorIndex}].sparse.indices[${s}]`,
+        message: `[vitrum/gltf-adapter] Sparse index ${jointIndex} is outside accessor count ${accessor.count}; patch entry skipped.`,
+        accessorIndex,
+        sparseEntryIndex: s,
+      });
+      continue;
+    }
+    for (let c = 0; c < 4; c += 1) {
+      result[jointIndex * 4 + c] = readJointComponent(
+        valueView,
+        (s * 4 + c) * valueCompSize,
+        accessor.componentType,
+      );
+    }
+  }
+}
+
+function readSparseIndexComponent(
+  view: DataView,
+  byteOffset: number,
+  componentType: GltfComponentType,
+): number {
+  if (componentType === GltfComponentType.UNSIGNED_BYTE) return view.getUint8(byteOffset);
+  if (componentType === GltfComponentType.UNSIGNED_SHORT) return view.getUint16(byteOffset, true);
+  return view.getUint32(byteOffset, true);
+}
+
+function readJointComponent(
+  view: DataView,
+  byteOffset: number,
+  componentType: GltfComponentType,
+): number {
+  return componentType === GltfComponentType.UNSIGNED_BYTE
+    ? view.getUint8(byteOffset)
+    : view.getUint16(byteOffset, true);
 }

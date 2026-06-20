@@ -1963,6 +1963,46 @@ describe('skin → SkinnedMeshPrimitive', () => {
     expect(Array.from(prim.skinIndices.slice(8, 12))).toEqual([0, 1, 0, 0]);
   });
 
+  it('applies sparse patches to JOINTS_0 accessors', async () => {
+    const { gltf, buffers } = makeSkinnedGltf(5121);
+    const baseBuffer = buffers.get(0)!;
+    const sparseIndices = u16Buffer([1]);
+    const sparseValues = u8Buffer([1, 0, 0, 0]);
+    const patchedBuffer = concatBuffers(baseBuffer, sparseIndices, sparseValues);
+    const sparseIndicesView = gltf.bufferViews!.length;
+    const sparseValuesView = sparseIndicesView + 1;
+    gltf.bufferViews!.push(
+      { buffer: 0, byteOffset: baseBuffer.byteLength, byteLength: sparseIndices.byteLength },
+      {
+        buffer: 0,
+        byteOffset: baseBuffer.byteLength + sparseIndices.byteLength,
+        byteLength: sparseValues.byteLength,
+      },
+    );
+    gltf.buffers![0] = { byteLength: patchedBuffer.byteLength };
+    gltf.accessors![3] = {
+      ...gltf.accessors![3]!,
+      sparse: {
+        count: 1,
+        indices: { bufferView: sparseIndicesView, componentType: 5123 },
+        values: { bufferView: sparseValuesView },
+      },
+    };
+    buffers.set(0, patchedBuffer);
+
+    const { scene, diagnostics } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+
+    expect(Array.from(prim.skinIndices.slice(0, 4))).toEqual([0, 1, 0, 0]);
+    expect(Array.from(prim.skinIndices.slice(4, 8))).toEqual([1, 0, 0, 0]);
+    expect(Array.from(prim.skinIndices.slice(8, 12))).toEqual([0, 1, 0, 0]);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'sparse-accessor-applied',
+      path: 'accessors[3].sparse',
+      accessorIndex: 3,
+    }));
+  });
+
   it('skinIndices decoded correctly from UNSIGNED_SHORT JOINTS_0', async () => {
     const { gltf, buffers } = makeSkinnedGltf(5123);
     const { scene } = await gltfToScene(gltf, { buffers });
