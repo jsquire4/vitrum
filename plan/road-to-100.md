@@ -1848,8 +1848,11 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    the explicit full-tier `bvhTraversal:'cwbvh-closest-experimental'` opt-in,
    retains binary BVH as the default/fallback policy, advertises a structured
    capability/warning, and has a `pt/cwbvh-binary-parity` behavioral lane with
-   zero-delta readback against binary traversal. Remaining work is real
-   equal-scene throughput/memory proof before any default promotion.
+   zero-delta readback against binary traversal plus same-scene timing/memory
+   evidence (`binaryMs=6244.126`, `cwbvhMs=5858.448`, `ratio=0.938`,
+   `memDelta=0`, `sceneDelta=0`) in the checked-in status artifact. Remaining
+   work is broader complex-scene throughput/memory proof before any default
+   promotion.
 
 ### Execution dependency
 
@@ -1985,10 +1988,18 @@ the same full-tier Cornell scene through binary traversal and
 `bvhTraversal:'cwbvh-closest-experimental'`, compares the readback pixels, and
 commits `tools/behavioral-gate/behavioral-gate-cwbvh-status.json` with
 `rmse=0`, `meanAbs=0`, and `maxAbs=0`; `npm run cwbvh-gpu-proof-check` now
-rejects stale renderer-parity evidence too.
+rejects stale renderer-parity evidence too. 2026-06-20 timing/memory follow-up:
+the same status artifact now also records same-scene render wall time and
+memory estimates for both traversal modes (`binaryMs=6244.126`,
+`cwbvhMs=5858.448`, `ratio=0.938`, `binaryMem=298288`,
+`cwbvhMem=298288`, `memDelta=0`, `binaryScene=2864`,
+`cwbvhScene=2864`, `sceneDelta=0`), and the proof checker rejects artifacts
+that lack positive timing/memory fields.
 
-**Remaining work:** equal-scene throughput/memory A/B before any renderer
-default promotion. Becomes decisive if/when a WebGPU ray-tracing extension ships
+**Remaining work:** broader complex-scene throughput/memory A/B before any
+renderer default promotion. The current artifact proves the opt-in is
+same-scene non-regressing on the tiny Cornell status scene, not a generalized
+throughput claim. Becomes decisive if/when a WebGPU ray-tracing extension ships
 (whole-field handicap today: no RT cores in the browser for anyone).
 
 ### F3 — Shipped denoiser weights (out-of-the-box UX)

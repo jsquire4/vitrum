@@ -1785,6 +1785,64 @@ function checkExpectation(label, rawStatus, lum, errCount, nans) {
   return { pass: false, note: `FAIL — expected OK, got ${rawStatus} (lum=${lum.toFixed(4)}, gpuErrs=${errCount}, nan=${nans})` };
 }
 
+function finiteOrNull(value) {
+  return Number.isFinite(value) ? value : null;
+}
+
+function summarizeGpuMemory(memory) {
+  if (memory == null) return null;
+  return {
+    total: finiteOrNull(memory.total),
+    common: finiteOrNull(memory.byCategory?.common),
+    scene: finiteOrNull(memory.byCategory?.scene),
+    storage: finiteOrNull(memory.byBufferUsage?.storage),
+    uniform: finiteOrNull(memory.byBufferUsage?.uniform),
+  };
+}
+
+function makeCwbvhPerf(binary, cwbvh) {
+  const binaryRenderMs = finiteOrNull(binary?.renderMs);
+  const cwbvhRenderMs = finiteOrNull(cwbvh?.renderMs);
+  const binaryMemoryBytes = finiteOrNull(binary?.memory?.total);
+  const cwbvhMemoryBytes = finiteOrNull(cwbvh?.memory?.total);
+  const binarySceneBytes = finiteOrNull(binary?.memory?.scene);
+  const cwbvhSceneBytes = finiteOrNull(cwbvh?.memory?.scene);
+  return {
+    kind: "same-scene",
+    binaryRenderMs,
+    cwbvhRenderMs,
+    renderMsRatio:
+      binaryRenderMs != null && binaryRenderMs > 0 && cwbvhRenderMs != null
+        ? cwbvhRenderMs / binaryRenderMs
+        : null,
+    binaryMemoryBytes,
+    cwbvhMemoryBytes,
+    memoryBytesDelta:
+      binaryMemoryBytes != null && cwbvhMemoryBytes != null
+        ? cwbvhMemoryBytes - binaryMemoryBytes
+        : null,
+    binarySceneBytes,
+    cwbvhSceneBytes,
+    sceneBytesDelta:
+      binarySceneBytes != null && cwbvhSceneBytes != null
+        ? cwbvhSceneBytes - binarySceneBytes
+        : null,
+  };
+}
+
+function hasCwbvhPerfEvidence(cwbvhPerf) {
+  return cwbvhPerf?.kind === "same-scene" &&
+    cwbvhPerf.binaryRenderMs > 0 &&
+    cwbvhPerf.cwbvhRenderMs > 0 &&
+    cwbvhPerf.renderMsRatio > 0 &&
+    cwbvhPerf.binaryMemoryBytes > 0 &&
+    cwbvhPerf.cwbvhMemoryBytes > 0 &&
+    cwbvhPerf.binarySceneBytes > 0 &&
+    cwbvhPerf.cwbvhSceneBytes > 0 &&
+    Number.isFinite(cwbvhPerf.memoryBytesDelta) &&
+    Number.isFinite(cwbvhPerf.sceneBytesDelta);
+}
+
 // ── pt-webgpu runner ──────────────────────────────────────────────────────────
 
 async function runPtConfig(label, engineOpts, sceneOpts) {
@@ -1813,10 +1871,12 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   let traceTier = "unknown";
   let mutation = null;
   let cwbvhParity = null;
+  let cwbvhPerf = null;
 
   async function renderFramesAndReadback() {
     let frameOutput = null;
     const sampleCount = sceneOpts.cwbvhBinaryParity === true ? 2 : SPP;
+    const renderStart = performance.now();
     for (let frame = 0; frame < sampleCount; frame++) {
       // eslint-disable-next-line no-loss-of-precision -- LCG constants intentionally exceed f64 mantissa; >>> 0 truncates to uint32 anyway
       const seed = ((frame * 6364136223846793005 + 1442695040888963407) >>> 0);
@@ -1831,8 +1891,11 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       await device.queue.onSubmittedWorkDone();
       if (frameOutput?.isConverged) break;
     }
-    if (frameOutput?.kind !== "rendered") return null;
-    return readbackAsRgba8(device, frameOutput.primaryRadiance, W, H);
+    const renderMs = performance.now() - renderStart;
+    const memory = summarizeGpuMemory(engine?.debug?.estimatedGpuMemoryBytes?.() ?? null);
+    if (frameOutput?.kind !== "rendered") return { pixels: null, renderMs, memory };
+    const pixels = await readbackAsRgba8(device, frameOutput.primaryRadiance, W, H);
+    return { pixels, renderMs, memory };
   }
 
   try {
@@ -1851,7 +1914,8 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       });
       traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
       engine.setScene(await buildGateScene(sceneOpts));
-      const binaryPixels = await renderFramesAndReadback();
+      const binaryResult = await renderFramesAndReadback();
+      const binaryPixels = binaryResult.pixels;
       try { engine?.dispose(); } catch { /* best-effort cleanup — ignore */ }
       engine = null;
       if (!binaryPixels) throw new Error(`${label}: binary traversal produced no rendered frame`);
@@ -1862,9 +1926,11 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       });
       traceTier = engine.capabilities.experimentalFeatures?.has("pt-webgpu-lite-tier") ? "lite" : "full";
       engine.setScene(await buildGateScene(sceneOpts));
-      pixels = await renderFramesAndReadback();
+      const cwbvhResult = await renderFramesAndReadback();
+      pixels = cwbvhResult.pixels;
       if (!pixels) throw new Error(`${label}: CWBVH traversal produced no rendered frame`);
       cwbvhParity = comparePixels(pixels, binaryPixels);
+      cwbvhPerf = makeCwbvhPerf(binaryResult, cwbvhResult);
     } else {
       engine = await createPTEngine_WebGPU({
         device,
@@ -1877,7 +1943,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       const scene = await buildGateScene(sceneOpts);
       engine.setScene(scene);
 
-      pixels = await renderFramesAndReadback();
+      pixels = (await renderFramesAndReadback()).pixels;
     }
     if (sceneOpts.mutation) {
       beforeMutationPixels = pixels;
@@ -1936,7 +2002,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       } else {
         throw new Error(`unknown mutation gate kind: ${sceneOpts.mutation}`);
       }
-      pixels = await renderFramesAndReadback();
+      pixels = (await renderFramesAndReadback()).pixels;
       if (beforeMutationPixels != null && pixels != null) {
         mutation = { kind: sceneOpts.mutation, ...comparePixels(pixels, beforeMutationPixels) };
       }
@@ -1977,21 +2043,25 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       cwbvhParity.rmse > CWBVH_BINARY_PARITY_THRESHOLDS.rmse ||
       cwbvhParity.meanAbs > CWBVH_BINARY_PARITY_THRESHOLDS.meanAbs ||
       cwbvhParity.maxAbs > CWBVH_BINARY_PARITY_THRESHOLDS.maxAbs);
+  const cwbvhPerfFailed =
+    sceneOpts.cwbvhBinaryParity === true &&
+    !hasCwbvhPerfEvidence(cwbvhPerf);
   let golden = null;
-  if (!wrongTier && !mutationFailed && !cwbvhParityFailed && !nans && errCount === 0 && lum >= LUM_THRESHOLD) {
+  if (!wrongTier && !mutationFailed && !cwbvhParityFailed && !cwbvhPerfFailed && !nans && errCount === 0 && lum >= LUM_THRESHOLD) {
     golden = await compareOrUpdateGolden(label, pixels);
   }
   const rawStatus = wrongTier ? "WRONG-TIER"
     : (mutationFailed ? "NO-MUTATION"
       : (cwbvhParityFailed ? "CWBVH-DELTA"
-        : (nans ? "NaN"
-          : (errCount > 0 ? "GPU-ERROR"
-            : (lum < LUM_THRESHOLD ? "BLACK"
-              : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK"))))));
+        : (cwbvhPerfFailed ? "CWBVH-PERF-MISSING"
+          : (nans ? "NaN"
+            : (errCount > 0 ? "GPU-ERROR"
+              : (lum < LUM_THRESHOLD ? "BLACK"
+                : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK")))))));
   const tierMsg = wrongTier
     ? `--require-full-tier requested but pt-webgpu resolved ${traceTier}`
     : "";
-  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden, traceTier, tierMsg, mutation, cwbvhParity };
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden, traceTier, tierMsg, mutation, cwbvhParity, cwbvhPerf };
 }
 
 // ── walkaround-hybrid runner ──────────────────────────────────────────────────
@@ -2118,6 +2188,19 @@ function formatCwbvhParity(cwbvhParity) {
   return `cwbvhParity=binary rmse=${cwbvhParity.rmse.toFixed(3)} meanAbs=${cwbvhParity.meanAbs.toFixed(3)} maxAbs=${cwbvhParity.maxAbs} <=(${CWBVH_BINARY_PARITY_THRESHOLDS.rmse.toFixed(1)},${CWBVH_BINARY_PARITY_THRESHOLDS.meanAbs.toFixed(1)},${CWBVH_BINARY_PARITY_THRESHOLDS.maxAbs})`;
 }
 
+function formatNumber(value, digits = 3) {
+  return Number.isFinite(value) ? value.toFixed(digits) : "nan";
+}
+
+function formatInteger(value) {
+  return Number.isFinite(value) ? String(Math.round(value)) : "nan";
+}
+
+function formatCwbvhPerf(cwbvhPerf) {
+  if (!cwbvhPerf) return "";
+  return `cwbvhPerf=${cwbvhPerf.kind} binaryMs=${formatNumber(cwbvhPerf.binaryRenderMs)} cwbvhMs=${formatNumber(cwbvhPerf.cwbvhRenderMs)} ratio=${formatNumber(cwbvhPerf.renderMsRatio)} binaryMem=${formatInteger(cwbvhPerf.binaryMemoryBytes)} cwbvhMem=${formatInteger(cwbvhPerf.cwbvhMemoryBytes)} memDelta=${formatInteger(cwbvhPerf.memoryBytesDelta)} binaryScene=${formatInteger(cwbvhPerf.binarySceneBytes)} cwbvhScene=${formatInteger(cwbvhPerf.cwbvhSceneBytes)} sceneDelta=${formatInteger(cwbvhPerf.sceneBytesDelta)}`;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 console.log("=== behavioral-gate ===");
@@ -2152,6 +2235,7 @@ for (const cfg of ptConfigs) {
   const goldenDetail = formatGolden(r.golden);
   const mutationDetail = formatMutation(r.mutation);
   const cwbvhParityDetail = formatCwbvhParity(r.cwbvhParity);
+  const cwbvhPerfDetail = formatCwbvhPerf(r.cwbvhPerf);
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
     : r.tierMsg
@@ -2159,7 +2243,7 @@ for (const cfg of ptConfigs) {
     : r.gpuErrorMsg
       ? `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
     : `${r.rawStatus} | tier=${r.traceTier ?? "?"} lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
-  const extraDetails = [mutationDetail, cwbvhParityDetail, goldenDetail].filter(Boolean).join(" | ");
+  const extraDetails = [mutationDetail, cwbvhParityDetail, cwbvhPerfDetail, goldenDetail].filter(Boolean).join(" | ");
   const detailWithGolden = extraDetails ? `${detail} | ${extraDetails}` : detail;
   console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detailWithGolden}${note ? " | " + note : ""}`);
 }

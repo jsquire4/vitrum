@@ -128,6 +128,7 @@ function parseConfigRows(stdout) {
     const extras = (match[5] ?? '').split('|').map((part) => part.trim()).filter(Boolean);
     const mutation = extras.find((part) => part.startsWith('mutation=')) ?? '';
     const cwbvhParity = extras.find((part) => part.startsWith('cwbvhParity=')) ?? '';
+    const cwbvhPerf = extras.find((part) => part.startsWith('cwbvhPerf=')) ?? '';
     const golden = extras.find((part) => part.startsWith('golden=')) ?? '';
     rows.push({
       verdict: match[1],
@@ -147,6 +148,17 @@ function parseConfigRows(stdout) {
       cwbvhParityMeanAbs: readNumberToken(cwbvhParity, 'meanAbs'),
       cwbvhParityMaxAbs: readNumberToken(cwbvhParity, 'maxAbs'),
       cwbvhParityThresholds: readThresholds(cwbvhParity),
+      cwbvhPerf: cwbvhPerf || null,
+      cwbvhPerfKind: readToken(cwbvhPerf, 'cwbvhPerf'),
+      cwbvhBinaryRenderMs: readNumberToken(cwbvhPerf, 'binaryMs'),
+      cwbvhRenderMs: readNumberToken(cwbvhPerf, 'cwbvhMs'),
+      cwbvhRenderMsRatio: readNumberToken(cwbvhPerf, 'ratio'),
+      cwbvhBinaryMemoryBytes: readNumberToken(cwbvhPerf, 'binaryMem'),
+      cwbvhMemoryBytes: readNumberToken(cwbvhPerf, 'cwbvhMem'),
+      cwbvhMemoryBytesDelta: readNumberToken(cwbvhPerf, 'memDelta'),
+      cwbvhBinarySceneBytes: readNumberToken(cwbvhPerf, 'binaryScene'),
+      cwbvhSceneBytes: readNumberToken(cwbvhPerf, 'cwbvhScene'),
+      cwbvhSceneBytesDelta: readNumberToken(cwbvhPerf, 'sceneDelta'),
       golden: golden || null,
       goldenStatus: readToken(golden, 'golden'),
       goldenVariant: readToken(golden, 'variant'),
