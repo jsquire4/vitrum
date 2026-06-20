@@ -1491,6 +1491,69 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  const primaryHitReplayCases: Array<readonly [string, 'rgb' | 'scalar', Partial<MaterialSpec>]> = [
+    ['emissive', 'rgb' as const, {
+      emissive: [0.25, 0.5, 0.75],
+      emissiveIntensity: 2,
+    }],
+    ['emissiveIntensity', 'scalar' as const, {
+      emissive: [0.25, 0.5, 0.75],
+      emissiveIntensity: 2,
+    }],
+    ['lightMapIntensity', 'scalar' as const, {
+      lightMapIntensity: 0.6,
+      lightMap: { handle: { width: 1, height: 1, data: new Float32Array([0.1, 0.2, 0.3, 1]) } },
+    }],
+    ['baseColor', 'rgb' as const, {
+      shadingModel: 'unlit' as const,
+      baseColor: [0.25, 0.5, 0.75],
+    }],
+    ['aoMapIntensity', 'scalar' as const, {
+      shadingModel: 'unlit' as const,
+      aoMapIntensity: 0.5,
+      aoMap: { handle: { width: 1, height: 1, data: new Float32Array([0.4, 1, 1, 1]) } },
+    }],
+  ];
+
+  it.each(primaryHitReplayCases)('keeps primary-hit %s on path-replay with unrelated transport/layer state', (field, kind, patch) => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                transmission: 0.45,
+                thickness: 0.25,
+                transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([0.8, 0, 0, 1]) } },
+                thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([0, 0.7, 0, 1]) } },
+                attenuationColor: [0.8, 0.9, 1],
+                attenuationDistance: 3,
+                frontLayer: { transmission: [0.9, 1, 1], roughness: 0.2 },
+                scatteringCoefficientRGB: [0.1, 0, 0],
+                ...patch,
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async () => new Float32Array(kind === 'rgb' ? 3 : 1),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: `materials.panel.${field}`, kind }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it('keeps alpha-coverage emissive params on finite-difference because visibility is not replayed', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -1522,6 +1585,42 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       details: expect.objectContaining({
         field: 'alphaMode',
         finiteDifferenceReason: 'visibility',
+      }),
+    }));
+    session.dispose();
+  });
+
+  it('keeps primary-hit params on finite-difference when a displacement map changes geometry', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                emissive: [1, 1, 1],
+                displacementMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-geometry',
+      path: 'materials.panel.emissive',
+      details: expect.objectContaining({
+        finiteDifferenceReason: 'geometry',
+        unsupportedMaterialFields: ['displacementMap'],
       }),
     }));
     session.dispose();

@@ -1167,7 +1167,9 @@ function pathReplayMaterialIssue(
   iridescenceCoupled: boolean,
 ): PathReplayMaterialIssue | null {
   const material = primitive.material;
-  if (field === 'baseColor' && isPathReplayCompatibleUnlitBaseColorMaterial(primitive)) return null;
+  if (field === 'baseColor' && material.shadingModel === 'unlit') {
+    return materialIssueForPrimaryHit(material, primitive);
+  }
   if (field === 'emissive' || field === 'emissiveIntensity') {
     return materialIssueForEmissive(material, primitive);
   }
@@ -1211,13 +1213,7 @@ function materialIssueForEmissive(
   material: MaterialSpec,
   primitive: ScenePrimitive,
 ): PathReplayMaterialIssue | null {
-  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true }, primitive);
-  if (common != null) return common;
-  const maps = listPathReplayPrimaryEmissionUnsupportedMaps(material);
-  if (maps.length > 0) {
-    return materialMapIssue(maps);
-  }
-  return null;
+  return materialIssueForPrimaryHit(material, primitive);
 }
 
 function materialIssueForBrdf(
@@ -1256,9 +1252,12 @@ function materialIssueForAoMapIntensity(
   material: MaterialSpec,
   primitive: ScenePrimitive,
 ): PathReplayMaterialIssue | null {
+  if (material.shadingModel === 'unlit') {
+    return materialIssueForPrimaryHit(material, primitive);
+  }
   const common = materialIssueCommon(material, {
-    allowIridescence: material.shadingModel === 'unlit',
-    allowAnisotropy: material.shadingModel === 'unlit',
+    allowIridescence: false,
+    allowAnisotropy: false,
   }, primitive);
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
@@ -1272,11 +1271,20 @@ function materialIssueForLightMapIntensity(
   material: MaterialSpec,
   primitive: ScenePrimitive,
 ): PathReplayMaterialIssue | null {
-  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true }, primitive);
-  if (common != null) return common;
-  const maps = listPathReplayPrimaryEmissionUnsupportedMaps(material);
-  if (maps.length > 0) {
-    return materialMapIssue(maps);
+  return materialIssueForPrimaryHit(material, primitive);
+}
+
+function materialIssueForPrimaryHit(
+  material: MaterialSpec,
+  primitive: ScenePrimitive,
+): PathReplayMaterialIssue | null {
+  const alphaVisibilityIssue = pathReplayAlphaVisibilityIssue(material, primitive);
+  if (alphaVisibilityIssue != null) return alphaVisibilityIssue;
+  if (material.displacementMap != null) {
+    return materialMapIssue(['displacementMap']);
+  }
+  if (material.extensions != null && Object.keys(material.extensions).length > 0) {
+    return { message: 'opaque MaterialSpec.extensions are not replayed by the adjoint pass', details: { field: 'extensions' } };
   }
   return null;
 }
@@ -1835,15 +1843,6 @@ function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string
   if (pathReplayThicknessMapAffectsTransport(m)) out.push('thicknessMap');
   if (pathReplayAlphaMapAffectsVisibility(m)) out.push('alphaMap');
   if (m.displacementMap != null) out.push('displacementMap');
-  return out;
-}
-
-function listPathReplayPrimaryEmissionUnsupportedMaps(m: MaterialSpec): readonly string[] {
-  const out: string[] = [];
-  if (pathReplayAlphaMapAffectsVisibility(m)) out.push('alphaMap');
-  if (m.displacementMap != null) out.push('displacementMap');
-  if (pathReplayTransmissionMapAffectsTransport(m)) out.push('transmissionMap');
-  if (pathReplayThicknessMapAffectsTransport(m)) out.push('thicknessMap');
   return out;
 }
 
