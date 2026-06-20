@@ -2355,6 +2355,75 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
   });
 
+  it('reports malformed punctual-light references before skipped-emitter import fallback', () => {
+    const { gltf } = makeInlineTriangleGltf();
+    gltf.extensionsUsed = ['KHR_lights_punctual'];
+    gltf.extensions = {
+      KHR_lights_punctual: {
+        lights: [
+          { type: 'point' },
+          { type: 'tube' },
+          null,
+        ],
+      },
+    } as never;
+    gltf.nodes![0] = {
+      ...gltf.nodes![0]!,
+      extensions: { KHR_lights_punctual: { light: 99 } },
+    };
+    gltf.nodes!.push({
+      extensions: { KHR_lights_punctual: { light: 1 } },
+    });
+    gltf.nodes!.push({
+      extensions: { KHR_lights_punctual: { light: 2 } },
+    });
+    gltf.scenes![0] = { nodes: [0, 1, 2] };
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.sceneGraph.punctualLightIssues).toEqual(expect.arrayContaining([
+      {
+        kind: 'missing-light',
+        path: 'nodes[0].extensions.KHR_lights_punctual.light',
+        nodeIndex: 0,
+        lightIndex: 99,
+      },
+      {
+        kind: 'unsupported-light-type',
+        path: 'extensions.KHR_lights_punctual.lights[1].type',
+        lightIndex: 1,
+        lightType: 'tube',
+      },
+      {
+        kind: 'unsupported-light-type',
+        path: 'extensions.KHR_lights_punctual.lights[2].type',
+        lightIndex: 2,
+      },
+    ]));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'scene',
+        name: 'KHR_lights_punctual.missing-light',
+        support: 'approximate',
+        path: 'nodes[0].extensions.KHR_lights_punctual.light',
+      }),
+      expect.objectContaining({
+        category: 'scene',
+        name: 'KHR_lights_punctual.unsupported-light-type',
+        support: 'approximate',
+        path: 'extensions.KHR_lights_punctual.lights[1].type',
+      }),
+      expect.objectContaining({
+        category: 'scene',
+        name: 'KHR_lights_punctual.unsupported-light-type',
+        support: 'approximate',
+        path: 'extensions.KHR_lights_punctual.lights[2].type',
+      }),
+    ]));
+  });
+
   it('reports malformed animation channels with compatibility source paths', () => {
     const gltf = makeExternalTexturedGltf();
     const timeAccessor = gltf.accessors!.length;

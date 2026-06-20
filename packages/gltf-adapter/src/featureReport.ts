@@ -313,6 +313,19 @@ export interface GltfSceneGraphFeatureReport {
   readonly cameras: number;
   readonly cameraPaths: readonly string[];
   readonly punctualLights: number;
+  readonly punctualLightIssues: readonly GltfPunctualLightIssue[];
+}
+
+export type GltfPunctualLightIssueKind =
+  | 'missing-light'
+  | 'unsupported-light-type';
+
+export interface GltfPunctualLightIssue {
+  readonly kind: GltfPunctualLightIssueKind;
+  readonly path: string;
+  readonly nodeIndex?: number;
+  readonly lightIndex?: number;
+  readonly lightType?: string;
 }
 
 export interface GltfResourceFeatureReport {
@@ -557,6 +570,7 @@ export function analyzeGltfAsset(
   const materials = analyzeMaterials(gltf, sceneScope, selectedTextureSourceExtensions);
   const animations = analyzeAnimations(gltf, sceneScope);
   const punctualLights = sceneScope?.punctualLightIndices.size ?? extractPunctualLightCount(gltf);
+  const punctualLightIssues = analyzePunctualLightIssues(gltf, sceneScope);
   const cameraPaths = sceneScope === undefined
     ? (gltf.cameras ?? []).map((_, index) => `cameras[${index}]`)
     : [...sceneScope.cameraIndices].sort((a, b) => a - b).map((index) => `cameras[${index}]`);
@@ -575,6 +589,7 @@ export function analyzeGltfAsset(
       cameras: sceneScope?.cameraIndices.size ?? gltf.cameras?.length ?? 0,
       cameraPaths,
       punctualLights,
+      punctualLightIssues,
     },
   };
 }
@@ -818,6 +833,16 @@ export function evaluateGltfBackendProfileCompatibility(
       message:
         'glTF cameras are reported for host inspection but are not imported into the core Scene contract; ' +
         'Vitrum cameras are supplied per frame through FrameInput.',
+    });
+  }
+
+  for (const punctualIssue of report.sceneGraph.punctualLightIssues) {
+    addIssue({
+      category: 'scene',
+      name: `KHR_lights_punctual.${punctualIssue.kind}`,
+      support: 'approximate',
+      path: punctualIssue.path,
+      message: punctualLightIssueMessage(punctualIssue),
     });
   }
 
@@ -1360,6 +1385,19 @@ function primitiveInstancingIssueMessage(issue: GltfPrimitiveInstancingIssue): s
     `glTF node ${issue.nodeIndex} EXT_mesh_gpu_instancing attribute ${String(issue.attribute)} ` +
     `must reference a non-negative accessor index, got ${String(issue.value)}; ` +
     'the importer falls back to a single base mesh.'
+  );
+}
+
+function punctualLightIssueMessage(issue: GltfPunctualLightIssue): string {
+  if (issue.kind === 'missing-light') {
+    return (
+      `glTF node ${String(issue.nodeIndex)} references KHR_lights_punctual light ` +
+      `${String(issue.lightIndex)} which does not exist; the importer skips that emitter.`
+    );
+  }
+  return (
+    `glTF KHR_lights_punctual light ${String(issue.lightIndex)} has unsupported type ` +
+    `"${String(issue.lightType)}"; the importer skips that emitter.`
   );
 }
 
@@ -3466,6 +3504,60 @@ function extractPunctualLightCount(gltf: GltfJson): number {
     return Array.isArray(lights) ? lights.length : 0;
   }
   return 0;
+}
+
+function analyzePunctualLightIssues(
+  gltf: GltfJson,
+  sceneScope: GltfSceneReachability | undefined,
+): readonly GltfPunctualLightIssue[] {
+  const ext = gltf.extensions?.['KHR_lights_punctual'];
+  const lights = ext && typeof ext === 'object' && !Array.isArray(ext)
+    ? (ext as { lights?: unknown }).lights
+    : undefined;
+  const lightEntries = Array.isArray(lights) ? lights : [];
+  const issues: GltfPunctualLightIssue[] = [];
+
+  for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
+    if (sceneScope !== undefined && !sceneScope.nodeIndices.has(nodeIndex)) continue;
+    const lightRef = node.extensions?.KHR_lights_punctual;
+    if (
+      lightRef == null ||
+      typeof lightRef !== 'object' ||
+      Array.isArray(lightRef) ||
+      typeof (lightRef as { readonly light?: unknown }).light !== 'number'
+    ) {
+      continue;
+    }
+    const lightIndex = (lightRef as { readonly light: number }).light;
+    if (lightEntries[lightIndex] === undefined) {
+      issues.push({
+        kind: 'missing-light',
+        path: `nodes[${nodeIndex}].extensions.KHR_lights_punctual.light`,
+        nodeIndex,
+        lightIndex,
+      });
+    }
+  }
+
+  const scopedLightIndices = sceneScope?.punctualLightIndices;
+  for (const [lightIndex, light] of lightEntries.entries()) {
+    if (scopedLightIndices !== undefined && !scopedLightIndices.has(lightIndex)) continue;
+    const type = light != null &&
+      typeof light === 'object' &&
+      !Array.isArray(light) &&
+      typeof (light as { readonly type?: unknown }).type === 'string'
+      ? (light as { readonly type: string }).type
+      : undefined;
+    if (type === 'point' || type === 'spot' || type === 'directional') continue;
+    issues.push({
+      kind: 'unsupported-light-type',
+      path: `extensions.KHR_lights_punctual.lights[${lightIndex}].type`,
+      lightIndex,
+      ...(type !== undefined ? { lightType: type } : {}),
+    });
+  }
+
+  return issues.sort((a, b) => a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind));
 }
 
 function sorted<T extends string>(values: Iterable<T>): T[] {
