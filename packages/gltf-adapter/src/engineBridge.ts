@@ -390,6 +390,7 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'generated-flat-normals',
   'unreadable-normal',
   'unreadable-optional-attribute',
+  'invalid-primitive-attribute',
   'generated-tangents',
   'missing-tangent-texcoord',
   'tangent-generation-failed',

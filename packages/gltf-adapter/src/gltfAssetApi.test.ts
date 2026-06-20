@@ -4916,6 +4916,75 @@ describe('loadGltfForEngine', () => {
     expect(createRejectedEngine).not.toHaveBeenCalled();
   });
 
+  it('classifies malformed authored tangents as degraded import diagnostics', async () => {
+    const { gltf, buffers } = makeInlineNormalMappedGltf();
+    const tangentData = f32Buffer([
+      1, 0, 0,
+      1, 0, 0,
+      1, 0, 0,
+    ]);
+    const tangentAccessor = gltf.accessors!.length;
+    const tangentBufferView = gltf.bufferViews!.length;
+    const tangentBuffer = gltf.buffers!.length;
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      attributes: {
+        ...gltf.meshes![0]!.primitives[0]!.attributes,
+        TANGENT: tangentAccessor,
+      },
+    };
+    gltf.accessors!.push({
+      bufferView: tangentBufferView,
+      componentType: 5126,
+      count: 3,
+      type: 'VEC3',
+    });
+    gltf.bufferViews!.push({
+      buffer: tangentBuffer,
+      byteOffset: 0,
+      byteLength: tangentData.byteLength,
+    });
+    gltf.buffers!.push({ byteLength: tangentData.byteLength });
+    buffers.set(tangentBuffer, tangentData);
+
+    const createAcceptedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    const accepted = await loadGltfForEngine(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine: createAcceptedEngine,
+    });
+
+    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'invalid-primitive-attribute',
+        path: 'meshes[0].primitives[0].attributes.TANGENT',
+      }),
+      expect.objectContaining({
+        code: 'generated-tangents',
+        path: 'meshes[0].primitives[0].attributes.TANGENT',
+      }),
+    ]));
+    expect(createAcceptedEngine).toHaveBeenCalledTimes(1);
+
+    const createRejectedEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      createEngine: createRejectedEngine,
+    })).rejects.toThrow(
+      'primitive:accessor.attributes.TANGENT.invalid-accessor-type=approximate ' +
+      `at accessors[${tangentAccessor}].type`,
+    );
+
+    expect(createRejectedEngine).not.toHaveBeenCalled();
+  });
+
   it('allows generated flat normals in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     delete gltf.meshes![0]!.primitives[0]!.attributes.NORMAL;
