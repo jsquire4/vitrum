@@ -3,13 +3,17 @@ import {
   SOBOL_TEXTURE_CHANNELS,
   SOBOL_TEXTURE_POINTS,
   SOBOL_TEXTURE_SIZE,
+  SOBOL_BLUE_NOISE_RANK_8X8,
+  SOBOL_BLUE_NOISE_TILE_SIZE,
   generateSobolTextureData,
+  initOwenScrambledSobolState,
   laineKarrasPermutation,
   maskedSobol,
   nestedUniformScrambleBase2,
   owenScrambledSobolFloat,
   owenScrambledSobolU32,
   reverseBits32,
+  sobolBlueNoiseRotationBits,
   sobolHash,
   sobolHashCombine,
   sobolTextureComponentBits,
@@ -54,7 +58,20 @@ describe('Sobol texture table', () => {
     expect(nestedUniformScrambleBase2(0x00abcdef, 0x31415926)).toBe(0x81c5a4ea);
   });
 
-  it('mirrors the pt-webgpu binding-free Owen-scrambled stream', () => {
+  it('pins the ranked 8x8 Sobol rotation tile', () => {
+    expect(SOBOL_BLUE_NOISE_TILE_SIZE).toBe(8);
+    expect(SOBOL_BLUE_NOISE_RANK_8X8).toHaveLength(64);
+    expect(new Set(SOBOL_BLUE_NOISE_RANK_8X8).size).toBe(64);
+    expect(Math.min(...SOBOL_BLUE_NOISE_RANK_8X8)).toBe(0);
+    expect(Math.max(...SOBOL_BLUE_NOISE_RANK_8X8)).toBe(63);
+    expect(SOBOL_BLUE_NOISE_RANK_8X8.slice(0, 8)).toEqual([0, 63, 12, 60, 3, 55, 15, 62]);
+    expect(sobolBlueNoiseRotationBits(0, 9)).toBe(0x000000);
+    expect(sobolBlueNoiseRotationBits(1, 9)).toBe(0x89a213);
+    expect(sobolBlueNoiseRotationBits(4, 9)).toBe(0xbcda23);
+    expect(sobolBlueNoiseRotationBits(63, 9)).toBe(0xe40131);
+  });
+
+  it('mirrors the pt-webgpu binding-free Owen-scrambled and rotated stream', () => {
     expect(sobolTextureComponentBits(7, 0)).toBe(0x00000007);
     expect(sobolTextureComponentBits(7, 5)).toBe(0x00000004);
     expect(owenScrambledSobolU32(0, 0)).toBe(0xa66de000);
@@ -62,7 +79,11 @@ describe('Sobol texture table', () => {
     expect(owenScrambledSobolU32(1, 0)).toBe(0x543dae00);
     expect(owenScrambledSobolU32(12345, 0)).toBe(0x96bc2600);
     expect(owenScrambledSobolU32(12345, 9)).toBe(0x801a7d00);
-    expect(owenScrambledSobolFloat(12345, 9)).toBeCloseTo(0.5004041790962219, 12);
+    expect(owenScrambledSobolU32(12345, 9, 1)).toBe(0x09bc9000);
+    expect(owenScrambledSobolU32(12345, 9, 4)).toBe(0x3cf4a000);
+    expect(owenScrambledSobolU32(12345, 9, 63)).toBe(0x641bae00);
+    expect(owenScrambledSobolFloat(12345, 9, 63)).toBeCloseTo(0.3910473585128784, 12);
+    expect(initOwenScrambledSobolState(9, 10, 123)).toBe(0xc0761100);
   });
 
   it('documents high-dimension behavior: four direction tables, hash-decorrelated dimensions', () => {

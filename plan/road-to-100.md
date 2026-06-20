@@ -1826,10 +1826,12 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    capability/warning. 2026-06-19 follow-up: `shared-samplers` now exports a
    CPU oracle for the same Laine-Karras / nested-uniform base-2 scramble and the
    pt-webgpu stream, including the current high-dimension behavior
-   (four direction tables plus per-dimension hash decorrelation). Remaining work
-   is blue-noise rotation, broader bounce/lobe/light dimension assignment audit,
-   real-adapter shader/behavioral gates for the Sobol WebGPU variants, and
-   equal-time RMSE convergence proof.
+   (four direction tables plus per-dimension hash decorrelation). 2026-06-20
+   follow-up: pt-webgpu Sobol now carries a binding-free 8x8 ranked tiled
+   rotation in the RNG state, mirrored by the shared CPU oracle; shader-gate and
+   individual dzn full-tier health artifacts cover the rotated full/lite/BDPT/
+   ReSTIR-PT Sobol variants. Remaining work is broader bounce/lobe/light
+   dimension assignment audit and equal-time RMSE convergence proof.
 2. Compressed wide BVH traversal (`WBVH-01`): the shared substrate is now
    partially landed: `shared-bvh` exports CWBVH-style 8-wide packing, quantized
    child bounds, deterministic packed metadata, conservative dequantized bounds
@@ -1904,16 +1906,21 @@ symbol contract so the megakernel, lite kernel, SPPM photon pass, ReSTIR-PT
 reuse passes, and BDPT light-subpath pass all switch coherently. It is explicitly
 tagged `pt-webgpu-sobol-sampling` in `capabilities.experimentalFeatures` and
 warns that this is hash-based Owen-scrambled Sobol over the first-four
-direction-table set, not the final blue-noise/per-dimension-audited sampler.
+direction-table set with a tiled ranked rotation, not the final
+per-dimension-audited sampler.
 `shared-samplers` now exposes a CPU oracle for the exact stream, so shader and
 host-side tests can detect future CPU/GPU drift in the scramble or dimension
 decorrelation behavior. 2026-06-19 behavioral proof added adapter-backed
 render-health lanes for full, lite, BDPT, and ReSTIR-PT reuse Sobol variants:
 the normal behavioral gate and individual WSL dzn status artifacts prove finite
 non-black readbacks with zero GPU errors for `pt/sobol-default`,
-`pt/sobol-lite`, `pt/sobol-bdpt`, and `pt/sobol-restirPtReuse`.
+`pt/sobol-lite`, `pt/sobol-bdpt`, and `pt/sobol-restirPtReuse`. 2026-06-20
+follow-up: the pt-webgpu RNG state now packs a 16-bit Sobol sample index, an
+8x8 pixel-tile rank, and the 8-bit dimension counter; `ptSobolNextU32` applies
+a per-dimension 24-bit Cranley-Patterson rotation from that rank, and
+`shared-samplers` pins the same table/state/oracle values.
 
-**Remaining work:** blue-noise rotation, broader per-dimension assignment audit
+**Remaining work:** broader per-dimension assignment audit
 (bounce/lobe/light dims), and equal-time RMSE A/B on the reference scenes
 (self-validating error curves, not eyeballs).
 

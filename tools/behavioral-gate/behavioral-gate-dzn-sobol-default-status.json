@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-06-20T00:03:30.496Z",
+  "generatedAt": "2026-06-20T00:57:48.129Z",
   "harness": "behavioral-gate:dzn",
   "verdict": "PASS",
   "command": "npm run behavioral-gate:dzn -- --filter sobol-default --require-full-tier",
   "filter": "sobol-default",
   "goldenVariant": "dzn-full",
-  "timeoutMs": 300000,
+  "timeoutMs": 180000,
   "dznEnv": "/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh",
   "exitStatus": 0,
   "signal": null,
@@ -20,7 +20,7 @@
       "label": "pt/sobol-default",
       "rawStatus": "OK",
       "tier": "full",
-      "luminance": 0.3753,
+      "luminance": 0.3754,
       "gpuErrors": 0,
       "nan": false,
       "mutation": null,
@@ -40,7 +40,7 @@
       "meanAbs": null,
       "maxAbs": null,
       "thresholds": null,
-      "rawLine": "PASS | pt/sobol-default             | OK | tier=full lum=0.3753 gpuErrs=0 nan=false"
+      "rawLine": "PASS | pt/sobol-default             | OK | tier=full lum=0.3754 gpuErrs=0 nan=false"
     }
   ]
 }

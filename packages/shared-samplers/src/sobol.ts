@@ -1,8 +1,20 @@
 export const SOBOL_TEXTURE_SIZE = 256;
 export const SOBOL_TEXTURE_POINTS = SOBOL_TEXTURE_SIZE * SOBOL_TEXTURE_SIZE;
 export const SOBOL_TEXTURE_CHANNELS = 4;
+export const SOBOL_BLUE_NOISE_TILE_SIZE = 8;
 
 const SOBOL_FACTOR = 1 / 16_777_216; // 2^-24, matching the GLSL Sobol texture path.
+
+export const SOBOL_BLUE_NOISE_RANK_8X8 = [
+   0, 63, 12, 60,  3, 55, 15, 62,
+  53, 23, 57, 17, 44, 19, 32, 22,
+  10, 40,  5, 41,  8, 35,  7, 47,
+  45, 28, 48, 25, 54, 29, 36, 24,
+   2, 38, 13, 46,  1, 37, 14, 51,
+  58, 30, 49, 16, 59, 20, 43, 18,
+  11, 56,  6, 34,  9, 39,  4, 50,
+  52, 31, 33, 27, 42, 26, 61, 21,
+] as const;
 
 const DIRECTIONS_1 = [
   0x80000000, 0xc0000000, 0xa0000000, 0xf0000000,
@@ -130,6 +142,28 @@ export function sobolTextureComponentBits(index: number, dimension: number): num
   return reverseBits32(maskedSobol(i, directionsForDimension(dimension))) & 0x00ffffff;
 }
 
+export function sobolBlueNoiseRotationBits(tileIndex: number, dimension: number): number {
+  const tile = finiteIntegerOrZero(tileIndex) & 63;
+  const dim = finiteIntegerOrZero(dimension) & 0xff;
+  const rank = SOBOL_BLUE_NOISE_RANK_8X8[tile] ?? 0;
+  if (rank === 0) return 0;
+  return sobolHash(sobolHashCombine(rank, dim)) & 0x00ffffff;
+}
+
+export function initOwenScrambledSobolState(
+  pixelX: number,
+  pixelY: number,
+  frameSeed: number,
+): number {
+  const px = finiteIntegerOrZero(pixelX) >>> 0;
+  const py = finiteIntegerOrZero(pixelY) >>> 0;
+  const frame = finiteIntegerOrZero(frameSeed) >>> 0;
+  const pixelSeed = sobolHash(sobolHashCombine(sobolHash(px), py));
+  const sampleIndex = (frame ^ pixelSeed) & 0x0000ffff;
+  const tile = (((py & 7) << 3) | (px & 7)) & 0xff;
+  return toU32((sampleIndex << 16) | (tile << 8));
+}
+
 function sobolComponent(index: number, directions: readonly number[]): number {
   return (reverseBits32(maskedSobol(index, directions)) & 0x00ffffff) * SOBOL_FACTOR;
 }
@@ -151,8 +185,12 @@ export function sobolTexturePoint(index: number): readonly [number, number, numb
  * `dimension` is intentionally reduced to the shader's 8-bit per-path counter
  * so tests can catch CPU/GPU drift at the exact public shader contract.
  */
-export function owenScrambledSobolU32(pathIndex: number, dimension: number): number {
-  const path = finiteIntegerOrZero(pathIndex) & 0x00ffffff;
+export function owenScrambledSobolU32(
+  pathIndex: number,
+  dimension: number,
+  rotationTile = 0,
+): number {
+  const path = finiteIntegerOrZero(pathIndex) & 0x0000ffff;
   const dim = finiteIntegerOrZero(dimension) & 0xff;
   const seed = sobolHash(sobolHashCombine(path, dim));
   const shuffleSeed = sobolHashCombine(seed, 0);
@@ -162,11 +200,17 @@ export function owenScrambledSobolU32(pathIndex: number, dimension: number): num
   ) % SOBOL_TEXTURE_POINTS;
   const result = sobolTextureComponentBits(shuffledIndex, dim);
   const componentSeed = sobolHashCombine(seed, 1 + (dim & 3));
-  return toU32(nestedUniformScrambleBase2(result, componentSeed) & 0xffffff00);
+  const scrambled24 = (nestedUniformScrambleBase2(result, componentSeed) >>> 8) & 0x00ffffff;
+  const rotated24 = (scrambled24 + sobolBlueNoiseRotationBits(rotationTile, dim)) & 0x00ffffff;
+  return toU32(rotated24 << 8);
 }
 
-export function owenScrambledSobolFloat(pathIndex: number, dimension: number): number {
-  return (owenScrambledSobolU32(pathIndex, dimension) >>> 8) * SOBOL_FACTOR;
+export function owenScrambledSobolFloat(
+  pathIndex: number,
+  dimension: number,
+  rotationTile = 0,
+): number {
+  return (owenScrambledSobolU32(pathIndex, dimension, rotationTile) >>> 8) * SOBOL_FACTOR;
 }
 
 export function generateSobolTextureData(pointCount = SOBOL_TEXTURE_POINTS): Float32Array {

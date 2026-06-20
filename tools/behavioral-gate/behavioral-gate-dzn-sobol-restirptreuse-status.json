@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-06-20T00:09:40.383Z",
+  "generatedAt": "2026-06-20T01:09:50.152Z",
   "harness": "behavioral-gate:dzn",
   "verdict": "PASS",
   "command": "npm run behavioral-gate:dzn -- --filter sobol-restirPtReuse --require-full-tier",
   "filter": "sobol-restirPtReuse",
   "goldenVariant": "dzn-full",
-  "timeoutMs": 360000,
+  "timeoutMs": 600000,
   "dznEnv": "/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh",
   "exitStatus": 0,
   "signal": null,
@@ -20,7 +20,7 @@
       "label": "pt/sobol-restirPtReuse",
       "rawStatus": "OK",
       "tier": "full",
-      "luminance": 0.2327,
+      "luminance": 0.4255,
       "gpuErrors": 0,
       "nan": false,
       "mutation": null,
@@ -40,7 +40,7 @@
       "meanAbs": null,
       "maxAbs": null,
       "thresholds": null,
-      "rawLine": "PASS | pt/sobol-restirPtReuse       | OK | tier=full lum=0.2327 gpuErrs=0 nan=false"
+      "rawLine": "PASS | pt/sobol-restirPtReuse       | OK | tier=full lum=0.4255 gpuErrs=0 nan=false"
     }
   ]
 }

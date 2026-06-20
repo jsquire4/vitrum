@@ -2392,12 +2392,13 @@ export const createPTEngine_WebGPU: EngineFactory<
       message:
         "[vitrum/pt-webgpu] sampling:'sobol' enables an opt-in hash-based " +
         'Owen-scrambled Sobol RNG across the pt-webgpu megakernel and auxiliary ' +
-        'SPPM/ReSTIR-PT/BDPT pipelines. Blue-noise rotations, broader dimension ' +
-        'audits, and equal-time RMSE promotion evidence remain Road-to-100 tails.',
+        'SPPM/ReSTIR-PT/BDPT pipelines with a tiled ranked rotation. Broader ' +
+        'dimension audits and equal-time RMSE promotion evidence remain Road-to-100 tails.',
       details: {
         sampling: 'sobol',
         fallback: 'none',
-        promotionTails: ['blue-noise-rotation', 'broader-dimension-audit', 'equal-time-rmse-ab'],
+        rotation: 'ranked-8x8',
+        promotionTails: ['broader-dimension-audit', 'equal-time-rmse-ab'],
       },
     });
   }

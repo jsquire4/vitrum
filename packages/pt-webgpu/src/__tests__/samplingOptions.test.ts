@@ -106,15 +106,17 @@ describe('pt-webgpu sampling options', () => {
     expect(structured.some((w) =>
       w.code === 'pt-webgpu.sobol-sampling-experimental' &&
       w.details?.sampling === 'sobol' &&
+      w.details?.rotation === 'ranked-8x8' &&
       Array.isArray(w.details?.promotionTails) &&
       !w.details.promotionTails.includes('owen-scrambling') &&
-      w.details.promotionTails.includes('blue-noise-rotation') &&
+      !w.details.promotionTails.includes('blue-noise-rotation') &&
       w.details.promotionTails.includes('broader-dimension-audit') &&
       w.details.promotionTails.includes('equal-time-rmse-ab'),
     )).toBe(true);
     const warningText = warn.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(warningText).toContain("sampling:'sobol'");
     expect(warningText).toContain('Owen-scrambled Sobol RNG');
+    expect(warningText).toContain('tiled ranked rotation');
     expect(warningText).not.toContain('Owen scrambling, blue-noise');
     warn.mockRestore();
   });

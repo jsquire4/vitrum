@@ -14,12 +14,24 @@ export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
  * binding-free for WebGPU.
  *
  * Promotion caveat: higher dimensions are hash-decorrelated over the first four
- * direction tables; there is no blue-noise rotation or measured RMSE promotion
- * evidence yet.
+ * direction tables and the stream uses a small tiled ranked rotation; measured
+ * RMSE promotion evidence and a broader dimension-assignment audit are still
+ * tracked separately.
  */
 export const PT_WEBGPU_SOBOL_RNG_WGSL = /* wgsl */ `
 const PT_SOBOL_FACTOR = 0.000000059604644775390625; // 1 / 2^24
 const PT_SOBOL_MAX_POINTS = 65536u;
+
+const PT_SOBOL_BLUE_NOISE_RANK_8X8 = array<u32, 64>(
+  0u, 63u, 12u, 60u, 3u, 55u, 15u, 62u,
+  53u, 23u, 57u, 17u, 44u, 19u, 32u, 22u,
+  10u, 40u, 5u, 41u, 8u, 35u, 7u, 47u,
+  45u, 28u, 48u, 25u, 54u, 29u, 36u, 24u,
+  2u, 38u, 13u, 46u, 1u, 37u, 14u, 51u,
+  58u, 30u, 49u, 16u, 59u, 20u, 43u, 18u,
+  11u, 56u, 6u, 34u, 9u, 39u, 4u, 50u,
+  52u, 31u, 33u, 27u, 42u, 26u, 61u, 21u
+);
 
 const PT_SOBOL_DIRECTIONS_1 = array<u32, 32>(
   0x80000000u, 0xc0000000u, 0xa0000000u, 0xf0000000u,
@@ -129,14 +141,24 @@ fn ptSobolTextureComponent(index: u32, dim: u32) -> u32 {
   return ptSobolReverseBits32(ptSobolMasked(index % PT_SOBOL_MAX_POINTS, dim)) & 0x00ffffffu;
 }
 
+fn ptSobolBlueNoiseRotation(tile: u32, dim: u32) -> u32 {
+  let rank = PT_SOBOL_BLUE_NOISE_RANK_8X8[tile & 63u];
+  if (rank == 0u) {
+    return 0u;
+  }
+  return ptSobolHash(ptSobolHashCombine(rank, dim)) & 0x00ffffffu;
+}
+
 fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32 {
   let pixelSeed = ptSobolHash(ptSobolHashCombine(ptSobolHash(px), py));
-  let pathIndex = (frameSeed ^ pixelSeed) & 0x00ffffffu;
-  return pathIndex << 8u;
+  let sampleIndex = (frameSeed ^ pixelSeed) & 0x0000ffffu;
+  let rotationTile = ((py & 7u) << 3u) | (px & 7u);
+  return (sampleIndex << 16u) | (rotationTile << 8u);
 }
 
 fn ptSobolNextU32(state: ptr<function, u32>) -> u32 {
-  let pathIndex = ((*state) >> 8u) & 0x00ffffffu;
+  let pathIndex = ((*state) >> 16u) & 0x0000ffffu;
+  let rotationTile = ((*state) >> 8u) & 0xffu;
   let dim = (*state) & 0xffu;
   let seed = ptSobolHash(ptSobolHashCombine(pathIndex, dim));
   let shuffleSeed = ptSobolHashCombine(seed, 0u);
@@ -147,8 +169,9 @@ fn ptSobolNextU32(state: ptr<function, u32>) -> u32 {
   var result = ptSobolTextureComponent(shuffledIndex, dim);
   let componentSeed = ptSobolHashCombine(seed, 1u + (dim & 3u));
   result = ptSobolNestedUniformScrambleBase2(result, componentSeed);
-  (*state) = (pathIndex << 8u) | ((dim + 1u) & 0xffu);
-  return result & 0xffffff00u;
+  let rotated24 = (((result >> 8u) & 0x00ffffffu) + ptSobolBlueNoiseRotation(rotationTile, dim)) & 0x00ffffffu;
+  (*state) = (pathIndex << 16u) | (rotationTile << 8u) | ((dim + 1u) & 0xffu);
+  return rotated24 << 8u;
 }
 
 fn pcgNext(state: ptr<function, u32>) -> u32 {
