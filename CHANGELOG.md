@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 tangent-frame anisotropy, 2026-06-20)
+
+- **pt-webgl2 anisotropic GGX now orients against authored/generated tangents:** the WebGL2 surface record builds `normalBasis` from the interpolated tangent attribute after Gram-Schmidt projection against the final shaded normal, falling back to the previous normal-only basis for missing or degenerate tangents. KHR anisotropy-map RG rotation now lands in the material tangent frame instead of an arbitrary frame derived from the normal alone. This is render-changing for anisotropic materials, so V28-B recapture remains the promotion proof.
+
 ### Fixed (glTF texture bridge truthfulness, 2026-06-20)
 
 - **CPU-readable glTF texture handles now honor decode target policy:** `decodeSceneTextures()` no longer skips existing `pixel-data` / `data-texture` handles. They are normalized through the same color-space, max-size, and NPOT diagnostic path as decoded raw images, so `target:"cpu-linear"` cannot leave an sRGB base-color CPU payload looking backend-ready but unconverted.

@@ -10,6 +10,41 @@ export const get_surface_record_function = /* glsl */`
 	// bounce; positive values opt into the performance approximation.
 	uniform int materialLodDepth;
 
+	mat3 getBasisFromNormalAndTangent( vec3 normal, vec4 tangentSample ) {
+
+		if ( length( normal ) <= 1e-6 ) {
+
+			return getBasisFromNormal( vec3( 0.0, 0.0, 1.0 ) );
+
+		}
+
+		vec3 n = normalize( normal );
+		if ( length( tangentSample.xyz ) <= 1e-6 ) {
+
+			return getBasisFromNormal( n );
+
+		}
+
+		vec3 tangent = tangentSample.xyz - n * dot( tangentSample.xyz, n );
+		if ( length( tangent ) <= 1e-6 ) {
+
+			return getBasisFromNormal( n );
+
+		}
+
+		tangent = normalize( tangent );
+		float tangentHandedness = tangentSample.w < 0.0 ? -1.0 : 1.0;
+		vec3 bitangent = cross( n, tangent ) * tangentHandedness;
+		if ( length( bitangent ) <= 1e-6 ) {
+
+			return getBasisFromNormal( n );
+
+		}
+
+		return mat3( tangent, normalize( bitangent ), n );
+
+	}
+
 	int getSurfaceRecord(
 		Material material, uint materialIndex, SurfaceHit surfaceHit, sampler2DArray attributesArray,
 		float accumulatedRoughness, int pathDepth, float heroWavelength,
@@ -538,7 +573,13 @@ export const get_surface_record_function = /* glsl */`
 		surf.filteredClearcoatRoughness = applyFilteredGlossy( surf.clearcoatRoughness, accumulatedRoughness );
 
 		// get the normal frames
-		surf.normalBasis = getBasisFromNormal( surf.normal );
+		vec4 bsdfTangentSample = textureSampleBarycoord(
+			attributesArray,
+			ATTR_TANGENT,
+			surfaceHit.barycoord,
+			surfaceHit.faceIndices.xyz
+		);
+		surf.normalBasis = getBasisFromNormalAndTangent( surf.normal, bsdfTangentSample );
 		surf.normalInvBasis = inverse( surf.normalBasis );
 
 		surf.clearcoatBasis = getBasisFromNormal( surf.clearcoatNormal );

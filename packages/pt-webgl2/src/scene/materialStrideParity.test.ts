@@ -107,6 +107,10 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(shader).toContain('attenuationThickness *= sampleMaterialTexture(');
     expect(shader).toContain('attenuationDist = min( attenuationDist, max( surf.attenuationThickness, 0.0 ) );');
     expect(shader).toContain('surf.anisotropy = clamp( anisotropy, 0.0, 1.0 );');
+    expect(shader).toContain('mat3 getBasisFromNormalAndTangent( vec3 normal, vec4 tangentSample )');
+    expect(shader).toContain('vec3 tangent = tangentSample.xyz - n * dot( tangentSample.xyz, n );');
+    expect(shader).toContain('vec4 bsdfTangentSample = textureSampleBarycoord(');
+    expect(shader).toContain('surf.normalBasis = getBasisFromNormalAndTangent( surf.normal, bsdfTangentSample );');
     expect(shader).toContain('vec2 anisotropicRoughnessAxes( SurfaceRecord surf )');
     expect(shader).toContain('ggxDirectionForSurface( wo, surf, rand2( 12 ) )');
     expect(shader).toContain('ggxDistributionForSurface( wh, surf )');
