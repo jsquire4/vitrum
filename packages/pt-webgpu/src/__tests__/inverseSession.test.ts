@@ -2513,6 +2513,84 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it.each([
+    ['clearcoat', 'scalar' as const],
+    ['clearcoatRoughness', 'scalar' as const],
+    ['sheen', 'scalar' as const],
+    ['sheenColor', 'rgb' as const],
+    ['sheenRoughness', 'scalar' as const],
+  ])('keeps additive lobe field %s on path-replay with fixed iridescence', (field, kind) => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                clearcoat: 0.65,
+                clearcoatRoughness: 0.25,
+                sheen: 0.45,
+                sheenColor: [0.8, 0.7, 0.6],
+                sheenRoughness: 0.35,
+                iridescence: 0.6,
+                iridescenceIor: 1.45,
+                iridescenceThicknessRange: [120, 420],
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async () => new Float32Array(kind === 'rgb' ? 3 : 1),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: `materials.panel.${field}`, kind }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
+  it('keeps base-BRDF fields conservative when fixed iridescence is active', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                iridescence: 0.6,
+                iridescenceIor: 1.45,
+                iridescenceThicknessRange: [120, 420],
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.roughness', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-material',
+      path: 'materials.panel.roughness',
+      details: expect.objectContaining({ field: 'iridescence' }),
+    }));
+    session.dispose();
+  });
+
   it('keeps envMapIntensity on scoped path-replay for direct HDRI environment NEE', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -3225,6 +3303,18 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       uAxis: [1, 0, 0] as [number, number, number],
       vAxis: [2, 0, 0] as [number, number, number],
     }],
+    ['zero-intensity unsupported emitter', {
+      kind: 'ies' as never,
+      id: 'dark-ies',
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 0,
+    } as unknown as SceneEmitter],
+    ['black unsupported emitter', {
+      kind: 'ies' as never,
+      id: 'black-ies',
+      color: [0, 0, 0] as [number, number, number],
+      intensity: 1,
+    } as unknown as SceneEmitter],
   ])('keeps path-replay when a %s cannot contribute direct light', (_label, emitter) => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -3243,6 +3333,39 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     expect(session.method).toBe('path-replay');
     expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-light-selection',
+    }));
+    session.dispose();
+  });
+
+  it('still degrades path-replay for contributing unsupported emitter kinds', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [
+        ...fake.scene.emitters,
+        {
+          kind: 'ies' as never,
+          id: 'bright-ies',
+          color: [1, 1, 1],
+          intensity: 1,
+        } as unknown as SceneEmitter,
+      ],
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-lighting',
+      path: 'materials.panel.baseColor',
+      details: expect.objectContaining({
+        emitterId: 'bright-ies',
+        emitterKind: 'ies',
+      }),
     }));
     session.dispose();
   });

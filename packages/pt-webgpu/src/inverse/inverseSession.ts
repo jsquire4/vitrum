@@ -279,6 +279,13 @@ const ADJOINT_ELIGIBLE_FIELDS = new Set([
   'clearcoatNormalScale',
 ]);
 const ADJOINT_ELIGIBLE_EMITTER_FIELDS = new Set(['color', 'intensity']);
+const ADJOINT_ADDITIVE_LOBE_FIELDS = new Set([
+  'clearcoat',
+  'clearcoatRoughness',
+  'sheen',
+  'sheenColor',
+  'sheenRoughness',
+]);
 const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'ior',
   'transmission',
@@ -1194,6 +1201,9 @@ function pathReplayMaterialIssue(
       details: { reason: 'coupled-iridescence-parameter' },
     };
   }
+  if (ADJOINT_ADDITIVE_LOBE_FIELDS.has(field)) {
+    return materialIssueForAdditiveLobe(material, primitive);
+  }
   return materialIssueForBrdf(material, primitive);
 }
 
@@ -1218,6 +1228,22 @@ function materialIssueForBrdf(
     return { message: 'unlit materials only support path-replay for baseColor primary-hit fitting', details: { reason: 'unlit' } };
   }
   const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true }, primitive);
+  if (common != null) return common;
+  const maps = listPathReplayTransportOrGeometryMaps(material);
+  if (maps.length > 0) {
+    return materialMapIssue(maps);
+  }
+  return null;
+}
+
+function materialIssueForAdditiveLobe(
+  material: MaterialSpec,
+  primitive: ScenePrimitive,
+): PathReplayMaterialIssue | null {
+  if (material.shadingModel === 'unlit') {
+    return { message: 'unlit materials do not evaluate clearcoat/sheen direct-light lobes', details: { reason: 'unlit' } };
+  }
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true }, primitive);
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
@@ -1624,13 +1650,16 @@ function pathReplayLightingIssue(
     readonly id: string;
     readonly kind: string;
     readonly angularDiameter?: number;
+    readonly color?: readonly number[];
+    readonly intensity?: number;
   }>).find((e) =>
     e.kind !== 'directional' &&
     e.kind !== 'point' &&
     e.kind !== 'spot' &&
     e.kind !== 'rect-area' &&
     e.kind !== 'disc-area' &&
-    e.kind !== 'mesh-area'
+    e.kind !== 'mesh-area' &&
+    directEmitterContributes(scene, e)
   );
   if (unsupported != null) {
     return {
