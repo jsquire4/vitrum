@@ -285,6 +285,8 @@ describe('glTF common extension policy', () => {
       support: 'approximate',
       path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
     });
+    expect(issue?.message).toContain('raw import uses scalar glossinessFactor');
+    expect(issue?.message).toContain('bake glossiness-in-alpha into a CPU-linear roughnessMap');
   });
 
   it('selects KHR_materials_variants mappings by name or index and otherwise falls back to base material', async () => {
@@ -393,8 +395,56 @@ describe('glTF common extension policy', () => {
     expect(selected.warnings.some((w) => w.includes('references missing material 99'))).toBe(true);
     expect(selected.diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
+        code: 'material-variant-material-missing',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[0].material',
+      }),
+      expect.objectContaining({
         code: 'material-variant-mapping-malformed',
         path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[2].variants',
+      }),
+    ]));
+  });
+
+  it('reports malformed root KHR_materials_variants lists without throwing', async () => {
+    const { gltf, buffers } = minimalMaterialGltf({
+      name: 'base red',
+      pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] },
+    });
+    gltf.extensionsUsed = ['KHR_materials_variants'];
+    gltf.extensionsRequired = ['KHR_materials_variants'];
+    gltf.extensions = {};
+    (gltf.extensions as Record<string, unknown>).KHR_materials_variants = {
+      variants: { name: 'blue' },
+    };
+    gltf.meshes![0]!.primitives[0]!.extensions = {
+      KHR_materials_variants: {
+        mappings: [{ material: 0, variants: [0] }],
+      },
+    };
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.variantMappingIssues).toEqual([
+      expect.objectContaining({
+        kind: 'malformed-root-variant-list',
+        path: 'extensions.KHR_materials_variants.variants',
+      }),
+    ]);
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'material',
+        name: 'KHR_materials_variants.variants.malformed-list',
+        support: 'unsupported',
+        path: 'extensions.KHR_materials_variants.variants',
+      }),
+    ]));
+
+    const selected = await gltfToScene(gltf, { buffers, materialVariant: 'blue' });
+    expect(((selected.scene.primitives[0] as MeshPrimitive).material.baseColor)).toEqual([1, 0, 0]);
+    expect(selected.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'material-variant-list-malformed',
+        path: 'extensions.KHR_materials_variants.variants',
       }),
     ]));
   });

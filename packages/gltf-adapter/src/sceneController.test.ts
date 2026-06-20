@@ -656,6 +656,64 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
   });
 
+  it('reports exact missing-material paths for variant mappings', async () => {
+    const { gltf, buffers } = materialVariantGltf();
+    gltf.meshes![0]!.primitives[0]!.extensions!.KHR_materials_variants!.mappings![0]!.material = 99;
+
+    const result = await gltfToScene(gltf, { buffers, materialVariant: 'blue' });
+
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'material-variant-material-missing',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[0].material',
+      }),
+    ]));
+    expect((result.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
+
+    const controller = createGltfSceneController({ gltf, ...result });
+    const frame = controller.setVariant('blue', {
+      engine: { setScene: vi.fn(), updatePrimitive: vi.fn(), reset: vi.fn() },
+    });
+
+    expect(frame.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'variant-mapping-material-missing',
+        path: 'meshes[0].primitives[0].extensions.KHR_materials_variants.mappings[0].material',
+      }),
+    ]));
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
+  });
+
+  it('reports malformed root material variant lists without throwing', async () => {
+    const { gltf, buffers } = materialVariantGltf();
+    (gltf.extensions as Record<string, unknown>).KHR_materials_variants = {
+      variants: { name: 'blue' },
+    };
+
+    const result = await gltfToScene(gltf, { buffers, materialVariant: 'blue' });
+
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'material-variant-list-malformed',
+        path: 'extensions.KHR_materials_variants.variants',
+      }),
+    ]));
+    expect((result.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
+
+    const controller = createGltfSceneController({ gltf, ...result });
+    const frame = controller.setVariant('blue', {
+      engine: { setScene: vi.fn(), updatePrimitive: vi.fn(), reset: vi.fn() },
+    });
+
+    expect(frame.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'variant-list-malformed',
+        path: 'extensions.KHR_materials_variants.variants',
+      }),
+    ]));
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([1, 0, 0]);
+  });
+
   it('switches high-UV variant materials with matching uv1 patches and clears them on reset', async () => {
     const { gltf, buffers } = materialVariantHighUvGltf();
     const result = await gltfToScene(gltf, { buffers });

@@ -260,6 +260,7 @@ export interface GltfMaterialTextureReferenceIssue {
 }
 
 export type GltfMaterialVariantMappingIssueKind =
+  | 'malformed-root-variant-list'
   | 'missing-material'
   | 'missing-variant-list'
   | 'missing-variant';
@@ -267,9 +268,9 @@ export type GltfMaterialVariantMappingIssueKind =
 export interface GltfMaterialVariantMappingIssue {
   readonly kind: GltfMaterialVariantMappingIssueKind;
   readonly path: string;
-  readonly meshIndex: number;
-  readonly primitiveIndex: number;
-  readonly mappingIndex: number;
+  readonly meshIndex?: number;
+  readonly primitiveIndex?: number;
+  readonly mappingIndex?: number;
   readonly materialIndex?: number;
   readonly variantIndex?: number;
 }
@@ -927,8 +928,8 @@ export function evaluateGltfBackendProfileCompatibility(
       ),
       message:
         'Archived specular-glossiness texture RGB is imported as specularColorMap, ' +
-        'and glossiness-in-alpha requires the texture decode bridge to bake a roughnessMap; ' +
-        'before that bake, scalar glossinessFactor drives roughness.',
+        'and raw import uses scalar glossinessFactor for roughness until the texture ' +
+        'decode bridge can bake glossiness-in-alpha into a CPU-linear roughnessMap.',
     });
   }
 
@@ -1007,7 +1008,9 @@ export function evaluateGltfBackendProfileCompatibility(
   for (const variantIssue of report.materials.variantMappingIssues) {
     addIssue({
       category: 'material',
-      name: `KHR_materials_variants.mapping.${variantIssue.kind}`,
+      name: variantIssue.kind === 'malformed-root-variant-list'
+        ? 'KHR_materials_variants.variants.malformed-list'
+        : `KHR_materials_variants.mapping.${variantIssue.kind}`,
       support: 'unsupported',
       path: variantIssue.path,
       message: materialVariantMappingIssueMessage(variantIssue),
@@ -1180,6 +1183,12 @@ function materialTextureReferenceIssueMessage(
 }
 
 function materialVariantMappingIssueMessage(issue: GltfMaterialVariantMappingIssue): string {
+  if (issue.kind === 'malformed-root-variant-list') {
+    return (
+      'glTF KHR_materials_variants declares a missing or malformed root variants array; ' +
+      'variant selection cannot be matched safely.'
+    );
+  }
   const label = `glTF mesh ${issue.meshIndex} primitive ${issue.primitiveIndex}`;
   if (issue.kind === 'missing-material') {
     return (
@@ -2787,7 +2796,16 @@ function materialVariantMappingIssues(
 ): GltfMaterialVariantMappingIssue[] {
   const issues: GltfMaterialVariantMappingIssue[] = [];
   const materialCount = gltf.materials?.length ?? 0;
-  const variantCount = gltf.extensions?.KHR_materials_variants?.variants?.length ?? 0;
+  const rootVariants = gltf.extensions?.KHR_materials_variants?.variants;
+  const rootVariantListMalformed = rootVariants !== undefined && !Array.isArray(rootVariants);
+  const variantCount = Array.isArray(rootVariants) ? rootVariants.length : 0;
+
+  if (rootVariantListMalformed) {
+    issues.push({
+      kind: 'malformed-root-variant-list',
+      path: 'extensions.KHR_materials_variants.variants',
+    });
+  }
 
   for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
     for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
@@ -2815,6 +2833,7 @@ function materialVariantMappingIssues(
           });
           continue;
         }
+        if (rootVariantListMalformed) continue;
         for (const [variantSlot, variantIndex] of mapping.variants.entries()) {
           if (!Number.isInteger(variantIndex) || variantIndex < 0 || variantIndex >= variantCount) {
             issues.push({

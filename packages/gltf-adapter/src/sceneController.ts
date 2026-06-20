@@ -94,6 +94,7 @@ export type GltfSceneControllerDiagnosticCode =
   | 'morph-weight-count-mismatch'
   | 'variant-bindings-missing'
   | 'variant-converted-materials-missing'
+  | 'variant-list-malformed'
   | 'variant-material-index-missing'
   | 'variant-mapping-malformed'
   | 'variant-mapping-material-missing'
@@ -951,7 +952,18 @@ function resolveMaterialVariantSelection(
   frame: GltfSceneControllerDiagnosticFrame,
 ): number | undefined {
   if (selector === undefined) return undefined;
-  const variants = gltf.extensions?.KHR_materials_variants?.variants ?? [];
+  const variantList = gltf.extensions?.KHR_materials_variants?.variants;
+  if (variantList !== undefined && !Array.isArray(variantList)) {
+    emitControllerDiagnostic(frame, {
+      code: 'variant-list-malformed',
+      path: 'extensions.KHR_materials_variants.variants',
+      message:
+        '[vitrum/gltf-adapter] GltfSceneController.setVariant: materialVariant was requested, ' +
+        'but extensions.KHR_materials_variants.variants is missing or malformed. Base materials are used.',
+    });
+    return undefined;
+  }
+  const variants = variantList ?? [];
   if (typeof selector === 'number') {
     if (Number.isInteger(selector) && selector >= 0 && selector < variants.length) return selector;
     emitControllerDiagnostic(frame, {
@@ -1001,14 +1013,21 @@ function resolvePrimitiveMaterialIndex(
       primitiveIndex,
     });
   }
-  const mapping = mappings.find((candidate) =>
-    Array.isArray(candidate.variants) && candidate.variants.includes(selectedVariantIndex)
-  );
-  if (!mapping) return baseMaterialIndex;
+  let matchedMapping:
+    | { readonly mapping: (typeof mappings)[number]; readonly index: number }
+    | undefined;
+  for (const [mappingIndex, candidate] of mappings.entries()) {
+    if (Array.isArray(candidate.variants) && candidate.variants.includes(selectedVariantIndex)) {
+      matchedMapping = { mapping: candidate, index: mappingIndex };
+      break;
+    }
+  }
+  if (!matchedMapping) return baseMaterialIndex;
+  const { mapping, index: mappingIndex } = matchedMapping;
   if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
     emitControllerDiagnostic(frame, {
       code: 'variant-mapping-material-missing',
-      path: `meshes[${meshIndex}].primitives[${primitiveIndex}].extensions.KHR_materials_variants.mappings`,
+      path: `meshes[${meshIndex}].primitives[${primitiveIndex}].extensions.KHR_materials_variants.mappings[${mappingIndex}].material`,
       message:
         `[vitrum/gltf-adapter] GltfSceneController.setVariant: mesh "${meshLabel}" ` +
         `KHR_materials_variants mapping for variant ${selectedVariantIndex} references missing ` +

@@ -5518,6 +5518,28 @@ describe('loadGltfForEngine', () => {
     expect((result.controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
   });
 
+  it('rejects malformed root KHR_materials_variants lists before constructing engines', async () => {
+    const { gltf, buffers } = makeInlineMaterialVariantGltf();
+    (gltf.extensions as Record<string, unknown>).KHR_materials_variants = {
+      variants: { name: 'blue' },
+    };
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    const promise = loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+      materialVariant: 'blue',
+    });
+
+    await expect(promise).rejects.toThrow(
+      'material:KHR_materials_variants.variants.malformed-list=unsupported at extensions.KHR_materials_variants.variants',
+    );
+    await expect(promise).rejects.toBeInstanceOf(GltfCompatibilityError);
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('keeps inactive material variants decoded before controller variant patches', async () => {
     const { gltf, buffers } = makeInlineTexturedVariantGltf();
     const engine = { setScene: vi.fn(), updatePrimitive: vi.fn(), reset: vi.fn() };

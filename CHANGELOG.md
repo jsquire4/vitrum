@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF variant diagnostics, 2026-06-20)
+
+- **Malformed root `KHR_materials_variants.variants` lists now fail truthfully instead of throwing or silently falling through:** `@vitrum/gltf-adapter` reports malformed root variant lists as exact `extensions.KHR_materials_variants.variants` compatibility/import/controller diagnostics, strict `loadGltfForEngine(..., compatibilityMode:'reject-unsupported')` rejects before engine construction, and missing selected variant materials now point at the exact `mappings[*].material` source path.
+- **Archived spec-gloss compatibility wording now matches runtime behavior:** the compatibility report states that raw import uses scalar `glossinessFactor` for roughness until the texture decode bridge bakes glossiness-in-alpha into a CPU-linear roughness map.
+
 ### Fixed (pt-webgl2 dispersion transmission eta coherence, 2026-06-20)
 
 - **Cauchy dispersion transmission now uses the same hero-wavelength eta for sampling and PDF evaluation:** `@vitrum/pt-webgl2` centralizes the effective dispersion IOR/eta calculation and threads it through dispersion ray sampling, transmission half-vector reconstruction, `transmissionEval()`'s denominator, and lobe-selection Fresnel weights. This closes the previous mismatch where dispersion rays were sampled with a hero-wavelength eta but the evaluated BTDF/PDF still used the base `surf.eta`. Render recapture and transmission radiometric promotion remain V28-B proof work.

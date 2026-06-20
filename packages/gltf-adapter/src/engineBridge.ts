@@ -363,6 +363,8 @@ const UNSUPPORTED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = ne
   'unreadable-position',
   'unreadable-indices',
   'empty-triangulated-primitive',
+  'material-variant-list-malformed',
+  'material-variant-mapping-malformed',
   'ignored-skin-attributes',
   'incomplete-skin-attributes',
   'singular-skin-transform',

@@ -421,6 +421,7 @@ export type GltfImportDiagnosticCode =
   | 'ignored-primitive-attribute'
   | 'empty-triangulated-primitive'
   | 'material-variant-not-found'
+  | 'material-variant-list-malformed'
   | 'material-variant-material-missing'
   | 'material-variant-mapping-malformed'
   | 'ignored-material-texcoord'
@@ -1322,7 +1323,19 @@ function _resolveMaterialVariantSelection(
   diagnostics: GltfImportDiagnostic[],
 ): number | undefined {
   if (selector === undefined) return undefined;
-  const variants = gltf.extensions?.KHR_materials_variants?.variants ?? [];
+  const variantList = gltf.extensions?.KHR_materials_variants?.variants;
+  if (variantList !== undefined && !Array.isArray(variantList)) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'material-variant-list-malformed',
+      path: 'extensions.KHR_materials_variants.variants',
+      message:
+        '[vitrum/gltf-adapter] materialVariant was requested, but ' +
+        'extensions.KHR_materials_variants.variants is missing or malformed. Base materials are used.',
+    });
+    return undefined;
+  }
+  const variants = variantList ?? [];
   if (typeof selector === 'number') {
     if (Number.isInteger(selector) && selector >= 0 && selector < variants.length) return selector;
     emitImportDiagnostic(warnings, diagnostics, {
@@ -1360,15 +1373,22 @@ function _resolvePrimitiveMaterialIndex(
 ): number | undefined {
   if (selectedVariantIndex === undefined) return baseMaterialIndex;
   const mappings = primitive.extensions?.KHR_materials_variants?.mappings ?? [];
-  const mapping = mappings.find((candidate) =>
-    Array.isArray(candidate.variants) && candidate.variants.includes(selectedVariantIndex)
-  );
-  if (!mapping) return baseMaterialIndex;
+  let matchedMapping:
+    | { readonly mapping: (typeof mappings)[number]; readonly index: number }
+    | undefined;
+  for (const [mappingIndex, candidate] of mappings.entries()) {
+    if (Array.isArray(candidate.variants) && candidate.variants.includes(selectedVariantIndex)) {
+      matchedMapping = { mapping: candidate, index: mappingIndex };
+      break;
+    }
+  }
+  if (!matchedMapping) return baseMaterialIndex;
+  const { mapping, index: mappingIndex } = matchedMapping;
   if (mapping.material < 0 || mapping.material >= (gltf.materials?.length ?? 0)) {
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
       code: 'material-variant-material-missing',
-      path: `${primitivePath}.extensions.KHR_materials_variants.mappings`,
+      path: `${primitivePath}.extensions.KHR_materials_variants.mappings[${mappingIndex}].material`,
       message:
         `[vitrum/gltf-adapter] Mesh "${meshLabel}" KHR_materials_variants mapping for ` +
         `variant ${selectedVariantIndex} references missing material ${mapping.material}. ` +
