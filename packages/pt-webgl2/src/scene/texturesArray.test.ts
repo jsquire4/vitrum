@@ -72,6 +72,47 @@ describe('packTextureAtlas', () => {
     expect(atlas!.layerOfByColorSpace.linear.get(back)).toBe(1);
     expect(atlas!.layerOfByColorSpace.srgb.size).toBe(0);
   });
+
+  it('emits structured warnings when material maps request unsupported sampler policy', () => {
+    const handle = dataTexHandle(new Float32Array([1, 1, 1, 1]), 1, 1);
+    const onWarning = vi.fn();
+    const atlas = packTextureAtlas([
+      {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        baseColorMap: {
+          handle,
+          magFilter: 'linear',
+          minFilter: 'linear',
+          mipFilter: 'linear',
+        },
+      },
+    ], { onWarning, warningPhase: 'setScene', warningMethod: 'setScene' });
+
+    expect(atlas).not.toBeNull();
+    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'pt-webgl2.texture-sampler-policy-approximation',
+      backend: 'pt-webgl2',
+      phase: 'setScene',
+      method: 'setScene',
+      details: expect.objectContaining({
+        materialIndex: 0,
+        field: 'baseColorMap',
+        requestedSamplerPolicy: {
+          magFilter: 'linear',
+          minFilter: 'linear',
+          mipFilter: 'linear',
+        },
+        backendSamplerPolicy: {
+          magFilter: 'nearest',
+          minFilter: 'nearest',
+          mipFilter: 'none',
+        },
+        fallback: 'shared-nearest-atlas-sampler',
+      }),
+    }));
+  });
 });
 
 describe('textureAtlasLayerCapacity', () => {

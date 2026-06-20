@@ -2178,6 +2178,44 @@ describe('decodeSceneTextures', () => {
     ]);
   });
 
+  it('promotes NPOT repeat-wrap decode diagnostics into degraded compatibility issues', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      warnOnNpotRepeatWrap: true,
+      decodePixels: () => ({
+        width: 3,
+        height: 5,
+        data: new Float32Array(3 * 5 * 4).fill(1),
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      }),
+    });
+
+    expect(result.textureDecodeDiagnostics).toEqual([
+      expect.objectContaining({
+        code: 'decoded-texture-npot-repeat-wrap',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        materialField: 'baseColorMap',
+      }),
+    ]);
+    expect(result.backendCompatibility).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        backend: 'pt-webgl2',
+        issues: expect.arrayContaining([
+          expect.objectContaining({
+            category: 'texture',
+            name: 'texture-decode:decoded-texture-npot-repeat-wrap:baseColorMap',
+            support: 'approximate',
+            path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+          }),
+        ]),
+      }),
+    ]));
+  });
+
   it('emits NPOT-repeat diagnostics for already CPU-readable handles', async () => {
     const scene: Scene = {
       primitives: [
@@ -5435,6 +5473,19 @@ describe('loadGltfForEngine', () => {
       expect.stringContaining('exceeds maxTextureSize=2'),
     ]);
     expect(result.warnings).toEqual(expect.arrayContaining([...result.textureDecodeWarnings]));
+    expect(result.asset.backendCompatibility).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        backend: 'pt-webgl2',
+        issues: expect.arrayContaining([
+          expect.objectContaining({
+            category: 'texture',
+            name: 'texture-decode:decoded-texture-exceeds-max-size:baseColorMap',
+            support: 'approximate',
+            path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+          }),
+        ]),
+      }),
+    ]));
 
     const attachedScene = engine.setScene.mock.calls[0]![0] as Scene;
     const primitive = attachedScene.primitives[0] as MeshPrimitive;
@@ -5447,6 +5498,32 @@ describe('loadGltfForEngine', () => {
     expect(handle.height).toBe(1);
     expect(handle.data).toBeInstanceOf(Float32Array);
     expect(result.asset.scene).toBe(attachedScene);
+  });
+
+  it('rejects degraded texture decode diagnostics before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      decodeTextures: true,
+      decodeImage: async (data: Uint8Array, mimeType: string) => ({ kind: 'raw-image', mimeType, data }),
+      decodePixels: () => ({
+        width: 4,
+        height: 2,
+        channels: 4 as const,
+        dataType: 'uint8' as const,
+        colorSpace: 'srgb' as const,
+        data: new Uint8Array(4 * 2 * 4).fill(255),
+      }),
+      maxTextureSize: 2,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow(
+      'texture:texture-decode:decoded-texture-exceeds-max-size:baseColorMap=approximate at materials[0].pbrMetallicRoughness.baseColorTexture',
+    );
+    expect(createEngine).not.toHaveBeenCalled();
   });
 
   it('loadGltfForEngine decodes browser image bytes without requiring a custom decodeImage hook', async () => {

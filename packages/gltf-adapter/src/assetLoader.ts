@@ -281,10 +281,15 @@ const SPEC_GLOSS_ALPHA_ISSUE =
   'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha';
 const EMISSIVE_MAP_TEXEL_PDF_ISSUE = 'emissiveMap.texelPdf';
 const TEXTURE_READINESS_ISSUE_PREFIX = 'texture-readiness:';
+const TEXTURE_DECODE_DIAGNOSTIC_ISSUE_PREFIX = 'texture-decode:';
 const TEXTURE_SOURCE_EXTENSION_HOOK_ISSUES = new Set([
   'KHR_texture_basisu',
   'EXT_texture_webp',
   'MSFT_texture_dds',
+]);
+const DEGRADED_TEXTURE_DECODE_DIAGNOSTICS: ReadonlySet<DecodeSceneTextureDiagnostic['code']> = new Set([
+  'decoded-texture-exceeds-max-size',
+  'decoded-texture-npot-repeat-wrap',
 ]);
 
 function reconcileBackendCompatibilityAfterSceneImport(
@@ -360,13 +365,21 @@ function reconcileBackendCompatibilityAfterTextureDecode(
   const reconciled = compatibility.map((candidate) => {
     const issues = candidate.issues.filter((issue) => {
       if (isTextureReadinessIssue(issue)) return false;
+      if (isTextureDecodeDiagnosticIssue(issue)) return false;
       if (specGlossAlphaIssueSatisfiedByDecode(issue, report, diagnostics, featureReport)) return false;
       if (emissiveTexelPdfIssueSatisfiedByDecode(issue, candidate, report)) return false;
       if (textureSourceHookIssueSatisfiedByDecode(issue, report)) return false;
       return true;
     });
-    return compatibilityWithTextureReadiness(
+    const decodeDiagnosticIssues = textureDecodeDiagnosticIssuesForCandidate(
       issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues),
+      diagnostics,
+    );
+    return compatibilityWithTextureReadiness(
+      compatibilityWithIssues(
+        issues.length === candidate.issues.length ? candidate : compatibilityWithIssues(candidate, issues),
+        [...issues, ...decodeDiagnosticIssues],
+      ),
       report,
     );
   });
@@ -480,6 +493,37 @@ function textureReadinessIssuesForCandidate(
   return issues;
 }
 
+function textureDecodeDiagnosticIssuesForCandidate(
+  candidate: GltfBackendCompatibility,
+  diagnostics: readonly DecodeSceneTextureDiagnostic[],
+): GltfCompatibilityIssue[] {
+  const unsupportedMaterialFields = new Set(
+    candidate.issues
+      .filter((issue) => issue.category === 'material' && issue.support === 'unsupported')
+      .map((issue) => issue.name),
+  );
+  const issues: GltfCompatibilityIssue[] = [];
+  const seen = new Set<string>();
+  for (const diagnostic of diagnostics) {
+    if (!DEGRADED_TEXTURE_DECODE_DIAGNOSTICS.has(diagnostic.code)) continue;
+    if (unsupportedMaterialFields.has(diagnostic.materialField)) continue;
+    const name = `${TEXTURE_DECODE_DIAGNOSTIC_ISSUE_PREFIX}${diagnostic.code}:${diagnostic.materialField}`;
+    const key = `${name}\n${diagnostic.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    issues.push({
+      category: 'texture',
+      name,
+      support: 'approximate',
+      path: diagnostic.path,
+      message:
+        `Texture decode diagnostic ${diagnostic.code} for "${diagnostic.materialField}" at ` +
+        `${diagnostic.path} affects backend profile ${candidate.profileId}: ${diagnostic.message}`,
+    });
+  }
+  return issues;
+}
+
 function textureReadinessKey(
   candidate: GltfBackendCompatibility,
 ): keyof GltfTextureDecodeReport['entries'][number]['backendReadiness'] | undefined {
@@ -497,6 +541,10 @@ function textureReadinessSupport(status: GltfBackendTextureStatus): GltfCompatib
 
 function isTextureReadinessIssue(issue: GltfCompatibilityIssue): boolean {
   return issue.category === 'texture' && issue.name.startsWith(TEXTURE_READINESS_ISSUE_PREFIX);
+}
+
+function isTextureDecodeDiagnosticIssue(issue: GltfCompatibilityIssue): boolean {
+  return issue.category === 'texture' && issue.name.startsWith(TEXTURE_DECODE_DIAGNOSTIC_ISSUE_PREFIX);
 }
 
 function issuesMatch(

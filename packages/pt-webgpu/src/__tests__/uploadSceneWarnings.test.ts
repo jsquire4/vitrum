@@ -26,6 +26,32 @@ function oneMeshSceneWithBadBaseColorTexture(): Scene {
   };
 }
 
+function oneMeshSceneWithNearestBaseColorTexture(): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'mesh-a',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap: {
+            handle: { image: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
+            magFilter: 'nearest',
+            minFilter: 'nearest',
+            mipFilter: 'none',
+          },
+        },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function makeDevice(): GPUDevice {
   return {
     queue: {
@@ -83,6 +109,35 @@ describe('uploadPackedScene warning propagation', () => {
     } finally {
       consoleWarn.mockRestore();
     }
+  });
+
+  it('routes material texture sampler-policy warnings through UploadedSceneBuffers warnings', () => {
+    installGpuConstStubs();
+    const device = makeDevice();
+    const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithNearestBaseColorTexture()));
+
+    expect(uploaded.structuredWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.material-texture-sampler-policy-approximation',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        details: expect.objectContaining({
+          colorSpace: 'sRGB',
+          layer: 0,
+          fields: ['baseColorMap'],
+          materialIndices: [0],
+          fallback: 'shared-linear-mipmapped-sampler',
+          requestedSamplerPolicies: [{
+            materialIndex: 0,
+            field: 'baseColorMap',
+            magFilter: 'nearest',
+            minFilter: 'nearest',
+            mipFilter: 'none',
+          }],
+        }),
+      }),
+    ]));
   });
 
   it('emits upload-time material texture failures through Engine.onWarning', async () => {

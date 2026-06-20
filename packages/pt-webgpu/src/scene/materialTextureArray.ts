@@ -25,7 +25,8 @@ export type MaterialTextureLayerUvScale = readonly [number, number];
 export type MaterialTextureArrayWarningCode =
   | 'texture-unreadable'
   | 'texture-size-mismatch'
-  | 'texture-unsupported-layout';
+  | 'texture-unsupported-layout'
+  | 'texture-sampler-policy-approximation';
 
 export interface MaterialTextureArrayWarning {
   readonly code: MaterialTextureArrayWarningCode;
@@ -38,6 +39,15 @@ export interface MaterialTextureArrayWarning {
   readonly arrayWidth?: number;
   readonly arrayHeight?: number;
   readonly byteLength?: number;
+  readonly requestedSamplerPolicies?: readonly MaterialTextureSamplerPolicyUse[];
+}
+
+export interface MaterialTextureSamplerPolicyUse {
+  readonly materialIndex: number;
+  readonly field: string;
+  readonly magFilter?: string;
+  readonly minFilter?: string;
+  readonly mipFilter?: string;
 }
 
 export interface MaterialTextureArray {
@@ -337,6 +347,49 @@ function layerUses(
   return layerInfos?.[layer]?.uses ?? [];
 }
 
+function samplerPolicyIsNativeForPtWebgpu(use: MaterialTextureLayerUse): boolean {
+  if (use.magFilter != null && use.magFilter !== 'linear') return false;
+  if (use.minFilter != null && use.minFilter !== 'linear') return false;
+  if (use.mipFilter != null && use.mipFilter !== 'linear') return false;
+  return true;
+}
+
+function requestedSamplerPolicy(use: MaterialTextureLayerUse): MaterialTextureSamplerPolicyUse {
+  return {
+    materialIndex: use.materialIndex,
+    field: use.field,
+    ...(use.magFilter != null ? { magFilter: use.magFilter } : {}),
+    ...(use.minFilter != null ? { minFilter: use.minFilter } : {}),
+    ...(use.mipFilter != null ? { mipFilter: use.mipFilter } : {}),
+  };
+}
+
+function appendSamplerPolicyWarnings(
+  warnings: string[],
+  structuredWarnings: MaterialTextureArrayWarning[],
+  layerInfos: ReadonlyArray<MaterialTextureLayerInfo> | undefined,
+): void {
+  if (layerInfos == null) return;
+  for (const info of layerInfos) {
+    const nonNative = info.uses.filter((use) => !samplerPolicyIsNativeForPtWebgpu(use));
+    if (nonNative.length === 0) continue;
+    const fields = Array.from(new Set(nonNative.map((use) => use.field))).join(', ');
+    const warning =
+      `[materialTextureArray] source ${info.layer} requests sampler policy outside pt-webgpu's ` +
+      `shared linear/linear/mipmap-linear material texture sampler for fields ${fields}; ` +
+      'the texture remains uploadable, but filtering/mipmap behavior is approximate.';
+    warnings.push(warning);
+    structuredWarnings.push({
+      code: 'texture-sampler-policy-approximation',
+      warning,
+      layer: info.layer,
+      uses: nonNative,
+      fallback: 'shared-linear-mipmapped-sampler',
+      requestedSamplerPolicies: nonNative.map(requestedSamplerPolicy),
+    });
+  }
+}
+
 /**
  * Build the material texture 2D-array. `sources` is the dedup'd, upload-ordered
  * handle list from {@link collectMaterialTextures}; layer `i` holds `sources[i]`,
@@ -352,6 +405,7 @@ export function createMaterialTextureArray(
 
   const warnings: string[] = [];
   const structuredWarnings: MaterialTextureArrayWarning[] = [];
+  appendSamplerPolicyWarnings(warnings, structuredWarnings, layerInfos);
   const payloads = sources.map(payloadOf);
   const maxDim = device.limits.maxTextureDimension2D;
   let width = 1;

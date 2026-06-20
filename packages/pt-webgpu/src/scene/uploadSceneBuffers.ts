@@ -1921,6 +1921,8 @@ function materialTextureWarningCode(warning: MaterialTextureArrayWarning): strin
       return 'pt-webgpu.material-texture-size-mismatch';
     case 'texture-unsupported-layout':
       return 'pt-webgpu.material-texture-unsupported-layout';
+    case 'texture-sampler-policy-approximation':
+      return 'pt-webgpu.material-texture-sampler-policy-approximation';
   }
 }
 
@@ -1951,6 +1953,7 @@ function materialTextureEngineWarnings(
         arrayWidth: warning.arrayWidth,
         arrayHeight: warning.arrayHeight,
         byteLength: warning.byteLength,
+        requestedSamplerPolicies: warning.requestedSamplerPolicies,
       },
     };
   });

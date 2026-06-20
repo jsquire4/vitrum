@@ -8,7 +8,13 @@
 // index + UVs. Materials with no maps get index -1 → the sampler skips them, so
 // a textureless scene stays byte-identical to the pre-P2 parametric path.
 
-import type { MaterialSpec, TextureRef, TextureWrapMode } from '@vitrum/core';
+import type {
+  MaterialSpec,
+  TextureFilterMode,
+  TextureMipFilterMode,
+  TextureRef,
+  TextureWrapMode,
+} from '@vitrum/core';
 import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
 
 /**
@@ -162,6 +168,9 @@ export interface MaterialTextureLayerUse {
   readonly field: string;
   readonly colorSpace: MaterialTextureColorSpace;
   readonly texCoord: number;
+  readonly magFilter?: TextureFilterMode;
+  readonly minFilter?: TextureFilterMode;
+  readonly mipFilter?: TextureMipFilterMode;
 }
 
 export interface MaterialTextureLayerInfo {
@@ -317,6 +326,9 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
         field,
         colorSpace,
         texCoord: ref?.texCoord ?? 0,
+        ...(ref?.magFilter != null ? { magFilter: ref.magFilter } : {}),
+        ...(ref?.minFilter != null ? { minFilter: ref.minFilter } : {}),
+        ...(ref?.mipFilter != null ? { mipFilter: ref.mipFilter } : {}),
       });
       return i;
     };

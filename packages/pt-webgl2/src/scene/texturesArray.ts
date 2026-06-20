@@ -12,7 +12,7 @@
 // All layers share one dimension (sampler2DArray requirement): the max source dim,
 // nearest-neighbour resampled. Provenance: gkjohnson/three-gpu-pathtracer (MIT).
 
-import type { EngineWarning, MaterialSpec } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec, TextureFilterMode, TextureMipFilterMode } from '@vitrum/core';
 
 /** The material-map fields the fork GLSL samples (others are inert until wired).
  *  D3 (Wave C) added the clearcoat/sheen/iridescence/specular maps — the fork
@@ -102,6 +102,13 @@ export interface TextureAtlasBuildOptions {
   readonly warningMethod?: string;
 }
 
+interface TextureRefSamplerPolicy {
+  readonly handle?: unknown;
+  readonly magFilter?: TextureFilterMode;
+  readonly minFilter?: TextureFilterMode;
+  readonly mipFilter?: TextureMipFilterMode;
+}
+
 function handleType(handle: unknown): string {
   return handle == null ? 'null' : Object.prototype.toString.call(handle);
 }
@@ -151,6 +158,45 @@ function collectHandle(
     seenSpaces.add(colorSpace);
     handles.push({ handle, colorSpace });
   }
+}
+
+function ptWebgl2SamplerPolicyIsNative(ref: TextureRefSamplerPolicy | undefined): boolean {
+  if (ref == null || ref.handle == null) return true;
+  if (ref.magFilter != null && ref.magFilter !== 'nearest') return false;
+  if (ref.minFilter != null && ref.minFilter !== 'nearest') return false;
+  if (ref.mipFilter != null && ref.mipFilter !== 'none') return false;
+  return true;
+}
+
+function samplerPolicyDetails(ref: TextureRefSamplerPolicy): Record<string, unknown> {
+  return {
+    ...(ref.magFilter != null ? { magFilter: ref.magFilter } : {}),
+    ...(ref.minFilter != null ? { minFilter: ref.minFilter } : {}),
+    ...(ref.mipFilter != null ? { mipFilter: ref.mipFilter } : {}),
+  };
+}
+
+function emitSamplerPolicyWarning(
+  options: TextureAtlasBuildOptions | undefined,
+  ref: TextureRefSamplerPolicy | undefined,
+  materialIndex: number,
+  field: string,
+): void {
+  if (ptWebgl2SamplerPolicyIsNative(ref)) return;
+  emitTextureWarning(options, {
+    code: 'pt-webgl2.texture-sampler-policy-approximation',
+    message:
+      `[pt-webgl2] material ${materialIndex} field ${field} requests texture sampler policy ` +
+      `${JSON.stringify(samplerPolicyDetails(ref as TextureRefSamplerPolicy))}, but pt-webgl2 material maps ` +
+      'are packed into one nearest-filtered texture array; the map will render with nearest filtering and no mip chain.',
+    details: {
+      materialIndex,
+      field,
+      requestedSamplerPolicy: samplerPolicyDetails(ref as TextureRefSamplerPolicy),
+      backendSamplerPolicy: { magFilter: 'nearest', minFilter: 'nearest', mipFilter: 'none' },
+      fallback: 'shared-nearest-atlas-sampler',
+    },
+  });
 }
 
 /** IEEE-754 half (uint16) → float32 (DataTextures may ship HalfFloat). */
@@ -294,12 +340,15 @@ export function packTextureAtlas(
   // unique (handle, color-space role) pairs in first-seen order
   const handles: { handle: unknown; colorSpace: TextureSampleColorSpace }[] = [];
   const seen = new Map<unknown, Set<TextureSampleColorSpace>>();
-  for (const m of materials) {
+  for (const [materialIndex, m] of materials.entries()) {
     for (const key of SAMPLED_MAP_KEYS) {
-      const ref = m[key] as { handle?: unknown } | undefined;
+      const ref = m[key] as TextureRefSamplerPolicy | undefined;
+      emitSamplerPolicyWarning(options, ref, materialIndex, key);
       collectHandle(handles, seen, ref, textureColorSpaceForMapKey(key));
     }
+    emitSamplerPolicyWarning(options, m.frontLayer?.normalMap, materialIndex, 'frontLayer.normalMap');
     collectHandle(handles, seen, m.frontLayer?.normalMap, 'linear');
+    emitSamplerPolicyWarning(options, m.backLayer?.normalMap, materialIndex, 'backLayer.normalMap');
     collectHandle(handles, seen, m.backLayer?.normalMap, 'linear');
   }
   if (handles.length === 0) return null;

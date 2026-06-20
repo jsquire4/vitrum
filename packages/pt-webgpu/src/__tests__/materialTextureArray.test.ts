@@ -222,4 +222,44 @@ describe('createMaterialTextureArray', () => {
       }),
     ]);
   });
+
+  it('reports sampler policy requests that differ from the shared pt-webgpu sampler', () => {
+    installGpuConstStubs();
+    const { device } = makeDevice();
+    const array = createMaterialTextureArray(
+      device,
+      [rawImage(1, 1)],
+      'rgba8unorm-srgb',
+      [{
+        layer: 0,
+        uses: [{
+          materialIndex: 2,
+          field: 'baseColorMap',
+          colorSpace: 'srgb',
+          texCoord: 0,
+          magFilter: 'nearest',
+          minFilter: 'nearest',
+          mipFilter: 'none',
+        }],
+      }],
+    );
+
+    expect(array.structuredWarnings).toEqual([
+      expect.objectContaining({
+        code: 'texture-sampler-policy-approximation',
+        layer: 0,
+        fallback: 'shared-linear-mipmapped-sampler',
+        requestedSamplerPolicies: [{
+          materialIndex: 2,
+          field: 'baseColorMap',
+          magFilter: 'nearest',
+          minFilter: 'nearest',
+          mipFilter: 'none',
+        }],
+      }),
+    ]);
+    expect(array.warnings).toContain(
+      "[materialTextureArray] source 0 requests sampler policy outside pt-webgpu's shared linear/linear/mipmap-linear material texture sampler for fields baseColorMap; the texture remains uploadable, but filtering/mipmap behavior is approximate.",
+    );
+  });
 });

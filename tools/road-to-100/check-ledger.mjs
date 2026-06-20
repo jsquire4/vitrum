@@ -448,6 +448,72 @@ for (const needle of [
   }
 }
 
+const gltfAssetLoader = await readText("packages/gltf-adapter/src/assetLoader.ts");
+for (const needle of [
+  "const TEXTURE_DECODE_DIAGNOSTIC_ISSUE_PREFIX = 'texture-decode:';",
+  "'decoded-texture-exceeds-max-size'",
+  "'decoded-texture-npot-repeat-wrap'",
+  "textureDecodeDiagnosticIssuesForCandidate(",
+]) {
+  if (!gltfAssetLoader.includes(needle)) {
+    fail(`gltf decoded texture diagnostics must feed backend compatibility: ${needle}`);
+  }
+}
+
+for (const needle of [
+  "rejects degraded texture decode diagnostics before constructing an engine",
+  "promotes NPOT repeat-wrap decode diagnostics into degraded compatibility issues",
+  "texture-decode:decoded-texture-exceeds-max-size:baseColorMap",
+  "texture-decode:decoded-texture-npot-repeat-wrap:baseColorMap",
+]) {
+  if (!gltfAssetApiTest.includes(needle)) {
+    fail(`gltf asset API tests must pin decode diagnostics as degraded compatibility: ${needle}`);
+  }
+}
+
+const ptWebgl2TexturesArray = await readText("packages/pt-webgl2/src/scene/texturesArray.ts");
+for (const needle of [
+  "pt-webgl2.texture-sampler-policy-approximation",
+  "backendSamplerPolicy: { magFilter: 'nearest', minFilter: 'nearest', mipFilter: 'none' }",
+  "fallback: 'shared-nearest-atlas-sampler'",
+]) {
+  if (!ptWebgl2TexturesArray.includes(needle)) {
+    fail(`pt-webgl2 texture atlas must warn on ignored sampler filter/mip policy: ${needle}`);
+  }
+}
+
+const ptWebgpuMaterialTextures = await readText("packages/pt-webgpu/src/scene/materialTextures.ts");
+for (const needle of [
+  "readonly magFilter?: TextureFilterMode;",
+  "readonly minFilter?: TextureFilterMode;",
+  "readonly mipFilter?: TextureMipFilterMode;",
+]) {
+  if (!ptWebgpuMaterialTextures.includes(needle)) {
+    fail(`pt-webgpu material texture layer uses must retain sampler policy metadata: ${needle}`);
+  }
+}
+
+const ptWebgpuMaterialTextureArray = await readText("packages/pt-webgpu/src/scene/materialTextureArray.ts");
+for (const needle of [
+  "'texture-sampler-policy-approximation'",
+  "fallback: 'shared-linear-mipmapped-sampler'",
+  "appendSamplerPolicyWarnings(warnings, structuredWarnings, layerInfos);",
+]) {
+  if (!ptWebgpuMaterialTextureArray.includes(needle)) {
+    fail(`pt-webgpu material texture array must warn on shared-sampler approximations: ${needle}`);
+  }
+}
+
+const ptWebgpuUploadSceneBuffersSamplerPolicy = await readText("packages/pt-webgpu/src/scene/uploadSceneBuffers.ts");
+for (const needle of [
+  "return 'pt-webgpu.material-texture-sampler-policy-approximation';",
+  "requestedSamplerPolicies: warning.requestedSamplerPolicies",
+]) {
+  if (!ptWebgpuUploadSceneBuffersSamplerPolicy.includes(needle)) {
+    fail(`pt-webgpu upload warnings must surface sampler-policy approximations: ${needle}`);
+  }
+}
+
 const walkaroundBackendConstructor = await readText("packages/engine/src/backends/walkaround.ts");
 for (const needle of [
   "opts.onAdapterProfile?.(profile);",
