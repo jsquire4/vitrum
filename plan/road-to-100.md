@@ -1232,6 +1232,8 @@ Alpha-visibility inverse classifier note (2026-06-20): `inverseSession.ts` now m
 
 2026-06-20 diagnostic truthfulness follow-up: dimension-changing pt-webgl2 geometry fallbacks now report `nativePatchMissing:"targeted-primitive-geometry-splice"` rather than the misleading old `"targeted-geometry-bvh-refit"` wording. Refit is already the same-topology native path; the remaining topology/list promotion tail is a true primitive/range splice plus BVH rebuild from the spliced stream.
 
+2026-06-20 mutation-performance follow-up: the dimension-changing geometry fallback now reuses the full geometry pack built while checking resident subimage eligibility instead of running `buildSceneGeometryTextureData(nextScene)` a second time before the resident-storage refresh. Capability stays `fallback-rebuild`; this only removes duplicate CPU work from the current bounded fallback.
+
 #### 2E — pt-webgpu lite tier policy
 
 **For arbitrary glTF 100%:** lite is **not** a target. Policy/code is closed below; keep these rows as regression gates:

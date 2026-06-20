@@ -627,6 +627,7 @@ for (const needle of [
   "pushMaterialAtlasRefreshWarning(",
   "textureRefreshMode: 'resident-storage-respecify'",
   "nativePatchMissing: 'targeted-primitive-geometry-splice'",
+  "const built = geometryRefreshBuild ?? buildSceneGeometryTextureData(nextScene, {",
   "key === 'material' || key === 'castShadow'",
   "materialWithCastShadow(primitive)",
 ]) {

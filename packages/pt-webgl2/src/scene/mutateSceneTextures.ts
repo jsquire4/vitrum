@@ -818,11 +818,13 @@ export function tryFastPathGeometryMutation(
     }
   }
 
+  let geometryRefreshBuild: ReturnType<typeof buildSceneGeometryTextureData> | null = null;
   if (currentMerged != null) {
     const built = buildSceneGeometryTextureData(nextScene, {
       warningPhase: 'mutation',
       warningMethod: 'updatePrimitive',
     });
+    geometryRefreshBuild = built;
     const vertexColorMaterialIdsChanged = !sameNumberSet(
       current.vertexColorMaterialIds,
       built.vertexColorMaterialIds,
@@ -886,7 +888,7 @@ export function tryFastPathGeometryMutation(
     }
   }
 
-  const built = buildSceneGeometryTextureData(nextScene, {
+  const built = geometryRefreshBuild ?? buildSceneGeometryTextureData(nextScene, {
     warningPhase: 'mutation',
     warningMethod: 'updatePrimitive',
   });
