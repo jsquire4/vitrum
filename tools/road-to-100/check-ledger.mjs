@@ -92,6 +92,15 @@ if (road.includes("blue-noise rotation, broader") || road.includes("blue-noise/p
 if (!road.includes("pt-webgpu Sobol now carries a binding-free 8x8 ranked tiled")) {
   fail("road-to-100.md must retain the reconciled pt-webgpu Sobol rotation summary");
 }
+if (road.includes("Remaining work is backend opt-in capability flags, binary-BVH fallback policy")) {
+  fail("road-to-100.md contains stale CWBVH opt-in/fallback/parity pending wording");
+}
+if (!road.includes("pt-webgpu` exposes\n   the explicit full-tier `bvhTraversal:'cwbvh-closest-experimental'` opt-in")) {
+  fail("road-to-100.md must retain the reconciled CWBVH opt-in summary");
+}
+if (!road.includes("zero-delta readback against binary traversal. Remaining work is real\n   equal-scene throughput/memory proof")) {
+  fail("road-to-100.md must retain the reconciled CWBVH throughput-only residual");
+}
 
 const ptWebgpuSource = await readText("packages/pt-webgpu/src/index.ts");
 if (ptWebgpuSource.includes("blue-noise rotation, broader dimension audits")) {

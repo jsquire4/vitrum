@@ -1833,16 +1833,19 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    ReSTIR-PT Sobol variants. Remaining work is broader bounce/lobe/light
    dimension assignment audit and equal-time RMSE convergence proof.
 2. Compressed wide BVH traversal (`WBVH-01`): the shared substrate is now
-   partially landed: `shared-bvh` exports CWBVH-style 8-wide packing, quantized
+   opt-in renderer landed: `shared-bvh` exports CWBVH-style 8-wide packing, quantized
    child bounds, deterministic packed metadata, conservative dequantized bounds
    checks, explicit u16→u32 WGSL upload packing, reordered triangle-payload
    overlay helpers, CPU first-hit/any-hit traversal oracles compared against
    brute force, and WGSL closest/any-hit traversal helpers
    covered by the WebGPU shader/pipeline gate. A standalone WebGPU parity oracle
    now compares the WGSL CWBVH traversal against the CPU oracle for closest-hit,
-   any-hit, and glass-skip cases. Remaining work is backend opt-in capability
-   flags, binary-BVH fallback policy, renderer binary-vs-CWBVH parity tests, and
-   real equal-scene throughput/memory proof.
+   any-hit, root-routed multi-BLAS, and glass-skip cases. `pt-webgpu` exposes
+   the explicit full-tier `bvhTraversal:'cwbvh-closest-experimental'` opt-in,
+   retains binary BVH as the default/fallback policy, advertises a structured
+   capability/warning, and has a `pt/cwbvh-binary-parity` behavioral lane with
+   zero-delta readback against binary traversal. Remaining work is real
+   equal-scene throughput/memory proof before any default promotion.
 
 ### Execution dependency
 
