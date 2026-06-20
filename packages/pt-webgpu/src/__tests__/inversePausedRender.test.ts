@@ -24,6 +24,29 @@ function makeScene(): Scene {
   };
 }
 
+function makeMultiLightScene(): Scene {
+  return {
+    ...makeScene(),
+    emitters: [
+      {
+        kind: 'point',
+        id: 'lamp',
+        position: [0, 1, 1],
+        color: [1, 1, 1],
+        intensity: 2,
+      },
+    ],
+    environment: {
+      kind: 'hdri',
+      hdri: {
+        width: 1,
+        height: 1,
+        data: new Float32Array([1, 1, 1]),
+      },
+    },
+  };
+}
+
 function identityMat(): Float32Array {
   const m = new Float32Array(16);
   m[0] = 1; m[5] = 1; m[10] = 1; m[15] = 1;
@@ -119,6 +142,48 @@ describe('pt-webgpu inverse render while host-paused', () => {
     const after = rec.computePassLabels.filter((label) => label === 'vitrum.pt-webgpu.pathTrace.pass').length;
     expect(after).toBeGreaterThan(before);
     expect(engine.state).toBe('paused');
+
+    session.dispose();
+    engine.dispose();
+  });
+
+  it('downgrades real-engine path replay when sampled direct-light selection has multiple candidates', async () => {
+    const rec: Recorder = { computePassLabels: [] };
+    const warnings: unknown[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeRenderAndReadbackDevice(rec),
+      onWarning: (warning) => warnings.push(warning),
+    });
+    engine.setScene(makeMultiLightScene());
+    engine.renderFrame(frameInput());
+
+    const session = engine.createInverseSession!({
+      target: {
+        data: new Float32Array([0.4, 0.4, 0.4]),
+        width: 1,
+        height: 1,
+        channels: 3,
+      },
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.01, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-light-selection',
+      path: 'materials.panel.baseColor',
+      details: expect.objectContaining({
+        candidateCount: 2,
+        directLighting: 'sampled-selection',
+        candidates: expect.arrayContaining([
+          'emitter:lamp:point',
+          'environment:hdri',
+        ]),
+      }),
+    }));
+    expect(warnings).toEqual([]);
 
     session.dispose();
     engine.dispose();
