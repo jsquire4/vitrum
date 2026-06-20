@@ -69,6 +69,7 @@ import {
   type ResolvedParamTarget,
 } from './optimizer.js';
 import { meshAreaEmitterAdjointRangeForScene } from '../scene/emitterPacking.js';
+import { luminance, readEnvironmentMapPixels } from '@vitrum/shared-samplers';
 
 /** The engine hooks an InverseSession needs. The engine implements these with
  *  private access to its scene + GPU pipeline; the session stays decoupled from
@@ -1519,10 +1520,35 @@ function directEmitterContributes(emitter: {
 
 function environmentContributesDirectLight(environment: {
   readonly kind?: string;
+  readonly hdri?: unknown;
   readonly intensity?: number;
 } | undefined): boolean {
   if (environment == null || environment.kind == null || environment.kind === 'none') return false;
-  return (environment.intensity ?? 1) > 0;
+  if (!((environment.intensity ?? 1) > 0)) return false;
+  if (environment.kind === 'hdri') {
+    return hdriHasPositiveLuminance(environment.hdri);
+  }
+  return true;
+}
+
+function hdriHasPositiveLuminance(handle: unknown): boolean {
+  const hdri = readEnvironmentMapPixels(handle);
+  if (hdri == null) return false;
+  const width = Math.floor(hdri.width);
+  const height = Math.floor(hdri.height);
+  const data = hdri.data;
+  if (width <= 0 || height <= 0 || data.length < width * height * 4) return false;
+  let totalWeight = 0;
+  for (let i = 0; i < width * height; i += 1) {
+    const r = Number(data[i * 4] ?? 0);
+    const g = Number(data[i * 4 + 1] ?? 0);
+    const b = Number(data[i * 4 + 2] ?? 0);
+    const y = (i / width) | 0;
+    const theta = ((y + 0.5) / height) * Math.PI;
+    totalWeight += Math.max(0, luminance(r, g, b) * Math.sin(theta));
+    if (totalWeight > 1e-12) return true;
+  }
+  return false;
 }
 
 function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean {

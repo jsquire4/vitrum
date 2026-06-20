@@ -2667,6 +2667,8 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
 
   it.each([
     ['zero-intensity HDRI', { kind: 'hdri' as const, hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) }, intensity: 0 }],
+    ['unreadable HDRI', { kind: 'hdri' as const, hdri: { opaque: true } }],
+    ['black HDRI', { kind: 'hdri' as const, hdri: { width: 1, height: 1, data: new Float32Array([0, 0, 0, 1]) } }],
     ['zero-intensity procedural sky', {
       kind: 'procedural-sky' as const,
       sunDirection: [0, 1, 0] as [number, number, number],
