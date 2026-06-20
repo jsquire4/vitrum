@@ -112,6 +112,48 @@ const MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS: ReadonlySet<string> = new Set([
   'clearcoatNormalScale',
 ]);
 
+export interface MaterialPatchRepackFields {
+  readonly textureFields: readonly string[];
+  readonly descriptorScalarFields: readonly string[];
+  readonly layerDescriptorFields: readonly string[];
+}
+
+export function materialPatchRepackFields(
+  patch: Partial<ScenePrimitive>,
+): MaterialPatchRepackFields {
+  const mat = patch.material as unknown as Record<string, unknown> | undefined;
+  if (mat == null) {
+    return { textureFields: [], descriptorScalarFields: [], layerDescriptorFields: [] };
+  }
+  const textureFields: string[] = [];
+  const descriptorScalarFields: string[] = [];
+  for (const field of Object.keys(mat)) {
+    if (TEXTURE_MAP_FIELDS.has(field)) textureFields.push(field);
+    if (MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS.has(field)) descriptorScalarFields.push(field);
+  }
+
+  const typedMat = patch.material as Partial<MaterialSpec>;
+  const layerDescriptorFields: string[] = [];
+  if (typedMat.frontLayer?.normalMap != null) layerDescriptorFields.push('frontLayer.normalMap');
+  if (typedMat.frontLayer?.normalScale != null) layerDescriptorFields.push('frontLayer.normalScale');
+  if (typedMat.backLayer?.normalMap != null) layerDescriptorFields.push('backLayer.normalMap');
+  if (typedMat.backLayer?.normalScale != null) layerDescriptorFields.push('backLayer.normalScale');
+
+  return {
+    textureFields: textureFields.sort(),
+    descriptorScalarFields: descriptorScalarFields.sort(),
+    layerDescriptorFields: layerDescriptorFields.sort(),
+  };
+}
+
+function hasMaterialPatchRepackFields(fields: MaterialPatchRepackFields): boolean {
+  return (
+    fields.textureFields.length > 0 ||
+    fields.descriptorScalarFields.length > 0 ||
+    fields.layerDescriptorFields.length > 0
+  );
+}
+
 /**
  * Material-only patch: `material` present and no other facet keys touched.
  *
@@ -128,15 +170,7 @@ export function canFastPathMaterialPatch(
   for (const key of Object.keys(patch)) {
     if (key !== 'material' && key !== 'id' && key !== 'kind') return false;
   }
-  // Reject if any TextureRef field is present in the material patch.
-  const mat = patch.material as unknown as Record<string, unknown>;
-  for (const field of Object.keys(mat)) {
-    if (TEXTURE_MAP_FIELDS.has(field)) return false;
-    if (MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS.has(field)) return false;
-  }
-  const typedMat = patch.material as Partial<MaterialSpec>;
-  if (typedMat.frontLayer?.normalMap != null || typedMat.frontLayer?.normalScale != null) return false;
-  if (typedMat.backLayer?.normalMap != null || typedMat.backLayer?.normalScale != null) return false;
+  if (hasMaterialPatchRepackFields(materialPatchRepackFields(patch))) return false;
   return true;
 }
 

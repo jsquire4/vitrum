@@ -1232,6 +1232,14 @@ Alpha-visibility inverse classifier note (2026-06-20): `inverseSession.ts` now m
 
 2026-06-20 primitive-shadow mutation follow-up: pt-webgl2 `updatePrimitive({ castShadow })` and combined `material + castShadow` patches now ride the material-lane fast path instead of falling back to `setScene()`. `mutateSceneTextures.ts` accepts `castShadow` as a material-lane field, reuses `materialWithCastShadow()`, and `engineContract.test.ts` pins no fallback warning, no GL texture allocation, preserved BVH/position objects, and updated material texture payload.
 
+Same-day pt-webgpu mutation-truth follow-up: material `updatePrimitive()`
+patches that touch texture-map handles or descriptor-resident material fields now
+emit `pt-webgpu.primitive-material-repack` before taking the existing full-scene
+repack path, with structured `textureFields`, `descriptorScalarFields`, and
+`layerDescriptorFields` details. This does not promote those edits to targeted
+native descriptor/texture-array updates; it makes the fallback visible and
+machine-readable for hosts and mutation-matrix proof.
+
 2026-06-20 diagnostic truthfulness follow-up: dimension-changing pt-webgl2 geometry fallbacks now report `nativePatchMissing:"targeted-primitive-geometry-splice"` rather than the misleading old `"targeted-geometry-bvh-refit"` wording. Refit is already the same-topology native path; the remaining topology/list promotion tail is a true primitive/range splice plus BVH rebuild from the spliced stream.
 
 2026-06-20 mutation-performance follow-up: the dimension-changing geometry fallback now reuses the full geometry pack built while checking resident subimage eligibility instead of running `buildSceneGeometryTextureData(nextScene)` a second time before the resident-storage refresh. Capability stays `fallback-rebuild`; this only removes duplicate CPU work from the current bounded fallback.

@@ -10,9 +10,9 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene } from '@vitrum/core';
+import type { EngineWarning, Scene } from '@vitrum/core';
 import { asMat4, asTextureRef } from '@vitrum/core';
-import { canFastPathMaterialPatch } from '../scene/incrementalPatch.js';
+import { canFastPathMaterialPatch, materialPatchRepackFields } from '../scene/incrementalPatch.js';
 import { hasMeshAreaEmitterForPrimitive } from '../scene/emitterPacking.js';
 import {
   applyEmitterCountMutation,
@@ -85,6 +85,22 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     expect(
       canFastPathMaterialPatch({ material: { roughness: 0.2 }, positions: new Float32Array(9) } as never),
     ).toBe(false);
+  });
+
+  it('classifies material fields that require a full descriptor/texture repack', () => {
+    expect(
+      materialPatchRepackFields({
+        material: {
+          baseColorMap: asTextureRef({}),
+          opacity: 0.5,
+          frontLayer: { normalMap: asTextureRef({}), normalScale: 0.25 },
+        },
+      } as never),
+    ).toEqual({
+      textureFields: ['baseColorMap'],
+      descriptorScalarFields: ['opacity'],
+      layerDescriptorFields: ['frontLayer.normalMap', 'frontLayer.normalScale'],
+    });
   });
 });
 
@@ -612,6 +628,55 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directionalAngula
 });
 
 describe('SceneMutationRouter — Phase 5C mutation observability', () => {
+  it('warns when a material texture/descriptor patch falls back to a full scene repack', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'floor',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { host } = makeHostWithEmissiveScene(scene);
+    const warnings: EngineWarning[] = [];
+    const hostWithWarnings: MutationHost = {
+      ...host,
+      warn: vi.fn((warning: EngineWarning) => warnings.push(warning)),
+    };
+    const router = new SceneMutationRouter(hostWithWarnings);
+
+    router.updatePrimitive('floor', {
+      material: {
+        baseColorMap: asTextureRef({ width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) }),
+        opacity: 0.75,
+      },
+    } as never);
+
+    expect(hostWithWarnings.setScene).toHaveBeenCalledTimes(1);
+    expect(hostWithWarnings.setSceneState).not.toHaveBeenCalled();
+    expect(warnings).toEqual([
+      expect.objectContaining({
+        code: 'pt-webgpu.primitive-material-repack',
+        backend: 'pt-webgpu',
+        phase: 'mutation',
+        method: 'updatePrimitive',
+        details: expect.objectContaining({
+          id: 'floor',
+          fallbackReason: 'material-texture-descriptor-repack',
+          nativePatchMissing: 'targeted-material-texture-descriptor-update',
+          textureFields: ['baseColorMap'],
+          descriptorScalarFields: ['opacity'],
+          layerDescriptorFields: [],
+        }),
+      }),
+    ]);
+  });
+
   it('updateEmitter writes the emitter buffer, commits scene state, and resets accumulation', () => {
     const scene: Scene = {
       primitives: [

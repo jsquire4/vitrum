@@ -39,6 +39,7 @@ import {
   canFastPathTopologyResizePatch,
   canFastPathTransformPatch,
   canReuseTlasBufferLengths,
+  materialPatchRepackFields,
   materialIndexForPrimitive,
 } from './scene/incrementalPatch.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
@@ -677,6 +678,31 @@ export class SceneMutationRouter {
       }
       host.reset();
       return;
+    }
+    const repackFields = materialPatchRepackFields(fastPathPatch);
+    if (
+      repackFields.textureFields.length > 0 ||
+      repackFields.descriptorScalarFields.length > 0 ||
+      repackFields.layerDescriptorFields.length > 0
+    ) {
+      warnHost(host, {
+        code: 'pt-webgpu.primitive-material-repack',
+        backend: 'pt-webgpu',
+        phase: 'mutation',
+        method: 'updatePrimitive',
+        message:
+          `[vitrum/pt-webgpu] updatePrimitive("${id}") material patch touches ` +
+          'texture-map or descriptor-resident fields, so the backend is using a full scene repack ' +
+          'to keep material descriptors and texture arrays coherent.',
+        details: {
+          id,
+          fallbackReason: 'material-texture-descriptor-repack',
+          nativePatchMissing: 'targeted-material-texture-descriptor-update',
+          textureFields: repackFields.textureFields,
+          descriptorScalarFields: repackFields.descriptorScalarFields,
+          layerDescriptorFields: repackFields.layerDescriptorFields,
+        },
+      });
     }
     host.setScene(nextScene);
   }
