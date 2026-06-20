@@ -1544,18 +1544,22 @@ function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string
   const out: string[] = [];
   if (m.transmissionMap != null) out.push('transmissionMap');
   if (m.thicknessMap != null) out.push('thicknessMap');
-  if (m.alphaMap != null) out.push('alphaMap');
+  if (pathReplayAlphaMapAffectsVisibility(m)) out.push('alphaMap');
   if (m.displacementMap != null) out.push('displacementMap');
   return out;
 }
 
 function listPathReplayPrimaryEmissionUnsupportedMaps(m: MaterialSpec): readonly string[] {
   const out: string[] = [];
-  if (m.alphaMap != null) out.push('alphaMap');
+  if (pathReplayAlphaMapAffectsVisibility(m)) out.push('alphaMap');
   if (m.displacementMap != null) out.push('displacementMap');
   if (m.transmissionMap != null) out.push('transmissionMap');
   if (m.thicknessMap != null) out.push('thicknessMap');
   return out;
+}
+
+function pathReplayAlphaMapAffectsVisibility(m: MaterialSpec): boolean {
+  return m.alphaMap != null && (m.alphaMode ?? 'opaque') !== 'opaque';
 }
 
 // ── path resolution / field validation ────────────────────────────────────────

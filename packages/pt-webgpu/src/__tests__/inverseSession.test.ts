@@ -1388,7 +1388,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps alpha-mapped emissive params on finite-difference because visibility is not replayed', () => {
+  it('keeps alpha-coverage emissive params on finite-difference because visibility is not replayed', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -1399,6 +1399,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
               material: {
                 ...pr.material,
                 emissive: [1, 1, 1],
+                alphaMode: 'mask',
                 alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
               },
             }
@@ -1416,8 +1417,8 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       code: 'path-replay-unsupported-visibility',
       path: 'materials.panel.emissive',
       details: expect.objectContaining({
+        field: 'alphaMode',
         finiteDifferenceReason: 'visibility',
-        unsupportedMaterialFields: expect.arrayContaining(['alphaMap']),
       }),
     }));
     session.dispose();
@@ -2425,11 +2426,39 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when an alpha map is dormant under opaque alphaMode', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'opaque',
+                alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([0.25, 0.25, 0.25, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it.each([
     ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility', 'visibility'],
     ['blend opacity', { alphaMode: 'blend' as const, opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport', 'transport'],
-    ['alpha map', { alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
+    ['alpha map', { alphaMode: 'mask' as const, alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
     ['thickness map', { thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
     ['displacement map', { displacementMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-material', 'geometry'],
