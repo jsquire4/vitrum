@@ -2700,6 +2700,133 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     ]));
   });
 
+  it('reports malformed material texture references with compatibility source paths', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0] = {
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 99 },
+        metallicRoughnessTexture: { index: 1 },
+      },
+      normalTexture: { index: 2 },
+      occlusionTexture: { index: 3 },
+      emissiveTexture: { index: 4 },
+    };
+    gltf.textures = [
+      { source: 0 },
+      {},
+      { source: 99 },
+      { source: 1 },
+      { source: 2 },
+    ];
+    gltf.images = [
+      { uri: 'textures/albedo.png', mimeType: 'image/png' },
+      { mimeType: 'image/png' },
+      { bufferView: 99, mimeType: 'image/png' },
+    ];
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.textureReferenceIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'missing-texture',
+        materialField: 'baseColorMap',
+        textureIndex: 99,
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture.index',
+      }),
+      expect.objectContaining({
+        kind: 'missing-texture-source',
+        materialField: 'roughnessMap',
+        textureIndex: 1,
+        path: 'textures[1].source',
+      }),
+      expect.objectContaining({
+        kind: 'missing-image',
+        materialField: 'normalMap',
+        textureIndex: 2,
+        imageIndex: 99,
+        path: 'textures[2].source',
+      }),
+      expect.objectContaining({
+        kind: 'missing-image-source',
+        materialField: 'aoMap',
+        textureIndex: 3,
+        imageIndex: 1,
+        path: 'images[1]',
+      }),
+      expect.objectContaining({
+        kind: 'missing-image-buffer-view',
+        materialField: 'emissiveMap',
+        textureIndex: 4,
+        imageIndex: 2,
+        bufferViewIndex: 99,
+        path: 'images[2].bufferView',
+      }),
+    ]));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'material',
+        name: 'baseColorMap.textureRef.missing-texture',
+        support: 'approximate',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture.index',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'roughnessMap.textureRef.missing-texture-source',
+        support: 'approximate',
+        path: 'textures[1].source',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'normalMap.textureRef.missing-image',
+        support: 'approximate',
+        path: 'textures[2].source',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'aoMap.textureRef.missing-image-source',
+        support: 'approximate',
+        path: 'images[1]',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'emissiveMap.textureRef.missing-image-buffer-view',
+        support: 'approximate',
+        path: 'images[2].bufferView',
+      }),
+    ]));
+  });
+
+  it('reports extension-only material texture sources as host-hook requirements', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.extensionsUsed = ['EXT_texture_webp'];
+    gltf.textures = [{
+      extensions: { EXT_texture_webp: { source: 0 } },
+    }];
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.textureReferenceIssues).toEqual([expect.objectContaining({
+      kind: 'disabled-texture-source-extension',
+      materialField: 'baseColorMap',
+      textureIndex: 0,
+      path: 'textures[0].extensions.EXT_texture_webp',
+      textureSourceExtensions: ['EXT_texture_webp'],
+    })]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'material',
+        name: 'baseColorMap.textureRef.disabled-texture-source-extension',
+        support: 'requires-hook',
+        path: 'textures[0].extensions.EXT_texture_webp',
+      }),
+    ]));
+
+    const selectedReport = analyzeGltfAsset(gltf, { textureSourceExtensions: ['EXT_texture_webp'] });
+    expect(selectedReport.materials.textureReferenceIssues).toEqual([]);
+  });
+
   it('uses the backend promise ledger to rank textured assets by fidelity tier', () => {
     const report = analyzeGltfAsset(makeExternalTexturedGltf());
     const ranked = rankGltfBackends(report, 'fidelity');

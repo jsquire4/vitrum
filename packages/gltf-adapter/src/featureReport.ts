@@ -118,6 +118,7 @@ export interface GltfMaterialFeatureReport {
   readonly textureFields: readonly (keyof MaterialSpec)[];
   readonly samplerPolicies: readonly GltfTextureSamplerPolicyUse[];
   readonly malformedSamplerPolicies: readonly GltfMalformedTextureSamplerPolicyUse[];
+  readonly textureReferenceIssues: readonly GltfMaterialTextureReferenceIssue[];
   readonly extensions: readonly string[];
   readonly unsupportedKnownExtensions: readonly string[];
   readonly alphaModes: readonly string[];
@@ -161,6 +162,25 @@ export interface GltfMalformedTextureSamplerPolicyUse {
   readonly materialPath: string;
   readonly path: string;
   readonly value?: number;
+}
+
+export type GltfMaterialTextureReferenceIssueKind =
+  | 'missing-texture'
+  | 'disabled-texture-source-extension'
+  | 'missing-texture-source'
+  | 'missing-image'
+  | 'missing-image-source'
+  | 'missing-image-buffer-view';
+
+export interface GltfMaterialTextureReferenceIssue {
+  readonly kind: GltfMaterialTextureReferenceIssueKind;
+  readonly materialField: keyof MaterialSpec;
+  readonly textureIndex: number;
+  readonly materialPath: string;
+  readonly path: string;
+  readonly imageIndex?: number;
+  readonly bufferViewIndex?: number;
+  readonly textureSourceExtensions?: readonly GltfTextureSourceExtensionName[];
 }
 
 export interface GltfAnimationFeatureReport {
@@ -447,7 +467,7 @@ export function analyzeGltfAsset(
   const extensions = analyzeExtensions(gltf, selectedTextureSourceExtensions, sceneScope);
   const resources = analyzeResources(gltf);
   const primitives = analyzePrimitives(gltf, sceneScope);
-  const materials = analyzeMaterials(gltf, sceneScope);
+  const materials = analyzeMaterials(gltf, sceneScope, selectedTextureSourceExtensions);
   const animations = analyzeAnimations(gltf, sceneScope);
   const punctualLights = sceneScope?.punctualLightIndices.size ?? extractPunctualLightCount(gltf);
   const cameraPaths = sceneScope === undefined
@@ -813,6 +833,19 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  for (const textureIssue of report.materials.textureReferenceIssues) {
+    const field = textureIssue.materialField;
+    const fieldSupport = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
+    if (fieldSupport === 'unsupported') continue;
+    addIssue({
+      category: 'material',
+      name: `${String(field)}.textureRef.${textureIssue.kind}`,
+      support: materialTextureReferenceIssueSupport(textureIssue),
+      path: textureIssue.path,
+      message: materialTextureReferenceIssueMessage(profile.id, textureIssue),
+    });
+  }
+
   if (report.materials.textureFields.includes('emissiveMap')) {
     const support = profile.materialOverrides?.emissiveMap ?? ledger.supportDetails.materials.emissiveMap ?? 'unknown';
     if (support === 'native' || support === 'approximate') {
@@ -921,6 +954,53 @@ function malformedSamplerPolicyMessage(
     `glTF material texture "${String(issue.materialField)}" has malformed sampler value ` +
     `${String(issue.value)} at ${issue.path}; backend profile ${profileId} imports the texture with default/fallback ` +
     `sampler settings for that material path (${issue.materialPath}).`
+  );
+}
+
+function materialTextureReferenceIssueSupport(
+  issue: GltfMaterialTextureReferenceIssue,
+): BackendSupportMode | 'requires-hook' {
+  return issue.kind === 'disabled-texture-source-extension' ? 'requires-hook' : 'approximate';
+}
+
+function materialTextureReferenceIssueMessage(
+  profileId: GltfBackendProfileId,
+  issue: GltfMaterialTextureReferenceIssue,
+): string {
+  if (issue.kind === 'missing-texture') {
+    return (
+      `glTF material texture "${String(issue.materialField)}" references missing texture index ` +
+      `${issue.textureIndex} at ${issue.path}; backend profile ${profileId} imports the material without that texture.`
+    );
+  }
+  if (issue.kind === 'disabled-texture-source-extension') {
+    return (
+      `glTF material texture "${String(issue.materialField)}" at ${issue.materialPath} has no base texture.source ` +
+      `and only provides ${issue.textureSourceExtensions?.join(', ') ?? 'texture-source extension'} image sources; ` +
+      `backend profile ${profileId} needs a host texture-source decode hook or it imports the material without that texture.`
+    );
+  }
+  if (issue.kind === 'missing-texture-source') {
+    return (
+      `glTF material texture "${String(issue.materialField)}" references textures[${issue.textureIndex}], ` +
+      `but that texture has no image source at ${issue.path}; backend profile ${profileId} imports the material without that texture.`
+    );
+  }
+  if (issue.kind === 'missing-image') {
+    return (
+      `glTF material texture "${String(issue.materialField)}" references image ${String(issue.imageIndex)} at ` +
+      `${issue.path}, but that image is missing; backend profile ${profileId} imports the material without that texture.`
+    );
+  }
+  if (issue.kind === 'missing-image-source') {
+    return (
+      `glTF material texture "${String(issue.materialField)}" resolves to image ${String(issue.imageIndex)}, ` +
+      `but the image has neither uri nor bufferView at ${issue.path}; backend profile ${profileId} imports the material without that texture.`
+    );
+  }
+  return (
+    `glTF material texture "${String(issue.materialField)}" resolves to image ${String(issue.imageIndex)}, ` +
+    `but image bufferView ${String(issue.bufferViewIndex)} is missing at ${issue.path}; backend profile ${profileId} imports the material without that texture.`
   );
 }
 
@@ -1609,6 +1689,7 @@ function materialTextureUvSets(material: GltfMaterial): ReadonlySet<number> {
 function analyzeMaterials(
   gltf: GltfJson,
   sceneScope: GltfSceneReachability | undefined,
+  selectedTextureSourceExtensions: ReadonlySet<string>,
 ): GltfMaterialFeatureReport {
   const materials = gltf.materials ?? [];
   const materialEntries = [...materials.entries()].filter(([materialIndex]) =>
@@ -1618,6 +1699,7 @@ function analyzeMaterials(
   const textureFields = new Set<keyof MaterialSpec>();
   const samplerPolicies: GltfTextureSamplerPolicyUse[] = [];
   const malformedSamplerPolicies: GltfMalformedTextureSamplerPolicyUse[] = [];
+  const textureReferenceIssues: GltfMaterialTextureReferenceIssue[] = [];
   const extensions = new Set<string>();
   const unsupportedKnownExtensions = new Set<string>();
   const alphaModes = new Set<string>();
@@ -1643,6 +1725,13 @@ function analyzeMaterials(
     const samplerPolicy = textureSamplerPolicyUse(gltf, field, info, path);
     if (samplerPolicy !== null) samplerPolicies.push(samplerPolicy);
     malformedSamplerPolicies.push(...textureMalformedSamplerPolicyUses(gltf, field, info, path));
+    textureReferenceIssues.push(...materialTextureReferenceIssues(
+      gltf,
+      field,
+      info,
+      path,
+      selectedTextureSourceExtensions,
+    ));
     const uvSet = textureInfoUvSet(info);
     uvSets.add(uvSet);
     if (currentMaterialIndex >= 0) {
@@ -1803,6 +1892,9 @@ function analyzeMaterials(
     malformedSamplerPolicies: malformedSamplerPolicies.sort((a, b) =>
       a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),
     ),
+    textureReferenceIssues: textureReferenceIssues.sort((a, b) =>
+      a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),
+    ),
     extensions: sorted(extensions),
     unsupportedKnownExtensions: sorted(unsupportedKnownExtensions),
     alphaModes: sorted(alphaModes),
@@ -1916,6 +2008,111 @@ function textureMalformedSamplerPolicyUses(
     });
   }
   return issues;
+}
+
+function materialTextureReferenceIssues(
+  gltf: GltfJson,
+  materialField: keyof MaterialSpec,
+  info: GltfTextureInfo,
+  materialPath: string,
+  selectedTextureSourceExtensions: ReadonlySet<string>,
+): GltfMaterialTextureReferenceIssue[] {
+  const texture = gltf.textures?.[info.index];
+  if (texture == null) {
+    return [{
+      kind: 'missing-texture',
+      materialField,
+      textureIndex: info.index,
+      materialPath,
+      path: `${materialPath}.index`,
+    }];
+  }
+
+  const selectedSource = selectMaterialTextureImageSourceForReport(texture, info.index, selectedTextureSourceExtensions);
+  if (selectedSource === undefined) {
+    const availableExtensions = availableTextureSourceExtensions(texture);
+    if (availableExtensions.length > 0) {
+      return [{
+        kind: 'disabled-texture-source-extension',
+        materialField,
+        textureIndex: info.index,
+        materialPath,
+        path: availableExtensions.length === 1
+          ? `textures[${info.index}].extensions.${availableExtensions[0]}`
+          : `textures[${info.index}].extensions`,
+        textureSourceExtensions: availableExtensions,
+      }];
+    }
+    return [{
+      kind: 'missing-texture-source',
+      materialField,
+      textureIndex: info.index,
+      materialPath,
+      path: `textures[${info.index}].source`,
+    }];
+  }
+
+  const image = gltf.images?.[selectedSource.imageIndex];
+  if (image == null) {
+    return [{
+      kind: 'missing-image',
+      materialField,
+      textureIndex: info.index,
+      materialPath,
+      path: selectedSource.path,
+      imageIndex: selectedSource.imageIndex,
+    }];
+  }
+  if (image.bufferView !== undefined && gltf.bufferViews?.[image.bufferView] == null) {
+    return [{
+      kind: 'missing-image-buffer-view',
+      materialField,
+      textureIndex: info.index,
+      materialPath,
+      path: `images[${selectedSource.imageIndex}].bufferView`,
+      imageIndex: selectedSource.imageIndex,
+      bufferViewIndex: image.bufferView,
+    }];
+  }
+  if (image.uri === undefined && image.bufferView === undefined) {
+    return [{
+      kind: 'missing-image-source',
+      materialField,
+      textureIndex: info.index,
+      materialPath,
+      path: `images[${selectedSource.imageIndex}]`,
+      imageIndex: selectedSource.imageIndex,
+    }];
+  }
+  return [];
+}
+
+function selectMaterialTextureImageSourceForReport(
+  texture: NonNullable<GltfJson['textures']>[number],
+  textureIndex: number,
+  selectedTextureSourceExtensions: ReadonlySet<string>,
+): { readonly imageIndex: number; readonly path: string } | undefined {
+  for (const extension of TEXTURE_SOURCE_EXTENSION_NAMES) {
+    if (!selectedTextureSourceExtensions.has(extension)) continue;
+    const source = texture.extensions?.[extension]?.source;
+    if (source !== undefined) {
+      return {
+        imageIndex: source,
+        path: `textures[${textureIndex}].extensions.${extension}.source`,
+      };
+    }
+  }
+  return texture.source !== undefined
+    ? { imageIndex: texture.source, path: `textures[${textureIndex}].source` }
+    : undefined;
+}
+
+function availableTextureSourceExtensions(
+  texture: NonNullable<GltfJson['textures']>[number],
+): readonly GltfTextureSourceExtensionName[] {
+  return TEXTURE_SOURCE_EXTENSION_NAMES.filter((extension) =>
+    texture.extensions?.[extension]?.source !== undefined
+  );
 }
 
 function isGltfWrapMode(value: number): boolean {

@@ -715,7 +715,16 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
         mimeType: 'image/webp',
       }),
     ]);
-    expect(webgl2.requiresHookCount).toBe(2);
+    expect(report.materials.textureReferenceIssues).toEqual([
+      expect.objectContaining({
+        kind: 'disabled-texture-source-extension',
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        path: 'textures[0].extensions.EXT_texture_webp',
+        textureSourceExtensions: ['EXT_texture_webp'],
+      }),
+    ]);
+    expect(webgl2.requiresHookCount).toBe(3);
     expect(webgl2.unsupportedCount).toBe(0);
     expect(webgl2.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -727,6 +736,12 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
       expect.objectContaining({
         category: 'extension',
         name: 'EXT_texture_webp',
+        support: 'requires-hook',
+        path: 'textures[0].extensions.EXT_texture_webp',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'baseColorMap.textureRef.disabled-texture-source-extension',
         support: 'requires-hook',
         path: 'textures[0].extensions.EXT_texture_webp',
       }),
