@@ -302,6 +302,21 @@ const MATERIAL_LOBE_MAP_GOLDEN = {
   },
 };
 
+const TRANSPARENT_OIT_GOLDEN = {
+  path: "tools/reference-renders/wh-transparent-oit-behavioral/wh-transparent-oit.png",
+  maxRmse: 8,
+  maxMeanAbs: 4,
+  maxAbs: 48,
+  variants: {
+    "dzn-full": {
+      path: "tools/reference-renders/wh-transparent-oit-behavioral/wh-transparent-oit.dzn-full.png",
+      maxRmse: 8,
+      maxMeanAbs: 4,
+      maxAbs: 48,
+    },
+  },
+};
+
 function goldenForProof(proof) {
   const variant = goldenVariant ? proof.variants?.[goldenVariant] : null;
   const selected = variant ?? proof;
@@ -2051,9 +2066,10 @@ function hasNaN(pixels) {
   return false;
 }
 
-const GLTF_GOLDENS = {
+const BEHAVIORAL_GOLDENS = {
   "pt/material-lobes": selectGolden(MATERIAL_LOBE_GOLDEN),
   "pt/material-lobe-maps": selectGolden(MATERIAL_LOBE_MAP_GOLDEN),
+  "wh/transparent-oit": selectGolden(TRANSPARENT_OIT_GOLDEN),
   [GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label]: {
     path: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath,
     maxRmse: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds.maxRmse,
@@ -2098,7 +2114,7 @@ function comparePixels(candidate, baseline) {
 }
 
 async function compareOrUpdateGolden(label, pixels) {
-  const golden = GLTF_GOLDENS[label];
+  const golden = BEHAVIORAL_GOLDENS[label];
   if (!golden) return null;
 
   if (updateGoldens) {
@@ -2567,8 +2583,17 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
 
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
-  const rawStatus = nans ? "NaN" : (errCount > 0 ? "GPU-ERROR" : (lum < LUM_THRESHOLD ? "BLACK" : "OK"));
-  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg };
+  const golden = (!nans && errCount === 0 && lum >= LUM_THRESHOLD)
+    ? await compareOrUpdateGolden(label, pixels)
+    : null;
+  const rawStatus = nans
+    ? "NaN"
+    : (errCount > 0
+      ? "GPU-ERROR"
+      : (lum < LUM_THRESHOLD
+        ? "BLACK"
+        : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK")));
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden };
 }
 
 // ── Self-test config (injected when --self-test) ───────────────────────────────
@@ -2671,12 +2696,14 @@ for (const cfg of whConfigs) {
   results.push(r);
   const { pass, note } = checkExpectation(r.label, r.rawStatus, r.lum, r.errCount, r.nans);
   const marker = pass ? "PASS" : "FAIL";
+  const goldenDetail = formatGolden(r.golden);
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
     : r.gpuErrorMsg
       ? `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
     : `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
-  console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detail}${note ? " | " + note : ""}`);
+  const detailWithGolden = goldenDetail ? `${detail} | ${goldenDetail}` : detail;
+  console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detailWithGolden}${note ? " | " + note : ""}`);
 }
 
 // ── Self-test mode ────────────────────────────────────────────────────────────

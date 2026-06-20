@@ -374,9 +374,22 @@ function walkaroundShardStatuses() {
     totalConfigs: 1,
     failures: 0,
     configs: [
-      { label, verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+      walkaroundExpectedConfig(label),
     ],
   }));
+}
+
+function walkaroundExpectedConfig(label) {
+  const base = { label, verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 };
+  if (label !== "wh/transparent-oit") return base;
+  return {
+    ...base,
+    goldenStatus: "ok",
+    goldenVariant: "dzn-full",
+    maxRmse: 8,
+    maxMeanAbs: 4,
+    maxAbs: 48,
+  };
 }
 
 function slug(value) {

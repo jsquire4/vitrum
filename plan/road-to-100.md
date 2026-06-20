@@ -1811,11 +1811,10 @@ sharded into eleven committed per-label artifacts:
 Each shard was rerun on dzn and passed with finite non-black output, zero GPU
 errors, and `nan:false`; `npm run behavioral-gate:dzn-status-check` verifies the
 shards, so the validation evidence no longer depends on one monolithic
-aggregate. The new `wh/transparent-oit` shard exercises a fractional
-`alphaMode:'blend'` pane with sun, point-light, and finite-area lighting, and
-keeps the structured warning that this is camera-visible OIT composition rather
-than true layered ReSTIR/GI transport.
-15-minute-plus host run.
+aggregate. The `wh/transparent-oit` shard now compares that fractional
+`alphaMode:'blend'` pane against a committed `dzn-full` PNG golden after sun,
+point-light, and finite-area lighting; it keeps the structured warning that this
+is camera-visible OIT composition rather than true layered ReSTIR/GI transport.
 
 ---
 

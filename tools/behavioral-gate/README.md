@@ -83,7 +83,10 @@ boot/render health for `pt/caustic-manifold`, `pt/caustic-photon`, and
 proof. The material-lobes lanes pin full-tier scalar and map-backed clearcoat,
 sheen, iridescence, anisotropy, and specular panels against committed dzn
 goldens; specialty-integrator radiometry and promotion remain separate proof
-work. The light, directional, HDRI, and procedural-sky lanes pin dzn execution
+work. The `wh/transparent-oit` shard pins its camera-visible fractional blend
+scene against a committed `dzn-full` PNG golden while keeping true transparent
+ReSTIR/GI transport intentionally approximate. The light, directional, HDRI, and
+procedural-sky lanes pin dzn execution
 for analytic emitters and environment modes across the relevant pt-webgpu
 full/lite and walkaround rows; reference-quality radiometric sweeps remain
 separate. The `wh/` lane pins all eleven walkaround behavioral rows on dzn,
@@ -168,14 +171,14 @@ before any golden update/compare if the backend resolves to lite.
 | `wh/rect-area-emitter` | — | rect-area ceiling light |
 | `wh/directional-sun` | `primaryLightDir, primaryLightIntensity` | direct sun NEE |
 | `wh/glass-gi` | — | refracted GI through glass |
-| `wh/transparent-oit` | `primaryLightDir, primaryLightIntensity` | fractional alpha-blend transparent composition |
+| `wh/transparent-oit` | `primaryLightDir, primaryLightIntensity` | fractional alpha-blend transparent composition + dzn-full golden PNG |
 
 ## Assertions per config
 
 1. **Zero GPU errors** — no validation or out-of-memory errors from the device error scopes.
 2. **Finite pixels** — no NaN values in the readback.
 3. **Non-black output** — mean luminance ≥ 0.005 (after 8 frames at 64×64).
-4. **Per-lane invariants** — e.g. glTF golden PNG tolerance checks and
+4. **Per-lane invariants** — e.g. glTF / transparent-OIT golden PNG tolerance checks and
    mutation-lane readback deltas.
 
 All required checks for a lane must pass for a result of `OK`.

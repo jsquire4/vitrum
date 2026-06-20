@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (validation evidence, 2026-06-20)
+
+- **Walkaround transparent OIT now has a committed dzn-full golden proof:** `tools/behavioral-gate` runs `wh/transparent-oit` through the shared PNG golden comparator, commits the 64x64 camera-visible fractional alpha-blend fixture under `tools/reference-renders/wh-transparent-oit-behavioral/`, and requires the dzn status artifact to report `golden=ok variant=dzn-full`. This is visual stability proof for OIT composition, not a promotion of true transparent ReSTIR/GI transport.
+
 ### Fixed (implementation truthfulness wave, 2026-06-18)
 
 - **Scoped primary-hit inverse path replay now admits already-mirrored terms:** `@vitrum/pt-webgpu` no longer downgrades unlit `emissive` / `emissiveIntensity`, camera-direct emissive/light-map fits with normal-only maps, or unlit `aoMapIntensity` with irrelevant BRDF lobe flags. These terms are primary-hit or local base-color-chain derivatives already mirrored by `adjointPass`; alpha, displacement, transmission/thickness, layered/volume/spectral, environment, indirect, and true normal-transport cases remain finite-difference or proof tails.
