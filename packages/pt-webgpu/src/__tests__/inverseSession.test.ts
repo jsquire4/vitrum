@@ -2300,6 +2300,57 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it.each([
+    ['normalScale', {
+      normalScale: 0.8,
+      normalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.7, 0.45, 1, 1]) } },
+    }],
+    ['bumpScale', {
+      bumpScale: 0.7,
+      bumpMap: { handle: { width: 2, height: 1, data: new Float32Array([0.1, 0, 0, 1, 0.9, 0, 0, 1]) } },
+    }],
+    ['clearcoatNormalScale', {
+      clearcoat: 0.65,
+      clearcoatNormalScale: 0.6,
+      clearcoatNormalMap: { handle: { width: 1, height: 1, data: new Float32Array([0.7, 0.45, 1, 1]) } },
+    }],
+  ])('keeps %s on path-replay when receiver materials use replayed iridescence maps', (field, patch) => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                ...patch,
+                iridescence: 0.65,
+                iridescenceIor: 1.45,
+                iridescenceThicknessRange: [120, 420],
+                iridescenceMap: { handle: { width: 1, height: 1, data: new Float32Array([0.75, 1, 1, 1]) } },
+                iridescenceThicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 0.5, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: `materials.panel.${field}`, kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      path: `materials.panel.${field}`,
+    }));
+    session.dispose();
+  });
+
   it('keeps envMapIntensity on scoped path-replay for direct HDRI environment NEE', () => {
     const fake = makeFakeEngine();
     fake.scene = {

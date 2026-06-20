@@ -1267,7 +1267,7 @@ function materialIssueForNormalScale(
   if (material.shadingModel === 'unlit') {
     return { message: 'unlit materials do not evaluate the normal-mapped direct-light lobe', details: { reason: 'unlit' } };
   }
-  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
@@ -1282,7 +1282,7 @@ function materialIssueForBumpScale(
   if (material.shadingModel === 'unlit') {
     return { message: 'unlit materials do not evaluate the bump-mapped direct-light lobe', details: { reason: 'unlit' } };
   }
-  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
