@@ -42,8 +42,10 @@ npm run behavioral-gate:dzn -- --filter gltf --require-full-tier
 
 # The dzn wrapper writes a filter-specific status artifact on PASS and
 # fail-closes long host hangs as HOST-BLOCKED, for example
-# behavioral-gate-dzn-gltf-status.json for --filter gltf. Override the default
-# 180s budget when deliberately collecting a slower full-tier lane:
+# behavioral-gate-dzn-gltf-status.json for --filter gltf. Slow walkaround proof
+# should be collected as per-label shards such as --filter wh/default rather
+# than one broad --filter wh/ aggregate. Override the default 180s budget when
+# deliberately collecting a slower full-tier lane:
 VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS=600000 \
   npm run behavioral-gate:dzn -- --filter gltf --require-full-tier
 
@@ -55,13 +57,13 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
 ```
 
-The committed dzn status set includes twenty passing focused artifacts
-(`gltf-material-sweep`, `mutation`, `default`, `lite-tier`, `spectral`,
-`sobol-default`, `sobol-bdpt`, `sobol-lite`, `sobol-restirPtReuse`, `skinned`,
-`analytic`, `bdpt`, `restirPtReuse`, `caustic`, `photon`, `light`, `directional`,
-`hdri`, `procedural-sky`, `wh/`) plus the broader `--filter gltf` full-suite lane.
-Together they cover every real behavioral-gate label; the only uncovered label is
-the synthetic `__self-test/always-black` failure-injection row.
+The committed dzn status set includes the broader `--filter gltf` full-suite
+lane, focused pt-webgpu/light/mutation artifacts, and ten walkaround shards
+(`wh/default`, `wh/rcEnabled`, `wh/ppgEnabled`, `wh/gtao-off`,
+`wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`, `wh/rect-area-emitter`,
+`wh/directional-sun`, `wh/glass-gi`). Together they cover every real
+behavioral-gate label; the only uncovered label is the synthetic
+`__self-test/always-black` failure-injection row.
 The broad glTF status confirms full-tier execution with zero GPU errors for all
 selected glTF lanes; real-asset comparisons use the explicit `dzn-full` golden
 variant under `tools/reference-renders/gltf-real-behavioral-dzn-full/`. The

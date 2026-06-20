@@ -278,28 +278,7 @@ const EXPECTED = [
       { label: "pt/procedural-sky", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
     ],
   },
-  {
-    path: "tools/behavioral-gate/behavioral-gate-dzn-wh-status.json",
-    command: "npm run behavioral-gate:dzn -- --filter wh/ --require-full-tier",
-    filter: "wh/",
-    goldenVariant: "dzn-full",
-    verdict: "PASS",
-    exitStatus: 0,
-    totalConfigs: 10,
-    failures: 0,
-    configs: [
-      { label: "wh/default", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/rcEnabled", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/ppgEnabled", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/gtao-off", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/checkerboard", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/skinned-mesh", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/hdri-env", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/rect-area-emitter", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/directional-sun", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-      { label: "wh/glass-gi", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
-    ],
-  },
+  ...walkaroundShardStatuses(),
   {
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-status.json",
     command: "npm run behavioral-gate:dzn -- --filter gltf --require-full-tier",
@@ -324,6 +303,38 @@ const EXPECTED = [
     ],
   },
 ];
+
+function walkaroundShardStatuses() {
+  const labels = [
+    "wh/default",
+    "wh/rcEnabled",
+    "wh/ppgEnabled",
+    "wh/gtao-off",
+    "wh/checkerboard",
+    "wh/skinned-mesh",
+    "wh/hdri-env",
+    "wh/rect-area-emitter",
+    "wh/directional-sun",
+    "wh/glass-gi",
+  ];
+  return labels.map((label) => ({
+    path: `tools/behavioral-gate/behavioral-gate-dzn-${slug(label)}-status.json`,
+    command: `npm run behavioral-gate:dzn -- --filter ${label} --require-full-tier`,
+    filter: label,
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label, verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 },
+    ],
+  }));
+}
+
+function slug(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "filtered";
+}
 
 function fail(message) {
   throw new Error(`[behavioral-gate-dzn-status-check] ${message}`);
@@ -448,4 +459,7 @@ if (missingLabels.length > 0) {
   fail(`missing committed dzn status coverage for ${missingLabels.join(", ")}`);
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (21 committed dzn status artifacts; all regular gate labels covered; focused labels are covered by their own proof checks)");
+console.log(
+  `[behavioral-gate-dzn-status-check] PASS (${EXPECTED.length} committed dzn status artifacts; ` +
+  "all regular gate labels covered; focused labels are covered by their own proof checks)",
+);

@@ -401,11 +401,16 @@ replacement for V28-B recaptures.
   cover pt-webgpu point/disc/spot/directional emitters, pt-webgpu HDRI and
   procedural-sky environments, the matching lite point/HDRI rows, and walkaround
   directional-sun/HDRI rows. Reference-quality radiometric sweeps remain.
-- Walkaround behavioral dzn proof. The broad `wh/` status artifact now covers
-  all ten walkaround behavioral rows on dzn with zero GPU errors. The run found
-  and fixed an RC-only validation bug: the RC material atlas/meta bindings were
-  declared filterable even though their `rgba32float` textures are
-  unfilterable and read only with `textureLoad`.
+- Walkaround behavioral dzn proof. The old broad `--filter wh/` aggregate now
+  times out on this WSL/dzn host before all ten rows finish, so the durable proof
+  is sharded per row: `wh/default`, `wh/rcEnabled`, `wh/ppgEnabled`,
+  `wh/gtao-off`, `wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`,
+  `wh/rect-area-emitter`, `wh/directional-sun`, and `wh/glass-gi` each have a
+  committed PASS status artifact with zero GPU errors. The dzn status checker
+  verifies those shard artifacts instead of requiring the fragile monolithic
+  run. The original broad run had found and fixed an RC-only validation bug: the
+  RC material atlas/meta bindings were declared filterable even though their
+  `rgba32float` textures are unfilterable and read only with `textureLoad`.
 - pt-webgpu full-tier material-furnace/reference-render sweeps. WSL lavapipe is
   adapter-limited for this lane (`maxStorageBuffersPerShaderStage=8`; full tier
   requires 34); use `behavioral-gate:dzn`, browser, or another real/full-tier
