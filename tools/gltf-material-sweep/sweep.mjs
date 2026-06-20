@@ -43,7 +43,7 @@ function assertExpectedSamplerCompatibility(compatibility) {
       const textureIndex = FIELD_TEXTURE_INDEX.get(field);
       if (textureIndex === undefined) continue;
       const policy = expectedSamplerPolicy(textureIndex);
-      if (!samplerPolicyIsNativeForBackend(backendSummary.backend, policy)) {
+      if (!samplerPolicyIsNativeForBackend(backendSummary.backend, policy, field)) {
         expected.add(`${field}.samplerPolicy:approximate:samplers[${textureIndex}].minFilter`);
       }
     }

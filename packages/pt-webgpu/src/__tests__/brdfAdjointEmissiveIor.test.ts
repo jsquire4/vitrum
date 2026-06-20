@@ -390,11 +390,10 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     session.dispose();
   });
 
-  it('keeps non-iridescence BRDF params on finite-difference when the material has a coupled iridescence lobe', () => {
+  it('keeps base/specular BRDF params on finite-difference when the material has a coupled iridescence lobe', () => {
     const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
       target,
       parameters: [
-        { path: 'materials.panel.clearcoat', kind: 'scalar' },
         { path: 'materials.panel.specularColor', kind: 'rgb' },
       ],
       method: 'path-replay',
@@ -403,8 +402,25 @@ describe('inverseSession — emissive/ior field-set widening', () => {
     expect(session.method).toBe('finite-difference');
     expect(session.diagnostics).toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-material',
-      path: 'materials.panel.clearcoat',
+      path: 'materials.panel.specularColor',
       details: expect.objectContaining({ field: 'iridescence', value: 0.2 }),
+    }));
+    session.dispose();
+  });
+
+  it('keeps additive clearcoat params on path-replay when fixed iridescence is present', () => {
+    const session = new PtWebgpuInverseSession(makeHooks(makeScene(), true), {
+      target,
+      parameters: [
+        { path: 'materials.panel.clearcoat', kind: 'scalar' },
+        { path: 'materials.panel.clearcoatRoughness', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-material',
     }));
     session.dispose();
   });

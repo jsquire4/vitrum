@@ -35,7 +35,19 @@ describe('pt-webgpu promise ledger compliance', () => {
     expect(sorted(caps.supportedEmitterKinds)).toEqual(sorted(expected.supportedEmitterKinds));
     expect(sorted(caps.supportedEnvironmentKinds ?? [])).toEqual(sorted(expected.supportedEnvironmentKinds));
     expect(sorted(caps.supportedAnalyticShapes)).toEqual(sorted(expected.supportedAnalyticShapes));
-    expect(caps.supportDetails).toEqual(expected.supportDetails);
+    expect(caps.supportDetails).toBeDefined();
+    const supportDetails = caps.supportDetails!;
+    expect(supportDetails).toEqual(expected.supportDetails);
+    expect(supportDetails.denoisers).toEqual({
+      none: 'native',
+      auto: 'native',
+      atrous: 'unsupported',
+      'atrous-variance': 'unsupported',
+      'svgf-real': 'unsupported',
+      bmfr: 'unsupported',
+      'oidn-final': 'native',
+      neural: 'unsupported',
+    });
 
     expect(caps.supportsAddRemovePrimitive).toBe(expected.supportsAddRemovePrimitive);
 
