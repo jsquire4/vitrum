@@ -648,6 +648,82 @@ function guardTextureSubUpload(gl: WebGL2RenderingContext, resourceName: string)
   }
 }
 
+function guardTextureImageUpload(
+  gl: WebGL2RenderingContext,
+  resourceName: string,
+  dim: number,
+  layers?: number,
+): void {
+  guardTextureSubUpload(gl, resourceName);
+  const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+  if (dim > maxSize) {
+    throw new Error(
+      `pt-webgl2: ${resourceName} needs a ${dim}² texture but this device only supports ` +
+        `${maxSize}² — reduce scene complexity.`,
+    );
+  }
+  if (layers !== undefined) {
+    const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
+    if (layers > maxLayers) {
+      throw new Error(
+        `pt-webgl2: ${resourceName} needs ${layers} array-texture layers but this device only supports ` +
+          `${maxLayers} — reduce the number of unique material textures in the scene.`,
+      );
+    }
+  }
+}
+
+/** Re-specify an existing square RGBA32F sampler2D payload, preserving texture identity. */
+export function replaceRgba32f(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Float32Array,
+  dim: number,
+  resourceName: string,
+): void {
+  guardTextureImageUpload(gl, resourceName, dim);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, dim, dim, 0, gl.RGBA, gl.FLOAT, data);
+}
+
+/** Re-specify an existing square RGBA32UI sampler2D payload, preserving texture identity. */
+export function replaceRgba32ui(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Uint32Array,
+  dim: number,
+  resourceName: string,
+): void {
+  guardTextureImageUpload(gl, resourceName, dim);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, dim, dim, 0, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data);
+}
+
+/** Re-specify an existing RGBA32F sampler2DArray payload, preserving texture identity. */
+export function replaceRgba32fArray(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Float32Array,
+  dim: number,
+  layers: number,
+  resourceName: string,
+): void {
+  guardTextureImageUpload(gl, resourceName, dim, layers);
+  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
+  gl.texImage3D(
+    gl.TEXTURE_2D_ARRAY,
+    0,
+    gl.RGBA32F,
+    dim,
+    dim,
+    layers,
+    0,
+    gl.RGBA,
+    gl.FLOAT,
+    data,
+  );
+}
+
 /** In-place replacement for an existing square RGBA32F sampler2D payload. */
 export function updateRgba32f(
   gl: WebGL2RenderingContext,

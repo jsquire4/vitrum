@@ -891,6 +891,85 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('respecifies resident scene textures for dimension-changing primitive topology patches', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texImage2D = vi.fn();
+    const texImage3D = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texImage2D: typeof texImage2D }).texImage2D = texImage2D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
+    try {
+      const e = await createPTEngine_WebGL2({
+        device: gl,
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      const initialTextureUploads = createTexture.mock.calls.length;
+      const initialImage2D = texImage2D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
+
+      const nextPositions = new Float32Array([
+        -1, -1, 0,
+        1, -1, 0,
+        1, 1, 0,
+        -1, 1, 0,
+        0, 2, 0,
+      ]);
+      const nextNormals = new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+      ]);
+      const nextUvs = new Float32Array([
+        0, 0,
+        1, 0,
+        1, 1,
+        0, 1,
+        0.5, 1.5,
+      ]);
+      const nextIndices = new Uint32Array([0, 2, 1, 2, 0, 3, 3, 2, 4]);
+
+      e.updatePrimitive?.('tri', {
+        positions: nextPositions,
+        normals: nextNormals,
+        uvs: nextUvs,
+        indices: nextIndices,
+      } as never);
+
+      const fallbackWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild');
+      expect(fallbackWarnings).toHaveLength(1);
+      expect(fallbackWarnings[0]?.details).toMatchObject({
+        primitiveId: 'tri',
+        fields: ['indices', 'normals', 'positions', 'uvs'],
+        fallbackReason: 'geometry-bvh-texture-rebuild',
+        nativePatchMissing: 'targeted-geometry-bvh-refit',
+        textureRefreshMode: 'resident-storage-respecify',
+      });
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(texImage2D.mock.calls.length - initialImage2D).toBe(5);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
+      const scene = e.getScene?.();
+      const prim = scene?.primitives[0];
+      expect(prim?.kind).toBe('mesh');
+      if (prim?.kind === 'mesh') {
+        expect(prim.positions.length).toBe(nextPositions.length);
+        expect(Array.from(prim.indices ?? [])).toEqual(Array.from(nextIndices));
+      }
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('primitive-mutation-fallback-rebuild') ||
+        m.includes('resident-storage-respecify'),
+      )).toHaveLength(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('refreshes the material atlas for new readable material texture-map patches without scene fallback', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
@@ -1850,7 +1929,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     const gl = createMockGl();
     let nextTextureId = 0;
     const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texImage2D = vi.fn();
+    const texImage3D = vi.fn();
     (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texImage2D: typeof texImage2D }).texImage2D = texImage2D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
     try {
       const e = await createPTEngine_WebGL2({
         device: gl,
@@ -1858,17 +1941,27 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       });
       e.setScene(triScene());
       const initialTextureUploads = createTexture.mock.calls.length;
+      const initialImage2D = texImage2D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
 
       e.addPrimitive?.(tri('extra', 2));
       const afterAddUploads = createTexture.mock.calls.length;
+      const afterAddImage2D = texImage2D.mock.calls.length;
+      const afterAddImage3D = texImage3D.mock.calls.length;
       e.removePrimitive?.('extra');
       const afterRemoveUploads = createTexture.mock.calls.length;
+      const afterRemoveImage2D = texImage2D.mock.calls.length;
+      const afterRemoveImage3D = texImage3D.mock.calls.length;
       // A second add of the same id is the same fallback signature and should not
       // spam animation/streaming hosts that repeatedly rebuild the same slot.
       e.addPrimitive?.(tri('extra', 2));
       const afterSecondAddUploads = createTexture.mock.calls.length;
+      const afterSecondAddImage2D = texImage2D.mock.calls.length;
+      const afterSecondAddImage3D = texImage3D.mock.calls.length;
       e.removePrimitive?.('extra');
       const afterSecondRemoveUploads = createTexture.mock.calls.length;
+      const afterSecondRemoveImage2D = texImage2D.mock.calls.length;
+      const afterSecondRemoveImage3D = texImage3D.mock.calls.length;
       e.addPrimitive?.({
         ...tri('extra', 2),
         material: {
@@ -1877,6 +1970,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         },
       } as never);
       const afterTexturedAddUploads = createTexture.mock.calls.length;
+      const afterTexturedAddImage2D = texImage2D.mock.calls.length;
+      const afterTexturedAddImage3D = texImage3D.mock.calls.length;
 
       const listWarnings = structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild');
       expect(listWarnings).toHaveLength(2);
@@ -1887,19 +1982,31 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           operation: 'addPrimitive',
           fallbackReason: 'primitive-list-texture-refresh',
           nativePatchMissing: 'targeted-primitive-list-splice',
+          textureRefreshMode: 'resident-storage-respecify',
         },
         {
           primitiveId: 'extra',
           operation: 'removePrimitive',
           fallbackReason: 'primitive-list-texture-refresh',
           nativePatchMissing: 'targeted-primitive-list-splice',
+          textureRefreshMode: 'resident-storage-respecify',
         },
       ]);
-      expect(afterAddUploads - initialTextureUploads).toBe(7);
-      expect(afterRemoveUploads - afterAddUploads).toBe(7);
-      expect(afterSecondAddUploads - afterRemoveUploads).toBe(7);
-      expect(afterSecondRemoveUploads - afterSecondAddUploads).toBe(7);
-      expect(afterTexturedAddUploads - afterSecondRemoveUploads).toBe(8);
+      expect(afterAddUploads - initialTextureUploads).toBe(0);
+      expect(afterRemoveUploads - afterAddUploads).toBe(0);
+      expect(afterSecondAddUploads - afterRemoveUploads).toBe(0);
+      expect(afterSecondRemoveUploads - afterSecondAddUploads).toBe(0);
+      expect(afterTexturedAddUploads - afterSecondRemoveUploads).toBe(1);
+      expect(afterAddImage2D - initialImage2D).toBe(6);
+      expect(afterRemoveImage2D - afterAddImage2D).toBe(6);
+      expect(afterSecondAddImage2D - afterRemoveImage2D).toBe(6);
+      expect(afterSecondRemoveImage2D - afterSecondAddImage2D).toBe(6);
+      expect(afterTexturedAddImage2D - afterSecondRemoveImage2D).toBe(6);
+      expect(afterAddImage3D - initialImage3D).toBe(1);
+      expect(afterRemoveImage3D - afterAddImage3D).toBe(1);
+      expect(afterSecondAddImage3D - afterRemoveImage3D).toBe(1);
+      expect(afterSecondRemoveImage3D - afterSecondAddImage3D).toBe(1);
+      expect(afterTexturedAddImage3D - afterSecondRemoveImage3D).toBe(2);
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('primitive-list-fallback-rebuild') ||
         m.includes('geometry/material/atlas/BVH texture pack'),
@@ -1915,7 +2022,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     const gl = createMockGl();
     let nextTextureId = 0;
     const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texImage2D = vi.fn();
+    const texImage3D = vi.fn();
     (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texImage2D: typeof texImage2D }).texImage2D = texImage2D;
+    (gl as unknown as { texImage3D: typeof texImage3D }).texImage3D = texImage3D;
     try {
       const e = await createPTEngine_WebGL2({
         device: gl,
@@ -1923,6 +2034,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       });
       e.setScene(triScene());
       const initialTextureUploads = createTexture.mock.calls.length;
+      const initialImage2D = texImage2D.mock.calls.length;
+      const initialImage3D = texImage3D.mock.calls.length;
       const sphere: AnalyticPrimitive = {
         kind: 'analytic',
         id: 'sphere-added',
@@ -1933,7 +2046,9 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
 
       e.addPrimitive?.(sphere);
 
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(7);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(texImage2D.mock.calls.length - initialImage2D).toBe(6);
+      expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
       const added = e.getScene?.()?.primitives.find((p) => p.id === 'sphere-added');
       expect(added?.kind).toBe('mesh');
       if (added?.kind !== 'mesh') {
@@ -1942,7 +2057,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(added.indices?.length).toBeGreaterThan(0);
       expect(structured.some((w) =>
         w.code === 'pt-webgl2.primitive-list-fallback-rebuild' &&
-        w.details?.fallbackReason === 'primitive-list-texture-refresh',
+        w.details?.fallbackReason === 'primitive-list-texture-refresh' &&
+        w.details?.textureRefreshMode === 'resident-storage-respecify',
       )).toBe(true);
       expect(structured.some((w) =>
         w.code === 'pt-webgl2.scene-upload-warning' &&

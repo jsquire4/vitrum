@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 mutation resource churn, 2026-06-20)
+
+- **Dimension-changing WebGL2 geometry/list refreshes now preserve resident texture objects:** `@vitrum/pt-webgl2` still grades topology/add/remove as bounded fallback refreshes until true targeted splice/refit lands, but those fallback refreshes now re-specify existing BVH/material/attribute/mesh-light texture storage with `texImage2D`/`texImage3D` instead of allocating replacement GL texture objects. Structured mutation warnings include `textureRefreshMode:"resident-storage-respecify"`, and the README no longer overstates pt-webgl2 mesh animation as “all patches via rebuild.”
+
 ### Fixed (glTF compatibility truthfulness, 2026-06-20)
 
 - **Unsupported glTF animation target paths now surface during compatibility preflight:** `analyzeGltfAsset()` records non-core animation target paths such as extension/pointer channels with exact `animations[*].channels[*].target.path` source paths, and `evaluateGltfBackendCompatibility()` reports them as `category:"animation"` / `support:"unsupported"` issues. Import still skips those channels with the existing structured diagnostic; strict backend selection can now reject them before constructing an engine.

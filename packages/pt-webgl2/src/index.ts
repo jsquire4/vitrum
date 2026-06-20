@@ -652,6 +652,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
           'addPrimitive',
           String(primitive.id),
           'primitive-list-texture-refresh',
+          fast.mutationFallback.textureRefreshMode,
         );
       }
       this.#commitMutationSwap(nextScene, fast);
@@ -689,6 +690,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
           'removePrimitive',
           String(id),
           'primitive-list-texture-refresh',
+          fast.mutationFallback.textureRefreshMode,
         );
       }
       this.#commitMutationSwap(nextScene, fast);
@@ -986,6 +988,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     method: 'addPrimitive' | 'removePrimitive',
     primitiveId: string,
     fallbackReason: 'primitive-list-texture-refresh' | 'primitive-list-scene-repack',
+    textureRefreshMode?: string,
   ): void {
     const key = `${method}:${primitiveId}:${fallbackReason}`;
     if (this.#fallbackMutationWarnings.has(key)) return;
@@ -1006,6 +1009,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         operation: method,
         fallbackReason,
         nativePatchMissing: 'targeted-primitive-list-splice',
+        ...(textureRefreshMode !== undefined ? { textureRefreshMode } : {}),
       },
     });
   }
@@ -1013,7 +1017,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #warnPrimitiveMutationFallback(
     id: string,
     patch: Partial<ScenePrimitive>,
-    mutationFallback?: { readonly fallbackReason: string; readonly nativePatchMissing: string },
+    mutationFallback?: {
+      readonly fallbackReason: string;
+      readonly nativePatchMissing: string;
+      readonly textureRefreshMode?: string;
+    },
   ): void {
     const fields = primitivePatchFields(patch);
     const materialFields = materialPatchFields(patch);
@@ -1035,6 +1043,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     ) {
       details.fallbackReason = mutationFallback.fallbackReason;
       details.nativePatchMissing = mutationFallback.nativePatchMissing;
+      if (mutationFallback.textureRefreshMode !== undefined) {
+        details.textureRefreshMode = mutationFallback.textureRefreshMode;
+      }
       if (patchFallback?.animationFields !== undefined) {
         details.animationFields = patchFallback.animationFields;
       }
