@@ -3043,6 +3043,34 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('degrades material path-replay for runtime environment kinds outside the replay domain', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [],
+      environment: {
+        kind: 'studio-dome',
+        intensity: 1,
+      } as unknown as Scene['environment'],
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-environment',
+      path: 'materials.panel.baseColor',
+      details: expect.objectContaining({
+        environmentKind: 'studio-dome',
+        supportedEnvironmentKinds: expect.arrayContaining(['none', 'hdri', 'procedural-sky']),
+      }),
+    }));
+    session.dispose();
+  });
+
   it.each([
     ['zero-radius disc', {
       kind: 'disc-area' as const,

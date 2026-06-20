@@ -1574,6 +1574,14 @@ function pathReplayLightingIssue(
     };
   }
 
+  const environmentIssue = pathReplayEnvironmentIssue(scene.environment as unknown as {
+    readonly kind?: string;
+    readonly intensity?: number;
+  });
+  if (environmentIssue != null) {
+    return environmentIssue;
+  }
+
   const candidates = directLightCandidateLabels(scene);
   if (candidates.length > 1 && context.directLighting !== 'summed-expectation') {
     return {
@@ -1590,6 +1598,28 @@ function pathReplayLightingIssue(
     };
   }
   return null;
+}
+
+function pathReplayEnvironmentIssue(environment: {
+  readonly kind?: string;
+  readonly intensity?: number;
+} | undefined): {
+  code: InverseSessionDiagnostic['code'];
+  message: string;
+  details: Record<string, string | number | readonly string[]>;
+} | null {
+  if (environment == null || environment.kind == null || environment.kind === 'none') return null;
+  if (!((environment.intensity ?? 1) > 0)) return null;
+  if (environment.kind === 'hdri' || environment.kind === 'procedural-sky') return null;
+  return {
+    code: 'path-replay-unsupported-environment',
+    message:
+      `environment kind "${environment.kind}" is outside the scoped path-replay environment replay domain`,
+    details: {
+      environmentKind: environment.kind,
+      supportedEnvironmentKinds: ['none', 'hdri', 'procedural-sky'],
+    },
+  };
 }
 
 function directLightCandidateLabels(scene: Scene): readonly string[] {
