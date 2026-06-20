@@ -50,6 +50,14 @@ const wi = norm([-0.32, 0.24, 1.0]);
 const dLoss: Vec3 = [1.4, -0.25, 0.7];
 const color: Vec3 = [0.8, 0.45, 0.2];
 const intensity = 2.25;
+const finiteAreaLightPdf = 3.7;
+const finiteAreaBrdfPdf = 0.92;
+
+function powerHeuristic(pdfA: number, pdfB: number): number {
+  const a2 = pdfA * pdfA;
+  const b2 = pdfB * pdfB;
+  return a2 / Math.max(a2 + b2, 1e-6);
+}
 
 function directLightBrdfValue(): Vec3 {
   const baseIso = evaluateBrdf(
@@ -128,7 +136,11 @@ describe('path-replay adjoint emitter gradients — independent CPU oracle', () 
     ['directional', Math.max(dot(normal, wi), 0)],
     ['point', Math.max(dot(normal, wi), 0) * 0.42],
     ['spot', Math.max(dot(normal, wi), 0) * 0.65 * 0.31],
-    ['finite area', Math.max(dot(normal, wi), 0) / 3.7],
+    [
+      'finite area',
+      (Math.max(dot(normal, wi), 0) * powerHeuristic(finiteAreaLightPdf, finiteAreaBrdfPdf)) /
+        finiteAreaLightPdf,
+    ],
   ])('%s color/intensity partials match finite differences of L = f * G * color * intensity', (_label, factor) => {
     const expectedColor: Vec3 = [
       dLoss[0] * brdf[0] * factor * intensity,
@@ -232,6 +244,7 @@ describe('path-replay adjoint emitter gradients — independent CPU oracle', () 
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('if (dIrrMean.w <= 1e-6) { continue; }');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(`${ADJOINT_EMITTER_TARGET_DIRECTIONAL}u`);
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * attenuation)');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('let areaFactor = misWeight / max(lightPdf, 1e-6);');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('dLoss_dR * brdfValue * (nDotL * areaFactor)');
   });
 });

@@ -29,8 +29,9 @@
  * by lit direct BRDF derivatives.
  * Direct lights are summed over all eligible lights (no MC light selection:
  * the adjoint estimates the direct-light expectation for each source; finite
- * area lights use the same area-measure surface samples as the forward NEE
- * branch). baseColor/roughness/metallic/specular/clearcoat/
+ * area/environment lights use the same area/env measure samples and per-light
+ * BRDF/light MIS weights as the forward NEE branch, but not the one-of-N light
+ * selection lottery). baseColor/roughness/metallic/specular/clearcoat/
  * sheen scalar params share this direct-light BRDF path. Map-free unlit baseColor is a primary-hit
  * contribution-level identity (`radiance += throughput * baseColor`) and is
  * scattered without requiring any light. The shading normal is faced toward the viewer
@@ -1124,6 +1125,158 @@ fn adjointConcentricDiscSample(xi: vec2f) -> vec2f {
 // ── the GPU-validated BRDF partials + adjointScatter (gradAccum at binding 8) ──
 ${PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL}
 
+fn adjointLuminance(v: vec3f) -> f32 {
+  return dot(v, vec3f(0.2126, 0.7152, 0.0722));
+}
+
+fn adjointPowerHeuristic(pdfA: f32, pdfB: f32) -> f32 {
+  let a2 = pdfA * pdfA;
+  let b2 = pdfB * pdfB;
+  return a2 / max(a2 + b2, 1e-6);
+}
+
+fn adjointClearcoatPdf(clearcoat: f32, clearcoatRoughness: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> f32 {
+  if (clearcoat < 1e-4) { return 0.0; }
+  let nDotV = max(dot(normal, wo), 0.0);
+  let nDotL = max(dot(normal, wi), 0.0);
+  if (nDotV <= 1e-5 || nDotL <= 1e-5) { return 0.0; }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let alpha = max(clearcoatRoughness * clearcoatRoughness, 1e-3);
+  let d = ggxD(nDotH, alpha);
+  let g1Wo = smithG1(nDotV, clearcoatRoughness);
+  return (d * g1Wo) / max(4.0 * nDotV, 1e-6);
+}
+
+fn adjointCharliePdfD(nDotH: f32, alpha: f32) -> f32 {
+  let invAlpha = 1.0 / max(alpha, 1e-4);
+  let sinThetaH = sqrt(max(0.0, 1.0 - nDotH * nDotH));
+  return (2.0 + invAlpha) * pow(sinThetaH, invAlpha) / (2.0 * PI);
+}
+
+fn adjointCharlieSheenPdf(sheen: f32, sheenRoughness: f32, normal: vec3f, wo: vec3f, wi: vec3f) -> f32 {
+  if (sheen < 1e-4) { return 0.0; }
+  let nDotL = max(dot(normal, wi), 0.0);
+  let nDotV = max(dot(normal, wo), 0.0);
+  if (nDotL <= 1e-5 || nDotV <= 1e-5) { return 0.0; }
+  let h = safe_normalize(wi + wo);
+  let nDotH = max(dot(normal, h), 0.0);
+  let vDotH = max(dot(wo, h), 1e-6);
+  let alpha = max(sheenRoughness * sheenRoughness, 1e-3);
+  return (adjointCharliePdfD(nDotH, alpha) * nDotH) / max(4.0 * vDotH, 1e-6);
+}
+
+fn adjointBrdfAnisotropicSpecPdf(
+  roughness: f32,
+  anisotropy: f32,
+  normal: vec3f,
+  tangent: vec3f,
+  bitangent: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> f32 {
+  let nDotV = max(dot(normal, wo), 1e-6);
+  let nDotL = max(dot(normal, wi), 0.0);
+  if (nDotL <= 1e-5) { return 0.0; }
+  let h = safe_normalize(wo + wi);
+  let alpha = max(roughness * roughness, 1e-3);
+  let aspect = sqrt(max(1.0 - 0.9 * anisotropy, 1e-4));
+  let ax = max(alpha / aspect, 1e-4);
+  let ay = max(alpha * aspect, 1e-4);
+  let hT = dot(h, tangent);
+  let hB = dot(h, bitangent);
+  let hN = max(dot(h, normal), 0.0);
+  let woT = dot(wo, tangent);
+  let woB = dot(wo, bitangent);
+  let woN = max(dot(wo, normal), 1e-6);
+  let d = adjointGgxDAnis(hT, hB, hN, ax, ay);
+  let g1 = adjointSmithG1Anis(woT, woB, woN, ax, ay);
+  return (d * g1) / max(4.0 * nDotV, 1e-6);
+}
+
+fn adjointBrdfDirectionalPdfFullSampledWithClearcoatNormal(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+) -> f32 {
+  let wiDotN = dot(normal, wi);
+  let woDotN = dot(normal, wo);
+  let nDotV = max(woDotN, 0.0);
+  if (nDotV <= 1e-5 || wiDotN * woDotN <= 0.0) { return 0.0; }
+  let h = safe_normalize(wi + wo);
+  let vDotH = max(dot(wo, h), 1e-6);
+  let f0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  let fresnel = fresnelSchlick(vDotH, f0);
+  let baseSpecProb = clamp(mix(0.04, 0.96, max(adjointLuminance(fresnel), metallic)), 0.04, 0.96);
+  let baseDiffProb = max(0.0, 1.0 - metallic);
+  let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
+  let specProb = baseSpecProb / sumProb;
+  let diffProb = baseDiffProb / sumProb;
+  let nDotL = max(wiDotN, 0.0);
+  if (nDotL <= 1e-5) { return 0.0; }
+  var pdfSpec: f32;
+  if (anisotropy > 1e-4) {
+    let tanT = adjointBuildTangent(normal);
+    let tanB = cross(normal, tanT);
+    let c = cos(anisotropyRotation);
+    let s = sin(anisotropyRotation);
+    let anisoT = c * tanT + s * tanB;
+    let anisoB = -s * tanT + c * tanB;
+    pdfSpec = adjointBrdfAnisotropicSpecPdf(roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
+  } else {
+    let nDotH = max(dot(normal, h), 0.0);
+    let alpha = max(roughness * roughness, 1e-3);
+    let d = ggxD(nDotH, alpha);
+    let g1Wo = smithG1(nDotV, roughness);
+    pdfSpec = (d * g1Wo) / max(4.0 * nDotV, 1e-6);
+  }
+  let pdfDiff = nDotL * INV_PI;
+  let basePdf = diffProb * pdfDiff + specProb * pdfSpec;
+  let ccPdf = clearcoat * adjointClearcoatPdf(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi);
+  let sheenPdf = sheen * adjointCharlieSheenPdf(sheen, sheenRoughness, normal, wo, wi);
+  let lobeWeight = max(1.0 + max(clearcoat, 0.0) + max(sheen, 0.0), 1.0);
+  return (basePdf + ccPdf + sheenPdf) / lobeWeight;
+}
+
+fn adjointDirectLightMisWeight(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  n: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  lightPdf: f32,
+) -> f32 {
+  if (lightPdf <= 0.0) { return 1.0; }
+  let brdfPdf = adjointBrdfDirectionalPdfFullSampledWithClearcoatNormal(
+    baseColor, roughness, metallic, n, clearcoatNormal, wo, wi,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness,
+    specularColor, specularIntensity, anisotropy, anisotropyRotation,
+  );
+  return adjointPowerHeuristic(lightPdf, brdfPdf);
+}
+
 // ── camera (mirror kernelCore.generatePrimaryRay) ───────────────────────────
 struct Ray { origin: vec3f, direction: vec3f }
 fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
@@ -1355,15 +1508,20 @@ fn directLightContributionValue(
   anisotropy: f32,
   anisotropyRotation: f32,
   Li: vec3f,
+  lightPdf: f32,
 ) -> vec3f {
   let nDotL = max(0.0, dot(n, wi));
   if (nDotL <= 0.0) { return vec3f(0.0); }
+  let misWeight = adjointDirectLightMisWeight(
+    baseColor, roughness, metallic, n, clearcoatNormal, wo, wi, specularColor, specularIntensity,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, anisotropy, anisotropyRotation, lightPdf,
+  );
   return directLightBrdfValue(
     baseColor, roughness, metallic, n, clearcoatNormal, wo, wi, specularColor, specularIntensity,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     anisotropy, anisotropyRotation,
-  ) * nDotL * Li;
+  ) * nDotL * Li * misWeight;
 }
 
 fn directLightNormalStackScaleGradient(
@@ -1391,6 +1549,7 @@ fn directLightNormalStackScaleGradient(
   anisotropy: f32,
   anisotropyRotation: f32,
   Li: vec3f,
+  lightPdf: f32,
 ) -> f32 {
   if (dot(dNormal_dScale, dNormal_dScale) <= 1e-12 &&
       dot(dClearcoatNormal_dScale, dClearcoatNormal_dScale) <= 1e-12) {
@@ -1405,13 +1564,13 @@ fn directLightNormalStackScaleGradient(
     baseColor, roughness, metallic, nPlus, ccPlus, wo, wi, specularColor, specularIntensity,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    anisotropy, anisotropyRotation, Li,
+    anisotropy, anisotropyRotation, Li, lightPdf,
   );
   let cMinus = directLightContributionValue(
     baseColor, roughness, metallic, nMinus, ccMinus, wo, wi, specularColor, specularIntensity,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    anisotropy, anisotropyRotation, Li,
+    anisotropy, anisotropyRotation, Li, lightPdf,
   );
   return dot(dLoss_dR, (cPlus - cMinus) / (2.0 * h));
 }
@@ -1440,6 +1599,7 @@ fn directLightClearcoatNormalScaleGradient(
   anisotropy: f32,
   anisotropyRotation: f32,
   Li: vec3f,
+  lightPdf: f32,
 ) -> f32 {
   if (dot(dClearcoatNormal_dScale, dClearcoatNormal_dScale) <= 1e-12 || clearcoat <= 1e-6) { return 0.0; }
   let h = ADJOINT_NORMAL_SCALE_DERIV_STEP;
@@ -1449,13 +1609,13 @@ fn directLightClearcoatNormalScaleGradient(
     baseColor, roughness, metallic, n, ccPlus, wo, wi, specularColor, specularIntensity,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    anisotropy, anisotropyRotation, Li,
+    anisotropy, anisotropyRotation, Li, lightPdf,
   );
   let cMinus = directLightContributionValue(
     baseColor, roughness, metallic, n, ccMinus, wo, wi, specularColor, specularIntensity,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
-    anisotropy, anisotropyRotation, Li,
+    anisotropy, anisotropyRotation, Li, lightPdf,
   );
   return dot(dLoss_dR, (cPlus - cMinus) / (2.0 * h));
 }
@@ -1717,7 +1877,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb,
+          effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb, 0.0,
         );
         gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
@@ -1725,14 +1885,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb,
+          effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb, 0.0,
         );
         gClearcoatNormalScale = gClearcoatNormalScale + directLightClearcoatNormalScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
           dClearcoatNormal_dClearcoatNormalScale, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb,
+          effectiveAnisotropy, effectiveAnisotropyRotation, dIrrMean.rgb, 0.0,
         );
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
@@ -1797,7 +1957,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li, 0.0,
         );
         gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
@@ -1805,14 +1965,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li, 0.0,
         );
         gClearcoatNormalScale = gClearcoatNormalScale + directLightClearcoatNormalScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
           dClearcoatNormal_dClearcoatNormalScale, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li, 0.0,
         );
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
@@ -1883,7 +2043,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li, 0.0,
         );
         gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
@@ -1891,14 +2051,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li, 0.0,
         );
         gClearcoatNormalScale = gClearcoatNormalScale + directLightClearcoatNormalScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
           dClearcoatNormal_dClearcoatNormalScale, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, Li, 0.0,
         );
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
@@ -1917,9 +2077,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     // Rect/disc-area lights: stochastic area-measure replay of the same geometric
-    // term the forward NEE integrates (brdf·nDotL·radiance / pdf_area). The pass
-    // still sums every light rather than replaying forward light-selection MIS,
-    // but it no longer approximates finite emitters by their centers.
+    // term the forward NEE integrates (brdf·nDotL·radiance·MIS / pdf_area). The pass
+    // still sums every light rather than replaying the forward one-of-N light
+    // selection lottery, but it no longer approximates finite emitters by centers
+    // or drops the forward area-light MIS weight.
     for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
       let rb = ri * 4u;
       let rpos = rectAreaLights[rb].xyz;
@@ -1952,7 +2113,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (cosLight <= 0.0) { continue; }
       if (rectAreaLights[rb].w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; } // shadowed
       let lightPdf = dist2 / max(cosLight * area, 1e-6);
-      let Li = rad / max(lightPdf, 1e-6);
+      let LiPerMisUnit = rad / max(lightPdf, 1e-6);
+      let misWeight = adjointDirectLightMisWeight(
+        effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi,
+        effectiveSpecularColor, effectiveSpecularIntensity,
+        effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness,
+        effectiveAnisotropy, effectiveAnisotropyRotation, lightPdf,
+      );
+      let Li = LiPerMisUnit * misWeight;
       let lg = directLightAdjoint(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -1984,7 +2152,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, lightPdf,
         );
         gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
@@ -1992,16 +2160,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, lightPdf,
         );
         gClearcoatNormalScale = gClearcoatNormalScale + directLightClearcoatNormalScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
           dClearcoatNormal_dClearcoatNormalScale, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, lightPdf,
         );
-        let areaFactor = 1.0 / max(lightPdf, 1e-6);
+        let areaFactor = misWeight / max(lightPdf, 1e-6);
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -2018,9 +2186,10 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       }
     }
 
-    // Mesh-area lights: stochastic uniform triangle-area replay of each packed
-    // emissive triangle. This mirrors the forward NEE triangle sampler without
-    // pretending to cover light-selection MIS or exact emissive texel-PDFs.
+    // Mesh-area lights: stochastic triangle-area replay of each packed emissive
+    // triangle or emissive-map texel subtriangle. This mirrors the forward NEE
+    // sampler and its per-light MIS weight without pretending to replay the
+    // forward one-of-N light-selection lottery.
     for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
       let mb = mi * 4u;
       let a = meshAreaLights[mb].xyz;
@@ -2057,7 +2226,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (cosLight <= 0.0) { continue; }
       if (mr.w <= 0.5 && anyHit(pos + n * 1e-3, wi, dist - 2e-3)) { continue; }
       let lightPdf = dist2 / max(cosLight * area, 1e-6);
-      let Li = mr.rgb / max(lightPdf, 1e-6);
+      let LiPerMisUnit = mr.rgb / max(lightPdf, 1e-6);
+      let misWeight = adjointDirectLightMisWeight(
+        effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi,
+        effectiveSpecularColor, effectiveSpecularIntensity,
+        effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness,
+        effectiveAnisotropy, effectiveAnisotropyRotation, lightPdf,
+      );
+      let Li = LiPerMisUnit * misWeight;
       let lg = directLightAdjoint(
         dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
         effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -2089,7 +2265,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, lightPdf,
         );
         gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
@@ -2097,16 +2273,16 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, lightPdf,
         );
         gClearcoatNormalScale = gClearcoatNormalScale + directLightClearcoatNormalScaleGradient(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
           dClearcoatNormal_dClearcoatNormalScale, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
           effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-          effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+          effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, lightPdf,
         );
-        let areaFactor = 1.0 / max(lightPdf, 1e-6);
+        let areaFactor = misWeight / max(lightPdf, 1e-6);
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -2126,9 +2302,9 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     // Environment NEE: stochastic CDF replay of the same equirect/procedural-sky
     // environment map the forward direct-light branch samples. Like the finite
     // area-light adjoint above, this estimates the source expectation directly
-    // (radiance / pdf) instead of replaying the forward one-of-N light-selection
-    // and MIS weights. Environment BSDF-escape / indirect paths remain outside the
-    // scoped single-bounce adjoint regime and are guarded by the render-regime gate.
+    // (radiance·MIS / pdf) instead of replaying the forward one-of-N light-selection
+    // lottery. Environment BSDF-escape / indirect paths remain outside the scoped
+    // single-bounce adjoint regime and are guarded by the render-regime gate.
     let envSample = sampleAdjointEnvironmentImportance(&rng);
     if (envSample.pdf > 0.0) {
       let wi = envSample.wi;
@@ -2136,7 +2312,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       if (nDotL > 0.0 && !anyHit(pos + n * 1e-3, wi, 1e30)) {
         let envLiPerUnitIntensity = envSample.value / max(envSample.pdf, 1e-8);
         let envMapIntensity = adjointMaterialEnvMapIntensity(matId);
-        let Li = envLiPerUnitIntensity * envMapIntensity;
+        let LiPerMisUnit = envLiPerUnitIntensity * envMapIntensity;
+        let misWeight = adjointDirectLightMisWeight(
+          effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi,
+          effectiveSpecularColor, effectiveSpecularIntensity,
+          effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness,
+          effectiveAnisotropy, effectiveAnisotropyRotation, envSample.pdf,
+        );
+        let Li = LiPerMisUnit * misWeight;
         let lg = directLightAdjoint(
           dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
@@ -2168,7 +2351,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
             effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-            effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+            effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, envSample.pdf,
           );
           gBumpScale = gBumpScale + directLightNormalStackScaleGradient(
             dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
@@ -2176,14 +2359,14 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
             effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-            effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+            effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, envSample.pdf,
           );
           gClearcoatNormalScale = gClearcoatNormalScale + directLightClearcoatNormalScaleGradient(
             dLoss_dR, effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal,
             dClearcoatNormal_dClearcoatNormalScale, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
             effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
-            effectiveAnisotropy, effectiveAnisotropyRotation, Li,
+            effectiveAnisotropy, effectiveAnisotropyRotation, LiPerMisUnit, envSample.pdf,
           );
           let brdfValue = directLightBrdfValue(
             effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
@@ -2191,7 +2374,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
             effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
             effectiveAnisotropy, effectiveAnisotropyRotation,
           );
-          gEnvMapIntensity = gEnvMapIntensity + dot(dLoss_dR, brdfValue * (nDotL * envLiPerUnitIntensity));
+          gEnvMapIntensity = gEnvMapIntensity + dot(dLoss_dR, brdfValue * (nDotL * envLiPerUnitIntensity * misWeight));
         }
       }
     }
