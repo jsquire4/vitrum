@@ -1023,6 +1023,8 @@ for (const needle of [
   "`oidn: { modelUrl }` exists",
   "structured",
   "`pt-webgpu.denoiser-auto-resolved` warning",
+  "Missing `modelUrl` throws at engine",
+  "reported through the denoiser error state",
 ]) {
   if (!ptWebgpuReadmeForDenoiser.includes(needle)) {
     fail(`pt-webgpu README must document denoiser:auto resolver truthfully: ${needle}`);

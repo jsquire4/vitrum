@@ -154,8 +154,9 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
   `pt-webgpu.denoiser-auto-resolved` warning. Explicit `oidn-final` still
   requires both host assets: (1) an OIDN ONNX model URL (`oidn: { modelUrl }`,
   e.g. `oidn_rt_hdr_alb_nrm.onnx`) and (2) the `onnxruntime-web` optional peer
-  dep installed in the host application. Missing either explicit `oidn-final`
-  asset produces a clear error at construction time.
+  dep installed in the host application. Missing `modelUrl` throws at engine
+  construction; missing `onnxruntime-web` or an unfetchable model fails the async
+  final-pass denoiser cycle and is reported through the denoiser error state.
 
 ## Polish commands
 
