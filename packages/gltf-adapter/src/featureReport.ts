@@ -117,6 +117,7 @@ export interface GltfMaterialFeatureReport {
   readonly materialFields: readonly (keyof MaterialSpec)[];
   readonly textureFields: readonly (keyof MaterialSpec)[];
   readonly samplerPolicies: readonly GltfTextureSamplerPolicyUse[];
+  readonly malformedSamplerPolicies: readonly GltfMalformedTextureSamplerPolicyUse[];
   readonly extensions: readonly string[];
   readonly unsupportedKnownExtensions: readonly string[];
   readonly alphaModes: readonly string[];
@@ -143,6 +144,23 @@ export interface GltfTextureSamplerPolicyUse {
   readonly minFilter?: GltfTextureSamplerFilterMode;
   readonly mipFilter?: GltfTextureSamplerMipMode;
   readonly usesMipmaps?: boolean;
+}
+
+export type GltfMalformedTextureSamplerKind =
+  | 'missing-sampler'
+  | 'invalid-wrap-s'
+  | 'invalid-wrap-t'
+  | 'invalid-mag-filter'
+  | 'invalid-min-filter';
+
+export interface GltfMalformedTextureSamplerPolicyUse {
+  readonly kind: GltfMalformedTextureSamplerKind;
+  readonly materialField: keyof MaterialSpec;
+  readonly textureIndex: number;
+  readonly samplerIndex: number;
+  readonly materialPath: string;
+  readonly path: string;
+  readonly value?: number;
 }
 
 export interface GltfAnimationFeatureReport {
@@ -782,6 +800,19 @@ export function evaluateGltfBackendProfileCompatibility(
     }
   }
 
+  for (const malformedSampler of report.materials.malformedSamplerPolicies) {
+    const field = malformedSampler.materialField;
+    const fieldSupport = profile.materialOverrides?.[field] ?? ledger.supportDetails.materials[field] ?? 'unknown';
+    if (fieldSupport === 'unsupported') continue;
+    addIssue({
+      category: 'material',
+      name: `${String(field)}.samplerPolicy.${malformedSampler.kind}`,
+      support: 'approximate',
+      path: malformedSampler.path,
+      message: malformedSamplerPolicyMessage(profile.id, malformedSampler),
+    });
+  }
+
   if (report.materials.textureFields.includes('emissiveMap')) {
     const support = profile.materialOverrides?.emissiveMap ?? ledger.supportDetails.materials.emissiveMap ?? 'unknown';
     if (support === 'native' || support === 'approximate') {
@@ -874,6 +905,23 @@ function samplerPolicySupport(
   if ((policy.minFilter ?? 'linear') !== 'linear') return 'approximate';
   if ((policy.mipFilter ?? 'linear') !== 'linear') return 'approximate';
   return 'native';
+}
+
+function malformedSamplerPolicyMessage(
+  profileId: GltfBackendProfileId,
+  issue: GltfMalformedTextureSamplerPolicyUse,
+): string {
+  if (issue.kind === 'missing-sampler') {
+    return (
+      `glTF material texture "${String(issue.materialField)}" references sampler ${issue.samplerIndex} at ` +
+      `${issue.path}, but that sampler is missing; backend profile ${profileId} imports the texture with default sampler settings.`
+    );
+  }
+  return (
+    `glTF material texture "${String(issue.materialField)}" has malformed sampler value ` +
+    `${String(issue.value)} at ${issue.path}; backend profile ${profileId} imports the texture with default/fallback ` +
+    `sampler settings for that material path (${issue.materialPath}).`
+  );
 }
 
 function animationMalformedChannelMessage(issue: GltfAnimationMalformedChannelIssue): string {
@@ -1569,6 +1617,7 @@ function analyzeMaterials(
   const fields = new Set<keyof MaterialSpec>();
   const textureFields = new Set<keyof MaterialSpec>();
   const samplerPolicies: GltfTextureSamplerPolicyUse[] = [];
+  const malformedSamplerPolicies: GltfMalformedTextureSamplerPolicyUse[] = [];
   const extensions = new Set<string>();
   const unsupportedKnownExtensions = new Set<string>();
   const alphaModes = new Set<string>();
@@ -1593,6 +1642,7 @@ function analyzeMaterials(
     addSourcePath(issuePaths, `field:${String(field)}`, path);
     const samplerPolicy = textureSamplerPolicyUse(gltf, field, info, path);
     if (samplerPolicy !== null) samplerPolicies.push(samplerPolicy);
+    malformedSamplerPolicies.push(...textureMalformedSamplerPolicyUses(gltf, field, info, path));
     const uvSet = textureInfoUvSet(info);
     uvSets.add(uvSet);
     if (currentMaterialIndex >= 0) {
@@ -1750,6 +1800,9 @@ function analyzeMaterials(
     samplerPolicies: samplerPolicies.sort((a, b) =>
       a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),
     ),
+    malformedSamplerPolicies: malformedSamplerPolicies.sort((a, b) =>
+      a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),
+    ),
     extensions: sorted(extensions),
     unsupportedKnownExtensions: sorted(unsupportedKnownExtensions),
     alphaModes: sorted(alphaModes),
@@ -1794,6 +1847,79 @@ function textureSamplerPolicyUse(
       usesMipmaps: minFilter.mipFilter !== 'none',
     } : {}),
   };
+}
+
+function textureMalformedSamplerPolicyUses(
+  gltf: GltfJson,
+  materialField: keyof MaterialSpec,
+  info: GltfTextureInfo,
+  materialPath: string,
+): GltfMalformedTextureSamplerPolicyUse[] {
+  const texture = gltf.textures?.[info.index];
+  const samplerIndex = texture?.sampler;
+  if (samplerIndex === undefined) return [];
+  const sampler = gltf.samplers?.[samplerIndex];
+  if (sampler == null) {
+    return [{
+      kind: 'missing-sampler',
+      materialField,
+      textureIndex: info.index,
+      samplerIndex,
+      materialPath,
+      path: `textures[${info.index}].sampler`,
+    }];
+  }
+
+  const issues: GltfMalformedTextureSamplerPolicyUse[] = [];
+  if (sampler.wrapS !== undefined && !isGltfWrapMode(sampler.wrapS)) {
+    issues.push({
+      kind: 'invalid-wrap-s',
+      materialField,
+      textureIndex: info.index,
+      samplerIndex,
+      materialPath,
+      path: `samplers[${samplerIndex}].wrapS`,
+      value: sampler.wrapS,
+    });
+  }
+  if (sampler.wrapT !== undefined && !isGltfWrapMode(sampler.wrapT)) {
+    issues.push({
+      kind: 'invalid-wrap-t',
+      materialField,
+      textureIndex: info.index,
+      samplerIndex,
+      materialPath,
+      path: `samplers[${samplerIndex}].wrapT`,
+      value: sampler.wrapT,
+    });
+  }
+  if (sampler.magFilter !== undefined && textureMagFilterMode(sampler.magFilter) === undefined) {
+    issues.push({
+      kind: 'invalid-mag-filter',
+      materialField,
+      textureIndex: info.index,
+      samplerIndex,
+      materialPath,
+      path: `samplers[${samplerIndex}].magFilter`,
+      value: sampler.magFilter,
+    });
+  }
+  if (sampler.minFilter !== undefined && textureMinFilterModes(sampler.minFilter) === null) {
+    issues.push({
+      kind: 'invalid-min-filter',
+      materialField,
+      textureIndex: info.index,
+      samplerIndex,
+      materialPath,
+      path: `samplers[${samplerIndex}].minFilter`,
+      value: sampler.minFilter,
+    });
+  }
+  return issues;
+}
+
+function isGltfWrapMode(value: number): boolean {
+  return value === 33071 || value === 33648 || value === 10497;
 }
 
 function textureMagFilterMode(value: number | undefined): GltfTextureSamplerFilterMode | undefined {

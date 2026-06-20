@@ -24,6 +24,8 @@ export type GltfMaterialDiagnosticCode =
   | 'invalid-material-dispersion'
   | 'material-texture-not-found'
   | 'material-texture-unresolved'
+  | 'material-texture-sampler-not-found'
+  | 'invalid-material-texture-sampler'
   | 'spec-gloss-approximation'
   | 'spec-gloss-texture-alpha-approximation'
   | 'unsupported-material-extension'
@@ -36,6 +38,9 @@ export interface GltfMaterialDiagnostic {
   readonly message: string;
   readonly materialIndex?: number;
   readonly textureIndex?: number;
+  readonly samplerIndex?: number;
+  readonly samplerProperty?: 'wrapS' | 'wrapT' | 'magFilter' | 'minFilter';
+  readonly samplerValue?: number;
   readonly extensionName?: string;
 }
 
@@ -842,7 +847,18 @@ function resolveMaterialTextureRef(
 ): TextureRef | undefined {
   if (!info) return undefined;
   const ref = resolveTextureRef(info, handleMap, gltf, sourcePath, textureSourceExtensions);
-  if (ref) return ref;
+  if (ref) {
+    emitMaterialTextureSamplerDiagnostics(
+      info,
+      gltf,
+      sourcePath,
+      warnings,
+      materialName,
+      materialIndex,
+      onDiagnostic,
+    );
+    return ref;
+  }
 
   const path = sourcePath ?? materialSourcePath(materialIndex, `texture:${info.index}`);
   const texture = gltf?.textures?.[info.index];
@@ -871,6 +887,118 @@ function resolveMaterialTextureRef(
       'but no decoded or raw image handle is available. Texture field ignored.',
   });
   return undefined;
+}
+
+function emitMaterialTextureSamplerDiagnostics(
+  info: MaterialTextureInfo,
+  gltf: GltfJson | undefined,
+  sourcePath: string | undefined,
+  warnings: string[],
+  materialName: string,
+  materialIndex: number | undefined,
+  onDiagnostic: GltfMaterialDiagnosticSink | undefined,
+): void {
+  const texture = gltf?.textures?.[info.index];
+  const samplerIndex = texture?.sampler;
+  if (samplerIndex === undefined) return;
+  const sampler = gltf?.samplers?.[samplerIndex];
+  const materialPath = sourcePath ?? materialSourcePath(materialIndex, `texture:${info.index}`);
+  if (sampler == null) {
+    emitMaterialDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'material-texture-sampler-not-found',
+      path: `textures[${info.index}].sampler`,
+      ...materialDiagnosticIndex(materialIndex),
+      textureIndex: info.index,
+      samplerIndex,
+      message:
+        `[vitrum/gltf-adapter] Material "${materialName}" references texture ${info.index} at ${materialPath}, ` +
+        `whose sampler index ${samplerIndex} does not exist. Texture imported with default sampler settings.`,
+    });
+    return;
+  }
+
+  emitInvalidSamplerDiagnosticIfNeeded(
+    sampler.wrapS,
+    'wrapS',
+    isGltfWrapMode,
+    info,
+    samplerIndex,
+    materialPath,
+    warnings,
+    materialName,
+    materialIndex,
+    onDiagnostic,
+  );
+  emitInvalidSamplerDiagnosticIfNeeded(
+    sampler.wrapT,
+    'wrapT',
+    isGltfWrapMode,
+    info,
+    samplerIndex,
+    materialPath,
+    warnings,
+    materialName,
+    materialIndex,
+    onDiagnostic,
+  );
+  emitInvalidSamplerDiagnosticIfNeeded(
+    sampler.magFilter,
+    'magFilter',
+    (value) => value === 9728 || value === 9729,
+    info,
+    samplerIndex,
+    materialPath,
+    warnings,
+    materialName,
+    materialIndex,
+    onDiagnostic,
+  );
+  emitInvalidSamplerDiagnosticIfNeeded(
+    sampler.minFilter,
+    'minFilter',
+    (value) => value === 9728 || value === 9729 || (value >= 9984 && value <= 9987),
+    info,
+    samplerIndex,
+    materialPath,
+    warnings,
+    materialName,
+    materialIndex,
+    onDiagnostic,
+  );
+}
+
+function emitInvalidSamplerDiagnosticIfNeeded(
+  value: number | undefined,
+  property: 'wrapS' | 'wrapT' | 'magFilter' | 'minFilter',
+  isValid: (value: number) => boolean,
+  info: MaterialTextureInfo,
+  samplerIndex: number,
+  materialPath: string,
+  warnings: string[],
+  materialName: string,
+  materialIndex: number | undefined,
+  onDiagnostic: GltfMaterialDiagnosticSink | undefined,
+): void {
+  if (value === undefined || isValid(value)) return;
+  const path = `samplers[${samplerIndex}].${property}`;
+  emitMaterialDiagnostic(warnings, onDiagnostic, {
+    severity: 'warning',
+    code: 'invalid-material-texture-sampler',
+    path,
+    ...materialDiagnosticIndex(materialIndex),
+    textureIndex: info.index,
+    samplerIndex,
+    samplerProperty: property,
+    samplerValue: value,
+    message:
+      `[vitrum/gltf-adapter] Material "${materialName}" references texture ${info.index} at ${materialPath}, ` +
+      `but ${path} has invalid value ${value}. Texture imported with default/fallback sampler settings.`,
+  });
+}
+
+function isGltfWrapMode(value: number): boolean {
+  return value === 33071 || value === 33648 || value === 10497;
 }
 
 function materialTextureSourcePath(materialIndex: number | undefined, suffix: string): string | undefined {

@@ -322,6 +322,13 @@
 > triangle strips/fans appear as `malformedPrimitives` and backend
 > `support:"unsupported"` primitive issues with exact `meshes[*].primitives[*]`
 > source paths.
+> Malformed texture sampler fallbacks now have the same predictable-API
+> treatment: missing sampler objects plus invalid `wrapS` / `wrapT` /
+> `magFilter` / `minFilter` values appear as `malformedSamplerPolicies` and
+> backend `support:"approximate"` material issues with exact
+> `textures[*].sampler` or `samplers[*].*` source paths; best-effort import also
+> emits structured material diagnostics while preserving default/fallback
+> sampler behavior.
 > Same-day pt-webgl2 skinning-warning follow-up: empty-bones skinned meshes
 > still render in rest pose, but scene ingestion now routes that fallback through
 > structured `pt-webgl2.skinned-mesh-empty-bones` warnings with the primitive id

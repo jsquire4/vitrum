@@ -2617,6 +2617,89 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     ]));
   });
 
+  it('reports malformed texture sampler policies with compatibility source paths', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0] = {
+      ...gltf.materials![0]!,
+      normalTexture: { index: 1 },
+    };
+    gltf.textures = [
+      { source: 0, sampler: 0 },
+      { source: 0, sampler: 7 },
+    ];
+    gltf.samplers = [{
+      wrapS: 123 as never,
+      wrapT: 456 as never,
+      magFilter: 111 as never,
+      minFilter: 222 as never,
+    }];
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.malformedSamplerPolicies).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'invalid-wrap-s',
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        samplerIndex: 0,
+        path: 'samplers[0].wrapS',
+        value: 123,
+      }),
+      expect.objectContaining({
+        kind: 'invalid-wrap-t',
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        samplerIndex: 0,
+        path: 'samplers[0].wrapT',
+        value: 456,
+      }),
+      expect.objectContaining({
+        kind: 'invalid-mag-filter',
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        samplerIndex: 0,
+        path: 'samplers[0].magFilter',
+        value: 111,
+      }),
+      expect.objectContaining({
+        kind: 'invalid-min-filter',
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        samplerIndex: 0,
+        path: 'samplers[0].minFilter',
+        value: 222,
+      }),
+      expect.objectContaining({
+        kind: 'missing-sampler',
+        materialField: 'normalMap',
+        textureIndex: 1,
+        samplerIndex: 7,
+        path: 'textures[1].sampler',
+      }),
+    ]));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'material',
+        name: 'baseColorMap.samplerPolicy.invalid-wrap-s',
+        support: 'approximate',
+        path: 'samplers[0].wrapS',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'baseColorMap.samplerPolicy.invalid-min-filter',
+        support: 'approximate',
+        path: 'samplers[0].minFilter',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'normalMap.samplerPolicy.missing-sampler',
+        support: 'approximate',
+        path: 'textures[1].sampler',
+      }),
+    ]));
+  });
+
   it('uses the backend promise ledger to rank textured assets by fidelity tier', () => {
     const report = analyzeGltfAsset(makeExternalTexturedGltf());
     const ranked = rankGltfBackends(report, 'fidelity');
@@ -4477,6 +4560,62 @@ describe('loadGltfForEngine', () => {
       compatibilityMode: 'reject-degraded',
       createEngine,
     })).rejects.toThrow('material:baseColorMap.samplerPolicy=approximate at samplers[0].minFilter');
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('reports malformed material texture samplers during best-effort import', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
+    gltf.samplers = [{
+      wrapS: 123 as never,
+      magFilter: 111 as never,
+      minFilter: 222 as never,
+    }];
+
+    const result = await loadGltfAsset(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+    });
+
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'invalid-material-texture-sampler',
+        path: 'samplers[0].wrapS',
+        materialIndex: 0,
+        textureIndex: 0,
+        samplerIndex: 0,
+        samplerProperty: 'wrapS',
+        samplerValue: 123,
+      }),
+      expect.objectContaining({
+        code: 'invalid-material-texture-sampler',
+        path: 'samplers[0].minFilter',
+        materialIndex: 0,
+        textureIndex: 0,
+        samplerIndex: 0,
+        samplerProperty: 'minFilter',
+        samplerValue: 222,
+      }),
+    ]));
+    const baseColor = result.scene.primitives[0]!.material.baseColorMap as TextureRef;
+    expect(baseColor.wrapS).toBeUndefined();
+    expect(baseColor.magFilter).toBeUndefined();
+    expect(baseColor.minFilter).toBeUndefined();
+  });
+
+  it('rejects malformed texture sampler policies before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
+    gltf.samplers = [{ minFilter: 222 as never }];
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    })).rejects.toThrow('material:baseColorMap.samplerPolicy.invalid-min-filter=approximate at samplers[0].minFilter');
     expect(createEngine).not.toHaveBeenCalled();
   });
 
