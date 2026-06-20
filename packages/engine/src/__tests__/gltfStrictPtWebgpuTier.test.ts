@@ -2,17 +2,29 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   const scene = Object.freeze({ primitives: [], emitters: [] });
-  const textureDecodeReport = Object.freeze({
+  type MockTextureDecodeReport = {
+    mapCount: number;
+    uniqueHandleCount: number;
+    rawImageCount: number;
+    imageBitmapCount: number;
+    opaqueHandleCount: number;
+    cpuReadableCount: number;
+    rawImageRefs: readonly object[];
+    imageBitmapRefs: readonly object[];
+    entries: readonly object[];
+  };
+  const emptyTextureDecodeReport = (): MockTextureDecodeReport => ({
     mapCount: 0,
     uniqueHandleCount: 0,
     rawImageCount: 0,
     imageBitmapCount: 0,
     opaqueHandleCount: 0,
     cpuReadableCount: 0,
-    rawImageRefs: Object.freeze([]),
-    imageBitmapRefs: Object.freeze([]),
-    entries: Object.freeze([]),
+    rawImageRefs: [],
+    imageBitmapRefs: [],
+    entries: [],
   });
+  const textureDecodeReport = emptyTextureDecodeReport();
   const unsupportedLiteIssue = Object.freeze({
     category: 'material',
     name: 'baseColorMap',
@@ -34,16 +46,31 @@ const mocks = vi.hoisted(() => {
 	    path: 'bufferViews[0].extensions.KHR_meshopt_compression',
 	    message: 'KHR_meshopt_compression requires a host meshopt decoder.',
 	  });
-	  const textureReadinessIssue = Object.freeze({
-	    category: 'texture',
-	    name: 'texture-readiness:pt-webgpu',
-	    support: 'requires-hook',
-	    path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
-	    message: 'pt-webgpu requires host-confirmed opaque texture handles.',
-	  });
+  const textureReadinessIssue = Object.freeze({
+    category: 'texture',
+    name: 'texture-readiness:pt-webgpu',
+    support: 'requires-hook',
+    path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+    message: 'pt-webgpu requires host-confirmed opaque texture handles.',
+  });
+  const specGlossAlphaIssue = Object.freeze({
+    category: 'material',
+    name: 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha',
+    support: 'approximate',
+    path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+    message: 'Spec-gloss texture alpha needs a decoded roughness bake.',
+  });
+  const emptyFeatureReport = Object.freeze({
+    materials: Object.freeze({
+      issuePaths: Object.freeze({}),
+    }),
+  });
   const state = {
     selectedBackend: 'pt-webgpu' as 'pt-webgpu' | 'pt-webgl2' | 'walkaround-hybrid',
     liteIssues: [unsupportedLiteIssue] as readonly object[],
+    textureDecodeReport,
+    textureDecodeDiagnostics: [] as readonly object[],
+    featureReport: emptyFeatureReport as object,
   };
   const makeCompatibility = () => Object.freeze([
     Object.freeze({
@@ -89,13 +116,15 @@ const mocks = vi.hoisted(() => {
     scene,
     gltf: Object.freeze({ asset: Object.freeze({ version: '2.0' }) }),
     sceneIndex: 0,
+    featureReport: state.featureReport,
     warnings: Object.freeze([]),
     diagnostics: Object.freeze([]),
     animations: Object.freeze([]),
     animationTargets: Object.freeze([]),
     backendCompatibility: makeCompatibility(),
     recommendedBackend: makeCompatibility()[0],
-    textureDecodeReport,
+    textureDecodeReport: state.textureDecodeReport,
+    textureDecodeDiagnostics: state.textureDecodeDiagnostics,
   });
   const attachEngine = vi.fn();
   return {
@@ -104,6 +133,9 @@ const mocks = vi.hoisted(() => {
 	    approximateLiteIssue,
 	    khrMeshoptHookIssue,
 	    textureReadinessIssue,
+	    specGlossAlphaIssue,
+	    emptyFeatureReport,
+      emptyTextureDecodeReport,
 	    makeAsset,
     createEngine: vi.fn(async () => ({
       backendId: state.selectedBackend,
@@ -234,6 +266,9 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
   beforeEach(() => {
     mocks.state.selectedBackend = 'pt-webgpu';
     mocks.state.liteIssues = [mocks.unsupportedLiteIssue];
+    mocks.state.textureDecodeReport = mocks.emptyTextureDecodeReport();
+    mocks.state.textureDecodeDiagnostics = [];
+    mocks.state.featureReport = mocks.emptyFeatureReport;
     mocks.createEngine.mockClear();
     mocks.attachEngine.mockClear();
     mocks.loadGltfForEngine.mockClear();
@@ -469,6 +504,112 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
 	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
 	    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
 	  });
+
+  it('does not satisfy runtime spec-gloss alpha rows with an unrelated decoded roughness map', async () => {
+    mocks.state.liteIssues = [mocks.specGlossAlphaIssue];
+    mocks.state.featureReport = {
+      materials: {
+        issuePaths: {
+          specGlossGlossinessAlpha: [
+            'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+          ],
+        },
+      },
+    };
+    mocks.state.textureDecodeReport = {
+      mapCount: 1,
+      uniqueHandleCount: 1,
+      rawImageCount: 0,
+      imageBitmapCount: 0,
+      opaqueHandleCount: 0,
+      cpuReadableCount: 1,
+      rawImageRefs: [],
+      imageBitmapRefs: [],
+      entries: [
+        {
+          primitiveId: 'gltf-prim-1',
+          primitiveKind: 'mesh',
+          primitiveIndex: 1,
+          materialField: 'roughnessMap',
+          path: 'materials[1].pbrMetallicRoughness.metallicRoughnessTexture',
+          texCoord: 0,
+          hasTransform: false,
+          wrapS: 'repeat',
+          wrapT: 'repeat',
+          colorSpace: 'linear',
+          handleColorSpace: 'linear',
+          handleKind: 'pixel-data',
+          backendReadiness: {
+            ptWebgl2: 'ready',
+            ptWebgpu: 'ready',
+            walkaroundHybrid: 'ready',
+          },
+        },
+      ],
+    };
+
+    await expect(
+      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-degraded' }),
+    ).rejects.toMatchObject({
+      failures: [
+        'material:KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha=approximate at materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+      ],
+    });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+  });
+
+  it('satisfies runtime spec-gloss alpha rows only with a matching linear roughness bake', async () => {
+    mocks.state.liteIssues = [mocks.specGlossAlphaIssue];
+    mocks.state.featureReport = {
+      materials: {
+        issuePaths: {
+          specGlossGlossinessAlpha: [
+            'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+          ],
+        },
+      },
+    };
+    mocks.state.textureDecodeReport = {
+      mapCount: 1,
+      uniqueHandleCount: 1,
+      rawImageCount: 0,
+      imageBitmapCount: 0,
+      opaqueHandleCount: 0,
+      cpuReadableCount: 1,
+      rawImageRefs: [],
+      imageBitmapRefs: [],
+      entries: [
+        {
+          primitiveId: 'gltf-prim-0',
+          primitiveKind: 'mesh',
+          primitiveIndex: 0,
+          materialField: 'roughnessMap',
+          path: 'materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+          texCoord: 0,
+          hasTransform: false,
+          wrapS: 'repeat',
+          wrapT: 'repeat',
+          colorSpace: 'linear',
+          handleColorSpace: 'linear',
+          handleKind: 'pixel-data',
+          backendReadiness: {
+            ptWebgl2: 'ready',
+            ptWebgpu: 'ready',
+            walkaroundHybrid: 'ready',
+          },
+        },
+      ],
+    };
+
+    await expect(
+      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-degraded' }),
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.createEngine).toHaveBeenCalledTimes(1);
+  });
 
 	  it('reports the runtime lite profile for best-effort pt-webgpu glTF loads without rejecting', async () => {
 	    await expect(

@@ -568,7 +568,30 @@ async function decodeTextureRef(
   },
 ): Promise<TextureRef> {
   const handleKind = classifyTextureHandle(ref.handle);
-  if (handleKind === 'pixel-data' || handleKind === 'data-texture') return ref;
+  const colorSpace = gltfTextureColorSpaceForField(context.field);
+  const outputColorSpace: GltfTextureColorSpace =
+    context.options.target === 'webgpu' ? colorSpace : 'linear';
+  if (handleKind === 'pixel-data' || handleKind === 'data-texture') {
+    const pixels = decodedPixelsFromCpuReadableHandle(ref.handle);
+    if (pixels === null) return ref;
+    let perSpace = context.decoded.get(ref.handle);
+    if (perSpace == null) {
+      perSpace = new Map();
+      context.decoded.set(ref.handle, perSpace);
+    }
+    let entry = perSpace.get(colorSpace);
+    if (entry == null) {
+      entry = cacheEntryFromDecodedPixels(
+        pixels,
+        colorSpace,
+        outputColorSpace,
+        context.options.maxTextureSize,
+      );
+      perSpace.set(colorSpace, entry);
+    }
+    emitDecodedTextureDiagnostics(entry, ref, context);
+    return { ...ref, handle: entry.handle };
+  }
   if (handleKind !== 'raw-image') {
     context.diagnostic({
       severity: 'warning',
@@ -612,9 +635,6 @@ async function decodeTextureRef(
     return ref;
   }
 
-  const colorSpace = gltfTextureColorSpaceForField(context.field);
-  const outputColorSpace: GltfTextureColorSpace =
-    context.options.target === 'webgpu' ? colorSpace : 'linear';
   let perSpace = context.decoded.get(ref.handle);
   if (perSpace == null) {
     perSpace = new Map();
@@ -649,28 +669,42 @@ async function decodeTextureRef(
       }
       throw err;
     }
-    const normalized = normalizeDecodedPixels(pixels, colorSpace, outputColorSpace);
-    const resized = resizeDecodedTextureToMaxSize(normalized, context.options.maxTextureSize);
-    const shouldAnnotate =
-      resized.width !== normalized.width ||
-      resized.height !== normalized.height ||
-      (typeof context.options.maxTextureSize === 'number' && context.options.maxTextureSize > 0);
-    entry = {
-      handle: shouldAnnotate
-        ? withDecodedTextureMetadata(
-            resized,
-            normalized.width,
-            normalized.height,
-            context.options.maxTextureSize,
-          )
-        : resized,
-      originalWidth: normalized.width,
-      originalHeight: normalized.height,
-    };
+    entry = cacheEntryFromDecodedPixels(
+      pixels,
+      colorSpace,
+      outputColorSpace,
+      context.options.maxTextureSize,
+    );
     perSpace.set(colorSpace, entry);
   }
   emitDecodedTextureDiagnostics(entry, ref, context);
   return { ...ref, handle: entry.handle };
+}
+
+function cacheEntryFromDecodedPixels(
+  pixels: GltfDecodedTexturePixels,
+  colorSpace: GltfTextureColorSpace,
+  outputColorSpace: GltfTextureColorSpace,
+  maxTextureSize: number | undefined,
+): DecodedTextureCacheEntry {
+  const normalized = normalizeDecodedPixels(pixels, colorSpace, outputColorSpace);
+  const resized = resizeDecodedTextureToMaxSize(normalized, maxTextureSize);
+  const shouldAnnotate =
+    resized.width !== normalized.width ||
+    resized.height !== normalized.height ||
+    (typeof maxTextureSize === 'number' && maxTextureSize > 0);
+  return {
+    handle: shouldAnnotate
+      ? withDecodedTextureMetadata(
+          resized,
+          normalized.width,
+          normalized.height,
+          maxTextureSize,
+        )
+      : resized,
+    originalWidth: normalized.width,
+    originalHeight: normalized.height,
+  };
 }
 
 const decodeRawImagePixelsWithPlatform: DecodeGltfTexturePixelsFn = async (handle, context) => {

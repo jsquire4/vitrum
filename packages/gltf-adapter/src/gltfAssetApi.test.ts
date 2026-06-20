@@ -1688,10 +1688,18 @@ describe('decodeSceneTextures', () => {
 
     const result = await decodeSceneTextures(scene, { target: 'cpu-linear' });
 
-    expect(result.decodedCount).toBe(1);
-    expect(result.unchangedCount).toBe(1);
+    expect(result.decodedCount).toBe(2);
+    expect(result.unchangedCount).toBe(0);
     expect(result.diagnostics).toEqual([]);
     const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    const specular = material.specularColorMap as TextureRef;
+    const specularHandle = specular.handle as {
+      data: Float32Array;
+      __vitrum_hint__: { colorSpace: string };
+    };
+    expect(specular.handle).not.toBe(pixelHandle);
+    expect(specularHandle.__vitrum_hint__.colorSpace).toBe('linear');
+    expect(specularHandle.data[0]).toBeCloseTo(1);
     const roughness = material.roughnessMap as TextureRef;
     expect(roughness.texCoord).toBe(1);
     expect(roughness.wrapS).toBe('clamp-to-edge');
@@ -1701,6 +1709,70 @@ describe('decodeSceneTextures', () => {
     expect(handle.data[1]).toBeCloseTo(expected);
     expect(handle.data[2]).toBeCloseTo(expected);
     expect(handle.data[3]).toBe(1);
+  });
+
+  it('normalizes already CPU-readable texture refs to the requested CPU-linear target', async () => {
+    const pixelHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 64, 255, 128]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: 'srgb' as const,
+    };
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'cpu-readable-srgb-mesh',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 1,
+            metallic: 0,
+            baseColorMap: { handle: pixelHandle },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await decodeSceneTextures(scene, { target: 'cpu-linear' });
+
+    expect(result.decodedCount).toBe(1);
+    expect(result.unchangedCount).toBe(0);
+    expect(result.diagnostics).toEqual([]);
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    const ref = material.baseColorMap as TextureRef;
+    const handle = ref.handle as {
+      width: number;
+      height: number;
+      data: Float32Array;
+      __vitrum_hint__: { colorSpace: string };
+    };
+    expect(handle).not.toBe(pixelHandle);
+    expect(handle.width).toBe(1);
+    expect(handle.height).toBe(1);
+    expect(handle.__vitrum_hint__.colorSpace).toBe('linear');
+    expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
+    expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
+    expect(handle.data[2]).toBeCloseTo(1);
+    expect(handle.data[3]).toBeCloseTo(128 / 255);
+    expect(result.report.entries).toEqual([
+      expect.objectContaining({
+        materialField: 'baseColorMap',
+        colorSpace: 'srgb',
+        handleColorSpace: 'linear',
+        handleKind: 'pixel-data',
+        backendReadiness: expect.objectContaining({
+          ptWebgl2: 'ready',
+          ptWebgpu: 'ready',
+          walkaroundHybrid: 'ready',
+        }),
+      }),
+    ]);
   });
 
   it('reports decoded lightMap handles as walkaround-ready', async () => {
@@ -1991,6 +2063,84 @@ describe('decodeSceneTextures', () => {
     ]);
   });
 
+  it('applies maxTextureSize diagnostics to already CPU-readable handles', async () => {
+    const pixels = new Float32Array(4 * 2 * 4);
+    for (let p = 0; p < 8; p += 1) {
+      pixels[p * 4] = p / 10;
+      pixels[p * 4 + 1] = 0.25;
+      pixels[p * 4 + 2] = 0.5;
+      pixels[p * 4 + 3] = 1;
+    }
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'cpu-readable-large-mesh',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 1,
+            metallic: 0,
+            normalMap: {
+              handle: {
+                width: 4,
+                height: 2,
+                data: pixels,
+                channels: 4,
+                dataType: 'float32',
+                colorSpace: 'linear',
+              },
+            },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await decodeSceneTextures(scene, {
+      target: 'cpu-linear',
+      maxTextureSize: 2,
+    });
+
+    expect(result.decodedCount).toBe(1);
+    expect(result.unchangedCount).toBe(0);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'decoded-texture-exceeds-max-size',
+        path: 'scene.primitives[0].material.normalMap',
+        materialField: 'normalMap',
+        primitiveId: 'cpu-readable-large-mesh',
+        primitiveIndex: 0,
+        width: 4,
+        height: 2,
+        maxTextureSize: 2,
+        resizedWidth: 2,
+        resizedHeight: 1,
+      }),
+    ]);
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    const handle = (material.normalMap as TextureRef).handle as {
+      width: number;
+      height: number;
+      data: Float32Array;
+      __vitrum_hint__: {
+        originalWidth?: number;
+        originalHeight?: number;
+        maxTextureSize?: number;
+      };
+    };
+    expect(handle.width).toBe(2);
+    expect(handle.height).toBe(1);
+    expect(handle.__vitrum_hint__).toMatchObject({
+      originalWidth: 4,
+      originalHeight: 2,
+      maxTextureSize: 2,
+    });
+  });
+
   it('emits structured NPOT-repeat diagnostics after host decoding', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const asset = await loadGltfAsset(gltf, { buffers });
@@ -2024,6 +2174,60 @@ describe('decodeSceneTextures', () => {
     ]);
     expect(result.warnings).toEqual([
       expect.stringContaining('NPOT 3x5'),
+    ]);
+  });
+
+  it('emits NPOT-repeat diagnostics for already CPU-readable handles', async () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'cpu-readable-npot-mesh',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 1,
+            metallic: 0,
+            metallicMap: {
+              handle: {
+                width: 3,
+                height: 5,
+                data: new Float32Array(3 * 5 * 4).fill(1),
+                channels: 4,
+                dataType: 'float32',
+                colorSpace: 'linear',
+              },
+              wrapS: 'repeat',
+              wrapT: 'mirrored-repeat',
+            },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await decodeSceneTextures(scene, {
+      target: 'cpu-linear',
+      warnOnNpotRepeatWrap: true,
+    });
+
+    expect(result.decodedCount).toBe(1);
+    expect(result.unchangedCount).toBe(0);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'decoded-texture-npot-repeat-wrap',
+        path: 'scene.primitives[0].material.metallicMap',
+        materialField: 'metallicMap',
+        primitiveId: 'cpu-readable-npot-mesh',
+        primitiveIndex: 0,
+        width: 3,
+        height: 5,
+        wrapS: 'repeat',
+        wrapT: 'mirrored-repeat',
+      }),
     ]);
   });
 

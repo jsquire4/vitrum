@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF texture bridge truthfulness, 2026-06-20)
+
+- **CPU-readable glTF texture handles now honor decode target policy:** `decodeSceneTextures()` no longer skips existing `pixel-data` / `data-texture` handles. They are normalized through the same color-space, max-size, and NPOT diagnostic path as decoded raw images, so `target:"cpu-linear"` cannot leave an sRGB base-color CPU payload looking backend-ready but unconverted.
+- **Engine glTF runtime spec-gloss satisfaction is source-path scoped:** `@vitrum/engine/gltf` now mirrors the adapter bridge when checking whether decoded roughness bakes satisfy `KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha`. An unrelated decoded roughness map no longer clears the strict runtime compatibility issue.
+
 ### Fixed (pt-webgl2 spectral transmission, 2026-06-20)
 
 - **Dispersion transmission now preserves anisotropic GGX sampling:** `dispersionTransmissionDirection()` uses the same `ggxDirectionForSurface()` helper as ordinary transmission, so anisotropic transmissive glass no longer falls back to an isotropic half-vector sampler when Cauchy dispersion is active. This is render-changing for pt-webgl2 spectral/dispersion materials with nonzero anisotropy, so V28-B recapture remains the promotion proof.

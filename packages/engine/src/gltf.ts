@@ -372,13 +372,20 @@ function isSatisfiedRuntimeCompatibilityIssue(
   if (issue.name === 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha') {
     const decoded = decodedAssetView(asset);
     if (decoded == null) return false;
-    const bakeUnavailable = decoded.textureDecodeDiagnostics.some((diagnostic) =>
-      diagnostic.code === 'spec-gloss-alpha-bake-unavailable'
+    const paths = decoded.featureReport.materials.issuePaths.specGlossGlossinessAlpha;
+    const requiredPaths = paths !== undefined && paths.length > 0 ? paths : [issue.path];
+    return requiredPaths.every((path) =>
+      !decoded.textureDecodeDiagnostics.some((diagnostic) =>
+        diagnostic.code === 'spec-gloss-alpha-bake-unavailable' &&
+        diagnostic.path === path
+      ) &&
+      decoded.textureDecodeReport.entries.some((entry) =>
+        entry.materialField === 'roughnessMap' &&
+        entry.path === path &&
+        entry.handleKind === 'pixel-data' &&
+        entry.handleColorSpace === 'linear'
+      )
     );
-    const bakedRoughnessMap = asset.textureDecodeReport.entries.some((entry) =>
-      entry.materialField === 'roughnessMap' && entry.handleKind === 'pixel-data'
-    );
-    return bakedRoughnessMap && !bakeUnavailable;
   }
 
   return false;
@@ -394,12 +401,20 @@ function opaqueTextureHandlesReadyForBackend(
 
 function decodedAssetView(
   asset: GltfAssetResult,
-): { readonly textureDecodeDiagnostics: readonly DecodeSceneTextureDiagnostic[] } | null {
+): {
+  readonly featureReport: GltfAssetResult['featureReport'];
+  readonly textureDecodeDiagnostics: readonly DecodeSceneTextureDiagnostic[];
+  readonly textureDecodeReport: GltfTextureDecodeReport;
+} | null {
   const maybe = asset as GltfAssetResult & {
     readonly textureDecodeDiagnostics?: readonly DecodeSceneTextureDiagnostic[];
   };
   return Array.isArray(maybe.textureDecodeDiagnostics)
-    ? { textureDecodeDiagnostics: maybe.textureDecodeDiagnostics }
+    ? {
+        featureReport: asset.featureReport,
+        textureDecodeDiagnostics: maybe.textureDecodeDiagnostics,
+        textureDecodeReport: asset.textureDecodeReport,
+      }
     : null;
 }
 
