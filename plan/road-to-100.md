@@ -1774,19 +1774,24 @@ dzn path is not judged against lavapipe-lite PNGs. Treat this as closed for
 pt-webgpu dzn full-tier glTF proof; pt-webgl2/browser recommended-backend proof
 remains queued separately.
 
-2026-06-17 pt-webgl2 browser status: `tools/gltf-browser-proof/` now drives the
+2026-06-17 pt-webgl2 browser status, refreshed 2026-06-20:
+`tools/gltf-browser-proof/` now drives the
 real `BoxTextured.glb`, `CesiumMilkTruck` Draco, and `MeshoptCubeTest` meshopt
 assets through `examples/gltf-viewer` and the public `loadGltfWithEngine()` path
 with `backend:'pt-webgl2'`. The example runs the browser texture decode bridge
 (`decodeTextures` + `decodePixels`) so texture payloads reach pt-webgl2 as
 CPU-readable pixels instead of opaque `ImageBitmap` handles, and it now wires
 browser-side Draco WASM plus meshoptimizer decode hooks for the compressed
-assets. On this WSL Playwright host all three pages reach capture readiness and
-the committed `pt-webgl2-real-status.json` proves the required extension/hook
-telemetry (`KHR_draco_mesh_compression` + `draco`, `KHR_meshopt_compression` +
-`meshopt`), but WebGL canvas readback (`toDataURL`) stalls; the status records
-each row as `HOST-BLOCKED` at `canvas-readback`. Browser PNG proof remains
-queued for a host that can read back WebGL2 canvases.
+assets. The 2026-06-20 source fix makes selected-scene feature reports inspect
+reachable `bufferViews[*].extensions.KHR_meshopt_compression` and keep
+reachable `KHR_mesh_quantization` accessors in the scoped extension report, so
+the real MeshoptCubeTest browser telemetry now proves
+`KHR_mesh_quantization` + `KHR_meshopt_compression` + the `meshopt` decode hook
+instead of falsely reporting an empty extension set. On this WSL Playwright host
+all three pages reach capture readiness, but Playwright canvas screenshot
+capture still times out; the status records each row as `HOST-BLOCKED` at
+`canvas-screenshot`. Browser PNG proof remains queued for a host that can
+capture WebGL2 canvases.
 
 Validation note: the walkaround-hybrid native-Deno behavioral lane is
 fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the

@@ -51,7 +51,7 @@ if (status.verdict === "HOST-BLOCKED") {
   for (const row of statusAssets) {
     if (row.verdict !== "HOST-BLOCKED" && row.verdict !== "PASS") fail(`${row.assetId}: unexpected verdict ${row.verdict}`);
     if (row.verdict === "HOST-BLOCKED") {
-      if (row.step !== "canvas-readback") fail(`${row.assetId}: unexpected host-blocked step ${row.step}`);
+      if (row.step !== "canvas-screenshot") fail(`${row.assetId}: unexpected host-blocked step ${row.step}`);
       if (!String(row.error ?? "").includes("browser capture timed out")) {
         fail(`${row.assetId}: HOST-BLOCKED status must preserve the timeout reason`);
       }

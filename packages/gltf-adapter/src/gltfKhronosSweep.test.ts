@@ -14,6 +14,7 @@ import {
   type GltfFeatureReport,
   type GltfJson,
 } from './index.js';
+import { collectGltfSceneReachability } from './sceneScope.js';
 
 function expectSourcePaths(compatibility: GltfBackendCompatibility): void {
   expect(compatibility.issues.every((issue) => issue.path.length > 0)).toBe(true);
@@ -775,6 +776,54 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
         name: 'KHR_meshopt_compression',
         support: 'requires-hook',
         path: 'bufferViews[0].extensions.KHR_meshopt_compression',
+      }),
+    ]));
+  });
+
+  it('keeps selected-scene bufferView meshopt and mesh-quantization extensions in scoped reports', () => {
+    const gltf = meshoptFallbackBufferSample({
+      fallbackStub: true,
+      extensionName: 'KHR_meshopt_compression',
+    });
+    gltf.extensionsUsed = ['KHR_mesh_quantization', 'KHR_meshopt_compression'];
+    gltf.extensionsRequired = ['KHR_mesh_quantization', 'KHR_meshopt_compression'];
+    gltf.accessors![0] = {
+      ...gltf.accessors![0]!,
+      componentType: 5122,
+      normalized: true,
+    };
+
+    const report = analyzeGltfAsset(gltf, { sceneIndex: 0 });
+    const webgl2 = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    const reachability = collectGltfSceneReachability(gltf, 0);
+
+    expect(report.extensions.used).toEqual(['KHR_mesh_quantization', 'KHR_meshopt_compression']);
+    expect(report.extensions.required).toEqual(['KHR_mesh_quantization', 'KHR_meshopt_compression']);
+    expect(report.extensions.supported).toEqual(expect.arrayContaining([
+      'KHR_mesh_quantization',
+      'KHR_meshopt_compression',
+    ]));
+    expect(report.extensions.requiresHook).toEqual(['KHR_meshopt_compression']);
+    expect(report.primitives.usesMeshopt).toBe(true);
+    expect(report.extensions.sourcePaths.KHR_meshopt_compression).toEqual(expect.arrayContaining([
+      'bufferViews[0].extensions.KHR_meshopt_compression',
+      'extensionsUsed[1]',
+      'extensionsRequired[1]',
+    ]));
+    expect([...reachability.bufferIndices].sort()).toEqual([0, 1]);
+    expect(webgl2.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'extension',
+        name: 'KHR_meshopt_compression',
+        support: 'requires-hook',
+        path: 'bufferViews[0].extensions.KHR_meshopt_compression',
+      }),
+    ]));
+    expect(webgl2.issues).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'extension',
+        name: 'KHR_mesh_quantization',
+        support: 'unsupported',
       }),
     ]));
   });

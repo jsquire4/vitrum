@@ -129,8 +129,11 @@ export function collectGltfSceneReachability(
   }
 
   for (const bufferViewIndex of bufferViewIndices) {
-    const bufferIndex = gltf.bufferViews?.[bufferViewIndex]?.buffer;
+    const bufferView = gltf.bufferViews?.[bufferViewIndex];
+    const bufferIndex = bufferView?.buffer;
     if (bufferIndex !== undefined) bufferIndices.add(bufferIndex);
+    const meshoptBufferIndex = meshoptCompressedBufferIndex(bufferView?.extensions);
+    if (meshoptBufferIndex !== undefined) bufferIndices.add(meshoptBufferIndex);
   }
 
   return {
@@ -169,6 +172,12 @@ function collectPrimitiveBufferViews(
   }
   const draco = primitive.extensions?.KHR_draco_mesh_compression;
   if (isRecord(draco) && typeof draco.bufferView === 'number') out.add(draco.bufferView);
+}
+
+function meshoptCompressedBufferIndex(extensions: Record<string, unknown> | undefined): number | undefined {
+  const ext = extensions?.EXT_meshopt_compression ?? extensions?.KHR_meshopt_compression;
+  if (!isRecord(ext) || typeof ext.buffer !== 'number') return undefined;
+  return ext.buffer;
 }
 
 function collectInstancingBufferViews(

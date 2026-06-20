@@ -183,15 +183,11 @@ async function capture(asset) {
       };
     }
 
-    captureStep = 'canvas-readback';
+    captureStep = 'canvas-screenshot';
     const goldenPath = resolve(repoRoot, asset.goldenPath);
     await mkdir(dirname(goldenPath), { recursive: true });
-    const dataUrl = await page.evaluate(() => {
-      const canvas = document.querySelector('canvas');
-      if (!(canvas instanceof HTMLCanvasElement)) throw new Error('capture canvas not found');
-      return canvas.toDataURL('image/png');
-    });
-    const pngBytes = Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
+    const canvas = page.locator('canvas').first();
+    const pngBytes = await canvas.screenshot({ type: 'png', timeout: timeoutMs });
     const png = PNG.sync.read(pngBytes);
     const luminance = meanLuminance(png.data);
     const compare = await compareOrUpdate(pngBytes, png, goldenPath);

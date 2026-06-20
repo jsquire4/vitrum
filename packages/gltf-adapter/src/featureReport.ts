@@ -1604,6 +1604,13 @@ function collectScopedNestedExtensionNames(
   for (const [textureIndex, texture] of textureEntriesForScope(gltf, sceneScope)) {
     collectNestedExtensionNames(texture, out, sourcePaths, `textures[${textureIndex}]`);
   }
+  for (const bufferViewIndex of sceneScope.bufferViewIndices) {
+    const bufferView = gltf.bufferViews?.[bufferViewIndex];
+    if (bufferView !== undefined) collectNestedExtensionNames(bufferView, out, sourcePaths, `bufferViews[${bufferViewIndex}]`);
+  }
+  if (sceneUsesMeshQuantization(gltf, sceneScope)) {
+    out.add('KHR_mesh_quantization');
+  }
   if (sceneScope.punctualLightIndices.size > 0) {
     out.add('KHR_lights_punctual');
     addSourcePath(sourcePaths, 'KHR_lights_punctual', 'extensions.KHR_lights_punctual');
@@ -1611,6 +1618,39 @@ function collectScopedNestedExtensionNames(
   if (out.has('KHR_materials_variants')) {
     addSourcePath(sourcePaths, 'KHR_materials_variants', 'extensions.KHR_materials_variants');
   }
+}
+
+function sceneUsesMeshQuantization(gltf: GltfJson, sceneScope: GltfSceneReachability): boolean {
+  const declared = (gltf.extensionsUsed ?? []).includes('KHR_mesh_quantization') ||
+    (gltf.extensionsRequired ?? []).includes('KHR_mesh_quantization');
+  if (!declared) return false;
+
+  for (const [meshIndex, mesh] of (gltf.meshes ?? []).entries()) {
+    for (const [primitiveIndex, primitive] of mesh.primitives.entries()) {
+      if (!sceneScope.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
+      if (primitiveAttributesUseQuantizedAccessors(gltf, primitive)) return true;
+    }
+  }
+
+  return false;
+}
+
+function primitiveAttributesUseQuantizedAccessors(gltf: GltfJson, primitive: GltfPrimitive): boolean {
+  const usesQuantizedAccessor = (accessorIndex: number | undefined): boolean => {
+    if (accessorIndex === undefined) return false;
+    const componentType = gltf.accessors?.[accessorIndex]?.componentType;
+    return componentType !== undefined && componentType !== 5126;
+  };
+
+  for (const accessorIndex of Object.values(primitive.attributes ?? {})) {
+    if (usesQuantizedAccessor(accessorIndex)) return true;
+  }
+  for (const target of primitive.targets ?? []) {
+    for (const accessorIndex of Object.values(target)) {
+      if (usesQuantizedAccessor(accessorIndex)) return true;
+    }
+  }
+  return false;
 }
 
 function collectNestedExtensionNames(

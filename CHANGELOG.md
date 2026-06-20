@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF browser proof truthfulness, 2026-06-20)
+
+- **Scene-scoped glTF feature reports now preserve bufferView meshopt and mesh-quantization telemetry:** `@vitrum/gltf-adapter` inspects selected-scene bufferView extensions when computing scoped reports, keeps reachable `KHR_mesh_quantization` accessors in the extension set, and marks meshopt compressed source buffers as reachable for external loading. The pt-webgl2 real-browser proof harness now captures via Playwright canvas screenshot and its refreshed fail-closed status proves `MeshoptCubeTest` reaches readiness with `KHR_mesh_quantization`, `KHR_meshopt_compression`, and the browser meshopt decode hook intact; PNG readback remains host-blocked on this WSL browser stack.
+
 ### Added (validation evidence, 2026-06-20)
 
 - **Walkaround transparent OIT now has a committed dzn-full golden proof:** `tools/behavioral-gate` runs `wh/transparent-oit` through the shared PNG golden comparator, commits the 64x64 camera-visible fractional alpha-blend fixture under `tools/reference-renders/wh-transparent-oit-behavioral/`, and requires the dzn status artifact to report `golden=ok variant=dzn-full`. This is visual stability proof for OIT composition, not a promotion of true transparent ReSTIR/GI transport.
