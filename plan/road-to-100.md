@@ -311,6 +311,11 @@
 > `analyzeGltfAsset({ sceneIndex })` and selected-scene resource fetching. Unused
 > scenes' animation buffers are not fetched, and their channels no longer leak
 > into returned clips or diagnostics for the selected scene.
+> Sparse preflight follow-up: reachable primitive POSITION/index accessors and
+> animation sampler input/output accessors now report malformed sparse storage
+> through `analyzeGltfAsset()` before backend selection when sparse indices or
+> values bufferViews are missing, their bufferViews reference missing buffers,
+> or sparse index component types are invalid.
 > Unknown animation sampler interpolation strings now appear as
 > `degradedInterpolations` with exact `animations[*].samplers[*].interpolation`
 > source paths and `support:"approximate"` compatibility issues, matching the

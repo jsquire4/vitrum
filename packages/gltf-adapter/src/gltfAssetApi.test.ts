@@ -3329,6 +3329,83 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(webgpuRows[1]!.unsupportedCount).toBe(0);
   });
 
+  it('reports malformed sparse POSITION storage before backend selection', () => {
+    const { gltf } = makeInlineTriangleGltf();
+    gltf.accessors![0] = {
+      ...gltf.accessors![0]!,
+      sparse: {
+        count: 1,
+        indices: { bufferView: 2, componentType: 5123 },
+        values: { bufferView: 3 },
+      },
+    };
+    gltf.bufferViews!.push({ buffer: 0, byteOffset: 0, byteLength: 2 });
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.primitives.malformedPrimitives).toContainEqual(expect.objectContaining({
+      kind: 'invalid-position-sparse-accessor',
+      path: 'accessors[0].sparse.values.bufferView',
+      accessorIndex: 0,
+      sparseIssueKind: 'missing-sparse-values-buffer-view',
+      bufferViewIndex: 3,
+    }));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'malformed.invalid-position-sparse-accessor',
+      support: 'unsupported',
+      path: 'accessors[0].sparse.values.bufferView',
+    }));
+  });
+
+  it('reports malformed sparse animation storage before backend selection', () => {
+    const { gltf } = makeInlineTriangleGltf();
+    const inputAccessor = gltf.accessors!.length;
+    const outputAccessor = inputAccessor + 1;
+    gltf.accessors!.push(
+      { bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' },
+      {
+        componentType: 5126,
+        count: 2,
+        type: 'VEC3',
+        sparse: {
+          count: 1,
+          indices: { bufferView: 2, componentType: 5126 as never },
+          values: { bufferView: 3 },
+        },
+      },
+    );
+    gltf.bufferViews!.push(
+      { buffer: 0, byteOffset: 0, byteLength: 4 },
+      { buffer: 0, byteOffset: 4, byteLength: 12 },
+    );
+    gltf.animations = [{
+      samplers: [{ input: inputAccessor, output: outputAccessor }],
+      channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+    }];
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.animations.malformedChannels).toContainEqual(expect.objectContaining({
+      kind: 'invalid-output-sparse-accessor',
+      path: `accessors[${outputAccessor}].sparse.indices.componentType`,
+      accessorIndex: outputAccessor,
+      accessorRole: 'output',
+      sparseIssueKind: 'invalid-sparse-indices-component-type',
+      componentType: 5126,
+    }));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'animation',
+      name: 'channel.invalid-output-sparse-accessor',
+      support: 'unsupported',
+      path: `accessors[${outputAccessor}].sparse.indices.componentType`,
+    }));
+  });
+
   it('reports morph tangent deltas as an approximate primitive compatibility issue', () => {
     const report = analyzeGltfAsset({
       asset: { version: '2.0' },

@@ -97,11 +97,20 @@ export type GltfMalformedPrimitiveKind =
   | 'invalid-position-accessor-component-type'
   | 'missing-position-buffer-view'
   | 'missing-position-buffer'
+  | 'invalid-position-sparse-accessor'
   | 'missing-index-accessor'
   | 'invalid-index-accessor'
   | 'missing-index-buffer-view'
   | 'missing-index-buffer'
+  | 'invalid-index-sparse-accessor'
   | 'empty-triangulated-primitive';
+
+export type GltfSparseAccessorStorageIssueKind =
+  | 'missing-sparse-indices-buffer-view'
+  | 'missing-sparse-indices-buffer'
+  | 'missing-sparse-values-buffer-view'
+  | 'missing-sparse-values-buffer'
+  | 'invalid-sparse-indices-component-type';
 
 export interface GltfMalformedPrimitiveIssue {
   readonly kind: GltfMalformedPrimitiveKind;
@@ -113,6 +122,7 @@ export interface GltfMalformedPrimitiveIssue {
   readonly bufferIndex?: number;
   readonly accessorType?: string;
   readonly componentType?: number;
+  readonly sparseIssueKind?: GltfSparseAccessorStorageIssueKind;
   readonly mode?: number;
 }
 
@@ -213,6 +223,8 @@ export type GltfAnimationMalformedChannelKind =
   | 'missing-output-buffer-view'
   | 'missing-input-buffer'
   | 'missing-output-buffer'
+  | 'invalid-input-sparse-accessor'
+  | 'invalid-output-sparse-accessor'
   | 'missing-target-node'
   | 'target-node-not-found'
   | 'invalid-output-count';
@@ -231,6 +243,7 @@ export interface GltfAnimationMalformedChannelIssue {
   readonly componentType?: number;
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
+  readonly sparseIssueKind?: GltfSparseAccessorStorageIssueKind;
   readonly expectedOutputFloats?: number;
   readonly actualOutputFloats?: number;
 }
@@ -1066,6 +1079,14 @@ function animationMalformedChannelMessage(issue: GltfAnimationMalformedChannelIs
       'the importer skips the channel.'
     );
   }
+  if (issue.kind === 'invalid-input-sparse-accessor' || issue.kind === 'invalid-output-sparse-accessor') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
+      `${String(issue.samplerIndex)} ${String(issue.accessorRole)} accessor ${String(issue.accessorIndex)} ` +
+      `with malformed sparse storage (${sparseAccessorStorageIssueMessage(issue)}); ` +
+      'the importer skips that sparse patch and the sampled animation data is incomplete.'
+    );
+  }
   if (issue.kind === 'missing-target-node') {
     return `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} has no target node; extension-targeted animation channels are not imported.`;
   }
@@ -1105,6 +1126,12 @@ function malformedPrimitiveMessage(issue: GltfMalformedPrimitiveIssue): string {
       `${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)}; the importer skips the primitive.`
     );
   }
+  if (issue.kind === 'invalid-position-sparse-accessor') {
+    return (
+      `${label} references POSITION accessor ${String(issue.accessorIndex)} with malformed sparse storage ` +
+      `(${sparseAccessorStorageIssueMessage(issue)}); the importer skips that sparse patch and geometry is incomplete.`
+    );
+  }
   if (issue.kind === 'missing-index-accessor') {
     return `${label} references index accessor ${String(issue.accessorIndex)} which does not exist; the importer skips the primitive.`;
   }
@@ -1123,7 +1150,48 @@ function malformedPrimitiveMessage(issue: GltfMalformedPrimitiveIssue): string {
       `${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)}; the importer skips the primitive.`
     );
   }
+  if (issue.kind === 'invalid-index-sparse-accessor') {
+    return (
+      `${label} references index accessor ${String(issue.accessorIndex)} with malformed sparse storage ` +
+      `(${sparseAccessorStorageIssueMessage(issue)}); the importer cannot faithfully reconstruct the index stream.`
+    );
+  }
   return `${label} uses topology mode ${String(issue.mode)} but the authored accessor counts cannot produce any triangles; the importer skips the primitive.`;
+}
+
+function sparseAccessorStorageIssueMessage(
+  issue: {
+    readonly sparseIssueKind?: GltfSparseAccessorStorageIssueKind;
+    readonly bufferViewIndex?: number;
+    readonly bufferIndex?: number;
+    readonly componentType?: number;
+  },
+): string {
+  if (issue.sparseIssueKind === 'missing-sparse-indices-buffer-view') {
+    return `sparse indices bufferView ${String(issue.bufferViewIndex)} is missing`;
+  }
+  if (issue.sparseIssueKind === 'missing-sparse-indices-buffer') {
+    return (
+      `sparse indices bufferView ${String(issue.bufferViewIndex)} references missing ` +
+      `buffer ${String(issue.bufferIndex)}`
+    );
+  }
+  if (issue.sparseIssueKind === 'missing-sparse-values-buffer-view') {
+    return `sparse values bufferView ${String(issue.bufferViewIndex)} is missing`;
+  }
+  if (issue.sparseIssueKind === 'missing-sparse-values-buffer') {
+    return (
+      `sparse values bufferView ${String(issue.bufferViewIndex)} references missing ` +
+      `buffer ${String(issue.bufferIndex)}`
+    );
+  }
+  if (issue.sparseIssueKind === 'invalid-sparse-indices-component-type') {
+    return (
+      `sparse indices componentType ${String(issue.componentType)} is invalid; ` +
+      'expected UNSIGNED_BYTE, UNSIGNED_SHORT, or UNSIGNED_INT'
+    );
+  }
+  return 'unknown sparse accessor storage issue';
 }
 
 function analyzeExtensions(
@@ -1610,6 +1678,19 @@ function primitiveImportBlockers(
       return issues;
     }
   }
+  const positionSparseIssue = sparseAccessorStorageIssue(gltf, positionAccessorIndex, positionAccessor);
+  if (positionSparseIssue !== undefined) {
+    issues.push({
+      kind: 'invalid-position-sparse-accessor',
+      path: positionSparseIssue.path,
+      meshIndex,
+      primitiveIndex,
+      accessorIndex: positionAccessorIndex,
+      mode,
+      ...sparseIssueDetails(positionSparseIssue),
+    });
+    return issues;
+  }
 
   const indexAccessorIndex = primitive.indices;
   let indexCount: number | undefined;
@@ -1669,6 +1750,19 @@ function primitiveImportBlockers(
         return issues;
       }
     }
+    const indexSparseIssue = sparseAccessorStorageIssue(gltf, indexAccessorIndex, indexAccessor);
+    if (indexSparseIssue !== undefined) {
+      issues.push({
+        kind: 'invalid-index-sparse-accessor',
+        path: indexSparseIssue.path,
+        meshIndex,
+        primitiveIndex,
+        accessorIndex: indexAccessorIndex,
+        mode,
+        ...sparseIssueDetails(indexSparseIssue),
+      });
+      return issues;
+    }
     indexCount = indexAccessor.count;
   }
 
@@ -1699,6 +1793,89 @@ function floatAccessorComponentTypeIsReadableByImporter(componentType: number): 
     componentType === 5123 ||
     componentType === 5125 ||
     componentType === 5126;
+}
+
+interface SparseAccessorStorageIssue {
+  readonly kind: GltfSparseAccessorStorageIssueKind;
+  readonly path: string;
+  readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
+  readonly componentType?: number;
+}
+
+function sparseAccessorStorageIssue(
+  gltf: GltfJson,
+  accessorIndex: number,
+  accessor: NonNullable<GltfJson['accessors']>[number],
+): SparseAccessorStorageIssue | undefined {
+  const sparse = accessor.sparse;
+  if (sparse === undefined) return undefined;
+
+  const indicesBufferViewIndex = sparse.indices.bufferView;
+  const indicesBufferView = gltf.bufferViews?.[indicesBufferViewIndex];
+  if (indicesBufferView == null) {
+    return {
+      kind: 'missing-sparse-indices-buffer-view',
+      path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
+      bufferViewIndex: indicesBufferViewIndex,
+    };
+  }
+  if (gltf.buffers?.[indicesBufferView.buffer] == null) {
+    return {
+      kind: 'missing-sparse-indices-buffer',
+      path: `bufferViews[${indicesBufferViewIndex}].buffer`,
+      bufferViewIndex: indicesBufferViewIndex,
+      bufferIndex: indicesBufferView.buffer,
+    };
+  }
+
+  const valuesBufferViewIndex = sparse.values.bufferView;
+  const valuesBufferView = gltf.bufferViews?.[valuesBufferViewIndex];
+  if (valuesBufferView == null) {
+    return {
+      kind: 'missing-sparse-values-buffer-view',
+      path: `accessors[${accessorIndex}].sparse.values.bufferView`,
+      bufferViewIndex: valuesBufferViewIndex,
+    };
+  }
+  if (gltf.buffers?.[valuesBufferView.buffer] == null) {
+    return {
+      kind: 'missing-sparse-values-buffer',
+      path: `bufferViews[${valuesBufferViewIndex}].buffer`,
+      bufferViewIndex: valuesBufferViewIndex,
+      bufferIndex: valuesBufferView.buffer,
+    };
+  }
+
+  if (!sparseIndexComponentTypeIsReadableByImporter(sparse.indices.componentType)) {
+    return {
+      kind: 'invalid-sparse-indices-component-type',
+      path: `accessors[${accessorIndex}].sparse.indices.componentType`,
+      componentType: sparse.indices.componentType,
+    };
+  }
+
+  return undefined;
+}
+
+function sparseIssueDetails(issue: SparseAccessorStorageIssue): {
+  readonly sparseIssueKind: GltfSparseAccessorStorageIssueKind;
+  readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
+  readonly componentType?: number;
+} {
+  return {
+    sparseIssueKind: issue.kind,
+    ...(issue.bufferViewIndex !== undefined ? { bufferViewIndex: issue.bufferViewIndex } : {}),
+    ...(issue.bufferIndex !== undefined ? { bufferIndex: issue.bufferIndex } : {}),
+    ...(issue.componentType !== undefined ? { componentType: issue.componentType } : {}),
+  };
+}
+
+function sparseIndexComponentTypeIsReadableByImporter(componentType: number): boolean {
+  return componentType === 5121 ||
+    componentType === 5123 ||
+    componentType === 5125;
 }
 
 function analyzeUnrepresentableMaterialUvSets(
@@ -2481,29 +2658,48 @@ function addAnimationAccessorStorageIssues(
   },
 ): void {
   const { animationIndex, channelIndex, channel, sampler, accessorRole, accessorIndex, accessor } = input;
-  if (accessor.bufferView === undefined) return;
-  const bufferViewIndex = accessor.bufferView;
-  const bufferView = gltf.bufferViews?.[bufferViewIndex];
   const kindPrefix = accessorRole === 'input' ? 'input' : 'output';
-  if (bufferView == null) {
-    issues.push({
-      kind: kindPrefix === 'input' ? 'missing-input-buffer-view' : 'missing-output-buffer-view',
-      path: `accessors[${accessorIndex}].bufferView`,
-      animationIndex,
-      channelIndex,
-      targetPath: channel.target.path,
-      samplerIndex: channel.sampler,
-      ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
-      accessorIndex,
-      accessorRole,
-      bufferViewIndex,
-    });
-    return;
+  if (accessor.bufferView !== undefined) {
+    const bufferViewIndex = accessor.bufferView;
+    const bufferView = gltf.bufferViews?.[bufferViewIndex];
+    if (bufferView == null) {
+      issues.push({
+        kind: kindPrefix === 'input' ? 'missing-input-buffer-view' : 'missing-output-buffer-view',
+        path: `accessors[${accessorIndex}].bufferView`,
+        animationIndex,
+        channelIndex,
+        targetPath: channel.target.path,
+        samplerIndex: channel.sampler,
+        ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
+        accessorIndex,
+        accessorRole,
+        bufferViewIndex,
+      });
+      return;
+    }
+    if (gltf.buffers?.[bufferView.buffer] == null) {
+      issues.push({
+        kind: kindPrefix === 'input' ? 'missing-input-buffer' : 'missing-output-buffer',
+        path: `bufferViews[${bufferViewIndex}].buffer`,
+        animationIndex,
+        channelIndex,
+        targetPath: channel.target.path,
+        samplerIndex: channel.sampler,
+        ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
+        accessorIndex,
+        accessorRole,
+        bufferViewIndex,
+        bufferIndex: bufferView.buffer,
+      });
+      return;
+    }
   }
-  if (gltf.buffers?.[bufferView.buffer] == null) {
+
+  const sparseIssue = sparseAccessorStorageIssue(gltf, accessorIndex, accessor);
+  if (sparseIssue !== undefined) {
     issues.push({
-      kind: kindPrefix === 'input' ? 'missing-input-buffer' : 'missing-output-buffer',
-      path: `bufferViews[${bufferViewIndex}].buffer`,
+      kind: kindPrefix === 'input' ? 'invalid-input-sparse-accessor' : 'invalid-output-sparse-accessor',
+      path: sparseIssue.path,
       animationIndex,
       channelIndex,
       targetPath: channel.target.path,
@@ -2511,8 +2707,7 @@ function addAnimationAccessorStorageIssues(
       ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
       accessorIndex,
       accessorRole,
-      bufferViewIndex,
-      bufferIndex: bufferView.buffer,
+      ...sparseIssueDetails(sparseIssue),
     });
   }
 }
