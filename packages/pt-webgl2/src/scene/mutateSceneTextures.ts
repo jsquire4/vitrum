@@ -1,7 +1,7 @@
 import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import { MATERIAL_PIXELS, packMaterialsTexture } from './materialsTexture.js';
-import { packLightsTexture } from './lightsTexture.js';
+import { LIGHT_PIXELS, packLightsTexture } from './lightsTexture.js';
 import { hasMeshAreaLightForPrimitive, packMeshAreaLights, TRI_LIGHT_PIXELS } from './meshAreaLights.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
@@ -234,6 +234,21 @@ function updateResidentMeshLightTexture(
 
   const meshLights = uploadRgba32f(gl, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
   return meshLights;
+}
+
+function updateResidentLightsTexture(
+  gl: WebGL2RenderingContext,
+  current: UploadedSceneTextures,
+  nextLightsData: ReturnType<typeof packLightsTexture>,
+): WebGLTexture {
+  const currentLightsDim = squareDim(current.lightCount * LIGHT_PIXELS);
+  const lights = nextLightsData.data as Float32Array;
+  if (currentLightsDim === nextLightsData.dim) {
+    updateRgba32f(gl, current.lights, lights, nextLightsData.dim, 'scene lights');
+  } else {
+    replaceRgba32f(gl, current.lights, lights, nextLightsData.dim, 'scene lights');
+  }
+  return current.lights;
 }
 
 function replaceResidentBvhTextures(
@@ -1098,11 +1113,10 @@ export function tryFastPathEmitterMutation(
   const isMeshAreaMutation = changed?.kind === 'mesh-area';
   const lightsData = packLightsTexture(nextScene.emitters);
   const structuredWarnings: EngineWarning[] = [];
-  const lights = uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights');
+  const lights = updateResidentLightsTexture(gl, current, lightsData);
   const meshLightsData = packMeshAreaLights(nextScene, geoPack);
-  const meshLights = meshLightsData.data != null
-    ? uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights')
-    : null;
+  const deleteOldTextures: (WebGLTexture | null)[] = [];
+  const meshLights = updateResidentMeshLightTexture(gl, current, meshLightsData, deleteOldTextures);
   const foldedMaterials = isMeshAreaMutation
     ? repackMeshAreaFoldedMaterials(geoPack, nextScene)
     : null;
@@ -1130,10 +1144,7 @@ export function tryFastPathEmitterMutation(
       totalEmissivePower: meshLightsData.totalEmissivePower,
     }),
     ...(foldedMaterials != null ? { geoPack: foldedMaterials.nextGeoPack } : {}),
-    deleteOldTextures: [
-      current.lights,
-      current.meshLights,
-    ],
+    deleteOldTextures,
     structuredWarnings,
   };
 }

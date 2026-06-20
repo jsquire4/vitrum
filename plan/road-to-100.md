@@ -1213,6 +1213,8 @@ Adjoint emitter/environment/normal-stack receiver note (2026-06-20): emitter `co
 | ~~Denoiser~~ ✅ DONE | `oidn-final` is now an in-engine asynchronous final-pass path on pt-webgl2 (`OIDNFinalDispatcher`, aux readback, `oidnFinal.test.ts`, `engineContract.test.ts`). | Non-OIDN realtime denoisers remain unsupported on converged pt-webgl2; hosts must provide `oidn.modelUrl` + optional bridge/runtime. |
 | ~~Caustics~~ ✅ DOC/TEST CLOSED | pt-webgl2 `manifold-nee` remains a deterministic refraction-walk heuristic, not Newton-solve MNEE (`options.ts`, README, core factory note). `renderer-fidelity-matrix.md` grades pt-webgl2 caustics `approximate`, and `engineContract.test.ts` pins that the backend surfaces caustic choices only through `capabilities.causticStrategy` rather than advertising native MNEE feature support. | Keep pt-webgpu `manifold-nee` as the validated reference; pt-webgl2 caustics stay approximate unless a real MNEE port lands. |
 
+2026-06-20 emitter-residency follow-up: pt-webgl2 `updateEmitter()` now preserves the resident analytic light texture by subuploading/re-specifying it in place, and mesh-area emitter edits preserve resident light and mesh-light texture objects when dimensions are stable. `engineContract.test.ts` pins zero GL texture create/delete churn for point-light and mesh-area emitter edits while keeping BVH geometry resident.
+
 #### 2E — pt-webgpu lite tier policy
 
 **For arbitrary glTF 100%:** lite is **not** a target. Policy/code is closed below; keep these rows as regression gates:

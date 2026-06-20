@@ -2072,13 +2072,31 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
   });
 
   it('updateEmitter and updateEnvironment patch scene textures without rebuilding BVH geometry', async () => {
-    const e = await createPTEngine_WebGL2(opts());
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texImage2D = vi.fn();
+    const deleteTexture = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texImage2D: typeof texImage2D }).texImage2D = texImage2D;
+    (gl as unknown as { deleteTexture: typeof deleteTexture }).deleteTexture = deleteTexture;
+    const e = await createPTEngine_WebGL2({ device: gl });
     e.setScene(sceneWithEmitter());
     const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
+    const initialTextureUploads = createTexture.mock.calls.length;
+    const initialSubImage2D = texSubImage2D.mock.calls.length;
+    const initialImage2D = texImage2D.mock.calls.length;
+    const initialDeletes = deleteTexture.mock.calls.length;
 
     e.updateEmitter?.('point-a', { intensity: 4 });
     expect(e.getScene?.()?.emitters[0]?.intensity).toBe(4);
     expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(0);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBe(0);
+    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
 
     e.updateEnvironment?.(hdriScene().environment);
     const scene = e.getScene?.();
@@ -2119,10 +2137,24 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
   });
 
   it('updateEmitter mesh-area patches folded material and mesh-light textures without rebuilding BVH geometry', async () => {
-    const e = await createPTEngine_WebGL2(opts());
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texImage2D = vi.fn();
+    const deleteTexture = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texImage2D: typeof texImage2D }).texImage2D = texImage2D;
+    (gl as unknown as { deleteTexture: typeof deleteTexture }).deleteTexture = deleteTexture;
+    const e = await createPTEngine_WebGL2({ device: gl });
     e.setScene(sceneWithMeshAreaEmitter());
     const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
     const beforePositions = e._debugGeoPack?.positions;
+    const initialTextureUploads = createTexture.mock.calls.length;
+    const initialSubImage2D = texSubImage2D.mock.calls.length;
+    const initialImage2D = texImage2D.mock.calls.length;
+    const initialDeletes = deleteTexture.mock.calls.length;
     expect(e._debugSceneTex?.meshLightCount).toBe(2);
     expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
     expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([1, 1, 1]);
@@ -2142,6 +2174,10 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(4);
     expect(e._debugSceneTex?.meshLightCount).toBe(2);
     expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(0);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBe(0);
+    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(3);
   });
 
   it('updatePrimitive material fast path preserves mesh-area folded emissive radiance', async () => {
