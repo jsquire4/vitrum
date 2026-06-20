@@ -2248,7 +2248,10 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     };
     gltf.animations = [{
       samplers: [{ input: 2, output: 3, interpolation: 'STEP' }],
-      channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+      channels: [
+        { sampler: 0, target: { node: 0, path: 'translation' } },
+        { sampler: 0, target: { node: 0, path: 'pointer' as never } },
+      ],
     }];
 
     const report = analyzeGltfAsset(gltf);
@@ -2275,7 +2278,11 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(report.materials.specularGlossinessTextureCount).toBe(1);
     expect(report.resources.externalBufferCount).toBe(1);
     expect(report.resources.externalImageCount).toBe(1);
-    expect(report.animations.paths).toEqual(['translation']);
+    expect(report.animations.paths).toEqual(['pointer', 'translation']);
+    expect(report.animations.unsupportedTargetPaths).toEqual(['pointer']);
+    expect(report.animations.issuePaths).toEqual({
+      'unsupportedTargetPath:pointer': ['animations[0].channels[1].target.path'],
+    });
     expect(report.animations.interpolations).toEqual(['STEP']);
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
@@ -2296,6 +2303,12 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       issue.name === 'KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha' &&
       issue.support === 'approximate',
     )).toBe(true);
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'animation',
+      name: 'target.path:pointer',
+      support: 'unsupported',
+      path: 'animations[0].channels[1].target.path',
+    }));
     const webgpuCompatibility = evaluateGltfBackendCompatibility(report, 'pt-webgpu');
     expect(webgpuCompatibility.issues.some((issue) =>
       issue.category === 'material' &&

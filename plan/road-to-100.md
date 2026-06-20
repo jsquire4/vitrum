@@ -300,6 +300,12 @@
 > `setScene()` already includes vertex-color alpha in alpha-blend approximation
 > warnings, and explicit glTF engine preferences already override adapter
 > recommendations unless the caller passes an explicit adapter backend.
+> Same-day animation preflight follow-up: unsupported glTF animation target paths
+> now appear in `analyzeGltfAsset()` with exact
+> `animations[*].channels[*].target.path` source paths and backend compatibility
+> reports as `category:"animation"` / `support:"unsupported"` issues, so strict
+> one-call loaders can reject extension/pointer animation channels before import
+> instead of discovering the skipped channel only after engine construction.
 > Same-day pt-webgl2 skinning-warning follow-up: empty-bones skinned meshes
 > still render in rest pose, but scene ingestion now routes that fallback through
 > structured `pt-webgl2.skinned-mesh-empty-bones` warnings with the primitive id

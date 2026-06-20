@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF animation compatibility truthfulness, 2026-06-20)
+
+- **Unsupported glTF animation target paths now surface during compatibility preflight:** `analyzeGltfAsset()` records non-core animation target paths such as extension/pointer channels with exact `animations[*].channels[*].target.path` source paths, and `evaluateGltfBackendCompatibility()` reports them as `category:"animation"` / `support:"unsupported"` issues. Import still skips those channels with the existing structured diagnostic; strict backend selection can now reject them before constructing an engine.
+
 ### Fixed (pt-webgpu inverse diagnostic specificity, 2026-06-20)
 
 - **Geometry-domain inverse replay blockers now have their own diagnostic code:** `@vitrum/core` exposes `path-replay-unsupported-geometry`, and `@vitrum/pt-webgpu` uses it for displacement-map path-replay downgrades instead of collapsing the case into generic material support. Hosts can now route displacement/BVH-geometry limitations separately from BRDF/material-domain inverse limitations.

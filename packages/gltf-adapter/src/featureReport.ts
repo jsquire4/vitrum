@@ -123,8 +123,10 @@ export interface GltfAnimationFeatureReport {
   readonly count: number;
   readonly channelCount: number;
   readonly paths: readonly string[];
+  readonly unsupportedTargetPaths: readonly string[];
   readonly interpolations: readonly string[];
   readonly targetNodeCount: number;
+  readonly issuePaths: Readonly<Record<string, readonly string[]>>;
 }
 
 export interface GltfSceneGraphFeatureReport {
@@ -155,7 +157,7 @@ export interface GltfFeatureReport {
 }
 
 export interface GltfCompatibilityIssue {
-  readonly category: 'extension' | 'primitive' | 'material' | 'scene' | 'texture';
+  readonly category: 'extension' | 'primitive' | 'material' | 'scene' | 'texture' | 'animation';
   readonly name: string;
   readonly support: BackendSupportMode | 'requires-hook' | 'unknown';
   readonly path: string;
@@ -315,6 +317,13 @@ const BACKEND_PROFILES: Readonly<Record<GltfBackendProfileId, GltfBackendProfile
     backend: 'walkaround-hybrid',
   }),
 });
+
+const CORE_ANIMATION_TARGET_PATHS: ReadonlySet<string> = new Set([
+  'translation',
+  'rotation',
+  'scale',
+  'weights',
+]);
 
 type SourcePathMap = Map<string, string[]>;
 
@@ -586,6 +595,22 @@ export function evaluateGltfBackendProfileCompatibility(
       message:
         'glTF cameras are reported for host inspection but are not imported into the core Scene contract; ' +
         'Vitrum cameras are supplied per frame through FrameInput.',
+    });
+  }
+
+  for (const targetPath of report.animations.unsupportedTargetPaths) {
+    addIssue({
+      category: 'animation',
+      name: `target.path:${targetPath}`,
+      support: 'unsupported',
+      path: firstSourcePath(
+        report.animations.issuePaths,
+        `unsupportedTargetPath:${targetPath}`,
+        'animations',
+      ),
+      message:
+        `glTF animation target path "${targetPath}" is not imported into the core animation controller; ` +
+        'supported target paths are translation, rotation, scale, and weights.',
     });
   }
 
@@ -1489,13 +1514,15 @@ function analyzeAnimations(
   sceneScope: GltfSceneReachability | undefined,
 ): GltfAnimationFeatureReport {
   const paths = new Set<string>();
+  const unsupportedTargetPaths = new Set<string>();
   const interpolations = new Set<string>();
   const targetNodes = new Set<number>();
   const animationIndices = new Set<number>();
+  const issuePaths: SourcePathMap = new Map();
   let channelCount = 0;
   for (const [animationIndex, animation] of (gltf.animations ?? []).entries()) {
     let animationHasReachableChannel = sceneScope === undefined;
-    for (const channel of animation.channels ?? []) {
+    for (const [channelIndex, channel] of (animation.channels ?? []).entries()) {
       if (
         sceneScope !== undefined &&
         (channel.target.node === undefined || !sceneScope.nodeIndices.has(channel.target.node))
@@ -1504,7 +1531,16 @@ function analyzeAnimations(
       }
       animationHasReachableChannel = true;
       channelCount += 1;
-      paths.add(channel.target.path);
+      const targetPath = channel.target.path;
+      paths.add(targetPath);
+      if (!CORE_ANIMATION_TARGET_PATHS.has(targetPath)) {
+        unsupportedTargetPaths.add(targetPath);
+        addSourcePath(
+          issuePaths,
+          `unsupportedTargetPath:${targetPath}`,
+          `animations[${animationIndex}].channels[${channelIndex}].target.path`,
+        );
+      }
       if (channel.target.node !== undefined) targetNodes.add(channel.target.node);
     }
     if (!animationHasReachableChannel) continue;
@@ -1517,8 +1553,10 @@ function analyzeAnimations(
     count: sceneScope === undefined ? gltf.animations?.length ?? 0 : animationIndices.size,
     channelCount,
     paths: sorted(paths),
+    unsupportedTargetPaths: sorted(unsupportedTargetPaths),
     interpolations: sorted(interpolations),
     targetNodeCount: targetNodes.size,
+    issuePaths: sourcePathRecord(issuePaths),
   };
 }
 
