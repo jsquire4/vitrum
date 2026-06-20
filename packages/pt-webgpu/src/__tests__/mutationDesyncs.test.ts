@@ -102,6 +102,31 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
       layerDescriptorFields: ['frontLayer.normalMap', 'frontLayer.normalScale'],
     });
   });
+
+  it('classifies layered descriptor removals as requiring a full repack', () => {
+    expect(
+      materialPatchRepackFields({
+        material: {
+          frontLayer: { normalMap: undefined, normalScale: undefined },
+          backLayer: undefined,
+        },
+      } as never),
+    ).toEqual({
+      textureFields: [],
+      descriptorScalarFields: [],
+      layerDescriptorFields: [
+        'backLayer.normalMap',
+        'backLayer.normalScale',
+        'frontLayer.normalMap',
+        'frontLayer.normalScale',
+      ],
+    });
+    expect(
+      canFastPathMaterialPatch({
+        material: { frontLayer: { normalMap: undefined } },
+      } as never),
+    ).toBe(false);
+  });
 });
 
 // ─── 2b: hasMeshAreaEmitterForPrimitive covers implicit emitters ──────────────

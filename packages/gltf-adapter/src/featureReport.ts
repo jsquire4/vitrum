@@ -27,6 +27,7 @@ import {
   gltfPrimitiveKey,
   type GltfSceneReachability,
 } from './sceneScope.js';
+import { resolveGltfMaterialAnimationPointer } from './materialPointerAnimation.js';
 
 export type GltfResourceKind = 'embedded' | 'bufferView' | 'data-uri' | 'external-uri' | 'missing';
 
@@ -430,6 +431,7 @@ const REQUIRED_EXTENSION_SUPPORT = new Set([
   'KHR_materials_emissive_strength',
   'KHR_materials_variants',
   'KHR_materials_pbrSpecularGlossiness',
+  'KHR_animation_pointer',
   'KHR_mesh_quantization',
   'KHR_texture_transform',
   'KHR_texture_basisu',
@@ -540,6 +542,7 @@ const CORE_ANIMATION_TARGET_PATHS: ReadonlySet<string> = new Set([
   'rotation',
   'scale',
   'weights',
+  'pointer',
 ]);
 const CORE_ANIMATION_INTERPOLATIONS: ReadonlySet<string> = new Set([
   'LINEAR',
@@ -886,9 +889,10 @@ export function evaluateGltfBackendProfileCompatibility(
         `unsupportedTargetPath:${targetPath}`,
         'animations',
       ),
-      message:
-        `glTF animation target path "${targetPath}" is not imported into the core animation controller; ` +
-        'supported target paths are translation, rotation, scale, and weights.',
+      message: targetPath === 'pointer'
+        ? 'glTF KHR_animation_pointer channel targets an unsupported JSON pointer; material factor pointers are imported, other mutable asset properties remain unsupported.'
+        : `glTF animation target path "${targetPath}" is not imported into the core animation controller; ` +
+          'supported target paths are translation, rotation, scale, weights, and supported KHR_animation_pointer material factors.',
     });
   }
 
@@ -3185,6 +3189,64 @@ function analyzeAnimations(
   for (const [animationIndex, animation] of (gltf.animations ?? []).entries()) {
     let animationHasReachableChannel = sceneScope === undefined;
     for (const [channelIndex, channel] of (animation.channels ?? []).entries()) {
+      const targetPath = channel.target.path;
+      if (targetPath === 'pointer') {
+        const pointer = channel.target.extensions?.KHR_animation_pointer?.pointer;
+        const pointerTarget = resolveGltfMaterialAnimationPointer(pointer);
+        if (
+          sceneScope !== undefined &&
+          pointerTarget !== undefined &&
+          !sceneScope.materialIndices.has(pointerTarget.materialIndex)
+        ) {
+          continue;
+        }
+        animationHasReachableChannel = true;
+        channelCount += 1;
+        paths.add(targetPath);
+        if (pointerTarget === undefined) {
+          unsupportedTargetPaths.add(targetPath);
+          addSourcePath(
+            issuePaths,
+            `unsupportedTargetPath:${targetPath}`,
+            pointer === undefined
+              ? `animations[${animationIndex}].channels[${channelIndex}].target.path`
+              : `animations[${animationIndex}].channels[${channelIndex}].target.extensions.KHR_animation_pointer.pointer`,
+          );
+          continue;
+        }
+        const sampler = animation.samplers?.[channel.sampler];
+        if (sampler == null) {
+          malformedChannels.push({
+            kind: 'missing-sampler',
+            path: `animations[${animationIndex}].samplers[${channel.sampler}]`,
+            animationIndex,
+            channelIndex,
+            targetPath,
+            samplerIndex: channel.sampler,
+          });
+          continue;
+        }
+        const samplerAccessorIssues = animationSamplerAccessorIssues(
+          gltf,
+          animationIndex,
+          channelIndex,
+          channel,
+          sampler,
+        );
+        if (samplerAccessorIssues.length > 0) {
+          malformedChannels.push(...samplerAccessorIssues);
+          continue;
+        }
+        const outputCountIssue = animationOutputCountIssue(
+          gltf,
+          animationIndex,
+          channelIndex,
+          channel,
+          sampler,
+        );
+        if (outputCountIssue !== undefined) malformedChannels.push(outputCountIssue);
+        continue;
+      }
       if (
         sceneScope !== undefined &&
         (channel.target.node === undefined || !sceneScope.nodeIndices.has(channel.target.node))
@@ -3193,7 +3255,6 @@ function analyzeAnimations(
       }
       animationHasReachableChannel = true;
       channelCount += 1;
-      const targetPath = channel.target.path;
       paths.add(targetPath);
       if (!CORE_ANIMATION_TARGET_PATHS.has(targetPath)) {
         unsupportedTargetPaths.add(targetPath);
@@ -3468,6 +3529,25 @@ function animationOutputCountIssue(
   const actualOutputFloats = animationAccessorFloatCount(outputAccessor);
   if (actualOutputFloats === undefined) return undefined;
   const targetPath = channel.target.path;
+  if (targetPath === 'pointer') {
+    const pointerTarget = resolveGltfMaterialAnimationPointer(
+      channel.target.extensions?.KHR_animation_pointer?.pointer,
+    );
+    if (pointerTarget !== undefined) {
+      const expectedOutputFloats = inputAccessor.count * pointerTarget.components * cubicFactor;
+      if (actualOutputFloats === expectedOutputFloats) return undefined;
+      return {
+        kind: 'invalid-output-count',
+        path: `animations[${animationIndex}].channels[${channelIndex}].sampler`,
+        animationIndex,
+        channelIndex,
+        targetPath,
+        samplerIndex: channel.sampler,
+        expectedOutputFloats,
+        actualOutputFloats,
+      };
+    }
+  }
   const trsCount = animationTargetTrsComponentCount(targetPath);
   if (trsCount !== undefined) {
     const expectedOutputFloats = inputAccessor.count * trsCount * cubicFactor;

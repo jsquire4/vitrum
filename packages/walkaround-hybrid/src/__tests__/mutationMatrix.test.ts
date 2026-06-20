@@ -578,6 +578,40 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material partial) splits shared merged material slots instead of leaking to siblings', () => {
+    const sharedMaterial = { baseColor: [0.4, 0.4, 0.4] as [number, number, number], roughness: 0.5, metallic: 0 };
+    const scene: Scene = {
+      primitives: [
+        { ...mesh('mesh-a', 0, [0.4, 0.4, 0.4]), material: sharedMaterial },
+        { ...mesh('mesh-b', 3, [0.4, 0.4, 0.4]), material: sharedMaterial },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { engine, buffers, pipeline } = seedEngine(scene, { bvhMode: 'merged' });
+    try {
+      expect(buffers.coreMaterials).toHaveLength(1);
+      expect(Array.from(new Uint32Array(buffers.triangleMaterialIds.cpuData))).toEqual([0, 0]);
+
+      engine.updatePrimitive('mesh-a', {
+        material: { roughness: 0.25 },
+      } as unknown as Partial<ScenePrimitive>);
+
+      expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhFullRebuild).not.toHaveBeenCalled();
+      const updatedBvh = storedBvh(engine);
+      expect(updatedBvh.coreMaterials).toHaveLength(2);
+      expect(updatedBvh.coreMaterials[0]?.roughness).toBe(0.5);
+      expect(updatedBvh.coreMaterials[1]?.roughness).toBe(0.25);
+      expect(Array.from(new Uint32Array(updatedBvh.triangleMaterialIds.cpuData))).toEqual([1, 0]);
+      const stored = storedScene(engine).primitives;
+      expect((stored[0] as Extract<ScenePrimitive, { kind: 'mesh' }>).material.roughness).toBe(0.25);
+      expect((stored[1] as Extract<ScenePrimitive, { kind: 'mesh' }>).material.roughness).toBe(0.5);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updatePrimitive(receiveShadow:false) emits the reserved receiveShadow warning', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     try {

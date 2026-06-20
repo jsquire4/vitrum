@@ -87,6 +87,16 @@ const TEXTURE_MAP_COLOR_SPACE: Readonly<Record<string, TextureSampleColorSpace>>
   lightMap: 'linear',
 });
 
+const LAYER_TEXTURE_MAP_FIELDS = [
+  { layer: 'frontLayer', field: 'normalMap', path: 'frontLayer.normalMap', colorSpace: 'linear' },
+  { layer: 'backLayer', field: 'normalMap', path: 'backLayer.normalMap', colorSpace: 'linear' },
+] as const satisfies readonly {
+  readonly layer: 'frontLayer' | 'backLayer';
+  readonly field: 'normalMap';
+  readonly path: string;
+  readonly colorSpace: TextureSampleColorSpace;
+}[];
+
 const GEOMETRY_TEXTURE_REFRESH_FIELDS: ReadonlySet<string> = new Set([
   'transform',
   'positions',
@@ -144,19 +154,70 @@ function canFastPathMaterialPatch(patch: Partial<ScenePrimitive>): boolean {
   return sawMaterialLaneField;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value) && !ArrayBuffer.isView(value);
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+interface TextureMapPatchEntry {
+  readonly path: string;
+  readonly colorSpace: TextureSampleColorSpace;
+  readonly value: unknown;
+}
+
+function textureMapPatchEntries(material: Record<string, unknown>): TextureMapPatchEntry[] {
+  const entries: TextureMapPatchEntry[] = [];
+  for (const field of Object.keys(material)) {
+    if (!TEXTURE_MAP_FIELDS.has(field)) continue;
+    entries.push({
+      path: field,
+      colorSpace: TEXTURE_MAP_COLOR_SPACE[field] ?? 'linear',
+      value: material[field],
+    });
+  }
+  for (const descriptor of LAYER_TEXTURE_MAP_FIELDS) {
+    if (!hasOwn(material, descriptor.layer)) continue;
+    const layer = material[descriptor.layer];
+    if (isRecord(layer)) {
+      if (!hasOwn(layer, descriptor.field)) continue;
+      entries.push({ path: descriptor.path, colorSpace: descriptor.colorSpace, value: layer[descriptor.field] });
+    } else {
+      entries.push({ path: descriptor.path, colorSpace: descriptor.colorSpace, value: undefined });
+    }
+  }
+  return entries;
+}
+
+function materialTextureValueAt(material: Record<string, unknown>, path: string): unknown {
+  const dot = path.indexOf('.');
+  if (dot < 0) return material[path];
+  const parent = material[path.slice(0, dot)];
+  if (!isRecord(parent)) return undefined;
+  return parent[path.slice(dot + 1)];
+}
+
+export function materialTextureMapPatchFields(patch: Partial<ScenePrimitive>): string[] {
+  if (patch.material == null) return [];
+  return textureMapPatchEntries(patch.material as unknown as Record<string, unknown>)
+    .map((entry) => entry.path)
+    .sort();
+}
+
 function texturePatchNeedsAtlasRefresh(
   patch: Partial<ScenePrimitive> & { material: MaterialSpec },
   materialLayerMap: TextureAtlasLayerMap | null,
 ): boolean {
   const mat = patch.material as unknown as Record<string, unknown>;
-  for (const field of Object.keys(mat)) {
-    if (!TEXTURE_MAP_FIELDS.has(field)) continue;
-    if (textureValueNeedsAtlasRefresh(field, mat[field], materialLayerMap)) return true;
+  for (const entry of textureMapPatchEntries(mat)) {
+    if (textureValueNeedsAtlasRefresh(entry.colorSpace, entry.value, materialLayerMap)) return true;
   }
   return false;
 }
 
-function textureHandleOf(value: unknown): unknown | null {
+function textureHandleOf(value: unknown): unknown {
   if (value == null || typeof value !== 'object') return null;
   return (value as { readonly handle?: unknown }).handle ?? null;
 }
@@ -168,17 +229,16 @@ function texturePatchMayCompactAtlas(
   if (previousMaterial == null) return false;
   const previous = previousMaterial as unknown as Record<string, unknown>;
   const next = patch.material as unknown as Record<string, unknown>;
-  for (const field of Object.keys(next)) {
-    if (!TEXTURE_MAP_FIELDS.has(field)) continue;
-    const previousHandle = textureHandleOf(previous[field]);
+  for (const entry of textureMapPatchEntries(next)) {
+    const previousHandle = textureHandleOf(materialTextureValueAt(previous, entry.path));
     if (previousHandle == null) continue;
-    if (textureHandleOf(next[field]) !== previousHandle) return true;
+    if (textureHandleOf(entry.value) !== previousHandle) return true;
   }
   return false;
 }
 
 function textureValueNeedsAtlasRefresh(
-  field: string,
+  colorSpace: TextureSampleColorSpace,
   value: unknown,
   materialLayerMap: TextureAtlasLayerMap | null,
 ): boolean {
@@ -186,7 +246,6 @@ function textureValueNeedsAtlasRefresh(
   if (typeof value !== 'object') return false;
   const handle = textureHandleOf(value);
   if (handle == null) return false;
-  const colorSpace = TEXTURE_MAP_COLOR_SPACE[field] ?? 'linear';
   return materialLayerMap?.[colorSpace].has(handle) !== true;
 }
 

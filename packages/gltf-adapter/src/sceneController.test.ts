@@ -275,6 +275,109 @@ function materialVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuff
   };
 }
 
+function materialPointerAnimationGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const packed = packF32([
+    [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    [0, 1],
+    [
+      1, 0, 0, 1,
+      0, 1, 0, 0.5,
+    ],
+    [0.2, 0.8],
+    [0.9, 0.1],
+    [
+      0, 0, 0,
+      1, 0.5, 0.25,
+    ],
+  ]);
+  return {
+    buffers: new Map([[0, packed.buffer]]),
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_animation_pointer'],
+      extensionsRequired: ['KHR_animation_pointer'],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{
+        pbrMetallicRoughness: {
+          baseColorFactor: [1, 0, 0, 1],
+          metallicFactor: 0.2,
+          roughnessFactor: 0.9,
+        },
+        emissiveFactor: [0, 0, 0],
+        alphaMode: 'BLEND',
+      }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 2, componentType: 5126, count: 2, type: 'VEC4' },
+        { bufferView: 3, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 4, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 5, componentType: 5126, count: 2, type: 'VEC3' },
+      ],
+      bufferViews: packed.views,
+      buffers: [{ byteLength: packed.buffer.byteLength }],
+      animations: [{
+        name: 'material-factors',
+        samplers: [
+          { input: 1, output: 2, interpolation: 'LINEAR' },
+          { input: 1, output: 3, interpolation: 'LINEAR' },
+          { input: 1, output: 4, interpolation: 'LINEAR' },
+          { input: 1, output: 5, interpolation: 'LINEAR' },
+        ],
+        channels: [
+          {
+            sampler: 0,
+            target: {
+              path: 'pointer',
+              extensions: {
+                KHR_animation_pointer: {
+                  pointer: '/materials/0/pbrMetallicRoughness/baseColorFactor',
+                },
+              },
+            },
+          },
+          {
+            sampler: 1,
+            target: {
+              path: 'pointer',
+              extensions: {
+                KHR_animation_pointer: {
+                  pointer: '/materials/0/pbrMetallicRoughness/metallicFactor',
+                },
+              },
+            },
+          },
+          {
+            sampler: 2,
+            target: {
+              path: 'pointer',
+              extensions: {
+                KHR_animation_pointer: {
+                  pointer: '/materials/0/pbrMetallicRoughness/roughnessFactor',
+                },
+              },
+            },
+          },
+          {
+            sampler: 3,
+            target: {
+              path: 'pointer',
+              extensions: {
+                KHR_animation_pointer: {
+                  pointer: '/materials/0/emissiveFactor',
+                },
+              },
+            },
+          },
+        ],
+      }],
+    },
+  };
+}
+
 function materialVariantHighUvGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const packed = packF32([
     [0, 0, 0, 1, 0, 0, 0, 1, 0],
@@ -499,6 +602,54 @@ describe('GltfSceneController', () => {
     expect(setScene).toHaveBeenCalledTimes(1);
     const scene = setScene.mock.calls[0]![0] as Scene;
     expect((scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(2);
+  });
+
+  it('applies KHR_animation_pointer material-factor channels through primitive material patches', async () => {
+    const { gltf, buffers } = materialPointerAnimationGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const updatePrimitive = vi.fn();
+    const reset = vi.fn();
+    const engine: GltfScenePatchTarget = { setScene: vi.fn(), updatePrimitive, reset };
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    expect(result.animations[0]!.channels).toHaveLength(4);
+    expect(result.animations[0]!.channels[0]!.target).toMatchObject({
+      path: 'pointer',
+      pointer: '/materials/0/pbrMetallicRoughness/baseColorFactor',
+    });
+
+    const frame = controller.applyAnimation('material-factors', 0.5, { engine });
+
+    expect(frame.usedSetScene).toBe(false);
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(reset).toHaveBeenCalledTimes(1);
+    const patch = frame.primitivePatches[0]!.patch as { material: MaterialSpec };
+    expect(patch.material.baseColor).toEqual([0.5, 0.5, 0]);
+    expect(patch.material.opacity).toBeCloseTo(0.75);
+    expect(patch.material.metallic).toBeCloseTo(0.5);
+    expect(patch.material.roughness).toBeCloseTo(0.5);
+    expect(patch.material.emissive).toEqual([0.5, 0.25, 0.125]);
+    const primitive = controller.scene.primitives[0] as MeshPrimitive;
+    expect(primitive.material.baseColor).toEqual([0.5, 0.5, 0]);
+    expect(primitive.material.metallic).toBeCloseTo(0.5);
+  });
+
+  it('material pointer animation falls back to setScene when primitive patching is unavailable', async () => {
+    const { gltf, buffers } = materialPointerAnimationGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const setScene = vi.fn();
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    const frame = controller.applyAnimation('material-factors', 1, { engine: { setScene } });
+
+    expect(frame.usedSetScene).toBe(true);
+    expect(setScene).toHaveBeenCalledTimes(1);
+    const scene = setScene.mock.calls[0]![0] as Scene;
+    const primitive = scene.primitives[0] as MeshPrimitive;
+    expect(primitive.material.baseColor).toEqual([0, 1, 0]);
+    expect(primitive.material.opacity).toBeCloseTo(0.5);
+    expect(primitive.material.metallic).toBeCloseTo(0.8);
+    expect(primitive.material.roughness).toBeCloseTo(0.1);
   });
 
   it('falls back to setScene when updatePrimitive throws', async () => {

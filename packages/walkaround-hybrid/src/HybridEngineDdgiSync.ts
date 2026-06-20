@@ -1,5 +1,5 @@
 /**
- * Shared DDGI-sync helper — the 5-step DDGI light-update sequence that both
+ * Shared DDGI-sync helper — the DDGI light-update sequence that both
  * `HybridEngine._syncDdgiLightsFromCoreScene` (incremental fast-update path)
  * and the `HybridEngineLifecycle` init-publish phase share.
  *
@@ -59,8 +59,7 @@ export interface SyncDdgiFromCoreSceneDeps {
   /**
    * Engine config primary-light direction (used by orientDdgiSunLights).
    * When provided, the merged lights are passed through `orientDdgiSunLights`.
-   * When absent (lifecycle init path), no orientation is applied — the
-   * lifecycle path does not call `orientDdgiSunLights`.
+   * When absent, scene directional emitters keep their own direction.
    */
   primaryLightDir?: readonly [number, number, number];
   /** TLAS primitive bindings from the active shared-BVH pack, when available. */
@@ -76,7 +75,7 @@ export interface SyncDdgiFromCoreSceneDeps {
 }
 
 /**
- * Run the 5-step DDGI light-sync sequence for a resolved core scene:
+ * Run the DDGI light-sync sequence for a resolved core scene:
  *   1. setSunIntensityMultiplier (single-count directional sun)
  *   2. setLights (merged ctorLights + scene lights, dedup sun)
  *   3. setEmitterTris (H18 Stage 2 — rect/disc/mesh area emitter NEE)

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
 import type { UploadedSceneTextures } from './sceneTextures.js';
-import { tryFastPathMaterialMutation } from './mutateSceneTextures.js';
+import { materialTextureMapPatchFields, tryFastPathMaterialMutation } from './mutateSceneTextures.js';
 
 function fakeGl(): WebGL2RenderingContext {
   const gl = {
@@ -10,6 +10,7 @@ function fakeGl(): WebGL2RenderingContext {
     RGBA: 0x1908,
     FLOAT: 0x1406,
     TEXTURE_2D: 0x0DE1,
+    TEXTURE_2D_ARRAY: 0x8C1A,
     TEXTURE_MIN_FILTER: 0x2801,
     TEXTURE_MAG_FILTER: 0x2800,
     TEXTURE_WRAP_S: 0x2802,
@@ -19,11 +20,13 @@ function fakeGl(): WebGL2RenderingContext {
     MAX_TEXTURE_SIZE: 0x0D33,
     isContextLost: vi.fn(() => false),
     getParameter: vi.fn(() => 8192),
-    createTexture: vi.fn(() => ({}) as WebGLTexture),
+    createTexture: vi.fn(() => ({})),
     bindTexture: vi.fn(),
     texParameteri: vi.fn(),
     texImage2D: vi.fn(),
     texSubImage2D: vi.fn(),
+    texImage3D: vi.fn(),
+    texSubImage3D: vi.fn(),
     deleteTexture: vi.fn(),
   };
   return gl as unknown as WebGL2RenderingContext;
@@ -131,6 +134,21 @@ function fakeCurrent(overrides: Partial<UploadedSceneTextures> = {}): UploadedSc
 }
 
 describe('tryFastPathMaterialMutation', () => {
+  it('classifies nested layered normal maps as texture-map patch fields', () => {
+    expect(materialTextureMapPatchFields({
+      material: {
+        roughness: 0.5,
+        baseColorMap: { handle: { id: 'base' } },
+        frontLayer: { normalMap: undefined, normalScale: 0.25 },
+        backLayer: undefined,
+      },
+    } as never)).toEqual([
+      'backLayer.normalMap',
+      'baseColorMap',
+      'frontLayer.normalMap',
+    ]);
+  });
+
   it('subuploads only material rows for scalar-only material mutations', () => {
     const gl = fakeGl();
     const previous = material({ roughness: 1 });
@@ -189,5 +207,52 @@ describe('tryFastPathMaterialMutation', () => {
     expect(meshLightData[4]).toBeCloseTo(6, 6);
     expect(meshLightData[5]).toBeCloseTo(0, 6);
     expect(meshLightData[6]).toBeCloseTo(0, 6);
+  });
+
+  it('drops a resident atlas when a layered normal-map patch removes the last texture', () => {
+    const gl = fakeGl();
+    const oldAtlas = { id: 'old-atlas' } as unknown as WebGLTexture;
+    const oldNormalHandle = { width: 1, height: 1, data: new Float32Array([0.5, 0.5, 1, 1]) };
+    const previous = material({
+      frontLayer: {
+        transmission: [1, 1, 1],
+        roughness: 0.25,
+        normalMap: { handle: oldNormalHandle },
+        normalScale: 0.75,
+      },
+    });
+    const next = material({
+      frontLayer: {
+        transmission: [1, 1, 1],
+        roughness: 0.25,
+        normalScale: 0.75,
+      },
+    });
+
+    const swap = tryFastPathMaterialMutation(
+      gl,
+      fakeCurrent({
+        textures2DArray: oldAtlas,
+        materialAtlasDim: 1,
+        materialAtlasLayerCount: 1,
+        materialAtlasLayerCapacity: 1,
+        materialLayerMap: { srgb: new Map(), linear: new Map([[oldNormalHandle, 0]]) },
+        meshLights: null,
+        meshLightCount: 0,
+        totalEmissiveArea: 0,
+        totalEmissivePower: 0,
+      }),
+      fakeMerged([previous]),
+      sceneWithPrimitive(panelPrimitive(next)),
+      'panel',
+      { material: { frontLayer: { normalMap: undefined } } } as never,
+    );
+
+    expect(swap).not.toBeNull();
+    expect(swap?.textures.textures2DArray).toBeNull();
+    expect(swap?.textures.materialLayerMap).toBeNull();
+    expect(swap?.textures.materialAtlasLayerCount).toBe(0);
+    expect(swap?.deleteOldTextures).toContain(oldAtlas);
+    expect((gl.texImage3D as unknown as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
   });
 });

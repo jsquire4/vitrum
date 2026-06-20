@@ -70,6 +70,97 @@ describe('patchScene helpers', () => {
     expect(next.emitters).toBe(scene.emitters);
   });
 
+  it('deep-merges layered material patches without dropping nested normal descriptors', () => {
+    const scene = makeScene();
+    const primitive = scene.primitives[0];
+    if (primitive == null) throw new Error('missing primitive in test scene');
+    const frontNormal = { handle: { id: 'front-normal' } };
+    const backNormal = { handle: { id: 'back-normal' } };
+    const layeredScene: Scene = {
+      ...scene,
+      primitives: [{
+        ...primitive,
+        material: {
+          ...primitive.material,
+          frontLayer: {
+            transmission: [1, 1, 1],
+            roughness: 0.3,
+            normalMap: frontNormal,
+            normalScale: 0.75,
+          },
+          backLayer: {
+            transmission: [0.9, 0.8, 0.7],
+            roughness: 0.4,
+            normalMap: backNormal,
+            normalScale: 0.5,
+          },
+        },
+      }],
+    };
+
+    const next = patchPrimitiveInScene(layeredScene, 'mesh-a', {
+      material: {
+        frontLayer: {
+          transmission: [0.5, 0.6, 0.7],
+        },
+      },
+    } as never);
+
+    const patched = next.primitives[0];
+    if (patched == null) throw new Error('missing patched primitive');
+    expect(patched.material.frontLayer).toEqual({
+      transmission: [0.5, 0.6, 0.7],
+      roughness: 0.3,
+      normalMap: frontNormal,
+      normalScale: 0.75,
+    });
+    expect(patched.material.backLayer).toEqual({
+      transmission: [0.9, 0.8, 0.7],
+      roughness: 0.4,
+      normalMap: backNormal,
+      normalScale: 0.5,
+    });
+  });
+
+  it('lets partial layered material patches explicitly clear nested fields', () => {
+    const scene = makeScene();
+    const primitive = scene.primitives[0];
+    if (primitive == null) throw new Error('missing primitive in test scene');
+    const normalMap = { handle: { id: 'front-normal' } };
+    const layeredScene: Scene = {
+      ...scene,
+      primitives: [{
+        ...primitive,
+        material: {
+          ...primitive.material,
+          frontLayer: {
+            transmission: [1, 1, 1],
+            roughness: 0.3,
+            normalMap,
+            normalScale: 0.75,
+          },
+        },
+      }],
+    };
+
+    const next = patchPrimitiveInScene(layeredScene, 'mesh-a', {
+      material: {
+        frontLayer: {
+          normalMap: undefined,
+        },
+      },
+    } as never);
+
+    const patched = next.primitives[0];
+    if (patched == null) throw new Error('missing patched primitive');
+    expect(patched.material.frontLayer).toEqual({
+      transmission: [1, 1, 1],
+      roughness: 0.3,
+      normalMap: undefined,
+      normalScale: 0.75,
+    });
+  });
+
   it('patches an emitter by id and leaves the original scene unmutated', () => {
     const scene = makeScene();
     const emitter = scene.emitters[0];

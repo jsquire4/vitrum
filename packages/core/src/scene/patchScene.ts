@@ -30,6 +30,32 @@ const MESH_LIKE_KINDS: ReadonlySet<ScenePrimitive['kind']> = new Set([
   'instanced-mesh',
 ]);
 
+const LAYERED_MATERIAL_KEYS = ['frontLayer', 'backLayer'] as const;
+
+function isMergeableRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value) && !ArrayBuffer.isView(value);
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function mergeMaterialPatch(
+  base: Record<string, unknown>,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged = { ...base, ...patch };
+  for (const key of LAYERED_MATERIAL_KEYS) {
+    if (!hasOwn(patch, key)) continue;
+    const baseLayer = base[key];
+    const patchLayer = patch[key];
+    merged[key] = isMergeableRecord(baseLayer) && isMergeableRecord(patchLayer)
+      ? { ...baseLayer, ...patchLayer }
+      : patchLayer;
+  }
+  return merged;
+}
+
 /**
  * Enforce the cross-backend invariants for a single primitive patch. Throws on
  * any violation; otherwise returns silently (the caller performs the spread).
@@ -102,13 +128,14 @@ export function patchPrimitiveInScene(
     const merged = { ...primitive, ...patch, id: primitive.id } as ScenePrimitive;
     // Deep-merge the `material` sub-object so a PARTIAL material patch (e.g.
     // `{ material: { emissive } }`) PRESERVES the primitive's other material
-    // fields instead of replacing the whole material. A shallow spread silently
-    // resets unspecified fields to packer defaults — and drops `baseColor`, which
-    // crashes the material packer. Non-material patch fields keep replace semantics.
+    // fields instead of replacing the whole material. Layered material objects
+    // are merged one level deeper so `{ material: { frontLayer: { roughness } } }`
+    // does not drop an existing `frontLayer.normalMap`/`normalScale`.
+    // Non-material patch fields keep replace semantics.
     const primMat = (primitive as unknown as { material?: Record<string, unknown> }).material;
     const patchMat = (patch as unknown as { material?: Record<string, unknown> }).material;
     if (patchMat != null && primMat != null) {
-      (merged as unknown as { material: Record<string, unknown> }).material = { ...primMat, ...patchMat };
+      (merged as unknown as { material: Record<string, unknown> }).material = mergeMaterialPatch(primMat, patchMat);
     }
     return merged;
   });

@@ -38,7 +38,7 @@ import { buildSceneTextures } from './scene/uploadSceneTextures.js';
 import type { UploadedSceneTextures } from './scene/sceneTextures.js';
 import {
   fastPathEnvironmentMutation,
-  TEXTURE_MAP_FIELDS,
+  materialTextureMapPatchFields,
   tryFastPathEmitterMutation,
   tryFastPathGeometryMutation,
   tryFastPathMaterialMutation,
@@ -65,10 +65,6 @@ function primitivePatchFields(patch: Partial<ScenePrimitive>): string[] {
 function materialPatchFields(patch: Partial<ScenePrimitive>): string[] {
   if (patch.material == null) return [];
   return Object.keys(patch.material as unknown as Record<string, unknown>).sort();
-}
-
-function materialTextureMapPatchFields(patch: Partial<ScenePrimitive>): string[] {
-  return materialPatchFields(patch).filter((field) => TEXTURE_MAP_FIELDS.has(field));
 }
 
 const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([

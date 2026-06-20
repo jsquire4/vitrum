@@ -525,7 +525,6 @@ export class PipelineInitCoordinator {
       //
       // Intentional differences vs engine path (preserved):
       //   - setLightsConditional: true (only call setLights if scene has emitters)
-      //   - No primaryLightDir supplied (lifecycle does NOT call orientDdgiSunLights)
       //   - No invalidateProbeCache (fresh init — probe cache is cold already)
       //
       // When sceneForSun is null (no core mesh scene), only set the multiplier
@@ -537,18 +536,17 @@ export class PipelineInitCoordinator {
       if (sceneForSun != null) {
         // H18/H41/sun-single-count: steps 1–4 via shared helper.
         // setLightsConditional=true: only merges if scene has ≥1 emitter.
-        // No primaryLightDir: lifecycle omits orientDdgiSunLights (engine path adds it).
         syncDdgiFromCoreScene({
           ddgi: host.ddgi,
           pipeline,
           ctorLights: host.ctorLights,
           primaryLightIntensity: host.primaryLightIntensity,
+          primaryLightDir: host.primaryLightDir,
           onWarning: (warning) => host.reportWarning(warning),
           setLightsConditional: true,
           ...(bvhPublished.bvhMode === 'tlas'
             ? { tlasPrimitiveBindings: bvhPublished.primitiveTlasBindings }
             : {}),
-          // primaryLightDir intentionally absent — lifecycle does not orient sun lights here
         }, sceneForSun);
       } else {
         // No core mesh scene: still set the sun intensity multiplier to the

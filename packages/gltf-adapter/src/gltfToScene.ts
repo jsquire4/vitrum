@@ -169,6 +169,7 @@ const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   'KHR_materials_emissive_strength',
   'KHR_materials_variants',
   'KHR_materials_pbrSpecularGlossiness',
+  'KHR_animation_pointer',
   // Accessor unpacking already converts BYTE/SHORT normalized attributes to
   // float32, which is the representation contract KHR_mesh_quantization needs.
   'KHR_mesh_quantization',
@@ -341,6 +342,12 @@ export interface GltfToSceneResult {
    */
   readonly materialVariantBindings?: ReadonlyArray<GltfMaterialVariantBinding>;
   /**
+   * Primitive-to-glTF-material provenance. Used by KHR_animation_pointer material
+   * playback to route `/materials/N/...` channels to every imported primitive
+   * that references that material.
+   */
+  readonly materialBindings?: ReadonlyArray<GltfMaterialBinding>;
+  /**
    * Primitive provenance for `EXT_mesh_gpu_instancing`. Each local instance
    * matrix is the accessor-authored TRS before the node world transform is
    * applied. `GltfSceneController` uses these to update `InstancedMeshPrimitive`
@@ -363,6 +370,11 @@ export interface GltfMaterialVariantBinding {
   readonly baseMaterialIndex?: number;
   readonly basePatch?: GltfMaterialVariantPrimitivePatch;
   readonly variantPatches?: ReadonlyArray<GltfMaterialVariantPatch>;
+}
+
+export interface GltfMaterialBinding {
+  readonly primitiveId: string;
+  readonly materialIndex: number;
 }
 
 export interface GltfMaterialVariantPrimitivePatch {
@@ -686,6 +698,7 @@ export async function gltfToScene(
   const primitives: ScenePrimitive[] = [];
   const animationTargets: Record<string, string[]> = {};
   const materialVariantBindings: GltfMaterialVariantBinding[] = [];
+  const materialBindings: GltfMaterialBinding[] = [];
   const instancingBindings: GltfInstancingBinding[] = [];
   let primIdCounter = 0;
 
@@ -1119,6 +1132,14 @@ export async function gltfToScene(
 
       const id = `gltf-prim-${primIdCounter++}`;
       (animationTargets[animationNodeId(nodeIdx)] ??= []).push(id);
+      if (
+        materialIndex !== undefined &&
+        Number.isInteger(materialIndex) &&
+        materialIndex >= 0 &&
+        materialIndex < coreMaterials.length
+      ) {
+        materialBindings.push({ primitiveId: id, materialIndex });
+      }
       if ((prim.extensions?.KHR_materials_variants?.mappings?.length ?? 0) > 0) {
         materialVariantBindings.push({
           primitiveId: id,
@@ -1298,6 +1319,7 @@ export async function gltfToScene(
     diagnostics.push(diagnostic);
   }, onAccessorDiagnostic, {
     reachableNodeIndices: sceneReachability.nodeIndices,
+    reachableMaterialIndices: sceneReachability.materialIndices,
   });
 
   const scene: Scene = {
@@ -1313,6 +1335,7 @@ export async function gltfToScene(
     animationTargets,
     convertedMaterials: coreMaterials,
     materialVariantBindings,
+    materialBindings,
     instancingBindings,
     warnings,
     diagnostics,

@@ -246,6 +246,12 @@ export interface GltfAnimationChannel {
     node?: number;
     /** 'translation' | 'rotation' | 'scale' | 'weights' (unknown paths warn + skip). */
     path: string;
+    extensions?: {
+      KHR_animation_pointer?: {
+        pointer?: string;
+      };
+      [key: string]: unknown;
+    };
   };
 }
 

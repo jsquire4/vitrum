@@ -23,6 +23,7 @@ import {
 import type { GltfJson, GltfNode, GltfPrimitive } from './gltfTypes.js';
 import type {
   GltfInstancingBinding,
+  GltfMaterialBinding,
   GltfMaterialVariantBinding,
   GltfMaterialVariantPrimitivePatch,
   GltfSceneCamera,
@@ -37,6 +38,10 @@ import {
   mat4Mul,
   nodeLocalMatrix,
 } from './transforms.js';
+import {
+  applyGltfMaterialPointerValue,
+  resolveGltfMaterialAnimationPointer,
+} from './materialPointerAnimation.js';
 
 export interface GltfScenePatchTarget {
   setScene(scene: Scene): void;
@@ -89,6 +94,9 @@ export type GltfSceneControllerDiagnosticCode =
   | 'animation-morph-target-missing'
   | 'animation-skin-joint-unreachable'
   | 'animation-skin-mesh-transform-noninvertible'
+  | 'animation-pointer-material-missing'
+  | 'animation-pointer-material-unmapped'
+  | 'animation-pointer-unsupported'
   | 'animation-target-node-unmapped'
   | 'controller-update-primitive-failed'
   | 'morph-weight-count-mismatch'
@@ -223,6 +231,7 @@ export class GltfSceneController {
   readonly #basePrimitiveById: Map<string, ScenePrimitive>;
   readonly #convertedMaterials: readonly MaterialSpec[];
   readonly #materialVariantBindings: readonly GltfMaterialVariantBinding[];
+  readonly #materialBindingsByMaterialIndex: ReadonlyMap<number, readonly string[]>;
   readonly #instancingBindingsByPrimitiveId: ReadonlyMap<string, GltfInstancingBinding>;
   readonly #skinBindingsByPrimitiveId: ReadonlyMap<string, SkinBinding>;
   readonly #warnings: string[] = [];
@@ -246,6 +255,7 @@ export class GltfSceneController {
     this.#basePrimitiveById = new Map(input.scene.primitives.map((p) => [String(p.id), p]));
     this.#convertedMaterials = input.convertedMaterials ?? [];
     this.#materialVariantBindings = input.materialVariantBindings ?? [];
+    this.#materialBindingsByMaterialIndex = buildMaterialBindings(input.materialBindings ?? []);
     this.#instancingBindingsByPrimitiveId = new Map(
       (input.instancingBindings ?? []).map((binding) => [binding.primitiveId, binding]),
     );
@@ -661,8 +671,13 @@ export class GltfSceneController {
   } {
     const locals = cloneLocalStates(this.#baseLocals);
     const morphWeightsByNode = new Map<number, Float32Array>();
+    const materialPointerSamples: SampledChannel[] = [];
 
     for (const sample of samples) {
+      if (sample.path === 'pointer') {
+        materialPointerSamples.push(sample);
+        continue;
+      }
       this.#applySampleToLocals(sample, locals, morphWeightsByNode, frame);
     }
 
@@ -704,6 +719,7 @@ export class GltfSceneController {
       const patch = this.#buildSkinPatch(id, binding, worldTransforms, patchMap.get(id), frame);
       if (patch) mergePrimitivePatch(patchMap, id, patch);
     }
+    this.#applyMaterialPointerSamples(materialPointerSamples, patchMap, frame);
 
     const primitivePatches = Array.from(patchMap, ([id, patch]) => ({ id, patch }));
     const target = options.engine ?? this.#engine;
@@ -854,6 +870,76 @@ export class GltfSceneController {
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
     } as Partial<ScenePrimitive>;
   }
+
+  #applyMaterialPointerSamples(
+    samples: readonly SampledChannel[],
+    patchMap: Map<string, Partial<ScenePrimitive>>,
+    frame: GltfSceneControllerDiagnosticFrame,
+  ): void {
+    if (samples.length === 0) return;
+    const animatedMaterials = new Map<number, MaterialSpec>();
+    const touchedMaterials = new Set<number>();
+
+    for (const sample of samples) {
+      const target = resolveGltfMaterialAnimationPointer(sample.pointer);
+      if (target === undefined) {
+        emitControllerDiagnostic(frame, {
+          code: 'animation-pointer-unsupported',
+          path: `animations.channels.target.extensions.KHR_animation_pointer.pointer["${sample.pointer ?? ''}"]`,
+          message:
+            `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: unsupported ` +
+            `KHR_animation_pointer target "${String(sample.pointer)}"; channel skipped.`,
+        });
+        continue;
+      }
+
+      const base = animatedMaterials.get(target.materialIndex)
+        ?? this.#convertedMaterials[target.materialIndex];
+      if (!base) {
+        emitControllerDiagnostic(frame, {
+          code: 'animation-pointer-material-missing',
+          path: `materials[${target.materialIndex}]`,
+          message:
+            `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: ` +
+            `KHR_animation_pointer target "${target.pointer}" references missing converted material ` +
+            `${target.materialIndex}; channel skipped.`,
+          materialIndex: target.materialIndex,
+        });
+        continue;
+      }
+
+      animatedMaterials.set(
+        target.materialIndex,
+        applyGltfMaterialPointerValue(base, target, sample.value),
+      );
+      touchedMaterials.add(target.materialIndex);
+    }
+
+    for (const materialIndex of touchedMaterials) {
+      const material = animatedMaterials.get(materialIndex);
+      if (!material) continue;
+      const primitiveIds = this.#materialBindingsByMaterialIndex.get(materialIndex) ?? [];
+      if (primitiveIds.length === 0) {
+        emitControllerDiagnostic(frame, {
+          code: 'animation-pointer-material-unmapped',
+          path: `materials[${materialIndex}]`,
+          message:
+            `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: ` +
+            `KHR_animation_pointer animated material ${materialIndex}, but no imported primitive currently ` +
+            'uses that material.',
+          materialIndex,
+        });
+        continue;
+      }
+
+      for (const id of primitiveIds) {
+        if (!findPrimitive(this.#scene, id)) continue;
+        mergePrimitivePatch(patchMap, id, {
+          material: materialReplacementPatch(material),
+        } as Partial<ScenePrimitive>);
+      }
+    }
+  }
 }
 
 function baseLocalState(node: GltfNode): NodeLocalState {
@@ -934,6 +1020,21 @@ function buildSkinBindings(
         meshNodeIndex: nodeIndex,
         jointNodeIndices: skin.joints,
       });
+    }
+  }
+  return out;
+}
+
+function buildMaterialBindings(
+  bindings: readonly GltfMaterialBinding[],
+): Map<number, readonly string[]> {
+  const out = new Map<number, string[]>();
+  for (const binding of bindings) {
+    const existing = out.get(binding.materialIndex);
+    if (existing) {
+      existing.push(binding.primitiveId);
+    } else {
+      out.set(binding.materialIndex, [binding.primitiveId]);
     }
   }
   return out;
@@ -1231,6 +1332,7 @@ function blendSampledChannels(
   const accumulators = new Map<string, {
     node: SampledChannel['node'];
     path: SampledChannel['path'];
+    pointer?: string;
     value: Float32Array;
     weightSum: number;
     referenceQuat?: Float32Array;
@@ -1240,12 +1342,13 @@ function blendSampledChannels(
     const weight = weights[clipIndex] ?? 0;
     if (weight <= 0) continue;
     for (const sample of perClipSamples[clipIndex] ?? []) {
-      const key = `${sample.node}\u0000${sample.path}`;
+      const key = `${sample.node}\u0000${sample.path}\u0000${sample.pointer ?? ''}`;
       let acc = accumulators.get(key);
       if (!acc) {
         acc = {
           node: sample.node,
           path: sample.path,
+          ...(sample.pointer !== undefined ? { pointer: sample.pointer } : {}),
           value: new Float32Array(sample.value.length),
           weightSum: 0,
           ...(sample.path === 'rotation' ? { referenceQuat: new Float32Array(sample.value) } : {}),
@@ -1280,7 +1383,12 @@ function blendSampledChannels(
         value[i] = (acc.value[i] ?? 0) / acc.weightSum;
       }
     }
-    out.push({ node: acc.node, path: acc.path, value });
+    out.push({
+      node: acc.node,
+      path: acc.path,
+      ...(acc.pointer !== undefined ? { pointer: acc.pointer } : {}),
+      value,
+    });
   }
   return out;
 }

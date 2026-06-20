@@ -105,4 +105,43 @@ describe('syncDdgiFromCoreScene', () => {
     expect(pipeline.updateAnalyticLights).toHaveBeenCalledWith(scene);
     expect(ddgi.setEmitterTris).toHaveBeenCalledTimes(1);
   });
+
+  it('orients DDGI sun lights to the runtime primary-light direction when supplied', () => {
+    const scene: Scene = {
+      primitives: [],
+      emitters: [{
+        kind: 'directional',
+        id: 'scene-sun',
+        direction: [0, -1, 0],
+        color: [1, 1, 1],
+        intensity: 2,
+      }],
+      environment: { kind: 'none' },
+    };
+    const ddgi = {
+      setSunIntensityMultiplier: vi.fn(),
+      setLights: vi.fn(),
+      setEmitterTris: vi.fn(),
+    } as unknown as DDGI;
+
+    syncDdgiFromCoreScene({
+      ddgi,
+      pipeline: null,
+      ctorLights: [],
+      primaryLightIntensity: 1,
+      primaryLightDir: [1, 0, 0],
+    }, scene);
+
+    const lights = vi.mocked(ddgi.setLights).mock.calls[0]?.[0] ?? [];
+    expect(lights).toHaveLength(1);
+    const sun = lights[0];
+    expect(sun?.kind).toBe('sun');
+    if (sun?.kind === 'sun') {
+      expect(sun.direction).toBeDefined();
+      if (sun.direction == null) throw new Error('expected oriented sun direction');
+      expect(sun.direction.x).toBeCloseTo(-1);
+      expect(sun.direction.y).toBeCloseTo(0);
+      expect(sun.direction.z).toBeCloseTo(0);
+    }
+  });
 });

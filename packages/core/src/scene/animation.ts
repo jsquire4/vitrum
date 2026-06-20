@@ -12,8 +12,8 @@ import type { SceneNodeId } from './math.js';
 /** Interpolation mode for a keyframe sampler (glTF 2.0). */
 export type AnimationInterpolation = 'LINEAR' | 'STEP' | 'CUBICSPLINE';
 
-/** Which node property a channel animates (glTF 2.0 target path). */
-export type AnimationTargetPath = 'translation' | 'rotation' | 'scale' | 'weights';
+/** Which property a channel animates (glTF 2.0 target path plus KHR_animation_pointer). */
+export type AnimationTargetPath = 'translation' | 'rotation' | 'scale' | 'weights' | 'pointer';
 
 /**
  * A keyframe sampler: input times → output values. `values` is flat; the
@@ -27,9 +27,18 @@ export interface AnimationSampler {
   readonly interpolation?: AnimationInterpolation; // default 'LINEAR'
 }
 
-/** One channel: animate `target.path` of `target.node` from `sampler`. */
+/** One channel: animate `target.path` of `target.node` from `sampler`.
+ *
+ * `path:"pointer"` carries a KHR_animation_pointer JSON pointer instead of a
+ * node-local TRS/weights target. Engines do not consume clips directly; adapter
+ * controllers resolve supported pointers to ordinary scene/material patches.
+ */
 export interface AnimationChannel {
-  readonly target: { readonly node: SceneNodeId; readonly path: AnimationTargetPath };
+  readonly target: {
+    readonly node: SceneNodeId;
+    readonly path: AnimationTargetPath;
+    readonly pointer?: string;
+  };
   readonly sampler: AnimationSampler;
 }
 
@@ -53,6 +62,7 @@ export interface AnimationClip {
 export interface SampledChannel {
   readonly node: SceneNodeId;
   readonly path: AnimationTargetPath;
+  readonly pointer?: string;
   /** translation/scale = 3, rotation = 4 (quat xyzw), weights = morph count. */
   readonly value: Float32Array;
 }
@@ -161,7 +171,12 @@ export function sampleAnimationClip(clip: AnimationClip, time: number): SampledC
       }
     }
     if (ch.target.path === 'rotation') normalizeSampledQuat(value);
-    out.push({ node: ch.target.node, path: ch.target.path, value });
+    out.push({
+      node: ch.target.node,
+      path: ch.target.path,
+      ...(ch.target.pointer !== undefined ? { pointer: ch.target.pointer } : {}),
+      value,
+    });
   }
   return out;
 }

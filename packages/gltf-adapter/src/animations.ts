@@ -35,13 +35,18 @@ import type {
 } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import { unpackAccessorFloat, type GltfAccessorDiagnosticSink } from './accessors.js';
+import { resolveGltfMaterialAnimationPointer, supportedGltfMaterialAnimationPointers } from './materialPointerAnimation.js';
 
 /** Stable channel-target node id for glTF node `nodeIndex` (`gltf-node-<i>`). */
 export function animationNodeId(nodeIndex: number): string {
   return `gltf-node-${nodeIndex}`;
 }
 
-const VALID_PATHS: ReadonlySet<string> = new Set(['translation', 'rotation', 'scale', 'weights']);
+export function animationPointerId(pointer: string): string {
+  return `gltf-pointer:${pointer}`;
+}
+
+const VALID_PATHS: ReadonlySet<string> = new Set(['translation', 'rotation', 'scale', 'weights', 'pointer']);
 const VALID_INTERPOLATIONS: ReadonlySet<string> = new Set(['LINEAR', 'STEP', 'CUBICSPLINE']);
 
 export type GltfAnimationImportDiagnosticCode =
@@ -77,6 +82,7 @@ export interface ConvertAnimationsOptions {
    * warnings, matching feature-report/resource-fetch scoping.
    */
   readonly reachableNodeIndices?: ReadonlySet<number>;
+  readonly reachableMaterialIndices?: ReadonlySet<number>;
 }
 
 /** Fixed per-keyframe component count for TRS paths (weights is inferred from
@@ -104,6 +110,7 @@ export function convertAnimations(
   const clips: AnimationClip[] = [];
   const animations = gltf.animations ?? [];
   const reachableNodeIndices = options.reachableNodeIndices;
+  const reachableMaterialIndices = options.reachableMaterialIndices;
 
   for (const [animIdx, anim] of animations.entries()) {
     const label = anim.name ?? `#${animIdx}`;
@@ -170,11 +177,6 @@ export function convertAnimations(
     };
 
     for (const [chIdx, ch] of gltfChannels.entries()) {
-      const nodeIdx = ch.target?.node;
-      if (reachableNodeIndices !== undefined) {
-        if (nodeIdx === undefined || !reachableNodeIndices.has(nodeIdx)) continue;
-        hasReachableChannel = true;
-      }
       const path = ch.target?.path;
       if (path === undefined || !VALID_PATHS.has(path)) {
         emitAnimationDiagnostic(warnings, onDiagnostic, {
@@ -189,6 +191,68 @@ export function convertAnimations(
             `path "${String(path)}" (supported: translation, rotation, scale, weights). Channel skipped.`,
         });
         continue;
+      }
+      if (path === 'pointer') {
+        const pointer = ch.target?.extensions?.KHR_animation_pointer?.pointer;
+        const pointerTarget = resolveGltfMaterialAnimationPointer(pointer);
+        if (
+          reachableMaterialIndices !== undefined &&
+          pointerTarget !== undefined &&
+          !reachableMaterialIndices.has(pointerTarget.materialIndex)
+        ) {
+          continue;
+        }
+        hasReachableChannel = true;
+        if (pointerTarget === undefined) {
+          emitAnimationDiagnostic(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: 'unsupported-animation-target-path',
+            path: `animations[${animIdx}].channels[${chIdx}].target.extensions.KHR_animation_pointer.pointer`,
+            animationIndex: animIdx,
+            channelIndex: chIdx,
+            targetPath: 'pointer',
+            message:
+              `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets unsupported ` +
+              `KHR_animation_pointer JSON pointer "${String(pointer)}". Supported material pointers: ` +
+              `${supportedGltfMaterialAnimationPointers().join(', ')}. Channel skipped.`,
+          });
+          continue;
+        }
+
+        const samplerData = decodeSampler(ch.sampler);
+        if (!samplerData) continue;
+        const { times, values, interpolation } = samplerData;
+        const cubicFactor = interpolation === 'CUBICSPLINE' ? 3 : 1;
+        const expected = times.length * pointerTarget.components * cubicFactor;
+        if (values.length !== expected) {
+          emitAnimationDiagnostic(warnings, onDiagnostic, {
+            severity: 'warning',
+            code: 'invalid-animation-output-count',
+            path: `animations[${animIdx}].channels[${chIdx}].sampler`,
+            animationIndex: animIdx,
+            channelIndex: chIdx,
+            samplerIndex: ch.sampler,
+            targetPath: 'pointer',
+            message:
+              `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} (${pointer}) has ` +
+              `${values.length} output floats but ${times.length} keyframes expect ${expected}. Channel skipped.`,
+          });
+          continue;
+        }
+        if (times.length > 0) {
+          duration = Math.max(duration, times[times.length - 1] ?? 0);
+        }
+        channels.push({
+          target: { node: animationPointerId(pointerTarget.pointer), path: 'pointer', pointer: pointerTarget.pointer },
+          sampler: { times, values, interpolation },
+        });
+        continue;
+      }
+
+      const nodeIdx = ch.target?.node;
+      if (reachableNodeIndices !== undefined) {
+        if (nodeIdx === undefined || !reachableNodeIndices.has(nodeIdx)) continue;
+        hasReachableChannel = true;
       }
       if (nodeIdx === undefined) {
         emitAnimationDiagnostic(warnings, onDiagnostic, {

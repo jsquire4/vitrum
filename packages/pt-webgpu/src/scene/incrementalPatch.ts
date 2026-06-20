@@ -6,7 +6,7 @@
 // `updatePrimitive`/`updateEmitter` and delegates the eligibility decisions
 // here.
 import type { ScenePrimitive } from '@vitrum/core';
-import type { MaterialSpec, Scene } from '@vitrum/core';
+import type { Scene } from '@vitrum/core';
 import type { UploadedSceneBuffers } from './uploadSceneBuffers.js';
 
 /**
@@ -118,6 +118,31 @@ export interface MaterialPatchRepackFields {
   readonly layerDescriptorFields: readonly string[];
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value) && !ArrayBuffer.isView(value);
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function collectLayerDescriptorPatchFields(
+  mat: Record<string, unknown>,
+): string[] {
+  const fields: string[] = [];
+  for (const layerName of ['frontLayer', 'backLayer'] as const) {
+    if (!hasOwn(mat, layerName)) continue;
+    const layer = mat[layerName];
+    if (!isRecord(layer)) {
+      fields.push(`${layerName}.normalMap`, `${layerName}.normalScale`);
+      continue;
+    }
+    if (hasOwn(layer, 'normalMap')) fields.push(`${layerName}.normalMap`);
+    if (hasOwn(layer, 'normalScale')) fields.push(`${layerName}.normalScale`);
+  }
+  return fields;
+}
+
 export function materialPatchRepackFields(
   patch: Partial<ScenePrimitive>,
 ): MaterialPatchRepackFields {
@@ -132,12 +157,7 @@ export function materialPatchRepackFields(
     if (MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS.has(field)) descriptorScalarFields.push(field);
   }
 
-  const typedMat = patch.material as Partial<MaterialSpec>;
-  const layerDescriptorFields: string[] = [];
-  if (typedMat.frontLayer?.normalMap != null) layerDescriptorFields.push('frontLayer.normalMap');
-  if (typedMat.frontLayer?.normalScale != null) layerDescriptorFields.push('frontLayer.normalScale');
-  if (typedMat.backLayer?.normalMap != null) layerDescriptorFields.push('backLayer.normalMap');
-  if (typedMat.backLayer?.normalScale != null) layerDescriptorFields.push('backLayer.normalScale');
+  const layerDescriptorFields = collectLayerDescriptorPatchFields(mat);
 
   return {
     textureFields: textureFields.sort(),

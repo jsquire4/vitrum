@@ -11,6 +11,7 @@ export type {
   GltfImportDiagnostic,
   GltfImportDiagnosticCode,
   GltfInstancingBinding,
+  GltfMaterialBinding,
   GltfMaterialVariantBinding,
   GltfSceneCamera,
   GltfToSceneOptions,
@@ -52,6 +53,14 @@ export {
   classifyTextureHandle,
   decodeSceneTextures,
 } from './texturePipeline.js';
+export {
+  resolveGltfMaterialAnimationPointer,
+  supportedGltfMaterialAnimationPointers,
+} from './materialPointerAnimation.js';
+export type {
+  GltfMaterialPointerField,
+  GltfMaterialPointerTarget,
+} from './materialPointerAnimation.js';
 export type {
   DecodeGltfTexturePixelsFn,
   DecodeSceneTextureDiagnostic,

@@ -3060,6 +3060,117 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     ]));
   });
 
+  it('treats supported KHR_animation_pointer material-factor channels as importable', () => {
+    const { gltf } = makeInlineTriangleGltf();
+    gltf.extensionsUsed = ['KHR_animation_pointer'];
+    gltf.extensionsRequired = ['KHR_animation_pointer'];
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      material: 0,
+    };
+    gltf.materials = [{
+      pbrMetallicRoughness: {
+        baseColorFactor: [1, 0, 0, 1],
+      },
+    }];
+
+    const timeAccessor = gltf.accessors!.length;
+    const outputAccessor = timeAccessor + 1;
+    const badOutputAccessor = timeAccessor + 2;
+    const packed = concatArrayBuffers([
+      f32Buffer([0, 1]),
+      f32Buffer([1, 0, 0, 1, 0, 1, 0, 1]),
+      f32Buffer([0, 1]),
+    ]);
+    const bufferIndex = gltf.buffers!.length;
+    const timeView = gltf.bufferViews!.length;
+    const outputView = timeView + 1;
+    const badOutputView = timeView + 2;
+    gltf.buffers!.push({ byteLength: packed.byteLength });
+    gltf.bufferViews!.push(
+      { buffer: bufferIndex, byteOffset: 0, byteLength: 8 },
+      { buffer: bufferIndex, byteOffset: 8, byteLength: 32 },
+      { buffer: bufferIndex, byteOffset: 40, byteLength: 8 },
+    );
+    gltf.accessors!.push(
+      { bufferView: timeView, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: outputView, componentType: 5126, count: 2, type: 'VEC4' },
+      { bufferView: badOutputView, componentType: 5126, count: 2, type: 'SCALAR' },
+    );
+    gltf.animations = [{
+      samplers: [
+        { input: timeAccessor, output: outputAccessor },
+        { input: timeAccessor, output: badOutputAccessor },
+      ],
+      channels: [
+        {
+          sampler: 0,
+          target: {
+            path: 'pointer',
+            extensions: {
+              KHR_animation_pointer: {
+                pointer: '/materials/0/pbrMetallicRoughness/baseColorFactor',
+              },
+            },
+          },
+        },
+        {
+          sampler: 1,
+          target: {
+            path: 'pointer',
+            extensions: {
+              KHR_animation_pointer: {
+                pointer: '/materials/0/pbrMetallicRoughness/baseColorFactor',
+              },
+            },
+          },
+        },
+        {
+          sampler: 0,
+          target: {
+            path: 'pointer',
+            extensions: {
+              KHR_animation_pointer: {
+                pointer: '/materials/0/unknownMutableProperty',
+              },
+            },
+          },
+        },
+      ],
+    }];
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.extensions.unsupportedRequired).not.toContain('KHR_animation_pointer');
+    expect(report.extensions.supported).toContain('KHR_animation_pointer');
+    expect(report.animations.paths).toEqual(['pointer']);
+    expect(report.animations.unsupportedTargetPaths).toEqual(['pointer']);
+    expect(report.animations.issuePaths).toMatchObject({
+      'unsupportedTargetPath:pointer': [
+        'animations[0].channels[2].target.extensions.KHR_animation_pointer.pointer',
+      ],
+    });
+    expect(report.animations.malformedChannels).toContainEqual(expect.objectContaining({
+      kind: 'invalid-output-count',
+      path: 'animations[0].channels[1].sampler',
+      expectedOutputFloats: 8,
+      actualOutputFloats: 2,
+    }));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'animation',
+      name: 'target.path:pointer',
+      support: 'unsupported',
+      path: 'animations[0].channels[2].target.extensions.KHR_animation_pointer.pointer',
+    }));
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'animation',
+      name: 'channel.invalid-output-count',
+      support: 'unsupported',
+      path: 'animations[0].channels[1].sampler',
+    }));
+  });
+
   it('reports primitive import blockers with compatibility source paths', () => {
     const gltf = makeExternalTexturedGltf();
     const shortPositionAccessor = gltf.accessors!.length;

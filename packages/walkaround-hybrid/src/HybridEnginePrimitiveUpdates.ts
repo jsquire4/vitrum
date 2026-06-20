@@ -111,6 +111,8 @@ import {
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
 import type { DDGI } from './ddgi/DDGI.js';
 
+const LAYERED_MATERIAL_KEYS = ['frontLayer', 'backLayer'] as const;
+
 // ── Shared refit helpers (behaviour-preserving extraction, WD sweep) ─────────
 //
 // `transformRefit`, `positionsRefit`, and `refitSkinnedMeshAfterGpuWrite` all
@@ -125,6 +127,32 @@ const REFIT_STRIDE = 4; // bvhPositions packs world xyz into [0..2] + uv-as-u32 
 
 function f32Copy(values: ArrayLike<number>): Float32Array {
   return new Float32Array(values);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value) && !ArrayBuffer.isView(value);
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function mergeMaterialPatch(
+  base: MaterialSpec,
+  patch: Partial<MaterialSpec>,
+): MaterialSpec {
+  const baseRecord = base as unknown as Record<string, unknown>;
+  const patchRecord = patch as unknown as Record<string, unknown>;
+  const merged: Record<string, unknown> = { ...baseRecord, ...patchRecord };
+  for (const key of LAYERED_MATERIAL_KEYS) {
+    if (!hasOwn(patchRecord, key)) continue;
+    const baseLayer = baseRecord[key];
+    const patchLayer = patchRecord[key];
+    merged[key] = isRecord(baseLayer) && isRecord(patchLayer)
+      ? { ...baseLayer, ...patchLayer }
+      : patchLayer;
+  }
+  return merged as unknown as MaterialSpec;
 }
 
 /**
@@ -1356,15 +1384,15 @@ export function materialPatch(
       `HybridEngine.updatePrimitive("${id}"): materialPatch requires patch.material.`,
     );
   }
+  const materialPatchValue = patch.material;
   const primIndex = ctx.lastScene.primitives.findIndex((p) => String(p.id) === id);
   const prevPrim = primIndex >= 0 ? ctx.lastScene.primitives[primIndex] : undefined;
   const prevMaterial =
     prevPrim && 'material' in prevPrim ? prevPrim.material : undefined;
-  const nextMaterial = (
+  const nextMaterial: MaterialSpec =
     prevMaterial != null
-      ? { ...prevMaterial, ...patch.material }
-      : patch.material
-  ) as MaterialSpec;
+      ? mergeMaterialPatch(prevMaterial, materialPatchValue)
+      : materialPatchValue;
   ctx.warnUnconsumedMaterialFields?.(
     collectUnconsumedMaterialFieldsForMaterial(nextMaterial as unknown as Record<string, unknown>),
   );
@@ -1422,35 +1450,74 @@ export function materialPatch(
     matIds.add(triMaterialIds[t]!);
   }
 
+  const triStart = range.triStart;
+  const triEnd = range.triStart + range.triCount;
+  const totalTris = triMaterialIds.length;
+  let slotIsShared = false;
+  for (let t = 0; t < totalTris && !slotIsShared; t++) {
+    if (t >= triStart && t < triEnd) continue;
+    if (matIds.has(triMaterialIds[t]!)) slotIsShared = true;
+  }
+
+  let materialIdsForPacking = triMaterialIds;
+  let updatedTriangleMaterialIds = bvh.triangleMaterialIds;
+  const updatedCoreMaterials = [...bvh.coreMaterials] as MaterialSpec[];
+  if (bvh.bvhMode === 'merged' && slotIsShared) {
+    const splitSlotByOriginalSlot = new Map<number, number>();
+    for (const matId of matIds) {
+      const splitSlot = updatedCoreMaterials.length;
+      updatedCoreMaterials.push(nextMaterial);
+      splitSlotByOriginalSlot.set(matId, splitSlot);
+    }
+    const splitTriMaterialIds = new Uint32Array(triMaterialIds);
+    for (let t = triStart; t < triEnd; t += 1) {
+      const splitSlot = splitSlotByOriginalSlot.get(triMaterialIds[t]!);
+      if (splitSlot != null) splitTriMaterialIds[t] = splitSlot;
+    }
+    materialIdsForPacking = splitTriMaterialIds;
+    const splitBytes = splitTriMaterialIds.buffer.slice(
+      splitTriMaterialIds.byteOffset,
+      splitTriMaterialIds.byteOffset + splitTriMaterialIds.byteLength,
+    );
+    updatedTriangleMaterialIds = {
+      cpuData: splitBytes,
+      byteLength: splitBytes.byteLength,
+      count: splitTriMaterialIds.length,
+    };
+  } else {
+    for (const matId of matIds) {
+      if (matId < updatedCoreMaterials.length) updatedCoreMaterials[matId] = nextMaterial;
+    }
+  }
+
   const indexView = new Uint32Array(bvh.bvhIndex.cpuData);
   const beerView = new Uint32Array(bvh.bvhBeerColors.cpuData);
   const roughMetalView = new Uint32Array(bvh.bvhRoughMetal.cpuData);
-  const updatedCoreMaterials = bvh.coreMaterials.map((m, matId) => (matIds.has(matId) ? nextMaterial : m));
   const fullIndex = packBVHIndexWFromCore(
     bvh.bvhIndicesStride3,
-    triMaterialIds,
+    materialIdsForPacking,
     updatedCoreMaterials,
     bvh.bvhBeerColors.count,
   );
   const fullBeer = packBVHBeerColorsFromCore(
-    triMaterialIds,
+    materialIdsForPacking,
     updatedCoreMaterials,
     bvh.bvhBeerColors.count,
   );
   // B1 — repack the per-tri roughness+metalness lane for the edited materials.
   const fullRoughMetal = packBVHRoughMetalFromCore(
-    triMaterialIds,
+    materialIdsForPacking,
     updatedCoreMaterials,
     bvh.bvhBeerColors.count,
   );
   const materialTextureAtlas = atlasNeedsRefresh
-    ? packMaterialTextureAtlas(updatedCoreMaterials, triMaterialIds, bvh.bvhBeerColors.count)
+    ? packMaterialTextureAtlas(updatedCoreMaterials, materialIdsForPacking, bvh.bvhBeerColors.count)
     : bvh.materialTextureAtlas;
   indexView.set(fullIndex);
   beerView.set(fullBeer);
   roughMetalView.set(fullRoughMetal);
   const fullEmissive = packBVHEmissiveLeFromCore(
-    triMaterialIds,
+    materialIdsForPacking,
     updatedCoreMaterials,
     bvh.bvhBeerColors.count,
   );
@@ -1485,18 +1552,9 @@ export function materialPatch(
   //
   // Detection: scan triMaterialIds once; if any triangle outside the
   // primitive's range carries one of `matIds`, the slot is shared.
-  const triStart = range.triStart;
-  const triEnd = range.triStart + range.triCount;
-  const totalTris = triMaterialIds.length;
-  let slotIsShared = false;
-  for (let t = 0; t < totalTris && !slotIsShared; t++) {
-    if (t >= triStart && t < triEnd) continue; // inside patched primitive — skip
-    if (matIds.has(triMaterialIds[t]!)) slotIsShared = true;
-  }
-
   const indexSlice = slotIsShared
     ? // Shared slot: upload the entire bvhIndex so all affected triangles
-      // (inside + outside this primitive) get the updated bvhIndex.w.
+      // (including a merged-mode slot split) get the updated bvhIndex.w.
       { byteOffset: 0, data: bvh.bvhIndex.cpuData.slice(0) }
     : // Exclusive slot: only this primitive's triangles were affected; the
       // slice upload is correct and avoids transferring the whole buffer.
@@ -1531,6 +1589,7 @@ export function materialPatch(
   let outBvh: SceneBVHBuffers = {
     ...bvh,
     bvhEmissiveLe: updatedEmissiveLe,
+    triangleMaterialIds: updatedTriangleMaterialIds,
     materialTextureAtlas,
     coreMaterials: updatedCoreMaterials,
   };
