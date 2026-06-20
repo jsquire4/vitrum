@@ -414,6 +414,53 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
+  it('setScene warns when receiveShadow:false is supplied', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeLiteDeviceForSetScene(),
+      onWarning: (w) => structured.push(w),
+    });
+    warn.mockClear();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'm',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [0.8, 0.2, 0.1],
+            roughness: 0.3,
+            metallic: 0,
+          },
+          receiveShadow: false,
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    try {
+      engine.setScene(scene);
+    } catch {
+      /* GPU stubs may throw after the warn — that's expected */
+    }
+    const calls = warn.mock.calls.map((c) => c.join(' '));
+    expect(calls.some((c) =>
+      c.includes('receiveShadow:false') &&
+      c.includes('m'),
+    )).toBe(true);
+    expect(structured.some((w) =>
+      w.code === 'pt-webgpu.reserved-receive-shadow' &&
+      w.phase === 'setScene' &&
+      w.method === 'setScene' &&
+      Array.isArray(w.details?.primitiveIds) &&
+      w.details.primitiveIds.includes('m'),
+    )).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
   it('full tier updatePrimitive warns with primitive-scoped details for scalar displacement fields', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
