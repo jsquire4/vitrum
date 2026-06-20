@@ -2043,6 +2043,10 @@ class PTEngineWebGPU implements Engine {
       getPathReplayGeometryCapabilities: () => ({
         supportedAnalyticShapes: this.#supportedAnalyticShapes(),
       }),
+      getMaterialSupportDetails: () =>
+        this.#traceTier === 'lite'
+          ? PT_WEBGPU_LITE_MATERIALS
+          : BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
       computeAdjointGradient: (req) => this.#computeAdjointGradient(req),
     };
     return new PtWebgpuInverseSession(hooks, opts);

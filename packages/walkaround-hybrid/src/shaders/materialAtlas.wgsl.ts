@@ -494,11 +494,28 @@ fn materialTangentFrameForHit(
   let duv2 = tc - ta;
   let det = duv1.x * duv2.y - duv1.y * duv2.x;
   var tangent = dp1;
-  var bitangent = fallbackBitangentForNormal(frameNormal, tangent);
+  var bitangent = dp2;
   if (abs(det) > 1e-8) {
     let invDet = 1.0 / det;
     tangent = (dp1 * duv2.y - dp2 * duv1.y) * invDet;
     bitangent = (dp2 * duv1.x - dp1 * duv2.x) * invDet;
+  }
+  let isTlas = ubo.bvhMode == 1u;
+  let tBase = hit.instanceIndex * 4u;
+  let tOk = isTlas && tBase + 2u < arrayLength(&tlasInstanceLocalToWorld);
+  if (tOk) {
+    tangent = transformDirectionCols(
+      tlasInstanceLocalToWorld[tBase],
+      tlasInstanceLocalToWorld[tBase + 1u],
+      tlasInstanceLocalToWorld[tBase + 2u],
+      tangent,
+    );
+    bitangent = transformDirectionCols(
+      tlasInstanceLocalToWorld[tBase],
+      tlasInstanceLocalToWorld[tBase + 1u],
+      tlasInstanceLocalToWorld[tBase + 2u],
+      bitangent,
+    );
   }
 
   tangent = tangent - frameNormal * dot(frameNormal, tangent);

@@ -40,6 +40,7 @@ import { RIS_MODULE } from '../ris.wgsl.js';
 import { RIS_GI_MODULE } from '../risGi.wgsl.js';
 import { composeWgsl } from '../../pipeline/wgslComposer.js';
 import { WGSL_MODULES } from '../../pipeline/wgslModules.js';
+import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js';
 
 // ── 1. Barycentric-blend CPU oracle ─────────────────────────────────────────
 //
@@ -202,6 +203,22 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
     expect(SCENE_TRAVERSAL_WGSL).toMatch(/w2l0\s*:\s*vec4f/);
     // The TLAS branch reuses the SAME normal transform the geometric path uses.
     expect(SCENE_TRAVERSAL_WGSL).toMatch(/tlasTransformNormalFromLocalCols\s*\(\s*w2l0/);
+  });
+
+  it('material atlas transforms derived fallback tangent frames for TLAS hits', () => {
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/let\s+dp1\s*=\s*p1\.xyz\s*-\s*p0\.xyz/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/let\s+tOk\s*=\s*isTlas\s*&&\s*tBase\s*\+\s*2u\s*<\s*arrayLength\(&tlasInstanceLocalToWorld\)/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/tangent\s*=\s*transformDirectionCols\(\s*tlasInstanceLocalToWorld\[tBase\]/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/bitangent\s*=\s*transformDirectionCols\(\s*tlasInstanceLocalToWorld\[tBase\]/);
+  });
+
+  it('DDGI probe material path transforms TLAS smooth normals and fallback tangents', () => {
+    const src = makeProbeUpdateRaysWGSL(64);
+    expect(src).toMatch(/fn\s+ddgiSmoothShadingNormalForHit\s*\(/);
+    expect(src).toMatch(/tlasTransformNormalFromLocalCols\(\s*tlasInstanceWorldToLocal\[tBase\]/);
+    expect(src).toMatch(/let\s+smoothNormal\s*=\s*ddgiSmoothShadingNormalForHit\(hit,\s*hit\.normal\)/);
+    expect(src).toMatch(/tangent\s*=\s*ddgiTransformDirectionCols\(\s*tlasInstanceLocalToWorld\[tBase\]/);
+    expect(src).toMatch(/bitangent\s*=\s*ddgiTransformDirectionCols\(\s*tlasInstanceLocalToWorld\[tBase\]/);
   });
 
   it('IntersectionResult carries instanceIndex + the TLAS traversal sets it', () => {

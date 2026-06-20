@@ -25,4 +25,11 @@ describe('walkaround shader hash policy', () => {
     expect(checkedSources).toContain('floatCellHash');
     expect(checkedSources).toContain('worldHash2');
   });
+
+  it('clips TLAS stained-glass tinted visibility against reconstructed world tMax', () => {
+    expect(SURFACE_TEXTURES_WGSL).toContain('let worldHitPos = tlasTransformPointCols');
+    expect(SURFACE_TEXTURES_WGSL).toContain('tCompare = dot(worldHitPos - worldOrigin, worldDir)');
+    expect(SURFACE_TEXTURES_WGSL).toContain('local t drives barycentrics, reconstructed');
+    expect(SURFACE_TEXTURES_WGSL).not.toContain('localOrigin, localDir, 1e20');
+  });
 });

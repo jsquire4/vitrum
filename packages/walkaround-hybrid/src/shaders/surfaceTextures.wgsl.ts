@@ -169,7 +169,8 @@ const BVH_BEER_TEX_WIDTH: u32 = 4096u;
 //   triIdx       — absolute triangle index (for beer-texture coord lookup)
 //   idxEntry     — raw bvh_index entry: .xyz = vertex indices, .w = packed material
 //   t            — ray hit distance (from intersectTriangle, pre-computed at call site)
-//   tMaxCmp      — upper-bound for t (local t for BLAS path, world t for merged path)
+//   tCompare     — t in the caller's segment space (world t for TLAS, local t otherwise)
+//   tMaxCmp      — upper-bound for tCompare
 //   origin / dir — ray (needed for barycentric hit-point interpolation)
 //   bvh_position — vertex position buffer (.w = packed UV)
 //   bvh_beer     — packed Beer-Lambert texture (r32uint, width BVH_BEER_TEX_WIDTH)
@@ -180,6 +181,7 @@ fn _bvhTintedTriAccumulate(
   triIdx:       u32,
   idxEntry:     vec4u,
   t:            f32,
+  tCompare:     f32,
   tMaxCmp:      f32,
   origin:       vec3f,
   dir:          vec3f,
@@ -187,7 +189,7 @@ fn _bvhTintedTriAccumulate(
   bvh_beer:     texture_2d<u32>,
   visibility:   ptr<function, vec3f>,
 ) -> bool {
-  if (t <= 1e-4 || t >= tMaxCmp) { return true; }
+  if (t <= 1e-4 || tCompare <= 1e-4 || tCompare >= tMaxCmp) { return true; }
   let trans4 = (idxEntry.w >> 4u) & 0xFu;
   if (trans4 > 4u) {
     // Glass hit — multiply visibility by sqrt(Beer x trans x texMod).
@@ -238,7 +240,8 @@ fn _bvhTintedTriAccumulate(
 }
 
 // Inner helper: traverse one BLAS from blasRoot, accumulating tinted visibility.
-// Positions in bvh_position are LOCAL-space; tMax is in LOCAL t units.
+// Positions in bvh_position are LOCAL-space. In TLAS mode, hit barycentrics use
+// local t, but segment clipping uses world t reconstructed through localToWorld.
 // Returns false early (sets visibility = 0) on opaque hit.
 fn _bvhTraceTintedBlasLeaves(
   bvh_index:    ptr<storage, array<vec4u>,   read>,
@@ -247,8 +250,15 @@ fn _bvhTraceTintedBlasLeaves(
   bvh_beer:     texture_2d<u32>,
   origin:   vec3f,   // LOCAL-space ray origin
   dir:      vec3f,   // LOCAL-space ray direction (unit)
-  tMaxLocal: f32,
+  tMaxCompare: f32,
   blasRoot:  u32,
+  useWorldTMax: bool,
+  l2w0: vec4f,
+  l2w1: vec4f,
+  l2w2: vec4f,
+  l2w3: vec4f,
+  worldOrigin: vec3f,
+  worldDir: vec3f,
   visibility: ptr<function, vec3f>,
 ) -> bool {
   // Returns true if we should keep going; false if opaque hit (caller should
@@ -271,7 +281,8 @@ fn _bvhTraceTintedBlasLeaves(
     let t2 = (nMax - origin) * invDir;
     let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
     let tFar  = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
-    if (tNear > tFar || tFar < 0.0 || tNear > tMaxLocal) { continue; }
+    let nodeTMax = select(tMaxCompare, BVH_INTERSECT_INFINITY, useWorldTMax);
+    if (tNear > tFar || tFar < 0.0 || tNear > nodeTMax) { continue; }
 
     let splitOrCount = node.splitAxisOrTriCount;
     if ((splitOrCount & 0xFFFF0000u) == LEAFNODE_FLAG) {
@@ -288,7 +299,13 @@ fn _bvhTraceTintedBlasLeaves(
         // Canonical intersectTriangle returns IntersectionResult; unwrap .dist.
         let triRes = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
         let t = select(BVH_INTERSECT_INFINITY, triRes.dist, triRes.didHit);
-        if (!_bvhTintedTriAccumulate(triIdx, idxEntry, t, tMaxLocal, origin, dir, bvh_position, bvh_beer, visibility)) {
+        var tCompare = t;
+        if (useWorldTMax && triRes.didHit) {
+          let localHitPos = origin + dir * t;
+          let worldHitPos = tlasTransformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
+          tCompare = dot(worldHitPos - worldOrigin, worldDir);
+        }
+        if (!_bvhTintedTriAccumulate(triIdx, idxEntry, t, tCompare, tMaxCompare, origin, dir, bvh_position, bvh_beer, visibility)) {
           return false;
         }
       }
@@ -362,15 +379,20 @@ fn bvhTraceTintedVisibility(
           // Transform ray to local space (mirrors traceTlasFirstHit).
           let localOrigin = tlasTransformPointCols(w2l0, w2l1, w2l2, w2l3, origin);
           let localDir    = tlasTransformDirectionCols(w2l0, w2l1, w2l2, dir);
-          // Use a conservative local tMax of 1e20 — the BLAS leaf test uses a
-          // local t but the outer TLAS AABB already bounds the traversal to the
-          // world segment [0, tMax]. This matches traceTlasAny's approach.
           let blasRoot = select(0u, tlasBlasRoots[instIdx], instIdx < arrayLength(&tlasBlasRoots));
-          // Run tinted BLAS traversal; if an opaque hit fires, visibility → 0.
+          let l2w0 = tlasInstanceLocalToWorld[m];
+          let l2w1 = tlasInstanceLocalToWorld[m + 1u];
+          let l2w2 = tlasInstanceLocalToWorld[m + 2u];
+          let l2w3 = tlasInstanceLocalToWorld[m + 3u];
+          // Run tinted BLAS traversal; local t drives barycentrics, reconstructed
+          // world t enforces the caller's finite [0, tMax) segment.
           let cont = _bvhTraceTintedBlasLeaves(
             bvh_index, bvh_position, bvh, bvh_beer,
-            localOrigin, localDir, 1e20,
-            blasRoot, &visibility,
+            localOrigin, localDir, tMax,
+            blasRoot, true,
+            l2w0, l2w1, l2w2, l2w3,
+            origin, dir,
+            &visibility,
           );
           if (!cont) { return vec3f(0.0); }
         }
@@ -431,7 +453,7 @@ fn bvhTraceTintedVisibility(
         // to operate on a plain f32 t-value.
         let triRes = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
         let t = select(BVH_INTERSECT_INFINITY, triRes.dist, triRes.didHit);
-        if (!_bvhTintedTriAccumulate(triIdx, idxEntry, t, tMax, origin, dir, bvh_position, bvh_beer, &visibility)) {
+        if (!_bvhTintedTriAccumulate(triIdx, idxEntry, t, t, tMax, origin, dir, bvh_position, bvh_beer, &visibility)) {
           return vec3f(0.0);
         }
       }

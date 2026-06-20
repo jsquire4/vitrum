@@ -54,6 +54,7 @@ import type {
   ScenePrimitive,
   SceneEmitter,
   MaterialSpec,
+  BackendSupportMode,
 } from '@vitrum/core';
 import { analyticPrimitiveToMesh } from '@vitrum/core';
 import type { Vec2, Vec3 } from '@vitrum/core';
@@ -106,6 +107,13 @@ export interface InverseEngineHooks {
    * while lite-tier unsupported analytics stay fail-closed.
    */
   getPathReplayGeometryCapabilities?(): InversePathReplayGeometryCapabilities;
+  /**
+   * Material support rows for the active pt-webgpu runtime profile. Full and
+   * lite profiles consume different material subsets, so inverse must reject
+   * parameters that the active shader path reports as unsupported instead of
+   * optimizing a renderer no-op through finite differences.
+   */
+  getMaterialSupportDetails?(): Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>>;
   /**
    * OPTIONAL Phase-1 path-replay adjoint. When present, the engine dispatches a
    * single-bounce adjoint compute pass over its scene buffers — re-tracing the
@@ -346,11 +354,13 @@ const MATERIAL_SCALAR_FIELDS = new Set([
   'dispersionAbbeNumber',
   'scatteringCoefficient',
   'scatteringAnisotropy',
-  'displacementScale',
-  'displacementBias',
 ]);
 const EMITTER_RGB_FIELDS = new Set(['color']);
 const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
+const UNSUPPORTED_RENDERER_INVERSE_MATERIAL_FIELDS = new Set([
+  'displacementScale',
+  'displacementBias',
+]);
 
 type PathReplayUnsupportedCode = InverseSessionDiagnostic['code'];
 type PathReplayMaterialIssue = {
@@ -410,7 +420,7 @@ export class PtWebgpuInverseSession implements InverseSession {
     let offset = 0;
     for (const param of opts.parameters) {
       const target = parseParamPath(param.path);
-      validateParam(scene, param, target);
+      validateParam(scene, param, target, hooks.getMaterialSupportDetails?.());
       const length = paramLength(param);
       this.#slots.push({ param, target, offset, length });
       offset += length;
@@ -1888,7 +1898,12 @@ function pathReplayAlphaMapAffectsVisibility(m: MaterialSpec): boolean {
 
 // ── path resolution / field validation ────────────────────────────────────────
 
-function validateParam(scene: Scene, param: InverseParam, target: ResolvedParamTarget): void {
+function validateParam(
+  scene: Scene,
+  param: InverseParam,
+  target: ResolvedParamTarget,
+  materialSupportDetails?: Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>>,
+): void {
   if (param.kind === 'texture') {
     throw new Error(
       `createInverseSession: parameter kind 'texture' (path "${param.path}") is reserved ` +
@@ -1902,6 +1917,13 @@ function validateParam(scene: Scene, param: InverseParam, target: ResolvedParamT
         `createInverseSession: no primitive with id "${target.id}" for path "${param.path}".`,
       );
     }
+    if (UNSUPPORTED_RENDERER_INVERSE_MATERIAL_FIELDS.has(target.field)) {
+      throw new Error(
+        `createInverseSession: material field "${target.field}" (path "${param.path}") is not ` +
+          'optimizable in pt-webgpu because the renderer does not implement displacement; ' +
+          'use a geometry/topology update or remove the field from inverse parameters.',
+      );
+    }
     const isRgb = MATERIAL_RGB_FIELDS.has(target.field);
     const isVec2 = MATERIAL_VEC2_FIELDS.has(target.field);
     const isScalar = MATERIAL_SCALAR_FIELDS.has(target.field);
@@ -1913,6 +1935,14 @@ function validateParam(scene: Scene, param: InverseParam, target: ResolvedParamT
             ...MATERIAL_VEC2_FIELDS,
             ...MATERIAL_SCALAR_FIELDS,
           ].join(', ')}.`,
+      );
+    }
+    const materialField = target.field as keyof MaterialSpec;
+    if (materialSupportDetails?.[materialField] === 'unsupported') {
+      throw new Error(
+        `createInverseSession: material field "${target.field}" (path "${param.path}") is not ` +
+          'optimizable on the active pt-webgpu runtime profile because that profile reports ' +
+          'the field as unsupported.',
       );
     }
     assertKind(param, isRgb ? 'rgb' : isVec2 ? 'vec2' : 'scalar');

@@ -23,7 +23,8 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "pt-webgl2 scalar/material/emitter/environment mutation and warning specificity",
     "engine glTF subpath, progressive handoff, RAF controller playback, and recreate scene retention",
     "method-scoped PT receiveShadow diagnostics, glTF variant generated-texture retention, and required-extension source-path diagnostics",
-    "glTF planner routing for walkaround-unsupported rich material fields, including source-pathed strict rejection"
+    "glTF planner routing for walkaround-unsupported rich material fields, including source-pathed strict rejection",
+    "inverse active-profile material support truthfulness, walkaround TLAS material-frame parity, and anisotropy-map tangent generation"
   ],
   "openPromotionBuckets": [
     "GPU material-furnace and reference-render sweeps",

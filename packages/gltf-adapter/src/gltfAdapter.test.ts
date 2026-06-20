@@ -1277,6 +1277,40 @@ describe('material field mapping', () => {
     expect(mat.anisotropyRotation).toBeCloseTo(1.0);
   });
 
+  it('generates tangents for an anisotropy-mapped primitive that omits TANGENT', async () => {
+    const handle = { kind: 'decoded-anisotropy' };
+    const { gltf, buffers } = makeNormalMappedTriangleGltf();
+    gltf.materials = [{
+      extensions: {
+        KHR_materials_anisotropy: {
+          anisotropyStrength: 0.6,
+          anisotropyRotation: 1.0,
+          anisotropyTexture: { index: 0 },
+        },
+      },
+    }];
+
+    const { scene, warnings, diagnostics } = await gltfToScene(gltf, {
+      buffers,
+      decodeImage: async () => handle,
+    });
+
+    const prim = scene.primitives[0] as MeshPrimitive;
+    expect((prim.material.anisotropyMap as TextureRef).handle).toBe(handle);
+    expect(prim.tangents).toBeInstanceOf(Float32Array);
+    expect(Array.from(prim.tangents!)).toEqual([
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ]);
+    expect(warnings.some((w) => w.includes('generated per-vertex tangents'))).toBe(true);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      severity: 'warning',
+      code: 'generated-tangents',
+      path: 'meshes[0].primitives[0].attributes.TANGENT',
+    }));
+  });
+
   it('maps KHR_materials_specular', async () => {
     const { gltf, buffers } = makeGltfWithMaterial({
       extensions: {

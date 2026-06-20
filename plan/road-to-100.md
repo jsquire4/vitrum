@@ -482,6 +482,18 @@
 > compatibility issues when a primitive mapping references a missing material,
 > missing/malformed variant list, or missing root variant index, instead of advertising the required extension as
 > supported while a selected variant would fall back to the base material.
+> **2026-06-20 code-closure follow-up:** pt-webgpu inverse sessions now reject
+> displacement scalar parameters at construction because displacement is a
+> renderer-unsupported field, and the real engine passes active full/lite
+> material support rows into inverse validation so lite-only unsupported fields
+> cannot be optimized as no-ops. Walkaround material atlas and DDGI probe-hit
+> material sampling now transform derived fallback tangent/bitangent frames for
+> TLAS instances before normal/bump map evaluation, DDGI smooth probe-hit
+> normals now use the same TLAS inverse-transpose world transform as ReSTIR/shade,
+> and TLAS stained-glass tinted visibility clips each BLAS hit against
+> reconstructed world-space `tMax` instead of an infinite local segment. glTF
+> import now treats `anisotropyMap` as tangent-space data, generating tangents
+> from the selected UV set when authored `TANGENT` is absent.
 > **2026-06-18 pt-webgl2 emitter shadow follow-up:** folded mesh-area emitter
 > materials now carry a dedicated shadow-disabled flag into the GLSL material
 > payload, and the ordinary forward emissive-hit MIS estimator skips those

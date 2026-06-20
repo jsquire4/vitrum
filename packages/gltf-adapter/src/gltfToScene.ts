@@ -1623,7 +1623,8 @@ function _maybeGenerateTangents(
 function materialNeedsTangentFrame(material: MaterialSpec): boolean {
   return material.normalMap !== undefined ||
     material.clearcoatNormalMap !== undefined ||
-    material.bumpMap !== undefined;
+    material.bumpMap !== undefined ||
+    material.anisotropyMap !== undefined;
 }
 
 function tangentFrameTexCoord(material: MaterialSpec): number | null {
@@ -1631,6 +1632,7 @@ function tangentFrameTexCoord(material: MaterialSpec): number | null {
     material.normalMap?.texCoord,
     material.clearcoatNormalMap?.texCoord,
     material.bumpMap?.texCoord,
+    material.anisotropyMap?.texCoord,
   ].filter((texCoord): texCoord is number => texCoord !== undefined);
   if (candidates.length === 0) return 0;
   const channels = new Set(candidates.map((texCoord) => Math.max(0, Math.floor(texCoord))));

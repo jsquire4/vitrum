@@ -349,6 +349,35 @@ npm test
 npm run shader-gate
 ```
 
+### Wave 5 — Source-Reader Bounded Tails
+
+Status 2026-06-20: **CLOSED.** A follow-up source-reader pass found four
+bounded code tails that were implementation work rather than proof work:
+
+- pt-webgpu inverse now rejects displacement scalar parameters at construction
+  instead of optimizing renderer-unsupported no-op fields through finite
+  difference.
+- pt-webgpu inverse receives active full/lite material support details, so
+  runtime-profile-unsupported material fields are rejected before session start.
+- walkaround material atlas and DDGI probe-hit material sampling now transform
+  derived fallback tangent/bitangent frames through the TLAS local-to-world
+  direction matrix before normal/bump-map evaluation; DDGI smooth probe-hit
+  normals use the TLAS inverse-transpose normal transform before material
+  response/direct-lighting.
+- TLAS stained-glass tinted visibility reconstructs world-space hit distance
+  for the caller's finite `tMax`, and glTF anisotropy-only texture assets now
+  trigger generated tangents just like normal/clearcoat-normal/bump maps.
+
+Focused gates:
+
+```bash
+npm test --workspace @vitrum/pt-webgpu -- inverseSession.test.ts
+npm test --workspace @vitrum/walkaround-hybrid -- smoothNormals.test.ts pcgHashPolicy.test.ts
+npm test --workspace @vitrum/gltf-adapter -- gltfAdapter.test.ts
+npm run shader-gate
+npm run typecheck
+```
+
 ## Parked Long-Tail Items
 
 These are real, but they should not block contract-complete unless the user

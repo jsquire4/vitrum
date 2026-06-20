@@ -453,6 +453,31 @@ fn ddgiTransformDirectionCols(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f, v: vec3f) -
   return l2w0.xyz * v.x + l2w1.xyz * v.y + l2w2.xyz * v.z;
 }
 
+fn ddgiSmoothShadingNormalForHit(hit: IntersectionResult, geoNormal: vec3f) -> vec3f {
+  let n0 = bvh_normal[hit.indices.x].xyz;
+  let n1 = bvh_normal[hit.indices.y].xyz;
+  let n2 = bvh_normal[hit.indices.z].xyz;
+  let blended =
+    hit.barycoord.x * n0 +
+    hit.barycoord.y * n1 +
+    hit.barycoord.z * n2;
+  let len = length(blended);
+  if (len < 1e-6) { return geoNormal; }
+  var n = blended / len;
+  let isTlas = ddgiTrace.bvhMode == 1u;
+  let tBase = hit.instanceIndex * 4u;
+  let tOk = isTlas && tBase + 2u < arrayLength(&tlasInstanceWorldToLocal);
+  if (tOk) {
+    n = tlasTransformNormalFromLocalCols(
+      tlasInstanceWorldToLocal[tBase],
+      tlasInstanceWorldToLocal[tBase + 1u],
+      tlasInstanceWorldToLocal[tBase + 2u],
+      n,
+    );
+  }
+  return n * hit.side;
+}
+
 fn ddgiTangentHandednessForLocalToWorld(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f) -> f32 {
   let det = dot(l2w0.xyz, cross(l2w1.xyz, l2w2.xyz));
   return select(-1.0, 1.0, det >= 0.0);
@@ -541,11 +566,28 @@ fn ddgiMaterialTangentFrameForHit(
   let duv2 = tc - ta;
   let det = duv1.x * duv2.y - duv1.y * duv2.x;
   var tangent = dp1;
-  var bitangent = ddgiFallbackBitangentForNormal(frameNormal, tangent);
+  var bitangent = dp2;
   if (abs(det) > 1e-8) {
     let invDet = 1.0 / det;
     tangent = (dp1 * duv2.y - dp2 * duv1.y) * invDet;
     bitangent = (dp2 * duv1.x - dp1 * duv2.x) * invDet;
+  }
+  let isTlas = ddgiTrace.bvhMode == 1u;
+  let tBase = hit.instanceIndex * 4u;
+  let tOk = isTlas && tBase + 2u < arrayLength(&tlasInstanceLocalToWorld);
+  if (tOk) {
+    tangent = ddgiTransformDirectionCols(
+      tlasInstanceLocalToWorld[tBase],
+      tlasInstanceLocalToWorld[tBase + 1u],
+      tlasInstanceLocalToWorld[tBase + 2u],
+      tangent,
+    );
+    bitangent = ddgiTransformDirectionCols(
+      tlasInstanceLocalToWorld[tBase],
+      tlasInstanceLocalToWorld[tBase + 1u],
+      tlasInstanceLocalToWorld[tBase + 2u],
+      bitangent,
+    );
   }
 
   tangent = tangent - frameNormal * dot(frameNormal, tangent);
@@ -1825,18 +1867,8 @@ fn probeUpdateRays(
       } else {
         let hitWorldPos = probeOrigin + dir * hit.dist;
 
-        // Smooth normal from barycentric blend.
-        let i0 = hit.indices.x;
-        let i1 = hit.indices.y;
-        let i2 = hit.indices.z;
-        let n0 = bvh_normal[i0].xyz;
-        let n1 = bvh_normal[i1].xyz;
-        let n2 = bvh_normal[i2].xyz;
-        let smoothNormal = normalize(
-          hit.barycoord.x * n0 +
-          hit.barycoord.y * n1 +
-          hit.barycoord.z * n2
-        ) * hit.side;
+        // Smooth normal from barycentric blend, transformed to world for TLAS hits.
+        let smoothNormal = ddgiSmoothShadingNormalForHit(hit, hit.normal);
         let normalMapped = ddgiApplyNormalMapForHit(hit, smoothNormal);
         let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);
         let probeMat = ddgiSampleProbeHitMaterial(hit, mat.baseColor, mat.roughness, mat.metalness, mat.transmission, mat.attenuationColor, smoothNormal, probeNormal);

@@ -195,6 +195,26 @@ describe('InverseSession — path resolution + validation throws', () => {
     })).toThrow(/not optimizable/);
   });
 
+  it('throws when a renderer-unsupported material field is requested', () => {
+    const fake = makeFakeEngine();
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.displacementScale', kind: 'scalar' }],
+    })).toThrow(/does not implement displacement/);
+  });
+
+  it('throws when the active runtime profile reports a material field unsupported', () => {
+    const fake = makeFakeEngine();
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getMaterialSupportDetails: () => ({ normalScale: 'unsupported' }),
+    };
+    expect(() => new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.normalScale', kind: 'scalar' }],
+    })).toThrow(/active pt-webgpu runtime profile/);
+  });
+
   it('throws when the declared kind disagrees with the resolved field', () => {
     const fake = makeFakeEngine();
     expect(() => new PtWebgpuInverseSession(fake.hooks, {
@@ -307,7 +327,7 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
     session.dispose();
   });
 
-  it('optimizes scalar displacement controls through finite differences without clamping signed bias', async () => {
+  it('rejects scalar displacement controls instead of optimizing renderer no-ops', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -317,7 +337,7 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
           : pr,
       ),
     };
-    const session = new PtWebgpuInverseSession(fake.hooks, {
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
       target: targetImage(2, 2, [0.2, 0.2, 0.2]),
       parameters: [
         { path: 'materials.panel.displacementScale', kind: 'scalar' },
@@ -325,19 +345,7 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
       ],
       samplesPerStep: 1,
       optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
-    });
-
-    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.3, 6)]);
-    expect(session.currentValues()[1]).toEqual([expect.closeTo(-0.4, 6)]);
-    const result = await session.step();
-    expect(result.gradient[0]![0]).toBeGreaterThan(0);
-    expect(result.gradient[1]![0]).toBeLessThan(0);
-    expect(session.currentValues()[0]![0]).toBeLessThan(0.3);
-    expect(session.currentValues()[1]![0]).toBeGreaterThan(-0.4);
-    expect(session.currentValues()[1]![0]).toBeLessThan(0);
-    expect(fake.scene.primitives[0]!.material.displacementScale).toBeCloseTo(session.currentValues()[0]![0]!, 6);
-    expect(fake.scene.primitives[0]!.material.displacementBias).toBeCloseTo(session.currentValues()[1]![0]!, 6);
-    session.dispose();
+    })).toThrow(/does not implement displacement/);
   });
 
   it('does not clamp anisotropyRotation to a half-turn by default', async () => {
@@ -1988,7 +1996,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('downgrades scalar displacement controls to finite differences with structured geometry diagnostics', () => {
+  it('rejects scalar displacement controls before path-replay diagnostics', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2006,26 +2014,14 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       ),
     };
     const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
-    const session = new PtWebgpuInverseSession(hooks, {
+    expect(() => new PtWebgpuInverseSession(hooks, {
       target: targetImage(2, 2, [0.8, 0.1, 0.1]),
       parameters: [
         { path: 'materials.panel.displacementScale', kind: 'scalar' },
         { path: 'materials.panel.displacementBias', kind: 'scalar' },
       ],
       method: 'path-replay',
-    });
-
-    expect(session.method).toBe('finite-difference');
-    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.25, 6)]);
-    expect(session.currentValues()[1]).toEqual([expect.closeTo(-0.125, 6)]);
-    for (const field of ['displacementScale', 'displacementBias']) {
-      expect(session.diagnostics).toContainEqual(expect.objectContaining({
-        code: 'path-replay-unsupported-geometry',
-        path: `materials.panel.${field}`,
-        details: expect.objectContaining({ field, finiteDifferenceReason: 'geometry' }),
-      }));
-    }
-    session.dispose();
+    })).toThrow(/does not implement displacement/);
   });
 
   it('resolves map-free vec2 iridescenceThicknessRange to path-replay', () => {
