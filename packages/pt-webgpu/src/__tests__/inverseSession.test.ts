@@ -164,6 +164,18 @@ describe('InverseSession — contract shape', () => {
     expect(session.currentValues()[0]).toEqual([expect.closeTo(0.9, 6)]);
     session.dispose();
   });
+
+  it('uses an explicit finite attenuationDistance initial when the scene has no finite medium yet', () => {
+    const fake = makeFakeEngine();
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.attenuationDistance', kind: 'scalar', initial: [2.5] }],
+    });
+
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(2.5, 6)]);
+    expect(fake.scene.primitives[0]!.material.attenuationDistance).toBeCloseTo(2.5, 6);
+    session.dispose();
+  });
 });
 
 describe('InverseSession — path resolution + validation throws', () => {
@@ -197,6 +209,29 @@ describe('InverseSession — path resolution + validation throws', () => {
       target: targetImage(2, 2, [0, 0, 0]),
       parameters: [{ path: 'materials.panel.iridescenceThicknessRange', kind: 'scalar' }],
     })).toThrow(/declared kind 'scalar'.*'vec2'/);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['infinite', Number.POSITIVE_INFINITY],
+    ['zero', 0],
+  ])('throws when attenuationDistance has a %s scene seed and no explicit initial', (_label, attenuationDistance) => {
+    const fake = makeFakeEngine();
+    if (attenuationDistance !== undefined) {
+      fake.scene = {
+        ...fake.scene,
+        primitives: fake.scene.primitives.map((pr) =>
+          pr.id === 'panel'
+            ? { ...pr, material: { ...pr.material, attenuationDistance } }
+            : pr,
+        ),
+      };
+    }
+
+    expect(() => new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'materials.panel.attenuationDistance', kind: 'scalar' }],
+    })).toThrow(/requires a finite positive scene attenuationDistance/);
   });
 
   it('throws on an empty parameter list', () => {

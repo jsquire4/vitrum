@@ -494,6 +494,7 @@ export class PtWebgpuInverseSession implements InverseSession {
             `length ${initial.length}, expected ${slot.length}.`,
         );
       }
+      validateInitialSceneValue(slot, initial, slot.param.initial != null);
       this.#flat.set(initial, slot.offset);
     }
 
@@ -1898,6 +1899,19 @@ function assertKind(param: InverseParam, expected: 'rgb' | 'vec2' | 'scalar'): v
   }
 }
 
+function validateInitialSceneValue(slot: ParamSlot, value: readonly number[], fromExplicitInitial: boolean): void {
+  if (slot.target.domain !== 'materials' || slot.target.field !== 'attenuationDistance') return;
+  const distance = value[0];
+  if (Number.isFinite(distance) && distance! > 0) return;
+  const source = fromExplicitInitial ? 'initial' : 'scene';
+  throw new Error(
+    `createInverseSession: parameter "${slot.param.path}" requires a finite positive ${source} ` +
+      'attenuationDistance. Undefined or Infinity means "no finite absorbing medium" in the ' +
+      'renderer, so pt-webgpu cannot forward-difference this parameter without an explicit ' +
+      'finite seed. Set parameter.initial to start fitting a finite medium.',
+  );
+}
+
 function findPrimitive(scene: Scene, id: string): ScenePrimitive | null {
   return scene.primitives.find((p) => p.id === id) ?? null;
 }
@@ -1918,7 +1932,7 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'transmission': return [m.transmission ?? 0];
       case 'thickness': return [m.thickness ?? 0];
       case 'attenuationColor': return [...(m.attenuationColor ?? [1, 1, 1])];
-      case 'attenuationDistance': return [m.attenuationDistance ?? 1];
+      case 'attenuationDistance': return [m.attenuationDistance ?? Number.POSITIVE_INFINITY];
       case 'dispersionAbbeNumber': return [m.dispersionAbbeNumber ?? 0];
       case 'scatteringCoefficient': return [m.scatteringCoefficient ?? 0];
       case 'scatteringAnisotropy': return [m.scatteringAnisotropy ?? 0];
