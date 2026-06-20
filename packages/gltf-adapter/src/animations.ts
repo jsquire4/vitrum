@@ -70,6 +70,15 @@ export type GltfAnimationImportDiagnosticSink = (
   diagnostic: GltfAnimationImportDiagnostic,
 ) => void;
 
+export interface ConvertAnimationsOptions {
+  /**
+   * Optional selected-scene node filter. Channels whose target node is absent
+   * from this set are outside the current import scene and are skipped without
+   * warnings, matching feature-report/resource-fetch scoping.
+   */
+  readonly reachableNodeIndices?: ReadonlySet<number>;
+}
+
 /** Fixed per-keyframe component count for TRS paths (weights is inferred from
  *  the buffer by the core sampler, so it is validated loosely here). */
 function trsComponents(path: AnimationTargetPath): number | undefined {
@@ -90,15 +99,18 @@ export function convertAnimations(
   warnings: string[],
   onDiagnostic?: GltfAnimationImportDiagnosticSink,
   onAccessorDiagnostic?: GltfAccessorDiagnosticSink,
+  options: ConvertAnimationsOptions = {},
 ): AnimationClip[] {
   const clips: AnimationClip[] = [];
   const animations = gltf.animations ?? [];
+  const reachableNodeIndices = options.reachableNodeIndices;
 
   for (const [animIdx, anim] of animations.entries()) {
     const label = anim.name ?? `#${animIdx}`;
     const samplers = anim.samplers ?? [];
     const gltfChannels = anim.channels ?? [];
     const channels: AnimationChannel[] = [];
+    let hasReachableChannel = reachableNodeIndices === undefined;
     let duration = 0;
 
     // Decode each referenced sampler once (multiple channels may share one).
@@ -158,6 +170,11 @@ export function convertAnimations(
     };
 
     for (const [chIdx, ch] of gltfChannels.entries()) {
+      const nodeIdx = ch.target?.node;
+      if (reachableNodeIndices !== undefined) {
+        if (nodeIdx === undefined || !reachableNodeIndices.has(nodeIdx)) continue;
+        hasReachableChannel = true;
+      }
       const path = ch.target?.path;
       if (path === undefined || !VALID_PATHS.has(path)) {
         emitAnimationDiagnostic(warnings, onDiagnostic, {
@@ -173,7 +190,6 @@ export function convertAnimations(
         });
         continue;
       }
-      const nodeIdx = ch.target?.node;
       if (nodeIdx === undefined) {
         emitAnimationDiagnostic(warnings, onDiagnostic, {
           severity: 'warning',
@@ -259,6 +275,7 @@ export function convertAnimations(
     }
 
     if (channels.length === 0) {
+      if (!hasReachableChannel) continue;
       emitAnimationDiagnostic(warnings, onDiagnostic, {
         severity: 'warning',
         code: 'dropped-animation',

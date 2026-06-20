@@ -785,15 +785,14 @@ describe('animations (GLTF-03)', () => {
       },
       {
         path: 'translation',
-        node: 99, // nonexistent node
         times: [0, 1],
-        values: [0,0,0, 1,0,0],
+        values: [0,0,0],
         outType: 'VEC3',
       },
     ]);
     const { animations, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
     expect(warnings.some(w => w.includes('BEZIER'))).toBe(true);
-    expect(warnings.some(w => w.includes('node 99'))).toBe(true);
+    expect(warnings.some(w => w.includes('expect 6'))).toBe(true);
     expect(diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({
         severity: 'warning',
@@ -804,11 +803,10 @@ describe('animations (GLTF-03)', () => {
       }),
       expect.objectContaining({
         severity: 'warning',
-        code: 'animation-target-node-not-found',
-        path: 'animations[0].channels[1].target.node',
+        code: 'invalid-animation-output-count',
+        path: 'animations[0].channels[1].sampler',
         animationIndex: 0,
         channelIndex: 1,
-        nodeIndex: 99,
       }),
     ]));
     expect(animations).toHaveLength(1);

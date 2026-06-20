@@ -1571,11 +1571,21 @@ describe('Draco without a decode hook', () => {
 describe('out-of-scope feature warnings', () => {
   it('drops a malformed animation (no channels) with a warning', async () => {
     const { gltf, buffers } = makeMinimalTriangleGltf();
-    gltf.animations = [{ name: 'walk' }]; // no channels/samplers → not importable
+    gltf.animations = [{
+      name: 'walk',
+      channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+      samplers: [],
+    }];
     const { animations, diagnostics, warnings } = await gltfToScene(gltf, { buffers });
     expect(animations).toHaveLength(0);
+    expect(warnings.some(w => w.includes('sampler 0'))).toBe(true);
     expect(warnings.some(w => w.includes('no importable channels'))).toBe(true);
     expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'missing-animation-sampler',
+        path: 'animations[0].samplers[0]',
+      }),
       expect.objectContaining({
         severity: 'warning',
         code: 'dropped-animation',

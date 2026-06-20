@@ -306,6 +306,11 @@
 > reports as `category:"animation"` / `support:"unsupported"` issues, so strict
 > one-call loaders can reject extension/pointer animation channels before import
 > instead of discovering the skipped channel only after engine construction.
+> Same-scene import alignment follow-up: `gltfToScene()` now scopes animation
+> conversion to the selected scene's reachable node set, matching
+> `analyzeGltfAsset({ sceneIndex })` and selected-scene resource fetching. Unused
+> scenes' animation buffers are not fetched, and their channels no longer leak
+> into returned clips or diagnostics for the selected scene.
 > Unknown animation sampler interpolation strings now appear as
 > `degradedInterpolations` with exact `animations[*].samplers[*].interpolation`
 > source paths and `support:"approximate"` compatibility issues, matching the

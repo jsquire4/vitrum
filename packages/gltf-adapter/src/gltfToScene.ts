@@ -1280,7 +1280,9 @@ export async function gltfToScene(
   // ── 10. Convert animations (GLTF-03) ───────────────────────────────────────
   const animations = convertAnimations(gltf, buffers, warnings, (diagnostic) => {
     diagnostics.push(diagnostic);
-  }, onAccessorDiagnostic);
+  }, onAccessorDiagnostic, {
+    reachableNodeIndices: sceneReachability.nodeIndices,
+  });
 
   const scene: Scene = {
     primitives,

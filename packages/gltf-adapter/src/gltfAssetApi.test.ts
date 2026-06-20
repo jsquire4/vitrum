@@ -3825,6 +3825,52 @@ describe('loadGltfForEngine', () => {
     )).toBe(false);
   });
 
+  it('does not import or warn on animations reachable only from unused scenes', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const originalBuffer = buffers.get(0)!;
+    gltf.scenes = [{ nodes: [0] }, { nodes: [1] }];
+    gltf.nodes = [{ mesh: 0 }, { mesh: 0 }];
+    gltf.accessors = [
+      ...(gltf.accessors ?? []),
+      { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: 3, componentType: 5126, count: 2, type: 'VEC3' },
+    ];
+    gltf.bufferViews = [
+      ...(gltf.bufferViews ?? []),
+      { buffer: 1, byteOffset: 0, byteLength: 2 * 4 },
+      { buffer: 1, byteOffset: 2 * 4, byteLength: 2 * 3 * 4 },
+    ];
+    gltf.buffers = [
+      { byteLength: originalBuffer.byteLength },
+      { uri: 'unused-animation.bin', byteLength: 8 * 4 },
+    ];
+    gltf.animations = [{
+      name: 'unused-scene-motion',
+      samplers: [{ input: 2, output: 3 }],
+      channels: [{ sampler: 0, target: { node: 1, path: 'translation' } }],
+    }];
+    const fetch = vi.fn(async (url: string) => {
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const result = await loadGltfAsset(gltf, {
+      buffers,
+      sceneIndex: 0,
+      baseUri: 'https://assets.example/model.gltf',
+      fetch,
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.featureReport.animations.count).toBe(0);
+    expect(result.featureReport.animations.channelCount).toBe(0);
+    expect(result.animations).toEqual([]);
+    expect(result.diagnostics.some((diagnostic) =>
+      diagnostic.path.startsWith('animations[0]') ||
+      diagnostic.code === 'unreadable-animation-sampler' ||
+      diagnostic.code === 'dropped-animation',
+    )).toBe(false);
+  });
+
   it('fetches selected-scene variant material textures without disabled texture-source sidecars', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.extensionsUsed = ['KHR_materials_variants', 'EXT_texture_webp'];
