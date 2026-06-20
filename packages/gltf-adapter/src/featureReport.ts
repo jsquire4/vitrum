@@ -207,6 +207,12 @@ export type GltfAnimationMalformedChannelKind =
   | 'missing-output-accessor'
   | 'invalid-input-accessor-type'
   | 'invalid-output-accessor-type'
+  | 'invalid-input-accessor-component-type'
+  | 'invalid-output-accessor-component-type'
+  | 'missing-input-buffer-view'
+  | 'missing-output-buffer-view'
+  | 'missing-input-buffer'
+  | 'missing-output-buffer'
   | 'missing-target-node'
   | 'target-node-not-found'
   | 'invalid-output-count';
@@ -222,6 +228,9 @@ export interface GltfAnimationMalformedChannelIssue {
   readonly accessorIndex?: number;
   readonly accessorRole?: 'input' | 'output';
   readonly accessorType?: string;
+  readonly componentType?: number;
+  readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
   readonly expectedOutputFloats?: number;
   readonly actualOutputFloats?: number;
 }
@@ -1033,6 +1042,28 @@ function animationMalformedChannelMessage(issue: GltfAnimationMalformedChannelIs
       `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
       `${String(issue.samplerIndex)} ${String(issue.accessorRole)} accessor ${String(issue.accessorIndex)} ` +
       `with invalid accessor type "${String(issue.accessorType)}"; the importer skips the channel.`
+    );
+  }
+  if (issue.kind === 'invalid-input-accessor-component-type' || issue.kind === 'invalid-output-accessor-component-type') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
+      `${String(issue.samplerIndex)} ${String(issue.accessorRole)} accessor ${String(issue.accessorIndex)} ` +
+      `with unsupported componentType ${String(issue.componentType)}; the importer skips the channel.`
+    );
+  }
+  if (issue.kind === 'missing-input-buffer-view' || issue.kind === 'missing-output-buffer-view') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
+      `${String(issue.samplerIndex)} ${String(issue.accessorRole)} accessor ${String(issue.accessorIndex)} ` +
+      `whose bufferView ${String(issue.bufferViewIndex)} is missing; the importer skips the channel.`
+    );
+  }
+  if (issue.kind === 'missing-input-buffer' || issue.kind === 'missing-output-buffer') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
+      `${String(issue.samplerIndex)} ${String(issue.accessorRole)} accessor ${String(issue.accessorIndex)} ` +
+      `whose bufferView ${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)}; ` +
+      'the importer skips the channel.'
     );
   }
   if (issue.kind === 'missing-target-node') {
@@ -2355,14 +2386,26 @@ function animationSamplerAccessorIssues(
       | 'missing-output-accessor'
       | 'invalid-input-accessor-type'
       | 'invalid-output-accessor-type'
+      | 'invalid-input-accessor-component-type'
+      | 'invalid-output-accessor-component-type'
+      | 'missing-input-buffer-view'
+      | 'missing-output-buffer-view'
+      | 'missing-input-buffer'
+      | 'missing-output-buffer'
     >,
     accessorRole: 'input' | 'output',
     accessorIndex: number,
-    accessorType?: string,
+    extra: {
+      readonly accessorType?: string;
+      readonly componentType?: number;
+      readonly bufferViewIndex?: number;
+      readonly bufferIndex?: number;
+      readonly path?: string;
+    } = {},
   ): void => {
     issues.push({
       kind,
-      path: `animations[${animationIndex}].samplers[${channel.sampler}].${accessorRole}`,
+      path: extra.path ?? `animations[${animationIndex}].samplers[${channel.sampler}].${accessorRole}`,
       animationIndex,
       channelIndex,
       targetPath: channel.target.path,
@@ -2370,7 +2413,10 @@ function animationSamplerAccessorIssues(
       ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
       accessorIndex,
       accessorRole,
-      ...(accessorType !== undefined ? { accessorType } : {}),
+      ...(extra.accessorType !== undefined ? { accessorType: extra.accessorType } : {}),
+      ...(extra.componentType !== undefined ? { componentType: extra.componentType } : {}),
+      ...(extra.bufferViewIndex !== undefined ? { bufferViewIndex: extra.bufferViewIndex } : {}),
+      ...(extra.bufferIndex !== undefined ? { bufferIndex: extra.bufferIndex } : {}),
     });
   };
 
@@ -2378,17 +2424,97 @@ function animationSamplerAccessorIssues(
   if (inputAccessor == null) {
     addIssue('missing-input-accessor', 'input', sampler.input);
   } else if (animationAccessorFloatCount(inputAccessor) === undefined) {
-    addIssue('invalid-input-accessor-type', 'input', sampler.input, String(inputAccessor.type));
+    addIssue('invalid-input-accessor-type', 'input', sampler.input, { accessorType: String(inputAccessor.type) });
+  } else if (!floatAccessorComponentTypeIsReadableByImporter(inputAccessor.componentType)) {
+    addIssue('invalid-input-accessor-component-type', 'input', sampler.input, {
+      componentType: inputAccessor.componentType,
+      path: `accessors[${sampler.input}].componentType`,
+    });
+  } else {
+    addAnimationAccessorStorageIssues(gltf, issues, {
+      animationIndex,
+      channelIndex,
+      channel,
+      sampler,
+      accessorRole: 'input',
+      accessorIndex: sampler.input,
+      accessor: inputAccessor,
+    });
   }
 
   const outputAccessor = gltf.accessors?.[sampler.output];
   if (outputAccessor == null) {
     addIssue('missing-output-accessor', 'output', sampler.output);
   } else if (animationAccessorFloatCount(outputAccessor) === undefined) {
-    addIssue('invalid-output-accessor-type', 'output', sampler.output, String(outputAccessor.type));
+    addIssue('invalid-output-accessor-type', 'output', sampler.output, { accessorType: String(outputAccessor.type) });
+  } else if (!floatAccessorComponentTypeIsReadableByImporter(outputAccessor.componentType)) {
+    addIssue('invalid-output-accessor-component-type', 'output', sampler.output, {
+      componentType: outputAccessor.componentType,
+      path: `accessors[${sampler.output}].componentType`,
+    });
+  } else {
+    addAnimationAccessorStorageIssues(gltf, issues, {
+      animationIndex,
+      channelIndex,
+      channel,
+      sampler,
+      accessorRole: 'output',
+      accessorIndex: sampler.output,
+      accessor: outputAccessor,
+    });
   }
 
   return issues;
+}
+
+function addAnimationAccessorStorageIssues(
+  gltf: GltfJson,
+  issues: GltfAnimationMalformedChannelIssue[],
+  input: {
+    readonly animationIndex: number;
+    readonly channelIndex: number;
+    readonly channel: GltfAnimationChannel;
+    readonly sampler: GltfAnimationSampler;
+    readonly accessorRole: 'input' | 'output';
+    readonly accessorIndex: number;
+    readonly accessor: NonNullable<GltfJson['accessors']>[number];
+  },
+): void {
+  const { animationIndex, channelIndex, channel, sampler, accessorRole, accessorIndex, accessor } = input;
+  if (accessor.bufferView === undefined) return;
+  const bufferViewIndex = accessor.bufferView;
+  const bufferView = gltf.bufferViews?.[bufferViewIndex];
+  const kindPrefix = accessorRole === 'input' ? 'input' : 'output';
+  if (bufferView == null) {
+    issues.push({
+      kind: kindPrefix === 'input' ? 'missing-input-buffer-view' : 'missing-output-buffer-view',
+      path: `accessors[${accessorIndex}].bufferView`,
+      animationIndex,
+      channelIndex,
+      targetPath: channel.target.path,
+      samplerIndex: channel.sampler,
+      ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
+      accessorIndex,
+      accessorRole,
+      bufferViewIndex,
+    });
+    return;
+  }
+  if (gltf.buffers?.[bufferView.buffer] == null) {
+    issues.push({
+      kind: kindPrefix === 'input' ? 'missing-input-buffer' : 'missing-output-buffer',
+      path: `bufferViews[${bufferViewIndex}].buffer`,
+      animationIndex,
+      channelIndex,
+      targetPath: channel.target.path,
+      samplerIndex: channel.sampler,
+      ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
+      accessorIndex,
+      accessorRole,
+      bufferViewIndex,
+      bufferIndex: bufferView.buffer,
+    });
+  }
 }
 
 function animationOutputCountIssue(

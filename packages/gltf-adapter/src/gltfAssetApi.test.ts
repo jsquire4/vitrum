@@ -2343,11 +2343,28 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const timeAccessor = gltf.accessors!.length;
     const outputAccessor = timeAccessor + 1;
     const invalidTypeAccessor = timeAccessor + 2;
+    const missingInputBufferViewAccessor = timeAccessor + 3;
+    const missingOutputBufferAccessor = timeAccessor + 4;
+    const invalidInputComponentAccessor = timeAccessor + 5;
+    const invalidOutputComponentAccessor = timeAccessor + 6;
+    const missingInputBufferAccessor = timeAccessor + 7;
+    const missingOutputBufferViewAccessor = timeAccessor + 8;
+    const missingAnimationBufferView = gltf.bufferViews!.length;
+    gltf.bufferViews = [
+      ...gltf.bufferViews!,
+      { buffer: 99, byteOffset: 0, byteLength: 36 },
+    ];
     gltf.accessors = [
       ...gltf.accessors!,
       { bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' },
       { bufferView: 0, componentType: 5126, count: 1, type: 'VEC3' },
       { bufferView: 0, componentType: 5126, count: 1, type: 'VEC9' as never },
+      { bufferView: 99, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: missingAnimationBufferView, componentType: 5126, count: 1, type: 'VEC3' },
+      { bufferView: 0, componentType: 999 as never, count: 2, type: 'SCALAR' },
+      { bufferView: 0, componentType: 999 as never, count: 1, type: 'VEC3' },
+      { bufferView: missingAnimationBufferView, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: 99, componentType: 5126, count: 1, type: 'VEC3' },
     ];
     gltf.animations = [{
       samplers: [
@@ -2356,9 +2373,15 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         { input: timeAccessor, output: 43 },
         { input: timeAccessor, output: invalidTypeAccessor },
         { input: invalidTypeAccessor, output: outputAccessor },
+        { input: missingInputBufferViewAccessor, output: outputAccessor },
+        { input: timeAccessor, output: missingOutputBufferAccessor },
+        { input: invalidInputComponentAccessor, output: outputAccessor },
+        { input: timeAccessor, output: invalidOutputComponentAccessor },
+        { input: missingInputBufferAccessor, output: outputAccessor },
+        { input: timeAccessor, output: missingOutputBufferViewAccessor },
       ],
       channels: [
-        { sampler: 7, target: { node: 0, path: 'translation' } },
+        { sampler: 99, target: { node: 0, path: 'translation' } },
         { sampler: 0, target: { path: 'rotation' } },
         { sampler: 0, target: { node: 99, path: 'scale' } },
         { sampler: 0, target: { node: 0, path: 'translation' } },
@@ -2366,11 +2389,18 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         { sampler: 2, target: { node: 0, path: 'translation' } },
         { sampler: 3, target: { node: 0, path: 'translation' } },
         { sampler: 4, target: { node: 0, path: 'translation' } },
+        { sampler: 5, target: { node: 0, path: 'translation' } },
+        { sampler: 6, target: { node: 0, path: 'translation' } },
+        { sampler: 7, target: { node: 0, path: 'translation' } },
+        { sampler: 8, target: { node: 0, path: 'translation' } },
+        { sampler: 9, target: { node: 0, path: 'translation' } },
+        { sampler: 10, target: { node: 0, path: 'translation' } },
       ],
     }];
 
     const report = analyzeGltfAsset(gltf);
-    expect(report.animations.malformedChannels).toEqual([
+    expect(report.animations.malformedChannels).toHaveLength(14);
+    expect(report.animations.malformedChannels).toEqual(expect.arrayContaining([
       {
         kind: 'missing-target-node',
         path: 'animations[0].channels[1].target.node',
@@ -2444,15 +2474,89 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         accessorType: 'VEC9',
       },
       {
-        kind: 'missing-sampler',
-        path: 'animations[0].samplers[7]',
+        kind: 'missing-input-buffer-view',
+        path: `accessors[${missingInputBufferViewAccessor}].bufferView`,
         animationIndex: 0,
-        channelIndex: 0,
+        channelIndex: 8,
+        targetPath: 'translation',
+        samplerIndex: 5,
+        nodeIndex: 0,
+        accessorIndex: missingInputBufferViewAccessor,
+        accessorRole: 'input',
+        bufferViewIndex: 99,
+      },
+      {
+        kind: 'missing-output-buffer',
+        path: `bufferViews[${missingAnimationBufferView}].buffer`,
+        animationIndex: 0,
+        channelIndex: 9,
+        targetPath: 'translation',
+        samplerIndex: 6,
+        nodeIndex: 0,
+        accessorIndex: missingOutputBufferAccessor,
+        accessorRole: 'output',
+        bufferViewIndex: missingAnimationBufferView,
+        bufferIndex: 99,
+      },
+      {
+        kind: 'invalid-input-accessor-component-type',
+        path: `accessors[${invalidInputComponentAccessor}].componentType`,
+        animationIndex: 0,
+        channelIndex: 10,
         targetPath: 'translation',
         samplerIndex: 7,
         nodeIndex: 0,
+        accessorIndex: invalidInputComponentAccessor,
+        accessorRole: 'input',
+        componentType: 999,
       },
-    ]);
+      {
+        kind: 'invalid-output-accessor-component-type',
+        path: `accessors[${invalidOutputComponentAccessor}].componentType`,
+        animationIndex: 0,
+        channelIndex: 11,
+        targetPath: 'translation',
+        samplerIndex: 8,
+        nodeIndex: 0,
+        accessorIndex: invalidOutputComponentAccessor,
+        accessorRole: 'output',
+        componentType: 999,
+      },
+      {
+        kind: 'missing-input-buffer',
+        path: `bufferViews[${missingAnimationBufferView}].buffer`,
+        animationIndex: 0,
+        channelIndex: 12,
+        targetPath: 'translation',
+        samplerIndex: 9,
+        nodeIndex: 0,
+        accessorIndex: missingInputBufferAccessor,
+        accessorRole: 'input',
+        bufferViewIndex: missingAnimationBufferView,
+        bufferIndex: 99,
+      },
+      {
+        kind: 'missing-output-buffer-view',
+        path: `accessors[${missingOutputBufferViewAccessor}].bufferView`,
+        animationIndex: 0,
+        channelIndex: 13,
+        targetPath: 'translation',
+        samplerIndex: 10,
+        nodeIndex: 0,
+        accessorIndex: missingOutputBufferViewAccessor,
+        accessorRole: 'output',
+        bufferViewIndex: 99,
+      },
+      {
+        kind: 'missing-sampler',
+        path: 'animations[0].samplers[99]',
+        animationIndex: 0,
+        channelIndex: 0,
+        targetPath: 'translation',
+        samplerIndex: 99,
+        nodeIndex: 0,
+      },
+    ]));
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(compatibility.issues).toEqual(expect.arrayContaining([
@@ -2478,7 +2582,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         category: 'animation',
         name: 'channel.missing-sampler',
         support: 'unsupported',
-        path: 'animations[0].samplers[7]',
+        path: 'animations[0].samplers[99]',
       }),
       expect.objectContaining({
         category: 'animation',
@@ -2503,6 +2607,42 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         name: 'channel.invalid-input-accessor-type',
         support: 'unsupported',
         path: 'animations[0].samplers[4].input',
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.missing-input-buffer-view',
+        support: 'unsupported',
+        path: `accessors[${missingInputBufferViewAccessor}].bufferView`,
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.missing-output-buffer',
+        support: 'unsupported',
+        path: `bufferViews[${missingAnimationBufferView}].buffer`,
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.missing-input-buffer',
+        support: 'unsupported',
+        path: `bufferViews[${missingAnimationBufferView}].buffer`,
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.missing-output-buffer-view',
+        support: 'unsupported',
+        path: `accessors[${missingOutputBufferViewAccessor}].bufferView`,
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.invalid-input-accessor-component-type',
+        support: 'unsupported',
+        path: `accessors[${invalidInputComponentAccessor}].componentType`,
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.invalid-output-accessor-component-type',
+        support: 'unsupported',
+        path: `accessors[${invalidOutputComponentAccessor}].componentType`,
       }),
     ]));
   });
