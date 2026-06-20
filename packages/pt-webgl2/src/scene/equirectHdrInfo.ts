@@ -15,9 +15,10 @@
 //   map          width×height : the equirect radiance (RGB, .a unused here)
 //   totalSum     unnormalized luminance integral over all pixels
 //
-// NOTE: like the fork, the per-pixel weight is plain Rec.709 luminance WITHOUT a
-// solid-angle (sin θ) term — the fork carries a TODO to add it but does not. We
-// match the fork so the GLSL `equirect_sampling` decoder behaves identically.
+// NOTE: unlike the original fork TODO, the per-pixel importance weight includes
+// the equirectangular texel solid-angle term sin(theta). The GLSL decoder's
+// returned PDF cancels that same factor back to a per-steradian density so the
+// sample CDF and MIS PDF stay measure-consistent.
 
 import type { EngineWarning, SceneEnvironment } from '@vitrum/core';
 import { bakePreethamSkyEquirect, readEnvironmentMapPixels } from '@vitrum/shared-samplers';
@@ -55,6 +56,11 @@ function emitEnvironmentWarning(
 function colorToLuminance(r: number, g: number, b: number): number {
   // https://en.wikipedia.org/wiki/Relative_luminance
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function equirectTexelSolidAngleWeight(y: number, height: number): number {
+  const theta = ((y + 0.5) / height) * Math.PI;
+  return Math.max(0, Math.sin(theta));
 }
 
 /**
@@ -204,7 +210,7 @@ export function buildEquirectInfo(
       map[i * 4 + 2] = b;
       map[i * 4 + 3] = 0;
 
-      const weight = colorToLuminance(r, g, b);
+      const weight = colorToLuminance(r, g, b) * equirectTexelSolidAngleWeight(y, height);
       cumulativeRowWeight += weight;
       totalSumValue += weight;
 

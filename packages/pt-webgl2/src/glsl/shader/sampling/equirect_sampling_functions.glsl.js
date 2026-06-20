@@ -7,19 +7,12 @@ export const equirect_functions = /* glsl */`
 
 	}
 
-	// gets the pdf of the given direction to sample
-	float equirectDirectionPdf( vec3 direction ) {
+	// Converts a solid-angle-weighted equirect texel PMF into a direction PDF.
+	// The CPU CDF weights texels by luminance * sin(theta); dividing by the texel
+	// solid angle cancels the same sin(theta), leaving this constant uv-area factor.
+	float equirectSolidAngleWeightedPdfFactor() {
 
-		vec2 uv = equirectDirectionToUv( direction );
-		float theta = uv.y * PI;
-		float sinTheta = sin( theta );
-		if ( sinTheta == 0.0 ) {
-
-			return 0.0;
-
-		}
-
-		return 1.0 / ( 2.0 * PI * PI * sinTheta );
+		return 1.0 / ( 2.0 * PI * PI );
 
 	}
 
@@ -41,7 +34,7 @@ export const equirect_functions = /* glsl */`
 		ivec2 resolution = textureSize( envMapInfo.map, 0 );
 		float pdf = lum / totalSum;
 
-		return float( resolution.x * resolution.y ) * pdf * equirectDirectionPdf( direction );
+		return float( resolution.x * resolution.y ) * pdf * equirectSolidAngleWeightedPdfFactor();
 
 	}
 
@@ -62,7 +55,7 @@ export const equirect_functions = /* glsl */`
 		ivec2 resolution = textureSize( envMapInfo.map, 0 );
 		float pdf = lum / totalSum;
 
-		return float( resolution.x * resolution.y ) * pdf * equirectDirectionPdf( direction );
+		return float( resolution.x * resolution.y ) * pdf * equirectSolidAngleWeightedPdfFactor();
 
 	}
 `;

@@ -25,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Emitter mutations now keep resident light textures:** analytic `updateEmitter()` edits subupload or re-specify the existing light texture instead of allocating/deleting a replacement, and mesh-area emitter edits now preserve both the analytic-light placeholder texture and resident mesh-light texture when their dimensions are stable. Focused engine-contract tests pin zero GL texture create/delete churn for point-light and mesh-area emitter edits while preserving BVH geometry.
 - **HDRI environment mutations now keep resident environment textures:** `updateEnvironment()` updates same-size HDRI map/CDF textures with `texSubImage2D` and re-specifies resized HDRI textures with `texImage2D` on the existing GL objects. Only none↔HDRI transitions create or delete environment textures, and focused engine-contract coverage pins zero GL texture create/delete churn for same-size and resized HDRI swaps.
 
+### Fixed (pt-webgl2 environment sampling, 2026-06-20)
+
+- **pt-webgl2 HDRI/procedural-sky CDFs now include equirect texel solid angle:** `buildEquirectInfo()` weights rows by `sin(theta)` instead of plain luminance-only texel mass, and the GLSL environment PDF now uses the matching per-steradian factor. Uniform equirects therefore sample equator rows more often than pole rows, matching the pt-webgpu HDRI posture and reducing pole oversampling while keeping MIS PDFs measure-consistent. This is render-changing for environment-lit scenes, so visual recapture remains part of the V28-B queue.
+
 ### Fixed (glTF compatibility truthfulness, 2026-06-20)
 
 - **Unsupported glTF animation target paths now surface during compatibility preflight:** `analyzeGltfAsset()` records non-core animation target paths such as extension/pointer channels with exact `animations[*].channels[*].target.path` source paths, and `evaluateGltfBackendCompatibility()` reports them as `category:"animation"` / `support:"unsupported"` issues. Import still skips those channels with the existing structured diagnostic; strict backend selection can now reject them before constructing an engine.

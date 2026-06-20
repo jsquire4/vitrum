@@ -3,6 +3,7 @@ import type { EngineWarning, HdriEnvironment, NoneEnvironment, ProceduralSkyEnvi
 import { buildEquirectInfo } from './equirectHdrInfo.js';
 
 const luminance = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
+const rowSolidAngleWeight = (y: number, height: number) => Math.sin(((y + 0.5) / height) * Math.PI);
 
 // A tiny 4×2 synthetic equirect HDRI. Row 0 is dim, row 1 has a bright hot spot
 // in the second column. Row-major RGB float pixels (3 floats/pixel), the shape
@@ -132,7 +133,7 @@ describe('buildEquirectInfo', () => {
     expect(out.conditional!.height).toBe(2);
   });
 
-  it('totalSum equals the unnormalized luminance integral', () => {
+  it('totalSum equals the solid-angle-weighted luminance integral', () => {
     let expected = 0;
     const { width, height, data } = env.hdri as {
       width: number;
@@ -140,7 +141,8 @@ describe('buildEquirectInfo', () => {
       data: Float32Array;
     };
     for (let i = 0; i < width * height; i += 1) {
-      expected += luminance(data[i * 3]!, data[i * 3 + 1]!, data[i * 3 + 2]!);
+      const y = Math.floor(i / width);
+      expected += luminance(data[i * 3]!, data[i * 3 + 1]!, data[i * 3 + 2]!) * rowSolidAngleWeight(y, height);
     }
     expect(out.totalSum).toBeCloseTo(expected, 5);
   });
@@ -167,6 +169,31 @@ describe('buildEquirectInfo', () => {
     const row1Centre = (1 + 0.5) / 2;
     expect(m[0]!).toBeCloseTo(row1Centre, 6);
     expect(m[4]!).toBeCloseTo(row1Centre, 6);
+  });
+
+  it('weights uniform equirect rows by solid angle so equator rows dominate poles', () => {
+    const data = new Float32Array([
+      1, 1, 1, 1,
+      1, 1, 1, 1,
+      1, 1, 1, 1,
+    ]);
+    const uniform = buildEquirectInfo({
+      kind: 'hdri',
+      hdri: {
+        width: 1,
+        height: 3,
+        data,
+        __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+      },
+    });
+
+    expect(uniform.totalSum).toBeCloseTo(2, 6);
+    const m = uniform.marginal!.data;
+    const equatorCentre = (1 + 0.5) / 3;
+    const northPoleCentre = (2 + 0.5) / 3;
+    expect(m[0]!).toBeCloseTo(equatorCentre, 6);
+    expect(m[4]!).toBeCloseTo(equatorCentre, 6);
+    expect(m[8]!).toBeCloseTo(northPoleCentre, 6);
   });
 
   it('bakes procedural-sky environments into the equirect HDRI path', () => {
