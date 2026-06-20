@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 spectral transmission, 2026-06-20)
+
+- **Dispersion transmission now preserves anisotropic GGX sampling:** `dispersionTransmissionDirection()` uses the same `ggxDirectionForSurface()` helper as ordinary transmission, so anisotropic transmissive glass no longer falls back to an isotropic half-vector sampler when Cauchy dispersion is active. This is render-changing for pt-webgl2 spectral/dispersion materials with nonzero anisotropy, so V28-B recapture remains the promotion proof.
+
 ### Fixed (world-space BVH robustness, 2026-06-20)
 
 - **Malformed triangles are now filtered before entering the shared world-space merge stream:** `mergeWorldSpaceFromCore()` filters out-of-range vertex indices and non-finite transformed triangle vertices before appending `mergedIndices` / `mergedTriMaterialId` / `meshVertexRanges`, so pt-webgl2, walkaround ReSTIR/DDGI/RC, and pt-webgpu merged-mode consumers no longer see stale pre-filter triangle counts or origin-collapsed fallback triangles after `buildArrayBvh()` rejects malformed input. A focused shared-BVH regression pins out-of-range and NaN triangle filtering through the actual world-space merge path.

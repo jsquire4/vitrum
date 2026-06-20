@@ -488,11 +488,7 @@ export const bsdf_functions = /* glsl */`
 		float eta = frontFace ? 1.0 / chosenIor : chosenIor;
 
 		float filteredRoughness = surf.filteredRoughness;
-		vec3 halfVector = ggxDirection(
-			wo,
-			vec2( filteredRoughness ),
-			rand2( 13 )
-		);
+		vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 13 ) );
 		vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
 
 		if ( surf.thinFilm ) {

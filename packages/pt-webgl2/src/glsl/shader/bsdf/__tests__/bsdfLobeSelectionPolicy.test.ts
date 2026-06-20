@@ -33,4 +33,16 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
     expect(result).not.toContain('getLobeWeights( wo, wi');
     expect(result).not.toContain('getHalfVector( wo, wi');
   });
+
+  it('keeps spectral dispersion transmission on the same anisotropic GGX sampler as ordinary transmission', () => {
+    const ordinaryTransmission = sourceBetween(
+      'vec3 transmissionDirection',
+      'float cauchyIORatLambda',
+    );
+    const dispersionTransmission = sourceBetween('vec3 dispersionTransmissionDirection', '// clearcoat');
+
+    expect(ordinaryTransmission).toContain('ggxDirectionForSurface( wo, surf, rand2( 13 ) )');
+    expect(dispersionTransmission).toContain('ggxDirectionForSurface( wo, surf, rand2( 13 ) )');
+    expect(dispersionTransmission).not.toMatch(/vec3\s+halfVector\s*=\s*ggxDirection\s*\(/);
+  });
 });
