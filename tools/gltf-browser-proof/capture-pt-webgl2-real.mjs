@@ -17,7 +17,9 @@ const height = Number(process.env.VITRUM_HEIGHT ?? '64');
 const spp = Number(process.env.VITRUM_SPP ?? '1');
 const port = Number(process.env.VITRUM_GLTF_BROWSER_PORT ?? '5187');
 const timeoutMs = Number(process.env.VITRUM_CAPTURE_TIMEOUT_MS ?? '120000');
-const statusPath = resolve(scriptDir, 'pt-webgl2-real-status.json');
+const screenshotTimeoutMs = Number(process.env.VITRUM_SCREENSHOT_TIMEOUT_MS ?? '15000');
+const dataUrlTimeoutMs = Number(process.env.VITRUM_DATA_URL_TIMEOUT_MS ?? '15000');
+const statusPath = resolveStatusPath(process.env.VITRUM_GLTF_BROWSER_STATUS_PATH);
 const thresholds = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
 const REAL_BROWSER_ASSETS = [
   {
@@ -71,6 +73,7 @@ let serverLog = '';
 server.stdout.on('data', (chunk) => { serverLog += chunk.toString(); });
 server.stderr.on('data', (chunk) => { serverLog += chunk.toString(); });
 
+let finalExitCode = 0;
 try {
   await waitForServer(port, timeoutMs);
   const assets = selectedAssets();
@@ -88,7 +91,7 @@ try {
   }
   const summary = summarize(results);
   await writeStatus(summary);
-  if (summary.verdict !== 'PASS') process.exit(summary.verdict === 'HOST-BLOCKED' ? 2 : 1);
+  finalExitCode = statusExitCode(summary.verdict);
 } catch (error) {
   await closeActiveBrowser();
   const status = {
@@ -103,10 +106,11 @@ try {
     serverLog: serverLog.slice(-4000),
   };
   await writeStatus(status);
-  process.exit(2);
+  finalExitCode = 2;
 } finally {
   await stopServer();
 }
+process.exit(finalExitCode);
 
 function readMultiFlag(name) {
   const values = [];
@@ -183,11 +187,10 @@ async function capture(asset) {
       };
     }
 
-    captureStep = 'canvas-screenshot';
     const goldenPath = resolve(repoRoot, asset.goldenPath);
     await mkdir(dirname(goldenPath), { recursive: true });
-    const canvas = page.locator('canvas').first();
-    const pngBytes = await canvas.screenshot({ type: 'png', timeout: timeoutMs });
+    const capture = await captureCanvasPng(page);
+    const pngBytes = capture.bytes;
     const png = PNG.sync.read(pngBytes);
     const luminance = meanLuminance(png.data);
     const compare = await compareOrUpdate(pngBytes, png, goldenPath);
@@ -212,6 +215,7 @@ async function capture(asset) {
       width: png.width,
       height: png.height,
       samplesPerPixel: spp,
+      captureMethod: capture.method,
       luminance,
       telemetry: summarizedTelemetry,
       golden: compare,
@@ -220,6 +224,41 @@ async function capture(asset) {
   } finally {
     await browser.close();
     if (activeBrowser === browser) activeBrowser = null;
+  }
+}
+
+async function captureCanvasPng(page) {
+  const canvas = page.locator('canvas').first();
+  const timeout = Math.max(1000, Math.min(timeoutMs, screenshotTimeoutMs));
+  try {
+    captureStep = 'canvas-screenshot';
+    return {
+      method: 'playwright-screenshot',
+      bytes: await canvas.screenshot({ type: 'png', timeout }),
+    };
+  } catch (error) {
+    captureStep = 'canvas-data-url';
+    const dataUrlTimeout = Math.max(1000, Math.min(timeoutMs, dataUrlTimeoutMs));
+    const dataUrl = await withTimeout(
+      page.evaluate(() => {
+        const canvas = document.querySelector('canvas');
+        if (!(canvas instanceof HTMLCanvasElement)) {
+          throw new Error('no HTMLCanvasElement is present for capture');
+        }
+        return canvas.toDataURL('image/png');
+      }),
+      dataUrlTimeout,
+      'canvas PNG data URL fallback timed out',
+    ).catch((fallbackError) => {
+      throw new Error(
+        `Playwright canvas screenshot failed (${error instanceof Error ? error.message : String(error)}); ` +
+          `canvas PNG data URL fallback failed (${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)})`,
+      );
+    });
+    return {
+      method: 'canvas-data-url',
+      bytes: pngBytesFromDataUrl(dataUrl),
+    };
   }
 }
 
@@ -283,6 +322,12 @@ function summarize(results) {
     assets: results,
     assetCount: results.length,
   };
+}
+
+function statusExitCode(verdict) {
+  if (verdict === 'PASS') return 0;
+  if (verdict === 'HOST-BLOCKED') return 2;
+  return 1;
 }
 
 async function compareOrUpdate(pngBytes, png, goldenPath) {
@@ -355,9 +400,11 @@ async function closeActiveBrowser() {
 
 async function withTimeout(promise, ms, message) {
   let timer;
+  const guarded = Promise.resolve(promise);
+  guarded.catch(() => undefined);
   try {
     return await Promise.race([
-      promise,
+      guarded,
       new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error(message)), ms);
       }),
@@ -400,4 +447,16 @@ function meanLuminance(pixels) {
 
 function relative(path) {
   return path.startsWith(`${repoRoot}/`) ? path.slice(repoRoot.length + 1) : path;
+}
+
+function pngBytesFromDataUrl(dataUrl) {
+  if (typeof dataUrl !== 'string') throw new Error(`canvas PNG data URL must be a string, got ${typeof dataUrl}`);
+  const match = /^data:image\/png;base64,(.+)$/i.exec(dataUrl);
+  if (match == null) throw new Error('canvas PNG data URL fallback did not return image/png data');
+  return Buffer.from(match[1], 'base64');
+}
+
+function resolveStatusPath(rawPath) {
+  if (rawPath == null || rawPath.length === 0) return resolve(scriptDir, 'pt-webgl2-real-status.json');
+  return resolve(repoRoot, rawPath);
 }

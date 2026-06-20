@@ -133,11 +133,23 @@ if (packageJson.scripts?.["gltf-browser-proof-check:required"] !== "deno run --s
 const gltfBrowserProofCheck = await readText("tools/gltf-browser-proof/check-status.mjs");
 for (const needle of [
   "const requirePass = Deno.args.includes(\"--require-pass\");",
-  "require-pass mode needs browser real glTF PASS; current status is HOST-BLOCKED at canvas-screenshot",
+  "require-pass mode needs browser real glTF PASS; current status is HOST-BLOCKED",
   "fail-closed HOST-BLOCKED on this WSL Playwright host",
 ]) {
   if (!gltfBrowserProofCheck.includes(needle)) {
     fail(`gltf browser proof checker must retain fail-closed/default plus required-promotion mode: ${needle}`);
+  }
+}
+
+const gltfBrowserCapture = await readText("tools/gltf-browser-proof/capture-pt-webgl2-real.mjs");
+for (const needle of [
+  "VITRUM_GLTF_BROWSER_STATUS_PATH",
+  "async function captureCanvasPng(page)",
+  "method: 'canvas-data-url'",
+  "canvas.toDataURL('image/png')",
+]) {
+  if (!gltfBrowserCapture.includes(needle)) {
+    fail(`gltf browser capture harness must retain temp status output and canvas data-url fallback: ${needle}`);
   }
 }
 

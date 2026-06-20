@@ -52,20 +52,30 @@ if (status.verdict === "HOST-BLOCKED") {
   for (const row of statusAssets) {
     if (row.verdict !== "HOST-BLOCKED" && row.verdict !== "PASS") fail(`${row.assetId}: unexpected verdict ${row.verdict}`);
     if (row.verdict === "HOST-BLOCKED") {
-      if (row.step !== "canvas-screenshot") fail(`${row.assetId}: unexpected host-blocked step ${row.step}`);
-      if (!String(row.error ?? "").includes("browser capture timed out")) {
-        fail(`${row.assetId}: HOST-BLOCKED status must preserve the timeout reason`);
+      if (row.step !== "canvas-screenshot" && row.step !== "canvas-data-url") {
+        fail(`${row.assetId}: unexpected host-blocked step ${row.step}`);
+      }
+      const error = String(row.error ?? "");
+      if (!error.includes("browser capture timed out") && !error.includes("canvas PNG data URL fallback failed")) {
+        fail(`${row.assetId}: HOST-BLOCKED status must preserve the timeout/readback reason`);
       }
     }
   }
   if (requirePass) {
-    fail("require-pass mode needs browser real glTF PASS; current status is HOST-BLOCKED at canvas-screenshot");
+    fail("require-pass mode needs browser real glTF PASS; current status is HOST-BLOCKED");
   }
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF lanes are fail-closed HOST-BLOCKED on this WSL Playwright host)");
 } else if (status.verdict === "PASS") {
   for (const row of statusAssets) {
     const asset = assetsById.get(row.assetId);
     if (row.verdict !== "PASS") fail(`${row.assetId}: top-level PASS requires every row to PASS`);
+    if (
+      row.captureMethod !== undefined &&
+      row.captureMethod !== "playwright-screenshot" &&
+      row.captureMethod !== "canvas-data-url"
+    ) {
+      fail(`${row.assetId}: unexpected captureMethod ${row.captureMethod}`);
+    }
     if (!(row.luminance > 0.005)) fail(`${row.assetId}: capture luminance must be non-black`);
     if (row.golden?.pass !== true) fail(`${row.assetId}: golden comparison did not pass`);
     if (row.golden?.path !== asset.goldenPath) fail(`${row.assetId}: manifest goldenPath mismatch`);

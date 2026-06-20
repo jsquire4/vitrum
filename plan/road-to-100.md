@@ -1898,6 +1898,10 @@ capture WebGL2 canvases. The default `npm run proof-check` lane intentionally
 keeps this fail-closed WSL status green, while
 `npm run gltf-browser-proof-check:required` is the promotion gate and fails on
 `HOST-BLOCKED` until the same rows record real PNG/golden `PASS` results.
+2026-06-20 follow-up: the capture harness now tries Playwright canvas screenshot
+first, then falls back to an in-page `canvas.toDataURL('image/png')` readback
+and supports `VITRUM_GLTF_BROWSER_STATUS_PATH` so single-asset probe runs can
+write temporary status files without disturbing the committed proof artifact.
 
 Validation note: the walkaround-hybrid native-Deno behavioral lane is
 fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the

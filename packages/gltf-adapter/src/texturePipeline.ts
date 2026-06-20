@@ -882,7 +882,7 @@ interface PngJsModule {
 
 async function importPngJs(): Promise<PngJsModule> {
   const specifier = 'pngjs';
-  return await import(specifier) as PngJsModule;
+  return await import(/* @vite-ignore */ specifier) as PngJsModule;
 }
 
 interface JpegJsDecodedImage {
@@ -905,7 +905,7 @@ interface JpegJsModule {
 
 async function importJpegJs(): Promise<JpegJsModule> {
   const specifier = 'jpeg-js';
-  return await import(specifier) as JpegJsModule;
+  return await import(/* @vite-ignore */ specifier) as JpegJsModule;
 }
 
 function jpegDecodeFn(module: JpegJsModule): JpegJsDecodeFn {
@@ -933,7 +933,7 @@ interface WebpWasmModule {
 
 async function importWebpWasm(): Promise<WebpWasmModule> {
   const specifier = 'webp-wasm';
-  return await import(specifier) as WebpWasmModule;
+  return await import(/* @vite-ignore */ specifier) as WebpWasmModule;
 }
 
 function webpDecodeFn(module: WebpWasmModule): WebpWasmDecodeFn {
