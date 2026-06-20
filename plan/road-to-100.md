@@ -48,7 +48,8 @@
 > covered by loader/spec tests, dispatch failures fall back to raw HDR,
 > NRC opt-in emits a structured experimental/biased warning, and glTF
 > `decodeSceneTextures(target:"webgpu")` now actually resolves raw image handles
-> to backend-ready texture payloads. Latest pt-webgpu inverse follow-up: transformed
+> to backend-upload-ready CPU/data texture payloads, not live `GPUTexture`
+> objects. Latest pt-webgpu inverse follow-up: transformed
 > mesh/skinned scenes now bake a transient world-space flat replay stream for the
 > adjoint pass (positions, normals, uv0/uv1, tangents, colors, vec4 indices, and
 > live material IDs), so non-identity mesh transforms no longer force a path-replay
@@ -663,11 +664,14 @@ buckets that the A–D framing was missing:**
   `createEngine`, `attachVitrum`, `VitrumCanvas`, `createProgressiveEngine`, both direct
   PT factories, and **`loadGltfWithEngine()`** (`examples/gltf-viewer`). H57 is closed
   as a provisioning gap; future examples are product polish, not a Road blocker.
-- **NEW C5 — contract-truth reconciliation** ✅: `promiseLedger` rows contradict shipped
-  runtime capabilities (pt-webgl2 analytic/mutations/aux); the fidelity matrix's `pt-webgl`
-  column describes a deleted package and omits pt-webgl2; CHANGELOG `[Unreleased]` has no
-  Removed entry for e14000c; ~6 tool READMEs document dead workflows; 2 packages have no
-  README (items H39–H45, H59). S–M effort, zero rendering risk, large honesty payoff.
+- **NEW C5 — contract-truth reconciliation** ✅ SOURCE-RECONCILED 2026-06-16:
+  the old contradiction cluster is closed. `promiseLedger` rows now match shipped
+  runtime capabilities for pt-webgl2 analytic primitives/mutations/aux paths, the
+  fidelity matrix tracks the active `pt-webgl2` / `pt-webgpu` columns and records
+  the removed fork-backed `pt-webgl` column as historical, CHANGELOG has the
+  e14000c removal note, and the tool README/package README residue is reconciled
+  in items H39-H45/H59. Remaining work is fidelity promotion evidence, not
+  stale contract-surface cleanup.
 - **NEW D10 — test-infrastructure gates** ✅/◻: the GL uniform-upload completeness
   sub-gate is now landed in `pt-webgl2` (`uploadGapGuard.test.ts` extracts declared
   shader uniforms, exercises default/spectral/DOF/BDPT frames, and requires every
@@ -1676,7 +1680,7 @@ GPU/browser harness.
 | Artifact | Action |
 |----------|--------|
 | `BACKEND_PROMISE_LEDGER` | Sole truth; READMEs cite ledger not prose |
-| `plan/renderer-fidelity-matrix.md` | Remove deleted `pt-webgl` column; add pt-webgl2 |
+| `plan/renderer-fidelity-matrix.md` | ✅ Reconciled: tracks pt-webgl2 + pt-webgpu; former `pt-webgl` column is historical only |
 | `items_to_fix.md` §H | Close items as fixed or strike |
 | ~~H30~~ ✅ CLOSED | Canvas backing store sizing is now applied before engine construction; `attachVitrumLoop.test.ts` pins CSS×DPR sizing |
 | ~~H57~~ ✅ CLOSED | `examples/gltf-viewer/` added; `examples/README.md` lists the glTF path and debug capture fields. |

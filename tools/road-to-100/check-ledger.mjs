@@ -89,17 +89,32 @@ if (!road.includes("Still OPEN for full-path parity")) {
 if (road.includes("blue-noise rotation, broader") || road.includes("blue-noise/per-dimension-audited")) {
   fail("road-to-100.md contains stale Sobol blue-noise-rotation pending wording");
 }
+if (road.includes("to backend-ready texture payloads")) {
+  fail("road-to-100.md contains ambiguous glTF decode target wording");
+}
 if (!road.includes("pt-webgpu Sobol now carries a binding-free 8x8 ranked tiled")) {
   fail("road-to-100.md must retain the reconciled pt-webgpu Sobol rotation summary");
 }
+if (!road.includes("to backend-upload-ready CPU/data texture payloads, not live `GPUTexture`")) {
+  fail("road-to-100.md must retain the precise glTF decode target boundary");
+}
 if (road.includes("Remaining work is backend opt-in capability flags, binary-BVH fallback policy")) {
   fail("road-to-100.md contains stale CWBVH opt-in/fallback/parity pending wording");
+}
+if (road.includes("the fidelity matrix's `pt-webgl`\n  column describes a deleted package and omits pt-webgl2")) {
+  fail("road-to-100.md contains stale C5 fidelity-matrix contradiction wording");
+}
+if (road.includes("| `plan/renderer-fidelity-matrix.md` | Remove deleted `pt-webgl` column; add pt-webgl2 |")) {
+  fail("road-to-100.md contains stale pending 5D renderer-matrix action");
 }
 if (!road.includes("pt-webgpu` exposes\n   the explicit full-tier `bvhTraversal:'cwbvh-closest-experimental'` opt-in")) {
   fail("road-to-100.md must retain the reconciled CWBVH opt-in summary");
 }
 if (!road.includes("zero-delta readback against binary traversal. Remaining work is real\n   equal-scene throughput/memory proof")) {
   fail("road-to-100.md must retain the reconciled CWBVH throughput-only residual");
+}
+if (!road.includes("fidelity matrix tracks the active `pt-webgl2` / `pt-webgpu` columns and records")) {
+  fail("road-to-100.md must retain the reconciled C5 renderer-matrix summary");
 }
 
 const ptWebgpuSource = await readText("packages/pt-webgpu/src/index.ts");
@@ -147,6 +162,7 @@ for (const [stalePhrase, message] of [
   ["the `FrameOutput` contract is back to", "stale E1 live FrameOutput regression wording"],
   ["any `Float32Array` of any length silently satisfies the `Mat4` type", "stale E2 live Mat4 regression wording"],
   ["`packages/pt-webgl/src/forkAccess.ts` is missing", "stale E6 retired pt-webgl missing-file wording"],
+  ["`packages/pt-webgl/src/forkAccess.ts` exists", "stale E6 retired pt-webgl live-file wording"],
   ["the pre-E1 implicit-singleton behaviour is back", "stale E5 live shared-device regression wording"],
   ["Neither file is in HEAD; both local copies are back", "stale E4 live shared-WGSL regression wording"],
   ["`packages/core/src/frame.ts:193` reads `export type BackendTexture = unknown;`", "stale E3 live backend-texture regression wording"],
@@ -189,6 +205,9 @@ for (const [docName, docText] of [
   for (const stalePhrase of [
     "MUST run impact analysis before editing any symbol",
     "NEVER edit a function, class, or method without first running `impact`",
+    "`packages/pt-webgl/src/forkAccess.ts` exists",
+    "walkaround + pt-webgl + pt-webgpu",
+    "pt-webgl/pt-webgpu also absorb",
     "A4-progressive (true Hachisuka SPPM — current is streaming-window)",
     "`TextureRef.texCoord` on pt-webgl2 (documented unkept promise)",
     "H-residue (H5 BDPT host driver",
@@ -240,6 +259,12 @@ if (!items.includes("point, spot, rect/disc, mesh-area, and HDRI/environment dir
 }
 if (!items.includes("pt-webgpu.hdri-unreadable") || !items.includes("pt-webgpu.hdri-zero-luminance")) {
   fail("items_to_fix.md must retain the pt-webgpu structured HDRI fallback boundary");
+}
+if (items.includes("V25 BDPT (pt-webgl) root-cause")) {
+  fail("items_to_fix.md contains stale retired-pt-webgl V25 BDPT wording");
+}
+if (!items.includes("pt-webgl2 BDPT browser/visual A/B promotion remains in `plan/renderer-fidelity-matrix.md`")) {
+  fail("items_to_fix.md must retain the reconciled pt-webgl2 BDPT promotion boundary");
 }
 
 const idempotentDispose = await readText("packages/engine/src/idempotentDispose.ts");
