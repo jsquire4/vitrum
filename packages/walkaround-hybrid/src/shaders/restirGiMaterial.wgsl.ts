@@ -9,6 +9,8 @@ struct RestirGIHitMaterial {
   rough: f32,
 };
 
+@group(1) @binding(12) var restir_gi_bvh_emissive: texture_2d<f32>;
+
 fn restir_gi_smooth_normal_for_hit(hit: IntersectionResult, geoNormal: vec3f) -> vec3f {
   let isTlas = ubo.bvhMode == 1u;
   let base = hit.instanceIndex * 4u;
@@ -198,6 +200,20 @@ fn restir_gi_receiver_phat_from_surface_or_geometry(
   return restir_gi_receiver_phat_from_geometry(xv, nv, xs, Lo);
 }
 
+fn restir_gi_surface_emission_for_hit(hit: IntersectionResult) -> vec3f {
+  let coord = vec2u(
+    hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
+    hit.indices.w / BVH_MATERIAL_TEX_WIDTH,
+  );
+  let scalarEmission = textureLoad(restir_gi_bvh_emissive, vec2i(coord), 0).rgb;
+  return sampleEmissiveMap(
+    hit.indices.w,
+    hit.uv,
+    materialAtlasUv1ForHit(hit),
+    scalarEmission,
+  );
+}
+
 fn sampleRestirGIHitMaterialForHit(
   hit: IntersectionResult,
   smoothNormal: vec3f,
@@ -220,6 +236,7 @@ fn sampleRestirGIHitMaterialForHit(
   out.albedo = payload.albedo;
   out.rough = payload.rough;
 
+  let surfaceEmission = restir_gi_surface_emission_for_hit(hit);
   let diffuseLo = incomingIrradiance * payload.albedo * INV_PI;
   if (restir_gi_has_rich_suffix_payload(payload)) {
     let woToVisible = safe_normalize(-wiVisibleToHit);
@@ -245,9 +262,9 @@ fn sampleRestirGIHitMaterialForHit(
       woToVisible,
       proxyWi,
     );
-    out.Lo = incomingIrradiance * brdf;
+    out.Lo = surfaceEmission + incomingIrradiance * brdf;
   } else {
-    out.Lo = diffuseLo;
+    out.Lo = surfaceEmission + diffuseLo;
   }
 
   return out;

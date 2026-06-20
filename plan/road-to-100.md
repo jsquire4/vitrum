@@ -1279,9 +1279,13 @@ core promise ledger now grade walkaround `baseColorMap`, `roughnessMap`,
   imply exact emitter-PDF semantics; `HybridEngine.setScene()` and material
   `updatePrimitive()` patches now emit the same truth as a structured
   `walkaround-hybrid.emissive-map-texel-pdf-approximation` runtime warning for
-  non-glTF hosts. These paths still do not build full
-  texel-alias emitter PDFs; analytic/extra emitter mapped payloads and
-  non-direct-probe-hit GI emission remain approximate,
+  non-glTF hosts. 2026-06-20 ReSTIR-GI emissive suffix follow-up: GI suffix hit
+  shading now reads per-triangle `bvh_emissive`, samples readable `emissiveMap`
+  through the hit UV0/UV1 metadata, and adds that surface emission before the
+  diffuse/rich-material BRDF response. These paths still do not build full
+  texel-alias emitter PDFs; analytic/extra emitter mapped payloads and global
+  texel-selection/PDF promotion across every GI/RC/DDGI/fallback path remain
+  approximate,
 GI receiver/reuse targeting is now material-lobe aware but still
 uses compact geometry+`Lo` reservoirs plus a temporal previous-domain fallback,
 transparent blend now has camera-visible OIT composition with direct sun plus

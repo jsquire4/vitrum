@@ -215,8 +215,10 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
 export const EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS = {
   directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
   fallbackDirectEmitterPdf: 'uv-local-barycentric-micro-emitter-selection',
-  residualApproximation: 'all-path-texel-pdf',
-  missing: 'all-path-exact-texel-alias-pdf',
+  giSuffixEmission: 'uv-local-emissive-texel-sampled-on-hit',
+  probeHitEmission: 'uv-local-emissive-texel-sampled-on-direct-probe-hit',
+  residualApproximation: 'global-texel-selection-pdf',
+  missing: 'global-exact-texel-alias-pdf',
   exactDirectEmitterConditions: [
     'cpu-readable-emissive-map',
     'non-mirrored-wrap',
@@ -224,7 +226,12 @@ export const EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS = {
     'bounded-covered-texel-cells',
     'readable-covered-texels',
   ],
-  approximatePaths: ['ReSTIR-GI', 'RC', 'DDGI', 'fallback-direct-emitter'],
+  approximatePaths: [
+    'ReSTIR-GI-texel-selection-pdf',
+    'RC-non-direct-texel-selection-pdf',
+    'DDGI-non-direct-texel-selection-pdf',
+    'fallback-direct-emitter',
+  ],
 } as const;
 
 function materialBearingPrimitiveKind(kind: string): boolean {
@@ -367,8 +374,10 @@ export function collectApproximateAlphaBlendPrimitiveIds(
  * Return primitive ids whose material-backed emissive maps still need a residual
  * all-path texel-PDF warning. This is a truthfulness surface, not a rejection:
  * walkaround samples readable emissive maps for visible glow and can split
- * eligible ReSTIR-DI finite emitters into exact texel-cell sub-triangles, but it
- * does not guarantee texel alias PDFs across every GI/RC/DDGI/fallback path.
+ * eligible ReSTIR-DI finite emitters into exact texel-cell sub-triangles.
+ * ReSTIR-GI suffix hits and direct probe hits sample the readable texel at the
+ * hit UV. The remaining approximation is global texel-selection/PDF promotion
+ * across every GI/RC/DDGI/fallback path.
  */
 export function collectApproximateEmissiveMapTexelPdfPrimitiveIds(
   primitives: ReadonlyArray<{

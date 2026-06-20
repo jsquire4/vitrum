@@ -942,9 +942,9 @@ export class HybridEngine implements Engine {
       message:
         `[vitrum/walkaround-hybrid] ${method}: material-backed emissiveMap ` +
         `surfaces are rendered; eligible ReSTIR-DI finite emitters are split ` +
-        `into exact texel-cell sub-triangles, but exact texel-space alias ` +
-        `tables/PDFs are not guaranteed across GI, RC, DDGI, and fallback ` +
-        `sampling paths; ` +
+        `into exact texel-cell sub-triangles, and GI/probe hit shading samples ` +
+        `the readable texel at the hit UV, but full texel-space alias tables/PDFs ` +
+        `are not guaranteed across every GI, RC, DDGI, and fallback sampling path; ` +
         `primitives: ${primitiveIds.join(', ')}.`,
       details: {
         primitiveIds,

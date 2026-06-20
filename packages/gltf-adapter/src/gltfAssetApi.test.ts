@@ -2240,7 +2240,8 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       support: 'approximate',
       path: 'materials[0].emissiveTexture',
     }));
-    expect(webgl2Issue?.message).toContain('exact texel-space emitter alias tables/PDFs');
+    expect(webgl2Issue?.message).toContain('GI/probe hit shading samples readable texels at the hit UV');
+    expect(webgl2Issue?.message).toContain('Exact global texel-space emitter alias tables/PDFs');
 
     const webgpuFull = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu');
     expect(webgpuFull.issues).toContainEqual(expect.objectContaining({

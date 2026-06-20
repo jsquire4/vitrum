@@ -38,8 +38,18 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.anisotropyTangent,');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.anisotropyBitangent,');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = incomingIrradiance * brdf;');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = diffuseLo;');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = surfaceEmission + incomingIrradiance * brdf;');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = surfaceEmission + diffuseLo;');
+  });
+
+  it('adds readable emissive-map surface emission to GI suffix hits', () => {
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('@group(1) @binding(12) var restir_gi_bvh_emissive');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('fn restir_gi_surface_emission_for_hit(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('textureLoad(restir_gi_bvh_emissive, vec2i(coord), 0).rgb');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('hit.indices.w % BVH_MATERIAL_TEX_WIDTH');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('sampleEmissiveMap(');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('materialAtlasUv1ForHit(hit)');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('let surfaceEmission = restir_gi_surface_emission_for_hit(hit);');
   });
 
   it('defines receiver-lobe p-hat helpers for rich-material GI reuse', () => {
@@ -102,6 +112,8 @@ describe('ReSTIR-GI material parity', () => {
       expect(shader).toContain('struct RestirDIMaterialPayload');
       expect(shader).toContain('fn applyNormalMapForHit(');
       expect(shader).toContain('fn applyBumpMapForHit(');
+      expect(shader).toContain('var restir_gi_bvh_emissive: texture_2d<f32>');
+      expect(shader).toContain('fn sampleEmissiveMap(');
     }
   });
 });

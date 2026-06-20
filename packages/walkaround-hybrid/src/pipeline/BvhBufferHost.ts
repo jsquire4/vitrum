@@ -59,8 +59,9 @@ export interface SceneBindGroupResources {
    *  buffer). Shade reads it via `textureLoad`; the swap freed a storage slot
    *  for `bvhNormalBuffer`. */
   bvhBeerTextureView: GPUTextureView;
-  /** Camera-visible emitters — per-tri HDR emissive Le, rgba32float texture
-   *  (binding 12). Shade reads it via `textureLoad` (lo_emitterGlow). */
+  /** Camera-visible/GI-suffix emitters — per-tri HDR emissive Le, rgba32float
+   *  texture (binding 12). Shade/OIT read it for visible glow; ReSTIR-GI suffix
+   *  hits combine it with readable emissive maps at hit UV. */
   bvhEmissiveTextureView: GPUTextureView;
   /** B1 — per-tri roughness+metalness, r32uint texture (binding 14). The
    *  ReSTIR/shade GGX BRDF + glossy/metal GI target read it via

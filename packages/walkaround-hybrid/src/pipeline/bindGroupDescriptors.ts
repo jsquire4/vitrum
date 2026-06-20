@@ -185,13 +185,13 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // `baseVertex+vi` (the merged-BVH world-space slot). 1 storage buffer; the
       // bvh_beer→texture swap above keeps the net storage count unchanged.
       { binding: 11, kind: 'storage-ro', note: 'bvh_normal (per-vertex world-space smooth normals)' },
-      // Camera-visible emitters (2026-05-30) — per-triangle HDR emissive radiance
+      // Camera-visible + GI-suffix emitters (2026-05-30; GI suffix 2026-06-20) —
+      // per-triangle HDR emissive radiance
       // Le, rgba16float texture (texture, not storage — keeps the scene group at
-      // the 16-storage floor, same rationale as bvh_beer). Shade reads it via
-      // textureLoad in lo_emitterGlow so emissive-mesh surfaces glow to the
-      // camera (the real-time analogue of pt-webgpu camera-visible emitters).
-      // Shade-only; the other primary passes declare a subset of the layout.
-      { binding: 12, kind: 'tex', note: 'bvh_emissive (per-tri HDR emissive Le, rgba16float texture; shade-only)' },
+      // the 16-storage floor, same rationale as bvh_beer). Shade/transparent OIT
+      // read it for camera-visible glow; ReSTIR-GI suffix shading reads it before
+      // applying readable emissive maps at hit UV.
+      { binding: 12, kind: 'tex', note: 'bvh_emissive (per-tri HDR emissive Le, rgba16float texture; shade + OIT + ReSTIR-GI suffix)' },
       // H41 — analytic point/spot emitters for camera-visible NEE in opaque shade
       // and transparent OIT (separate from the RIS area-emitter pool). The
       // rgba32float texture starts with a header texel whose .x lane is the light

@@ -818,8 +818,10 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(texelPdfWarnings[0]?.details?.primitiveIds).toEqual(['mesh-a']);
       expect(texelPdfWarnings[0]?.details).toMatchObject({
         directEmitterPdf: 'exact-texel-cell-subtriangles-when-eligible',
-        residualApproximation: 'all-path-texel-pdf',
-        missing: 'all-path-exact-texel-alias-pdf',
+        giSuffixEmission: 'uv-local-emissive-texel-sampled-on-hit',
+        probeHitEmission: 'uv-local-emissive-texel-sampled-on-direct-probe-hit',
+        residualApproximation: 'global-texel-selection-pdf',
+        missing: 'global-exact-texel-alias-pdf',
       });
     } finally {
       engine.dispose();
@@ -1341,7 +1343,8 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(warning?.method).toBe('updateEmitter');
       expect(warning?.details?.primitiveIds).toEqual(['mesh-a']);
       expect(warning?.details?.directEmitterPdf).toBe('exact-texel-cell-subtriangles-when-eligible');
-      expect(warning?.details?.missing).toBe('all-path-exact-texel-alias-pdf');
+      expect(warning?.details?.giSuffixEmission).toBe('uv-local-emissive-texel-sampled-on-hit');
+      expect(warning?.details?.missing).toBe('global-exact-texel-alias-pdf');
     } finally {
       engine.dispose();
     }

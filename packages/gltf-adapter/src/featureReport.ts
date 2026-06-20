@@ -674,8 +674,9 @@ export function evaluateGltfBackendProfileCompatibility(
         message:
           `Backend profile ${profile.id} imports glTF emissiveTexture for visible emission, ` +
           'and CPU-readable maps may be subdivided into UV-local mesh emitter records, ' +
-          'but exact texel-space emitter alias tables/PDFs are not guaranteed across all ' +
-          'direct, GI, RC, DDGI, and fallback sampling paths.',
+          'while GI/probe hit shading samples readable texels at the hit UV. Exact ' +
+          'global texel-space emitter alias tables/PDFs are still not guaranteed across ' +
+          'every GI, RC, DDGI, and fallback sampling path.',
       });
     }
   }
