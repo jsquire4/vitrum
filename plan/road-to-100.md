@@ -313,8 +313,9 @@
 > returns the structured diagnostics for host policy/UI. The archived scalar
 > `KHR_materials_pbrSpecularGlossiness` import diagnostic now follows the same
 > bridge reconciliation as the preflight compatibility row; the
-> glossiness-alpha texture diagnostic remains governed by the CPU-linear
-> roughness-bake satisfaction path. Decoder-returned malformed Draco attribute
+> glossiness-alpha texture diagnostic now follows the same CPU-linear
+> roughness-bake satisfaction path for both preflight compatibility rows and
+> post-import diagnostics. Decoder-returned malformed Draco attribute
 > or index payloads now classify as approximate degraded imports when the scene
 > remains representable; identical uncompressed fallback buffer/accessor use
 > stays non-blocking telemetry.

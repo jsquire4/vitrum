@@ -316,7 +316,7 @@ function enforceCompatibility<
       return issue.support !== 'native';
     })
     .map(formatCompatibilityIssue);
-  const rejectedImportDiagnostics = importDiagnosticFailures(asset.diagnostics, mode);
+  const rejectedImportDiagnostics = importDiagnosticFailures(asset, mode);
   const rejectedTextureReadiness = textureReadinessFailures(asset.textureDecodeReport, backend, mode, options);
   const failures = [
     ...rejectedIssues,
@@ -434,17 +434,19 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'material-texture-sampler-not-found',
   'invalid-material-texture-sampler',
   'spec-gloss-approximation',
+  'spec-gloss-texture-alpha-approximation',
   'unsupported-material-extension',
   'unknown-material-extension',
 ]);
 
 function importDiagnosticFailures(
-  diagnostics: readonly GltfImportDiagnostic[],
+  asset: GltfAssetResult | GltfDecodedAssetResult,
   mode: GltfCompatibilityMode,
 ): string[] {
   if (mode === 'best-effort') return [];
-  return diagnostics
+  return asset.diagnostics
     .map((diagnostic) => {
+      if (isSatisfiedImportDiagnostic(diagnostic, asset)) return undefined;
       const support = importDiagnosticSupport(diagnostic.code);
       if (support == null) return undefined;
       if (mode === 'reject-unsupported' && support !== 'unsupported') return undefined;
@@ -457,6 +459,15 @@ function importDiagnosticSupport(code: GltfImportDiagnosticCode): 'unsupported' 
   if (UNSUPPORTED_IMPORT_DIAGNOSTICS.has(code)) return 'unsupported';
   if (DEGRADED_IMPORT_DIAGNOSTICS.has(code)) return 'approximate';
   return undefined;
+}
+
+function isSatisfiedImportDiagnostic(
+  diagnostic: GltfImportDiagnostic,
+  asset: GltfAssetResult | GltfDecodedAssetResult,
+): boolean {
+  return diagnostic.code === 'spec-gloss-texture-alpha-approximation' &&
+    isDecodedAsset(asset) &&
+    isSpecGlossAlphaBakeSatisfied(asset, diagnostic.path);
 }
 
 function textureReadinessFailures<
@@ -575,20 +586,22 @@ function isSatisfiedCompatibilityIssue<
   ) {
     const paths = asset.featureReport.materials.issuePaths.specGlossGlossinessAlpha;
     const requiredPaths = paths !== undefined && paths.length > 0 ? paths : [issue.path];
-    return requiredPaths.every((path) =>
-      !asset.textureDecodeDiagnostics.some((diagnostic) =>
-        diagnostic.code === 'spec-gloss-alpha-bake-unavailable' &&
-        diagnostic.path === path
-      ) &&
-      asset.textureDecodeReport.entries.some((entry) =>
-        entry.materialField === 'roughnessMap' &&
-        entry.path === path &&
-        entry.handleKind === 'pixel-data' &&
-        entry.handleColorSpace === 'linear'
-      )
-    );
+    return requiredPaths.every((path) => isSpecGlossAlphaBakeSatisfied(asset, path));
   }
   return false;
+}
+
+function isSpecGlossAlphaBakeSatisfied(asset: GltfDecodedAssetResult, path: string): boolean {
+  return !asset.textureDecodeDiagnostics.some((diagnostic) =>
+    diagnostic.code === 'spec-gloss-alpha-bake-unavailable' &&
+    diagnostic.path === path
+  ) &&
+    asset.textureDecodeReport.entries.some((entry) =>
+      entry.materialField === 'roughnessMap' &&
+      entry.path === path &&
+      entry.handleKind === 'pixel-data' &&
+      entry.handleColorSpace === 'linear'
+    );
 }
 
 function isTextureReadinessIssue(issue: GltfCompatibilityIssue): boolean {

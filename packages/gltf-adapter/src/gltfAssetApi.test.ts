@@ -5625,6 +5625,9 @@ describe('loadGltfForEngine', () => {
     expect(failures).toContain(
       'import:spec-gloss-approximation=approximate at materials[0].extensions.KHR_materials_pbrSpecularGlossiness',
     );
+    expect(failures).toContain(
+      'import:spec-gloss-texture-alpha-approximation=approximate at materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+    );
     expect(createEngine).not.toHaveBeenCalled();
   });
 
@@ -5657,6 +5660,7 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
     expect(message).toContain('material:KHR_materials_pbrSpecularGlossiness=approximate');
     expect(message).not.toContain('specularGlossinessTexture.glossinessAlpha');
+    expect(message).not.toContain('spec-gloss-texture-alpha-approximation');
   });
 
   it('does not satisfy spec-gloss alpha degradation with an unrelated decoded roughnessMap', async () => {
