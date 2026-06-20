@@ -293,9 +293,13 @@ export class ProgressiveHandoffCoordinator {
 
   /** Add a primitive to both engines (where supported) and restart at real-time. */
   addPrimitive(primitive: ScenePrimitive): void {
-    const nextScene = this.#scene != null
-      ? { ...this.#scene, primitives: [...this.#scene.primitives, primitive] }
-      : null;
+    let nextScene: Scene | null = null;
+    if (this.#scene != null) {
+      if (this.#scene.primitives.some((p) => String(p.id) === String(primitive.id))) {
+        throw new Error(`addPrimitive: primitive "${String(primitive.id)}" already exists in current scene`);
+      }
+      nextScene = { ...this.#scene, primitives: [...this.#scene.primitives, primitive] };
+    }
     const rtAdd = this.#realtime.addPrimitive;
     const cvAdd = this.#converged.addPrimitive;
     if (rtAdd == null || cvAdd == null) {
@@ -324,9 +328,16 @@ export class ProgressiveHandoffCoordinator {
 
   /** Remove a primitive from both engines (where supported) and restart at real-time. */
   removePrimitive(id: ScenePrimitive['id']): void {
-    const nextScene = this.#scene != null
-      ? { ...this.#scene, primitives: this.#scene.primitives.filter((p) => p.id !== id) }
-      : null;
+    let nextScene: Scene | null = null;
+    if (this.#scene != null) {
+      if (!this.#scene.primitives.some((p) => String(p.id) === String(id))) {
+        throw new Error(`removePrimitive: primitive "${String(id)}" not found in current scene`);
+      }
+      nextScene = {
+        ...this.#scene,
+        primitives: this.#scene.primitives.filter((p) => String(p.id) !== String(id)),
+      };
+    }
     const rtRemove = this.#realtime.removePrimitive;
     const cvRemove = this.#converged.removePrimitive;
     if (rtRemove == null || cvRemove == null) {

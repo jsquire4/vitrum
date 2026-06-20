@@ -248,6 +248,62 @@ describe('ProgressiveHandoffCoordinator', () => {
     expect(cv.setScene).not.toHaveBeenCalled();
   });
 
+  it('preserves primitive-list invariants when building scene fallbacks', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    delete (cv.engine as Partial<Engine>).addPrimitive;
+    delete (cv.engine as Partial<Engine>).removePrimitive;
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: sceneWithPrimitive(),
+      stillFramesBeforeHandoff: 1,
+    });
+
+    expect(() => c.addPrimitive(meshPrimitive('p'))).toThrow(
+      /primitive "p" already exists in current scene/,
+    );
+    expect(rt.addPrimitive).not.toHaveBeenCalled();
+    expect(rt.setScene).not.toHaveBeenCalled();
+    expect(cv.setScene).not.toHaveBeenCalled();
+
+    expect(() => c.removePrimitive('missing')).toThrow(
+      /primitive "missing" not found in current scene/,
+    );
+    expect(rt.removePrimitive).not.toHaveBeenCalled();
+    expect(rt.setScene).not.toHaveBeenCalled();
+    expect(cv.setScene).not.toHaveBeenCalled();
+  });
+
+  it('falls back to setScene on both engines when primitive-list methods are absent', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    delete (cv.engine as Partial<Engine>).addPrimitive;
+    delete (cv.engine as Partial<Engine>).removePrimitive;
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: sceneWithPrimitive(),
+      stillFramesBeforeHandoff: 1,
+    });
+
+    c.addPrimitive(meshPrimitive('q'));
+    expect(rt.addPrimitive).not.toHaveBeenCalled();
+    expect(rt.setScene).toHaveBeenCalledTimes(1);
+    expect(cv.setScene).toHaveBeenCalledTimes(1);
+    const afterAdd = rt.setScene.mock.calls[0]![0] as Scene;
+    expect(afterAdd.primitives.map((p) => p.id)).toEqual(['p', 'q']);
+    expect(cv.setScene).toHaveBeenCalledWith(afterAdd);
+
+    c.removePrimitive('q');
+    expect(rt.removePrimitive).not.toHaveBeenCalled();
+    expect(rt.setScene).toHaveBeenCalledTimes(2);
+    expect(cv.setScene).toHaveBeenCalledTimes(2);
+    const afterRemove = rt.setScene.mock.calls[1]![0] as Scene;
+    expect(afterRemove.primitives.map((p) => p.id)).toEqual(['p']);
+    expect(cv.setScene).toHaveBeenCalledWith(afterRemove);
+  });
+
   it('falls back to setScene on both engines when a primitive fast path rejects', () => {
     const rt = makeStubEngine();
     const cv = makeStubEngine();

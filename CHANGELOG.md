@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (progressive handoff scene authority, 2026-06-20)
+
+- **Progressive glTF/controller scene fallbacks now preserve primitive-list invariants:** `ProgressiveHandoffCoordinator` already used core patch helpers for `updatePrimitive()` scene fallbacks. Its `addPrimitive()` / `removePrimitive()` fallback path now also rejects duplicate adds and missing removes before calling `setScene()` on either engine, so a backend missing optional primitive-list methods cannot silently desynchronize the realtime/converged pair.
+
 ### Fixed (walkaround option truthfulness, 2026-06-20)
 
 - **Invalid walkaround `maxBounces` now clamps in the effective config, not only in prose:** `@vitrum/walkaround-hybrid` already warned that `maxBounces < 1` is treated as the direct-only DDGI regime. The parsed config and public capabilities now report the clamped value `1` as well, so hosts no longer see `capabilities.maxBounces === 0` after a warning that promised `1`.
