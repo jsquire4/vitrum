@@ -303,40 +303,6 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
-	// Sprint 6: perturb a refracted direction by a GGX lobe.
-	// This approximates the rough-transmission BSDF evaluated at normal incidence.
-	// Called AFTER specular refraction so it is additive to the Phase 4 normal-map
-	// perturbation (which modifies surface normals before refraction).
-	//
-	// refractDir : specular refraction direction (unit vector)
-	// roughness  : Disney roughness α (0 = specular glass, 1 = frosted glass)
-	// u1, u2     : uniform random samples for GGX importance sampling
-	// Returns    : perturbed refraction direction (unit vector)
-	//
-	// Reference: Heitz 2014 — "Importance Sampling Microfacet-Based BSDFs using
-	// the Distribution of Visible Normals" (EGSR 2014).
-	vec3 perturbDirectionByGGX( vec3 refractDir, float roughness, float u1, float u2 ) {
-
-		if ( roughness < 1e-4 ) return refractDir;  // specular: no perturbation
-
-		float alpha = roughness * roughness;
-
-		// GGX microfacet importance sample in hemisphere (Heitz 2014 visible NDF)
-		float phi       = 2.0 * PI * u1;
-		float cosTheta  = sqrt( ( 1.0 - u2 ) / ( 1.0 + ( alpha * alpha - 1.0 ) * u2 ) );
-		float sinTheta  = sqrt( max( 0.0, 1.0 - cosTheta * cosTheta ) );
-		vec3 localH     = vec3( sinTheta * cos( phi ), sinTheta * sin( phi ), cosTheta );
-
-		// Transform localH to the frame where refractDir is the +Z axis
-		vec3 up         = abs( refractDir.z ) < 0.999 ? vec3( 0, 0, 1 ) : vec3( 1, 0, 0 );
-		vec3 tangent    = normalize( cross( up, refractDir ) );
-		vec3 bitangent  = cross( refractDir, tangent );
-		vec3 perturbed  = localH.x * tangent + localH.y * bitangent + localH.z * refractDir;
-
-		return normalize( perturbed );
-
-	}
-
 	vec3 transmissionDirection( vec3 wo, SurfaceRecord surf ) {
 
 		float eta = surf.eta;
@@ -348,12 +314,6 @@ export const bsdf_functions = /* glsl */`
 			lightDirection = - refract( normalize( - lightDirection ), - vec3( 0.0, 0.0, 1.0 ), 1.0 / eta );
 
 		}
-
-		// Sprint 6: apply rough-refraction GGX lobe after specular refraction.
-		// Phase 4 modifies surf.normalBasis before this call; Sprint 6 perturbs
-		// the refracted direction after — they compose correctly in order.
-		vec2 roughRand = rand2( 47 );
-		lightDirection = perturbDirectionByGGX( normalize( lightDirection ), surf.filteredRoughness, roughRand.x, roughRand.y );
 
 		return normalize( lightDirection );
 
@@ -487,17 +447,12 @@ export const bsdf_functions = /* glsl */`
 		bool frontFace = surf.frontFace;
 		float eta = frontFace ? 1.0 / chosenIor : chosenIor;
 
-		float filteredRoughness = surf.filteredRoughness;
 		vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 13 ) );
 		vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
 
 		if ( surf.thinFilm ) {
 			lightDirection = - refract( normalize( - lightDirection ), - vec3( 0.0, 0.0, 1.0 ), 1.0 / eta );
 		}
-
-		// Sprint 6: apply rough-refraction GGX lobe (same as transmissionDirection).
-		vec2 roughRand = rand2( 47 );
-		lightDirection = perturbDirectionByGGX( normalize( lightDirection ), filteredRoughness, roughRand.x, roughRand.y );
 
 		return normalize( lightDirection );
 

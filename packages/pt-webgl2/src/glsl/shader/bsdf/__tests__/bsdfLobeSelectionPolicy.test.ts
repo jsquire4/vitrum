@@ -45,4 +45,16 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
     expect(dispersionTransmission).toContain('ggxDirectionForSurface( wo, surf, rand2( 13 ) )');
     expect(dispersionTransmission).not.toMatch(/vec3\s+halfVector\s*=\s*ggxDirection\s*\(/);
   });
+
+  it('does not apply an unmatched second GGX perturbation after rough refraction', () => {
+    const ordinaryTransmission = sourceBetween(
+      'vec3 transmissionDirection',
+      'float cauchyIORatLambda',
+    );
+    const dispersionTransmission = sourceBetween('vec3 dispersionTransmissionDirection', '// clearcoat');
+
+    expect(bsdf_functions).not.toContain('perturbDirectionByGGX');
+    expect(ordinaryTransmission).not.toContain('rand2( 47 )');
+    expect(dispersionTransmission).not.toContain('rand2( 47 )');
+  });
 });

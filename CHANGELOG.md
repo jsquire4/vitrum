@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 rough transmission PDF coherence, 2026-06-20)
+
+- **pt-webgl2 rough transmission no longer applies an untracked second GGX perturbation:** ordinary and Cauchy/hero-wavelength transmission now use the sampled GGX microfacet half-vector as the sole rough-refraction direction sample. The removed post-refraction `rand2(47)` perturbation double-roughened transmitted rays without a matching term in `transmissionEval()`'s PDF, so transmissive rough glass is now closer to the evaluated BTDF/PDF contract. This is render-changing for rough transmission materials; V28-B recapture and radiometric promotion evidence remain required.
+
 ### Fixed (pt-webgl2 tangent-frame anisotropy, 2026-06-20)
 
 - **pt-webgl2 anisotropic GGX now orients against authored/generated tangents:** the WebGL2 surface record builds `normalBasis` from the interpolated tangent attribute after Gram-Schmidt projection against the final shaded normal, falling back to the previous normal-only basis for missing or degenerate tangents. KHR anisotropy-map RG rotation now lands in the material tangent frame instead of an arbitrary frame derived from the normal alone. This is render-changing for anisotropic materials, so V28-B recapture remains the promotion proof.
