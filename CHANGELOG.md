@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (pt-webgpu inverse diagnostic specificity, 2026-06-20)
 
 - **Geometry-domain inverse replay blockers now have their own diagnostic code:** `@vitrum/core` exposes `path-replay-unsupported-geometry`, and `@vitrum/pt-webgpu` uses it for displacement-map path-replay downgrades instead of collapsing the case into generic material support. Hosts can now route displacement/BVH-geometry limitations separately from BRDF/material-domain inverse limitations.
+- **Scalar displacement inverse controls now fail truthfully instead of at validation:** `materials.<id>.displacementScale` and `materials.<id>.displacementBias` are accepted as finite-difference material parameters, seeded from the scene, patched through the inverse material hook, and downgraded from requested path replay with `path-replay-unsupported-geometry`. This does not promote backend displacement rendering; it makes inverse-session compatibility reports distinguish geometry-domain finite-difference tails from non-optimizable fields.
 
 ### Fixed (pt-webgpu inverse alpha truthfulness, 2026-06-20)
 

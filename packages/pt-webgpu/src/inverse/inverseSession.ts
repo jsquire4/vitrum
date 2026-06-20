@@ -291,6 +291,7 @@ const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
   'scatteringCoefficientRGB',
 ]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
+const PATH_REPLAY_GEOMETRY_ONLY_FIELDS = new Set(['displacementScale', 'displacementBias']);
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -338,6 +339,8 @@ const MATERIAL_SCALAR_FIELDS = new Set([
   'dispersionAbbeNumber',
   'scatteringCoefficient',
   'scatteringAnisotropy',
+  'displacementScale',
+  'displacementBias',
 ]);
 const EMITTER_RGB_FIELDS = new Set(['color']);
 const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
@@ -853,7 +856,8 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
 ): {
   readonly code:
     | 'path-replay-unsupported-transport'
-    | 'path-replay-unsupported-visibility';
+    | 'path-replay-unsupported-visibility'
+    | 'path-replay-unsupported-geometry';
   readonly message: string;
   readonly details: Record<string, string | readonly string[]>;
 } | null {
@@ -878,6 +882,18 @@ function pathReplayFiniteDifferenceOnlyFieldIssue(
         field,
         finiteDifferenceReason: 'visibility',
         affectedTerms: ['alpha-coverage', 'ray-visibility', 'shadow-visibility'],
+      },
+    };
+  }
+  if (PATH_REPLAY_GEOMETRY_ONLY_FIELDS.has(field)) {
+    return {
+      code: 'path-replay-unsupported-geometry',
+      message:
+        'which changes displacement geometry that the scoped path-replay adjoint does not mirror yet',
+      details: {
+        field,
+        finiteDifferenceReason: 'geometry',
+        affectedTerms: ['micro-displacement', 'bvh-geometry', 'visibility'],
       },
     };
   }
@@ -1824,6 +1840,8 @@ function defaultClampRange(field: string): [number, number] {
     case 'iridescenceThicknessRange':
       return [0, Infinity];
     case 'anisotropyRotation':
+    case 'displacementScale':
+    case 'displacementBias':
       return [-Infinity, Infinity];
     case 'emissive':
     case 'emissiveIntensity':
@@ -1893,6 +1911,8 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'aoMapIntensity': return [m.aoMapIntensity ?? 1];
       case 'lightMapIntensity': return [m.lightMapIntensity ?? 1];
       case 'envMapIntensity': return [m.envMapIntensity ?? 1];
+      case 'displacementScale': return [m.displacementScale ?? 1];
+      case 'displacementBias': return [m.displacementBias ?? 0];
       default: break;
     }
   } else {
@@ -1949,6 +1969,8 @@ function materialPatch(field: string, value: number[]): Partial<MaterialSpec> {
     case 'aoMapIntensity': return { aoMapIntensity: value[0]! };
     case 'lightMapIntensity': return { lightMapIntensity: value[0]! };
     case 'envMapIntensity': return { envMapIntensity: value[0]! };
+    case 'displacementScale': return { displacementScale: value[0]! };
+    case 'displacementBias': return { displacementBias: value[0]! };
     default: throw new Error(`inverse: unsupported material field "${field}".`);
   }
 }

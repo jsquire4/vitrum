@@ -86,10 +86,12 @@ function makeFakeEngine(W = 2, H = 2): FakeEngine {
       const scatteringCoefficient = mat.scatteringCoefficient ?? 0;
       const scatteringAnisotropy = mat.scatteringAnisotropy ?? 0;
       const scatteringCoefficientRGB = mat.scatteringCoefficientRGB ?? [0, 0, 0];
+      const displacementScale = mat.displacementScale ?? 0;
+      const displacementBias = mat.displacementBias ?? 0;
       const rgb = new Float32Array(width * height * 3);
       for (let p = 0; p < width * height; p++) {
-        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0] + iridescenceThicknessRange[0] / 1000 + dispersionAbbeNumber / 100 + scatteringCoefficient + scatteringCoefficientRGB[0];
-        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1] + iridescenceThicknessRange[1] / 1000 + scatteringAnisotropy + scatteringCoefficientRGB[1];
+        rgb[p * 3 + 0] = mat.baseColor[0] + transmission + opacity + normalOrBumpScale + attenuationColor[0] + iridescenceThicknessRange[0] / 1000 + dispersionAbbeNumber / 100 + scatteringCoefficient + scatteringCoefficientRGB[0] + displacementScale;
+        rgb[p * 3 + 1] = mat.baseColor[1] + thickness + attenuationDistance + alphaCutoff + materialMapIntensity + attenuationColor[1] + iridescenceThicknessRange[1] / 1000 + scatteringAnisotropy + scatteringCoefficientRGB[1] + displacementBias;
         rgb[p * 3 + 2] = mat.baseColor[2] + attenuationColor[2] + anisotropyRotation + scatteringCoefficientRGB[2];
       }
       return { rgb, channels: 3 as const };
@@ -177,7 +179,7 @@ describe('InverseSession — path resolution + validation throws', () => {
     const fake = makeFakeEngine();
     expect(() => new PtWebgpuInverseSession(fake.hooks, {
       target: targetImage(2, 2, [0, 0, 0]),
-      parameters: [{ path: 'materials.panel.displacementScale', kind: 'scalar' }],
+      parameters: [{ path: 'materials.panel.baseColorMap', kind: 'scalar' }],
     })).toThrow(/not optimizable/);
   });
 
@@ -267,6 +269,39 @@ describe('InverseSession — Phase-0 finite-difference loop converges', () => {
     expect(fake.scene.primitives[0]!.material.transmission).toBeCloseTo(session.currentValues()[0]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.thickness).toBeCloseTo(session.currentValues()[1]![0]!, 6);
     expect(fake.scene.primitives[0]!.material.attenuationDistance).toBeCloseTo(session.currentValues()[2]![0]!, 6);
+    session.dispose();
+  });
+
+  it('optimizes scalar displacement controls through finite differences without clamping signed bias', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? { ...pr, material: { ...pr.material, displacementScale: 0.3, displacementBias: -0.4 } }
+          : pr,
+      ),
+    };
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      target: targetImage(2, 2, [0.2, 0.2, 0.2]),
+      parameters: [
+        { path: 'materials.panel.displacementScale', kind: 'scalar' },
+        { path: 'materials.panel.displacementBias', kind: 'scalar' },
+      ],
+      samplesPerStep: 1,
+      optimizer: { learningRate: 0.2, fdEpsilon: 1e-3 },
+    });
+
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.3, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(-0.4, 6)]);
+    const result = await session.step();
+    expect(result.gradient[0]![0]).toBeGreaterThan(0);
+    expect(result.gradient[1]![0]).toBeLessThan(0);
+    expect(session.currentValues()[0]![0]).toBeLessThan(0.3);
+    expect(session.currentValues()[1]![0]).toBeGreaterThan(-0.4);
+    expect(session.currentValues()[1]![0]).toBeLessThan(0);
+    expect(fake.scene.primitives[0]!.material.displacementScale).toBeCloseTo(session.currentValues()[0]![0]!, 6);
+    expect(fake.scene.primitives[0]!.material.displacementBias).toBeCloseTo(session.currentValues()[1]![0]!, 6);
     session.dispose();
   });
 
@@ -1814,6 +1849,46 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         code: 'path-replay-unsupported-transport',
         path: `materials.panel.${field}`,
         details: expect.objectContaining({ field, finiteDifferenceReason: 'transport' }),
+      }));
+    }
+    session.dispose();
+  });
+
+  it('downgrades scalar displacement controls to finite differences with structured geometry diagnostics', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                displacementScale: 0.25,
+                displacementBias: -0.125,
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.displacementScale', kind: 'scalar' },
+        { path: 'materials.panel.displacementBias', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.25, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(-0.125, 6)]);
+    for (const field of ['displacementScale', 'displacementBias']) {
+      expect(session.diagnostics).toContainEqual(expect.objectContaining({
+        code: 'path-replay-unsupported-geometry',
+        path: `materials.panel.${field}`,
+        details: expect.objectContaining({ field, finiteDifferenceReason: 'geometry' }),
       }));
     }
     session.dispose();
