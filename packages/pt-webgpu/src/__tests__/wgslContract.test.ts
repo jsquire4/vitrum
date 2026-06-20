@@ -285,8 +285,8 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-18: pt-webgpu sheen source sampling switched from the
     // documented cosine approximation to a matching Charlie half-vector sampler
     // and PDF.
-    expect(digest).toBe('b675b6c42e1303b51503e77460879120f41df8d6108e7f7bab4c8eb6addf183e');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(388630);
+    expect(digest).toBe('e619a8112aebdfdf3beba7d2cf1fd405d43f272071b09ae4aaa6ba4aa00e40d7');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(389071);
   });
 });
 

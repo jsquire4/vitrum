@@ -47,6 +47,7 @@ export const FrameParamsSlot = {
   sceneCenterY: 98,
   sceneCenterZ: 99,
   sceneRadius: 100,
+  directLightingMode: 101,
 } as const;
 
 export const FRAME_PARAMS_WGSL_FIELDS = [
@@ -94,4 +95,5 @@ export const FRAME_PARAMS_WGSL_FIELDS = [
   'sceneCenterY: f32',
   'sceneCenterZ: f32',
   'sceneRadius: f32',
+  'directLightingMode: u32',
 ] as const;

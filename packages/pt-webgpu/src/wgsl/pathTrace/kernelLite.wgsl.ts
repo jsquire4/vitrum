@@ -163,11 +163,13 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       lightCount = lightCount + 1u;
     }
     if (lightCount > 0u) {
+      let sumDirectLighting = params.directLightingMode == 1u;
       let picked = u32(min(floor(rand_f32(&rng) * f32(lightCount)), f32(lightCount - 1u)));
+      let directLightingScale = select(f32(lightCount), 1.0, sumDirectLighting);
       var current = 0u;
       var directLi = vec3f(0.0);
       for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           let dBase = liteDirBase + di * 2u;
           let dDirAD = textureLoad(liteLightTex, vec2i(i32(dBase), 0), 0);
           let dIrrMean = textureLoad(liteLightTex, vec2i(i32(dBase + 1u), 0), 0);
@@ -199,7 +201,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
                 mat.specularColor, mat.specularIntensity,
                 0.0, 0.0);
               let dirIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
-              directLi = throughput * brdf * nDotL * dirIrrOut;
+              directLi = directLi + throughput * brdf * nDotL * dirIrrOut;
             }
           }
         }
@@ -207,7 +209,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       }
       // B12 — point lights (delta; stride 3 texels: pos, rad, [dist, decay, 0, 0]).
       for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           let base = litePtBase + pi * 3u;
           let lp  = textureLoad(liteLightTex, vec2i(i32(base),      0), 0).xyz;
           let rad = textureLoad(liteLightTex, vec2i(i32(base + 1u), 0), 0).rgb;
@@ -233,14 +235,14 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               0.0, 0.0);
             let attenuation = select(1.0 / dist2, pow(max(dist, 1.0), -ptDecay), ptDecay > 0.01);
             let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
-            directLi = throughput * brdf * nDotL * radOut * attenuation;
+            directLi = directLi + throughput * brdf * nDotL * radOut * attenuation;
           }
         }
         current = current + 1u;
       }
       // B12 — spot lights (delta; stride 4 texels: pos, dir+cosOuter, rad+cosInner, [dist,decay,0,0]).
       for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           let sb2 = liteSpBase + si * 4u;
           let spos   = textureLoad(liteLightTex, vec2i(i32(sb2),      0), 0).xyz;
           let saxis  = textureLoad(liteLightTex, vec2i(i32(sb2 + 1u), 0), 0);
@@ -274,7 +276,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
                 mat.specularColor, mat.specularIntensity,
                 0.0, 0.0);
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
-              directLi = throughput * brdf * nDotL * softness * sradOut * attenuation;
+              directLi = directLi + throughput * brdf * nDotL * softness * sradOut * attenuation;
             }
           }
         }
@@ -290,7 +292,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
       // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
       for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           let rb2 = liteRcBase + ri * 4u;
           let rpos = textureLoad(liteLightTex, vec2i(i32(rb2),      0), 0).xyz;
           let ru   = textureLoad(liteLightTex, vec2i(i32(rb2 + 1u), 0), 0).xyz;
@@ -338,14 +340,14 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               let rectShadowDisabledL = textureLoad(liteLightTex, vec2i(i32(rb2), 0), 0).w > 0.5;
               if (rectShadowDisabledL || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
-                directLi = throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6);
+                directLi = directLi + throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6);
               }
             }
           }
         }
         current = current + 1u;
       }
-      if ((hasEnvironmentMap() || params.environmentSun.w > 1e-6) && current == picked) {
+      if ((hasEnvironmentMap() || params.environmentSun.w > 1e-6) && (sumDirectLighting || current == picked)) {
         var envDir = vec3f(0.0, 1.0, 0.0);
         var envColor = vec3f(0.0);
         var envPdf = 0.0;
@@ -377,11 +379,11 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             // A3 — spectralise the env radiance at the hero λ (RGB unchanged).
             let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u);
             let misWeight = powerHeuristic(envPdf, brdfPdf);
-            directLi = throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8);
+            directLi = directLi + throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8);
           }
         }
       }
-      radiance = radiance + directLi * f32(lightCount);
+      radiance = radiance + directLi * directLightingScale;
     }
 
     let caustic = causticMode();

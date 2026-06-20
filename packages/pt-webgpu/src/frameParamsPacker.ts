@@ -42,7 +42,8 @@ const _highestSlot = Math.max(...(Object.values(FrameParamsSlot) as number[]));
 //   prevViewProj at slot 80, mat4x4f = 16 slots → last slot 95
 //   directionalLightCount at slot 96, u32 = 1 slot → last slot 96
 //   sceneCenterX/Y/Z + sceneRadius at slots 97..100 → last slot 100
-// The last slot actually WRITTEN is sceneRadius = 100. The mat fields span
+//   directLightingMode at slot 101, u32 = 1 slot → last slot 101
+// The last slot actually WRITTEN is directLightingMode = 101. The mat fields span
 // slots [48..95].
 // We let the generator-derived FRAME_PARAMS_BYTE_SIZE / 4 give us the effective
 // slot count (accounting for trailing struct padding):
@@ -121,6 +122,7 @@ export interface FrameParamsEngineConfig {
   readonly bdpt: boolean;
   readonly bdptMaxLightBounces: number;
   readonly lightTreeImportanceSampling: boolean;
+  readonly directLightingMode: 'sampled-selection' | 'summed-expectation';
 }
 
 /**
@@ -208,6 +210,8 @@ export function packFrameParams(
   paramsF32[FrameParamsSlot.sceneCenterY] = sb.sceneCenter[1];
   paramsF32[FrameParamsSlot.sceneCenterZ] = sb.sceneCenter[2];
   paramsF32[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
+  paramsU32[FrameParamsSlot.directLightingMode] =
+    config.directLightingMode === 'summed-expectation' ? 1 : 0;
   // H14-E: HDRI intensity lives in its own f32 slot (slot 31 = environmentHdriIntensity),
   // separate from environmentSun.w (procedural sky sun strength). This ensures the HDRI
   // equirect lookup is NOT silently zeroed when sun.w == 0 (e.g. night-only scenes).

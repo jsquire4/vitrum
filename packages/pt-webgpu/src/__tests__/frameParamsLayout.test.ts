@@ -123,6 +123,7 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'sceneCenterY: f32',
       'sceneCenterZ: f32',
       'sceneRadius: f32',
+      'directLightingMode: u32',
     ]);
   });
 

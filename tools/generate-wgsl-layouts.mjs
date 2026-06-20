@@ -55,6 +55,10 @@ const FRAME_FIELDS = [
   ['sceneCenterY', 'f32'],
   ['sceneCenterZ', 'f32'],
   ['sceneRadius', 'f32'],
+  // Inverse rendering can ask the forward baseline to sum direct-light
+  // candidates instead of sampling one emitter. Appended after the existing
+  // scalar tail so no earlier field offsets move.
+  ['directLightingMode', 'u32'],
 ];
 
 const SIZE_BYTES = { u32: 4, f32: 4, vec4f: 16, mat4x4f: 64 };

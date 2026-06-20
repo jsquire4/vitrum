@@ -1098,6 +1098,7 @@ class PTEngineWebGPU implements Engine {
         bdpt: this.#bdpt,
         bdptMaxLightBounces: this.#bdptMaxLightBounces,
         lightTreeImportanceSampling: this.#lightTreeImportanceSampling,
+        directLightingMode: this.#inInverseRender ? 'summed-expectation' : 'sampled-selection',
       },
       this.#sceneBuffers!,
       input,
@@ -2009,7 +2010,7 @@ class PTEngineWebGPU implements Engine {
         bdpt: this.#bdpt && this.#traceTier === 'full',
         restirPtReuse: this.#restirPtReuse,
         causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
-        directLighting: 'sampled-selection',
+        directLighting: 'summed-expectation',
       }),
       getPathReplayGeometryCapabilities: () => ({
         supportedAnalyticShapes: this.#supportedAnalyticShapes(),

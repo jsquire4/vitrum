@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
+import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 interface Recorder {
   readonly computePassLabels: string[];
+  readonly directLightingModes: number[];
 }
 
 function makeScene(): Scene {
@@ -84,7 +86,15 @@ function makeRenderAndReadbackDevice(rec: Recorder): GPUDevice {
     finish: vi.fn(() => ({})),
   };
   return {
-    queue: { writeBuffer: vi.fn(), writeTexture: vi.fn(), submit: vi.fn() },
+    queue: {
+      writeBuffer: vi.fn((_buffer: GPUBuffer, _offset: number, data: BufferSource) => {
+        if (data instanceof ArrayBuffer && data.byteLength >= 512) {
+          rec.directLightingModes.push(new Uint32Array(data)[FrameParamsSlot.directLightingMode] ?? -1);
+        }
+      }),
+      writeTexture: vi.fn(),
+      submit: vi.fn(),
+    },
     createBuffer: vi.fn((desc?: { label?: string; size?: number }) => {
       const size = Math.max(16, desc?.size ?? 256);
       return {
@@ -116,7 +126,7 @@ function makeRenderAndReadbackDevice(rec: Recorder): GPUDevice {
 
 describe('pt-webgpu inverse render while host-paused', () => {
   it('bypasses the public paused-frame fast-out only for inverse-session renders', async () => {
-    const rec: Recorder = { computePassLabels: [] };
+    const rec: Recorder = { computePassLabels: [], directLightingModes: [] };
     const engine = await createPTEngine_WebGPU({ device: makeRenderAndReadbackDevice(rec) });
     engine.setScene(makeScene());
     engine.renderFrame(frameInput());
@@ -141,14 +151,16 @@ describe('pt-webgpu inverse render while host-paused', () => {
 
     const after = rec.computePassLabels.filter((label) => label === 'vitrum.pt-webgpu.pathTrace.pass').length;
     expect(after).toBeGreaterThan(before);
+    expect(rec.directLightingModes).toContain(0);
+    expect(rec.directLightingModes).toContain(1);
     expect(engine.state).toBe('paused');
 
     session.dispose();
     engine.dispose();
   });
 
-  it('downgrades real-engine path replay when sampled direct-light selection has multiple candidates', async () => {
-    const rec: Recorder = { computePassLabels: [] };
+  it('keeps real-engine path replay for multiple candidates because inverse renders sum direct light', async () => {
+    const rec: Recorder = { computePassLabels: [], directLightingModes: [] };
     const warnings: unknown[] = [];
     const engine = await createPTEngine_WebGPU({
       device: makeRenderAndReadbackDevice(rec),
@@ -170,18 +182,9 @@ describe('pt-webgpu inverse render while host-paused', () => {
       optimizer: { learningRate: 0.01, fdEpsilon: 1e-3 },
     });
 
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-light-selection',
-      path: 'materials.panel.baseColor',
-      details: expect.objectContaining({
-        candidateCount: 2,
-        directLighting: 'sampled-selection',
-        candidates: expect.arrayContaining([
-          'emitter:lamp:point',
-          'environment:hdri',
-        ]),
-      }),
     }));
     expect(warnings).toEqual([]);
 

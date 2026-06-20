@@ -89,6 +89,8 @@ function reconstructExpected(
   f[FrameParamsSlot.sceneCenterY] = sb.sceneCenter[1];
   f[FrameParamsSlot.sceneCenterZ] = sb.sceneCenter[2];
   f[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
+  u[FrameParamsSlot.directLightingMode] =
+    config.directLightingMode === 'summed-expectation' ? 1 : 0;
   // H14-E: HDRI intensity in its own slot (slot 31), separate from environmentSun.w.
   f[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   f[FrameParamsSlot.cameraPos] = input.cameraPosition[0];
@@ -163,6 +165,7 @@ function makeConfig(over: Partial<FrameParamsEngineConfig> = {}): FrameParamsEng
     bdpt: false,
     bdptMaxLightBounces: 3,
     lightTreeImportanceSampling: true,
+    directLightingMode: 'sampled-selection',
     ...over,
   };
 }
@@ -266,6 +269,14 @@ const MATRIX: ReadonlyArray<{
     height: 200,
   },
   {
+    name: 'inverse summed direct-light mode',
+    config: makeConfig({ directLightingMode: 'summed-expectation' }),
+    sb: makeSceneInputs(),
+    input: makeInput(),
+    width: 128,
+    height: 128,
+  },
+  {
     name: 'with prev matrices for motion vectors',
     config: makeConfig(),
     sb: makeSceneInputs(),
@@ -363,6 +374,26 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(fullU[FrameParamsSlot.analyticCount]).toBe(7);
   });
 
+  it('packs inverse direct-light summed-expectation mode into the scalar tail', () => {
+    const sampled = new Uint32Array(packFrameParams(
+      makeConfig({ directLightingMode: 'sampled-selection' }),
+      makeSceneInputs(),
+      makeInput(),
+      400,
+      300,
+    ));
+    const summed = new Uint32Array(packFrameParams(
+      makeConfig({ directLightingMode: 'summed-expectation' }),
+      makeSceneInputs(),
+      makeInput(),
+      400,
+      300,
+    ));
+    expect(FrameParamsSlot.directLightingMode).toBe(101);
+    expect(sampled[FrameParamsSlot.directLightingMode]).toBe(0);
+    expect(summed[FrameParamsSlot.directLightingMode]).toBe(1);
+  });
+
   it('frozen literal golden for the canonical baseline input', () => {
     // Pins the absolute u32/f32 slot values so the packer + the reconstruction
     // cannot silently co-drift. Spot-checks the scalar header + the camera/light
@@ -404,6 +435,7 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(f[FrameParamsSlot.sceneCenterY]).toBe(5);
     expect(f[FrameParamsSlot.sceneCenterZ]).toBe(6);
     expect(f[FrameParamsSlot.sceneRadius]).toBe(7);
+    expect(u[FrameParamsSlot.directLightingMode]).toBe(0);
     expect(f[FrameParamsSlot.cameraPos]).toBe(2);
     expect(f[FrameParamsSlot.cameraPos + 1]).toBe(3);
     expect(f[FrameParamsSlot.cameraPos + 2]).toBe(8);

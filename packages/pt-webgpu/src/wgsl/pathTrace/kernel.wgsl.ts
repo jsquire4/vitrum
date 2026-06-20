@@ -529,6 +529,7 @@ ${transmissiveBlock}
       lightCount = lightCount + 1u;
     }
     if (lightCount > 0u) {
+      let sumDirectLighting = params.directLightingMode == 1u;
       // WS2 — power-weighted light selection (Conty Estévez & Kulla 2018,
       // Shirley 1996). When the full-tier light tree is built (≥2 lights), pick
       // the emitter by a power × spatial-proximity descent and divide the
@@ -554,7 +555,9 @@ ${transmissiveBlock}
       // is the property V22's unbiasedness A/B checks.
       var lightSelectInvPdf: f32 = f32(lightCount); // 1 / (1/lightCount)
       let lightTreeActive = params.lightTreeEnabled != 0u && params.lightTreeNodeCount > 0u;
-      if (lightTreeActive) {
+      if (sumDirectLighting) {
+        lightSelectInvPdf = 1.0;
+      } else if (lightTreeActive) {
         let lt = sampleLightTree(hitPos, LT_DIST2_FLOOR, params.lightTreeNodeCount, &rng);
         if (lt.emitterIndex >= 0 && lt.pdf > 0.0 && u32(lt.emitterIndex) < lightCount) {
           picked = u32(lt.emitterIndex);
@@ -568,6 +571,7 @@ ${transmissiveBlock}
         picked = u32(min(floor(rand_f32(&rng) * f32(lightCount)), f32(lightCount - 1u)));
         lightSelectInvPdf = f32(lightCount);
       }
+      let directLightingScale = select(lightSelectInvPdf, 1.0, sumDirectLighting);
       var current = 0u;
       var directLi = vec3f(0.0);
       // N-directional loop: each record in directionalLights[] is 2 vec4f:
@@ -578,7 +582,7 @@ ${transmissiveBlock}
       // scenes because the same packed direction/irradiance data drives both
       // this surface loop and the in-medium NEE loop above.
       for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           let dBase = di * 2u;
           let dDirAD = directionalLights[dBase];        // .xyz = toward-light dir, .w = angularDiameter
           let dIrrMean = directionalLights[dBase + 1u]; // .rgb = irradiance,        .w = mean irradiance
@@ -617,13 +621,13 @@ ${transmissiveBlock}
             // A3 — spectralise the directional irradiance at the hero λ (RGB unchanged).
             let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
             // Delta light (no MIS): compensate the one-of-N selection by /p_select.
-            directLi = throughput * brdf * nDotL * dIrrOut * lightSelectInvPdf;
+            directLi = directLi + throughput * brdf * nDotL * dIrrOut * directLightingScale;
           }
         }
         current = current + 1u;
       }
       for (var pi = 0u; pi < params.pointLightCount; pi = pi + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           // H51-D: stride 3 (3 vec4 = 12 f32): position, radiance, [distance, decay, 0, 0]
           let base = pi * 3u;
           let lp = pointLights[base].xyz;
@@ -655,13 +659,13 @@ ${transmissiveBlock}
             // Delta light (no MIS): compensate the one-of-N selection by /p_select.
             // A3 — spectralise the light radiance at the hero λ (RGB unchanged).
             let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
-            directLi = throughput * brdf * nDotL * radOut * attenuation * lightSelectInvPdf;
+            directLi = directLi + throughput * brdf * nDotL * radOut * attenuation * directLightingScale;
           }
         }
         current = current + 1u;
       }
       for (var si = 0u; si < params.spotLightCount; si = si + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           // H51-D: stride 4 (4 vec4 = 16 f32): position, dir+cosOuter, radiance+cosInner, [distance, decay, 0, 0]
           let sb = si * 4u;
           let spos = spotLights[sb].xyz;
@@ -700,7 +704,7 @@ ${transmissiveBlock}
               // Delta light (no MIS): compensate the one-of-N selection by /p_select.
               // A3 — spectralise the spot radiance at the hero λ (RGB unchanged).
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
-              directLi = throughput * brdf * nDotL * softness * sradOut * attenuation * lightSelectInvPdf;
+              directLi = directLi + throughput * brdf * nDotL * softness * sradOut * attenuation * directLightingScale;
             }
           }
         }
@@ -713,7 +717,7 @@ ${transmissiveBlock}
       // Native analytic disc emitters replace the 32-triangle fan, 2026-06-10 —
       // RENDER-CHANGING for disc-lit scenes, A/B in R9-B.
       for (var ri = 0u; ri < params.rectAreaLightCount; ri = ri + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           let rb = ri * 4u;
           let rpos = rectAreaLights[rb].xyz;
           let ru = rectAreaLights[rb + 1u].xyz;
@@ -774,7 +778,7 @@ ${transmissiveBlock}
               if (rectAreaLights[rb].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
                 // A3 — spectralise the rect/disc-area radiance at the hero λ.
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
-                directLi = throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
+                directLi = directLi + throughput * brdf * nDotL * rrOut * misWeight / max(lightPdf, 1e-6) * directLightingScale;
               }
             }
           }
@@ -782,7 +786,7 @@ ${transmissiveBlock}
         current = current + 1u;
       }
       for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
-        if (current == picked) {
+        if (sumDirectLighting || current == picked) {
           let mb = mi * 4u;
           let a = meshAreaLights[mb].xyz;
           let b = meshAreaLights[mb + 1u].xyz;
@@ -825,14 +829,14 @@ ${transmissiveBlock}
               if (meshAreaLights[mb + 3u].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
                 // A3 — spectralise the mesh-area radiance at the hero λ.
                 let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);
-                directLi = throughput * brdf * nDotL * mrOut * misWeight / max(lightPdf, 1e-6) * lightSelectInvPdf;
+                directLi = directLi + throughput * brdf * nDotL * mrOut * misWeight / max(lightPdf, 1e-6) * directLightingScale;
               }
             }
           }
         }
         current = current + 1u;
       }
-      if ((hasEnvironmentMap() || params.environmentSun.w > 1e-6) && current == picked) {
+      if ((hasEnvironmentMap() || params.environmentSun.w > 1e-6) && (sumDirectLighting || current == picked)) {
         var envDir = vec3f(0.0, 1.0, 0.0);
         var envColor = vec3f(0.0);
         var envPdf = 0.0;
@@ -874,17 +878,14 @@ ${transmissiveBlock}
             let envScale = materialEnvMapIntensity(matId);
             let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envScale;
             let misWeight = powerHeuristic(envPdf, brdfPdf);
-            directLi = throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8) * lightSelectInvPdf;
+            directLi = directLi + throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8) * directLightingScale;
           }
         }
       }
-      // Every branch already multiplied its contribution by lightSelectInvPdf
-      // (= 1/p_select) to compensate the one-of-N pick — OUTSIDE the per-light
-      // MIS power heuristic (which uses the per-light area / env pdf alone). So
-      // the accumulation is a bare add; the single-sample NEE is unbiased and,
-      // crucially, its expectation is INDEPENDENT of the selection pdf (the
-      // p_select cancels), so the power-weighted tree and the uniform pick share
-      // the same converged mean and differ only in variance.
+      // Sampled mode: each branch multiplies by 1/p_select OUTSIDE the per-light
+      // MIS power heuristic, so tree and uniform picks share the same converged
+      // mean and differ only in variance. Summed inverse mode visits every branch
+      // once and uses scale 1, matching the deterministic direct-light adjoint.
       radiance = radiance + directLi;
     }
 

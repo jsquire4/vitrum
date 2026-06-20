@@ -116,8 +116,8 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Shirley-Chiu signed-denominator bug. Disc-area sampling was previously
     // mirrored into the wrong quadrant for two square quadrants; render-changing
     // for lite-tier disc-area lights, now pinned by oracle.concentricDiscSample.
-    expect(digest).toBe('c3e4f2f1a0bfe48f727ad630b8688ca3200737e7b747f69367afa50c8edfda9a');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(156422);
+    expect(digest).toBe('e221dd2673b2391cc5af24927f6a38b78908b48eda03cdf6c4892d7edfb072e8');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(156964);
   });
 });
 
@@ -170,7 +170,7 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dIrrMean = textureLoad(liteLightTex, vec2i(i32(dBase + 1u), 0), 0);');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dirShadowDisabled = angDiamRaw < 0.0;');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY))');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('directLi = throughput * brdf * nDotL * dirIrrOut;');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('directLi = directLi + throughput * brdf * nDotL * dirIrrOut;');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn sampleSky');
   });
 

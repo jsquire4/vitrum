@@ -112,6 +112,10 @@ struct FrameParams {
   sceneCenterY: f32,
   sceneCenterZ: f32,
   sceneRadius: f32,
+  // 0 = sampled one-of-N direct-light selection; 1 = sum direct candidates.
+  // Inverse path replay uses mode 1 so the forward baseline matches the adjoint
+  // pass's deterministic direct-light domain.
+  directLightingMode: u32,
 };
 
 @group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
