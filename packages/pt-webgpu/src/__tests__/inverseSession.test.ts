@@ -2454,13 +2454,43 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when transmission and thickness maps are dormant at zero transmission', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                transmission: 0,
+                transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([0.5, 0, 0, 1]) } },
+                thickness: 0.75,
+                thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([0, 0.5, 0, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it.each([
     ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility', 'visibility'],
     ['blend opacity', { alphaMode: 'blend' as const, opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport', 'transport'],
     ['alpha map', { alphaMode: 'mask' as const, alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
-    ['transmission map', { transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
-    ['thickness map', { thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
+    ['transmission map', { transmission: 0.25, transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
+    ['thickness map', { transmission: 0.25, thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
     ['displacement map', { displacementMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-material', 'geometry'],
     ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }, 'path-replay-unsupported-transport', 'transport'],
     ['thin-film stack', { thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 180 }] } }, 'path-replay-unsupported-transport', 'transport'],

@@ -1542,8 +1542,8 @@ function hasPathReplayTransportOrGeometryMap(m: MaterialSpec): boolean {
 
 function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string[] {
   const out: string[] = [];
-  if (m.transmissionMap != null) out.push('transmissionMap');
-  if (m.thicknessMap != null) out.push('thicknessMap');
+  if (pathReplayTransmissionMapAffectsTransport(m)) out.push('transmissionMap');
+  if (pathReplayThicknessMapAffectsTransport(m)) out.push('thicknessMap');
   if (pathReplayAlphaMapAffectsVisibility(m)) out.push('alphaMap');
   if (m.displacementMap != null) out.push('displacementMap');
   return out;
@@ -1553,9 +1553,17 @@ function listPathReplayPrimaryEmissionUnsupportedMaps(m: MaterialSpec): readonly
   const out: string[] = [];
   if (pathReplayAlphaMapAffectsVisibility(m)) out.push('alphaMap');
   if (m.displacementMap != null) out.push('displacementMap');
-  if (m.transmissionMap != null) out.push('transmissionMap');
-  if (m.thicknessMap != null) out.push('thicknessMap');
+  if (pathReplayTransmissionMapAffectsTransport(m)) out.push('transmissionMap');
+  if (pathReplayThicknessMapAffectsTransport(m)) out.push('thicknessMap');
   return out;
+}
+
+function pathReplayTransmissionMapAffectsTransport(m: MaterialSpec): boolean {
+  return m.transmissionMap != null && (m.transmission ?? 0) > 1e-6;
+}
+
+function pathReplayThicknessMapAffectsTransport(m: MaterialSpec): boolean {
+  return m.thicknessMap != null && (m.transmission ?? 0) > 1e-6;
 }
 
 function pathReplayAlphaMapAffectsVisibility(m: MaterialSpec): boolean {
