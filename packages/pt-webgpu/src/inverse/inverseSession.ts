@@ -1333,7 +1333,7 @@ function materialIssueCommon(
       },
     };
   }
-  if (material.spectralAttenuation != null || material.dispersionAbbeNumber != null) {
+  if (pathReplaySpectralOrDispersionAffectsTransport(material)) {
     return {
       code: 'path-replay-unsupported-transport',
       message: 'spectral/dispersion material transport is not replayed',
@@ -1344,7 +1344,7 @@ function materialIssueCommon(
       },
     };
   }
-  if ((material.scatteringCoefficient ?? 0) > 0 || material.scatteringCoefficientRGB != null) {
+  if (pathReplayScatteringAffectsTransport(material)) {
     return {
       code: 'path-replay-unsupported-transport',
       message: 'volume/scattering material transport is not replayed',
@@ -1530,8 +1530,8 @@ function isPathReplayCompatibleUnlitBaseColorMaterial(m: MaterialSpec): boolean 
   if ((m.alphaMode ?? 'opaque') !== 'opaque') return false;
   if ((m.transmission ?? 0) > 1e-6) return false;
   if (m.frontLayer != null || m.backLayer != null || m.thinFilmStack != null) return false;
-  if (m.spectralAttenuation != null || m.dispersionAbbeNumber != null) return false;
-  if ((m.scatteringCoefficient ?? 0) > 0 || (m.scatteringCoefficientRGB != null)) return false;
+  if (pathReplaySpectralOrDispersionAffectsTransport(m)) return false;
+  if (pathReplayScatteringAffectsTransport(m)) return false;
   if (m.extensions != null && Object.keys(m.extensions).length > 0) return false;
   return !hasPathReplayTransportOrGeometryMap(m);
 }
@@ -1564,6 +1564,18 @@ function pathReplayTransmissionMapAffectsTransport(m: MaterialSpec): boolean {
 
 function pathReplayThicknessMapAffectsTransport(m: MaterialSpec): boolean {
   return m.thicknessMap != null && (m.transmission ?? 0) > 1e-6;
+}
+
+function pathReplaySpectralOrDispersionAffectsTransport(m: MaterialSpec): boolean {
+  return (m.transmission ?? 0) > 1e-6 &&
+    (m.spectralAttenuation != null || m.dispersionAbbeNumber != null);
+}
+
+function pathReplayScatteringAffectsTransport(m: MaterialSpec): boolean {
+  if ((m.transmission ?? 0) <= 1e-6) return false;
+  if ((m.scatteringCoefficient ?? 0) > 0) return true;
+  const rgb = m.scatteringCoefficientRGB;
+  return rgb != null && ((rgb[0] ?? 0) > 0 || (rgb[1] ?? 0) > 0 || (rgb[2] ?? 0) > 0);
 }
 
 function pathReplayAlphaMapAffectsVisibility(m: MaterialSpec): boolean {

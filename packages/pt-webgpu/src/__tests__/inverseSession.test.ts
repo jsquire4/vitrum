@@ -2484,6 +2484,41 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when spectral and scattering metadata are dormant on an opaque material', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                transmission: 0,
+                dispersionAbbeNumber: 42,
+                spectralAttenuation: {
+                  wavelengthStart: 380,
+                  wavelengthEnd: 700,
+                  values: new Float32Array([0.1, 0.2, 0.3]),
+                },
+                scatteringCoefficient: 0.3,
+                scatteringCoefficientRGB: [0.1, 0.2, 0.3],
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it.each([
     ['alpha mode', { alphaMode: 'mask' as const }, 'path-replay-unsupported-visibility', 'visibility'],
     ['blend opacity', { alphaMode: 'blend' as const, opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
@@ -2495,13 +2530,14 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     ['front layer', { frontLayer: { transmission: [0.9, 0.8, 0.7] as [number, number, number] } }, 'path-replay-unsupported-transport', 'transport'],
     ['thin-film stack', { thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 180 }] } }, 'path-replay-unsupported-transport', 'transport'],
     ['spectral attenuation', {
+      transmission: 0.25,
       spectralAttenuation: {
         wavelengthStart: 380,
         wavelengthEnd: 700,
         values: new Float32Array([0.1, 0.2, 0.3]),
       },
     }, 'path-replay-unsupported-transport', 'transport'],
-    ['volume scattering', { scatteringCoefficientRGB: [0.1, 0.2, 0.3] as [number, number, number] }, 'path-replay-unsupported-transport', 'transport'],
+    ['volume scattering', { transmission: 0.25, scatteringCoefficientRGB: [0.1, 0.2, 0.3] as [number, number, number] }, 'path-replay-unsupported-transport', 'transport'],
   ])('degrades to finite-difference for path-replay material with %s', (_label, patch, expectedCode, expectedReason) => {
     const fake = makeFakeEngine();
     fake.scene = {
