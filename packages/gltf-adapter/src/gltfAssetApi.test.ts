@@ -5604,14 +5604,26 @@ describe('loadGltfForEngine', () => {
     const { gltf, buffers } = makeInlineSpecGlossTexturedGltf();
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
-      buffers,
-      decodeImage: async () => ({ kind: 'decoded-texture' }),
-      backend: 'pt-webgl2',
-      compatibilityMode: 'reject-degraded',
-      createEngine,
-    })).rejects.toThrow(
-      'material:KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha=approximate',
+    let error: unknown;
+    try {
+      await loadGltfForEngine(gltf, {
+        buffers,
+        decodeImage: async () => ({ kind: 'decoded-texture' }),
+        backend: 'pt-webgl2',
+        compatibilityMode: 'reject-degraded',
+        createEngine,
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(GltfCompatibilityError);
+    const failures = (error as GltfCompatibilityError).failures;
+    expect(failures).toContain(
+      'material:KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture.glossinessAlpha=approximate at materials[0].extensions.KHR_materials_pbrSpecularGlossiness.specularGlossinessTexture',
+    );
+    expect(failures).toContain(
+      'import:spec-gloss-approximation=approximate at materials[0].extensions.KHR_materials_pbrSpecularGlossiness',
     );
     expect(createEngine).not.toHaveBeenCalled();
   });

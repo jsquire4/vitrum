@@ -310,7 +310,11 @@
 > post-import `material-texture-sampler-not-found` and
 > `invalid-material-texture-sampler` diagnostics as approximate degraded imports
 > for `reject-degraded`, while `reject-unsupported` still accepts the asset and
-> returns the structured diagnostics for host policy/UI.
+> returns the structured diagnostics for host policy/UI. The archived scalar
+> `KHR_materials_pbrSpecularGlossiness` import diagnostic now follows the same
+> bridge reconciliation as the preflight compatibility row; the
+> glossiness-alpha texture diagnostic remains governed by the CPU-linear
+> roughness-bake satisfaction path.
 > Same-scene import alignment follow-up: `gltfToScene()` now scopes animation
 > conversion to the selected scene's reachable node set, matching
 > `analyzeGltfAsset({ sceneIndex })` and selected-scene resource fetching. Unused
