@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
+import { GltfCompatibilityError, loadGltfForEngine } from './index.js';
 import type { GltfJson } from './gltfTypes.js';
 import type { DracoDecodeFn, DracoDecodeResult, MeshoptDecodeFn } from './compression.js';
 import { sampleAnimationClip } from '@vitrum/core';
@@ -528,6 +529,49 @@ describe('KHR_draco_mesh_compression hooks (GLTF-02)', () => {
         semantic: 'POSITION',
       }),
     ]));
+  });
+
+  it('classifies decoded Draco optional-attribute corruption as degraded in the one-call bridge', async () => {
+    const { gltf, buffers } = makeDracoGltf();
+    const hook: DracoDecodeFn = () => ({
+      attributes: {
+        POSITION: new Float32Array(TRI_POSITIONS),
+        NORMAL: new Float32Array(6), // accessor says count 3 × VEC3 = 9
+      },
+      indices: new Uint32Array(TRI_INDICES),
+    });
+
+    const accepted = await loadGltfForEngine(gltf, {
+      buffers,
+      dracoDecode: hook,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+    });
+    expect(accepted.asset.scene.primitives).toHaveLength(1);
+    expect(accepted.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'draco-attribute-count-mismatch',
+        path: 'meshes[0].primitives[0].attributes.NORMAL',
+        semantic: 'NORMAL',
+      }),
+    ]));
+
+    let error: unknown;
+    try {
+      await loadGltfForEngine(gltf, {
+        buffers,
+        dracoDecode: hook,
+        backend: 'pt-webgl2',
+        compatibilityMode: 'reject-degraded',
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(GltfCompatibilityError);
+    expect((error as GltfCompatibilityError).failures).toContain(
+      'import:draco-attribute-count-mismatch=approximate at meshes[0].primitives[0].attributes.NORMAL',
+    );
   });
 
   it('index-count mismatch rejects the decoded indices', async () => {

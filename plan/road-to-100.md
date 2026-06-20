@@ -314,7 +314,10 @@
 > `KHR_materials_pbrSpecularGlossiness` import diagnostic now follows the same
 > bridge reconciliation as the preflight compatibility row; the
 > glossiness-alpha texture diagnostic remains governed by the CPU-linear
-> roughness-bake satisfaction path.
+> roughness-bake satisfaction path. Decoder-returned malformed Draco attribute
+> or index payloads now classify as approximate degraded imports when the scene
+> remains representable; identical uncompressed fallback buffer/accessor use
+> stays non-blocking telemetry.
 > Same-scene import alignment follow-up: `gltfToScene()` now scopes animation
 > conversion to the selected scene's reachable node set, matching
 > `analyzeGltfAsset({ sceneIndex })` and selected-scene resource fetching. Unused
