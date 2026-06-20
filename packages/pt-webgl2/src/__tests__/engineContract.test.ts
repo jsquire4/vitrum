@@ -185,6 +185,25 @@ function hdriScene(): Scene {
   };
 }
 
+function hdriSceneWithPixels(width: number, height: number, scale: number): Scene {
+  const data = new Float32Array(width * height * 4);
+  for (let i = 0; i < width * height; i += 1) {
+    data[i * 4 + 0] = scale * (i + 1);
+    data[i * 4 + 1] = scale * 0.5 * (i + 1);
+    data[i * 4 + 2] = scale * 0.25 * (i + 1);
+    data[i * 4 + 3] = 1;
+  }
+  return {
+    primitives: [tri('tri', 0)],
+    emitters: [],
+    environment: {
+      kind: 'hdri',
+      hdri: { width, height, data },
+      intensity: 1,
+    },
+  };
+}
+
 function opts(): PTEngineWebGL2Options {
   return { device: createMockGl() };
 }
@@ -2104,6 +2123,47 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugSceneTex?.envMap).toBe(true);
     expect(e._debugSceneTex?.envTotalSum).toBeGreaterThan(0);
     expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+  });
+
+  it('updateEnvironment preserves resident HDRI textures across same-size and resized updates', async () => {
+    const gl = createMockGl();
+    let nextTextureId = 0;
+    const createTexture = vi.fn(() => ({ id: nextTextureId++ }) as unknown as WebGLTexture);
+    const texSubImage2D = vi.fn();
+    const texImage2D = vi.fn();
+    const deleteTexture = vi.fn();
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
+    (gl as unknown as { texImage2D: typeof texImage2D }).texImage2D = texImage2D;
+    (gl as unknown as { deleteTexture: typeof deleteTexture }).deleteTexture = deleteTexture;
+
+    const e = await createPTEngine_WebGL2({ device: gl });
+    e.setScene(hdriSceneWithPixels(1, 1, 0.25));
+    const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
+    const initialTextureUploads = createTexture.mock.calls.length;
+    const initialSubImage2D = texSubImage2D.mock.calls.length;
+    const initialImage2D = texImage2D.mock.calls.length;
+    const initialDeletes = deleteTexture.mock.calls.length;
+
+    e.updateEnvironment?.(hdriSceneWithPixels(1, 1, 0.5).environment);
+    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+    expect(e._debugSceneTex?.envWidth).toBe(1);
+    expect(e._debugSceneTex?.envHeight).toBe(1);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(0);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBe(0);
+    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(3);
+
+    const afterSameSizeSubImage2D = texSubImage2D.mock.calls.length;
+    const afterSameSizeImage2D = texImage2D.mock.calls.length;
+    e.updateEnvironment?.(hdriSceneWithPixels(2, 2, 0.125).environment);
+    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+    expect(e._debugSceneTex?.envWidth).toBe(2);
+    expect(e._debugSceneTex?.envHeight).toBe(2);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(0);
+    expect(texImage2D.mock.calls.length - afterSameSizeImage2D).toBe(3);
+    expect(texSubImage2D.mock.calls.length - afterSameSizeSubImage2D).toBe(0);
   });
 
   it('accepts directional angularDiameter on setScene and updateEmitter without unsupported-field warnings', async () => {

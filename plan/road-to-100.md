@@ -1215,6 +1215,8 @@ Adjoint emitter/environment/normal-stack receiver note (2026-06-20): emitter `co
 
 2026-06-20 emitter-residency follow-up: pt-webgl2 `updateEmitter()` now preserves the resident analytic light texture by subuploading/re-specifying it in place, and mesh-area emitter edits preserve resident light and mesh-light texture objects when dimensions are stable. `engineContract.test.ts` pins zero GL texture create/delete churn for point-light and mesh-area emitter edits while keeping BVH geometry resident.
 
+2026-06-20 environment-residency follow-up: pt-webgl2 `updateEnvironment()` now preserves resident HDRI map / marginal-CDF / conditional-CDF texture objects across same-size and resized HDRI swaps. Same-size updates use `texSubImage2D`; resized HDRIs re-specify storage with `texImage2D`; only none↔HDRI transitions create/drop environment textures. `engineContract.test.ts` pins zero GL texture create/delete churn while keeping BVH geometry resident.
+
 #### 2E — pt-webgpu lite tier policy
 
 **For arbitrary glTF 100%:** lite is **not** a target. Policy/code is closed below; keep these rows as regression gates:

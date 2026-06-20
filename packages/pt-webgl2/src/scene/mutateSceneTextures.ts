@@ -11,9 +11,11 @@ import {
   buildRefitSceneGeometryTextures,
   expandAnalyticPrimitiveFallbacks,
   replaceRgba32f,
+  replaceRgba32fRect,
   replaceRgba32fArray,
   replaceRgba32ui,
   updateRgba32f,
+  updateRgba32fRect,
   updateRgba32fArray,
   updateRgba32ui,
   uploadRgba32f,
@@ -119,6 +121,8 @@ export interface WebGl2MutationSwap {
     readonly textureRefreshMode?: string;
   };
 }
+
+type RectFloatTextureData = { readonly data: Float32Array; readonly width: number; readonly height: number };
 
 function isMeshLikePrimitive(p: ScenePrimitive | undefined): p is Extract<
   ScenePrimitive,
@@ -249,6 +253,32 @@ function updateResidentLightsTexture(
     replaceRgba32f(gl, current.lights, lights, nextLightsData.dim, 'scene lights');
   }
   return current.lights;
+}
+
+function updateNullableRectTexture(
+  gl: WebGL2RenderingContext,
+  currentTexture: WebGLTexture | null,
+  currentWidth: number,
+  currentHeight: number,
+  nextData: RectFloatTextureData | null,
+  resourceName: string,
+  deleteOldTextures: (WebGLTexture | null)[],
+): WebGLTexture | null {
+  if (nextData == null) {
+    if (currentTexture != null) {
+      deleteOldTextures.push(currentTexture);
+    }
+    return null;
+  }
+  if (currentTexture == null) {
+    return uploadRgba32fRect(gl, nextData.data, nextData.width, nextData.height, resourceName);
+  }
+  if (currentWidth === nextData.width && currentHeight === nextData.height) {
+    updateRgba32fRect(gl, currentTexture, nextData.data, nextData.width, nextData.height, resourceName);
+  } else {
+    replaceRgba32fRect(gl, currentTexture, nextData.data, nextData.width, nextData.height, resourceName);
+  }
+  return currentTexture;
 }
 
 function replaceResidentBvhTextures(
@@ -1161,15 +1191,34 @@ export function fastPathEnvironmentMutation(
     warningPhase: 'mutation',
     warningMethod: 'updateEnvironment',
   });
-  const envMap = env.map
-    ? uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height, 'environment map')
-    : null;
-  const envMarginal = env.marginal
-    ? uploadRgba32fRect(gl, env.marginal.data, env.marginal.width, env.marginal.height, 'environment marginal CDF')
-    : null;
-  const envConditional = env.conditional
-    ? uploadRgba32fRect(gl, env.conditional.data, env.conditional.width, env.conditional.height, 'environment conditional CDF')
-    : null;
+  const deleteOldTextures: (WebGLTexture | null)[] = [];
+  const envMap = updateNullableRectTexture(
+    gl,
+    current.envMap,
+    current.envWidth,
+    current.envHeight,
+    env.map,
+    'environment map',
+    deleteOldTextures,
+  );
+  const envMarginal = updateNullableRectTexture(
+    gl,
+    current.envMarginal,
+    current.envHeight,
+    current.envMarginal != null ? 1 : 0,
+    env.marginal,
+    'environment marginal CDF',
+    deleteOldTextures,
+  );
+  const envConditional = updateNullableRectTexture(
+    gl,
+    current.envConditional,
+    current.envWidth,
+    current.envHeight,
+    env.conditional,
+    'environment conditional CDF',
+    deleteOldTextures,
+  );
   return {
     textures: withTextureReplacementsForGl(gl, current, {
       envMap,
@@ -1179,7 +1228,7 @@ export function fastPathEnvironmentMutation(
       envWidth: env.map?.width ?? 0,
       envHeight: env.map?.height ?? 0,
     }),
-    deleteOldTextures: [current.envMap, current.envMarginal, current.envConditional],
+    deleteOldTextures,
     structuredWarnings,
   };
 }

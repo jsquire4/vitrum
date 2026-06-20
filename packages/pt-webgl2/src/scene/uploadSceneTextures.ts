@@ -766,6 +766,34 @@ export function uploadRgba32fRect(
   });
 }
 
+/** Re-specify an existing non-square RGBA32F sampler2D payload, preserving texture identity. */
+export function replaceRgba32fRect(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Float32Array,
+  width: number,
+  height: number,
+  resourceName: string,
+): void {
+  guardTextureImageUpload(gl, resourceName, Math.max(width, height));
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, data);
+}
+
+/** In-place replacement for an existing non-square RGBA32F sampler2D payload. */
+export function updateRgba32fRect(
+  gl: WebGL2RenderingContext,
+  texture: WebGLTexture,
+  data: Float32Array,
+  width: number,
+  height: number,
+  resourceName: string,
+): void {
+  guardTextureSubUpload(gl, resourceName);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.FLOAT, data);
+}
+
 /** RGBA32F TEXTURE_2D_ARRAY (dim×dim × `layers`), NEAREST/ClampToEdge — the
  *  5-layer vertex-attribute array (normal/tangent/uv0/color/uv1). */
 export function uploadRgba32fArray(
