@@ -112,6 +112,7 @@ const EXPECTATION_TABLE = {
   "pt/directional-2":     { expected: "ok" },
   "pt/hdri-env":          { expected: "ok" },
   "pt/procedural-sky":    { expected: "ok" },
+  "pt/material-lobes":    { expected: "ok" },
   "pt/spectral+bdpt":     { expected: "ok" },
   "pt/lite+hdri":         { expected: "ok" },
   "pt/lite+point-light":  { expected: "ok" },
@@ -193,6 +194,7 @@ const PT_CONFIGS = [
   { label: "pt/directional-2",    eng: {},                                    scene: { ptSmokeLight: "directional-2" } },
   { label: "pt/hdri-env",         eng: {},                                    scene: { hdri: true } },
   { label: "pt/procedural-sky",   eng: {},                                    scene: { sky: true } },
+  { label: "pt/material-lobes",    eng: {},                                    scene: { materialLobes: true } },
   { label: "pt/spectral+bdpt",    eng: { spectral: true, bdpt: true },        scene: {} },
   { label: "pt/lite+hdri",        eng: { traceTier: "lite" },                 scene: { hdri: true } },
   { label: "pt/lite+point-light", eng: { traceTier: "lite" },                 scene: { ptSmokeLight: "point" } },
@@ -268,6 +270,21 @@ const GLTF_TOPOLOGY_GOLDENS = Object.fromEntries(GLTF_TOPOLOGY_BEHAVIORAL_PROOFS
   },
 ]));
 
+const MATERIAL_LOBE_GOLDEN = {
+  path: "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobes.png",
+  maxRmse: 8,
+  maxMeanAbs: 4,
+  maxAbs: 48,
+  variants: {
+    "dzn-full": {
+      path: "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobes.dzn-full.png",
+      maxRmse: 8,
+      maxMeanAbs: 4,
+      maxAbs: 48,
+    },
+  },
+};
+
 function goldenForProof(proof) {
   const variant = goldenVariant ? proof.variants?.[goldenVariant] : null;
   const selected = variant ?? proof;
@@ -276,6 +293,18 @@ function goldenForProof(proof) {
     maxRmse: selected.thresholds.maxRmse,
     maxMeanAbs: selected.thresholds.maxMeanAbs,
     maxAbs: selected.thresholds.maxAbs,
+    variant: variant ? goldenVariant : null,
+  };
+}
+
+function selectGolden(config) {
+  const variant = goldenVariant ? config.variants?.[goldenVariant] : null;
+  const selected = variant ?? config;
+  return {
+    path: selected.path,
+    maxRmse: selected.maxRmse,
+    maxMeanAbs: selected.maxMeanAbs,
+    maxAbs: selected.maxAbs,
     variant: variant ? goldenVariant : null,
   };
 }
@@ -676,6 +705,103 @@ function buildPtSmokeLightScene(kind = "rect") {
   return {
     primitives: [quad],
     emitters,
+    environment: { kind: "none" },
+  };
+}
+
+function makeMaterialLobePanel(id, centerX, material) {
+  const halfW = 0.16;
+  const halfH = 0.44;
+  return {
+    kind: "mesh",
+    id,
+    positions: new Float32Array([
+      centerX - halfW, -halfH, 0,
+      centerX + halfW, -halfH, 0,
+      centerX + halfW,  halfH, 0,
+      centerX - halfW,  halfH, 0,
+    ]),
+    normals: new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]),
+    tangents: new Float32Array([
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+      1, 0, 0, 1,
+    ]),
+    uvs: new Float32Array([
+      0, 0,
+      1, 0,
+      1, 1,
+      0, 1,
+    ]),
+    indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    material,
+  };
+}
+
+function buildPtMaterialLobeScene() {
+  const primitives = [
+    makeMaterialLobePanel("material-lobe-clearcoat", -0.70, {
+      baseColor: [0.72, 0.72, 0.76],
+      roughness: 0.34,
+      metallic: 0.0,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.06,
+      specularIntensity: 1.0,
+    }),
+    makeMaterialLobePanel("material-lobe-sheen", -0.35, {
+      baseColor: [0.56, 0.30, 0.18],
+      roughness: 0.68,
+      metallic: 0.0,
+      sheen: 1.0,
+      sheenColor: [1.0, 0.44, 0.18],
+      sheenRoughness: 0.24,
+      specularIntensity: 0.45,
+    }),
+    makeMaterialLobePanel("material-lobe-iridescence", 0.0, {
+      baseColor: [0.60, 0.64, 0.68],
+      roughness: 0.24,
+      metallic: 0.0,
+      iridescence: 1.0,
+      iridescenceIor: 1.55,
+      iridescenceThicknessRange: [140, 620],
+      specularIntensity: 0.8,
+    }),
+    makeMaterialLobePanel("material-lobe-anisotropy", 0.35, {
+      baseColor: [0.30, 0.42, 0.72],
+      roughness: 0.26,
+      metallic: 0.15,
+      anisotropy: 0.88,
+      anisotropyRotation: 0.32,
+      specularIntensity: 0.9,
+    }),
+    makeMaterialLobePanel("material-lobe-specular", 0.70, {
+      baseColor: [0.72, 0.70, 0.62],
+      roughness: 0.18,
+      metallic: 0.0,
+      specularIntensity: 1.0,
+      specularColor: [1.0, 0.42, 0.20],
+      clearcoat: 0.12,
+    }),
+  ];
+
+  return {
+    primitives,
+    emitters: [{
+      kind: "rect-area",
+      id: "material-lobe-softbox",
+      position: [0, 0.12, 1.2],
+      uAxis: [0, 0.36, 0],
+      vAxis: [0.72, 0, 0],
+      color: [1.0, 0.95, 0.86],
+      intensity: 18.0,
+      castShadow: false,
+    }],
     environment: { kind: "none" },
   };
 }
@@ -1459,6 +1585,7 @@ async function buildGateScene(opts = {}) {
   if (opts.gltfReal) return buildRealGltfAssetScene(opts.gltfReal);
   if (opts.gltf) return buildGltfFixtureScene(opts.gltf);
   if (opts.cwbvhComplex) return buildCwbvhComplexScene();
+  if (opts.materialLobes) return buildPtMaterialLobeScene();
   if (opts.ptSmokeLight) return buildPtSmokeLightScene(opts.ptSmokeLight);
   if (opts.mutation === "material") return buildMutationMaterialScene();
   if (opts.mutation === "environment") return buildMutationEnvironmentScene();
@@ -1753,6 +1880,7 @@ function hasNaN(pixels) {
 }
 
 const GLTF_GOLDENS = {
+  "pt/material-lobes": selectGolden(MATERIAL_LOBE_GOLDEN),
   [GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label]: {
     path: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath,
     maxRmse: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds.maxRmse,
