@@ -83,10 +83,33 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasInstancedSkinnedOrMorphed: boolean;
   readonly hasIgnoredSkinAttributes: boolean;
   readonly hasIncompleteSkinAttributes: boolean;
+  readonly malformedPrimitives: readonly GltfMalformedPrimitiveIssue[];
   readonly hasVertexColors: boolean;
   readonly ignoredVertexColorSets: readonly string[];
   readonly hasUv1: boolean;
   readonly issuePaths: Readonly<Record<string, readonly string[]>>;
+}
+
+export type GltfMalformedPrimitiveKind =
+  | 'missing-position'
+  | 'missing-position-accessor'
+  | 'invalid-position-accessor-type'
+  | 'invalid-position-accessor-component-type'
+  | 'missing-position-buffer-view'
+  | 'missing-index-accessor'
+  | 'invalid-index-accessor'
+  | 'missing-index-buffer-view'
+  | 'empty-triangulated-primitive';
+
+export interface GltfMalformedPrimitiveIssue {
+  readonly kind: GltfMalformedPrimitiveKind;
+  readonly path: string;
+  readonly meshIndex: number;
+  readonly primitiveIndex: number;
+  readonly accessorIndex?: number;
+  readonly accessorType?: string;
+  readonly componentType?: number;
+  readonly mode?: number;
 }
 
 export interface GltfMaterialFeatureReport {
@@ -528,6 +551,16 @@ export function evaluateGltfBackendProfileCompatibility(
     });
   }
 
+  for (const malformed of report.primitives.malformedPrimitives) {
+    addIssue({
+      category: 'primitive',
+      name: `malformed.${malformed.kind}`,
+      support: 'unsupported',
+      path: malformed.path,
+      message: malformedPrimitiveMessage(malformed),
+    });
+  }
+
   if (report.primitives.hasMorphTargetTangents) {
     addIssue({
       category: 'primitive',
@@ -874,6 +907,41 @@ function animationMalformedChannelMessage(issue: GltfAnimationMalformedChannelIs
   );
 }
 
+function malformedPrimitiveMessage(issue: GltfMalformedPrimitiveIssue): string {
+  const label = `glTF mesh ${issue.meshIndex} primitive ${issue.primitiveIndex}`;
+  if (issue.kind === 'missing-position') {
+    return `${label} has no POSITION attribute; the importer skips the primitive.`;
+  }
+  if (issue.kind === 'missing-position-accessor') {
+    return `${label} references POSITION accessor ${String(issue.accessorIndex)} which does not exist; the importer skips the primitive.`;
+  }
+  if (issue.kind === 'invalid-position-accessor-type') {
+    return `${label} references POSITION accessor ${String(issue.accessorIndex)} with invalid accessor type "${String(issue.accessorType)}"; the importer skips the primitive.`;
+  }
+  if (issue.kind === 'invalid-position-accessor-component-type') {
+    return (
+      `${label} references POSITION accessor ${String(issue.accessorIndex)} with unsupported ` +
+      `componentType ${String(issue.componentType)}; the importer skips the primitive.`
+    );
+  }
+  if (issue.kind === 'missing-position-buffer-view') {
+    return `${label} references POSITION accessor ${String(issue.accessorIndex)} whose bufferView is missing; the importer skips the primitive.`;
+  }
+  if (issue.kind === 'missing-index-accessor') {
+    return `${label} references index accessor ${String(issue.accessorIndex)} which does not exist; the importer skips the primitive.`;
+  }
+  if (issue.kind === 'invalid-index-accessor') {
+    return (
+      `${label} references index accessor ${String(issue.accessorIndex)} with type ` +
+      `${String(issue.accessorType)} / componentType ${String(issue.componentType)}; the importer skips the primitive.`
+    );
+  }
+  if (issue.kind === 'missing-index-buffer-view') {
+    return `${label} references index accessor ${String(issue.accessorIndex)} whose bufferView is missing; the importer skips the primitive.`;
+  }
+  return `${label} uses topology mode ${String(issue.mode)} but the authored accessor counts cannot produce any triangles; the importer skips the primitive.`;
+}
+
 function analyzeExtensions(
   gltf: GltfJson,
   selectedTextureSourceExtensions: ReadonlySet<string>,
@@ -1128,6 +1196,7 @@ function analyzePrimitives(
   let hasInstancedSkinnedOrMorphed = false;
   let hasIgnoredSkinAttributes = false;
   let hasIncompleteSkinAttributes = false;
+  const malformedPrimitives: GltfMalformedPrimitiveIssue[] = [];
   const meshNodesWithSkin = new Map<number, string[]>();
   const meshNodesWithoutSkin = new Map<number, string[]>();
   for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
@@ -1148,12 +1217,18 @@ function analyzePrimitives(
       const mode = primitive.mode ?? 4;
       const modeKey = String(mode);
       byMode.set(modeKey, (byMode.get(modeKey) ?? 0) + 1);
+      const supportedOrFallbackMode = SUPPORTED_GLTF_PRIMITIVE_MODES.has(mode);
       if (FALLBACK_GENERATED_PRIMITIVE_MODES.has(mode)) {
         fallbackGeneratedModes.add(modeKey);
         addSourcePath(issuePaths, `mode:${modeKey}`, `${primitivePath}.mode`);
       } else if (!SUPPORTED_GLTF_PRIMITIVE_MODES.has(mode)) {
         unsupportedModes.add(modeKey);
         addSourcePath(issuePaths, `mode:${modeKey}`, `${primitivePath}.mode`);
+      }
+      if (supportedOrFallbackMode) {
+        malformedPrimitives.push(
+          ...primitiveImportBlockers(gltf, meshIndex, primitiveIndex, primitive, primitivePath, mode),
+        );
       }
       for (const semantic of Object.keys(primitive.attributes ?? {})) {
         attributeSemantics.add(semantic);
@@ -1255,11 +1330,159 @@ function analyzePrimitives(
     hasInstancedSkinnedOrMorphed,
     hasIgnoredSkinAttributes,
     hasIncompleteSkinAttributes,
+    malformedPrimitives: malformedPrimitives.sort((a, b) =>
+      a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind)
+    ),
     hasVertexColors,
     ignoredVertexColorSets: sorted(ignoredVertexColorSets),
     hasUv1,
     issuePaths: sourcePathRecord(issuePaths),
   };
+}
+
+function primitiveImportBlockers(
+  gltf: GltfJson,
+  meshIndex: number,
+  primitiveIndex: number,
+  primitive: GltfPrimitive,
+  primitivePath: string,
+  mode: number,
+): GltfMalformedPrimitiveIssue[] {
+  const issues: GltfMalformedPrimitiveIssue[] = [];
+  const positionAccessorIndex = primitive.attributes?.POSITION;
+  if (positionAccessorIndex === undefined) {
+    issues.push({
+      kind: 'missing-position',
+      path: `${primitivePath}.attributes.POSITION`,
+      meshIndex,
+      primitiveIndex,
+      mode,
+    });
+    return issues;
+  }
+  const positionAccessor = gltf.accessors?.[positionAccessorIndex];
+  if (positionAccessor == null) {
+    issues.push({
+      kind: 'missing-position-accessor',
+      path: `${primitivePath}.attributes.POSITION`,
+      meshIndex,
+      primitiveIndex,
+      accessorIndex: positionAccessorIndex,
+      mode,
+    });
+    return issues;
+  }
+  if (accessorComponentCount(positionAccessor.type) === undefined) {
+    issues.push({
+      kind: 'invalid-position-accessor-type',
+      path: `${primitivePath}.attributes.POSITION`,
+      meshIndex,
+      primitiveIndex,
+      accessorIndex: positionAccessorIndex,
+      accessorType: String(positionAccessor.type),
+      mode,
+    });
+    return issues;
+  }
+  if (!floatAccessorComponentTypeIsReadableByImporter(positionAccessor.componentType)) {
+    issues.push({
+      kind: 'invalid-position-accessor-component-type',
+      path: `${primitivePath}.attributes.POSITION`,
+      meshIndex,
+      primitiveIndex,
+      accessorIndex: positionAccessorIndex,
+      componentType: positionAccessor.componentType,
+      mode,
+    });
+    return issues;
+  }
+  if (
+    positionAccessor.bufferView !== undefined &&
+    gltf.bufferViews?.[positionAccessor.bufferView] == null
+  ) {
+    issues.push({
+      kind: 'missing-position-buffer-view',
+      path: `${primitivePath}.attributes.POSITION`,
+      meshIndex,
+      primitiveIndex,
+      accessorIndex: positionAccessorIndex,
+      mode,
+    });
+    return issues;
+  }
+
+  const indexAccessorIndex = primitive.indices;
+  let indexCount: number | undefined;
+  if (indexAccessorIndex !== undefined) {
+    const indexAccessor = gltf.accessors?.[indexAccessorIndex];
+    if (indexAccessor == null) {
+      issues.push({
+        kind: 'missing-index-accessor',
+        path: `${primitivePath}.indices`,
+        meshIndex,
+        primitiveIndex,
+        accessorIndex: indexAccessorIndex,
+        mode,
+      });
+      return issues;
+    }
+    if (!indexAccessorIsReadableByImporter(indexAccessor)) {
+      issues.push({
+        kind: 'invalid-index-accessor',
+        path: `${primitivePath}.indices`,
+        meshIndex,
+        primitiveIndex,
+        accessorIndex: indexAccessorIndex,
+        accessorType: String(indexAccessor.type),
+        componentType: indexAccessor.componentType,
+        mode,
+      });
+      return issues;
+    }
+    if (
+      indexAccessor.bufferView !== undefined &&
+      gltf.bufferViews?.[indexAccessor.bufferView] == null
+    ) {
+      issues.push({
+        kind: 'missing-index-buffer-view',
+        path: `${primitivePath}.indices`,
+        meshIndex,
+        primitiveIndex,
+        accessorIndex: indexAccessorIndex,
+        mode,
+      });
+      return issues;
+    }
+    indexCount = indexAccessor.count;
+  }
+
+  if ((mode === 5 || mode === 6) && (indexCount ?? positionAccessor.count) < 3) {
+    issues.push({
+      kind: 'empty-triangulated-primitive',
+      path: primitivePath,
+      meshIndex,
+      primitiveIndex,
+      mode,
+    });
+  }
+
+  return issues;
+}
+
+function indexAccessorIsReadableByImporter(accessor: NonNullable<GltfJson['accessors']>[number]): boolean {
+  if (accessor.type !== 'SCALAR') return false;
+  return accessor.componentType === 5121 ||
+    accessor.componentType === 5123 ||
+    accessor.componentType === 5125;
+}
+
+function floatAccessorComponentTypeIsReadableByImporter(componentType: number): boolean {
+  return componentType === 5120 ||
+    componentType === 5121 ||
+    componentType === 5122 ||
+    componentType === 5123 ||
+    componentType === 5125 ||
+    componentType === 5126;
 }
 
 function analyzeUnrepresentableMaterialUvSets(
@@ -1826,7 +2049,16 @@ function animationTargetTrsComponentCount(path: string): number | undefined {
 
 function animationAccessorFloatCount(accessor: NonNullable<GltfJson['accessors']>[number]): number | undefined {
   try {
-    return accessor.count * typeComponentCount(accessor.type);
+    const componentCount = accessorComponentCount(accessor.type);
+    return componentCount === undefined ? undefined : accessor.count * componentCount;
+  } catch {
+    return undefined;
+  }
+}
+
+function accessorComponentCount(type: string): number | undefined {
+  try {
+    return typeComponentCount(type);
   } catch {
     return undefined;
   }

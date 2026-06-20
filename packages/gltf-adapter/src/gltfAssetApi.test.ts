@@ -2507,6 +2507,116 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     ]));
   });
 
+  it('reports primitive import blockers with compatibility source paths', () => {
+    const gltf = makeExternalTexturedGltf();
+    const shortPositionAccessor = gltf.accessors!.length;
+    const invalidTypeAccessor = shortPositionAccessor + 1;
+    const invalidComponentAccessor = shortPositionAccessor + 2;
+    const missingPositionBufferViewAccessor = shortPositionAccessor + 3;
+    const invalidIndexAccessor = shortPositionAccessor + 4;
+    const missingIndexBufferViewAccessor = shortPositionAccessor + 5;
+    gltf.accessors = [
+      ...gltf.accessors!,
+      { bufferView: 0, componentType: 5126, count: 2, type: 'VEC3' },
+      { bufferView: 0, componentType: 5126, count: 3, type: 'VEC9' as never },
+      { bufferView: 0, componentType: 999 as never, count: 3, type: 'VEC3' },
+      { bufferView: 99, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: 0, componentType: 5126, count: 3, type: 'SCALAR' },
+      { bufferView: 99, componentType: 5123, count: 3, type: 'SCALAR' },
+    ];
+    gltf.meshes![0]!.primitives = [
+      { attributes: {}, material: 0 },
+      { attributes: { POSITION: 99 }, material: 0 },
+      { attributes: { POSITION: invalidTypeAccessor }, material: 0 },
+      { attributes: { POSITION: invalidComponentAccessor }, material: 0 },
+      { attributes: { POSITION: missingPositionBufferViewAccessor }, material: 0 },
+      { attributes: { POSITION: 0 }, indices: 99, material: 0 },
+      { attributes: { POSITION: 0 }, indices: invalidIndexAccessor, material: 0 },
+      { attributes: { POSITION: 0 }, indices: missingIndexBufferViewAccessor, material: 0 },
+      { mode: 5, attributes: { POSITION: shortPositionAccessor }, material: 0 },
+    ];
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.primitives.malformedPrimitives).toHaveLength(9);
+    expect(report.primitives.malformedPrimitives).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'missing-position',
+        path: 'meshes[0].primitives[0].attributes.POSITION',
+      }),
+      expect.objectContaining({
+        kind: 'missing-position-accessor',
+        path: 'meshes[0].primitives[1].attributes.POSITION',
+        accessorIndex: 99,
+      }),
+      expect.objectContaining({
+        kind: 'invalid-position-accessor-type',
+        path: 'meshes[0].primitives[2].attributes.POSITION',
+        accessorIndex: invalidTypeAccessor,
+        accessorType: 'VEC9',
+      }),
+      expect.objectContaining({
+        kind: 'invalid-position-accessor-component-type',
+        path: 'meshes[0].primitives[3].attributes.POSITION',
+        accessorIndex: invalidComponentAccessor,
+        componentType: 999,
+      }),
+      expect.objectContaining({
+        kind: 'missing-position-buffer-view',
+        path: 'meshes[0].primitives[4].attributes.POSITION',
+        accessorIndex: missingPositionBufferViewAccessor,
+      }),
+      expect.objectContaining({
+        kind: 'missing-index-accessor',
+        path: 'meshes[0].primitives[5].indices',
+        accessorIndex: 99,
+      }),
+      expect.objectContaining({
+        kind: 'invalid-index-accessor',
+        path: 'meshes[0].primitives[6].indices',
+        accessorIndex: invalidIndexAccessor,
+        componentType: 5126,
+      }),
+      expect.objectContaining({
+        kind: 'missing-index-buffer-view',
+        path: 'meshes[0].primitives[7].indices',
+        accessorIndex: missingIndexBufferViewAccessor,
+      }),
+      expect.objectContaining({
+        kind: 'empty-triangulated-primitive',
+        path: 'meshes[0].primitives[8]',
+        mode: 5,
+      }),
+    ]));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'malformed.missing-position',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[0].attributes.POSITION',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'malformed.invalid-position-accessor-component-type',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[3].attributes.POSITION',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'malformed.missing-index-buffer-view',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[7].indices',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'malformed.empty-triangulated-primitive',
+        support: 'unsupported',
+        path: 'meshes[0].primitives[8]',
+      }),
+    ]));
+  });
+
   it('uses the backend promise ledger to rank textured assets by fidelity tier', () => {
     const report = analyzeGltfAsset(makeExternalTexturedGltf());
     const ranked = rankGltfBackends(report, 'fidelity');

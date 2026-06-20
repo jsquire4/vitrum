@@ -316,6 +316,12 @@
 > output-count mismatches appear as `malformedChannels` and backend
 > `support:"unsupported"` issues with the exact source path that the importer
 > later reports.
+> Malformed primitive blockers that the importer skips now have the same
+> preflight surface: missing `POSITION`, missing/unreadable accessor
+> references, missing referenced bufferViews, invalid index accessors, and empty
+> triangle strips/fans appear as `malformedPrimitives` and backend
+> `support:"unsupported"` primitive issues with exact `meshes[*].primitives[*]`
+> source paths.
 > Same-day pt-webgl2 skinning-warning follow-up: empty-bones skinned meshes
 > still render in rest pose, but scene ingestion now routes that fallback through
 > structured `pt-webgl2.skinned-mesh-empty-bones` warnings with the primitive id
