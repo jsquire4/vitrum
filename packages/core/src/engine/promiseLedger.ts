@@ -855,13 +855,19 @@ const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] =
   lighting: 'unsupported',
 });
 
-/** pt-webgpu mutations — native fast paths for all per-primitive mutation kinds;
- *  add/remove are fallback-rebuild (insert/evict forces a full BLAS/TLAS repack).
- *  resize and lighting are unsupported. */
+/** pt-webgpu mutations — geometry/transform/topology/emitter/env patches have
+ *  targeted native paths. Material scalar edits that live in `materialsBuffer`
+ *  also update one slot in-place, but material texture handles and descriptor-
+ *  resident fields (`alphaMode`/cutoff/opacity, AO/light/env intensity,
+ *  normal/bump/clearcoat-normal scale, anisotropy, layer normal descriptors)
+ *  fall back to a full scene repack so descriptor buffers and texture arrays
+ *  stay coherent. The coarse row is therefore `fallback-rebuild` rather than
+ *  `native`. Add/remove are fallback-rebuild (insert/evict forces a full
+ *  BLAS/TLAS repack). Resize and lighting are unsupported. */
 const PT_WEBGPU_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
   transform: 'native',
   positions: 'native',
-  material: 'native',
+  material: 'fallback-rebuild',
   emitter: 'native',
   topology: 'native',
   addPrimitive: 'fallback-rebuild',

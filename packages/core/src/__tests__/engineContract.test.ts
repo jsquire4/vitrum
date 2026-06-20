@@ -337,6 +337,14 @@ describe('backend promise ledger', () => {
     expect(webgpu.methodPromises.updateLighting).toBe(false);
   });
 
+  it('pins pt-webgpu material mutation as fallback-rebuild for descriptor-backed material edits', () => {
+    const webgpu = BACKEND_PROMISE_LEDGER['pt-webgpu'];
+
+    expect(webgpu.incrementalPatchSupport.material).toBe(true);
+    expect(webgpu.methodPromises.updatePrimitive).toBe(true);
+    expect(webgpu.supportDetails.mutations.material).toBe('fallback-rebuild');
+  });
+
   it('pins environment fidelity rows for DDGI SH walkaround versus path tracers', () => {
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.environments).toEqual({
       none: 'native',
