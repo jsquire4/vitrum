@@ -80,10 +80,10 @@ ReSTIR-PT variants with the tiled ranked Sobol rotation; dimension-assignment
 audit and equal-time RMSE promotion remain separate proof work. The caustic/photon lanes prove full-tier
 boot/render health for `pt/caustic-manifold`, `pt/caustic-photon`, and
 `pt/spectral+photon`; caustic radiometric convergence remains a separate A/B
-proof. The material-lobes lane pins full-tier scalar clearcoat, sheen,
-iridescence, anisotropy, and specular panels against a committed dzn golden; map
-furnace and radiometric promotion remain separate proof work. The light,
-directional, HDRI, and procedural-sky lanes pin dzn execution
+proof. The material-lobes lanes pin full-tier scalar and map-backed clearcoat,
+sheen, iridescence, anisotropy, and specular panels against committed dzn
+goldens; specialty-integrator radiometry and promotion remain separate proof
+work. The light, directional, HDRI, and procedural-sky lanes pin dzn execution
 for analytic emitters and environment modes across the relevant pt-webgpu
 full/lite and walkaround rows; reference-quality radiometric sweeps remain
 separate. The `wh/` lane pins all eleven walkaround behavioral rows on dzn,
@@ -92,7 +92,7 @@ glass-GI/transparent-OIT modes.
 
 ## What it covers
 
-### pt-webgpu configs (43)
+### pt-webgpu configs (44)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
@@ -117,6 +117,7 @@ glass-GI/transparent-OIT modes.
 | `pt/hdri-env` | — | synthetic flat-white HDRI environment |
 | `pt/procedural-sky` | — | Preetham procedural sky |
 | `pt/material-lobes` | — | full-tier scalar clearcoat/sheen/iridescence/anisotropy/specular panel golden |
+| `pt/material-lobe-maps` | — | full-tier map-backed clearcoat/sheen/iridescence/anisotropy/specular panel golden |
 | `pt/spectral+bdpt` | `spectral:true, bdpt:true` | combo |
 | `pt/lite+hdri` | `traceTier:'lite'` | lite + HDRI |
 | `pt/lite+point-light` | `traceTier:'lite'` | lite + point light |
@@ -144,9 +145,10 @@ The glTF rows are end-to-end import/engine smoke fixtures: they assert that the
 adapter preserves the named feature, boots the selected engine, uploads the scene,
 and produces finite non-black output. On lavapipe's WSL adapter, `pt-webgpu`
 auto-selects the lite tier because the adapter exposes only the lite WebGPU storage
-limits. The `pt/material-lobes` lane is collected on dzn full tier and covers
-scalar lobe render stability only; map-heavy furnace and specialty-integrator
-radiometric parity remain in the renderer fidelity proof queue.
+limits. The `pt/material-lobes` and `pt/material-lobe-maps` lanes are collected
+on dzn full tier and cover scalar plus CPU-readable map-backed lobe render
+stability; specialty-integrator radiometric parity remains in the renderer
+fidelity proof queue.
 
 The pt-webgpu rows print `tier=full|lite`. Use `--require-full-tier` for
 full-tier capture work; it fails selected non-lite pt-webgpu rows as `WRONG-TIER`

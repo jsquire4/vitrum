@@ -113,6 +113,7 @@ const EXPECTATION_TABLE = {
   "pt/hdri-env":          { expected: "ok" },
   "pt/procedural-sky":    { expected: "ok" },
   "pt/material-lobes":    { expected: "ok" },
+  "pt/material-lobe-maps": { expected: "ok" },
   "pt/spectral+bdpt":     { expected: "ok" },
   "pt/lite+hdri":         { expected: "ok" },
   "pt/lite+point-light":  { expected: "ok" },
@@ -195,6 +196,7 @@ const PT_CONFIGS = [
   { label: "pt/hdri-env",         eng: {},                                    scene: { hdri: true } },
   { label: "pt/procedural-sky",   eng: {},                                    scene: { sky: true } },
   { label: "pt/material-lobes",    eng: {},                                    scene: { materialLobes: true } },
+  { label: "pt/material-lobe-maps", eng: {},                                   scene: { materialLobeMaps: true } },
   { label: "pt/spectral+bdpt",    eng: { spectral: true, bdpt: true },        scene: {} },
   { label: "pt/lite+hdri",        eng: { traceTier: "lite" },                 scene: { hdri: true } },
   { label: "pt/lite+point-light", eng: { traceTier: "lite" },                 scene: { ptSmokeLight: "point" } },
@@ -278,6 +280,21 @@ const MATERIAL_LOBE_GOLDEN = {
   variants: {
     "dzn-full": {
       path: "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobes.dzn-full.png",
+      maxRmse: 8,
+      maxMeanAbs: 4,
+      maxAbs: 48,
+    },
+  },
+};
+
+const MATERIAL_LOBE_MAP_GOLDEN = {
+  path: "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobe-maps.png",
+  maxRmse: 8,
+  maxMeanAbs: 4,
+  maxAbs: 48,
+  variants: {
+    "dzn-full": {
+      path: "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobe-maps.dzn-full.png",
       maxRmse: 8,
       maxMeanAbs: 4,
       maxAbs: 48,
@@ -744,6 +761,26 @@ function makeMaterialLobePanel(id, centerX, material) {
   };
 }
 
+function mapTex(id, data, width = 2, height = 2) {
+  return { id, width, height, data: new Float32Array(data) };
+}
+
+function texRef(handle, patch = {}) {
+  return { handle, ...patch };
+}
+
+const TEX_TRANSFORM_A = {
+  offset: [0.04, 0.02],
+  scale: [0.92, 0.96],
+  rotation: 0.08,
+};
+
+const TEX_TRANSFORM_B = {
+  offset: [0.08, 0.05],
+  scale: [0.84, 0.90],
+  rotation: -0.12,
+};
+
 function buildPtMaterialLobeScene() {
   const primitives = [
     makeMaterialLobePanel("material-lobe-clearcoat", -0.70, {
@@ -795,6 +832,140 @@ function buildPtMaterialLobeScene() {
     emitters: [{
       kind: "rect-area",
       id: "material-lobe-softbox",
+      position: [0, 0.12, 1.2],
+      uAxis: [0, 0.36, 0],
+      vAxis: [0.72, 0, 0],
+      color: [1.0, 0.95, 0.86],
+      intensity: 18.0,
+      castShadow: false,
+    }],
+    environment: { kind: "none" },
+  };
+}
+
+function buildPtMaterialLobeMapScene() {
+  const clearcoatMap = mapTex("map-clearcoat-factor", [
+    1.00, 0.80, 0.35, 1,
+    0.55, 0.90, 0.45, 1,
+    0.25, 0.65, 0.85, 1,
+    0.75, 0.35, 0.60, 1,
+  ]);
+  const clearcoatRoughnessMap = mapTex("map-clearcoat-roughness", [
+    0.12, 0.08, 0.10, 1,
+    0.28, 0.24, 0.22, 1,
+    0.44, 0.38, 0.35, 1,
+    0.18, 0.16, 0.14, 1,
+  ]);
+  const clearcoatNormalMap = mapTex("map-clearcoat-normal", [
+    0.50, 0.50, 1.00, 1,
+    0.64, 0.48, 0.94, 1,
+    0.42, 0.58, 0.93, 1,
+    0.55, 0.62, 0.90, 1,
+  ]);
+  const sheenColorMap = mapTex("map-sheen-color", [
+    1.00, 0.32, 0.16, 1,
+    0.88, 0.48, 0.22, 1,
+    0.70, 0.22, 0.46, 1,
+    1.00, 0.70, 0.34, 1,
+  ]);
+  const sheenRoughnessMap = mapTex("map-sheen-roughness", [
+    0.12, 0.32, 0.52, 1,
+    0.22, 0.42, 0.62, 1,
+    0.34, 0.54, 0.74, 1,
+    0.18, 0.38, 0.58, 1,
+  ]);
+  const iridescenceMap = mapTex("map-iridescence-factor", [
+    0.25, 0.25, 0.25, 1,
+    0.70, 0.70, 0.70, 1,
+    1.00, 1.00, 1.00, 1,
+    0.45, 0.45, 0.45, 1,
+  ]);
+  const iridescenceThicknessMap = mapTex("map-iridescence-thickness", [
+    0.10, 0.20, 0.30, 1,
+    0.45, 0.55, 0.65, 1,
+    0.80, 0.70, 0.60, 1,
+    0.30, 0.40, 0.50, 1,
+  ]);
+  const anisotropyMap = mapTex("map-anisotropy", [
+    1.00, 0.50, 0.85, 1,
+    0.50, 1.00, 0.65, 1,
+    0.00, 0.50, 0.95, 1,
+    0.50, 0.00, 0.55, 1,
+  ]);
+  const specularColorMap = mapTex("map-specular-color", [
+    1.00, 0.42, 0.20, 1,
+    0.88, 0.60, 0.28, 1,
+    0.58, 0.78, 1.00, 1,
+    1.00, 0.74, 0.46, 1,
+  ]);
+  const specularIntensityMap = mapTex("map-specular-intensity", [
+    1.00, 1.00, 1.00, 1.00,
+    0.70, 0.70, 0.70, 0.70,
+    0.35, 0.35, 0.35, 0.35,
+    0.85, 0.85, 0.85, 0.85,
+  ]);
+
+  const primitives = [
+    makeMaterialLobePanel("material-lobe-map-clearcoat", -0.70, {
+      baseColor: [0.72, 0.72, 0.76],
+      roughness: 0.30,
+      metallic: 0.0,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.35,
+      clearcoatMap: texRef(clearcoatMap, { texCoord: 0, transform: TEX_TRANSFORM_A }),
+      clearcoatRoughnessMap: texRef(clearcoatRoughnessMap, { texCoord: 0, wrapS: "mirrored-repeat" }),
+      clearcoatNormalMap: texRef(clearcoatNormalMap, { texCoord: 0, transform: TEX_TRANSFORM_B }),
+      clearcoatNormalScale: 0.55,
+      specularIntensity: 0.8,
+    }),
+    makeMaterialLobePanel("material-lobe-map-sheen", -0.35, {
+      baseColor: [0.50, 0.26, 0.18],
+      roughness: 0.72,
+      metallic: 0.0,
+      sheen: 1.0,
+      sheenColor: [1.0, 1.0, 1.0],
+      sheenRoughness: 0.55,
+      sheenColorMap: texRef(sheenColorMap, { texCoord: 0, transform: TEX_TRANSFORM_B }),
+      sheenRoughnessMap: texRef(sheenRoughnessMap, { texCoord: 0, wrapT: "mirrored-repeat" }),
+      specularIntensity: 0.35,
+    }),
+    makeMaterialLobePanel("material-lobe-map-iridescence", 0.0, {
+      baseColor: [0.58, 0.62, 0.66],
+      roughness: 0.26,
+      metallic: 0.0,
+      iridescence: 1.0,
+      iridescenceIor: 1.55,
+      iridescenceThicknessRange: [120, 680],
+      iridescenceMap: texRef(iridescenceMap, { texCoord: 0, transform: TEX_TRANSFORM_A }),
+      iridescenceThicknessMap: texRef(iridescenceThicknessMap, { texCoord: 0, wrapS: "mirrored-repeat" }),
+      specularIntensity: 0.85,
+    }),
+    makeMaterialLobePanel("material-lobe-map-anisotropy", 0.35, {
+      baseColor: [0.30, 0.42, 0.72],
+      roughness: 0.28,
+      metallic: 0.12,
+      anisotropy: 1.0,
+      anisotropyRotation: 0.18,
+      anisotropyMap: texRef(anisotropyMap, { texCoord: 0, transform: TEX_TRANSFORM_B }),
+      specularIntensity: 0.9,
+    }),
+    makeMaterialLobePanel("material-lobe-map-specular", 0.70, {
+      baseColor: [0.72, 0.70, 0.62],
+      roughness: 0.20,
+      metallic: 0.0,
+      specularIntensity: 1.0,
+      specularColor: [1.0, 1.0, 1.0],
+      specularColorMap: texRef(specularColorMap, { texCoord: 0, transform: TEX_TRANSFORM_A }),
+      specularIntensityMap: texRef(specularIntensityMap, { texCoord: 0, wrapT: "mirrored-repeat" }),
+      clearcoat: 0.16,
+    }),
+  ];
+
+  return {
+    primitives,
+    emitters: [{
+      kind: "rect-area",
+      id: "material-lobe-map-softbox",
       position: [0, 0.12, 1.2],
       uAxis: [0, 0.36, 0],
       vAxis: [0.72, 0, 0],
@@ -1586,6 +1757,7 @@ async function buildGateScene(opts = {}) {
   if (opts.gltf) return buildGltfFixtureScene(opts.gltf);
   if (opts.cwbvhComplex) return buildCwbvhComplexScene();
   if (opts.materialLobes) return buildPtMaterialLobeScene();
+  if (opts.materialLobeMaps) return buildPtMaterialLobeMapScene();
   if (opts.ptSmokeLight) return buildPtSmokeLightScene(opts.ptSmokeLight);
   if (opts.mutation === "material") return buildMutationMaterialScene();
   if (opts.mutation === "environment") return buildMutationEnvironmentScene();
@@ -1881,6 +2053,7 @@ function hasNaN(pixels) {
 
 const GLTF_GOLDENS = {
   "pt/material-lobes": selectGolden(MATERIAL_LOBE_GOLDEN),
+  "pt/material-lobe-maps": selectGolden(MATERIAL_LOBE_MAP_GOLDEN),
   [GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label]: {
     path: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath,
     maxRmse: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.thresholds.maxRmse,

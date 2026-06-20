@@ -285,13 +285,16 @@ artifact via
 `npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier`
 (`tier=full`, zero GPU errors, golden RMSE 0.544); `npm run proof-check`
 validates `tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json`.
-2026-06-20 follow-up: `pt/material-lobes` now adds a focused scalar-lobe
-behavioral scene for clearcoat, sheen, iridescence, anisotropy, and dielectric
-specular panels. The lane has both a lavapipe golden and a dzn full-tier
-`dzn-full` golden/status artifact via
+2026-06-20 follow-up: `pt/material-lobes` and `pt/material-lobe-maps` now add
+focused scalar-lobe and CPU-readable map-backed behavioral scenes for clearcoat,
+sheen, iridescence, anisotropy, and dielectric specular panels. Both lanes have
+lavapipe goldens and dzn full-tier `dzn-full` golden/status artifacts via
 `npm run behavioral-gate:dzn -- --filter material-lobes --require-full-tier`
-(`tier=full`, zero GPU errors, golden RMSE 0.000). Treat broader map-heavy
-material furnace and radiometric A/B as the remaining validation work.
+and
+`npm run behavioral-gate:dzn -- --filter material-lobe-maps --require-full-tier`
+(`tier=full`, zero GPU errors, golden RMSE 0.000). Treat broader
+specialty-integrator and radiometric A/B promotion as the remaining validation
+work.
 
 Allowed work:
 
@@ -520,7 +523,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | Baseline/lite/spectral/skinned/analytic execution | pt-webgpu/walkaround | Focused dzn status now proves default pt/walkaround, explicit pt-webgpu lite fallback, spectral combos, skinned/glTF-skinned animation, and full-tier analytic sphere lanes boot/render finite non-black with zero GPU errors. The dzn status checker now fails if any real behavioral-gate label lacks committed coverage. Remaining work is reference-quality or radiometric promotion where applicable. |
 | Analytic emitter/environment proof | pt-webgpu/walkaround | Focused dzn status now proves point/disc/spot/directional, HDRI, and procedural-sky lanes boot/render finite non-black with zero GPU errors on their selected full/lite/walkaround rows. Remaining work is reference-quality radiometric sweep coverage. |
 | Walkaround behavioral matrix | walkaround | The broad `behavioral-gate:dzn -- --filter wh/ --require-full-tier` aggregate is host-blocked on this WSL/dzn runner, but each walkaround row now has an individual committed PASS status artifact (`wh/default`, `wh/rcEnabled`, `wh/ppgEnabled`, `wh/gtao-off`, `wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`, `wh/rect-area-emitter`, `wh/directional-sun`, `wh/glass-gi`, `wh/transparent-oit`) with zero GPU errors, and `npm run behavioral-gate:dzn-status-check` verifies those shards. Remaining work is A/B quality proof, not boot/render validity. |
-| pt-webgpu full-tier material furnace | pt-webgpu | Scalar clearcoat/sheen/iridescence/aniso/specular full-tier capture is now covered by `pt/material-lobes` dzn golden proof. Remaining work is map-backed lobe reference renders plus specialty-integrator/radiometric A/B before promotion. |
+| pt-webgpu full-tier material furnace | pt-webgpu | Scalar and CPU-readable map-backed clearcoat/sheen/iridescence/aniso/specular full-tier captures are now covered by `pt/material-lobes` and `pt/material-lobe-maps` dzn golden proof. Remaining work is specialty-integrator/radiometric A/B before promotion. |
 | pt-webgl2 material furnace | pt-webgl2 | Thickness/SSS/procedural-sky/emissive panels against references. |
 | Rich-material GI | walkaround | A/B showing receiver-lobe material target improves or preserves correctness. |
 | Transparent OIT visual proof | walkaround | `wh/transparent-oit` now gives dzn boot/render proof for a fractional alpha-blend pane with sun, point-light, and finite-area lighting, while preserving the approximation warning. Remaining work is reference-quality visual/A-B proof for alpha shadow transmittance and layered-transport boundaries. |
