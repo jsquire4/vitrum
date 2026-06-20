@@ -4,6 +4,7 @@
 
 const statusUrl = new URL("./pt-webgl2-real-status.json", import.meta.url);
 const manifestUrl = new URL("../reference-renders/gltf-real-browser-pt-webgl2/manifest.json", import.meta.url);
+const requirePass = Deno.args.includes("--require-pass");
 
 function fail(message) {
   throw new Error(`[gltf-browser-proof-check] ${message}`);
@@ -56,6 +57,9 @@ if (status.verdict === "HOST-BLOCKED") {
         fail(`${row.assetId}: HOST-BLOCKED status must preserve the timeout reason`);
       }
     }
+  }
+  if (requirePass) {
+    fail("require-pass mode needs browser real glTF PASS; current status is HOST-BLOCKED at canvas-screenshot");
   }
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF lanes are fail-closed HOST-BLOCKED on this WSL Playwright host)");
 } else if (status.verdict === "PASS") {

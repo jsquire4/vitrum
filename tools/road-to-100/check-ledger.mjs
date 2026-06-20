@@ -80,6 +80,7 @@ if (!Array.isArray(metadata.requiredGreenGates) || !metadata.requiredGreenGates.
 }
 
 const road = await readText("plan/road-to-100.md");
+const packageJson = JSON.parse(await readText(PACKAGE_PATH));
 if (!road.includes('For this ledger, "100%" = everything fully implemented')) {
   fail("road-to-100.md must retain the explicit 100% definition");
 }
@@ -121,6 +122,23 @@ if (!road.includes("fidelity matrix tracks the active `pt-webgl2` / `pt-webgpu` 
 }
 if (!road.includes("attachVitrum.auto-recreate-scene-snapshot-unavailable")) {
   fail("road-to-100.md must retain the attachVitrum no-live-scene-snapshot warning follow-up");
+}
+if (!road.includes("`npm run gltf-browser-proof-check:required` is the promotion gate and fails on")) {
+  fail("road-to-100.md must retain strict browser glTF promotion-gate wording");
+}
+if (packageJson.scripts?.["gltf-browser-proof-check:required"] !== "deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs --require-pass") {
+  fail("package.json must retain the strict browser glTF required proof script");
+}
+
+const gltfBrowserProofCheck = await readText("tools/gltf-browser-proof/check-status.mjs");
+for (const needle of [
+  "const requirePass = Deno.args.includes(\"--require-pass\");",
+  "require-pass mode needs browser real glTF PASS; current status is HOST-BLOCKED at canvas-screenshot",
+  "fail-closed HOST-BLOCKED on this WSL Playwright host",
+]) {
+  if (!gltfBrowserProofCheck.includes(needle)) {
+    fail(`gltf browser proof checker must retain fail-closed/default plus required-promotion mode: ${needle}`);
+  }
 }
 
 const ptWebgpuSource = await readText("packages/pt-webgpu/src/index.ts");
@@ -1074,7 +1092,6 @@ for (const needle of [
   }
 }
 
-const packageJson = JSON.parse(await readText(PACKAGE_PATH));
 const scripts = packageJson.scripts ?? {};
 if (scripts["road-to-100-source-check"] !== "deno run --sloppy-imports --allow-read tools/road-to-100/check-ledger.mjs") {
   fail("package.json must expose road-to-100-source-check");

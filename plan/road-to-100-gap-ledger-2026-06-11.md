@@ -26,7 +26,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
   ],
   "openPromotionBuckets": [
     "GPU material-furnace and reference-render sweeps",
-    "broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens",
+    "broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens; npm run gltf-browser-proof-check:required fails on HOST-BLOCKED until real browser PNG/golden PASS exists",
     "GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT quality and radiometric A/B evidence",
     "browser and real-adapter validation outside WSL GPU smoke coverage",
     "explicit support-vs-permanent-unsupported decisions for displacement, spectral, full transparent transport, production neural checkpoint, and NRC default tier"

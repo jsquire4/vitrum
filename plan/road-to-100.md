@@ -1894,7 +1894,10 @@ instead of falsely reporting an empty extension set. On this WSL Playwright host
 all three pages reach capture readiness, but Playwright canvas screenshot
 capture still times out; the status records each row as `HOST-BLOCKED` at
 `canvas-screenshot`. Browser PNG proof remains queued for a host that can
-capture WebGL2 canvases.
+capture WebGL2 canvases. The default `npm run proof-check` lane intentionally
+keeps this fail-closed WSL status green, while
+`npm run gltf-browser-proof-check:required` is the promotion gate and fails on
+`HOST-BLOCKED` until the same rows record real PNG/golden `PASS` results.
 
 Validation note: the walkaround-hybrid native-Deno behavioral lane is
 fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the

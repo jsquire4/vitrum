@@ -92,14 +92,17 @@ autograd through the whole kernel breaks at those jumps. Production approaches:
 
 These change the cost estimate and pin the main risk:
 
-1. **The optimizer half is already built.** The NRC fused MLP kernel (landed this session)
-   is a WGSL training kernel with a *full backward pass*: i32 fixed-point atomic gradient
-   accumulation, mixed-precision Adam, workgroup-resident tiles, validated GPU==CPU-analytic
-   to ~9.5e-7. That is exactly the gradient-accumulation + optimizer + WGSL-autodiff
-   discipline the inverse loop needs. **What remains unbuilt is the adjoint *integrator*** —
-   differentiating the path-trace kernel itself — which is the hard half. The roadmap's
-   "8–12 weeks" estimate should be revised *down* now that the optimizer/grad plumbing
-   exists and is proven (`packages/walkaround-hybrid/src/neural/nrc/`).
+1. **The optimizer half is already built, and a scoped Phase-1 adjoint now exists.**
+   The NRC fused MLP kernel is a WGSL training kernel with a *full backward pass*:
+   i32 fixed-point atomic gradient accumulation, mixed-precision Adam, workgroup-resident
+   tiles, validated GPU==CPU-analytic to ~9.5e-7. `pt-webgpu` also now has a scoped
+   path-replay inverse pass for continuous direct-light shading gradients. What remains
+   unbuilt is broad adjoint parity: indirect/path-space derivatives, stochastic path
+   reuse, spectral/volume/layered material gradients, transmission/thickness/displacement,
+   and the visibility-discontinuity cases that need finite-difference, reparameterization,
+   or explicit unsupported diagnostics beyond Phase 1. The old "8-12 weeks" estimate
+   should be read as the broader parity project, not the current scoped adjoint baseline
+   (`packages/walkaround-hybrid/src/neural/nrc/`, `packages/pt-webgpu/src/inverse/`).
 
 2. **The memory wall forces path replay in-browser.** A backward/adjoint pass needs per-pixel
    path state to replay against. The BDPT eye-stack (also this session) is direct evidence of
