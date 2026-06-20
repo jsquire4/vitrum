@@ -1108,7 +1108,7 @@ function pathReplayEmitterReceiverSceneIssue(
 function pathReplayEmitterReceiverMaterialIssue(
   material: MaterialSpec,
 ): PathReplayMaterialIssue | null {
-  const common = materialIssueCommon(material, { allowIridescence: false, allowAnisotropy: true });
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
@@ -1131,6 +1131,9 @@ function pathReplayMaterialIssue(
   }
   if (field === 'lightMapIntensity') {
     return materialIssueForLightMapIntensity(material);
+  }
+  if (field === 'envMapIntensity') {
+    return materialIssueForEnvMapIntensity(material);
   }
   if (field === 'iridescence' || field === 'iridescenceIor' || field === 'iridescenceThicknessRange') {
     return materialIssueForIridescence(material);
@@ -1204,6 +1207,24 @@ function materialIssueForLightMapIntensity(
   const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
   if (common != null) return common;
   const maps = listPathReplayPrimaryEmissionUnsupportedMaps(material);
+  if (maps.length > 0) {
+    return materialMapIssue(maps);
+  }
+  return null;
+}
+
+function materialIssueForEnvMapIntensity(
+  material: MaterialSpec,
+): PathReplayMaterialIssue | null {
+  if (material.shadingModel === 'unlit') {
+    return {
+      message: 'unlit materials do not evaluate environment direct-light BRDF intensity',
+      details: { reason: 'unlit' },
+    };
+  }
+  const common = materialIssueCommon(material, { allowIridescence: true, allowAnisotropy: true });
+  if (common != null) return common;
+  const maps = listPathReplayTransportOrGeometryMaps(material);
   if (maps.length > 0) {
     return materialMapIssue(maps);
   }

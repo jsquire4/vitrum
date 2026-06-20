@@ -1315,12 +1315,17 @@ fn directLightBrdfValue(
   sheen: f32,
   sheenRoughness: f32,
   sheenColor: vec3f,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
   anisotropy: f32,
   anisotropyRotation: f32,
 ) -> vec3f {
-  return adjointEvaluateBrdfWithAnisotropy(
+  return adjointEvaluateBrdfWithAnisotropyAndIridescence(
     baseColor, roughness, metallic, n, wo, wi,
     anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) +
     adjointClearcoatLobe(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi) +
     adjointSheenLobe(sheen, sheenRoughness, sheenColor, n, wo, wi);
@@ -1352,6 +1357,7 @@ fn directLightContributionValue(
   return directLightBrdfValue(
     baseColor, roughness, metallic, n, clearcoatNormal, wo, wi, specularColor, specularIntensity,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    0.0, 1.3, 0.0, 0.0,
     anisotropy, anisotropyRotation,
   ) * nDotL * Li;
 }
@@ -1712,6 +1718,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
           effectiveAnisotropy, effectiveAnisotropyRotation,
         );
         scatterEmitterRadianceGradient(
@@ -1788,6 +1795,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
           effectiveAnisotropy, effectiveAnisotropyRotation,
         );
         scatterEmitterRadianceGradient(
@@ -1870,6 +1878,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
           effectiveAnisotropy, effectiveAnisotropyRotation,
         );
         scatterEmitterRadianceGradient(
@@ -1968,6 +1977,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
           effectiveAnisotropy, effectiveAnisotropyRotation,
         );
         scatterEmitterRadianceGradient(
@@ -2069,6 +2079,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         let brdfValue = directLightBrdfValue(
           effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
           effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+          effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
           effectiveAnisotropy, effectiveAnisotropyRotation,
         );
         scatterEmitterRadianceGradient(
@@ -2143,6 +2154,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
           let brdfValue = directLightBrdfValue(
             effectiveBaseColor, effectiveRoughness, effectiveMetallic, n, clearcoatNormal, wo, wi, effectiveSpecularColor, effectiveSpecularIntensity,
             effectiveClearcoat, effectiveClearcoatRoughness, sheen, effectiveSheenRoughness, effectiveSheenColor,
+            effectiveIridescence, iridescenceIor, effectiveIridescenceThicknessMin, effectiveIridescenceThicknessMax,
             effectiveAnisotropy, effectiveAnisotropyRotation,
           );
           gEnvMapIntensity = gEnvMapIntensity + dot(dLoss_dR, brdfValue * (nDotL * envLiPerUnitIntensity));

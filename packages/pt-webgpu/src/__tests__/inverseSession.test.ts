@@ -1287,6 +1287,39 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps emitter path-replay when receiver materials use replayed iridescence maps', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                iridescence: 0.65,
+                iridescenceIor: 1.45,
+                iridescenceThicknessRange: [120, 420],
+                iridescenceMap: { handle: { width: 1, height: 1, data: new Float32Array([0.75, 1, 1, 1]) } },
+                iridescenceThicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 0.5, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'emitters.lamp.intensity', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      path: 'emitters.lamp.intensity',
+    }));
+    session.dispose();
+  });
+
   it('keeps path-replay for camera-direct emissive params with an emissiveMap', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -2295,6 +2328,45 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     }));
     expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
       code: 'path-replay-unsupported-lighting',
+    }));
+    session.dispose();
+  });
+
+  it('keeps envMapIntensity path-replay when the receiver uses iridescence maps', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [],
+      environment: { kind: 'hdri', hdri: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                envMapIntensity: 0.35,
+                iridescence: 0.65,
+                iridescenceIor: 1.45,
+                iridescenceThicknessRange: [120, 420],
+                iridescenceMap: { handle: { width: 1, height: 1, data: new Float32Array([0.75, 1, 1, 1]) } },
+                iridescenceThicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 0.5, 1, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(1) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.envMapIntensity', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).not.toContainEqual(expect.objectContaining({
+      path: 'materials.panel.envMapIntensity',
     }));
     session.dispose();
   });

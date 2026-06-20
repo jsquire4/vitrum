@@ -497,13 +497,58 @@ fn adjointEvaluateBrdfWithAnisotropy(
   specularColor: vec3f,
   specularIntensity: f32,
 ) -> vec3f {
+  let f0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  return adjointEvaluateBrdfWithAnisotropyF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, f0,
+  );
+}
+
+fn adjointEvaluateBrdfWithAnisotropyAndIridescence(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+) -> vec3f {
+  let baseF0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  let h = safe_normalize(wi + wo);
+  let vDotH = clamp(max(dot(wo, h), 0.0), 0.0, 1.0);
+  let thicknessNm = mix(iridescenceThicknessMin, iridescenceThicknessMax, vDotH);
+  let iridF0 = adjointEvalIridescence(1.0, iridescenceIor, vDotH, thicknessNm, baseF0);
+  let f0 = mix(baseF0, iridF0, clamp(iridescence, 0.0, 1.0));
+  return adjointEvaluateBrdfWithAnisotropyF0(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, f0,
+  );
+}
+
+fn adjointEvaluateBrdfWithAnisotropyF0(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  f0: vec3f,
+) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   let nDotV = max(dot(normal, wo), 0.0);
   if (nDotL <= 1e-5 || nDotV <= 1e-5) { return vec3f(0.0); }
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 0.0);
-  let f0 = adjointMaterialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
   let f = fresnelSchlick(vDotH, f0);
   let diff = (vec3f(1.0) - f) * (1.0 - metallic) * baseColor * INV_PI;
   if (anisotropy <= 1e-4) {
