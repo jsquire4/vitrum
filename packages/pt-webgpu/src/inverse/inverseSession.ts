@@ -357,6 +357,7 @@ export class PtWebgpuInverseSession implements InverseSession {
   readonly #method: InverseGradientMethod;
   readonly #diagnostics: readonly InverseSessionDiagnostic[];
   readonly #pathReplaySlotEligible: readonly boolean[];
+  readonly #pathReplayShaderSlotEligible: readonly boolean[];
   readonly #usesPartialPathReplay: boolean;
   readonly #samplesPerStep: number;
   readonly #fdEpsilon: number;
@@ -469,6 +470,12 @@ export class PtWebgpuInverseSession implements InverseSession {
           ).length === 0,
         )
       : this.#slots.map(() => false);
+    this.#pathReplayShaderSlotEligible = canUseScopedAdjoint
+      ? this.#slots.map((slot, index) =>
+          this.#pathReplaySlotEligible[index] === true &&
+          !isPathReplayZeroGradientSlot(scene, slot),
+        )
+      : this.#slots.map(() => false);
     this.#usesPartialPathReplay =
       this.#method === 'finite-difference' &&
       canUseScopedAdjoint &&
@@ -535,32 +542,32 @@ export class PtWebgpuInverseSession implements InverseSession {
       // (Method resolution already guaranteed the hook + adjoint-eligibility for
       // every slot included in `replaySlots`.)
       grad = new Float32Array(this.#flat.length);
-      const replaySlots = this.#method === 'path-replay'
-        ? this.#slots
-        : this.#slots.filter((_slot, index) => this.#pathReplaySlotEligible[index] === true);
-      const adjointGrad = await this.#hooks.computeAdjointGradient!({
-        dLoss_dRendered,
-        channels: base.channels,
-        width,
-        height,
-        samples: this.#samplesPerStep,
-        params: replaySlots.map((s) => ({
-          domain: s.target.domain,
-          id: s.target.id,
-          field: s.target.field,
-          offset: s.offset,
-          length: s.length,
-        })),
-        gradientLength: this.#flat.length,
-      });
-      if (adjointGrad.length !== this.#flat.length) {
-        throw new Error(
-          `InverseSession.step: adjoint gradient length ${adjointGrad.length} ≠ ` +
-            `parameter length ${this.#flat.length}.`,
-        );
-      }
-      for (const slot of replaySlots) {
-        grad.set(adjointGrad.subarray(slot.offset, slot.offset + slot.length), slot.offset);
+      const replaySlots = this.#slots.filter((_slot, index) => this.#pathReplayShaderSlotEligible[index] === true);
+      if (replaySlots.length > 0) {
+        const adjointGrad = await this.#hooks.computeAdjointGradient!({
+          dLoss_dRendered,
+          channels: base.channels,
+          width,
+          height,
+          samples: this.#samplesPerStep,
+          params: replaySlots.map((s) => ({
+            domain: s.target.domain,
+            id: s.target.id,
+            field: s.target.field,
+            offset: s.offset,
+            length: s.length,
+          })),
+          gradientLength: this.#flat.length,
+        });
+        if (adjointGrad.length !== this.#flat.length) {
+          throw new Error(
+            `InverseSession.step: adjoint gradient length ${adjointGrad.length} ≠ ` +
+              `parameter length ${this.#flat.length}.`,
+          );
+        }
+        for (const slot of replaySlots) {
+          grad.set(adjointGrad.subarray(slot.offset, slot.offset + slot.length), slot.offset);
+        }
       }
       if (this.#usesPartialPathReplay) {
         await this.#fillFiniteDifferenceGradient(
@@ -747,6 +754,9 @@ function diagnosePathReplaySlot(
   if (target.domain !== 'materials') {
     return diagnosePathReplayEmitterSlot(scene, slot, geometryCapabilities, renderContext);
   }
+  if (isPathReplayZeroGradientSlot(scene, slot)) {
+    return [];
+  }
   if (!ADJOINT_ELIGIBLE_FIELDS.has(target.field)) {
     const finiteDifferenceOnlyIssue = pathReplayFiniteDifferenceOnlyFieldIssue(target.field);
     if (finiteDifferenceOnlyIssue != null) {
@@ -827,6 +837,15 @@ function diagnosePathReplaySlot(
     }
   }
   return [];
+}
+
+function isPathReplayZeroGradientSlot(scene: Scene, slot: ParamSlot): boolean {
+  const target = slot.target;
+  if (target.domain !== 'materials') return false;
+  if (target.field !== 'opacity' && target.field !== 'alphaCutoff') return false;
+  const prim = findPrimitive(scene, target.id);
+  if (prim == null) return false;
+  return (prim.material.alphaMode ?? 'opaque') === 'opaque';
 }
 
 function pathReplayFiniteDifferenceOnlyFieldIssue(

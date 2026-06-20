@@ -65,6 +65,38 @@ describe('pickPrimitiveCpu (pt-webgpu perspective)', () => {
     expect(result).toBe('B');
   });
 
+  it('skips indexed triangles that reference vertices outside the position buffer', () => {
+    const malformed: MeshPrimitive = {
+      kind: 'mesh',
+      id: 'bad',
+      positions: new Float32Array([
+        10, 10, 0,
+        -1, -1, 0,
+        1, -1, 0,
+      ]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      indices: new Uint32Array([999, 1, 2]),
+      material: DUMMY_MAT,
+    };
+    expect(pickPrimitiveCpu(makeScene(malformed), CAMERA, W / 2, H / 2, W, H)).toBeNull();
+  });
+
+  it('skips triangles with non-finite vertex positions', () => {
+    const malformed: MeshPrimitive = {
+      kind: 'mesh',
+      id: 'nan',
+      positions: new Float32Array([
+        0, 0, 0,
+        -1, -1, 0,
+        1, Number.NaN, 0,
+      ]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      indices: new Uint32Array([0, 1, 2]),
+      material: DUMMY_MAT,
+    };
+    expect(pickPrimitiveCpu(makeScene(malformed), CAMERA, W / 2, H / 2, W, H)).toBeNull();
+  });
+
   it('picks an analytic sphere at the origin', () => {
     const sphere: AnalyticPrimitive = {
       kind: 'analytic',

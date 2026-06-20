@@ -1938,6 +1938,58 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps opaque alpha scalars on path-replay as zero-gradient lanes without FD probes', async () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'opaque',
+                opacity: 0.25,
+                alphaCutoff: 0.9,
+              },
+            }
+          : pr,
+      ),
+    };
+    let adjointCalled = false;
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async () => {
+        adjointCalled = true;
+        return new Float32Array(2);
+      },
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.opacity', kind: 'scalar' },
+        { path: 'materials.panel.alphaCutoff', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    const before = fake.renderCount;
+    const result = await session.step();
+    expect(fake.renderCount - before).toBe(1);
+    expect(adjointCalled).toBe(false);
+    expect(result.gradient).toEqual([
+      [expect.closeTo(0, 6)],
+      [expect.closeTo(0, 6)],
+    ]);
+    expect(session.currentValues()).toEqual([
+      [expect.closeTo(0.25, 6)],
+      [expect.closeTo(0.9, 6)],
+    ]);
+    session.dispose();
+  });
+
   it('keeps opaque-material baseColor on path-replay when opacity is inert', () => {
     const fake = makeFakeEngine();
     fake.scene = {

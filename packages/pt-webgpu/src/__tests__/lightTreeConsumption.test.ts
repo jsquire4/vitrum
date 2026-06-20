@@ -51,9 +51,12 @@ describe('WS2 — light-tree WGSL consumption + gating', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = 1.0 / lt.pdf;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('lightSelectInvPdf = f32(lightCount);');
     // EVERY NEE branch compensates the selection OUTSIDE the MIS heuristic by
-    // multiplying its contribution by lightSelectInvPdf (so the mean is
-    // independent of the selection pdf — only the variance changes).
-    expect(PT_WEBGPU_TRACE_WGSL).toMatch(/\* lightSelectInvPdf;/);
+    // multiplying its contribution by directLightingScale. Ordinary renders use
+    // lightSelectInvPdf; inverse summed-direct renders pin the scale to 1.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'let directLightingScale = select(lightSelectInvPdf, 1.0, sumDirectLighting);',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toMatch(/\* directLightingScale;/);
   });
 
   it('FULL trace accumulates a fully-normalized directLi (no leftover unconditional uniform compensation)', () => {
@@ -69,7 +72,11 @@ describe('WS2 — light-tree WGSL consumption + gating', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('var<storage, read> lightTree');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('fn sampleLightTree(');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('lightSelectInvPdf');
-    // Lite keeps its own uniform pick (separate kernelLite.wgsl).
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('radiance = radiance + directLi * f32(lightCount);');
+    // Lite keeps its own uniform pick (separate kernelLite.wgsl) and shares the
+    // inverse summed-direct scale switch.
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
+      'let directLightingScale = select(f32(lightCount), 1.0, sumDirectLighting);',
+    );
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('radiance = radiance + directLi * directLightingScale;');
   });
 });

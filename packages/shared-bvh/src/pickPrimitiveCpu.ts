@@ -103,9 +103,31 @@ function raySphere(ray: Ray, center: V3, radius: number): number | null {
 }
 
 // ── per-primitive intersection ───────────────────────────────────────────────
+function vertexCount(positions: Float32Array): number {
+  return Math.floor(positions.length / 3);
+}
+
 /** Read + world-transform vertex `i`'s position from a flat xyz array. */
-function vert(positions: Float32Array, i: number, transform: Mat4 | undefined): V3 {
-  return transformPoint(transform, [positions[i * 3] ?? 0, positions[i * 3 + 1] ?? 0, positions[i * 3 + 2] ?? 0]);
+function vert(positions: Float32Array, i: number, transform: Mat4 | undefined): V3 | null {
+  const x = positions[i * 3];
+  const y = positions[i * 3 + 1];
+  const z = positions[i * 3 + 2];
+  if (typeof x !== 'number' || typeof y !== 'number' || typeof z !== 'number') return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+  return transformPoint(transform, [x, y, z]);
+}
+
+function validTriangleIndices(
+  positions: Float32Array,
+  i0: number,
+  i1: number,
+  i2: number,
+): boolean {
+  const count = vertexCount(positions);
+  return Number.isInteger(i0) && Number.isInteger(i1) && Number.isInteger(i2) &&
+    i0 >= 0 && i0 < count &&
+    i1 >= 0 && i1 < count &&
+    i2 >= 0 && i2 < count;
 }
 
 function intersectTriangleSoup(
@@ -115,12 +137,17 @@ function intersectTriangleSoup(
   ray: Ray,
 ): number | null {
   let best: number | null = null;
-  const triCount = indices != null ? (indices.length / 3) | 0 : (positions.length / 9) | 0;
+  const triCount = indices != null ? Math.floor(indices.length / 3) : Math.floor(vertexCount(positions) / 3);
   for (let t = 0; t < triCount; t++) {
-    const i0 = (indices != null ? indices[t * 3] : t * 3) ?? 0;
-    const i1 = (indices != null ? indices[t * 3 + 1] : t * 3 + 1) ?? 0;
-    const i2 = (indices != null ? indices[t * 3 + 2] : t * 3 + 2) ?? 0;
-    const hit = rayTriangle(ray, vert(positions, i0, transform), vert(positions, i1, transform), vert(positions, i2, transform));
+    const i0 = indices != null ? indices[t * 3]! : t * 3;
+    const i1 = indices != null ? indices[t * 3 + 1]! : t * 3 + 1;
+    const i2 = indices != null ? indices[t * 3 + 2]! : t * 3 + 2;
+    if (!validTriangleIndices(positions, i0, i1, i2)) continue;
+    const v0 = vert(positions, i0, transform);
+    const v1 = vert(positions, i1, transform);
+    const v2 = vert(positions, i2, transform);
+    if (v0 == null || v1 == null || v2 == null) continue;
+    const hit = rayTriangle(ray, v0, v1, v2);
     if (hit != null && (best == null || hit < best)) best = hit;
   }
   return best;

@@ -97,6 +97,8 @@ export async function loadGltfWithEngine(
   options: LoadGltfWithEngineOptions = {},
 ): Promise<GltfForEngineResult<EngineWithBackendId>> {
   const { engineOptions, ...adapterOptions } = options;
+  const preferredAdapterBackend =
+    adapterOptions.backend ?? backendSelectionForExplicitPrefer(engineOptions?.prefer);
   if (adapterOptions.engine != null) {
     const { engine, attachScene, ...loadOptions } = adapterOptions;
     const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
@@ -125,6 +127,7 @@ export async function loadGltfWithEngine(
   let runtimeProfileId: GltfBackendProfileId | undefined;
   const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
     ...adapterOptions,
+    ...(preferredAdapterBackend !== undefined ? { backend: preferredAdapterBackend } : {}),
     engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     createEngine: async ({ scene, backend, asset, options: createOptions }) => {
       runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
@@ -408,4 +411,20 @@ function preferForSelectedBackend(
   if (backend === 'pt-webgpu') return 'quality-webgpu';
   if (backend === 'pt-webgl2') return 'quality';
   return fallback ?? 'auto';
+}
+
+function backendSelectionForExplicitPrefer(
+  prefer: EnginePreference | undefined,
+): GltfEngineSelection | undefined {
+  switch (prefer) {
+    case 'quality':
+      return 'pt-webgl2';
+    case 'quality-webgpu':
+      return 'pt-webgpu';
+    case 'realtime':
+      return 'walkaround-hybrid';
+    case 'auto':
+    case undefined:
+      return undefined;
+  }
 }

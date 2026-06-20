@@ -113,6 +113,15 @@ const mocks = vi.hoisted(() => {
     })),
     attachEngine,
     loadGltfForEngine: vi.fn(async (_input: unknown, options: Record<string, unknown>) => {
+      const requested = options['backend'] as
+        | 'pt-webgpu'
+        | 'pt-webgpu-lite'
+        | 'pt-webgl2'
+        | 'walkaround-hybrid'
+        | undefined;
+      const selectedBackend = requested === 'pt-webgpu-lite'
+        ? 'pt-webgpu'
+        : requested ?? state.selectedBackend;
       const factory = options['createEngine'] as
         | ((args: { scene: unknown; backend: string; asset: unknown; options: object }) => Promise<unknown>)
         | undefined;
@@ -122,13 +131,13 @@ const mocks = vi.hoisted(() => {
         ? undefined
         : await factory({
           scene,
-          backend: state.selectedBackend,
+          backend: selectedBackend,
           asset,
           options: factoryOptions,
         });
       const actualBackend = (
         engine as { readonly backendId?: 'pt-webgpu' | 'pt-webgl2' | 'walkaround-hybrid' } | undefined
-      )?.backendId ?? state.selectedBackend;
+      )?.backendId ?? selectedBackend;
       return {
         asset,
         backend: actualBackend,
@@ -243,6 +252,25 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
       recommendedHeroBackend: 'pt-webgpu-lite',
       limits: Object.freeze({}),
     });
+  });
+
+  it('passes explicit engine preference into glTF backend selection before adapter recommendations', async () => {
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engineOptions: {
+          canvas: {} as HTMLCanvasElement,
+          prefer: 'quality',
+        },
+      }),
+    ).resolves.toMatchObject({ attached: true });
+
+    expect(mocks.loadGltfForEngine).toHaveBeenCalledWith(
+      'asset.glb',
+      expect.objectContaining({ backend: 'pt-webgl2' }),
+    );
+    expect(mocks.createEngine).toHaveBeenCalledWith(expect.objectContaining({
+      prefer: 'quality',
+    }));
   });
 
   it('rejects reject-degraded glTF loads when selected pt-webgpu is lite tier', async () => {

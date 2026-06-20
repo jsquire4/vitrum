@@ -1086,6 +1086,8 @@ export class HybridEngine implements Engine {
         readonly id?: string;
         readonly kind: string;
         readonly material?: Record<string, unknown>;
+        readonly positions?: ArrayLike<number> | undefined;
+        readonly colors?: ArrayLike<number> | undefined;
       }>,
     );
     this._warnApproximateAlphaBlendPrimitiveIds(alphaBlendApproxIds, 'setScene');
