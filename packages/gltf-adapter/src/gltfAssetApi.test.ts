@@ -2247,7 +2247,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       },
     };
     gltf.animations = [{
-      samplers: [{ input: 2, output: 3, interpolation: 'STEP' }],
+      samplers: [{ input: 2, output: 3, interpolation: 'BEZIER' as never }],
       channels: [
         { sampler: 0, target: { node: 0, path: 'translation' } },
         { sampler: 0, target: { node: 0, path: 'pointer' as never } },
@@ -2281,9 +2281,11 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(report.animations.paths).toEqual(['pointer', 'translation']);
     expect(report.animations.unsupportedTargetPaths).toEqual(['pointer']);
     expect(report.animations.issuePaths).toEqual({
+      'degradedInterpolation:BEZIER': ['animations[0].samplers[0].interpolation'],
       'unsupportedTargetPath:pointer': ['animations[0].channels[1].target.path'],
     });
-    expect(report.animations.interpolations).toEqual(['STEP']);
+    expect(report.animations.interpolations).toEqual(['BEZIER']);
+    expect(report.animations.degradedInterpolations).toEqual(['BEZIER']);
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(compatibility.issues.some((issue) =>
@@ -2308,6 +2310,12 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       name: 'target.path:pointer',
       support: 'unsupported',
       path: 'animations[0].channels[1].target.path',
+    }));
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'animation',
+      name: 'sampler.interpolation:BEZIER',
+      support: 'approximate',
+      path: 'animations[0].samplers[0].interpolation',
     }));
     const webgpuCompatibility = evaluateGltfBackendCompatibility(report, 'pt-webgpu');
     expect(webgpuCompatibility.issues.some((issue) =>

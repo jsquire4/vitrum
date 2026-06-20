@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (glTF animation compatibility truthfulness, 2026-06-20)
 
 - **Unsupported glTF animation target paths now surface during compatibility preflight:** `analyzeGltfAsset()` records non-core animation target paths such as extension/pointer channels with exact `animations[*].channels[*].target.path` source paths, and `evaluateGltfBackendCompatibility()` reports them as `category:"animation"` / `support:"unsupported"` issues. Import still skips those channels with the existing structured diagnostic; strict backend selection can now reject them before constructing an engine.
+- **Unknown glTF animation interpolation fallbacks now surface during compatibility preflight:** `analyzeGltfAsset()` records non-core sampler interpolation strings such as `BEZIER` under `degradedInterpolations` with exact `animations[*].samplers[*].interpolation` source paths, and `evaluateGltfBackendCompatibility()` reports them as `category:"animation"` / `support:"approximate"` issues. This matches the importer, which accepts the asset but falls back to `LINEAR` for those samplers.
 
 ### Fixed (pt-webgpu inverse diagnostic specificity, 2026-06-20)
 

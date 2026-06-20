@@ -125,6 +125,7 @@ export interface GltfAnimationFeatureReport {
   readonly paths: readonly string[];
   readonly unsupportedTargetPaths: readonly string[];
   readonly interpolations: readonly string[];
+  readonly degradedInterpolations: readonly string[];
   readonly targetNodeCount: number;
   readonly issuePaths: Readonly<Record<string, readonly string[]>>;
 }
@@ -323,6 +324,11 @@ const CORE_ANIMATION_TARGET_PATHS: ReadonlySet<string> = new Set([
   'rotation',
   'scale',
   'weights',
+]);
+const CORE_ANIMATION_INTERPOLATIONS: ReadonlySet<string> = new Set([
+  'LINEAR',
+  'STEP',
+  'CUBICSPLINE',
 ]);
 
 type SourcePathMap = Map<string, string[]>;
@@ -611,6 +617,22 @@ export function evaluateGltfBackendProfileCompatibility(
       message:
         `glTF animation target path "${targetPath}" is not imported into the core animation controller; ` +
         'supported target paths are translation, rotation, scale, and weights.',
+    });
+  }
+
+  for (const interpolation of report.animations.degradedInterpolations) {
+    addIssue({
+      category: 'animation',
+      name: `sampler.interpolation:${interpolation}`,
+      support: 'approximate',
+      path: firstSourcePath(
+        report.animations.issuePaths,
+        `degradedInterpolation:${interpolation}`,
+        'animations',
+      ),
+      message:
+        `glTF animation sampler interpolation "${interpolation}" is not part of the core glTF interpolation set; ` +
+        'the importer falls back to LINEAR for those samplers.',
     });
   }
 
@@ -1516,6 +1538,7 @@ function analyzeAnimations(
   const paths = new Set<string>();
   const unsupportedTargetPaths = new Set<string>();
   const interpolations = new Set<string>();
+  const degradedInterpolations = new Set<string>();
   const targetNodes = new Set<number>();
   const animationIndices = new Set<number>();
   const issuePaths: SourcePathMap = new Map();
@@ -1545,8 +1568,17 @@ function analyzeAnimations(
     }
     if (!animationHasReachableChannel) continue;
     animationIndices.add(animationIndex);
-    for (const sampler of animation.samplers ?? []) {
-      interpolations.add(sampler.interpolation ?? 'LINEAR');
+    for (const [samplerIndex, sampler] of (animation.samplers ?? []).entries()) {
+      const interpolation = sampler.interpolation ?? 'LINEAR';
+      interpolations.add(interpolation);
+      if (!CORE_ANIMATION_INTERPOLATIONS.has(interpolation)) {
+        degradedInterpolations.add(interpolation);
+        addSourcePath(
+          issuePaths,
+          `degradedInterpolation:${interpolation}`,
+          `animations[${animationIndex}].samplers[${samplerIndex}].interpolation`,
+        );
+      }
     }
   }
   return {
@@ -1555,6 +1587,7 @@ function analyzeAnimations(
     paths: sorted(paths),
     unsupportedTargetPaths: sorted(unsupportedTargetPaths),
     interpolations: sorted(interpolations),
+    degradedInterpolations: sorted(degradedInterpolations),
     targetNodeCount: targetNodes.size,
     issuePaths: sourcePathRecord(issuePaths),
   };

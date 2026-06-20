@@ -306,6 +306,10 @@
 > reports as `category:"animation"` / `support:"unsupported"` issues, so strict
 > one-call loaders can reject extension/pointer animation channels before import
 > instead of discovering the skipped channel only after engine construction.
+> Unknown animation sampler interpolation strings now appear as
+> `degradedInterpolations` with exact `animations[*].samplers[*].interpolation`
+> source paths and `support:"approximate"` compatibility issues, matching the
+> importer fallback to `LINEAR` instead of silently accepting degraded timing.
 > Same-day pt-webgl2 skinning-warning follow-up: empty-bones skinned meshes
 > still render in rest pose, but scene ingestion now routes that fallback through
 > structured `pt-webgl2.skinned-mesh-empty-bones` warnings with the primitive id
