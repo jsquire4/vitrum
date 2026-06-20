@@ -18,7 +18,7 @@ function makeStubDevice(): GPUDevice {
  * pt-webgpu is a converged progressive path tracer; its only wired denoisers are
  * 'none' and 'oidn-final'. 'svgf-real' is a real-time 1-spp spatiotemporal filter
  * and is intentionally NOT wired here — it joins the already-warned unsupported set
- * (atrous / atrous-variance / bmfr / neural) and degrades to no-denoise.
+	 * (auto / atrous / atrous-variance / bmfr / neural) and degrades to no-denoise.
  */
 describe('pt-webgpu unsupported denoisers degrade to no-denoise', () => {
   it("'svgf-real' warns (pointing at oidn-final) and degrades to no-denoise", async () => {
@@ -37,7 +37,7 @@ describe('pt-webgpu unsupported denoisers degrade to no-denoise', () => {
     warn.mockRestore();
   });
 
-  it.each(['atrous', 'atrous-variance', 'bmfr', 'neural'] as const)(
+  it.each(['auto', 'atrous', 'atrous-variance', 'bmfr', 'neural'] as const)(
     "'%s' warns and degrades to no-denoise",
     async (denoiser) => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

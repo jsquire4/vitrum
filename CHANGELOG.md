@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (denoiser auto-resolution truthfulness, 2026-06-20)
+
+- **`denoiser:'auto'` is now an explicit, truthful engine option:** `@vitrum/core` includes `auto` in `EngineDenoiserMode`; `@vitrum/walkaround-hybrid` resolves it to host-provided neural weights, host-provided OIDN model URL, or the preset/default denoiser and emits `walkaround-hybrid.denoiser-auto-resolved` with `packageProvidesProductionWeights:false`. pt-webgl2/pt-webgpu report `auto` as unsupported in the promise ledger and warn/degrade to no-denoise like other non-wired denoisers.
+
 ### Fixed (walkaround material texture diagnostics, 2026-06-20)
 
 - **Invalid walkaround texture transforms now warn truthfully:** `@vitrum/walkaround-hybrid` reports non-finite material texture-transform components as `walkaround-hybrid.invalid-material-texture-transform` with an identity-transform fallback, instead of collapsing the sanitized atlas-backed map into the unreadable/ignored-map warning path.

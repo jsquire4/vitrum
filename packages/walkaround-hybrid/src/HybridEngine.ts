@@ -539,6 +539,27 @@ export class HybridEngine implements Engine {
     if (opts.onWarning != null) {
       this._warningSubs.push(opts.onWarning);
     }
+    if (cfg.denoiserAutoResolution != null) {
+      const r = cfg.denoiserAutoResolution;
+      this._warn({
+        code: 'walkaround-hybrid.denoiser-auto-resolved',
+        backend: 'walkaround-hybrid',
+        phase: 'construction',
+        method: 'createWalkaroundEngine_Hybrid',
+        message:
+          `[HybridEngine] denoiser:'auto' resolved to '${r.resolved}' (${r.reason}). ` +
+          `The package does not ship production neural weights; neural is selected ` +
+          `only when the host provides neuralWeights, and OIDN only when the host ` +
+          `provides an OIDN model URL.`,
+        details: {
+          requested: r.requested,
+          resolved: r.resolved,
+          reason: r.reason,
+          packageProvidesProductionWeights: r.packageProvidesProductionWeights,
+          defaultEnabled: r.defaultEnabled,
+        },
+      });
+    }
 
     // B15 — capture which radiometric clamps the HOST set explicitly. These
     // bypass scene-scale scaling (an explicit override is absolute). None of

@@ -12,6 +12,7 @@ import type { MaterialSpec } from '../scene/material.js';
 
 export type EngineDenoiserMode =
   | 'none'
+  | 'auto'
   | 'atrous'
   | 'atrous-variance'
   | 'svgf-real'
@@ -21,6 +22,7 @@ export type EngineDenoiserMode =
 
 export const ENGINE_DENOISER_MODES = Object.freeze([
   'none',
+  'auto',
   'atrous',
   'atrous-variance',
   'svgf-real',

@@ -10,7 +10,7 @@ Provides a class-based `Engine` implementation (`HybridEngine`) that composes:
 - **ReSTIR DI** (Reservoir-based Spatiotemporal Importance Resampling) — direct illumination with temporal + spatial reuse.
 - **ReSTIR-GI** (Ouyang et al. 2021) — indirect-illumination reservoirs with RIS + temporal + spatial reuse (Sprints 16–17).
 - **GTAO** (Jiménez 2016) — half-resolution ground-truth-based ambient occlusion with bilateral upsample (Sprint 15).
-- **Denoisers** (selectable via `EngineOptions.denoiser`): `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'neural'` (opt-in U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
+- **Denoisers** (selectable via `EngineOptions.denoiser`): `'auto'` (resolves only from host-supplied neural/OIDN assets, then falls back visibly), `'atrous'`, `'atrous-variance'` (default), `'svgf-real'` (per-channel SVGF on direct + indirect, Sprint 18), `'bmfr'`, `'oidn-final'`, and `'neural'` (opt-in U-Net; requires preloaded weights — see `tools/neural-denoiser-training/README.md`).
 - **PPG** path guiding (Müller et al. 2017) — opt-in/experimental via `EngineOptions.ppgEnabled`; GPU-side training atomics feed CPU sTree/dTree updates, `splitOverflowLeaves` adaptively splits high-sample spatial cells, and inline gi-ris guided sampling consumes the learned distribution under `src/ppg/`.
 - **NRC** (Neural Radiance Caching) — opt-in/experimental via `nrcEnabled:true`; the default is off and construction emits a structured warning because the cache is a biased learned GI approximation.
 - **Approximate material lobes** — atlas-backed scalar `specular`, `clearcoat`, `sheen`, `anisotropy`, and `iridescence` controls feed shade-owned direct, analytic, sun, glossy-indirect, ReSTIR-DI, and GI suffix material paths; readable specular, clearcoat factor/roughness/normal, sheen color/roughness, anisotropy, and iridescence factor/thickness maps multiply, perturb, or thin-film-modify the scalar controls. These rows remain approximate because GI receiver/reuse targeting and validation are not rich-lobe-complete.
@@ -22,12 +22,13 @@ All modes share the same engine surface — only the post-shade pass changes.
 
 | Mode               | Default | Description                                                                          |
 |--------------------|---------|--------------------------------------------------------------------------------------|
+| `'auto'`           |         | Resolves at construction to host `neuralWeights`, then host `extensions['walkaround-hybrid'].oidnModelUrl`, then the preset/default denoiser. Emits a structured resolution warning and does not imply bundled production weights. |
 | `'atrous'`         |         | Legacy 3-iteration à-trous (no variance weighting).                                  |
 | `'atrous-variance'`| ✓       | Welford temporal accumulator + variance lookup + 3-iter à-trous. Current production. |
 | `'svgf-real'`      |         | Real Schied 2017 SVGF (T2.H1) — reprojection, moments, 7×7 filter, 5-tap à-trous.    |
 | `'bmfr'`           |         | Blockwise Multi-Order Feature Regression (Koskela et al. 2019) — Householder-QR feature regression. |
 | `'neural'`         |         | U-Net neural denoiser (T2.H2 / W10). Requires `neuralWeights` — see below.           |
-| `'oidn-final'`     |         | Intel OIDN via ONNX Runtime Web (async; requires `extensions.oidnModelUrl`).         |
+| `'oidn-final'`     |         | Intel OIDN via ONNX Runtime Web (async; requires `extensions['walkaround-hybrid'].oidnModelUrl`). |
 
 ### Neural denoiser — weights interface
 
@@ -93,7 +94,7 @@ src/
                            GTAO, GTAOUpsample, Composite, Resolve, SampleBudget,
                            PPGUpdate, ReGIRBuild, MotionVectors) + declarative passOrder
     denoisers/           — Denoiser registry (atrous, atrous-variance, svgf-real,
-                           neural, oidn-final, none)
+                           bmfr, neural, oidn-final, none; auto resolves before registry lookup)
     WalkaroundGPUPipeline.ts — Iterates PASS_ORDER each frame
   restir/                — ReSTIR BVH + emitter list builders (bvhCore.ts, emitterList.ts)
   shaders/               — WGSL shader strings: ris, risGi, temporal, temporalGi,

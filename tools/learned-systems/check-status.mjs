@@ -129,12 +129,17 @@ async function assertRuntimeTruthfulnessGuards() {
 
   const requiredFragments = [
     [config, "opts.denoiser === 'neural' && !opts.neuralWeights", "neural weights construction guard"],
-    [config, "opts.denoiser ?? preset.denoiser ?? 'atrous-variance'", "non-neural default denoiser"],
+    [config, "function resolveHybridDenoiser", "denoiser auto/default resolver"],
+    [config, "opts.denoiser !== 'auto'", "non-auto denoiser path"],
+    [config, "reason = 'host-neural-weights'", "auto denoiser host neural route"],
+    [config, "reason = 'host-oidn-model-url'", "auto denoiser host OIDN route"],
+    [config, "let reason: DenoiserAutoResolutionReason = 'no-host-model-assets'", "auto denoiser fallback disclosure"],
     [config, "opts.nrcEnabled === true ? 1 : 0", "NRC opt-in config bit"],
     [engine, "walkaround-hybrid.nrc-experimental-biased", "NRC experimental warning code"],
     [engine, "defaultEnabled: false", "NRC warning defaultEnabled=false"],
     [engine, "estimator: 'biased'", "NRC warning estimator=biased"],
     [engine, "walkaround-hybrid.neural-host-weights-required", "neural host-weights warning code"],
+    [engine, "walkaround-hybrid.denoiser-auto-resolved", "denoiser auto resolution warning code"],
     [engine, "packageProvidesProductionWeights: false", "neural warning production-weight disclosure"],
     [engine, "walkaround-hybrid-gris-unbiased-reuse", "GRIS opt-in experimental feature"],
     [engine, "walkaround-hybrid-ppg-guided-gi", "PPG opt-in experimental feature"],

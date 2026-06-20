@@ -75,6 +75,10 @@ export interface EngineOptions {
    *  `@vitrum/walkaround-hybrid`. GPU memory budget at 1080p: ~52 MB of
    *  new persistent textures.
    *
+   *  `'auto'` — backend-owned creation-time resolver. Backends that support it
+   *  must report the resolved concrete mode through structured warnings; backends
+   *  that do not support it must reject or degrade explicitly.
+   *
    *  `'neural'` — GPU U-Net denoiser. Requires backend-specific weight
    *  provisioning (e.g. `HybridEngineOptions.neuralWeights` in
    *  `@vitrum/walkaround-hybrid`). Opt-in; default remains `'atrous-variance'`.

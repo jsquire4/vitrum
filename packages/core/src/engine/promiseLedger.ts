@@ -786,6 +786,11 @@ type DenoiserSupportMatrix = Readonly<Record<EngineDenoiserMode, BackendSupportM
 
 const WALKAROUND_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   none: 'native',
+  // Creation-time policy resolver: native on walkaround-hybrid. It chooses the
+  // best concrete denoiser from host-supplied neural/OIDN assets, otherwise warns
+  // and falls back to the existing atrous-variance path. It does NOT imply bundled
+  // production neural weights.
+  auto: 'native',
   atrous: 'native',
   'atrous-variance': 'native',
   'svgf-real': 'native',
@@ -799,6 +804,7 @@ const WALKAROUND_DENOISERS: DenoiserSupportMatrix = Object.freeze({
 
 const PT_WEBGL2_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   none: 'native',
+  auto: 'unsupported',
   atrous: 'unsupported',
   'atrous-variance': 'unsupported',
   'svgf-real': 'unsupported',
@@ -809,6 +815,7 @@ const PT_WEBGL2_DENOISERS: DenoiserSupportMatrix = Object.freeze({
 
 const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   none: 'native',
+  auto: 'unsupported',
   atrous: 'unsupported',
   'atrous-variance': 'unsupported',
   'svgf-real': 'unsupported',

@@ -259,6 +259,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(c.supportDetails?.mutations.resize).toBe('native');
     expect(c.supportDetails?.denoisers).toEqual({
       none: 'native',
+      auto: 'unsupported',
       atrous: 'unsupported',
       'atrous-variance': 'unsupported',
       'svgf-real': 'unsupported',
@@ -2475,15 +2476,17 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it("denoiser: 'svgf-real' emits exactly one console.warn naming the value", async () => {
+  it.each(['svgf-real', 'auto'] as const)(
+    "denoiser: '%s' emits exactly one console.warn naming the value",
+    async (denoiser) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      await createPTEngine_WebGL2({ ...opts(), denoiser: 'svgf-real' });
+      await createPTEngine_WebGL2({ ...opts(), denoiser });
       const denoiserWarns = warn.mock.calls.filter((args) =>
         String(args[0]).includes('denoiser'),
       );
       expect(denoiserWarns).toHaveLength(1);
-      expect(String(denoiserWarns[0]![0])).toContain('svgf-real');
+      expect(String(denoiserWarns[0]![0])).toContain(denoiser);
       expect(String(denoiserWarns[0]![0])).toContain('pt-webgl2');
     } finally {
       warn.mockRestore();

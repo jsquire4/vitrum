@@ -28,6 +28,22 @@ import { PPG_MIS_ALPHA } from './ppg/ppgConstants.js';
 /** Default per-frame target interval (~60 FPS soft-cap). */
 const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
 
+type HybridDenoiser = (typeof VALID_DENOISERS)[number];
+export type ResolvedHybridDenoiser = Exclude<HybridDenoiser, 'auto'>;
+export type DenoiserAutoResolutionReason =
+  | 'host-neural-weights'
+  | 'host-oidn-model-url'
+  | 'lite-neural-unavailable'
+  | 'no-host-model-assets';
+
+export interface DenoiserAutoResolution {
+  readonly requested: 'auto';
+  readonly resolved: ResolvedHybridDenoiser;
+  readonly reason: DenoiserAutoResolutionReason;
+  readonly packageProvidesProductionWeights: false;
+  readonly defaultEnabled: false;
+}
+
 function emitConfigWarning(opts: HybridEngineOptions, warning: EngineWarning): void {
   console.warn(warning.message);
   if (opts.onWarning == null) return;
@@ -71,7 +87,8 @@ function warnLiteBvhModeOverride(opts: HybridEngineOptions): void {
  * returned record.
  */
 export interface ParsedHybridEngineConfig {
-  readonly denoiser: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final';
+  readonly denoiser: ResolvedHybridDenoiser;
+  readonly denoiserAutoResolution: DenoiserAutoResolution | undefined;
   readonly neuralWeights: ModelWeights | undefined;
   readonly oidnModelUrl: string | undefined;
   readonly oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
@@ -180,6 +197,54 @@ function readWalkaroundHybridExt(opts: HybridEngineOptions): WalkaroundHybridExt
   })?.['walkaround-hybrid'];
 }
 
+function hasOidnModelUrl(oidnModelUrl: string | undefined): oidnModelUrl is string {
+  return typeof oidnModelUrl === 'string' && oidnModelUrl.length > 0;
+}
+
+function resolvePresetDenoiser(
+  preset: ReturnType<typeof resolveQualityPreset>,
+): ResolvedHybridDenoiser {
+  return preset.denoiser ?? 'atrous-variance';
+}
+
+function resolveHybridDenoiser(
+  opts: HybridEngineOptions,
+  preset: ReturnType<typeof resolveQualityPreset>,
+  oidnModelUrl: string | undefined,
+): { denoiser: ResolvedHybridDenoiser; autoResolution: DenoiserAutoResolution | undefined } {
+  const fallback = resolvePresetDenoiser(preset);
+  if (opts.denoiser !== 'auto') {
+    return {
+      denoiser: (opts.denoiser ?? fallback) as ResolvedHybridDenoiser,
+      autoResolution: undefined,
+    };
+  }
+
+  let resolved: ResolvedHybridDenoiser = fallback;
+  let reason: DenoiserAutoResolutionReason = 'no-host-model-assets';
+  if (opts.tier !== 'lite' && opts.neuralWeights != null) {
+    resolved = 'neural';
+    reason = 'host-neural-weights';
+  } else if (opts.tier === 'lite' && opts.neuralWeights != null) {
+    reason = 'lite-neural-unavailable';
+  }
+  if (reason !== 'host-neural-weights' && hasOidnModelUrl(oidnModelUrl)) {
+    resolved = 'oidn-final';
+    reason = 'host-oidn-model-url';
+  }
+
+  return {
+    denoiser: resolved,
+    autoResolution: {
+      requested: 'auto',
+      resolved,
+      reason,
+      packageProvidesProductionWeights: false,
+      defaultEnabled: false,
+    },
+  };
+}
+
 /**
  * Pure construction-time validation of `HybridEngineOptions` — throws the
  * three (well, six) `TypeError`s the constructor relies on, in the exact same
@@ -244,7 +309,7 @@ export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
   ) {
     throw new TypeError(
       `[HybridEngine] unsupported denoiser '${String(opts.denoiser)}'. ` +
-      `walkaround-hybrid supports: 'none' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final'.`,
+      `walkaround-hybrid supports: 'none' | 'auto' | 'atrous' | 'atrous-variance' | 'svgf-real' | 'bmfr' | 'neural' | 'oidn-final'.`,
     );
   }
   // T2.H2 — 'neural' requires neuralWeights to be provided.
@@ -300,11 +365,13 @@ export function deriveHybridEngineConfig(
 
   const whExt = readWalkaroundHybridExt(opts);
   const oidnModelUrl = whExt?.oidnModelUrl;
+  const denoiser = resolveHybridDenoiser(opts, preset, oidnModelUrl);
 
   return {
     // Preset supplies the denoiser fallback (low ⇒ 'atrous'); explicit
     // opts.denoiser wins, then the engine default 'atrous-variance'.
-    denoiser: opts.denoiser ?? preset.denoiser ?? 'atrous-variance',
+    denoiser: denoiser.denoiser,
+    denoiserAutoResolution: denoiser.autoResolution,
     neuralWeights: opts.neuralWeights,
     oidnModelUrl,
     oidnExecutionProviders: whExt?.oidnExecutionProviders,

@@ -951,6 +951,47 @@ for (const needle of [
   }
 }
 
+const hybridEngineDenoiserConfig = await readText("packages/walkaround-hybrid/src/HybridEngineConfig.ts");
+for (const needle of [
+  "export type ResolvedHybridDenoiser = Exclude<HybridDenoiser, 'auto'>;",
+  "function resolveHybridDenoiser",
+  "opts.denoiser !== 'auto'",
+  "reason = 'host-neural-weights'",
+  "reason = 'host-oidn-model-url'",
+  "reason = 'lite-neural-unavailable'",
+  "packageProvidesProductionWeights: false",
+]) {
+  if (!hybridEngineDenoiserConfig.includes(needle)) {
+    fail(`walkaround denoiser:auto resolver must stay truthful: ${needle}`);
+  }
+}
+
+const hybridEngineDenoiserWarnings = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
+for (const needle of [
+  "walkaround-hybrid.denoiser-auto-resolved",
+  "denoiser:'auto' resolved",
+  "does not ship production neural weights",
+  "walkaround-hybrid.neural-host-weights-required",
+]) {
+  if (!hybridEngineDenoiserWarnings.includes(needle)) {
+    fail(`walkaround denoiser:auto/neural warnings must stay structured: ${needle}`);
+  }
+}
+
+const walkaroundCapabilitiesPartitionTest = await readText("packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts");
+for (const needle of [
+  "resolves denoiser:'auto' to the default when no host model assets exist",
+  "reason: 'no-host-model-assets'",
+  "resolves denoiser:'auto' to neural only when full-tier host weights are supplied",
+  "reason: 'host-neural-weights'",
+  "resolves denoiser:'auto' away from neural on lite even if weights are present",
+  "reason: 'lite-neural-unavailable'",
+]) {
+  if (!walkaroundCapabilitiesPartitionTest.includes(needle)) {
+    fail(`walkaround denoiser:auto tests must pin resolver cases: ${needle}`);
+  }
+}
+
 const unetArchitecture = await readText("packages/walkaround-hybrid/src/neural/unetArchitecture.ts");
 for (const needle of [
   "pack       → enc_input",

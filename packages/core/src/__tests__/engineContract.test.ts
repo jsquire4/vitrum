@@ -231,6 +231,7 @@ describe('backend promise ledger', () => {
 
     expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.denoisers).toEqual({
       none: 'native',
+      auto: 'unsupported',
       atrous: 'unsupported',
       'atrous-variance': 'unsupported',
       'svgf-real': 'unsupported',
@@ -248,6 +249,9 @@ describe('backend promise ledger', () => {
       'native',
     );
     expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.denoisers.bmfr).toBe(
+      'native',
+    );
+    expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.denoisers.auto).toBe(
       'native',
     );
   });

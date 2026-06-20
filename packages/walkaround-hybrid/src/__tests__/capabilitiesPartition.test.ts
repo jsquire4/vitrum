@@ -81,6 +81,10 @@ function makeZeroNeuralWeights(): ModelWeights {
   return { layers };
 }
 
+function resolvedDenoiser(engine: HybridEngine): string {
+  return (engine as unknown as { _cfg: { denoiser: string } })._cfg.denoiser;
+}
+
 function meshPrimitive(id: string): ScenePrimitive {
   return {
     kind: 'mesh',
@@ -244,6 +248,101 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     const engine = new HybridEngine(makeOpts());
     try {
       expect(engine.capabilities.experimentalFeatures).toEqual(new Set(['svgf-real-conservative-objid']));
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it("resolves denoiser:'auto' to the default when no host model assets exist", () => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: unknown[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      denoiser: 'auto',
+      onWarning: (warning) => warnings.push(warning),
+    });
+    try {
+      expect(resolvedDenoiser(engine)).toBe('atrous-variance');
+      expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(false);
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.denoiser-auto-resolved',
+          backend: 'walkaround-hybrid',
+          phase: 'construction',
+          details: expect.objectContaining({
+            requested: 'auto',
+            resolved: 'atrous-variance',
+            reason: 'no-host-model-assets',
+            packageProvidesProductionWeights: false,
+            defaultEnabled: false,
+          }),
+        }),
+      ]);
+      expect(warnSpy.mock.calls.flat().join('\n')).toContain("denoiser:'auto' resolved to 'atrous-variance'");
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it("resolves denoiser:'auto' to neural only when full-tier host weights are supplied", () => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: unknown[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      denoiser: 'auto',
+      neuralWeights: makeZeroNeuralWeights(),
+      onWarning: (warning) => warnings.push(warning),
+    });
+    try {
+      expect(resolvedDenoiser(engine)).toBe('neural');
+      expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(true);
+      expect(warnings).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.denoiser-auto-resolved',
+          details: expect.objectContaining({
+            requested: 'auto',
+            resolved: 'neural',
+            reason: 'host-neural-weights',
+            packageProvidesProductionWeights: false,
+          }),
+        }),
+        expect.objectContaining({
+          code: 'walkaround-hybrid.neural-host-weights-required',
+          details: expect.objectContaining({
+            denoiser: 'neural',
+            packageProvidesProductionWeights: false,
+            defaultEnabled: false,
+          }),
+        }),
+      ]));
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it("resolves denoiser:'auto' away from neural on lite even if weights are present", () => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: unknown[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      tier: 'lite',
+      denoiser: 'auto',
+      neuralWeights: makeZeroNeuralWeights(),
+      onWarning: (warning) => warnings.push(warning),
+    });
+    try {
+      expect(resolvedDenoiser(engine)).toBe('atrous-variance');
+      expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(false);
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.denoiser-auto-resolved',
+          details: expect.objectContaining({
+            requested: 'auto',
+            resolved: 'atrous-variance',
+            reason: 'lite-neural-unavailable',
+          }),
+        }),
+      ]);
     } finally {
       engine.dispose();
     }

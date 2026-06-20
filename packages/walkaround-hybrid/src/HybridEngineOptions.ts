@@ -21,6 +21,7 @@ import type { CascadeDim } from '@vitrum/walkaround-rc';
  */
 export const VALID_DENOISERS = [
   'none',
+  'auto',
   'atrous',
   'atrous-variance',
   'svgf-real',
@@ -191,7 +192,12 @@ export interface HybridEngineOptions extends EngineOptions {
    *   `'atrous-variance'` (default) — temporal Welford + à-trous + variance
    *   scalar lookup; honest about what it does (not Schied 2017 SVGF).
    *
- *   `'atrous'` — legacy three-pass edge-stopping à-trous only.
+   *   `'auto'` — choose a concrete denoiser from host-supplied assets at engine
+   *   construction. Full tier prefers `neuralWeights`, then `oidnModelUrl`, then
+   *   falls back to the preset/default denoiser with a structured warning. The
+   *   package still ships no production neural weights.
+   *
+   *   `'atrous'` — legacy three-pass edge-stopping à-trous only.
  *
  *   `'none'` — pass-through mode; skips denoiser dispatch and composites the
  *   raw HDR target directly.
