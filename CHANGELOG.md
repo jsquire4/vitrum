@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (world-space BVH robustness, 2026-06-20)
+
+- **Malformed triangles are now filtered before entering the shared world-space merge stream:** `mergeWorldSpaceFromCore()` filters out-of-range vertex indices and non-finite transformed triangle vertices before appending `mergedIndices` / `mergedTriMaterialId` / `meshVertexRanges`, so pt-webgl2, walkaround ReSTIR/DDGI/RC, and pt-webgpu merged-mode consumers no longer see stale pre-filter triangle counts or origin-collapsed fallback triangles after `buildArrayBvh()` rejects malformed input. A focused shared-BVH regression pins out-of-range and NaN triangle filtering through the actual world-space merge path.
+- **OIDN resize race proof now exercises the async stale-upload guard directly:** `OIDNFinalDenoiser` already captured `_resizeGeneration` before readback/inference and aborted `writeTexture()` after resize. The walkaround OIDN tests now hold inference in flight, call `resize()`, release the result, and assert the stale upload is skipped while the denoiser remains in HDR fallback until a fresh output lands.
+
 ### Fixed (progressive handoff scene authority, 2026-06-20)
 
 - **Progressive glTF/controller scene fallbacks now preserve primitive-list invariants:** `ProgressiveHandoffCoordinator` already used core patch helpers for `updatePrimitive()` scene fallbacks. Its `addPrimitive()` / `removePrimitive()` fallback path now also rejects duplicate adds and missing removes before calling `setScene()` on either engine, so a backend missing optional primitive-list methods cannot silently desynchronize the realtime/converged pair.

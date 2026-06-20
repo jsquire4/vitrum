@@ -322,6 +322,39 @@ describe('OIDNFinalDenoiser.dispatch', () => {
     expect(secondOut).not.toBe(hdr); // it's now the owned denoised texture
   });
 
+  it('skips stale result upload when resize happens during an in-flight inference cycle', async () => {
+    const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
+    const device = fakeDevice();
+    await d.initialize(fakeInitCtx(device));
+
+    let releaseInference!: () => void;
+    denoiseFinal.mockImplementationOnce(async (inputs: { color: Float32Array }) => {
+      await new Promise<void>((resolve) => { releaseInference = resolve; });
+      return new Float32Array(inputs.color);
+    });
+
+    const encoder = fakeEncoder();
+    const hdr = fakeTexture();
+    const ctx = fakeDispatchCtx(device, encoder, hdr, fakeTexture(), fakeTexture());
+    expect(d.dispatch(ctx)).toBe(hdr);
+
+    for (let i = 0; i < 8 && denoiseFinal.mock.calls.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(denoiseFinal).toHaveBeenCalledTimes(1);
+
+    d.resize(128, 64);
+    releaseInference();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(device.queue.writeTexture).not.toHaveBeenCalled();
+    expect(d.state()).toEqual({
+      status: 'fallback',
+      reason: 'waiting for first OIDN output',
+    });
+  });
+
   it('falls back to raw HDR, reports a retryable failed state, and retries after dispatch-time OIDN failure', async () => {
     const d = new OIDNFinalDenoiser({ modelUrl: '/m.onnx' });
     const device = fakeDevice();

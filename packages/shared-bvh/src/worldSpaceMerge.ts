@@ -34,7 +34,7 @@
  *
  */
 
-import type { Mat4, MaterialSpec, Scene, ScenePrimitive, TextureRef } from '@vitrum/core';
+import type { Mat4, MaterialSpec, Scene, SceneNodeId, ScenePrimitive, TextureRef } from '@vitrum/core';
 import type { PlainAabb } from './aabb.js';
 import { buildArrayBvh } from './buildArrayBvh.js';
 
@@ -214,6 +214,8 @@ function isMeshLike(primitive: ScenePrimitive): primitive is MeshLikePrimitive {
 export const DEFAULT_MERGE_FILTER = (primitive: ScenePrimitive): boolean =>
   isMeshLike(primitive);
 
+const MAX_WORLD_MERGE_FILTER_WARNINGS = 10;
+
 function constantVertexRgbMultiplier(primitive: MeshLikePrimitive): readonly [number, number, number] | null {
   const colors = primitive.colors;
   if (colors == null || colors.length === 0) return null;
@@ -287,6 +289,10 @@ function applyMatrix4(m: ArrayLike<number>, x: number, y: number, z: number): [n
     (e1 * x + e5 * y + e9 * z + e13) * w,
     (e2 * x + e6 * y + e10 * z + e14) * w,
   ];
+}
+
+function finiteVec3(v: readonly [number, number, number]): boolean {
+  return Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]);
 }
 
 /**
@@ -677,6 +683,19 @@ export function mergeWorldSpaceFromCore(
 
   let minX = Infinity, minY = Infinity, minZ = Infinity;
   let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  let filteredTriangleWarnCount = 0;
+  let filteredTriangleCount = 0;
+
+  const warnFilteredTriangle = (primitiveId: SceneNodeId, tri: number, reason: string): void => {
+    filteredTriangleCount += 1;
+    if (filteredTriangleWarnCount < MAX_WORLD_MERGE_FILTER_WARNINGS) {
+      console.warn(
+        `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] Primitive "${primitiveId}" triangle ${tri} ${reason}; ` +
+        'filtering it from the merged world-space BVH.',
+      );
+      filteredTriangleWarnCount += 1;
+    }
+  };
 
   for (const primitive of scene.primitives) {
     if (!filter(primitive) || !isMeshLike(primitive)) continue;
@@ -726,6 +745,34 @@ export function mergeWorldSpaceFromCore(
       const normalMatrix = getNormalMatrix3(m);
       const flip = determinant4(m) < 0;
 
+      const validTriangles: Array<readonly [number, number, number]> = [];
+      for (let t = 0; t < localTriCount; t += 1) {
+        const a = baseIndices[t * 3] ?? 0;
+        const b = baseIndices[t * 3 + 1] ?? 0;
+        const c = baseIndices[t * 3 + 2] ?? 0;
+        if (a >= localVertexCount || b >= localVertexCount || c >= localVertexCount) {
+          warnFilteredTriangle(
+            primitive.id,
+            t,
+            `references an out-of-range vertex index (i0=${a}, i1=${b}, i2=${c}; vertexCount=${localVertexCount})`,
+          );
+          continue;
+        }
+        const pa = applyMatrix4(m, basePositions[a * 3] ?? 0, basePositions[a * 3 + 1] ?? 0, basePositions[a * 3 + 2] ?? 0);
+        const pb = applyMatrix4(m, basePositions[b * 3] ?? 0, basePositions[b * 3 + 1] ?? 0, basePositions[b * 3 + 2] ?? 0);
+        const pc = applyMatrix4(m, basePositions[c * 3] ?? 0, basePositions[c * 3 + 1] ?? 0, basePositions[c * 3 + 2] ?? 0);
+        if (!finiteVec3(pa) || !finiteVec3(pb) || !finiteVec3(pc)) {
+          warnFilteredTriangle(
+            primitive.id,
+            t,
+            'has a non-finite transformed vertex coordinate (NaN or Inf)',
+          );
+          continue;
+        }
+        validTriangles.push(flip ? [c, b, a] : [a, b, c]);
+      }
+      if (validTriangles.length === 0) continue;
+
       const vertexStart = Math.floor(positions.length / stride);
       const triStart = Math.floor(mergedTriMaterialId.length);
 
@@ -773,23 +820,18 @@ export function mergeWorldSpaceFromCore(
         // UVs are 2D texture coords — transform-invariant (no world-matrix applied).
         uvs.push(baseUvs?.[i * 2] ?? 0, baseUvs?.[i * 2 + 1] ?? 0);
 
-        if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
-        if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
-        if (wz < minZ) minZ = wz; if (wz > maxZ) maxZ = wz;
+        if (Number.isFinite(wx) && Number.isFinite(wy) && Number.isFinite(wz)) {
+          if (wx < minX) minX = wx; if (wx > maxX) maxX = wx;
+          if (wy < minY) minY = wy; if (wy > maxY) maxY = wy;
+          if (wz < minZ) minZ = wz; if (wz > maxZ) maxZ = wz;
+        }
       }
 
       // Append this instance's triangles (global vertex refs = local + start),
       // applying the negative-determinant winding flip (v0↔v2) when needed —
       // mirroring StaticGeometryGenerator's `invertGeometry`.
-      for (let t = 0; t < localTriCount; t += 1) {
-        const a = (baseIndices[t * 3] ?? 0) + vertexStart;
-        const b = (baseIndices[t * 3 + 1] ?? 0) + vertexStart;
-        const c = (baseIndices[t * 3 + 2] ?? 0) + vertexStart;
-        if (flip) {
-          mergedIndices.push(c, b, a);
-        } else {
-          mergedIndices.push(a, b, c);
-        }
+      for (const [a, b, c] of validTriangles) {
+        mergedIndices.push(a + vertexStart, b + vertexStart, c + vertexStart);
         mergedTriMaterialId.push(matSlot);
       }
 
@@ -798,10 +840,17 @@ export function mergeWorldSpaceFromCore(
         vertexStart,
         vertexCount: localVertexCount,
         triStart,
-        triCount: localTriCount,
+        triCount: validTriangles.length,
         windingFlipped: flip,
       });
     }
+  }
+
+  if (filteredTriangleCount > MAX_WORLD_MERGE_FILTER_WARNINGS) {
+    console.warn(
+      `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] ${filteredTriangleCount} malformed triangles filtered ` +
+      `(${MAX_WORLD_MERGE_FILTER_WARNINGS} individual warnings shown above).`,
+    );
   }
 
   const vertexCount = Math.floor(positions.length / stride);
