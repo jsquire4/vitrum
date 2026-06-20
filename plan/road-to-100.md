@@ -312,9 +312,10 @@
 > importer fallback to `LINEAR` instead of silently accepting degraded timing.
 > Malformed animation channels that the importer skips now have the same
 > preflight surface: missing samplers, missing target nodes, nonexistent target
-> nodes, and JSON-detectable output-count mismatches appear as
-> `malformedChannels` and backend `support:"unsupported"` issues with the exact
-> source path that the importer later reports.
+> nodes, missing/invalid sampler input-output accessors, and JSON-detectable
+> output-count mismatches appear as `malformedChannels` and backend
+> `support:"unsupported"` issues with the exact source path that the importer
+> later reports.
 > Same-day pt-webgl2 skinning-warning follow-up: empty-bones skinned meshes
 > still render in rest pose, but scene ingestion now routes that fallback through
 > structured `pt-webgl2.skinned-mesh-empty-bones` warnings with the primitive id

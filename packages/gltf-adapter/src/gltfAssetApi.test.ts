@@ -2246,6 +2246,11 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         },
       },
     };
+    gltf.accessors = [
+      ...gltf.accessors!,
+      { bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: 0, componentType: 5126, count: 2, type: 'VEC3' },
+    ];
     gltf.animations = [{
       samplers: [{ input: 2, output: 3, interpolation: 'BEZIER' as never }],
       channels: [
@@ -2337,18 +2342,30 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const gltf = makeExternalTexturedGltf();
     const timeAccessor = gltf.accessors!.length;
     const outputAccessor = timeAccessor + 1;
+    const invalidTypeAccessor = timeAccessor + 2;
     gltf.accessors = [
       ...gltf.accessors!,
       { bufferView: 0, componentType: 5126, count: 2, type: 'SCALAR' },
       { bufferView: 0, componentType: 5126, count: 1, type: 'VEC3' },
+      { bufferView: 0, componentType: 5126, count: 1, type: 'VEC9' as never },
     ];
     gltf.animations = [{
-      samplers: [{ input: timeAccessor, output: outputAccessor }],
+      samplers: [
+        { input: timeAccessor, output: outputAccessor },
+        { input: 42, output: outputAccessor },
+        { input: timeAccessor, output: 43 },
+        { input: timeAccessor, output: invalidTypeAccessor },
+        { input: invalidTypeAccessor, output: outputAccessor },
+      ],
       channels: [
         { sampler: 7, target: { node: 0, path: 'translation' } },
         { sampler: 0, target: { path: 'rotation' } },
         { sampler: 0, target: { node: 99, path: 'scale' } },
         { sampler: 0, target: { node: 0, path: 'translation' } },
+        { sampler: 1, target: { node: 0, path: 'translation' } },
+        { sampler: 2, target: { node: 0, path: 'translation' } },
+        { sampler: 3, target: { node: 0, path: 'translation' } },
+        { sampler: 4, target: { node: 0, path: 'translation' } },
       ],
     }];
 
@@ -2379,6 +2396,52 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         nodeIndex: 0,
         expectedOutputFloats: 6,
         actualOutputFloats: 3,
+      },
+      {
+        kind: 'missing-input-accessor',
+        path: 'animations[0].samplers[1].input',
+        animationIndex: 0,
+        channelIndex: 4,
+        targetPath: 'translation',
+        samplerIndex: 1,
+        nodeIndex: 0,
+        accessorIndex: 42,
+        accessorRole: 'input',
+      },
+      {
+        kind: 'missing-output-accessor',
+        path: 'animations[0].samplers[2].output',
+        animationIndex: 0,
+        channelIndex: 5,
+        targetPath: 'translation',
+        samplerIndex: 2,
+        nodeIndex: 0,
+        accessorIndex: 43,
+        accessorRole: 'output',
+      },
+      {
+        kind: 'invalid-output-accessor-type',
+        path: 'animations[0].samplers[3].output',
+        animationIndex: 0,
+        channelIndex: 6,
+        targetPath: 'translation',
+        samplerIndex: 3,
+        nodeIndex: 0,
+        accessorIndex: invalidTypeAccessor,
+        accessorRole: 'output',
+        accessorType: 'VEC9',
+      },
+      {
+        kind: 'invalid-input-accessor-type',
+        path: 'animations[0].samplers[4].input',
+        animationIndex: 0,
+        channelIndex: 7,
+        targetPath: 'translation',
+        samplerIndex: 4,
+        nodeIndex: 0,
+        accessorIndex: invalidTypeAccessor,
+        accessorRole: 'input',
+        accessorType: 'VEC9',
       },
       {
         kind: 'missing-sampler',
@@ -2416,6 +2479,30 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         name: 'channel.missing-sampler',
         support: 'unsupported',
         path: 'animations[0].samplers[7]',
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.missing-input-accessor',
+        support: 'unsupported',
+        path: 'animations[0].samplers[1].input',
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.missing-output-accessor',
+        support: 'unsupported',
+        path: 'animations[0].samplers[2].output',
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.invalid-output-accessor-type',
+        support: 'unsupported',
+        path: 'animations[0].samplers[3].output',
+      }),
+      expect.objectContaining({
+        category: 'animation',
+        name: 'channel.invalid-input-accessor-type',
+        support: 'unsupported',
+        path: 'animations[0].samplers[4].input',
       }),
     ]));
   });

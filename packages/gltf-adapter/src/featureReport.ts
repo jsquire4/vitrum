@@ -136,6 +136,10 @@ export interface GltfAnimationFeatureReport {
 
 export type GltfAnimationMalformedChannelKind =
   | 'missing-sampler'
+  | 'missing-input-accessor'
+  | 'missing-output-accessor'
+  | 'invalid-input-accessor-type'
+  | 'invalid-output-accessor-type'
   | 'missing-target-node'
   | 'target-node-not-found'
   | 'invalid-output-count';
@@ -148,6 +152,9 @@ export interface GltfAnimationMalformedChannelIssue {
   readonly targetPath?: string;
   readonly samplerIndex?: number;
   readonly nodeIndex?: number;
+  readonly accessorIndex?: number;
+  readonly accessorRole?: 'input' | 'output';
+  readonly accessorType?: string;
   readonly expectedOutputFloats?: number;
   readonly actualOutputFloats?: number;
 }
@@ -839,6 +846,20 @@ function samplerPolicySupport(
 function animationMalformedChannelMessage(issue: GltfAnimationMalformedChannelIssue): string {
   if (issue.kind === 'missing-sampler') {
     return `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ${String(issue.samplerIndex)} which does not exist; the importer skips the channel.`;
+  }
+  if (issue.kind === 'missing-input-accessor' || issue.kind === 'missing-output-accessor') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
+      `${String(issue.samplerIndex)} ${String(issue.accessorRole)} accessor ${String(issue.accessorIndex)} ` +
+      'which does not exist; the importer skips the channel.'
+    );
+  }
+  if (issue.kind === 'invalid-input-accessor-type' || issue.kind === 'invalid-output-accessor-type') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
+      `${String(issue.samplerIndex)} ${String(issue.accessorRole)} accessor ${String(issue.accessorIndex)} ` +
+      `with invalid accessor type "${String(issue.accessorType)}"; the importer skips the channel.`
+    );
   }
   if (issue.kind === 'missing-target-node') {
     return `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} has no target node; extension-targeted animation channels are not imported.`;
@@ -1650,6 +1671,17 @@ function analyzeAnimations(
         });
         continue;
       }
+      const samplerAccessorIssues = animationSamplerAccessorIssues(
+        gltf,
+        animationIndex,
+        channelIndex,
+        channel,
+        sampler,
+      );
+      if (samplerAccessorIssues.length > 0) {
+        malformedChannels.push(...samplerAccessorIssues);
+        continue;
+      }
       const outputCountIssue = animationOutputCountIssue(
         gltf,
         animationIndex,
@@ -1688,6 +1720,57 @@ function analyzeAnimations(
     targetNodeCount: targetNodes.size,
     issuePaths: sourcePathRecord(issuePaths),
   };
+}
+
+function animationSamplerAccessorIssues(
+  gltf: GltfJson,
+  animationIndex: number,
+  channelIndex: number,
+  channel: GltfAnimationChannel,
+  sampler: GltfAnimationSampler,
+): GltfAnimationMalformedChannelIssue[] {
+  const issues: GltfAnimationMalformedChannelIssue[] = [];
+  const addIssue = (
+    kind: Extract<
+      GltfAnimationMalformedChannelKind,
+      | 'missing-input-accessor'
+      | 'missing-output-accessor'
+      | 'invalid-input-accessor-type'
+      | 'invalid-output-accessor-type'
+    >,
+    accessorRole: 'input' | 'output',
+    accessorIndex: number,
+    accessorType?: string,
+  ): void => {
+    issues.push({
+      kind,
+      path: `animations[${animationIndex}].samplers[${channel.sampler}].${accessorRole}`,
+      animationIndex,
+      channelIndex,
+      targetPath: channel.target.path,
+      samplerIndex: channel.sampler,
+      ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
+      accessorIndex,
+      accessorRole,
+      ...(accessorType !== undefined ? { accessorType } : {}),
+    });
+  };
+
+  const inputAccessor = gltf.accessors?.[sampler.input];
+  if (inputAccessor == null) {
+    addIssue('missing-input-accessor', 'input', sampler.input);
+  } else if (animationAccessorFloatCount(inputAccessor) === undefined) {
+    addIssue('invalid-input-accessor-type', 'input', sampler.input, String(inputAccessor.type));
+  }
+
+  const outputAccessor = gltf.accessors?.[sampler.output];
+  if (outputAccessor == null) {
+    addIssue('missing-output-accessor', 'output', sampler.output);
+  } else if (animationAccessorFloatCount(outputAccessor) === undefined) {
+    addIssue('invalid-output-accessor-type', 'output', sampler.output, String(outputAccessor.type));
+  }
+
+  return issues;
 }
 
 function animationOutputCountIssue(
