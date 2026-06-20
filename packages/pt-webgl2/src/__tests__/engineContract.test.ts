@@ -394,6 +394,62 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('dedupes repeated sampler-policy approximation warnings at the engine surface', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      const base = triScene();
+      const prim = base.primitives[0] as MeshPrimitive;
+      const scene: Scene = {
+        ...base,
+        primitives: [{
+          ...prim,
+          material: {
+            ...prim.material,
+            baseColorMap: {
+              handle: WHITE_TEX,
+              magFilter: 'linear',
+              minFilter: 'nearest',
+              mipFilter: 'linear',
+            },
+          },
+        }],
+      };
+
+      e.setScene(scene);
+      e.setScene(scene);
+
+      const samplerWarnings = structured.filter((w) =>
+        w.code === 'pt-webgl2.texture-sampler-policy-approximation'
+      );
+      expect(samplerWarnings).toHaveLength(1);
+      expect(samplerWarnings[0]).toMatchObject({
+        backend: 'pt-webgl2',
+        phase: 'setScene',
+        method: 'setScene',
+        details: {
+          materialIndex: 0,
+          field: 'baseColorMap',
+          requestedSamplerPolicy: {
+            magFilter: 'linear',
+            minFilter: 'nearest',
+            mipFilter: 'linear',
+          },
+          fallback: 'shared-nearest-atlas-sampler',
+        },
+      });
+      expect(warn.mock.calls.flat().map(String).filter((m) =>
+        m.includes('texture sampler policy')
+      )).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('emits structured HDRI warnings on the updateEnvironment fast path', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

@@ -263,6 +263,21 @@ function emitWebgl2Warning(
   }
 }
 
+function engineWarningDedupeKey(warning: EngineWarning): string | null {
+  if (warning.code !== 'pt-webgl2.texture-sampler-policy-approximation') return null;
+  const details = warning.details ?? {};
+  return [
+    warning.code,
+    warning.phase ?? '',
+    warning.method ?? '',
+    String(details.materialIndex ?? ''),
+    String(details.field ?? ''),
+    JSON.stringify(details.requestedSamplerPolicy ?? null),
+    JSON.stringify(details.backendSamplerPolicy ?? null),
+    String(details.fallback ?? ''),
+  ].join('|');
+}
+
 function hasOidnModelUrl(opts: Pick<PTEngineWebGL2Options, 'oidn'>): boolean {
   return typeof opts.oidn?.modelUrl === 'string' && opts.oidn.modelUrl.length > 0;
 }
@@ -366,6 +381,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #onProgressSubs = new Set<(p: ProgressStats) => void>();
   #onErrorSubs = new Set<(e: EngineError) => void>();
   #onWarningSubs = new Set<(w: EngineWarning) => void>();
+  #warningDedupeKeys = new Set<string>();
   #fallbackMutationWarnings = new Set<string>();
 
   constructor(opts: PTEngineWebGL2Options, slot: StateSlot, traceTier: WebGl2TraceTier) {
@@ -1004,6 +1020,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   }
 
   #warn(warning: EngineWarning, ...consoleArgs: readonly unknown[]): void {
+    const dedupeKey = engineWarningDedupeKey(warning);
+    if (dedupeKey != null) {
+      if (this.#warningDedupeKeys.has(dedupeKey)) return;
+      this.#warningDedupeKeys.add(dedupeKey);
+    }
     console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
     this.#emitWarning(warning);
   }

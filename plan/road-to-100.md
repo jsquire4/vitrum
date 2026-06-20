@@ -1902,6 +1902,10 @@ keeps this fail-closed WSL status green, while
 first, then falls back to an in-page `canvas.toDataURL('image/png')` readback
 and supports `VITRUM_GLTF_BROWSER_STATUS_PATH` so single-asset probe runs can
 write temporary status files without disturbing the committed proof artifact.
+pt-webgl2 now dedupes repeated sampler-policy approximation warnings at the
+engine warning surface, keeping this browser proof lane focused on one stable
+structured diagnostic per material-map slot instead of repeating it on capture
+retries or scene re-uploads.
 
 Validation note: the walkaround-hybrid native-Deno behavioral lane is
 fail-closed on this WSL adapter. Deno 2.8.1 / wgpu-hal can panic before the
