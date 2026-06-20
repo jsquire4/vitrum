@@ -709,7 +709,7 @@ for (const needle of [
   }
 }
 
-const ptWebgl2Index = await readText("packages/pt-webgl2/src/index.ts");
+const ptWebgl2DenoiserIndex = await readText("packages/pt-webgl2/src/index.ts");
 for (const needle of [
   "if (opts.denoiser === 'oidn-final')",
   "const modelUrl = opts.oidn?.modelUrl;",
@@ -718,7 +718,7 @@ for (const needle of [
   "deterministic refraction-walk heuristic",
   "deterministic cone-traced photon estimate",
 ]) {
-  if (!ptWebgl2Index.includes(needle)) {
+  if (!ptWebgl2DenoiserIndex.includes(needle)) {
     fail(`pt-webgl2 must retain OIDN and caustic-approximation runtime warnings: ${needle}`);
   }
 }
@@ -739,7 +739,7 @@ for (const needle of [
   }
 }
 
-const ptWebgl2EngineContractTest = await readText("packages/pt-webgl2/src/__tests__/engineContract.test.ts");
+const ptWebgl2DenoiserEngineContractTest = await readText("packages/pt-webgl2/src/__tests__/engineContract.test.ts");
 for (const needle of [
   "keeps the atlas texture object resident during dimension-changing primitive list fallbacks",
   "updatePrimitive castShadow patches update the material lane without rebuilding BVH geometry",
@@ -749,7 +749,7 @@ for (const needle of [
   "nextLayerCapacity: 8",
   "expect(prim.castShadow).toBe(true);",
 ]) {
-  if (!ptWebgl2EngineContractTest.includes(needle)) {
+  if (!ptWebgl2DenoiserEngineContractTest.includes(needle)) {
     fail(`pt-webgl2 engine contract tests must pin atlas/castShadow mutation residency: ${needle}`);
   }
 }
@@ -989,6 +989,62 @@ for (const needle of [
 ]) {
   if (!walkaroundCapabilitiesPartitionTest.includes(needle)) {
     fail(`walkaround denoiser:auto tests must pin resolver cases: ${needle}`);
+  }
+}
+
+const ptWebgl2Index = await readText("packages/pt-webgl2/src/index.ts");
+for (const needle of [
+  "function resolveWebgl2AutoDenoiser",
+  "pt-webgl2.denoiser-auto-resolved",
+  "provide oidn.modelUrl",
+  "return { ...opts, denoiser: resolved };",
+]) {
+  if (!ptWebgl2Index.includes(needle)) {
+    fail(`pt-webgl2 denoiser:auto resolver must stay wired: ${needle}`);
+  }
+}
+
+const ptWebgpuIndexForDenoiser = await readText("packages/pt-webgpu/src/index.ts");
+for (const needle of [
+  "function resolvePtWebgpuAutoDenoiser",
+  "pt-webgpu.denoiser-auto-resolved",
+  "provide oidn.modelUrl",
+  "new PTEngineWebGPU(effectiveOpts, slot, traceTier)",
+]) {
+  if (!ptWebgpuIndexForDenoiser.includes(needle)) {
+    fail(`pt-webgpu denoiser:auto resolver must stay wired: ${needle}`);
+  }
+}
+
+const ptWebgl2EngineContractTest = await readText("packages/pt-webgl2/src/__tests__/engineContract.test.ts");
+for (const needle of [
+  "denoiser: 'auto' resolves to no-denoise without host OIDN assets",
+  "pt-webgl2.denoiser-auto-resolved",
+  "reason: 'host-oidn-model-url'",
+]) {
+  if (!ptWebgl2EngineContractTest.includes(needle)) {
+    fail(`pt-webgl2 denoiser:auto tests must pin resolver cases: ${needle}`);
+  }
+}
+
+const ptWebgpuUnsupportedDenoiserTest = await readText("packages/pt-webgpu/src/__tests__/unsupportedDenoiserDegrade.test.ts");
+for (const needle of [
+  "denoiser:'auto' resolves to no-denoise without host OIDN assets",
+  "denoiser:'auto' resolved to 'none'",
+]) {
+  if (!ptWebgpuUnsupportedDenoiserTest.includes(needle)) {
+    fail(`pt-webgpu denoiser:auto no-asset test must stay present: ${needle}`);
+  }
+}
+
+const ptWebgpuOidnFinalIntegrationTest = await readText("packages/pt-webgpu/src/__tests__/oidnFinalIntegration.test.ts");
+for (const needle of [
+  "denoiser:'auto' resolves to oidn-final when host OIDN config exists",
+  "pt-webgpu.denoiser-auto-resolved",
+  "reason: 'host-oidn-model-url'",
+]) {
+  if (!ptWebgpuOidnFinalIntegrationTest.includes(needle)) {
+    fail(`pt-webgpu denoiser:auto OIDN test must stay present: ${needle}`);
   }
 }
 

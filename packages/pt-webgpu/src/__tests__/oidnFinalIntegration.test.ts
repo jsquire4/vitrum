@@ -64,6 +64,36 @@ describe('pt-webgpu oidn-final (WG-1)', () => {
     warn.mockRestore();
   });
 
+  it("denoiser:'auto' resolves to oidn-final when host OIDN config exists", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: unknown[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      denoiser: 'auto',
+      oidn: { modelUrl: '/models/oidn_rt_hdr.onnx' },
+      oidnBridgeLoader: async () => ({
+        denoiseFinal: vi.fn(async () => new Float32Array(0)),
+      }),
+      oidnReadbackFn: mockReadback(),
+      onWarning: (w) => structured.push(w),
+    });
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.denoiser-auto-resolved',
+        details: expect.objectContaining({
+          requested: 'auto',
+          resolved: 'oidn-final',
+          reason: 'host-oidn-model-url',
+          packageProvidesProductionWeights: false,
+        }),
+      }),
+    ]));
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('unsupported-denoiser'))).toBe(false);
+    expect(engine.capabilities.experimentalFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
   it('OIDNFinalDispatcher forwards albedo + normal aux to denoiseFinal', async () => {
     let resolveDenoise: ((rgb: Float32Array) => void) | null = null;
     const denoisedSentinel = new Float32Array(32 * 16 * 3).fill(9);

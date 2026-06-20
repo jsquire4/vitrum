@@ -410,6 +410,32 @@ function emitPteWarning(
   }
 }
 
+function hasOidnModelUrl(opts: Pick<PTEngineWebGPUOptions, 'oidn'>): boolean {
+  return typeof opts.oidn?.modelUrl === 'string' && opts.oidn.modelUrl.length > 0;
+}
+
+function resolvePtWebgpuAutoDenoiser(opts: PTEngineWebGPUOptions): PTEngineWebGPUOptions {
+  if (opts.denoiser !== 'auto') return opts;
+  const resolved = hasOidnModelUrl(opts) ? 'oidn-final' : 'none';
+  const reason = resolved === 'oidn-final' ? 'host-oidn-model-url' : 'no-host-model-assets';
+  emitPteWarning(opts, {
+    code: 'pt-webgpu.denoiser-auto-resolved',
+    backend: 'pt-webgpu',
+    phase: 'construction',
+    method: 'createPTEngine_WebGPU',
+    message:
+      `[vitrum/pt-webgpu] denoiser:'auto' resolved to '${resolved}' (${reason}). ` +
+      `pt-webgpu ships no OIDN model; provide oidn.modelUrl to enable the async final-pass OIDN denoiser.`,
+    details: {
+      requested: 'auto',
+      resolved,
+      reason,
+      packageProvidesProductionWeights: false,
+    },
+  });
+  return { ...opts, denoiser: resolved };
+}
+
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -2323,6 +2349,7 @@ export const createPTEngine_WebGPU: EngineFactory<
   }
   const resolvedBdptMaxLightBounces = resolveBdptMaxLightBounces(bdptMaxLightBounces);
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
+  const effectiveOpts = resolvePtWebgpuAutoDenoiser(opts);
   if (
     opts.bdpt === true &&
     traceTier === 'full' &&
@@ -2353,20 +2380,20 @@ export const createPTEngine_WebGPU: EngineFactory<
     });
   }
   if (
-    opts.denoiser != null &&
-    opts.denoiser !== 'none' &&
-    opts.denoiser !== 'oidn-final'
+    effectiveOpts.denoiser != null &&
+    effectiveOpts.denoiser !== 'none' &&
+    effectiveOpts.denoiser !== 'oidn-final'
   ) {
-    emitPteWarning(opts, {
+    emitPteWarning(effectiveOpts, {
       code: 'pt-webgpu.unsupported-denoiser',
       backend: 'pt-webgpu',
       phase: 'construction',
       method: 'createPTEngine_WebGPU',
       message:
-        `[vitrum/pt-webgpu] denoiser="${opts.denoiser}" requested, but only 'none' and 'oidn-final' are wired. ` +
+        `[vitrum/pt-webgpu] denoiser="${effectiveOpts.denoiser}" requested, but only 'none' and 'oidn-final' are wired. ` +
         "pt-webgpu is a converged progressive path tracer; 'svgf-real' is a real-time 1-spp filter and is unsupported here — " +
         "use 'oidn-final' for converged denoising. Degrading to no-denoise.",
-      details: { requested: opts.denoiser },
+      details: { requested: effectiveOpts.denoiser },
     });
   }
   const requestedSampling = (opts as { readonly sampling?: unknown }).sampling;
@@ -2517,7 +2544,7 @@ export const createPTEngine_WebGPU: EngineFactory<
     });
   }
   const slot = makeStateSlot();
-  const engine = new PTEngineWebGPU(opts, slot, traceTier);
+  const engine = new PTEngineWebGPU(effectiveOpts, slot, traceTier);
   slot.set('ready');
   return engine;
 };

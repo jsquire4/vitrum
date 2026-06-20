@@ -259,7 +259,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(c.supportDetails?.mutations.resize).toBe('native');
     expect(c.supportDetails?.denoisers).toEqual({
       none: 'native',
-      auto: 'unsupported',
+      auto: 'native',
       atrous: 'unsupported',
       'atrous-variance': 'unsupported',
       'svgf-real': 'unsupported',
@@ -2476,7 +2476,63 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it.each(['svgf-real', 'auto'] as const)(
+  it("denoiser: 'auto' resolves to no-denoise without host OIDN assets", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      await createPTEngine_WebGL2({
+        ...opts(),
+        denoiser: 'auto',
+        onWarning: (w) => structured.push(w),
+      });
+      expect(structured).toEqual([
+        expect.objectContaining({
+          code: 'pt-webgl2.denoiser-auto-resolved',
+          details: expect.objectContaining({
+            requested: 'auto',
+            resolved: 'none',
+            reason: 'no-host-model-assets',
+            packageProvidesProductionWeights: false,
+          }),
+        }),
+      ]);
+      expect(warn.mock.calls.flat().map(String).some((m) => m.includes('unsupported-denoiser'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("denoiser: 'auto' resolves to OIDN when host model config exists", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      await createPTEngine_WebGL2({
+        ...opts(),
+        denoiser: 'auto',
+        oidn: { modelUrl: '/models/oidn_rt_hdr_alb_nrm.onnx' },
+        oidnBridgeLoader: async () => ({
+          denoiseFinal: async (inputs) => new Float32Array(inputs.color.length),
+        }),
+        onWarning: (w) => structured.push(w),
+      });
+      expect(structured).toEqual([
+        expect.objectContaining({
+          code: 'pt-webgl2.denoiser-auto-resolved',
+          details: expect.objectContaining({
+            requested: 'auto',
+            resolved: 'oidn-final',
+            reason: 'host-oidn-model-url',
+            packageProvidesProductionWeights: false,
+          }),
+        }),
+      ]);
+      expect(warn.mock.calls.flat().map(String).some((m) => m.includes('unsupported-denoiser'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it.each(['svgf-real'] as const)(
     "denoiser: '%s' emits exactly one console.warn naming the value",
     async (denoiser) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

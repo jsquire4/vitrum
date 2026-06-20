@@ -263,6 +263,32 @@ function emitWebgl2Warning(
   }
 }
 
+function hasOidnModelUrl(opts: Pick<PTEngineWebGL2Options, 'oidn'>): boolean {
+  return typeof opts.oidn?.modelUrl === 'string' && opts.oidn.modelUrl.length > 0;
+}
+
+function resolveWebgl2AutoDenoiser(opts: PTEngineWebGL2Options): PTEngineWebGL2Options {
+  if (opts.denoiser !== 'auto') return opts;
+  const resolved = hasOidnModelUrl(opts) ? 'oidn-final' : 'none';
+  const reason = resolved === 'oidn-final' ? 'host-oidn-model-url' : 'no-host-model-assets';
+  emitWebgl2Warning(opts, {
+    code: 'pt-webgl2.denoiser-auto-resolved',
+    backend: 'pt-webgl2',
+    phase: 'construction',
+    method: 'createPTEngine_WebGL2',
+    message:
+      `[vitrum/pt-webgl2] denoiser:'auto' resolved to '${resolved}' (${reason}). ` +
+      `pt-webgl2 ships no OIDN model; provide oidn.modelUrl to enable the async final-pass OIDN denoiser.`,
+    details: {
+      requested: 'auto',
+      resolved,
+      reason,
+      packageProvidesProductionWeights: false,
+    },
+  });
+  return { ...opts, denoiser: resolved };
+}
+
 export interface PTEngineWebGL2Surface {
   /** @internal The retained single-root merged BVH pack (for tests/inspection). */
   readonly _debugGeoPack: WorldSpaceMergeResult | null;
@@ -1329,20 +1355,21 @@ export const createPTEngine_WebGL2: EngineFactory<
       `createPTEngine_WebGL2: backgroundBlur must be a finite number >= 0 (got ${opts.backgroundBlur})`,
     );
   }
+  const effectiveOpts = resolveWebgl2AutoDenoiser(opts);
   // Unsupported realtime denoisers still degrade to no-denoise with a clear
   // warning. `oidn-final` is handled by the engine constructor because it is a
   // real asynchronous final-pass path that requires host-provided model config.
-  if (opts.denoiser != null && opts.denoiser !== 'none' && opts.denoiser !== 'oidn-final') {
-    emitWebgl2Warning(opts, {
+  if (effectiveOpts.denoiser != null && effectiveOpts.denoiser !== 'none' && effectiveOpts.denoiser !== 'oidn-final') {
+    emitWebgl2Warning(effectiveOpts, {
       code: 'pt-webgl2.unsupported-denoiser',
       backend: 'pt-webgl2',
       phase: 'construction',
       method: 'createPTEngine_WebGL2',
       message:
-        `[vitrum/pt-webgl2] denoiser="${opts.denoiser}" requested, but pt-webgl2 only supports ` +
+        `[vitrum/pt-webgl2] denoiser="${effectiveOpts.denoiser}" requested, but pt-webgl2 only supports ` +
         '`none` and the asynchronous final-pass `oidn-final` denoiser. ' +
         'Degrading to no-denoise (denoiserState will report "disabled").',
-      details: { requested: opts.denoiser },
+      details: { requested: effectiveOpts.denoiser },
     });
   }
   // Item 22 — DOF × equirectangular regime guard (trust-remediation-plan §22).
@@ -1373,7 +1400,7 @@ export const createPTEngine_WebGL2: EngineFactory<
   }
   const traceTier = resolveWebGl2TraceTier(gl, opts.traceTier);
   const slot = makeStateSlot();
-  const engine = new PTEngineWebGL2(opts, slot, traceTier);
+  const engine = new PTEngineWebGL2(effectiveOpts, slot, traceTier);
   slot.set('ready');
   return engine;
 };

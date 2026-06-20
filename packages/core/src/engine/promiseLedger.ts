@@ -804,7 +804,7 @@ const WALKAROUND_DENOISERS: DenoiserSupportMatrix = Object.freeze({
 
 const PT_WEBGL2_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   none: 'native',
-  auto: 'unsupported',
+  auto: 'native',
   atrous: 'unsupported',
   'atrous-variance': 'unsupported',
   'svgf-real': 'unsupported',
@@ -815,7 +815,7 @@ const PT_WEBGL2_DENOISERS: DenoiserSupportMatrix = Object.freeze({
 
 const PT_WEBGPU_DENOISERS: DenoiserSupportMatrix = Object.freeze({
   none: 'native',
-  auto: 'unsupported',
+  auto: 'native',
   atrous: 'unsupported',
   'atrous-variance': 'unsupported',
   'svgf-real': 'unsupported',

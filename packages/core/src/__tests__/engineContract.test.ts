@@ -231,7 +231,7 @@ describe('backend promise ledger', () => {
 
     expect(BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.denoisers).toEqual({
       none: 'native',
-      auto: 'unsupported',
+      auto: 'native',
       atrous: 'unsupported',
       'atrous-variance': 'unsupported',
       'svgf-real': 'unsupported',
@@ -240,6 +240,9 @@ describe('backend promise ledger', () => {
       neural: 'unsupported',
     });
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['oidn-final']).toBe(
+      'native',
+    );
+    expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers.auto).toBe(
       'native',
     );
     expect(BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers['svgf-real']).toBe(

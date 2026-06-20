@@ -5,7 +5,7 @@
  *      are packed into independent pt-webgpu texture slots.
  *   C: warn once listing unknown opts.extensions keys.
  *   D: validate/warn bdptOptions.maxLightBounces rather than silently coercing.
- * H48: warn when opts.denoiser is neither 'none' nor 'oidn-final'.
+ * H48: warn when opts.denoiser is neither 'none', 'auto', nor 'oidn-final'.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { createPTEngine_WebGPU } from '../index.js';
