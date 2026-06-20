@@ -704,6 +704,18 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
     const nextScene = patchPrimitiveInScene(this.#scene, id, patch);
+    if ((patch as { receiveShadow?: boolean }).receiveShadow === false) {
+      this.#warn({
+        code: 'pt-webgl2.reserved-receive-shadow',
+        backend: 'pt-webgl2',
+        phase: 'mutation',
+        method: 'updatePrimitive',
+        message:
+          `[vitrum/pt-webgl2] updatePrimitive("${id}"): receiveShadow:false is reserved ` +
+          'and not consumed by any backend (non-physical for GI).',
+        details: { primitiveIds: [id] },
+      });
+    }
     const fast = tryFastPathMaterialMutation(
       this.#gl,
       this.#sceneTextures,

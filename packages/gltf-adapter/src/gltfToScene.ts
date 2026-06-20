@@ -149,7 +149,7 @@ const MATERIAL_TEXTURE_REF_FIELDS = [
   'lightMap',
 ] as const satisfies readonly (keyof MaterialSpec)[];
 
-type MaterialTextureRefField = typeof MATERIAL_TEXTURE_REF_FIELDS[number];
+export type MaterialTextureRefField = typeof MATERIAL_TEXTURE_REF_FIELDS[number];
 
 const SUPPORTED_REQUIRED_EXTENSIONS = new Set([
   'KHR_draco_mesh_compression',
@@ -368,6 +368,7 @@ export interface GltfMaterialVariantBinding {
 export interface GltfMaterialVariantPrimitivePatch {
   readonly materialIndex?: number;
   readonly materialRouting?: MaterialSpec;
+  readonly droppedTextureFields?: readonly MaterialTextureRefField[];
   readonly uv1?: Float32Array | undefined;
   readonly tangents?: Float32Array | undefined;
 }
@@ -552,7 +553,9 @@ export async function gltfToScene(
       throw new GltfImportError(message, [{
         severity: 'error',
         code: 'unsupported-required-extension',
-        path: `extensionsRequired[${i}]`,
+        path: scopedFeatureReport.extensions.sourcePaths[ext]?.find((path) =>
+          path.startsWith('extensionsRequired['),
+        ) ?? `extensionsRequired[${i}]`,
         message,
       }]);
     }
@@ -1426,6 +1429,9 @@ function _buildPrimitiveMaterialVariantPatch(
   return {
     ...(materialIndex !== undefined ? { materialIndex } : {}),
     materialRouting: uvResolved.material,
+    ...(uvResolved.droppedTextureFields != null && uvResolved.droppedTextureFields.length > 0
+      ? { droppedTextureFields: uvResolved.droppedTextureFields }
+      : {}),
     uv1: uvResolved.uv1,
     tangents: finalTangents,
   };
@@ -1901,6 +1907,7 @@ function _extractSkinData(
 
 interface PrimitiveUvMaterialResolution {
   readonly material: MaterialSpec;
+  readonly droppedTextureFields?: readonly MaterialTextureRefField[];
   readonly uv1?: Float32Array;
   /** glTF TEXCOORD_N semantic assigned to core `uv1`.
    *  Usually 1, but a single high material UV set can be losslessly remapped
@@ -2006,7 +2013,11 @@ function _resolvePrimitiveUvMaterial(
         'for this primitive instead of being sampled with the wrong UV channel.',
     });
   }
-  return { material: dropped, ...(uv1 ? { uv1, uv1SourceTexCoord: 1 } : {}) };
+  return {
+    material: dropped,
+    droppedTextureFields: dropFields,
+    ...(uv1 ? { uv1, uv1SourceTexCoord: 1 } : {}),
+  };
 }
 
 function remapVec2Attribute(

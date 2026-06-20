@@ -192,7 +192,7 @@ export class ProgressiveHandoffCoordinator {
   readonly #controllerTarget: ProgressiveHandoffControllerTarget = {
     setScene: (scene) => this.setScene(scene),
     updatePrimitive: (id, patch) => this.updatePrimitive(id, patch),
-    reset: () => this.reset(),
+    reset: () => this.#resetEnginesAfterControllerMutation(),
   };
 
   #prev: CameraSnapshot | null = null;
@@ -238,6 +238,12 @@ export class ProgressiveHandoffCoordinator {
     this.#stillFrames = 0;
     this.#phase = 'realtime';
     this.#convergedStale = true;
+  }
+
+  #resetEnginesAfterControllerMutation(): void {
+    this.#realtime.reset();
+    this.#converged.reset();
+    this.reset();
   }
 
   // ── Scene authority ───────────────────────────────────────────────────────

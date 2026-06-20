@@ -1141,6 +1141,9 @@ function materialForVariantPatch(
 ): MaterialSpec {
   if (patch.materialRouting === undefined) return material;
   const routed: Record<string, unknown> = { ...material };
+  const droppedFields = new Set<MaterialTextureRefField>(
+    patch.droppedTextureFields as readonly MaterialTextureRefField[] | undefined,
+  );
   for (const field of MATERIAL_TEXTURE_REF_FIELDS) {
     const routedRef = patch.materialRouting[field as MaterialTextureRefField];
     const liveRef = material[field as MaterialTextureRefField];
@@ -1148,7 +1151,7 @@ function materialForVariantPatch(
       routed[field] = isTextureRef(liveRef)
         ? textureRefWithRouting(liveRef, routedRef)
         : routedRef;
-    } else {
+    } else if (droppedFields.has(field as MaterialTextureRefField)) {
       delete routed[field];
     }
   }

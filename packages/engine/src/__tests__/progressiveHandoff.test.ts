@@ -318,6 +318,32 @@ describe('ProgressiveHandoffCoordinator', () => {
       .toBeLessThan(rt.renderFrame.mock.invocationCallOrder[0] ?? 0);
   });
 
+  it('controller target reset invalidates both underlying engine accumulators before render', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const advance = vi.fn(
+      (_deltaSeconds: number, options?: Parameters<ProgressiveHandoffController['advance']>[1]) => {
+        options?.engine?.reset?.();
+      },
+    );
+    const controller: ProgressiveHandoffController = { animations: [{}], advance };
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene: sceneWithPrimitive(),
+      stillFramesBeforeHandoff: 1,
+      controller,
+    });
+
+    const result = c.frame(input(0));
+
+    expect(result.phase).toBe('realtime');
+    expect(rt.reset).toHaveBeenCalledTimes(1);
+    expect(cv.reset).toHaveBeenCalledTimes(1);
+    expect(rt.reset.mock.invocationCallOrder[0] ?? 0)
+      .toBeLessThan(rt.renderFrame.mock.invocationCallOrder[0] ?? 0);
+  });
+
   it('uses the host controller delta callback and loop flag', () => {
     const rt = makeStubEngine();
     const cv = makeStubEngine();

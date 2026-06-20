@@ -462,6 +462,36 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
+  it('warns when receiveShadow:false is supplied through updatePrimitive', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const e = await createPTEngine_WebGL2({
+        ...opts(),
+        onWarning: (w) => structured.push(w),
+      });
+      e.setScene(triScene());
+      structured.length = 0;
+      warn.mockClear();
+
+      e.updatePrimitive?.('tri', { receiveShadow: false } as never);
+
+      expect(structured.some((w) =>
+        w.code === 'pt-webgl2.reserved-receive-shadow' &&
+        w.phase === 'mutation' &&
+        w.method === 'updatePrimitive' &&
+        Array.isArray(w.details?.primitiveIds) &&
+        w.details.primitiveIds.includes('tri'),
+      )).toBe(true);
+      expect(warn.mock.calls.flat().map(String).some((m) =>
+        m.includes('updatePrimitive("tri")') && m.includes('receiveShadow:false'),
+      )).toBe(true);
+      e.dispose();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('warns when scalar displacement fields are supplied through the material mutation fast path', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];

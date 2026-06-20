@@ -1316,10 +1316,13 @@ describe('material field mapping', () => {
         MY_optional_extension: { foo: 42 },
       },
     });
-    (gltf as GltfJson & { extensionsRequired: string[] }).extensionsRequired = ['VENDOR_required_extension'];
+    (gltf as GltfJson & { extensionsRequired: string[] }).extensionsRequired = [
+      'KHR_materials_unlit',
+      'AAA_required_extension',
+    ];
 
     await expect(gltfToScene(gltf, { buffers })).rejects.toThrow(
-      /extensionsRequired includes unsupported extension "VENDOR_required_extension"/,
+      /extensionsRequired includes unsupported extension "AAA_required_extension"/,
     );
     await expect(gltfToScene(gltf, { buffers })).rejects.toBeInstanceOf(GltfImportError);
     await expect(gltfToScene(gltf, { buffers })).rejects.toMatchObject({
@@ -1327,8 +1330,8 @@ describe('material field mapping', () => {
       diagnostics: [{
         severity: 'error',
         code: 'unsupported-required-extension',
-        path: 'extensionsRequired[0]',
-        message: expect.stringContaining('VENDOR_required_extension'),
+        path: 'extensionsRequired[1]',
+        message: expect.stringContaining('AAA_required_extension'),
       }],
     });
   });

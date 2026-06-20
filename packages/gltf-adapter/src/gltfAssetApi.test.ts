@@ -561,6 +561,66 @@ function makeInlineTexturedVariantGltf(): { gltf: GltfJson; buffers: Map<number,
   };
 }
 
+function makeInlineSpecGlossVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const imageBytes = bytes([0x89, 0x50, 0x4e, 0x47]);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_materials_variants', 'KHR_materials_pbrSpecularGlossiness'],
+      extensionsRequired: ['KHR_materials_variants'],
+      extensions: {
+        KHR_materials_variants: {
+          variants: [{ name: 'glossy' }],
+        },
+      },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }],
+            },
+          },
+        }],
+      }],
+      materials: [
+        { name: 'base red', pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+        {
+          name: 'variant spec gloss',
+          extensions: {
+            KHR_materials_pbrSpecularGlossiness: {
+              diffuseFactor: [1, 1, 1, 1],
+              specularFactor: [1, 1, 1],
+              glossinessFactor: 0.5,
+              specularGlossinessTexture: { index: 0 },
+            },
+          },
+        },
+      ],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 1, mimeType: 'image/png' }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 1, byteOffset: 0, byteLength: imageBytes.byteLength },
+      ],
+      buffers: [
+        { byteLength: positions.byteLength },
+        { byteLength: imageBytes.byteLength },
+      ],
+    },
+    buffers: new Map([
+      [0, positions],
+      [1, imageBytes],
+    ]),
+  };
+}
+
 function makeInlineAnimatedInstancedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const instanceTranslations = f32Buffer([
@@ -3962,6 +4022,54 @@ describe('loadGltfForEngine', () => {
     expect(handle.data[0]).toBeCloseTo(srgbToLinearForTest(128 / 255));
     expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
     expect(handle.data[2]).toBeCloseTo(1);
+  });
+
+  it('keeps generated spec-gloss roughness maps in controller variant patches', async () => {
+    const { gltf, buffers } = makeInlineSpecGlossVariantGltf();
+    const engine = { setScene: vi.fn(), updatePrimitive: vi.fn(), reset: vi.fn() };
+    const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 128]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: context.colorSpace,
+    }));
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      engine,
+      backend: 'pt-webgl2',
+      decodePixels,
+      attachScene: false,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.decodedTextureCount).toBe(2);
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.textureDecodeReport.entries.map((entry) => entry.materialField).sort()).toEqual([
+      'roughnessMap',
+      'specularColorMap',
+    ]);
+
+    const frame = result.controller.setVariant('glossy');
+
+    expect(frame.usedSetScene).toBe(false);
+    expect(engine.updatePrimitive).toHaveBeenCalledTimes(1);
+    const patch = engine.updatePrimitive.mock.calls[0]![1] as { material: MeshPrimitive['material'] };
+    const roughness = patch.material.roughnessMap as TextureRef | undefined;
+    expect(roughness).toBeDefined();
+    const handle = roughness!.handle as { width: number; height: number; data: Float32Array; __vitrum_hint__: unknown };
+    expect(handle.width).toBe(1);
+    expect(handle.height).toBe(1);
+    expect(handle.__vitrum_hint__).toEqual({ channels: 4, dataType: 'float32', colorSpace: 'linear' });
+    const expected = 1 - 0.5 * (128 / 255);
+    expect(Array.from(handle.data.slice(0, 4))).toEqual([
+      expect.closeTo(expected),
+      expect.closeTo(expected),
+      expect.closeTo(expected),
+      1,
+    ]);
   });
 
   it('reports inactive material variant textures before decode', async () => {

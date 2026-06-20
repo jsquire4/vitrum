@@ -206,6 +206,18 @@ export class SceneMutationRouter {
     // captures that invariant for the type checker.
     const currentScene = host.getScene()!;
     const currentPrimitive = currentScene.primitives.find((p) => p.id === id) ?? null;
+    if ((patch as { receiveShadow?: boolean }).receiveShadow === false) {
+      warnHost(host, {
+        code: 'pt-webgpu.reserved-receive-shadow',
+        backend: 'pt-webgpu',
+        phase: 'mutation',
+        method: 'updatePrimitive',
+        message:
+          `[vitrum/pt-webgpu] updatePrimitive("${id}"): receiveShadow:false is reserved ` +
+          'and not consumed by any backend (non-physical for GI).',
+        details: { primitiveIds: [id] },
+      });
+    }
 
     // Item 1 — bones patch: when the host submits updated bone matrices (and/or
     // boneInverses/morphWeights) on a skinned-mesh, re-solve the skin and
