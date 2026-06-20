@@ -86,6 +86,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly malformedPrimitives: readonly GltfMalformedPrimitiveIssue[];
   readonly accessorStorageIssues: readonly GltfPrimitiveAccessorStorageIssue[];
   readonly accessorImportIssues: readonly GltfPrimitiveAccessorImportIssue[];
+  readonly instancingIssues: readonly GltfPrimitiveInstancingIssue[];
   readonly hasVertexColors: boolean;
   readonly ignoredVertexColorSets: readonly string[];
   readonly hasUv1: boolean;
@@ -169,6 +170,19 @@ export interface GltfPrimitiveAccessorImportIssue {
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
   readonly componentType?: number;
+}
+
+export type GltfPrimitiveInstancingIssueKind =
+  | 'missing-attributes'
+  | 'missing-transform-attributes'
+  | 'invalid-attribute-accessor-index';
+
+export interface GltfPrimitiveInstancingIssue {
+  readonly kind: GltfPrimitiveInstancingIssueKind;
+  readonly path: string;
+  readonly nodeIndex: number;
+  readonly attribute?: string;
+  readonly value?: unknown;
 }
 
 export interface GltfMaterialFeatureReport {
@@ -689,6 +703,16 @@ export function evaluateGltfBackendProfileCompatibility(
       support: importIssue.support,
       path: importIssue.path,
       message: primitiveAccessorImportIssueMessage(importIssue),
+    });
+  }
+
+  for (const instancingIssue of report.primitives.instancingIssues) {
+    addIssue({
+      category: 'primitive',
+      name: `EXT_mesh_gpu_instancing.${instancingIssue.kind}`,
+      support: 'unsupported',
+      path: instancingIssue.path,
+      message: primitiveInstancingIssueMessage(instancingIssue),
     });
   }
 
@@ -1319,6 +1343,26 @@ function primitiveAccessorImportIssueMessage(issue: GltfPrimitiveAccessorImportI
   );
 }
 
+function primitiveInstancingIssueMessage(issue: GltfPrimitiveInstancingIssue): string {
+  if (issue.kind === 'missing-attributes') {
+    return (
+      `glTF node ${issue.nodeIndex} uses EXT_mesh_gpu_instancing without an attributes object; ` +
+      'the importer falls back to a single base mesh.'
+    );
+  }
+  if (issue.kind === 'missing-transform-attributes') {
+    return (
+      `glTF node ${issue.nodeIndex} uses EXT_mesh_gpu_instancing without TRANSLATION, ROTATION, or SCALE accessors; ` +
+      'the importer falls back to a single base mesh.'
+    );
+  }
+  return (
+    `glTF node ${issue.nodeIndex} EXT_mesh_gpu_instancing attribute ${String(issue.attribute)} ` +
+    `must reference a non-negative accessor index, got ${String(issue.value)}; ` +
+    'the importer falls back to a single base mesh.'
+  );
+}
+
 function analyzeExtensions(
   gltf: GltfJson,
   selectedTextureSourceExtensions: ReadonlySet<string>,
@@ -1576,6 +1620,7 @@ function analyzePrimitives(
   const malformedPrimitives: GltfMalformedPrimitiveIssue[] = [];
   const accessorStorageIssues: GltfPrimitiveAccessorStorageIssue[] = [];
   const accessorImportIssues: GltfPrimitiveAccessorImportIssue[] = [];
+  const instancingIssues: GltfPrimitiveInstancingIssue[] = [];
   const meshNodesWithSkin = new Map<number, string[]>();
   const meshNodesWithoutSkin = new Map<number, string[]>();
   for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
@@ -1710,9 +1755,38 @@ function analyzePrimitives(
     hasInstancing = true;
     const instancingPath = `nodes[${nodeIndex}].extensions.EXT_mesh_gpu_instancing`;
     addSourcePath(issuePaths, 'kind:instanced-mesh', instancingPath);
+    const instancingExtension = node.extensions.EXT_mesh_gpu_instancing as unknown;
+    const instancingAttributes = isJsonRecord(instancingExtension)
+      ? instancingExtension.attributes
+      : undefined;
+    if (!isJsonRecord(instancingExtension) || !isJsonRecord(instancingAttributes)) {
+      instancingIssues.push({
+        kind: 'missing-attributes',
+        path: instancingPath,
+        nodeIndex,
+      });
+      continue;
+    }
     let instancingCount: number | undefined;
-    for (const [attr, accessorIndex] of Object.entries(node.extensions.EXT_mesh_gpu_instancing.attributes ?? {})) {
-      if (accessorIndex === undefined) continue;
+    let hasTransformAttribute = false;
+    for (const [attr, rawAccessorIndex] of Object.entries(instancingAttributes)) {
+      if (!INSTANCING_TRANSFORM_ATTRIBUTES.has(attr)) continue;
+      hasTransformAttribute = true;
+      if (
+        typeof rawAccessorIndex !== 'number' ||
+        !Number.isInteger(rawAccessorIndex) ||
+        rawAccessorIndex < 0
+      ) {
+        instancingIssues.push({
+          kind: 'invalid-attribute-accessor-index',
+          path: `${instancingPath}.attributes.${attr}`,
+          nodeIndex,
+          attribute: attr,
+          value: rawAccessorIndex,
+        });
+        continue;
+      }
+      const accessorIndex = rawAccessorIndex;
       addPrimitiveAccessorStorageIssue(gltf, accessorStorageIssues, {
         semantic: `instancing.${attr}`,
         accessorIndex,
@@ -1726,6 +1800,13 @@ function analyzePrimitives(
       });
       const accessor = gltf.accessors?.[accessorIndex];
       if (accessor !== undefined && instancingCount === undefined) instancingCount = accessor.count;
+    }
+    if (!hasTransformAttribute) {
+      instancingIssues.push({
+        kind: 'missing-transform-attributes',
+        path: `${instancingPath}.attributes`,
+        nodeIndex,
+      });
     }
     const mesh = gltf.meshes?.[node.mesh];
     const meshHasMorphTargets = (mesh?.primitives ?? []).some((primitive) =>
@@ -1792,6 +1873,9 @@ function analyzePrimitives(
       a.path.localeCompare(b.path) ||
       a.semantic.localeCompare(b.semantic) ||
       a.accessorIndex - b.accessorIndex
+    ),
+    instancingIssues: instancingIssues.sort((a, b) =>
+      a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind)
     ),
     hasVertexColors,
     ignoredVertexColorSets: sorted(ignoredVertexColorSets),
@@ -2279,6 +2363,11 @@ function addPrimitiveAccessorImportIssue(
 
 const FLOAT_ACCESSOR_COMPONENT_TYPES = [5120, 5121, 5122, 5123, 5125, 5126] as const;
 const JOINTS_ACCESSOR_COMPONENT_TYPES = [5121, 5123] as const;
+const INSTANCING_TRANSFORM_ATTRIBUTES = new Set(['TRANSLATION', 'ROTATION', 'SCALE']);
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
 
 function primitiveAttributeAccessorExpectation(semantic: string): {
   readonly expectedTypes: readonly string[];

@@ -3808,6 +3808,62 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     )).toBe(false);
   });
 
+  it('reports malformed EXT_mesh_gpu_instancing shapes as unsupported base-mesh fallbacks', () => {
+    const cases = [
+      {
+        name: 'missing-attributes',
+        extension: {},
+        expected: {
+          kind: 'missing-attributes',
+          path: 'nodes[0].extensions.EXT_mesh_gpu_instancing',
+        },
+      },
+      {
+        name: 'missing-transform-attributes',
+        extension: { attributes: { _CUSTOM: 1 } },
+        expected: {
+          kind: 'missing-transform-attributes',
+          path: 'nodes[0].extensions.EXT_mesh_gpu_instancing.attributes',
+        },
+      },
+      {
+        name: 'invalid-attribute-accessor-index',
+        extension: { attributes: { TRANSLATION: -1 } },
+        expected: {
+          kind: 'invalid-attribute-accessor-index',
+          path: 'nodes[0].extensions.EXT_mesh_gpu_instancing.attributes.TRANSLATION',
+          attribute: 'TRANSLATION',
+          value: -1,
+        },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const { gltf } = makeInlineTriangleGltf();
+      gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+      gltf.nodes![0] = {
+        ...gltf.nodes![0]!,
+        extensions: {
+          EXT_mesh_gpu_instancing: testCase.extension,
+        },
+      };
+
+      const report = analyzeGltfAsset(gltf);
+      expect(report.primitives.instancingIssues, testCase.name).toContainEqual(expect.objectContaining({
+        ...testCase.expected,
+        nodeIndex: 0,
+      }));
+
+      const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+      expect(compatibility.issues, testCase.name).toContainEqual(expect.objectContaining({
+        category: 'primitive',
+        name: `EXT_mesh_gpu_instancing.${testCase.expected.kind}`,
+        support: 'unsupported',
+        path: testCase.expected.path,
+      }));
+    }
+  });
+
   it('reports EXT_mesh_gpu_instancing on morphed meshes as an unsupported combined primitive case', () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);
