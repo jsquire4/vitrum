@@ -22,14 +22,15 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "pt-webgpu direct-light scoped inverse replay with explicit downgrade diagnostics",
     "pt-webgl2 scalar/material/emitter/environment mutation and warning specificity",
     "engine glTF subpath, progressive handoff, RAF controller playback, and recreate scene retention",
-    "method-scoped PT receiveShadow diagnostics, glTF variant generated-texture retention, and required-extension source-path diagnostics"
+    "method-scoped PT receiveShadow diagnostics, glTF variant generated-texture retention, and required-extension source-path diagnostics",
+    "glTF planner routing for walkaround-unsupported rich material fields, including source-pathed strict rejection"
   ],
   "openPromotionBuckets": [
     "GPU material-furnace and reference-render sweeps",
     "broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens; npm run gltf-browser-proof-check:required fails on HOST-BLOCKED until real browser PNG/golden PASS exists",
     "GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT quality and radiometric A/B evidence",
     "browser and real-adapter validation outside WSL GPU smoke coverage",
-    "explicit support-vs-permanent-unsupported decisions for displacement, spectral, full transparent transport, production neural checkpoint, and NRC default tier"
+    "production neural checkpoint and NRC/neural default-tier decisions; displacement, spectral/scattering, layered/thin-film, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
   ],
   "requiredGreenGates": [
     "npm run typecheck",
@@ -53,6 +54,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
 ## Current Verdict
 
 The contract/API implementation campaign is in the tail. The remaining Road work
-is mostly proof and promotion breadth, plus explicit decisions for rows that are
-research-grade or intentionally unsupported. This ledger is not a GA completion
-claim.
+is mostly proof and promotion breadth, plus learned-system default/checkpoint
+decisions. Displacement, walkaround spectral/scattering, layered/thin-film, and
+full transparent transport are explicit unsupported/approximate contract rows,
+not silent implementation promises. This ledger is not a GA completion claim.

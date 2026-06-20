@@ -3742,6 +3742,69 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(webgpuRows[1]!.unsupportedCount).toBe(0);
   });
 
+  it('routes glTF dispersion materials away from walkaround in the planner', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.extensionsUsed = ['KHR_materials_dispersion'];
+    gltf.materials = [{
+      pbrMetallicRoughness: {
+        baseColorFactor: [1, 1, 1, 1],
+      },
+      extensions: {
+        KHR_materials_dispersion: {
+          dispersion: 0.08,
+        },
+      },
+    }];
+    gltf.meshes![0]!.primitives[0]!.material = 0;
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.materialFields).toContain('dispersionAbbeNumber');
+
+    const realtimeRanked = rankGltfBackends(report, 'realtime');
+    const walkaround = realtimeRanked.find((entry) => entry.profileId === 'walkaround-hybrid');
+    expect(realtimeRanked[0]).toMatchObject({
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu',
+      unsupportedCount: 0,
+    });
+    expect(walkaround).toMatchObject({
+      backend: 'walkaround-hybrid',
+      unsupportedCount: 1,
+      issues: expect.arrayContaining([
+        expect.objectContaining({
+          category: 'material',
+          name: 'dispersionAbbeNumber',
+          support: 'unsupported',
+          path: 'materials[0].extensions.KHR_materials_dispersion.dispersion',
+        }),
+      ]),
+    });
+
+    let error: unknown;
+    try {
+      await loadGltfForEngine(gltf, {
+        buffers,
+        backend: 'walkaround-hybrid',
+        compatibilityMode: 'reject-unsupported',
+        createEngine: async () => ({ setScene: vi.fn() }),
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(GltfCompatibilityError);
+    expect((error as GltfCompatibilityError).failures).toContain(
+      'material:dispersionAbbeNumber=unsupported at materials[0].extensions.KHR_materials_dispersion.dispersion',
+    );
+    expect((error as GltfCompatibilityError).failureDetails).toContainEqual(expect.objectContaining({
+      source: 'compatibility-issue',
+      category: 'material',
+      name: 'dispersionAbbeNumber',
+      support: 'unsupported',
+      path: 'materials[0].extensions.KHR_materials_dispersion.dispersion',
+    }));
+  });
+
   it('reports malformed sparse POSITION storage before backend selection', () => {
     const { gltf } = makeInlineTriangleGltf();
     gltf.accessors![0] = {
