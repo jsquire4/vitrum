@@ -2513,16 +2513,25 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const invalidTypeAccessor = shortPositionAccessor + 1;
     const invalidComponentAccessor = shortPositionAccessor + 2;
     const missingPositionBufferViewAccessor = shortPositionAccessor + 3;
-    const invalidIndexAccessor = shortPositionAccessor + 4;
-    const missingIndexBufferViewAccessor = shortPositionAccessor + 5;
+    const missingBufferViewIndex = gltf.bufferViews!.length;
+    const missingPositionBufferAccessor = shortPositionAccessor + 4;
+    const invalidIndexAccessor = shortPositionAccessor + 5;
+    const missingIndexBufferViewAccessor = shortPositionAccessor + 6;
+    const missingIndexBufferAccessor = shortPositionAccessor + 7;
+    gltf.bufferViews = [
+      ...gltf.bufferViews!,
+      { buffer: 99, byteOffset: 0, byteLength: 36 },
+    ];
     gltf.accessors = [
       ...gltf.accessors!,
       { bufferView: 0, componentType: 5126, count: 2, type: 'VEC3' },
       { bufferView: 0, componentType: 5126, count: 3, type: 'VEC9' as never },
       { bufferView: 0, componentType: 999 as never, count: 3, type: 'VEC3' },
       { bufferView: 99, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: missingBufferViewIndex, componentType: 5126, count: 3, type: 'VEC3' },
       { bufferView: 0, componentType: 5126, count: 3, type: 'SCALAR' },
       { bufferView: 99, componentType: 5123, count: 3, type: 'SCALAR' },
+      { bufferView: missingBufferViewIndex, componentType: 5123, count: 3, type: 'SCALAR' },
     ];
     gltf.meshes![0]!.primitives = [
       { attributes: {}, material: 0 },
@@ -2530,14 +2539,16 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       { attributes: { POSITION: invalidTypeAccessor }, material: 0 },
       { attributes: { POSITION: invalidComponentAccessor }, material: 0 },
       { attributes: { POSITION: missingPositionBufferViewAccessor }, material: 0 },
+      { attributes: { POSITION: missingPositionBufferAccessor }, material: 0 },
       { attributes: { POSITION: 0 }, indices: 99, material: 0 },
       { attributes: { POSITION: 0 }, indices: invalidIndexAccessor, material: 0 },
       { attributes: { POSITION: 0 }, indices: missingIndexBufferViewAccessor, material: 0 },
+      { attributes: { POSITION: 0 }, indices: missingIndexBufferAccessor, material: 0 },
       { mode: 5, attributes: { POSITION: shortPositionAccessor }, material: 0 },
     ];
 
     const report = analyzeGltfAsset(gltf);
-    expect(report.primitives.malformedPrimitives).toHaveLength(9);
+    expect(report.primitives.malformedPrimitives).toHaveLength(11);
     expect(report.primitives.malformedPrimitives).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'missing-position',
@@ -2566,24 +2577,38 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         accessorIndex: missingPositionBufferViewAccessor,
       }),
       expect.objectContaining({
+        kind: 'missing-position-buffer',
+        path: `bufferViews[${missingBufferViewIndex}].buffer`,
+        accessorIndex: missingPositionBufferAccessor,
+        bufferViewIndex: missingBufferViewIndex,
+        bufferIndex: 99,
+      }),
+      expect.objectContaining({
         kind: 'missing-index-accessor',
-        path: 'meshes[0].primitives[5].indices',
+        path: 'meshes[0].primitives[6].indices',
         accessorIndex: 99,
       }),
       expect.objectContaining({
         kind: 'invalid-index-accessor',
-        path: 'meshes[0].primitives[6].indices',
+        path: 'meshes[0].primitives[7].indices',
         accessorIndex: invalidIndexAccessor,
         componentType: 5126,
       }),
       expect.objectContaining({
         kind: 'missing-index-buffer-view',
-        path: 'meshes[0].primitives[7].indices',
+        path: 'meshes[0].primitives[8].indices',
         accessorIndex: missingIndexBufferViewAccessor,
       }),
       expect.objectContaining({
+        kind: 'missing-index-buffer',
+        path: `bufferViews[${missingBufferViewIndex}].buffer`,
+        accessorIndex: missingIndexBufferAccessor,
+        bufferViewIndex: missingBufferViewIndex,
+        bufferIndex: 99,
+      }),
+      expect.objectContaining({
         kind: 'empty-triangulated-primitive',
-        path: 'meshes[0].primitives[8]',
+        path: 'meshes[0].primitives[10]',
         mode: 5,
       }),
     ]));
@@ -2606,13 +2631,25 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         category: 'primitive',
         name: 'malformed.missing-index-buffer-view',
         support: 'unsupported',
-        path: 'meshes[0].primitives[7].indices',
+        path: 'meshes[0].primitives[8].indices',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'malformed.missing-position-buffer',
+        support: 'unsupported',
+        path: `bufferViews[${missingBufferViewIndex}].buffer`,
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'malformed.missing-index-buffer',
+        support: 'unsupported',
+        path: `bufferViews[${missingBufferViewIndex}].buffer`,
       }),
       expect.objectContaining({
         category: 'primitive',
         name: 'malformed.empty-triangulated-primitive',
         support: 'unsupported',
-        path: 'meshes[0].primitives[8]',
+        path: 'meshes[0].primitives[10]',
       }),
     ]));
   });
@@ -2702,6 +2739,11 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
 
   it('reports malformed material texture references with compatibility source paths', () => {
     const gltf = makeExternalTexturedGltf();
+    const unavailableImageBufferView = gltf.bufferViews!.length;
+    gltf.bufferViews = [
+      ...gltf.bufferViews!,
+      { buffer: 99, byteOffset: 0, byteLength: 4 },
+    ];
     gltf.materials![0] = {
       pbrMetallicRoughness: {
         baseColorTexture: { index: 99 },
@@ -2710,6 +2752,11 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       normalTexture: { index: 2 },
       occlusionTexture: { index: 3 },
       emissiveTexture: { index: 4 },
+      extensions: {
+        KHR_materials_specular: {
+          specularTexture: { index: 5 },
+        },
+      },
     };
     gltf.textures = [
       { source: 0 },
@@ -2717,11 +2764,13 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       { source: 99 },
       { source: 1 },
       { source: 2 },
+      { source: 3 },
     ];
     gltf.images = [
       { uri: 'textures/albedo.png', mimeType: 'image/png' },
       { mimeType: 'image/png' },
       { bufferView: 99, mimeType: 'image/png' },
+      { bufferView: unavailableImageBufferView, mimeType: 'image/png' },
     ];
 
     const report = analyzeGltfAsset(gltf);
@@ -2760,6 +2809,15 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         bufferViewIndex: 99,
         path: 'images[2].bufferView',
       }),
+      expect.objectContaining({
+        kind: 'image-buffer-unavailable',
+        materialField: 'specularIntensityMap',
+        textureIndex: 5,
+        imageIndex: 3,
+        bufferViewIndex: unavailableImageBufferView,
+        bufferIndex: 99,
+        path: `bufferViews[${unavailableImageBufferView}].buffer`,
+      }),
     ]));
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
@@ -2793,6 +2851,12 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         name: 'emissiveMap.textureRef.missing-image-buffer-view',
         support: 'approximate',
         path: 'images[2].bufferView',
+      }),
+      expect.objectContaining({
+        category: 'material',
+        name: 'specularIntensityMap.textureRef.image-buffer-unavailable',
+        support: 'approximate',
+        path: `bufferViews[${unavailableImageBufferView}].buffer`,
       }),
     ]));
   });

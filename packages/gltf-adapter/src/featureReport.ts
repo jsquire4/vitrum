@@ -96,9 +96,11 @@ export type GltfMalformedPrimitiveKind =
   | 'invalid-position-accessor-type'
   | 'invalid-position-accessor-component-type'
   | 'missing-position-buffer-view'
+  | 'missing-position-buffer'
   | 'missing-index-accessor'
   | 'invalid-index-accessor'
   | 'missing-index-buffer-view'
+  | 'missing-index-buffer'
   | 'empty-triangulated-primitive';
 
 export interface GltfMalformedPrimitiveIssue {
@@ -107,6 +109,8 @@ export interface GltfMalformedPrimitiveIssue {
   readonly meshIndex: number;
   readonly primitiveIndex: number;
   readonly accessorIndex?: number;
+  readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
   readonly accessorType?: string;
   readonly componentType?: number;
   readonly mode?: number;
@@ -170,7 +174,8 @@ export type GltfMaterialTextureReferenceIssueKind =
   | 'missing-texture-source'
   | 'missing-image'
   | 'missing-image-source'
-  | 'missing-image-buffer-view';
+  | 'missing-image-buffer-view'
+  | 'image-buffer-unavailable';
 
 export interface GltfMaterialTextureReferenceIssue {
   readonly kind: GltfMaterialTextureReferenceIssueKind;
@@ -180,6 +185,7 @@ export interface GltfMaterialTextureReferenceIssue {
   readonly path: string;
   readonly imageIndex?: number;
   readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
   readonly textureSourceExtensions?: readonly GltfTextureSourceExtensionName[];
 }
 
@@ -998,9 +1004,16 @@ function materialTextureReferenceIssueMessage(
       `but the image has neither uri nor bufferView at ${issue.path}; backend profile ${profileId} imports the material without that texture.`
     );
   }
+  if (issue.kind === 'missing-image-buffer-view') {
+    return (
+      `glTF material texture "${String(issue.materialField)}" resolves to image ${String(issue.imageIndex)}, ` +
+      `but image bufferView ${String(issue.bufferViewIndex)} is missing at ${issue.path}; backend profile ${profileId} imports the material without that texture.`
+    );
+  }
   return (
     `glTF material texture "${String(issue.materialField)}" resolves to image ${String(issue.imageIndex)}, ` +
-    `but image bufferView ${String(issue.bufferViewIndex)} is missing at ${issue.path}; backend profile ${profileId} imports the material without that texture.`
+    `but image bufferView ${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)} at ${issue.path}; ` +
+    `backend profile ${profileId} imports the material without that texture.`
   );
 }
 
@@ -1055,6 +1068,12 @@ function malformedPrimitiveMessage(issue: GltfMalformedPrimitiveIssue): string {
   if (issue.kind === 'missing-position-buffer-view') {
     return `${label} references POSITION accessor ${String(issue.accessorIndex)} whose bufferView is missing; the importer skips the primitive.`;
   }
+  if (issue.kind === 'missing-position-buffer') {
+    return (
+      `${label} references POSITION accessor ${String(issue.accessorIndex)} whose bufferView ` +
+      `${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)}; the importer skips the primitive.`
+    );
+  }
   if (issue.kind === 'missing-index-accessor') {
     return `${label} references index accessor ${String(issue.accessorIndex)} which does not exist; the importer skips the primitive.`;
   }
@@ -1066,6 +1085,12 @@ function malformedPrimitiveMessage(issue: GltfMalformedPrimitiveIssue): string {
   }
   if (issue.kind === 'missing-index-buffer-view') {
     return `${label} references index accessor ${String(issue.accessorIndex)} whose bufferView is missing; the importer skips the primitive.`;
+  }
+  if (issue.kind === 'missing-index-buffer') {
+    return (
+      `${label} references index accessor ${String(issue.accessorIndex)} whose bufferView ` +
+      `${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)}; the importer skips the primitive.`
+    );
   }
   return `${label} uses topology mode ${String(issue.mode)} but the authored accessor counts cannot produce any triangles; the importer skips the primitive.`;
 }
@@ -1538,6 +1563,22 @@ function primitiveImportBlockers(
     });
     return issues;
   }
+  if (positionAccessor.bufferView !== undefined) {
+    const bufferView = gltf.bufferViews?.[positionAccessor.bufferView];
+    if (bufferView !== undefined && gltf.buffers?.[bufferView.buffer] == null) {
+      issues.push({
+        kind: 'missing-position-buffer',
+        path: `bufferViews[${positionAccessor.bufferView}].buffer`,
+        meshIndex,
+        primitiveIndex,
+        accessorIndex: positionAccessorIndex,
+        bufferViewIndex: positionAccessor.bufferView,
+        bufferIndex: bufferView.buffer,
+        mode,
+      });
+      return issues;
+    }
+  }
 
   const indexAccessorIndex = primitive.indices;
   let indexCount: number | undefined;
@@ -1580,6 +1621,22 @@ function primitiveImportBlockers(
         mode,
       });
       return issues;
+    }
+    if (indexAccessor.bufferView !== undefined) {
+      const bufferView = gltf.bufferViews?.[indexAccessor.bufferView];
+      if (bufferView !== undefined && gltf.buffers?.[bufferView.buffer] == null) {
+        issues.push({
+          kind: 'missing-index-buffer',
+          path: `bufferViews[${indexAccessor.bufferView}].buffer`,
+          meshIndex,
+          primitiveIndex,
+          accessorIndex: indexAccessorIndex,
+          bufferViewIndex: indexAccessor.bufferView,
+          bufferIndex: bufferView.buffer,
+          mode,
+        });
+        return issues;
+      }
     }
     indexCount = indexAccessor.count;
   }
@@ -2073,6 +2130,21 @@ function materialTextureReferenceIssues(
       imageIndex: selectedSource.imageIndex,
       bufferViewIndex: image.bufferView,
     }];
+  }
+  if (image.bufferView !== undefined) {
+    const bufferView = gltf.bufferViews?.[image.bufferView];
+    if (bufferView !== undefined && gltf.buffers?.[bufferView.buffer] == null) {
+      return [{
+        kind: 'image-buffer-unavailable',
+        materialField,
+        textureIndex: info.index,
+        materialPath,
+        path: `bufferViews[${image.bufferView}].buffer`,
+        imageIndex: selectedSource.imageIndex,
+        bufferViewIndex: image.bufferView,
+        bufferIndex: bufferView.buffer,
+      }];
+    }
   }
   if (image.uri === undefined && image.bufferView === undefined) {
     return [{
