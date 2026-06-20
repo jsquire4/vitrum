@@ -58,11 +58,12 @@ export const RESTIR_PT_SPECIALTY_PROOF = {
   scriptPath: "tools/radiometric-ab/ab-restir-pt-specialty.mjs",
   resultPath: "tools/radiometric-ab/results-restir-pt-specialty.json",
   coverage: {
-    specialtyLobes: ["anisotropy", "clearcoat", "iridescence", "sheen"],
+    specialtyLobes: ["anisotropy", "clearcoat", "iridescence", "sheen", "specular"],
+    materialSources: ["map-backed-effective-values", "scalar"],
     requiresGpuRecapture: false,
   },
   summary: {
-    caseCount: 3,
+    caseCount: 4,
     maxAbsoluteError: 0,
     maxRelativeError: 0,
   },

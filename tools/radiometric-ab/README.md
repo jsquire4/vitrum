@@ -3,8 +3,8 @@
 Radiometric A/B harnesses for `pt-webgpu`. Most scripts run full-tier render
 variants in the linear HDR domain (`captureFrame({ colorSpace:'linear' })`) —
 the raw `accumTexture` float32 values, NOT the tonemapped display output. The
-ReSTIR-PT specialty-lobe script is a CPU/static identity proof, not a GPU
-recapture.
+ReSTIR-PT specialty-lobe script is a CPU/static identity proof for scalar and
+map-backed-effective lobe payloads, not a GPU recapture.
 
 ## What this tests
 
@@ -16,7 +16,7 @@ recapture.
 | `ab-sppm.mjs` | SPPM convergence | `causticStrategy:'manifold-nee'` (GPU-validated MNEE) | `causticStrategy:'photon-map'` at 20/50/80 frames |
 | `ab-bdpt.mjs` | BDPT unbiasedness + variance | `bdpt:false` (unidirectional) | `bdpt:true` |
 | `ab-restir-pt.mjs` | ReSTIR-PT bias + variance | `restirPtReuse:false` (default megakernel) | `restirPtReuse:true` (composite megakernel) |
-| `ab-restir-pt-specialty.mjs` | ReSTIR-PT specialty-lobe identity | base-path CPU estimator | one-sample ReSTIR-PT producer/finalize/resolve identity |
+| `ab-restir-pt-specialty.mjs` | ReSTIR-PT specialty-lobe identity | base-path CPU estimator | one-sample ReSTIR-PT producer/finalize/resolve identity for scalar + map-backed-effective clearcoat/sheen/iridescence/aniso/specular payloads |
 
 ## How to run
 

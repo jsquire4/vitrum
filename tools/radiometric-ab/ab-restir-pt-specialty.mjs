@@ -12,8 +12,9 @@
  *
  * For a one-sample producer reservoir, W cancels pHat and the resolved result
  * must match the base path estimator f_bsdf * cosTheta * Lo / pdfSrc. The cases
- * below keep clearcoat, sheen, iridescence, and anisotropy nonzero in a bounded
- * static fixture so package tests can pin coverage without requiring WebGPU.
+ * below keep clearcoat, sheen, iridescence, anisotropy, and KHR specular nonzero
+ * in bounded scalar and map-backed-effective-value fixtures so package tests can
+ * pin coverage without requiring WebGPU.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -389,6 +390,7 @@ function specialtyCases() {
     },
     {
       id: 'all-specialty-lobes',
+      materialSource: 'scalar',
       activeLobes: ['clearcoat', 'sheen', 'iridescence', 'anisotropy'],
       material: {
         ...common,
@@ -411,6 +413,43 @@ function specialtyCases() {
       wo: normalize([0.44, 0.16, 0.89]),
       wi: normalize([-0.39, -0.31, 0.84]),
       Lo: [1.8, 1.1, 0.74],
+    },
+    {
+      id: 'map-backed-effective-lobes',
+      materialSource: 'map-backed-effective-values',
+      activeLobes: ['clearcoat', 'sheen', 'iridescence', 'anisotropy', 'specular'],
+      material: {
+        ...common,
+        baseColor: [0.52, 0.43, 0.33],
+        roughness: 0.28,
+        clearcoat: 0.84,
+        clearcoatRoughness: 0.16,
+        sheen: 0.57,
+        sheenRoughness: 0.41,
+        sheenColor: [0.22, 0.81, 0.64],
+        iridescence: 0.71,
+        iridescenceIor: 1.48,
+        iridescenceThicknessMin: 340,
+        iridescenceThicknessMax: 340,
+        specularColor: [0.62, 0.88, 1.0],
+        specularIntensity: 0.73,
+        anisotropy: 0.46,
+        anisotropyRotation: 0.39,
+      },
+      texturePayload: {
+        clearcoatMap: 0.84,
+        clearcoatRoughnessMap: 0.64,
+        sheenColorMap: [0.22, 0.81, 0.64],
+        sheenRoughnessMap: 0.41,
+        iridescenceMap: 0.71,
+        iridescenceThicknessMap: 0.5,
+        anisotropyMap: [0.46, 0.39],
+        specularColorMap: [0.62, 0.88, 1.0],
+        specularIntensityMap: 0.73,
+      },
+      wo: normalize([-0.18, 0.37, 0.91]),
+      wi: normalize([0.44, -0.22, 0.87]),
+      Lo: [0.74, 1.46, 1.12],
     },
   ];
 }
@@ -455,7 +494,9 @@ function evaluateCase(cfg) {
 
   return roundDeep({
     id: cfg.id,
+    materialSource: cfg.materialSource ?? 'scalar',
     activeLobes: cfg.activeLobes,
+    ...(cfg.texturePayload ? { texturePayload: cfg.texturePayload } : {}),
     geometry: { xv, xs, normal, clearcoatNormal, wo: cfg.wo, wi: cfg.wi, cosTheta },
     material: cfg.material,
     reference: {
@@ -485,6 +526,7 @@ function evaluateCase(cfg) {
 export function runRestirPtSpecialtyReference() {
   const cases = specialtyCases().map(evaluateCase);
   const coveredLobes = [...new Set(cases.flatMap((c) => c.activeLobes))].sort();
+  const materialSources = [...new Set(cases.map((c) => c.materialSource))].sort();
   const maxAbsoluteError = Math.max(...cases.map((c) => c.ab.absDiff));
   const maxRelativeError = Math.max(...cases.map((c) => c.ab.relativeError));
   const luminanceChecksum = cases.reduce((acc, c, i) => acc + (i + 1) * c.restirPt.luminance, 0);
@@ -496,6 +538,7 @@ export function runRestirPtSpecialtyReference() {
     invariant: 'single-sample ReSTIR-PT resolves to f_bsdf*cos*Lo/pdfSrc for specialty visible lobes',
     coverage: {
       specialtyLobes: coveredLobes,
+      materialSources,
       requiresGpuRecapture: false,
     },
     summary: {

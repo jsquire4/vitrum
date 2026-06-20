@@ -34,6 +34,7 @@ interface SpecialtyFixture {
   readonly mode: string;
   readonly coverage: {
     readonly specialtyLobes: readonly string[];
+    readonly materialSources: readonly string[];
     readonly requiresGpuRecapture: boolean;
   };
   readonly summary: {
@@ -71,11 +72,11 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
     expect(fixture.mode).toBe('cpu-static');
     expect(fixture.coverage.requiresGpuRecapture).toBe(false);
     expect(fixture.summary).toEqual({
-      caseCount: 3,
+      caseCount: 4,
       maxAbsoluteError: 0,
       maxRelativeError: 0,
-      luminanceChecksum: 3.40007609048,
-      pdfChecksum: 3.224578288215,
+      luminanceChecksum: 10.258282571792,
+      pdfChecksum: 4.024098414883,
     });
 
     for (const c of fixture.cases) {
@@ -93,17 +94,23 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
     }
   });
 
-  it('covers clearcoat, sheen, iridescence, and anisotropy in the fixture cases', () => {
+  it('covers scalar and map-backed specialty lobe payloads in the fixture cases', () => {
     expect(fixture.coverage.specialtyLobes).toEqual([
       'anisotropy',
       'clearcoat',
       'iridescence',
       'sheen',
+      'specular',
+    ]);
+    expect(fixture.coverage.materialSources).toEqual([
+      'map-backed-effective-values',
+      'scalar',
     ]);
     expect(fixture.cases.map((c) => [c.id, c.activeLobes])).toEqual([
       ['clearcoat-sheen', ['clearcoat', 'sheen']],
       ['iridescent-anisotropic', ['iridescence', 'anisotropy']],
       ['all-specialty-lobes', ['clearcoat', 'sheen', 'iridescence', 'anisotropy']],
+      ['map-backed-effective-lobes', ['clearcoat', 'sheen', 'iridescence', 'anisotropy', 'specular']],
     ]);
   });
 
@@ -112,6 +119,8 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
       'var clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture',
       'var sheenV = vMat.sheen;',
       'var iridescenceV = clamp(vMat.iridescence * sampleIridescenceTexture',
+      'var specularColorV = clamp(vMat.specularColor * sampleSpecularColorTexture',
+      'var specularIntensityV = clamp(vMat.specularIntensity * sampleSpecularIntensityTexture',
       'let anisotropyV = materialAnisotropy(vMatId, vHit.triIndex, vHit.baryVW);',
       'let wiRecon = rptSampleSourceReconnectionDirection(',
       'let pdfSrc = rptSourceDirectionalPdfFull(',
@@ -125,9 +134,13 @@ describe('ReSTIR-PT specialty-lobe CPU/static reference', () => {
       'sheenV:            f32,',
       'iridescenceV:      f32,',
       'anisotropyV:       f32,',
+      'specularColorV:    vec3f,',
+      'specularIntensityV: f32,',
       'buf[b + 31u] = bitcast<u32>(r.clearcoatV);',
       'buf[b + 38u] = bitcast<u32>(r.iridescenceV);',
       'buf[b + 42u] = bitcast<u32>(r.anisotropyV);',
+      'buf[b + 44u] = bitcast<u32>(r.specularColorV.x);',
+      'buf[b + 47u] = bitcast<u32>(r.specularIntensityV);',
     ]) {
       expect(RESERVOIR_PT_HERO_WGSL).toContain(line);
     }

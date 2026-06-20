@@ -165,6 +165,9 @@ async function checkRestirPtSpecialty(proof) {
   if (!sameJson(result.coverage?.specialtyLobes, proof.coverage.specialtyLobes)) {
     fail("restir-pt-specialty: specialtyLobes coverage differs from proofs.mjs");
   }
+  if (!sameJson(result.coverage?.materialSources, proof.coverage.materialSources)) {
+    fail("restir-pt-specialty: materialSources coverage differs from proofs.mjs");
+  }
   if (result.coverage?.requiresGpuRecapture !== proof.coverage.requiresGpuRecapture) {
     fail("restir-pt-specialty: requiresGpuRecapture differs from proofs.mjs");
   }

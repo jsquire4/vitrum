@@ -1599,8 +1599,11 @@ non-lite pt-webgpu config that cannot resolve there.
 Focused scalar and CPU-readable map-backed clearcoat/sheen/iridescence/aniso/
 specular behavioral goldens now live in `pt/material-lobes` and
 `pt/material-lobe-maps`, including dzn full-tier status artifacts. Remaining
-material-furnace work is specialty-integrator radiometry and promotion A/B; a
-green lite run can no longer be mistaken for full-tier material evidence.
+material-furnace work is GPU/radiometric promotion A/B; the ReSTIR-PT specialty
+fixture now pins scalar plus map-backed-effective clearcoat/sheen/iridescence/
+aniso/specular one-sample producer/finalize/resolve identity, so a green lite run
+or scalar-only static fixture can no longer be mistaken for full-tier material
+evidence.
 
 ✅ **RADIOMETRIC A/B FALSE-POSITIVE GUARDS ADDED (2026-06-17):**
 `tools/radiometric-ab/{ab-sppm,ab-bdpt,ab-restir-pt}.mjs` now force
@@ -1867,7 +1870,9 @@ than true layered ReSTIR/GI transport.
    ✅ narrowed by `pt/gltf-material-sweep`; default lavapipe golden and dzn
    full-tier assertion now cover API boot/readback for the material-heavy
    fixture. Remaining work is broader material-furnace/reference fidelity
-   promotion, not API boot/readback plumbing.
+   promotion, not API boot/readback plumbing. The material-lobe proof lane now
+   also includes `pt/material-lobe-maps` dzn full-tier goldens plus scalar and
+   map-backed-effective ReSTIR-PT specialty identity fixtures.
 10. Ledger/README/fidelity matrix reconciliation
 
 ### Active performance track

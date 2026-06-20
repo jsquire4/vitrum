@@ -7,20 +7,26 @@
       "anisotropy",
       "clearcoat",
       "iridescence",
-      "sheen"
+      "sheen",
+      "specular"
+    ],
+    "materialSources": [
+      "map-backed-effective-values",
+      "scalar"
     ],
     "requiresGpuRecapture": false
   },
   "summary": {
-    "caseCount": 3,
+    "caseCount": 4,
     "maxAbsoluteError": 0,
     "maxRelativeError": 0,
-    "luminanceChecksum": 3.40007609048,
-    "pdfChecksum": 3.224578288215
+    "luminanceChecksum": 10.258282571792,
+    "pdfChecksum": 4.024098414883
   },
   "cases": [
     {
       "id": "clearcoat-sheen",
+      "materialSource": "scalar",
       "activeLobes": [
         "clearcoat",
         "sheen"
@@ -128,6 +134,7 @@
     },
     {
       "id": "iridescent-anisotropic",
+      "materialSource": "scalar",
       "activeLobes": [
         "iridescence",
         "anisotropy"
@@ -235,6 +242,7 @@
     },
     {
       "id": "all-specialty-lobes",
+      "materialSource": "scalar",
       "activeLobes": [
         "clearcoat",
         "sheen",
@@ -340,6 +348,139 @@
         "absDiff": 0,
         "relativeError": 0,
         "lobeDeltaFromNeutral": -0.326402105825
+      }
+    },
+    {
+      "id": "map-backed-effective-lobes",
+      "materialSource": "map-backed-effective-values",
+      "activeLobes": [
+        "clearcoat",
+        "sheen",
+        "iridescence",
+        "anisotropy",
+        "specular"
+      ],
+      "texturePayload": {
+        "clearcoatMap": 0.84,
+        "clearcoatRoughnessMap": 0.64,
+        "sheenColorMap": [
+          0.22,
+          0.81,
+          0.64
+        ],
+        "sheenRoughnessMap": 0.41,
+        "iridescenceMap": 0.71,
+        "iridescenceThicknessMap": 0.5,
+        "anisotropyMap": [
+          0.46,
+          0.39
+        ],
+        "specularColorMap": [
+          0.62,
+          0.88,
+          1
+        ],
+        "specularIntensityMap": 0.73
+      },
+      "geometry": {
+        "xv": [
+          0,
+          0,
+          0
+        ],
+        "xs": [
+          0.770423849708,
+          -0.385211924854,
+          1.523338066468
+        ],
+        "normal": [
+          0,
+          0,
+          1
+        ],
+        "clearcoatNormal": [
+          0.079999360008,
+          -0.039999680004,
+          0.995992032096
+        ],
+        "wo": [
+          -0.180234457291,
+          0.370481939987,
+          0.91118531186
+        ],
+        "wi": [
+          0.440242199833,
+          -0.220121099917,
+          0.870478895125
+        ],
+        "cosTheta": 0.870478895125
+      },
+      "material": {
+        "baseColor": [
+          0.52,
+          0.43,
+          0.33
+        ],
+        "roughness": 0.28,
+        "metallic": 0,
+        "clearcoat": 0.84,
+        "clearcoatRoughness": 0.16,
+        "sheen": 0.57,
+        "sheenRoughness": 0.41,
+        "sheenColor": [
+          0.22,
+          0.81,
+          0.64
+        ],
+        "iridescence": 0.71,
+        "iridescenceIor": 1.48,
+        "iridescenceThicknessMin": 340,
+        "iridescenceThicknessMax": 340,
+        "specularColor": [
+          0.62,
+          0.88,
+          1
+        ],
+        "specularIntensity": 0.73,
+        "anisotropy": 0.46,
+        "anisotropyRotation": 0.39
+      },
+      "reference": {
+        "fBsdf": [
+          0.19201761259,
+          0.3357992135,
+          0.158894280702
+        ],
+        "Lo": [
+          0.74,
+          1.46,
+          1.12
+        ],
+        "pdfSrc": 0.199880031667,
+        "pHat": 0.342704632167,
+        "wCandidate": 1.714551620328,
+        "W": 5.003001008446
+      },
+      "basePath": {
+        "indirect": [
+          0.618816124925,
+          2.135115468176,
+          0.775023951934
+        ],
+        "luminance": 1.714551620328
+      },
+      "restirPt": {
+        "indirect": [
+          0.618816124925,
+          2.135115468176,
+          0.775023951934
+        ],
+        "luminance": 1.714551620328
+      },
+      "ab": {
+        "absDiff": 0,
+        "relativeError": 0,
+        "lobeDeltaFromNeutral": 1.028329802843
       }
     }
   ]
