@@ -316,6 +316,7 @@ function walkaroundShardStatuses() {
     "wh/rect-area-emitter",
     "wh/directional-sun",
     "wh/glass-gi",
+    "wh/transparent-oit",
   ];
   return labels.map((label) => ({
     path: `tools/behavioral-gate/behavioral-gate-dzn-${slug(label)}-status.json`,

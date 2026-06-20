@@ -156,6 +156,11 @@ const EXPECTATION_TABLE = {
   // regardless of glass; the glass-GI term adds the indirect contribution seen through
   // the glass. RENDER-CHANGING for glass scenes, A/B in R8-C.
   "wh/glass-gi":          { expected: "ok" },
+  // Transparent OIT execution proof: fractional alpha-blend layer in front of
+  // lit Cornell geometry with sun, point, and finite-area lighting. This proves
+  // the pass boots/renders on the adapter; full layered transport remains out
+  // of scope for this gate.
+  "wh/transparent-oit":    { expected: "ok" },
 };
 
 // ── Matrix ────────────────────────────────────────────────────────────────────
@@ -242,6 +247,10 @@ const WH_CONFIGS = [
   // regardless (direct light through glass); the glass-GI term adds the diffuse-wall
   // indirect contribution visible through the pane.
   { label: "wh/glass-gi",          eng: {},                                    scene: { glass: true } },
+  { label: "wh/transparent-oit",    eng: {
+      primaryLightDir:       [0.45, -0.8, 0.2],
+      primaryLightIntensity: 1.4,
+    },                                                                          scene: { transparentOit: true } },
 ];
 
 const REAL_GLTF_GOLDENS = Object.fromEntries(REAL_GLTF_BEHAVIORAL_PROOFS.map((proof) => [
@@ -349,6 +358,28 @@ function buildCornellScene(opts = {}) {
     });
   }
 
+  // Transparent OIT proof lane: keep this distinct from the glass-GI lane above.
+  // It is a fractional alpha-blend surface, not a transmissive volume, so it
+  // exercises the camera-visible transparent composition pass.
+  if (opts.transparentOit) {
+    primitives.push({
+      kind: "mesh", id: "transparent-oit-pane",
+      positions: new Float32Array([-0.62,-0.46,0.45, 0.62,-0.46,0.45, 0.62,0.46,0.45, -0.62,0.46,0.45]),
+      normals:   new Float32Array([0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1]),
+      uvs:       new Float32Array([0,0, 1,0, 1,1, 0,1]),
+      indices:   new Uint32Array([0,2,1, 2,0,3]),
+      material:  {
+        baseColor: [0.12, 0.65, 1.0, 0.52],
+        roughness: 0.18,
+        metallic: 0.0,
+        alphaMode: "blend",
+        opacity: 0.52,
+        specularIntensity: 0.65,
+        clearcoat: 0.35,
+      },
+    });
+  }
+
   // directionalOnly: no rect-area emitter, so the only light is the primary
   // directional set on the engine (tests that lo_sunNEE lights opaque surfaces).
   const emitters = opts.directionalOnly ? [] : (opts.emitters ?? [{
@@ -357,6 +388,15 @@ function buildCornellScene(opts = {}) {
     uAxis: [0, 0, 0.2], vAxis: [0.2, 0, 0],
     color: [1,1,1], intensity: 12.0,
   }]);
+  if (opts.transparentOit) {
+    emitters.push({
+      kind: "point", id: "transparent-oit-point",
+      position: [-0.55, 0.25, 0.95],
+      color: [0.9, 0.96, 1.0],
+      intensity: 3.5,
+      castShadow: false,
+    });
+  }
 
   let environment = { kind: "none" };
   if (opts.hdri) {

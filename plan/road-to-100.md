@@ -1793,11 +1793,15 @@ and higher-confidence reference captures.
 `npm run behavioral-gate:dzn -- --filter wh/ --require-full-tier` aggregate is
 too slow for the current WSL/dzn timeout envelope and now records
 `HOST-BLOCKED` in `behavioral-gate-dzn-wh-status.json`. The proof is therefore
-sharded into ten committed per-label artifacts:
-`behavioral-gate-dzn-wh-{default,rcenabled,ppgenabled,gtao-off,checkerboard,skinned-mesh,hdri-env,rect-area-emitter,directional-sun,glass-gi}-status.json`.
+sharded into eleven committed per-label artifacts:
+`behavioral-gate-dzn-wh-{default,rcenabled,ppgenabled,gtao-off,checkerboard,skinned-mesh,hdri-env,rect-area-emitter,directional-sun,glass-gi,transparent-oit}-status.json`.
 Each shard was rerun on dzn and passed with finite non-black output, zero GPU
 errors, and `nan:false`; `npm run behavioral-gate:dzn-status-check` verifies the
 shards, so the validation evidence no longer depends on one monolithic
+aggregate. The new `wh/transparent-oit` shard exercises a fractional
+`alphaMode:'blend'` pane with sun, point-light, and finite-area lighting, and
+keeps the structured warning that this is camera-visible OIT composition rather
+than true layered ReSTIR/GI transport.
 15-minute-plus host run.
 
 ---

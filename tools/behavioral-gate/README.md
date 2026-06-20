@@ -58,10 +58,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
 ```
 
 The committed dzn status set includes the broader `--filter gltf` full-suite
-lane, focused pt-webgpu/light/mutation artifacts, and ten walkaround shards
+lane, focused pt-webgpu/light/mutation artifacts, and eleven walkaround shards
 (`wh/default`, `wh/rcEnabled`, `wh/ppgEnabled`, `wh/gtao-off`,
 `wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`, `wh/rect-area-emitter`,
-`wh/directional-sun`, `wh/glass-gi`). Together they cover every real
+`wh/directional-sun`, `wh/glass-gi`, `wh/transparent-oit`). Together they cover every real
 behavioral-gate label; the only uncovered label is the synthetic
 `__self-test/always-black` failure-injection row.
 The broad glTF status confirms full-tier execution with zero GPU errors for all
