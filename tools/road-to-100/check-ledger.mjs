@@ -1016,6 +1016,19 @@ for (const needle of [
   }
 }
 
+const ptWebgpuReadmeForDenoiser = await readText("packages/pt-webgpu/README.md");
+for (const needle of [
+  "`denoiser: 'auto'` / `'oidn-final'` with aux readback",
+  "resolves at construction to host OIDN",
+  "`oidn: { modelUrl }` exists",
+  "structured",
+  "`pt-webgpu.denoiser-auto-resolved` warning",
+]) {
+  if (!ptWebgpuReadmeForDenoiser.includes(needle)) {
+    fail(`pt-webgpu README must document denoiser:auto resolver truthfully: ${needle}`);
+  }
+}
+
 const ptWebgl2EngineContractTest = await readText("packages/pt-webgl2/src/__tests__/engineContract.test.ts");
 for (const needle of [
   "denoiser: 'auto' resolves to no-denoise without host OIDN assets",

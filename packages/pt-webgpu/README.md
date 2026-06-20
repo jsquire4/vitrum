@@ -117,7 +117,7 @@ Mechanical parity for the native WebGL2 path tracer is **implemented** for:
 - `updatePrimitive` / `updateEmitter` incremental APIs (see ledger)
 - Hero-wavelength spectral (opt-in extension), Cauchy IOR at hero λ, layered MIS
 - Volumetric subsurface scattering (WS4): homogeneous participating-media random walk — free-flight distance sampling (`t = -ln(1-ξ)/σ_t`), Henyey-Greenstein phase scatter, single-scatter albedo σ_s/σ_t, in-medium next-event estimation with phase↔light power-heuristic MIS, and specular-chain Beer-Lambert extinction in the caustic path. σ_t = σ_a (from `attenuationColor`/`attenuationDistance`, or the spectral curve when authored) + σ_s (`scatteringCoefficient(RGB)`); g = `scatteringAnisotropy`. The walk is **compiled out when BDPT is enabled** (the BDPT light subpath has no medium logic — energy-conservation gate), falling back to per-channel Beer-Lambert absorption. The compatibility (lite) tier keeps Beer-Lambert absorption only (no walk).
-- `denoiser: 'oidn-final'` with aux readback
+- `denoiser: 'auto'` / `'oidn-final'` with aux readback
 
 **Denoisers on pt-webgpu:** `'none'`, `'auto'`, `'oidn-final'`. `auto` resolves to host OIDN when `oidn: { modelUrl }` exists, otherwise no-denoise with a structured warning. Any other mode (incl. `'svgf-real'`) warns and degrades to no-denoise — SVGF is a real-time 1-spp filter, the wrong regime for a converged tracer.
 
@@ -148,7 +148,15 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
   visibility, normal/bump/light/transmission/thickness/displacement and clearcoat-normal
   maps, layered/volume/spectral domains, indirect/environment emission, and full
   stochastic area sampling still use finite difference or remain validation tails.
-- **`denoiser: 'oidn-final'` is NOT turnkey** — vitrum ships neither of the two required host assets: (1) an OIDN ONNX model URL (`oidn: { modelUrl }`, e.g. `oidn_rt_hdr_alb_nrm.onnx`) and (2) the `onnxruntime-web` optional peer dep installed in the host application. Missing either produces a clear error at construction time.
+- **`denoiser: 'auto'` / `'oidn-final'` is NOT turnkey** — `auto`
+  resolves at construction to host OIDN when `oidn: { modelUrl }` exists,
+  otherwise to no-denoise with a structured
+  `pt-webgpu.denoiser-auto-resolved` warning. Explicit `oidn-final` still
+  requires both host assets: (1) an OIDN ONNX model URL (`oidn: { modelUrl }`,
+  e.g. `oidn_rt_hdr_alb_nrm.onnx`) and (2) the `onnxruntime-web` optional peer
+  dep installed in the host application. Missing either explicit `oidn-final`
+  asset produces a clear error at construction time.
+
 ## Polish commands
 
 ```bash
