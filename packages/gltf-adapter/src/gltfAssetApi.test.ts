@@ -3377,6 +3377,118 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
   });
 
+  it('reports malformed sparse storage on optional primitive streams as degraded import issues', () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addMorphedGpuInstancing(gltf, buffers);
+    const inverseBindAccessor = gltf.accessors!.length;
+    gltf.nodes![0] = { ...gltf.nodes![0]!, skin: 0 };
+    gltf.nodes!.push({ name: 'joint' });
+    gltf.skins = [{ joints: [1], inverseBindMatrices: inverseBindAccessor }];
+    gltf.accessors!.push({
+      bufferView: 0,
+      componentType: 5126,
+      count: 1,
+      type: 'MAT4',
+      sparse: {
+        count: 1,
+        indices: { bufferView: 0, componentType: 5123 },
+        values: { bufferView: 102 },
+      },
+    });
+    gltf.accessors![1] = {
+      ...gltf.accessors![1]!,
+      sparse: {
+        count: 1,
+        indices: { bufferView: 0, componentType: 5123 },
+        values: { bufferView: 99 },
+      },
+    };
+    gltf.accessors![2] = {
+      ...gltf.accessors![2]!,
+      sparse: {
+        count: 1,
+        indices: { bufferView: 0, componentType: 5123 },
+        values: { bufferView: 100 },
+      },
+    };
+    gltf.accessors![3] = {
+      ...gltf.accessors![3]!,
+      sparse: {
+        count: 1,
+        indices: { bufferView: 0, componentType: 5123 },
+        values: { bufferView: 101 },
+      },
+    };
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.primitives.accessorStorageIssues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        semantic: 'attributes.NORMAL',
+        accessorIndex: 1,
+        path: 'accessors[1].sparse.values.bufferView',
+        sparseIssueKind: 'missing-sparse-values-buffer-view',
+        meshIndex: 0,
+        primitiveIndex: 0,
+        bufferViewIndex: 99,
+      }),
+      expect.objectContaining({
+        semantic: 'targets.POSITION',
+        accessorIndex: 2,
+        path: 'accessors[2].sparse.values.bufferView',
+        sparseIssueKind: 'missing-sparse-values-buffer-view',
+        meshIndex: 0,
+        primitiveIndex: 0,
+        targetIndex: 0,
+        bufferViewIndex: 100,
+      }),
+      expect.objectContaining({
+        semantic: 'instancing.TRANSLATION',
+        accessorIndex: 3,
+        path: 'accessors[3].sparse.values.bufferView',
+        sparseIssueKind: 'missing-sparse-values-buffer-view',
+        nodeIndex: 0,
+        bufferViewIndex: 101,
+      }),
+      expect.objectContaining({
+        semantic: 'skin.inverseBindMatrices',
+        accessorIndex: inverseBindAccessor,
+        path: `accessors[${inverseBindAccessor}].sparse.values.bufferView`,
+        sparseIssueKind: 'missing-sparse-values-buffer-view',
+        skinIndex: 0,
+        bufferViewIndex: 102,
+      }),
+    ]));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'accessor.attributes.NORMAL.missing-sparse-values-buffer-view',
+        support: 'approximate',
+        path: 'accessors[1].sparse.values.bufferView',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'accessor.targets.POSITION.missing-sparse-values-buffer-view',
+        support: 'approximate',
+        path: 'accessors[2].sparse.values.bufferView',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'accessor.instancing.TRANSLATION.missing-sparse-values-buffer-view',
+        support: 'approximate',
+        path: 'accessors[3].sparse.values.bufferView',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'accessor.skin.inverseBindMatrices.missing-sparse-values-buffer-view',
+        support: 'approximate',
+        path: `accessors[${inverseBindAccessor}].sparse.values.bufferView`,
+      }),
+    ]));
+  });
+
   it('reports malformed sparse animation storage before backend selection', () => {
     const { gltf } = makeInlineTriangleGltf();
     const inputAccessor = gltf.accessors!.length;

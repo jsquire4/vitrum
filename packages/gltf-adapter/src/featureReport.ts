@@ -84,6 +84,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasIgnoredSkinAttributes: boolean;
   readonly hasIncompleteSkinAttributes: boolean;
   readonly malformedPrimitives: readonly GltfMalformedPrimitiveIssue[];
+  readonly accessorStorageIssues: readonly GltfPrimitiveAccessorStorageIssue[];
   readonly hasVertexColors: boolean;
   readonly ignoredVertexColorSets: readonly string[];
   readonly hasUv1: boolean;
@@ -124,6 +125,21 @@ export interface GltfMalformedPrimitiveIssue {
   readonly componentType?: number;
   readonly sparseIssueKind?: GltfSparseAccessorStorageIssueKind;
   readonly mode?: number;
+}
+
+export interface GltfPrimitiveAccessorStorageIssue {
+  readonly path: string;
+  readonly semantic: string;
+  readonly accessorIndex: number;
+  readonly sparseIssueKind: GltfSparseAccessorStorageIssueKind;
+  readonly meshIndex?: number;
+  readonly primitiveIndex?: number;
+  readonly targetIndex?: number;
+  readonly nodeIndex?: number;
+  readonly skinIndex?: number;
+  readonly bufferViewIndex?: number;
+  readonly bufferIndex?: number;
+  readonly componentType?: number;
 }
 
 export interface GltfMaterialFeatureReport {
@@ -624,6 +640,16 @@ export function evaluateGltfBackendProfileCompatibility(
       support: 'unsupported',
       path: malformed.path,
       message: malformedPrimitiveMessage(malformed),
+    });
+  }
+
+  for (const storageIssue of report.primitives.accessorStorageIssues) {
+    addIssue({
+      category: 'primitive',
+      name: `accessor.${storageIssue.semantic}.${storageIssue.sparseIssueKind}`,
+      support: 'approximate',
+      path: storageIssue.path,
+      message: primitiveAccessorStorageIssueMessage(storageIssue),
     });
   }
 
@@ -1194,6 +1220,21 @@ function sparseAccessorStorageIssueMessage(
   return 'unknown sparse accessor storage issue';
 }
 
+function primitiveAccessorStorageIssueMessage(issue: GltfPrimitiveAccessorStorageIssue): string {
+  const location = issue.meshIndex !== undefined && issue.primitiveIndex !== undefined
+    ? `glTF mesh ${issue.meshIndex} primitive ${issue.primitiveIndex}`
+    : issue.nodeIndex !== undefined
+      ? `glTF node ${issue.nodeIndex}`
+      : issue.skinIndex !== undefined
+        ? `glTF skin ${issue.skinIndex}`
+        : 'glTF primitive input';
+  return (
+    `${location} ${issue.semantic} accessor ${issue.accessorIndex} has malformed sparse storage ` +
+    `(${sparseAccessorStorageIssueMessage(issue)}); best-effort import skips that sparse patch ` +
+    'and imports degraded attribute data.'
+  );
+}
+
 function analyzeExtensions(
   gltf: GltfJson,
   selectedTextureSourceExtensions: ReadonlySet<string>,
@@ -1449,6 +1490,7 @@ function analyzePrimitives(
   let hasIgnoredSkinAttributes = false;
   let hasIncompleteSkinAttributes = false;
   const malformedPrimitives: GltfMalformedPrimitiveIssue[] = [];
+  const accessorStorageIssues: GltfPrimitiveAccessorStorageIssue[] = [];
   const meshNodesWithSkin = new Map<number, string[]>();
   const meshNodesWithoutSkin = new Map<number, string[]>();
   for (const [nodeIndex, node] of (gltf.nodes ?? []).entries()) {
@@ -1482,8 +1524,16 @@ function analyzePrimitives(
           ...primitiveImportBlockers(gltf, meshIndex, primitiveIndex, primitive, primitivePath, mode),
         );
       }
-      for (const semantic of Object.keys(primitive.attributes ?? {})) {
+      for (const [semantic, accessorIndex] of Object.entries(primitive.attributes ?? {})) {
         attributeSemantics.add(semantic);
+        if (semantic !== 'POSITION' && accessorIndex !== undefined) {
+          addPrimitiveAccessorStorageIssue(gltf, accessorStorageIssues, {
+            semantic: `attributes.${semantic}`,
+            accessorIndex,
+            meshIndex,
+            primitiveIndex,
+          });
+        }
         if (semantic === 'TANGENT') hasTangents = true;
         if (semantic === 'COLOR_0') {
           hasVertexColors = true;
@@ -1526,7 +1576,14 @@ function analyzePrimitives(
             hasMorphTargetTangents = true;
             addSourcePath(issuePaths, 'morphTargetTangents', `${primitivePath}.targets[${targetIndex}].TANGENT`);
           }
-          for (const attr of Object.keys(target)) {
+          for (const [attr, accessorIndex] of Object.entries(target)) {
+            addPrimitiveAccessorStorageIssue(gltf, accessorStorageIssues, {
+              semantic: `targets.${attr}`,
+              accessorIndex,
+              meshIndex,
+              primitiveIndex,
+              targetIndex,
+            });
             if (/^TEXCOORD_\d+$/.test(attr)) {
               hasMorphTargetTexcoords = true;
               addSourcePath(issuePaths, 'morphTargetTexcoords', `${primitivePath}.targets[${targetIndex}].${attr}`);
@@ -1547,6 +1604,14 @@ function analyzePrimitives(
     hasInstancing = true;
     const instancingPath = `nodes[${nodeIndex}].extensions.EXT_mesh_gpu_instancing`;
     addSourcePath(issuePaths, 'kind:instanced-mesh', instancingPath);
+    for (const [attr, accessorIndex] of Object.entries(node.extensions.EXT_mesh_gpu_instancing.attributes ?? {})) {
+      if (accessorIndex === undefined) continue;
+      addPrimitiveAccessorStorageIssue(gltf, accessorStorageIssues, {
+        semantic: `instancing.${attr}`,
+        accessorIndex,
+        nodeIndex,
+      });
+    }
     const mesh = gltf.meshes?.[node.mesh];
     const meshHasMorphTargets = (mesh?.primitives ?? []).some((primitive) =>
       (primitive.targets?.length ?? 0) > 0,
@@ -1555,6 +1620,15 @@ function analyzePrimitives(
       hasInstancedSkinnedOrMorphed = true;
       addSourcePath(issuePaths, 'instancedSkinnedOrMorphed', instancingPath);
     }
+  }
+  for (const [skinIndex, skin] of (gltf.skins ?? []).entries()) {
+    if (sceneScope !== undefined && !sceneScope.skinIndices.has(skinIndex)) continue;
+    if (skin.inverseBindMatrices === undefined) continue;
+    addPrimitiveAccessorStorageIssue(gltf, accessorStorageIssues, {
+      semantic: 'skin.inverseBindMatrices',
+      accessorIndex: skin.inverseBindMatrices,
+      skinIndex,
+    });
   }
   for (const bv of bufferViewsForScope(gltf, sceneScope)) {
     if (hasMeshoptCompressionExtension(bv.extensions)) usesMeshopt = true;
@@ -1584,6 +1658,11 @@ function analyzePrimitives(
     hasIncompleteSkinAttributes,
     malformedPrimitives: malformedPrimitives.sort((a, b) =>
       a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind)
+    ),
+    accessorStorageIssues: accessorStorageIssues.sort((a, b) =>
+      a.path.localeCompare(b.path) ||
+      a.semantic.localeCompare(b.semantic) ||
+      a.accessorIndex - b.accessorIndex
     ),
     hasVertexColors,
     ignoredVertexColorSets: sorted(ignoredVertexColorSets),
@@ -1870,6 +1949,36 @@ function sparseIssueDetails(issue: SparseAccessorStorageIssue): {
     ...(issue.bufferIndex !== undefined ? { bufferIndex: issue.bufferIndex } : {}),
     ...(issue.componentType !== undefined ? { componentType: issue.componentType } : {}),
   };
+}
+
+function addPrimitiveAccessorStorageIssue(
+  gltf: GltfJson,
+  issues: GltfPrimitiveAccessorStorageIssue[],
+  input: {
+    readonly semantic: string;
+    readonly accessorIndex: number;
+    readonly meshIndex?: number;
+    readonly primitiveIndex?: number;
+    readonly targetIndex?: number;
+    readonly nodeIndex?: number;
+    readonly skinIndex?: number;
+  },
+): void {
+  const accessor = gltf.accessors?.[input.accessorIndex];
+  if (accessor == null) return;
+  const sparseIssue = sparseAccessorStorageIssue(gltf, input.accessorIndex, accessor);
+  if (sparseIssue === undefined) return;
+  issues.push({
+    semantic: input.semantic,
+    accessorIndex: input.accessorIndex,
+    path: sparseIssue.path,
+    ...(input.meshIndex !== undefined ? { meshIndex: input.meshIndex } : {}),
+    ...(input.primitiveIndex !== undefined ? { primitiveIndex: input.primitiveIndex } : {}),
+    ...(input.targetIndex !== undefined ? { targetIndex: input.targetIndex } : {}),
+    ...(input.nodeIndex !== undefined ? { nodeIndex: input.nodeIndex } : {}),
+    ...(input.skinIndex !== undefined ? { skinIndex: input.skinIndex } : {}),
+    ...sparseIssueDetails(sparseIssue),
+  });
 }
 
 function sparseIndexComponentTypeIsReadableByImporter(componentType: number): boolean {
