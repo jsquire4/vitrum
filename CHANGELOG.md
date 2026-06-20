@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround option truthfulness, 2026-06-20)
+
+- **Invalid walkaround `maxBounces` now clamps in the effective config, not only in prose:** `@vitrum/walkaround-hybrid` already warned that `maxBounces < 1` is treated as the direct-only DDGI regime. The parsed config and public capabilities now report the clamped value `1` as well, so hosts no longer see `capabilities.maxBounces === 0` after a warning that promised `1`.
+
 ### Fixed (pt-webgl2 mutation resource churn, 2026-06-20)
 
 - **Dimension-changing WebGL2 geometry/list refreshes now preserve resident texture objects:** `@vitrum/pt-webgl2` still grades topology/add/remove as bounded fallback refreshes until true targeted splice/refit lands, but those fallback refreshes now re-specify existing BVH/material/attribute/mesh-light texture storage with `texImage2D`/`texImage3D` instead of allocating replacement GL texture objects. Structured mutation warnings include `textureRefreshMode:"resident-storage-respecify"`, and the README no longer overstates pt-webgl2 mesh animation as “all patches via rebuild.”

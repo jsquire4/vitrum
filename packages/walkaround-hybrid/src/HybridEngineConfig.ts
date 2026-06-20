@@ -168,6 +168,12 @@ function resolveNrcWarmupSteps(value: number | undefined): number {
   return Math.max(0, Math.floor(value));
 }
 
+function resolveMaxBounces(value: number | undefined): number {
+  if (value === undefined) return 4;
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(1, value);
+}
+
 function readWalkaroundHybridExt(opts: HybridEngineOptions): WalkaroundHybridExt | undefined {
   return (opts.extensions as undefined | {
     'walkaround-hybrid'?: WalkaroundHybridExt;
@@ -370,7 +376,7 @@ export function deriveHybridEngineConfig(
     rebuildKeyFingerprintSeen: fingerprintHybridPipelineRebuildKey(
       opts.getPipelineRebuildKey?.() ?? opts.pipelineRebuildKey ?? null,
     ),
-    maxBounces: opts.maxBounces ?? 4,
+    maxBounces: resolveMaxBounces(opts.maxBounces),
     verbose: opts.verbose ?? false,
     debug: opts.debug ?? false,
     // Phase-0 productization — quality-preset-resolved structural / gating

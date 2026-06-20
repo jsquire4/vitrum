@@ -552,19 +552,21 @@ export class HybridEngine implements Engine {
     // (2, 3, 4, …) are all identical to the default >= 2 regime because the EMA
     // converges to the bounce limit regardless of the integer value — only the
     // 1-vs-many distinction is meaningful. Warn only when the value cannot be
-    // honoured as authored (== 0 or negative is treated as direct-only).
-    if (cfg.maxBounces < 1) {
+    // honoured as authored (non-finite, == 0, or negative is treated as
+    // direct-only).
+    const authoredMaxBounces = opts.maxBounces;
+    if (authoredMaxBounces !== undefined && (!Number.isFinite(authoredMaxBounces) || authoredMaxBounces < 1)) {
       this._warn({
         code: 'walkaround-hybrid.max-bounces-clamped',
         backend: 'walkaround-hybrid',
         phase: 'construction',
         method: 'createWalkaroundEngine_Hybrid',
         message:
-          `[HybridEngine] maxBounces=${cfg.maxBounces} is < 1 and is treated as ` +
+          `[HybridEngine] maxBounces=${String(authoredMaxBounces)} is not a valid positive value and is treated as ` +
         `1 (direct-only DDGI probes). The walkaround engine is not a path tracer; ` +
         `maxBounces gates the DDGI diffuse multi-bounce feedback (1 = direct-only, ` +
         `>= 2 = infinite-bounce diffuse equilibrium), not a per-ray bounce count.`,
-        details: { requested: cfg.maxBounces, clampedTo: 1 },
+        details: { requested: authoredMaxBounces, clampedTo: cfg.maxBounces },
       });
     }
     // H46 — causticStrategy: walkaround always reports 'none' in capabilities.

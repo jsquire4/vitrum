@@ -252,6 +252,12 @@ describe('deriveHybridEngineConfig — defaulting record (parse split)', () => {
     }
   });
 
+  it('normalizes invalid maxBounces values to the documented direct-only regime', () => {
+    expect(derive(baseOpts({ maxBounces: 0 })).maxBounces).toBe(1);
+    expect(derive(baseOpts({ maxBounces: -2 })).maxBounces).toBe(1);
+    expect(derive(baseOpts({ maxBounces: Number.NaN })).maxBounces).toBe(1);
+  });
+
   it('produces an identical config record over an option matrix', () => {
     const matrix: Partial<HybridEngineOptions>[] = [
       {},

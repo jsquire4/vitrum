@@ -174,6 +174,9 @@
 > `luminance(radiance)·area` triangles instead of the largest geometric-area
 > triangles, so UV-local emissive texel sub-triangles are not discarded ahead of
 > darker but larger triangles when the cap is reached.
+> Same-day walkaround option-truth follow-up: invalid/non-finite `maxBounces`
+> requests now clamp in `deriveHybridEngineConfig()` to the effective direct-only
+> DDGI regime (`1`), so the warning, `_cfg`, and `capabilities.maxBounces` agree.
 > Latest inverse API follow-up: pt-webgpu path replay now mirrors top-level
 > `normalMap` / `normalScale`, `bumpMap` / `bumpScale`, and
 > `clearcoatNormalMap` / `clearcoatNormalScale` in the scoped direct-light

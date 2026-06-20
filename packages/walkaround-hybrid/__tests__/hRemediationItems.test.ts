@@ -414,14 +414,15 @@ describe('H46 — HybridEngine construction warnings', () => {
     expect(bounceWarns).toHaveLength(0);
   });
 
-  it('warns when maxBounces < 1 (cannot be honoured; treated as direct-only)', async () => {
+  it('warns and exposes maxBounces=1 when maxBounces < 1 (cannot be honoured; treated as direct-only)', async () => {
     const { HybridEngine } = await import('../src/HybridEngine.js');
-    new HybridEngine(makeStubOpts({ maxBounces: 0 }) as never);
+    const engine = new HybridEngine(makeStubOpts({ maxBounces: 0 }) as never);
     const bounceWarns = warnSpy.mock.calls.filter(
       (c) => String(c[0]).includes('maxBounces'),
     );
     expect(bounceWarns.length).toBeGreaterThan(0);
     expect(String(bounceWarns[0]![0])).toContain('0');
+    expect(engine.capabilities.maxBounces).toBe(1);
   });
 
   it('warns when causticStrategy is manifold-nee', async () => {
