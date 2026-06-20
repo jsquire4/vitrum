@@ -28,10 +28,18 @@ import {
   type GltfScenePatchTarget,
 } from './sceneController.js';
 import type { GltfBackendProfileId, GltfCompatibilityIssue } from './featureReport.js';
-import { GltfCompatibilityError } from './errors.js';
+import {
+  GltfCompatibilityError,
+  type GltfCompatibilityFailureDetail,
+} from './errors.js';
 
 export type GltfEngineSelection = GltfBackendProfileId | 'recommended';
 export type GltfCompatibilityMode = 'best-effort' | 'reject-unsupported' | 'reject-degraded';
+
+interface GltfCompatibilityFailure {
+  readonly message: string;
+  readonly detail: GltfCompatibilityFailureDetail;
+}
 
 export interface GltfEngineFactoryInput<TFactoryOptions extends object = Record<string, never>> {
   readonly scene: Scene;
@@ -302,7 +310,7 @@ function enforceStaticPreImportCompatibility<
 
   const failures = candidate.issues
     .filter((issue) => isPreImportBlockingCompatibilityIssue(issue, preflight, options))
-    .map(formatCompatibilityIssue);
+    .map(compatibilityIssueFailure);
   if (failures.length === 0) return;
   throwCompatibilityRejected(selected.backend, profileId, mode, 'Selected backend', failures);
 }
@@ -367,7 +375,7 @@ function enforceCompatibility<
       if (mode === 'reject-unsupported') return issue.support === 'unsupported';
       return issue.support !== 'native';
     })
-    .map(formatCompatibilityIssue);
+    .map(compatibilityIssueFailure);
   const rejectedImportDiagnostics = importDiagnosticFailures(asset, mode);
   const rejectedTextureReadiness = textureReadinessFailures(asset.textureDecodeReport, backend, mode, options);
   const failures = [
@@ -385,9 +393,10 @@ function throwCompatibilityRejected(
   profileId: GltfBackendProfileId,
   mode: GltfCompatibilityMode,
   label: string,
-  failures: readonly string[],
+  failures: readonly GltfCompatibilityFailure[],
 ): never {
   const issues = failures
+    .map((failure) => failure.message)
     .join(', ');
   throw new GltfCompatibilityError({
     code: 'GLTF_COMPATIBILITY_REJECTED',
@@ -398,7 +407,8 @@ function throwCompatibilityRejected(
     profileId,
     compatibilityMode: mode,
     label,
-    failures,
+    failures: failures.map((failure) => failure.message),
+    failureDetails: failures.map((failure) => failure.detail),
   });
 }
 
@@ -526,17 +536,27 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
 function importDiagnosticFailures(
   asset: GltfAssetResult | GltfDecodedAssetResult,
   mode: GltfCompatibilityMode,
-): string[] {
+): GltfCompatibilityFailure[] {
   if (mode === 'best-effort') return [];
   return asset.diagnostics
-    .map((diagnostic) => {
+    .map((diagnostic): GltfCompatibilityFailure | undefined => {
       if (isSatisfiedImportDiagnostic(diagnostic, asset)) return undefined;
       const support = importDiagnosticSupport(diagnostic.code);
       if (support == null) return undefined;
       if (mode === 'reject-unsupported' && support !== 'unsupported') return undefined;
-      return `import:${diagnostic.code}=${support} at ${diagnostic.path}`;
+      return {
+        message: `import:${diagnostic.code}=${support} at ${diagnostic.path}`,
+        detail: {
+          source: 'import-diagnostic',
+          category: 'import',
+          code: diagnostic.code,
+          support,
+          path: diagnostic.path,
+          message: diagnostic.message,
+        },
+      } satisfies GltfCompatibilityFailure;
     })
-    .filter((message): message is string => message !== undefined);
+    .filter((failure): failure is GltfCompatibilityFailure => failure !== undefined);
 }
 
 function importDiagnosticSupport(code: GltfImportDiagnosticCode): 'unsupported' | 'approximate' | undefined {
@@ -562,18 +582,18 @@ function textureReadinessFailures<
   backend: BackendId,
   mode: GltfCompatibilityMode,
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
-): string[] {
+): GltfCompatibilityFailure[] {
   if (mode === 'best-effort') return [];
   const key = textureReadinessKey(backend);
   return report.entries
-    .map((entry) => {
+    .map((entry): GltfCompatibilityFailure | undefined => {
       const status = entry.backendReadiness[key];
       const support = textureReadinessSupport(status, options, backend);
       if (support == null) return undefined;
       if (mode === 'reject-unsupported' && support !== 'unsupported') return undefined;
-      return formatTextureReadinessFailure(entry, status, support);
+      return textureReadinessFailure(entry, status, support);
     })
-    .filter((message): message is string => message !== undefined);
+    .filter((failure): failure is GltfCompatibilityFailure => failure !== undefined);
 }
 
 function textureReadinessSupport<
@@ -595,6 +615,27 @@ function formatTextureReadinessFailure(
   support: 'unsupported' | 'requires-hook',
 ): string {
   return `texture:${entry.materialField}=${support} at ${entry.path} (${status})`;
+}
+
+function textureReadinessFailure(
+  entry: GltfTextureDecodeReportEntry,
+  status: GltfBackendTextureStatus,
+  support: 'unsupported' | 'requires-hook',
+): GltfCompatibilityFailure {
+  return {
+    message: formatTextureReadinessFailure(entry, status, support),
+    detail: {
+      source: 'texture-readiness',
+      category: 'texture',
+      name: entry.materialField,
+      support,
+      path: entry.path,
+      materialField: entry.materialField,
+      status,
+      message:
+        `Texture ${entry.materialField} at ${entry.path} is ${status} for the selected backend.`,
+    },
+  };
 }
 
 function textureReadinessKey(backend: BackendId): keyof GltfTextureDecodeReportEntry['backendReadiness'] {
@@ -637,6 +678,20 @@ function isBackendProfileId(value: unknown): value is GltfBackendProfileId {
 
 function formatCompatibilityIssue(issue: GltfCompatibilityIssue): string {
   return `${issue.category}:${issue.name}=${issue.support} at ${issue.path}`;
+}
+
+function compatibilityIssueFailure(issue: GltfCompatibilityIssue): GltfCompatibilityFailure {
+  return {
+    message: formatCompatibilityIssue(issue),
+    detail: {
+      source: 'compatibility-issue',
+      category: issue.category,
+      name: issue.name,
+      support: issue.support,
+      path: issue.path,
+      message: issue.message,
+    },
+  };
 }
 
 function isSatisfiedCompatibilityIssue<

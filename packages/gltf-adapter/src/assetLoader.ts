@@ -769,12 +769,13 @@ async function resolveExternalBuffers(
     if (bufferIndices !== undefined && !bufferIndices.has(index)) continue;
     if (buffers.has(index)) continue;
     if (buffer.uri == null) continue;
+    const sourcePath = `buffers[${index}].uri`;
     if (buffer.uri.startsWith('data:')) {
-      buffers.set(index, uint8ToArrayBuffer(decodeDataUri(buffer.uri, 'buffer', `buffer ${index}`)));
+      buffers.set(index, uint8ToArrayBuffer(decodeDataUri(buffer.uri, 'buffer', `buffer ${index}`, sourcePath)));
       continue;
     }
-    const url = resolveUri(buffer.uri, baseUri, 'buffer');
-    const data = await fetchArrayBuffer(url, options, 'buffer');
+    const url = resolveUri(buffer.uri, baseUri, 'buffer', sourcePath);
+    const data = await fetchArrayBuffer(url, options, 'buffer', sourcePath);
     buffers.set(index, data);
   }
 }
@@ -790,8 +791,9 @@ async function resolveExternalImages(
     if (imageIndices !== undefined && !imageIndices.has(index)) continue;
     if (image.bufferView !== undefined) continue;
     if (image.uri == null || image.uri.startsWith('data:')) continue;
-    const url = resolveUri(image.uri, baseUri, 'image');
-    const fetched = await fetchImageBytes(url, options);
+    const sourcePath = `images[${index}].uri`;
+    const url = resolveUri(image.uri, baseUri, 'image', sourcePath);
+    const fetched = await fetchImageBytes(url, options, sourcePath);
     out.set(index, {
       bytes: fetched.bytes,
       mimeType: image.mimeType ?? fetched.mimeType ?? inferMimeType(image.uri),
@@ -803,11 +805,12 @@ async function resolveExternalImages(
 async function fetchImageBytes(
   url: string,
   options: LoadGltfAssetOptions,
+  sourcePath?: string,
 ): Promise<{ readonly bytes: Uint8Array; readonly mimeType?: string }> {
   const cacheKey = { url, kind: 'image' } satisfies GltfAssetCacheKey;
   const cached = await options.cache?.get(cacheKey);
   if (cached !== undefined) return { bytes: new Uint8Array(cached) };
-  const response = await fetchResource(url, options, 'image');
+  const response = await fetchResource(url, options, 'image', sourcePath);
   const data = await response.arrayBuffer();
   await options.cache?.set(cacheKey, data);
   const mimeType = response.headers?.get('content-type') ?? undefined;
@@ -820,11 +823,12 @@ async function fetchArrayBuffer(
   url: string,
   options: LoadGltfAssetOptions,
   kind: GltfAssetResourceKind,
+  sourcePath?: string,
 ): Promise<ArrayBuffer> {
   const cacheKey = { url, kind } satisfies GltfAssetCacheKey;
   const cached = await options.cache?.get(cacheKey);
   if (cached !== undefined) return cached;
-  const response = await fetchResource(url, options, kind);
+  const response = await fetchResource(url, options, kind, sourcePath);
   const data = await response.arrayBuffer();
   await options.cache?.set(cacheKey, data);
   return data;
@@ -834,12 +838,14 @@ async function fetchResource(
   url: string,
   options: LoadGltfAssetOptions,
   kind: GltfAssetResourceKind,
+  sourcePath?: string,
 ): Promise<GltfAssetFetchResponse> {
   const fetchFn = (options.fetch ?? globalThis.fetch) as GltfAssetFetch | undefined;
   if (typeof fetchFn !== 'function') {
     throw new GltfResourceNotFound({
       url,
       kind,
+      ...(sourcePath !== undefined ? { sourcePath } : {}),
       message:
         `[vitrum/gltf-adapter] loadGltfAsset requires a fetch implementation ` +
         `for ${kind} resource "${url}".`,
@@ -850,11 +856,12 @@ async function fetchResource(
   try {
     response = await fetchFn(url, init);
   } catch (cause) {
-    throw new GltfFetchFailed({ url, kind, cause });
+    throw new GltfFetchFailed({ url, kind, ...(sourcePath !== undefined ? { sourcePath } : {}), cause });
   }
   if (response.ok === false) {
     throw new GltfFetchFailed(Object.assign(
       { url, kind },
+      sourcePath === undefined ? {} : { sourcePath },
       response.status === undefined ? {} : { status: response.status },
       response.statusText === undefined ? {} : { statusText: response.statusText },
     ));
@@ -883,7 +890,12 @@ function isGlb(buffer: ArrayBuffer): boolean {
   return buffer.byteLength >= 4 && new DataView(buffer).getUint32(0, true) === 0x46546c67;
 }
 
-function resolveUri(uri: string, baseUri: string | URL | undefined, kind: GltfAssetResourceKind): string {
+function resolveUri(
+  uri: string,
+  baseUri: string | URL | undefined,
+  kind: GltfAssetResourceKind,
+  sourcePath?: string,
+): string {
   if (uri.startsWith('data:')) return uri;
   try {
     return new URL(uri).toString();
@@ -892,6 +904,7 @@ function resolveUri(uri: string, baseUri: string | URL | undefined, kind: GltfAs
       throw new GltfResourceNotFound({
         url: uri,
         kind,
+        ...(sourcePath !== undefined ? { sourcePath } : {}),
         message:
           `[vitrum/gltf-adapter] Cannot resolve relative ${kind} URI "${uri}" without a baseUri.`,
       });
@@ -904,10 +917,16 @@ function directoryUrl(url: string): string {
   return new URL('.', url).toString();
 }
 
-function decodeDataUri(uri: string, kind: GltfAssetResourceKind, label: string): Uint8Array {
+function decodeDataUri(uri: string, kind: GltfAssetResourceKind, label: string, sourcePath?: string): Uint8Array {
   const comma = uri.indexOf(',');
   if (comma < 0) {
-    throw dataUriError(uri, kind, 'malformed-data-uri', `[vitrum/gltf-adapter] ${label} has a malformed data: URI.`);
+    throw dataUriError(
+      uri,
+      kind,
+      'malformed-data-uri',
+      `[vitrum/gltf-adapter] ${label} has a malformed data: URI.`,
+      sourcePath,
+    );
   }
   const meta = uri.slice(5, comma);
   const payload = uri.slice(comma + 1);
@@ -920,6 +939,7 @@ function decodeDataUri(uri: string, kind: GltfAssetResourceKind, label: string):
           kind,
           'data-uri-atob-unavailable',
           `[vitrum/gltf-adapter] ${label} uses base64 data URI but atob() is unavailable.`,
+          sourcePath,
         );
       }
       const bin = globalThis.atob(payload.replace(/\s+/g, ''));
@@ -936,6 +956,7 @@ function decodeDataUri(uri: string, kind: GltfAssetResourceKind, label: string):
       'data-uri-decode-failed',
       `[vitrum/gltf-adapter] ${label} data: URI could not be decoded: ` +
         `${cause instanceof Error ? cause.message : String(cause)}.`,
+      sourcePath,
       cause,
     );
   }
@@ -946,6 +967,7 @@ function dataUriError(
   kind: GltfAssetResourceKind,
   reason: GltfResourceDecodeFailureReason,
   message: string,
+  sourcePath?: string,
   cause?: unknown,
 ): GltfResourceDecodeFailed {
   return new GltfResourceDecodeFailed({
@@ -953,6 +975,7 @@ function dataUriError(
     kind,
     reason,
     message,
+    ...(sourcePath !== undefined ? { sourcePath } : {}),
     ...(cause === undefined ? {} : { cause }),
   });
 }

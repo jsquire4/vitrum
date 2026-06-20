@@ -29,12 +29,14 @@ export class GltfAdapterError extends Error {
 export interface GltfResourceErrorInit {
   readonly url: string;
   readonly kind: GltfAssetResourceKind;
+  readonly sourcePath?: string;
   readonly message?: string;
 }
 
 export class GltfResourceNotFound extends GltfAdapterError {
   readonly url: string;
   readonly kind: GltfAssetResourceKind;
+  readonly sourcePath?: string;
 
   constructor(init: GltfResourceErrorInit) {
     super(
@@ -43,6 +45,7 @@ export class GltfResourceNotFound extends GltfAdapterError {
     );
     this.url = init.url;
     this.kind = init.kind;
+    if (init.sourcePath !== undefined) this.sourcePath = init.sourcePath;
   }
 }
 
@@ -55,6 +58,7 @@ export interface GltfFetchFailedInit extends GltfResourceErrorInit {
 export class GltfFetchFailed extends GltfAdapterError {
   readonly url: string;
   readonly kind: GltfAssetResourceKind;
+  readonly sourcePath?: string;
   readonly status?: number;
   readonly statusText?: string;
 
@@ -69,6 +73,7 @@ export class GltfFetchFailed extends GltfAdapterError {
     );
     this.url = init.url;
     this.kind = init.kind;
+    if (init.sourcePath !== undefined) this.sourcePath = init.sourcePath;
     if (init.status !== undefined) this.status = init.status;
     if (init.statusText !== undefined) this.statusText = init.statusText;
   }
@@ -82,6 +87,7 @@ export interface GltfResourceDecodeFailedInit extends GltfResourceErrorInit {
 export class GltfResourceDecodeFailed extends GltfAdapterError {
   readonly url: string;
   readonly kind: GltfAssetResourceKind;
+  readonly sourcePath?: string;
   readonly reason: GltfResourceDecodeFailureReason;
 
   constructor(init: GltfResourceDecodeFailedInit) {
@@ -93,6 +99,7 @@ export class GltfResourceDecodeFailed extends GltfAdapterError {
     );
     this.url = init.url;
     this.kind = init.kind;
+    if (init.sourcePath !== undefined) this.sourcePath = init.sourcePath;
     this.reason = init.reason;
   }
 }
@@ -148,7 +155,20 @@ export interface GltfCompatibilityErrorInit {
   readonly compatibilityMode?: string;
   readonly label?: string;
   readonly failures?: readonly string[];
+  readonly failureDetails?: readonly GltfCompatibilityFailureDetail[];
   readonly cause?: unknown;
+}
+
+export interface GltfCompatibilityFailureDetail {
+  readonly source: 'compatibility-issue' | 'import-diagnostic' | 'texture-readiness';
+  readonly category?: string;
+  readonly name?: string;
+  readonly support?: string;
+  readonly path?: string;
+  readonly message?: string;
+  readonly code?: string;
+  readonly materialField?: string;
+  readonly status?: string;
 }
 
 export class GltfCompatibilityError extends GltfAdapterError {
@@ -158,6 +178,7 @@ export class GltfCompatibilityError extends GltfAdapterError {
   readonly compatibilityMode?: string;
   readonly label?: string;
   readonly failures: readonly string[];
+  readonly failureDetails: readonly GltfCompatibilityFailureDetail[];
 
   constructor(init: GltfCompatibilityErrorInit) {
     super(
@@ -171,5 +192,6 @@ export class GltfCompatibilityError extends GltfAdapterError {
     if (init.compatibilityMode !== undefined) this.compatibilityMode = init.compatibilityMode;
     if (init.label !== undefined) this.label = init.label;
     this.failures = [...(init.failures ?? [])];
+    this.failureDetails = [...(init.failureDetails ?? [])];
   }
 }

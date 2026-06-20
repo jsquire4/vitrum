@@ -164,6 +164,8 @@ export type DecodeGltfTexturePixelsFn = (
 export type DecodeSceneTextureDiagnosticCode =
   | 'unsupported-handle-kind'
   | 'raw-image-decoder-missing'
+  | 'decode-pixels-failed'
+  | 'decode-pixels-invalid'
   | 'platform-image-decode-failed'
   | 'platform-image-readback-unavailable'
   | 'platform-image-readback-failed'
@@ -193,6 +195,7 @@ export interface DecodeSceneTextureDiagnostic {
   readonly imageUri?: string;
   readonly imageMimeType?: string;
   readonly textureSourceExtension?: GltfTextureSourceExtension;
+  readonly causeMessage?: string;
 }
 
 export interface DecodeSceneTexturesOptions {
@@ -667,7 +670,41 @@ async function decodeTextureRef(
         });
         return ref;
       }
-      throw err;
+      const causeMessage = err instanceof Error ? err.message : String(err);
+      context.diagnostic({
+        severity: 'warning',
+        code: 'decode-pixels-failed',
+        path: context.path,
+        materialField: context.field,
+        primitiveId: context.primitiveId,
+        primitiveIndex: context.primitiveIndex,
+        handleKind,
+        ...textureSourceDiagnosticFields(context.source),
+        causeMessage,
+        message:
+          `[vitrum/gltf-adapter] ${context.path} decodePixels hook failed: ` +
+          `${causeMessage}. Texture left unchanged.`,
+      });
+      return ref;
+    }
+    const invalid = validateDecodedTexturePixels(pixels);
+    if (invalid != null) {
+      context.diagnostic({
+        severity: 'warning',
+        code: 'decode-pixels-invalid',
+        path: context.path,
+        materialField: context.field,
+        primitiveId: context.primitiveId,
+        primitiveIndex: context.primitiveIndex,
+        handleKind,
+        ...(typeof pixels.width === 'number' && Number.isFinite(pixels.width) ? { width: pixels.width } : {}),
+        ...(typeof pixels.height === 'number' && Number.isFinite(pixels.height) ? { height: pixels.height } : {}),
+        ...textureSourceDiagnosticFields(context.source),
+        message:
+          `[vitrum/gltf-adapter] ${context.path} decodePixels hook returned invalid pixels: ` +
+          `${invalid}. Texture left unchanged.`,
+      });
+      return ref;
     }
     entry = cacheEntryFromDecodedPixels(
       pixels,
@@ -679,6 +716,48 @@ async function decodeTextureRef(
   }
   emitDecodedTextureDiagnostics(entry, ref, context);
   return { ...ref, handle: entry.handle };
+}
+
+function validateDecodedTexturePixels(pixels: GltfDecodedTexturePixels): string | null {
+  if (typeof pixels.width !== 'number' || !Number.isFinite(pixels.width)) {
+    return `width must be a finite number, got ${String(pixels.width)}`;
+  }
+  if (typeof pixels.height !== 'number' || !Number.isFinite(pixels.height)) {
+    return `height must be a finite number, got ${String(pixels.height)}`;
+  }
+  const width = Math.floor(pixels.width);
+  const height = Math.floor(pixels.height);
+  if (width <= 0 || height <= 0) {
+    return `dimensions must be positive, got ${pixels.width}x${pixels.height}`;
+  }
+  if (!isArrayLikeData(pixels.data)) {
+    return 'data must be an array-like pixel payload';
+  }
+  if (
+    pixels.channels !== undefined &&
+    pixels.channels !== 1 &&
+    pixels.channels !== 2 &&
+    pixels.channels !== 3 &&
+    pixels.channels !== 4
+  ) {
+    return `channels must be 1, 2, 3, or 4, got ${String(pixels.channels)}`;
+  }
+  if (
+    pixels.dataType !== undefined &&
+    pixels.dataType !== 'uint8' &&
+    pixels.dataType !== 'uint16' &&
+    pixels.dataType !== 'float32'
+  ) {
+    return `dataType must be uint8, uint16, or float32, got ${String(pixels.dataType)}`;
+  }
+  if (
+    pixels.colorSpace !== undefined &&
+    pixels.colorSpace !== 'srgb' &&
+    pixels.colorSpace !== 'linear'
+  ) {
+    return `colorSpace must be srgb or linear, got ${String(pixels.colorSpace)}`;
+  }
+  return null;
 }
 
 function cacheEntryFromDecodedPixels(
@@ -1241,7 +1320,7 @@ function normalizeDecodedPixels(
 ): GltfCpuTextureHandle {
   const width = Math.max(0, Math.floor(pixels.width));
   const height = Math.max(0, Math.floor(pixels.height));
-  if (width <= 0 || height <= 0) {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     throw new Error(`[vitrum/gltf-adapter] decodePixels returned invalid texture dimensions ${pixels.width}x${pixels.height}.`);
   }
   const channels = pixels.channels ?? inferDecodedChannels(pixels.data, width, height);

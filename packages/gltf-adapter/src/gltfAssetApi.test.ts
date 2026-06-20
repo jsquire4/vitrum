@@ -974,6 +974,7 @@ describe('loadGltfAsset', () => {
     await expect(loadGltfAsset(gltf)).rejects.toMatchObject({
       kind: 'buffer',
       url: 'mesh.bin',
+      sourcePath: 'buffers[0].uri',
     });
   });
 
@@ -987,6 +988,7 @@ describe('loadGltfAsset', () => {
       kind: 'buffer',
       reason: 'malformed-data-uri',
       url: 'data:application/octet-stream;base64',
+      sourcePath: 'buffers[0].uri',
     });
   });
 
@@ -1000,6 +1002,7 @@ describe('loadGltfAsset', () => {
       kind: 'buffer',
       reason: 'data-uri-decode-failed',
       url: 'data:application/octet-stream,%E0%A4%A',
+      sourcePath: 'buffers[0].uri',
     });
   });
 
@@ -1015,6 +1018,29 @@ describe('loadGltfAsset', () => {
     await expect(loadGltfAsset('https://cdn.test/missing.gltf', { fetch })).rejects.toMatchObject({
       kind: 'asset',
       url: 'https://cdn.test/missing.gltf',
+      status: 404,
+      statusText: 'Not Found',
+    });
+  });
+
+  it('throws typed image fetch failures with glTF source paths', async () => {
+    const gltf = makeExternalTexturedGltf();
+    const fetch = vi.fn(async () => ({
+      ok: false,
+      status: 404,
+      statusText: 'Not Found',
+      arrayBuffer: async () => new ArrayBuffer(0),
+    }));
+
+    await expect(loadGltfAsset(gltf, {
+      baseUri: 'https://cdn.test/assets/model.gltf',
+      buffers: new Map([[0, new ArrayBuffer(gltf.buffers![0]!.byteLength)]]),
+      fetch,
+    })).rejects.toMatchObject({
+      code: 'GLTF_FETCH_FAILED',
+      kind: 'image',
+      url: 'https://cdn.test/assets/textures/albedo.png',
+      sourcePath: 'images[0].uri',
       status: 404,
       statusText: 'Not Found',
     });
@@ -1226,6 +1252,64 @@ describe('loadGltfAsset', () => {
     expect(handle.data[1]).toBeCloseTo(srgbToLinearForTest(64 / 255));
     expect(handle.data[2]).toBeCloseTo(1);
     expect(handle.data[3]).toBeCloseTo(128 / 255);
+  });
+
+  it('reports host decodePixels failures as texture diagnostics instead of throwing', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const decodePixels = vi.fn(() => {
+      throw new Error('decoder unavailable');
+    });
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      decodePixels,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.decodedTextureCount).toBe(0);
+    expect(result.unchangedTextureCount).toBe(1);
+    expect(result.textureDecodeDiagnostics).toEqual([
+      expect.objectContaining({
+        code: 'decode-pixels-failed',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        materialField: 'baseColorMap',
+        textureIndex: 0,
+        imageIndex: 0,
+        imageMimeType: 'image/png',
+        causeMessage: 'decoder unavailable',
+      }),
+    ]);
+    expect(result.textureDecodeWarnings[0]).toContain('decodePixels hook failed');
+  });
+
+  it('reports invalid decodePixels dimensions as texture diagnostics instead of throwing', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      decodePixels: () => ({
+        width: 0,
+        height: 1,
+        data: new Uint8Array([255, 255, 255, 255]),
+        channels: 4,
+        dataType: 'uint8',
+      }),
+    });
+
+    expect(result.decodedTextureCount).toBe(0);
+    expect(result.unchangedTextureCount).toBe(1);
+    expect(result.textureDecodeDiagnostics).toEqual([
+      expect.objectContaining({
+        code: 'decode-pixels-invalid',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        materialField: 'baseColorMap',
+        width: 0,
+        height: 1,
+        textureIndex: 0,
+        imageIndex: 0,
+      }),
+    ]);
+    expect(result.textureDecodeWarnings[0]).toContain('invalid pixels');
   });
 
   it('loadGltfAndDecodeTextures bypasses browser ImageBitmap handles when a pixel decoder is supplied', async () => {
@@ -5832,6 +5916,15 @@ describe('loadGltfForEngine', () => {
       'texture:texture-readiness:baseColorMap=requires-hook at materials[0].pbrMetallicRoughness.baseColorTexture',
     );
     expect(failures.filter((failure) => failure.includes('baseColorMap'))).toHaveLength(1);
+    expect((error as GltfCompatibilityError).failureDetails).toContainEqual(expect.objectContaining({
+      source: 'texture-readiness',
+      category: 'texture',
+      name: 'baseColorMap',
+      support: 'requires-hook',
+      path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+      materialField: 'baseColorMap',
+      status: 'opaque',
+    }));
   });
 
   it('rejects degraded authored sampler policies before constructing an engine', async () => {
@@ -5840,13 +5933,59 @@ describe('loadGltfForEngine', () => {
     gltf.samplers = [{ magFilter: 9728, minFilter: 9984 }];
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
 
-    await expect(loadGltfForEngine(gltf, {
-      buffers,
-      decodeImage: async () => ({ kind: 'decoded-texture' }),
-      backend: 'pt-webgl2',
-      compatibilityMode: 'reject-degraded',
-      createEngine,
-    })).rejects.toThrow('material:baseColorMap.samplerPolicy=approximate at samplers[0].minFilter');
+    let error: unknown;
+    try {
+      await loadGltfForEngine(gltf, {
+        buffers,
+        decodeImage: async () => ({ kind: 'decoded-texture' }),
+        backend: 'pt-webgl2',
+        compatibilityMode: 'reject-degraded',
+        createEngine,
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(GltfCompatibilityError);
+    expect((error as GltfCompatibilityError).message).toContain(
+      'material:baseColorMap.samplerPolicy=approximate at samplers[0].minFilter',
+    );
+    expect((error as GltfCompatibilityError).failureDetails).toContainEqual(expect.objectContaining({
+      source: 'compatibility-issue',
+      category: 'material',
+      name: 'baseColorMap.samplerPolicy',
+      support: 'approximate',
+      path: 'samplers[0].minFilter',
+    }));
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('keeps structured import diagnostic details on strict compatibility errors', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.nodes = [{ mesh: 0, camera: 0 }];
+    gltf.cameras = [{}];
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    let error: unknown;
+    try {
+      await loadGltfForEngine(gltf, {
+        buffers,
+        backend: 'pt-webgl2',
+        compatibilityMode: 'reject-degraded',
+        createEngine,
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toBeInstanceOf(GltfCompatibilityError);
+    expect((error as GltfCompatibilityError).failureDetails).toContainEqual(expect.objectContaining({
+      source: 'import-diagnostic',
+      category: 'import',
+      code: 'ignored-camera',
+      support: 'approximate',
+      path: 'cameras[0]',
+    }));
     expect(createEngine).not.toHaveBeenCalled();
   });
 

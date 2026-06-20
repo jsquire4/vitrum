@@ -423,6 +423,7 @@ for (const needle of [
   "export class GltfCompatibilityError extends GltfAdapterError",
   "readonly compatibilityMode?: string;",
   "readonly failures: readonly string[];",
+  "readonly failureDetails: readonly GltfCompatibilityFailureDetail[];",
 ]) {
   if (!gltfErrors.includes(needle)) {
     fail(`gltf-adapter must retain structured compatibility error surface: ${needle}`);
@@ -431,7 +432,8 @@ for (const needle of [
 
 const gltfEngineBridge = await readText("packages/gltf-adapter/src/engineBridge.ts");
 for (const needle of [
-  "import { GltfCompatibilityError } from './errors.js';",
+  "GltfCompatibilityError,",
+  "type GltfCompatibilityFailureDetail,",
   "code: 'GLTF_COMPATIBILITY_REJECTED'",
   "code: 'GLTF_COMPATIBILITY_PROFILE_MISSING'",
   "code: 'GLTF_RUNTIME_PROFILE_MISMATCH'",
