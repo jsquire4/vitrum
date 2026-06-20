@@ -283,6 +283,20 @@
 > unsupported-material/displacement warnings now retain the aggregate `fields`
 > list while also reporting exact `primitiveIds` plus per-primitive
 > `primitiveFields`, matching the mutation-path diagnostic specificity.
+> **2026-06-20 mutation/glTF truthfulness follow-up:** pt-webgl2 and pt-webgpu
+> now emit method-scoped structured `reserved-receive-shadow` diagnostics from
+> `updatePrimitive()` as well as `setScene()`; `GltfSceneController` variant
+> patches preserve post-decode generated texture refs such as spec-gloss
+> alpha-baked `roughnessMap` unless the importer explicitly dropped that field
+> for an unrepresentable UV route; `unsupported-required-extension` diagnostics
+> report the original `extensionsRequired[i]` source path after sorted feature
+> analysis; and progressive glTF controller resets now invalidate both realtime
+> and converged engines before restarting the coordinator. A source re-audit
+> also verified three older leads as stale at `e2b4ee6f`: opaque alpha scalar
+> inverse slots are already zero-gradient path-replay lanes, walkaround
+> `setScene()` already includes vertex-color alpha in alpha-blend approximation
+> warnings, and explicit glTF engine preferences already override adapter
+> recommendations unless the caller passes an explicit adapter backend.
 > Same-day pt-webgl2 skinning-warning follow-up: empty-bones skinned meshes
 > still render in rest pose, but scene ingestion now routes that fallback through
 > structured `pt-webgl2.skinned-mesh-empty-bones` warnings with the primitive id

@@ -9,7 +9,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
 {
   "schema": "vitrum.road-to-100.gap-ledger.v1",
   "ledgerDate": "2026-06-11",
-  "currentAsOf": "2026-06-19",
+  "currentAsOf": "2026-06-20",
   "status": "active",
   "canonicalDetail": "plan/road-to-100.md",
   "historicalBugLedger": "items_to_fix.md",
@@ -21,7 +21,8 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "walkaround material atlas, alpha, emitter, and mutation truthfulness tails",
     "pt-webgpu direct-light scoped inverse replay with explicit downgrade diagnostics",
     "pt-webgl2 scalar/material/emitter/environment mutation and warning specificity",
-    "engine glTF subpath, progressive handoff, RAF controller playback, and recreate scene retention"
+    "engine glTF subpath, progressive handoff, RAF controller playback, and recreate scene retention",
+    "method-scoped PT receiveShadow diagnostics, glTF variant generated-texture retention, and required-extension source-path diagnostics"
   ],
   "openPromotionBuckets": [
     "GPU material-furnace and reference-render sweeps",
