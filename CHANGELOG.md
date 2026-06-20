@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (pt-webgl2 dispersion transmission eta coherence, 2026-06-20)
+
+- **Cauchy dispersion transmission now uses the same hero-wavelength eta for sampling and PDF evaluation:** `@vitrum/pt-webgl2` centralizes the effective dispersion IOR/eta calculation and threads it through dispersion ray sampling, transmission half-vector reconstruction, `transmissionEval()`'s denominator, and lobe-selection Fresnel weights. This closes the previous mismatch where dispersion rays were sampled with a hero-wavelength eta but the evaluated BTDF/PDF still used the base `surf.eta`. Render recapture and transmission radiometric promotion remain V28-B proof work.
+
 ### Fixed (pt-webgl2 rough transmission PDF coherence, 2026-06-20)
 
 - **pt-webgl2 rough transmission no longer applies an untracked second GGX perturbation:** ordinary and Cauchy/hero-wavelength transmission now use the sampled GGX microfacet half-vector as the sole rough-refraction direction sample. The removed post-refraction `rand2(47)` perturbation double-roughened transmitted rays without a matching term in `transmissionEval()`'s PDF, so transmissive rough glass is now closer to the evaluated BTDF/PDF contract. This is render-changing for rough transmission materials; V28-B recapture and radiometric promotion evidence remain required.

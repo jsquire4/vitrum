@@ -193,6 +193,59 @@ export const bsdf_functions = /* glsl */`
 
 	}
 
+	// ── Sprint 12: Cauchy IOR at arbitrary wavelength ────────────────────────────
+	//
+	// cauchyIORatLambda: evaluate IOR at a given wavelength using the three-term Cauchy formula.
+	// GLSL mirror of @vitrum/shared-samplers/src/cauchyIor.ts::cauchyIOR.
+	//
+	// Parameters: lambdaNm in nm; A, B, C in µm units (Sprint 12 coefficient form).
+	//   n(λ) = A + B/λ² + C/λ⁴    (λ in µm)
+	//
+	// This function is the Sprint 12 replacement for Sprint 8's per-channel Cauchy approach.
+	// It is called at the hero wavelength sampled from sampleHeroWavelengthMIS in the main loop.
+	//
+	// New uniforms: iorCauchyA, iorCauchyB, iorCauchyC (see PhysicalPathTracingMaterial.js).
+	// Legacy Sprint 8 scalar dispersion uniforms were removed; per-material
+	// dispersion now flows through surf.dispersionStrength.
+	//
+	float cauchyIORatLambda( float lambdaNm, float A, float B, float C ) {
+		float lambdaUm = lambdaNm * 0.001;  // nm → µm
+		float lam2 = lambdaUm * lambdaUm;
+		float lam4 = lam2 * lam2;
+		// Fast path: skip C term when near-zero to save one division.
+		if ( abs( C ) < 1e-8 ) return A + B / lam2;
+		return A + B / lam2 + C / lam4;
+	}
+
+	bool cauchyDispersionEnabled( SurfaceRecord surf ) {
+
+		return surf.dispersionStrength > 1e-5 && ( abs( iorCauchyB ) > 1e-8 || abs( iorCauchyC ) > 1e-8 );
+
+	}
+
+	float surfaceIorAtHero( SurfaceRecord surf, float heroWavelength ) {
+
+		if ( ! cauchyDispersionEnabled( surf ) ) {
+
+			return surf.ior;
+
+		}
+
+		float iorAtHero = cauchyIORatLambda( heroWavelength, iorCauchyA, iorCauchyB, iorCauchyC );
+		float iorDelta = iorAtHero - iorCauchyA;
+		float dispersionScale = surf.dispersionStrength / max( abs( iorCauchyB ), 1e-6 );
+		dispersionScale = clamp( dispersionScale, 0.0, 4.0 );
+		return max( 1.0, surf.ior + iorDelta * dispersionScale );
+
+	}
+
+	float transmissionEtaAtHero( SurfaceRecord surf, float heroWavelength ) {
+
+		float ior = surfaceIorAtHero( surf, heroWavelength );
+		return surf.frontFace ? 1.0 / ior : ior;
+
+	}
+
 	// specular
 	float specularEval( vec3 wo, vec3 wi, vec3 wh, SurfaceRecord surf, float heroWavelength, inout vec3 color ) {
 
@@ -280,7 +333,7 @@ export const bsdf_functions = /* glsl */`
 			color *= thinFilmRt.y;
 		}
 
-		float eta = surf.eta;
+		float eta = transmissionEtaAtHero( surf, heroWavelength );
 		float cosTheta = min( wo.z, 1.0 );
 		float sinTheta = sqrt( max( 1.0 - cosTheta * cosTheta, 0.0 ) );
 		bool cannotRefract = eta * sinTheta > 1.0;
@@ -290,7 +343,6 @@ export const bsdf_functions = /* glsl */`
 
 		}
 
-		float filteredRoughness = surf.filteredRoughness;
 		float inner = eta * dot( wi, wh ) + dot( wo, wh );
 		float denom = inner * inner;
 		if ( denom <= 1e-12 ) {
@@ -317,30 +369,6 @@ export const bsdf_functions = /* glsl */`
 
 		return normalize( lightDirection );
 
-	}
-
-	// ── Sprint 12: Cauchy IOR at arbitrary wavelength ────────────────────────────
-	//
-	// cauchyIORatLambda: evaluate IOR at a given wavelength using the three-term Cauchy formula.
-	// GLSL mirror of @vitrum/shared-samplers/src/cauchyIor.ts::cauchyIOR.
-	//
-	// Parameters: lambdaNm in nm; A, B, C in µm units (Sprint 12 coefficient form).
-	//   n(λ) = A + B/λ² + C/λ⁴    (λ in µm)
-	//
-	// This function is the Sprint 12 replacement for Sprint 8's per-channel Cauchy approach.
-	// It is called at the hero wavelength sampled from sampleHeroWavelengthMIS in the main loop.
-	//
-	// New uniforms: iorCauchyA, iorCauchyB, iorCauchyC (see PhysicalPathTracingMaterial.js).
-	// Legacy Sprint 8 scalar dispersion uniforms were removed; per-material
-	// dispersion now flows through surf.dispersionStrength.
-	//
-	float cauchyIORatLambda( float lambdaNm, float A, float B, float C ) {
-		float lambdaUm = lambdaNm * 0.001;  // nm → µm
-		float lam2 = lambdaUm * lambdaUm;
-		float lam4 = lam2 * lam2;
-		// Fast path: skip C term when near-zero to save one division.
-		if ( abs( C ) < 1e-8 ) return A + B / lam2;
-		return A + B / lam2 + C / lam4;
 	}
 
 	// ── Sprint 8: Chromatic dispersion via Cauchy formula + Jakob+Hanika rider ──
@@ -437,15 +465,7 @@ export const bsdf_functions = /* glsl */`
 	// preserved by applying only the spectral delta from iorCauchyA.
 	vec3 dispersionTransmissionDirection( vec3 wo, SurfaceRecord surf, float heroWavelength ) {
 
-		float iorAtHero = cauchyIORatLambda( heroWavelength, iorCauchyA, iorCauchyB, iorCauchyC );
-		float iorDelta = iorAtHero - iorCauchyA;
-		float dispersionScale = surf.dispersionStrength / max( abs( iorCauchyB ), 1e-6 );
-		dispersionScale = clamp( dispersionScale, 0.0, 4.0 );
-		float chosenIor = max( 1.0, surf.ior + iorDelta * dispersionScale );
-
-		// Refract using hero-wavelength IOR (front-face: air→glass = 1/ior).
-		bool frontFace = surf.frontFace;
-		float eta = frontFace ? 1.0 / chosenIor : chosenIor;
+		float eta = transmissionEtaAtHero( surf, heroWavelength );
 
 		vec3 halfVector = ggxDirectionForSurface( wo, surf, rand2( 13 ) );
 		vec3 lightDirection = refract( normalize( - wo ), halfVector, eta );
@@ -517,12 +537,15 @@ export const bsdf_functions = /* glsl */`
 	// bsdf
 	void getLobeWeights(
 		vec3 wo, vec3 wi, vec3 wh, vec3 clearcoatWo, SurfaceRecord surf,
+		float heroWavelength,
 		inout float diffuseWeight, inout float specularWeight, inout float transmissionWeight, inout float clearcoatWeight
 	) {
 
 		float metalness = surf.metalness;
 		float transmission = surf.transmission;
-		float fEstimate = disneyFresnel( wo, wi, wh, surf.f0, surf.eta, surf.metalness );
+		float eta = transmissionEtaAtHero( surf, heroWavelength );
+		float f0 = iorRatioToF0( eta );
+		float fEstimate = disneyFresnel( wo, wi, wh, f0, eta, surf.metalness );
 
 		float transSpecularProb = mix( max( 0.25, fEstimate ), 1.0, metalness );
 		float diffSpecularProb = 0.5 + 0.5 * metalness;
@@ -540,7 +563,7 @@ export const bsdf_functions = /* glsl */`
 	}
 
 	void getSamplingLobeWeights(
-		vec3 wo, vec3 clearcoatWo, SurfaceRecord surf,
+		vec3 wo, vec3 clearcoatWo, SurfaceRecord surf, float heroWavelength,
 		inout float diffuseWeight, inout float specularWeight, inout float transmissionWeight, inout float clearcoatWeight
 	) {
 
@@ -550,7 +573,7 @@ export const bsdf_functions = /* glsl */`
 		// directions. The individual lobe BRDF values remain evaluated at the real
 		// wi; only the mixture-selection probabilities are frozen to the sampling
 		// policy so MIS sees the PDF of the distribution that could generate wi.
-		getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
+		getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
 
 	}
 
@@ -591,7 +614,8 @@ export const bsdf_functions = /* glsl */`
 		// transmission
 		if ( transmissionWeight > 0.0 && wi.z < 0.0 ) {
 
-			tpdf = transmissionEval( wo, wi, halfVector, surf, heroWavelength, color );
+			vec3 transmissionHalfVector = getHalfVector( wi, wo, transmissionEtaAtHero( surf, heroWavelength ) );
+			tpdf = transmissionEval( wo, wi, transmissionHalfVector, surf, heroWavelength, color );
 
 		}
 
@@ -648,7 +672,7 @@ export const bsdf_functions = /* glsl */`
 		float specularWeight;
 		float transmissionWeight;
 		float clearcoatWeight;
-		getSamplingLobeWeights( wo, clearcoatWo, surf, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
+		getSamplingLobeWeights( wo, clearcoatWo, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
 
 		float specularPdf;
 		return bsdfEval( wo, clearcoatWo, wi, clearcoatWi, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight, specularPdf, color );
@@ -723,7 +747,7 @@ export const bsdf_functions = /* glsl */`
 		float specularWeight;
 		float transmissionWeight;
 		float clearcoatWeight;
-		getSamplingLobeWeights( wo, clearcoatWo, surf, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
+		getSamplingLobeWeights( wo, clearcoatWo, surf, heroWavelength, diffuseWeight, specularWeight, transmissionWeight, clearcoatWeight );
 
 		float pdf[4];
 		pdf[0] = diffuseWeight;
@@ -773,9 +797,7 @@ export const bsdf_functions = /* glsl */`
 			// Sprint 12 hero-wavelength dispersion path.
 			// Fast path: if material or global Cauchy dispersion is effectively disabled,
 			// use the classic single-IOR transmission direction.
-			bool materialDispersionEnabled = surf.dispersionStrength > 1e-5;
-			bool cauchyEnabled = abs( iorCauchyB ) > 1e-8 || abs( iorCauchyC ) > 1e-8;
-			if ( materialDispersionEnabled && cauchyEnabled ) {
+			if ( cauchyDispersionEnabled( surf ) ) {
 				wi = dispersionTransmissionDirection( wo, surf, heroWavelength );
 				clearcoatWi = normalize( clearcoatInvBasis * normalize( normalBasis * wi ) );
 				ScatterRecord dispResult;

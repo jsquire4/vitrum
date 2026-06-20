@@ -20,12 +20,12 @@ function sourceFrom(startNeedle: string): string {
 describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
   it('uses one sampling-lobe policy helper for sampled and evaluated PDFs', () => {
     const helper = sourceBetween('void getSamplingLobeWeights', 'float bsdfEval');
-    expect(helper).toContain('getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf');
+    expect(helper).toContain('getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf, heroWavelength');
 
     const result = sourceBetween('float bsdfResult', '// Sprint 7: SSS');
     const sample = sourceFrom('ScatterRecord bsdfSample');
-    expect(result).toContain('getSamplingLobeWeights( wo, clearcoatWo, surf');
-    expect(sample).toContain('getSamplingLobeWeights( wo, clearcoatWo, surf');
+    expect(result).toContain('getSamplingLobeWeights( wo, clearcoatWo, surf, heroWavelength');
+    expect(sample).toContain('getSamplingLobeWeights( wo, clearcoatWo, surf, heroWavelength');
   });
 
   it('does not recompute mixture probabilities from arbitrary light directions in bsdfResult', () => {
@@ -37,7 +37,7 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
   it('keeps spectral dispersion transmission on the same anisotropic GGX sampler as ordinary transmission', () => {
     const ordinaryTransmission = sourceBetween(
       'vec3 transmissionDirection',
-      'float cauchyIORatLambda',
+      '// ── Sprint 8: Chromatic dispersion',
     );
     const dispersionTransmission = sourceBetween('vec3 dispersionTransmissionDirection', '// clearcoat');
 
@@ -49,12 +49,29 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
   it('does not apply an unmatched second GGX perturbation after rough refraction', () => {
     const ordinaryTransmission = sourceBetween(
       'vec3 transmissionDirection',
-      'float cauchyIORatLambda',
+      '// ── Sprint 8: Chromatic dispersion',
     );
     const dispersionTransmission = sourceBetween('vec3 dispersionTransmissionDirection', '// clearcoat');
 
     expect(bsdf_functions).not.toContain('perturbDirectionByGGX');
     expect(ordinaryTransmission).not.toContain('rand2( 47 )');
     expect(dispersionTransmission).not.toContain('rand2( 47 )');
+  });
+
+  it('uses hero-wavelength eta for dispersion sampling and transmission PDF evaluation', () => {
+    const transmissionEval = sourceBetween(
+      'float transmissionEval',
+      'vec3 transmissionDirection',
+    );
+    const bsdfEval = sourceBetween('float bsdfEval', 'float bsdfResult');
+    const dispersionTransmission = sourceBetween('vec3 dispersionTransmissionDirection', '// clearcoat');
+    const sample = sourceFrom('ScatterRecord bsdfSample');
+
+    expect(bsdf_functions).toContain('float transmissionEtaAtHero( SurfaceRecord surf, float heroWavelength )');
+    expect(transmissionEval).toContain('float eta = transmissionEtaAtHero( surf, heroWavelength );');
+    expect(bsdfEval).toContain('vec3 transmissionHalfVector = getHalfVector( wi, wo, transmissionEtaAtHero( surf, heroWavelength ) );');
+    expect(dispersionTransmission).toContain('float eta = transmissionEtaAtHero( surf, heroWavelength );');
+    expect(sample).toContain('if ( cauchyDispersionEnabled( surf ) )');
+    expect(dispersionTransmission).not.toContain('iorDelta');
   });
 });
