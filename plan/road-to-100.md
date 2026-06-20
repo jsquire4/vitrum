@@ -1903,11 +1903,14 @@ warns that this is hash-based Owen-scrambled Sobol over the first-four
 direction-table set, not the final blue-noise/per-dimension-audited sampler.
 `shared-samplers` now exposes a CPU oracle for the exact stream, so shader and
 host-side tests can detect future CPU/GPU drift in the scramble or dimension
-decorrelation behavior.
+decorrelation behavior. 2026-06-19 behavioral proof added adapter-backed
+render-health lanes for full, lite, BDPT, and ReSTIR-PT reuse Sobol variants:
+the normal behavioral gate and individual WSL dzn status artifacts prove finite
+non-black readbacks with zero GPU errors for `pt/sobol-default`,
+`pt/sobol-lite`, `pt/sobol-bdpt`, and `pt/sobol-restirPtReuse`.
 
 **Remaining work:** blue-noise rotation, broader per-dimension assignment audit
-(bounce/lobe/light dims), real-adapter behavioral proof for the Sobol WebGPU
-variants, and equal-time RMSE A/B on the reference scenes
+(bounce/lobe/light dims), and equal-time RMSE A/B on the reference scenes
 (self-validating error curves, not eyeballs).
 
 ### F2 — Compressed wide BVH traversal (biggest throughput win)

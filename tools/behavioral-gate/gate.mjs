@@ -90,6 +90,10 @@ const goldenVariant = readFlagValue("--golden-variant") || Deno.env.get("VITRUM_
 const EXPECTATION_TABLE = {
   // pt-webgpu configs
   "pt/default":           { expected: "ok" },
+  "pt/sobol-default":     { expected: "ok" },
+  "pt/sobol-bdpt":        { expected: "ok" },
+  "pt/sobol-lite":        { expected: "ok" },
+  "pt/sobol-restirPtReuse": { expected: "ok" },
   "pt/spectral":          { expected: "ok" },
   "pt/bdpt":              { expected: "ok" },
   "pt/caustic-manifold":  { expected: "ok" },
@@ -158,6 +162,13 @@ const EXPECTATION_TABLE = {
 
 const PT_CONFIGS = [
   { label: "pt/default",          eng: {},                                    scene: { ptSmokeLight: "rect" } },
+  // F1 proof lane — opt-in hash-based Owen-scrambled Sobol remains experimental,
+  // but these behavioral configs prove the composed full/lite/BDPT/ReSTIR-PT
+  // variants render finite non-black images on the same adapter gate as PCG.
+  { label: "pt/sobol-default",    eng: { sampling: "sobol" },                 scene: { ptSmokeLight: "rect" } },
+  { label: "pt/sobol-bdpt",       eng: { sampling: "sobol", bdpt: true },      scene: {} },
+  { label: "pt/sobol-lite",       eng: { sampling: "sobol", traceTier: "lite" }, scene: {} },
+  { label: "pt/sobol-restirPtReuse", eng: { sampling: "sobol", restirPtReuse: true }, scene: {} },
   { label: "pt/spectral",         eng: { spectral: true },                    scene: {} },
   { label: "pt/bdpt",             eng: { bdpt: true },                        scene: {} },
   { label: "pt/caustic-manifold", eng: { causticStrategy: "manifold-nee" },   scene: {} },

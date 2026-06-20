@@ -55,12 +55,13 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
   npm run behavioral-gate:tlas-glass-shadow
 ```
 
-The committed dzn status set includes sixteen passing focused artifacts
+The committed dzn status set includes twenty passing focused artifacts
 (`gltf-material-sweep`, `mutation`, `default`, `lite-tier`, `spectral`,
-`skinned`, `analytic`, `bdpt`, `restirPtReuse`, `caustic`, `photon`, `light`,
-`directional`, `hdri`, `procedural-sky`, `wh/`) plus the broader `--filter gltf`
-full-suite lane. Together they cover every real behavioral-gate label; the only
-uncovered label is the synthetic `__self-test/always-black` failure-injection row.
+`sobol-default`, `sobol-bdpt`, `sobol-lite`, `sobol-restirPtReuse`, `skinned`,
+`analytic`, `bdpt`, `restirPtReuse`, `caustic`, `photon`, `light`, `directional`,
+`hdri`, `procedural-sky`, `wh/`) plus the broader `--filter gltf` full-suite lane.
+Together they cover every real behavioral-gate label; the only uncovered label is
+the synthetic `__self-test/always-black` failure-injection row.
 The broad glTF status confirms full-tier execution with zero GPU errors for all
 selected glTF lanes; real-asset comparisons use the explicit `dzn-full` golden
 variant under `tools/reference-renders/gltf-real-behavioral-dzn-full/`. The
@@ -71,7 +72,10 @@ The BDPT lane is a full-tier boot/render proof for `pt/bdpt` and
 `pt/spectral+bdpt`; material furnace and multi-vertex promotion remain separate
 radiometric proof work. The ReSTIR-PT lane is a full-tier boot/render proof for
 off-default `pt/restirPtReuse`; equal-spp variance and specialty radiometric
-promotion remain separate proof work. The caustic/photon lanes prove full-tier
+promotion remain separate proof work. The Sobol lanes prove adapter-backed
+boot/render health for the opt-in `sampling:'sobol'` full, lite, BDPT, and
+ReSTIR-PT variants; blue-noise rotation, dimension-assignment audit, and
+equal-time RMSE promotion remain separate proof work. The caustic/photon lanes prove full-tier
 boot/render health for `pt/caustic-manifold`, `pt/caustic-photon`, and
 `pt/spectral+photon`; caustic radiometric convergence remains a separate A/B
 proof. The light, directional, HDRI, and procedural-sky lanes pin dzn execution
@@ -83,11 +87,15 @@ glass-GI modes.
 
 ## What it covers
 
-### pt-webgpu configs (38)
+### pt-webgpu configs (42)
 
 | Label | Engine opts | Notes |
 |-------|-------------|-------|
 | `pt/default` | — | baseline |
+| `pt/sobol-default` | `sampling:'sobol'` | Sobol full-tier render-health proof |
+| `pt/sobol-bdpt` | `sampling:'sobol', bdpt:true` | Sobol + BDPT render-health proof |
+| `pt/sobol-lite` | `sampling:'sobol', traceTier:'lite'` | Sobol lite-tier render-health proof |
+| `pt/sobol-restirPtReuse` | `sampling:'sobol', restirPtReuse:true` | Sobol + ReSTIR-PT reuse render-health proof |
 | `pt/spectral` | `spectral:true` | hero-λ spectral transport |
 | `pt/bdpt` | `bdpt:true` | bidirectional PT |
 | `pt/caustic-manifold` | `causticStrategy:'manifold-nee'` | MNEE manifold caustics |

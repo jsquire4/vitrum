@@ -71,6 +71,58 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-sobol-default-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter sobol-default --require-full-tier",
+    filter: "sobol-default",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label: "pt/sobol-default", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-sobol-bdpt-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter sobol-bdpt --require-full-tier",
+    filter: "sobol-bdpt",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label: "pt/sobol-bdpt", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-sobol-lite-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter sobol-lite --require-full-tier",
+    filter: "sobol-lite",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label: "pt/sobol-lite", verdict: "PASS", rawStatus: "OK", tier: "lite", minLuminance: 0.005 },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-sobol-restirptreuse-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter sobol-restirPtReuse --require-full-tier",
+    filter: "sobol-restirPtReuse",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      { label: "pt/sobol-restirPtReuse", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
     command: "npm run behavioral-gate:dzn -- --filter spectral --require-full-tier",
     filter: "spectral",
@@ -395,4 +447,4 @@ if (missingLabels.length > 0) {
   fail(`missing committed dzn status coverage for ${missingLabels.join(", ")}`);
 }
 
-console.log("[behavioral-gate-dzn-status-check] PASS (17 committed dzn status artifacts; all regular gate labels covered; focused labels are covered by their own proof checks)");
+console.log("[behavioral-gate-dzn-status-check] PASS (21 committed dzn status artifacts; all regular gate labels covered; focused labels are covered by their own proof checks)");
