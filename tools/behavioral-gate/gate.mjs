@@ -216,6 +216,7 @@ const PT_FOCUSED_CONFIGS = [
   // Full-tier proof lane: this needs the CWBVH storage-buffer floor and is covered
   // by its own focused proof status rather than the default lavapipe sweep.
   { label: "pt/cwbvh-binary-parity", eng: {},                                   scene: { cwbvhBinaryParity: true, ptSmokeLight: "rect" } },
+  { label: "pt/cwbvh-complex-parity", eng: {},                                  scene: { cwbvhBinaryParity: true, cwbvhComplex: true } },
 ];
 
 const WH_CONFIGS = [
@@ -635,6 +636,79 @@ function buildPtSmokeLightScene(kind = "rect") {
   return {
     primitives: [quad],
     emitters,
+    environment: { kind: "none" },
+  };
+}
+
+function makeCwbvhStressQuad(id, cx, cy, z, size, color) {
+  const half = size * 0.5;
+  return {
+    kind: "mesh",
+    id,
+    positions: new Float32Array([
+      cx - half, cy - half, z,
+      cx + half, cy - half, z,
+      cx + half, cy + half, z,
+      cx - half, cy + half, z,
+    ]),
+    normals: new Float32Array([
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+      0, 0, 1,
+    ]),
+    uvs: new Float32Array([
+      0, 0,
+      1, 0,
+      1, 1,
+      0, 1,
+    ]),
+    indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
+    material: {
+      shadingModel: "unlit",
+      baseColor: color,
+      roughness: 0.62,
+      metallic: 0.0,
+    },
+  };
+}
+
+function buildCwbvhComplexScene() {
+  const primitives = [];
+  const grid = 12;
+  const spacing = 1.55 / (grid - 1);
+  const size = spacing * 0.55;
+  let id = 0;
+  for (let y = 0; y < grid; y++) {
+    for (let x = 0; x < grid; x++) {
+      const fx = x / (grid - 1);
+      const fy = y / (grid - 1);
+      primitives.push(makeCwbvhStressQuad(
+        `cwbvh-stress-${id++}`,
+        -0.775 + x * spacing,
+        -0.775 + y * spacing,
+        -0.15 - 0.002 * ((x + y) % 5),
+        size,
+        [
+          0.22 + 0.55 * fx,
+          0.28 + 0.46 * fy,
+          0.35 + 0.28 * ((x + 2 * y) % 7) / 6,
+        ],
+      ));
+    }
+  }
+  return {
+    primitives,
+    emitters: [{
+      kind: "rect-area",
+      id: "cwbvh-stress-light",
+      position: [0, 0, 1.35],
+      uAxis: [0.5, 0, 0],
+      vAxis: [0, 0.5, 0],
+      color: [1, 1, 1],
+      intensity: 18.0,
+      castShadow: false,
+    }],
     environment: { kind: "none" },
   };
 }
@@ -1344,6 +1418,7 @@ async function buildRealGltfAssetScene(assetId) {
 async function buildGateScene(opts = {}) {
   if (opts.gltfReal) return buildRealGltfAssetScene(opts.gltfReal);
   if (opts.gltf) return buildGltfFixtureScene(opts.gltf);
+  if (opts.cwbvhComplex) return buildCwbvhComplexScene();
   if (opts.ptSmokeLight) return buildPtSmokeLightScene(opts.ptSmokeLight);
   if (opts.mutation === "material") return buildMutationMaterialScene();
   if (opts.mutation === "environment") return buildMutationEnvironmentScene();

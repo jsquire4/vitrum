@@ -1847,12 +1847,13 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    any-hit, root-routed multi-BLAS, and glass-skip cases. `pt-webgpu` exposes
    the explicit full-tier `bvhTraversal:'cwbvh-closest-experimental'` opt-in,
    retains binary BVH as the default/fallback policy, advertises a structured
-   capability/warning, and has a `pt/cwbvh-binary-parity` behavioral lane with
+   capability/warning, and has focused `pt/cwbvh-*` behavioral lanes with
    zero-delta readback against binary traversal plus same-scene timing/memory
-   evidence (`binaryMs=6244.126`, `cwbvhMs=5858.448`, `ratio=0.938`,
-   `memDelta=0`, `sceneDelta=0`) in the checked-in status artifact. Remaining
-   work is broader complex-scene throughput/memory proof before any default
-   promotion.
+   evidence on both the simple Cornell lane and a 144-primitive complex lane
+   (`complex binaryMs=5911.334`, `complex cwbvhMs=5738.875`,
+   `complex ratio=0.971`, `complex binaryScene=373464`, `memDelta=0`,
+   `sceneDelta=0`) in the checked-in status artifact. Remaining work is
+   cross-workload/cross-adapter default-promotion throughput evidence.
 
 ### Execution dependency
 
@@ -1990,17 +1991,26 @@ commits `tools/behavioral-gate/behavioral-gate-cwbvh-status.json` with
 `rmse=0`, `meanAbs=0`, and `maxAbs=0`; `npm run cwbvh-gpu-proof-check` now
 rejects stale renderer-parity evidence too. 2026-06-20 timing/memory follow-up:
 the same status artifact now also records same-scene render wall time and
-memory estimates for both traversal modes (`binaryMs=6244.126`,
-`cwbvhMs=5858.448`, `ratio=0.938`, `binaryMem=298288`,
+memory estimates for both traversal modes (`binaryMs=6313.105`,
+`cwbvhMs=6267.236`, `ratio=0.993`, `binaryMem=298288`,
 `cwbvhMem=298288`, `memDelta=0`, `binaryScene=2864`,
 `cwbvhScene=2864`, `sceneDelta=0`), and the proof checker rejects artifacts
-that lack positive timing/memory fields.
+that lack positive timing/memory fields. Same-day complex-scene follow-up:
+the focused status now also includes `pt/cwbvh-complex-parity`, a deterministic
+144-primitive multi-BLAS stress scene that stays non-black, matches binary
+readback with `rmse=0`, and records `binaryMs=5911.334`,
+`cwbvhMs=5738.875`, `ratio=0.971`, `binaryMem=668888`,
+`cwbvhMem=668888`, `binaryScene=373464`, `cwbvhScene=373464`,
+`memDelta=0`, and `sceneDelta=0`. The proof checker now requires both lanes
+and requires the complex lane to have a larger scene/memory footprint than the
+simple lane.
 
-**Remaining work:** broader complex-scene throughput/memory A/B before any
-renderer default promotion. The current artifact proves the opt-in is
-same-scene non-regressing on the tiny Cornell status scene, not a generalized
-throughput claim. Becomes decisive if/when a WebGPU ray-tracing extension ships
-(whole-field handicap today: no RT cores in the browser for anyone).
+**Remaining work:** cross-workload/cross-adapter throughput A/B before any
+renderer default promotion. The current artifacts prove opt-in same-scene
+non-regression on one tiny Cornell scene and one deterministic complex stress
+scene, not a generalized default-performance claim. Becomes decisive if/when a
+WebGPU ray-tracing extension ships (whole-field handicap today: no RT cores in
+the browser for anyone).
 
 ### F3 — Shipped denoiser weights (out-of-the-box UX)
 

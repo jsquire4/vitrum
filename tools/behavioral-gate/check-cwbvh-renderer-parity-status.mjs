@@ -25,45 +25,63 @@ if (status.command !== "npm run behavioral-gate -- --filter cwbvh --require-full
 }
 if (status.filter !== "cwbvh") fail(`unexpected filter ${status.filter}`);
 if (status.exitStatus !== 0) fail(`exitStatus must be 0, got ${status.exitStatus}`);
-if (status.summary?.totalConfigs !== 1 || status.summary?.failures !== 0) {
+if (status.summary?.totalConfigs !== 2 || status.summary?.failures !== 0) {
   fail(`unexpected summary ${JSON.stringify(status.summary)}`);
 }
 
-const config = status.configs?.find((entry) => entry.label === "pt/cwbvh-binary-parity");
-if (config == null) fail("missing pt/cwbvh-binary-parity config");
-if (config.verdict !== "PASS") fail(`config verdict is ${config.verdict}`);
-if (config.rawStatus !== "OK") fail(`config rawStatus is ${config.rawStatus}`);
-if (config.tier !== "full") fail(`config tier is ${config.tier}`);
-if (config.gpuErrors !== 0) fail(`gpuErrors must be 0, got ${config.gpuErrors}`);
-if (config.nan !== false) fail(`nan must be false, got ${config.nan}`);
-if (!(config.luminance >= 0.005)) fail(`luminance below bound: ${config.luminance}`);
-if (config.cwbvhParityKind !== "binary") fail(`parity kind is ${config.cwbvhParityKind}`);
-if (config.cwbvhParityRmse > 1) fail(`RMSE exceeds bound: ${config.cwbvhParityRmse}`);
-if (config.cwbvhParityMeanAbs > 0.5) fail(`meanAbs exceeds bound: ${config.cwbvhParityMeanAbs}`);
-if (config.cwbvhParityMaxAbs > 8) fail(`maxAbs exceeds bound: ${config.cwbvhParityMaxAbs}`);
-if (!sameJson(config.cwbvhParityThresholds, { maxRmse: 1, maxMeanAbs: 0.5, maxAbs: 8 })) {
-  fail(`thresholds mismatch: ${JSON.stringify(config.cwbvhParityThresholds)}`);
+function validateConfig(label) {
+  const config = status.configs?.find((entry) => entry.label === label);
+  if (config == null) fail(`missing ${label} config`);
+  if (config.verdict !== "PASS") fail(`${label} verdict is ${config.verdict}`);
+  if (config.rawStatus !== "OK") fail(`${label} rawStatus is ${config.rawStatus}`);
+  if (config.tier !== "full") fail(`${label} tier is ${config.tier}`);
+  if (config.gpuErrors !== 0) fail(`${label} gpuErrors must be 0, got ${config.gpuErrors}`);
+  if (config.nan !== false) fail(`${label} nan must be false, got ${config.nan}`);
+  if (!(config.luminance >= 0.005)) fail(`${label} luminance below bound: ${config.luminance}`);
+  if (config.cwbvhParityKind !== "binary") fail(`${label} parity kind is ${config.cwbvhParityKind}`);
+  if (config.cwbvhParityRmse > 1) fail(`${label} RMSE exceeds bound: ${config.cwbvhParityRmse}`);
+  if (config.cwbvhParityMeanAbs > 0.5) fail(`${label} meanAbs exceeds bound: ${config.cwbvhParityMeanAbs}`);
+  if (config.cwbvhParityMaxAbs > 8) fail(`${label} maxAbs exceeds bound: ${config.cwbvhParityMaxAbs}`);
+  if (!sameJson(config.cwbvhParityThresholds, { maxRmse: 1, maxMeanAbs: 0.5, maxAbs: 8 })) {
+    fail(`${label} thresholds mismatch: ${JSON.stringify(config.cwbvhParityThresholds)}`);
+  }
+  if (config.cwbvhPerfKind !== "same-scene") fail(`${label} perf kind is ${config.cwbvhPerfKind}`);
+  const binaryMs = requireFinite(config, "cwbvhBinaryRenderMs");
+  const cwbvhMs = requireFinite(config, "cwbvhRenderMs");
+  const ratio = requireFinite(config, "cwbvhRenderMsRatio");
+  const binaryMemory = requireFinite(config, "cwbvhBinaryMemoryBytes");
+  const cwbvhMemory = requireFinite(config, "cwbvhMemoryBytes");
+  const memoryDelta = requireFinite(config, "cwbvhMemoryBytesDelta");
+  const binaryScene = requireFinite(config, "cwbvhBinarySceneBytes");
+  const cwbvhScene = requireFinite(config, "cwbvhSceneBytes");
+  const sceneDelta = requireFinite(config, "cwbvhSceneBytesDelta");
+  if (binaryMs <= 0 || cwbvhMs <= 0 || ratio <= 0) {
+    fail(`${label} render timings must be positive, got binaryMs=${binaryMs}, cwbvhMs=${cwbvhMs}, ratio=${ratio}`);
+  }
+  if (binaryMemory <= 0 || cwbvhMemory <= 0 || binaryScene <= 0 || cwbvhScene <= 0) {
+    fail(`${label} memory figures must be positive, got binary=${binaryMemory}, cwbvh=${cwbvhMemory}, binaryScene=${binaryScene}, cwbvhScene=${cwbvhScene}`);
+  }
+  if (memoryDelta !== 0 || sceneDelta !== 0) {
+    fail(`${label} expected no opt-in memory delta for the current uploaded mirror layout, got total=${memoryDelta}, scene=${sceneDelta}`);
+  }
+  return {
+    rmse: config.cwbvhParityRmse,
+    meanAbs: config.cwbvhParityMeanAbs,
+    maxAbs: config.cwbvhParityMaxAbs,
+    binaryMs,
+    cwbvhMs,
+    memoryDelta,
+    binaryMemory,
+    binaryScene,
+  };
 }
-if (config.cwbvhPerfKind !== "same-scene") fail(`perf kind is ${config.cwbvhPerfKind}`);
-const binaryMs = requireFinite(config, "cwbvhBinaryRenderMs");
-const cwbvhMs = requireFinite(config, "cwbvhRenderMs");
-const ratio = requireFinite(config, "cwbvhRenderMsRatio");
-const binaryMemory = requireFinite(config, "cwbvhBinaryMemoryBytes");
-const cwbvhMemory = requireFinite(config, "cwbvhMemoryBytes");
-const memoryDelta = requireFinite(config, "cwbvhMemoryBytesDelta");
-const binaryScene = requireFinite(config, "cwbvhBinarySceneBytes");
-const cwbvhScene = requireFinite(config, "cwbvhSceneBytes");
-const sceneDelta = requireFinite(config, "cwbvhSceneBytesDelta");
-if (binaryMs <= 0 || cwbvhMs <= 0 || ratio <= 0) {
-  fail(`render timings must be positive, got binaryMs=${binaryMs}, cwbvhMs=${cwbvhMs}, ratio=${ratio}`);
-}
-if (binaryMemory <= 0 || cwbvhMemory <= 0 || binaryScene <= 0 || cwbvhScene <= 0) {
-  fail(`memory figures must be positive, got binary=${binaryMemory}, cwbvh=${cwbvhMemory}, binaryScene=${binaryScene}, cwbvhScene=${cwbvhScene}`);
-}
-if (memoryDelta !== 0 || sceneDelta !== 0) {
-  fail(`expected no opt-in memory delta for the current uploaded mirror layout, got total=${memoryDelta}, scene=${sceneDelta}`);
+
+const simple = validateConfig("pt/cwbvh-binary-parity");
+const complex = validateConfig("pt/cwbvh-complex-parity");
+if (complex.binaryScene <= simple.binaryScene || complex.binaryMemory <= simple.binaryMemory) {
+  fail(`complex lane must have a larger scene/memory footprint than simple lane, got simple scene=${simple.binaryScene}, complex scene=${complex.binaryScene}, simple total=${simple.binaryMemory}, complex total=${complex.binaryMemory}`);
 }
 
 console.log(
-  `[cwbvh-renderer-parity-proof-check] PASS (rmse=${config.cwbvhParityRmse}, meanAbs=${config.cwbvhParityMeanAbs}, maxAbs=${config.cwbvhParityMaxAbs}, binaryMs=${binaryMs}, cwbvhMs=${cwbvhMs}, memoryDelta=${memoryDelta})`,
+  `[cwbvh-renderer-parity-proof-check] PASS (simple rmse=${simple.rmse}, complex rmse=${complex.rmse}, simpleMs=${simple.binaryMs}/${simple.cwbvhMs}, complexMs=${complex.binaryMs}/${complex.cwbvhMs}, complexSceneBytes=${complex.binaryScene})`,
 );

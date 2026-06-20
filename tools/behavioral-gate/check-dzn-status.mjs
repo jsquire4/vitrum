@@ -436,6 +436,7 @@ for (const expected of EXPECTED) {
 const gateSource = await Deno.readTextFile(new URL("./gate.mjs", import.meta.url));
 const labelsCoveredByFocusedProofs = new Set([
   "pt/cwbvh-binary-parity",
+  "pt/cwbvh-complex-parity",
 ]);
 const gateLabels = [...gateSource.matchAll(/label:\s*"([^"]+)"/g)]
   .map((match) => match[1])

@@ -110,10 +110,10 @@ if (road.includes("| `plan/renderer-fidelity-matrix.md` | Remove deleted `pt-web
 if (!road.includes("pt-webgpu` exposes\n   the explicit full-tier `bvhTraversal:'cwbvh-closest-experimental'` opt-in")) {
   fail("road-to-100.md must retain the reconciled CWBVH opt-in summary");
 }
-if (!road.includes("zero-delta readback against binary traversal plus same-scene timing/memory\n   evidence")) {
+if (!road.includes("zero-delta readback against binary traversal plus same-scene timing/memory\n   evidence on both the simple Cornell lane and a 144-primitive complex lane")) {
   fail("road-to-100.md must retain the reconciled CWBVH timing/memory proof summary");
 }
-if (!road.includes("work is broader complex-scene throughput/memory proof before any default")) {
+if (!road.includes("Remaining work is\n   cross-workload/cross-adapter default-promotion throughput evidence")) {
   fail("road-to-100.md must retain the reconciled CWBVH promotion-only residual");
 }
 if (!road.includes("fidelity matrix tracks the active `pt-webgl2` / `pt-webgpu` columns and records")) {
