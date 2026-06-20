@@ -72,6 +72,8 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *     clearcoatRoughness, sheenColor, sheenRoughness, iridescence,
  *     iridescenceThickness, specularColor, specularIntensity, clearcoatNormal,
  *     thickness, frontLayer.normalMap, backLayer.normalMap.
+ *  88-99: per-map filter policy, packed as two scalars per consumed map:
+ *     {magFilter, minFilter}, 0 nearest / 1 linear, in the same map order.
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
@@ -119,8 +121,10 @@ import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
  *     the top-level normal map when the selected face has a layer normal.
  *   - vec4 #82–#87: authored mip-filter policy for every map above. The
  *     full-tier shader already uses explicit LOD in compute, so these lanes
- *     let it honor `mipFilter:"none"` and nearest-vs-linear mip selection while
- *     keeping the single shared linear mag/min sampler.
+ *     let it honor `mipFilter:"none"` and nearest-vs-linear mip selection.
+ *   - vec4 #88–#99: authored mag/min filter policy for every map above. Regular
+ *     map sampling switches nearest requests to explicit `textureLoad` while
+ *     retaining filtered `textureSampleLevel` for linear requests.
  */
 export const MATERIAL_TEX_UV_META_VEC4_OFFSET = 19;
 export const MATERIAL_TEX_UV_META_VEC4S_PER_MAP = 2;
@@ -147,8 +151,14 @@ export const MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET =
 export const MATERIAL_TEX_MIP_POLICY_MAP_COUNT =
   MATERIAL_TEX_UV_MAP_COUNT + MATERIAL_TEX_EXTENSION_MAP_COUNT + 1 + 1 + MATERIAL_TEX_LAYER_NORMAL_MAP_COUNT;
 export const MATERIAL_TEX_MIP_POLICY_VEC4_COUNT = Math.ceil(MATERIAL_TEX_MIP_POLICY_MAP_COUNT / 4);
-export const MATERIAL_TEX_VEC4_STRIDE =
+export const MATERIAL_TEX_FILTER_POLICY_VEC4_OFFSET =
   MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET + MATERIAL_TEX_MIP_POLICY_VEC4_COUNT;
+export const MATERIAL_TEX_FILTER_POLICY_FLOATS_PER_MAP = 2;
+export const MATERIAL_TEX_FILTER_POLICY_VEC4_COUNT = Math.ceil(
+  (MATERIAL_TEX_MIP_POLICY_MAP_COUNT * MATERIAL_TEX_FILTER_POLICY_FLOATS_PER_MAP) / 4,
+);
+export const MATERIAL_TEX_VEC4_STRIDE =
+  MATERIAL_TEX_FILTER_POLICY_VEC4_OFFSET + MATERIAL_TEX_FILTER_POLICY_VEC4_COUNT;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
@@ -258,6 +268,29 @@ function writeMipPolicy(
   if (mapSlot < 0 || mapSlot >= MATERIAL_TEX_MIP_POLICY_MAP_COUNT) return;
   descriptors[b + MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET * 4 + mapSlot] =
     MIP_FILTER_INDEX[ref?.mipFilter ?? 'linear'];
+}
+
+function writeDefaultFilterPolicies(descriptors: Float32Array, b: number): void {
+  const start = b + MATERIAL_TEX_FILTER_POLICY_VEC4_OFFSET * 4;
+  const count = MATERIAL_TEX_MIP_POLICY_MAP_COUNT * MATERIAL_TEX_FILTER_POLICY_FLOATS_PER_MAP;
+  for (let i = 0; i < count; i += 1) {
+    descriptors[start + i] = 1;
+  }
+}
+
+function writeFilterPolicy(
+  descriptors: Float32Array,
+  b: number,
+  mapSlot: number,
+  ref: TextureRef | undefined,
+): void {
+  if (mapSlot < 0 || mapSlot >= MATERIAL_TEX_MIP_POLICY_MAP_COUNT) return;
+  const offset =
+    b +
+    MATERIAL_TEX_FILTER_POLICY_VEC4_OFFSET * 4 +
+    mapSlot * MATERIAL_TEX_FILTER_POLICY_FLOATS_PER_MAP;
+  descriptors[offset] = ref?.magFilter === 'nearest' ? 0 : 1;
+  descriptors[offset + 1] = ref?.minFilter === 'nearest' ? 0 : 1;
 }
 
 function writeUvMeta(
@@ -483,6 +516,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeWrapPair(descriptors, b + MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4, m.frontLayer?.normalMap);
     writeWrapPair(descriptors, b + MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4 + 2, m.backLayer?.normalMap);
     writeDefaultMipPolicies(descriptors, b);
+    writeDefaultFilterPolicies(descriptors, b);
     writeMipPolicy(descriptors, b, 0, bc);
     writeMipPolicy(descriptors, b, 1, m.emissiveMap);
     writeMipPolicy(descriptors, b, 2, m.normalMap);
@@ -506,6 +540,29 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     writeMipPolicy(descriptors, b, 20, m.thicknessMap);
     writeMipPolicy(descriptors, b, 21, m.frontLayer?.normalMap);
     writeMipPolicy(descriptors, b, 22, m.backLayer?.normalMap);
+    writeFilterPolicy(descriptors, b, 0, bc);
+    writeFilterPolicy(descriptors, b, 1, m.emissiveMap);
+    writeFilterPolicy(descriptors, b, 2, m.normalMap);
+    writeFilterPolicy(descriptors, b, 3, roughnessMap);
+    writeFilterPolicy(descriptors, b, 4, metallicMap);
+    writeFilterPolicy(descriptors, b, 5, m.aoMap);
+    writeFilterPolicy(descriptors, b, 6, m.lightMap);
+    writeFilterPolicy(descriptors, b, 7, m.bumpMap);
+    writeFilterPolicy(descriptors, b, 8, m.anisotropyMap);
+    writeFilterPolicy(descriptors, b, 9, m.alphaMap);
+    writeFilterPolicy(descriptors, b, 10, m.transmissionMap);
+    writeFilterPolicy(descriptors, b, 11, m.clearcoatMap);
+    writeFilterPolicy(descriptors, b, 12, m.clearcoatRoughnessMap);
+    writeFilterPolicy(descriptors, b, 13, m.sheenColorMap);
+    writeFilterPolicy(descriptors, b, 14, m.sheenRoughnessMap);
+    writeFilterPolicy(descriptors, b, 15, m.iridescenceMap);
+    writeFilterPolicy(descriptors, b, 16, m.iridescenceThicknessMap);
+    writeFilterPolicy(descriptors, b, 17, m.specularColorMap);
+    writeFilterPolicy(descriptors, b, 18, m.specularIntensityMap);
+    writeFilterPolicy(descriptors, b, 19, m.clearcoatNormalMap);
+    writeFilterPolicy(descriptors, b, 20, m.thicknessMap);
+    writeFilterPolicy(descriptors, b, 21, m.frontLayer?.normalMap);
+    writeFilterPolicy(descriptors, b, 22, m.backLayer?.normalMap);
     writeUvMeta(descriptors, b, 0, bc);
     writeUvMeta(descriptors, b, 1, m.emissiveMap);
     writeUvMeta(descriptors, b, 2, m.normalMap);

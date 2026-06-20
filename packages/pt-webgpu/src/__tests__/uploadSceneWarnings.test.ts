@@ -26,7 +26,7 @@ function oneMeshSceneWithBadBaseColorTexture(): Scene {
   };
 }
 
-function oneMeshSceneWithNearestBaseColorTexture(): Scene {
+function oneMeshSceneWithApproximateBumpSamplerPolicy(): Scene {
   return {
     primitives: [
       {
@@ -38,11 +38,12 @@ function oneMeshSceneWithNearestBaseColorTexture(): Scene {
           baseColor: [1, 1, 1],
           roughness: 0.5,
           metallic: 0,
-          baseColorMap: {
+          bumpScale: 0.2,
+          bumpMap: {
             handle: { image: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
             magFilter: 'nearest',
             minFilter: 'nearest',
-            mipFilter: 'none',
+            mipFilter: 'linear',
           },
         },
       },
@@ -114,7 +115,7 @@ describe('uploadPackedScene warning propagation', () => {
   it('routes material texture sampler-policy warnings through UploadedSceneBuffers warnings', () => {
     installGpuConstStubs();
     const device = makeDevice();
-    const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithNearestBaseColorTexture()));
+    const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithApproximateBumpSamplerPolicy()));
 
     expect(uploaded.structuredWarnings).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -123,17 +124,17 @@ describe('uploadPackedScene warning propagation', () => {
         phase: 'setScene',
         method: 'setScene',
         details: expect.objectContaining({
-          colorSpace: 'sRGB',
+          colorSpace: 'linear',
           layer: 0,
-          fields: ['baseColorMap'],
+          fields: ['bumpMap'],
           materialIndices: [0],
-          fallback: 'shared-linear-filter-per-map-mip-policy',
+          fallback: 'regular-map-policy-sampler-with-bump-base-texel-gradient',
           requestedSamplerPolicies: [{
             materialIndex: 0,
-            field: 'baseColorMap',
+            field: 'bumpMap',
             magFilter: 'nearest',
             minFilter: 'nearest',
-            mipFilter: 'none',
+            mipFilter: 'linear',
           }],
         }),
       }),

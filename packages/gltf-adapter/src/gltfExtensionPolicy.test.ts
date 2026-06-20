@@ -590,7 +590,7 @@ describe('glTF common extension policy', () => {
     }));
   });
 
-  it('reports authored non-linear sampler policy as an approximate compatibility issue', () => {
+  it('reports authored mipmapped nearest sampler policy as approximate on pt-webgl2', () => {
     const { gltf } = minimalMaterialGltf({
       pbrMetallicRoughness: {
         baseColorTexture: { index: 0 },
@@ -625,6 +625,9 @@ describe('glTF common extension policy', () => {
         }),
       ]),
     );
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues.some(
+      (issue) => issue.name === 'baseColorMap.samplerPolicy',
+    )).toBe(false);
   });
 
   it('treats linear mipmapped sampler policy as exact on pt-webgpu full but approximate elsewhere', () => {
@@ -709,7 +712,7 @@ describe('glTF common extension policy', () => {
     expect(ptWebgpuIssues.some((issue) => issue.name.endsWith('.samplerPolicy'))).toBe(false);
   });
 
-  it('treats nearest non-mip sampler policy as exact on pt-webgl2 but approximate on pt-webgpu full', () => {
+  it('treats nearest non-mip sampler policy as exact on pt-webgl2 and pt-webgpu full', () => {
     const { gltf } = minimalMaterialGltf({
       pbrMetallicRoughness: {
         baseColorTexture: { index: 0 },
@@ -724,15 +727,8 @@ describe('glTF common extension policy', () => {
     expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues.some(
       (issue) => issue.name === 'baseColorMap.samplerPolicy',
     )).toBe(false);
-    expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          category: 'material',
-          name: 'baseColorMap.samplerPolicy',
-          support: 'approximate',
-          path: 'samplers[0].minFilter',
-        }),
-      ]),
-    );
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues.some(
+      (issue) => issue.name === 'baseColorMap.samplerPolicy',
+    )).toBe(false);
   });
 });

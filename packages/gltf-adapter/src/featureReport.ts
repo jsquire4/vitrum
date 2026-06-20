@@ -1109,14 +1109,12 @@ function samplerPolicySupport(
     if ((policy.mipFilter ?? 'none') !== 'none') return 'approximate';
     return 'native';
   }
-  if ((policy.magFilter ?? 'linear') !== 'linear') return 'approximate';
-  if ((policy.minFilter ?? 'linear') !== 'linear') return 'approximate';
-  if (
-    policy.materialField === 'bumpMap' &&
-    policy.mipFilter !== undefined &&
-    policy.mipFilter !== 'none'
-  ) {
-    return 'approximate';
+  if (policy.materialField === 'bumpMap') {
+    if ((policy.magFilter ?? 'linear') !== 'linear') return 'approximate';
+    if ((policy.minFilter ?? 'linear') !== 'linear') return 'approximate';
+    if (policy.mipFilter !== undefined && policy.mipFilter !== 'none') {
+      return 'approximate';
+    }
   }
   return 'native';
 }

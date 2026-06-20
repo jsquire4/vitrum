@@ -7,6 +7,7 @@ import {
   MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET,
   MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET,
+  MATERIAL_TEX_FILTER_POLICY_VEC4_OFFSET,
   MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET,
   MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET,
@@ -328,7 +329,25 @@ function materialLayerSamplerWgsl(
   let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
   let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
   let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
-  let policyLod = materialTexturePolicyLod(lod, mipCount, materialTextureMipPolicy(base, mipPolicySlot));
+  let mipPolicy = materialTextureMipPolicy(base, mipPolicySlot);
+  let policyLod = materialTexturePolicyLod(lod, mipCount, mipPolicy);
+  let filterPolicy = materialTextureFilterPolicy(base, mipPolicySlot);
+  let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
+  if (filterMode < 0.5) {
+    let maxLod = max(mipCount - 1.0, 0.0);
+    let lod0 = clamp(floor(policyLod), 0.0, maxLod);
+    let lod1 = clamp(lod0 + 1.0, 0.0, maxLod);
+    let lod0u = u32(lod0);
+    let lod1u = u32(lod1);
+    let dim0 = vec2f(textureDimensions(${texArray}, lod0u));
+    let dim1 = vec2f(textureDimensions(${texArray}, lod1u));
+    let coord0 = vec2i(clamp(floor(fittedUv * dim0), vec2f(0.0), max(dim0 - vec2f(1.0), vec2f(0.0))));
+    let coord1 = vec2i(clamp(floor(fittedUv * dim1), vec2f(0.0), max(dim1 - vec2f(1.0), vec2f(0.0))));
+    let c0 = textureLoad(${texArray}, coord0, layerIdx, lod0u);
+    let c1 = textureLoad(${texArray}, coord1, layerIdx, lod1u);
+    let mipMix = select(0.0, fract(policyLod), mipPolicy >= 1.5);
+    return mix(c0, c1, mipMix);
+  }
   return textureSampleLevel(${texArray}, materialTexSampler, fittedUv, layerIdx, policyLod);
 }`;
 }
@@ -419,6 +438,8 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 //  78-81: front/back layer-normal UV metadata
 //  82-87: per-map mip policy, one scalar per map:
 //     0 none / 1 nearest / 2 linear
+//  88-99: per-map filter policy, two scalars per map:
+//     {magFilter, minFilter}, 0 nearest / 1 linear
 const MATERIAL_TEX_VEC4_STRIDE = ${MATERIAL_TEX_VEC4_STRIDE}u;
 const MATERIAL_TEX_UV_BASE_COLOR = ${MATERIAL_TEX_UV_META_VEC4_OFFSET}u;
 const MATERIAL_TEX_UV_EMISSIVE = ${MATERIAL_TEX_UV_META_VEC4_OFFSET + MATERIAL_TEX_UV_META_VEC4S_PER_MAP}u;
@@ -477,6 +498,7 @@ const MATERIAL_TEX_MIP_CLEARCOAT_NORMAL = 19u;
 const MATERIAL_TEX_MIP_THICKNESS = 20u;
 const MATERIAL_TEX_MIP_FRONT_LAYER_NORMAL = 21u;
 const MATERIAL_TEX_MIP_BACK_LAYER_NORMAL = 22u;
+const MATERIAL_TEX_FILTER_POLICY = ${MATERIAL_TEX_FILTER_POLICY_VEC4_OFFSET}u;
 
 fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
   let m = u32(mode);
@@ -511,6 +533,16 @@ fn materialTexturePolicyLod(lod: f32, mipCount: f32, mipPolicy: f32) -> f32 {
     return clamp(floor(lod + 0.5), 0.0, maxLod);
   }
   return clamp(lod, 0.0, maxLod);
+}
+
+fn materialTextureFilterPolicy(base: u32, slot: u32) -> vec2f {
+  let scalarOffset = slot * 2u;
+  let vecIdx = base + MATERIAL_TEX_FILTER_POLICY + scalarOffset / 4u;
+  if (vecIdx >= arrayLength(&materialTexDescriptors)) { return vec2f(1.0); }
+  let packed = materialTexDescriptors[vecIdx];
+  let lane = scalarOffset - (scalarOffset / 4u) * 4u;
+  if (lane == 0u) { return packed.xy; }
+  return packed.zw;
 }
 
 // Sample array layer \`layerIdx\` for material \`base\` (= matId·stride) at the hit:

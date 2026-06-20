@@ -223,7 +223,7 @@ describe('createMaterialTextureArray', () => {
     ]);
   });
 
-  it('reports sampler policy requests that differ from the shared pt-webgpu sampler', () => {
+  it('accepts regular material-map sampler policy requests consumed by the pt-webgpu descriptor', () => {
     installGpuConstStubs();
     const { device } = makeDevice();
     const array = createMaterialTextureArray(
@@ -244,23 +244,10 @@ describe('createMaterialTextureArray', () => {
       }],
     );
 
-    expect(array.structuredWarnings).toEqual([
-      expect.objectContaining({
-        code: 'texture-sampler-policy-approximation',
-        layer: 0,
-        fallback: 'shared-linear-filter-per-map-mip-policy',
-        requestedSamplerPolicies: [{
-          materialIndex: 2,
-          field: 'baseColorMap',
-          magFilter: 'nearest',
-          minFilter: 'nearest',
-          mipFilter: 'none',
-        }],
-      }),
-    ]);
-    expect(array.warnings).toContain(
-      "[materialTextureArray] source 0 requests sampler policy outside pt-webgpu's shared linear mag/min material texture sampler for fields baseColorMap; the texture remains uploadable, but filtering behavior is approximate.",
-    );
+    expect(array.structuredWarnings.filter((warning) =>
+      warning.code === 'texture-sampler-policy-approximation',
+    )).toEqual([]);
+    expect(array.warnings.some((warning) => warning.includes('sampler policy'))).toBe(false);
   });
 
   it('accepts authored mip policies when mag/min filtering stays linear', () => {
@@ -328,6 +315,7 @@ describe('createMaterialTextureArray', () => {
       expect.objectContaining({
         code: 'texture-sampler-policy-approximation',
         layer: 0,
+        fallback: 'regular-map-policy-sampler-with-bump-base-texel-gradient',
         requestedSamplerPolicies: [{
           materialIndex: 4,
           field: 'bumpMap',

@@ -288,8 +288,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-20: material texture sampling appended per-map mip
     // policy lanes and applies `none` / nearest / linear mip LOD choices in the
     // explicit-LOD full-tier sampler.
-    expect(digest).toBe('71c335cccde1ca36b8125c7a6fd901db387cf9e209e1b425d0fe7109f9b97bba');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(391921);
+    // Re-pinned 2026-06-20: material texture sampling appended per-map filter
+    // policy lanes and uses a nearest `textureLoad` branch for regular maps.
+    expect(digest).toBe('d742e8b1a929dc063e14e81e886b1255a7d004d7147d32ac525fb7197e270ff0');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(394442);
   });
 });
 
