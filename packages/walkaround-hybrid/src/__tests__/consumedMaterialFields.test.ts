@@ -473,6 +473,44 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
+  it('emits a structured setScene warning for reserved receiveShadow:false', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const baseScene = consumedOnlyScene();
+      const basePrim = baseScene.primitives[0]!;
+      const scene: Scene = {
+        ...baseScene,
+        primitives: [
+          {
+            ...basePrim,
+            receiveShadow: false,
+          } as unknown as ScenePrimitive,
+        ],
+      };
+
+      engine.setScene(scene);
+
+      const warning = structured.find((w) =>
+        w.code === 'walkaround-hybrid.reserved-receive-shadow',
+      );
+      expect(warning).toMatchObject({
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'setScene',
+        details: { primitiveIds: ['m1'] },
+      });
+      expect(warnSpy.mock.calls.flat().map(String).some((m) =>
+        m.includes('receiveShadow:false') && m.includes('m1'),
+      )).toBe(true);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('warns only once per distinct field set across repeated setScene calls', () => {
     const engine = new HybridEngine(makeOpts());
     try {
