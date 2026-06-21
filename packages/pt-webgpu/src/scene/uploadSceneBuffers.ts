@@ -919,7 +919,7 @@ export function buildPackedScene(
           tlasInstanceLocalToWorld: new Float32Array(0),
           tlasNodeCount: 0,
           primitiveTlasBindings: [] as readonly PrimitiveTlasBinding[],
-          warnings: [] as readonly string[],
+          warnings: merged.warnings,
         } satisfies ScenePackResult;
       })()
     : packSceneFromCore(scene, {

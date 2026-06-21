@@ -101,6 +101,16 @@ function buildGeometryInputs(
   const merged = mergeWorldSpaceFromCore(skinnedScene, {
     positionStride: 4,
     splitMaterialsByCastShadow: true,
+    onWarning: (message) => {
+      warningOptions.onWarning({
+        code: 'pt-webgl2.vertex-displacement-warning',
+        message: `[pt-webgl2] ${message}`,
+        backend: 'pt-webgl2',
+        phase: warningOptions.warningPhase,
+        method: warningOptions.warningMethod,
+        details: { source: 'mergeWorldSpaceFromCore' },
+      });
+    },
   });
   const mergedUv1 = mergeUv1FromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
   const mergedTangents = mergeTangentsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
@@ -176,7 +186,7 @@ export function buildSceneGeometryTextureData(
     triangleCount: geometry.merged.triangleCount,
     merged: geometry.merged,
     vertexColorMaterialIds,
-    warnings: meshLightsData.warnings,
+    warnings: [...geometry.merged.warnings, ...meshLightsData.warnings],
     structuredWarnings,
   };
 }
@@ -277,7 +287,7 @@ export function buildRefitSceneGeometryTextures(
     meshLightsData,
     merged: refitMerged,
     vertexColorMaterialIds,
-    warnings: meshLightsData.warnings,
+    warnings: [...geometry.merged.warnings, ...meshLightsData.warnings],
     structuredWarnings,
   };
 }
@@ -419,7 +429,7 @@ export function buildSceneTextures(
   return {
     textures,
     merged,
-    warnings: meshLightsData.warnings.length > 0 ? [...warnings, ...meshLightsData.warnings] : warnings,
+    warnings: [...warnings, ...merged.warnings, ...meshLightsData.warnings],
     structuredWarnings,
     supported,
   };

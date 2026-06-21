@@ -56,7 +56,7 @@ export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'lightMap',
 ]);
 
-const UNSUPPORTED_DISPLACEMENT_FIELDS: ReadonlySet<string> = new Set([
+const DISPLACEMENT_GEOMETRY_MATERIAL_FIELDS: ReadonlySet<string> = new Set([
   'displacementMap',
   'displacementScale',
   'displacementBias',
@@ -150,6 +150,11 @@ function canFastPathMaterialPatch(patch: Partial<ScenePrimitive>): boolean {
       continue;
     }
     return false;
+  }
+  if (patch.material != null) {
+    for (const field of Object.keys(patch.material as unknown as Record<string, unknown>)) {
+      if (DISPLACEMENT_GEOMETRY_MATERIAL_FIELDS.has(field)) return false;
+    }
   }
   return sawMaterialLaneField;
 }
@@ -247,14 +252,6 @@ function textureValueNeedsAtlasRefresh(
   const handle = textureHandleOf(value);
   if (handle == null) return false;
   return materialLayerMap?.[colorSpace].has(handle) !== true;
-}
-
-function unsupportedDisplacementPatchFields(patch: Partial<ScenePrimitive>): readonly string[] {
-  if (patch.material == null) return [];
-  const material = patch.material as unknown as Record<string, unknown>;
-  return Object.keys(material)
-    .filter((field) => UNSUPPORTED_DISPLACEMENT_FIELDS.has(field))
-    .sort();
 }
 
 function canRefreshGeometryTextures(patch: Partial<ScenePrimitive>): boolean {
@@ -654,23 +651,7 @@ export function tryFastPathMaterialMutation(
     texturePatchMayCompactAtlas(geoPack.materials[slot], materialPatch)
   );
 
-  const unsupportedDisplacementFields = unsupportedDisplacementPatchFields(patch);
-  const structuredWarnings: EngineWarning[] = unsupportedDisplacementFields.length > 0
-    ? [{
-        code: 'pt-webgl2.unsupported-displacement-material',
-        backend: 'pt-webgl2',
-        phase: 'mutation',
-        method: 'updatePrimitive',
-        message:
-          `[vitrum/pt-webgl2] updatePrimitive("${primitiveId}"): displacement material fields are supplied ` +
-          `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
-        details: {
-          fields: unsupportedDisplacementFields,
-          primitiveIds: [primitiveId],
-          primitiveFields: [{ primitiveId, fields: unsupportedDisplacementFields }],
-        },
-      }]
-    : [];
+  const structuredWarnings: EngineWarning[] = [];
 
   const explicitMeshArea = hasExplicitMeshAreaEmitterForPrimitive(nextScene, primitiveId);
   const foldedMaterials = explicitMeshArea

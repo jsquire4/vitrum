@@ -11,6 +11,7 @@ import { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.j
 import { buildTlas, refitTlas } from './tlas.js';
 import { invertMat4 as _invertMat4 } from './mathUtils.js';
 import { rebaseLeafTriOffset as _rebaseLeafTriOffset, copyVec4Strided as _copyVec4Strided } from './splicePack.js';
+import { maybeDisplaceMeshPositions } from './vertexDisplacement.js';
 
 // ── Back-compat re-export from extracted module ───────────────────────────────
 // invertMat4 was previously defined in this file; now canonical in mathUtils.
@@ -128,6 +129,31 @@ export function computeLocalAabb(positions: Float32Array): {
   let maxY = Number.NEGATIVE_INFINITY;
   let maxZ = Number.NEGATIVE_INFINITY;
   for (let i = 0; i + 2 < positions.length; i += 3) {
+    const x = positions[i] ?? 0;
+    const y = positions[i + 1] ?? 0;
+    const z = positions[i + 2] ?? 0;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+    maxZ = Math.max(maxZ, z);
+  }
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+}
+
+function computeStridedLocalAabb(positions: Float32Array, stride: number): {
+  min: readonly [number, number, number];
+  max: readonly [number, number, number];
+} | null {
+  if (positions.length < 3 || stride < 3) return null;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let minZ = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  let maxZ = Number.NEGATIVE_INFINITY;
+  for (let i = 0; i + 2 < positions.length; i += stride) {
     const x = positions[i] ?? 0;
     const y = positions[i + 1] ?? 0;
     const z = positions[i + 2] ?? 0;
@@ -297,10 +323,19 @@ function packOneMeshLikePrimitive(
       `expected at least ${vertexCount * 3}. Ignoring authored vertex colors.`,
     );
   }
+  const sourcePositions = maybeDisplaceMeshPositions({
+    primitiveId: primitive.id,
+    material: primitive.material,
+    positions: basePositions,
+    normals: primitive.normals,
+    ...(baseUvs != null ? { uvs: baseUvs } : {}),
+    ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
+    onWarning: (warning) => warnings.push(warning),
+  }) ?? basePositions;
   for (let i = 0; i < vertexCount; i += 1) {
-    localPositions[i * VERTEX_STRIDE_F32] = basePositions[i * 3] ?? 0;
-    localPositions[i * VERTEX_STRIDE_F32 + 1] = basePositions[i * 3 + 1] ?? 0;
-    localPositions[i * VERTEX_STRIDE_F32 + 2] = basePositions[i * 3 + 2] ?? 0;
+    localPositions[i * VERTEX_STRIDE_F32] = sourcePositions[i * 3] ?? 0;
+    localPositions[i * VERTEX_STRIDE_F32 + 1] = sourcePositions[i * 3 + 1] ?? 0;
+    localPositions[i * VERTEX_STRIDE_F32 + 2] = sourcePositions[i * 3 + 2] ?? 0;
     localPositions[i * VERTEX_STRIDE_F32 + 3] = 0;
     localNormals[i * VERTEX_STRIDE_F32] = primitive.normals[i * 3] ?? 0;
     localNormals[i * VERTEX_STRIDE_F32 + 1] = primitive.normals[i * 3 + 1] ?? 1;
@@ -382,7 +417,7 @@ function packOneMeshLikePrimitive(
     );
   }
 
-  const localAabb = computeLocalAabb(basePositions);
+  const localAabb = computeStridedLocalAabb(localPositions, VERTEX_STRIDE_F32);
   if (localAabb == null) return { slice: null, warnings };
 
   return {

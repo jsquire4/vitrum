@@ -71,9 +71,6 @@ type PrimLike = {
 };
 
 const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
-  displacementMap: { handle: { id: 'height' } },
-  displacementScale: 0.2,
-  displacementBias: -0.1,
   spectralAttenuation: {
     wavelengthStart: 380,
     wavelengthEnd: 700,
@@ -91,9 +88,6 @@ const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
 const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
   'backLayer',
   'dispersionAbbeNumber',
-  'displacementBias',
-  'displacementMap',
-  'displacementScale',
   'frontLayer',
   'scatteringAnisotropy',
   'scatteringCoefficient',
@@ -151,7 +145,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'transmission',
       'attenuationColor', 'attenuationDistance', 'thickness', 'thicknessMap', 'ior', 'extensions',
       'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
-      'bumpMap', 'bumpScale',
+      'bumpMap', 'bumpScale', 'displacementMap', 'displacementScale', 'displacementBias',
       'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity', 'envMapIntensity',
       'specularColor', 'specularIntensity', 'clearcoat', 'clearcoatRoughness',
       'sheen', 'sheenColor', 'sheenRoughness',
@@ -219,7 +213,7 @@ describe('collectUnconsumedMaterialFields', () => {
       displacementMap: { handle: 'height' },
       displacementScale: 0.25,
       displacementBias: -0.05,
-    })).toEqual(['displacementBias', 'displacementMap', 'displacementScale']);
+    })).toEqual([]);
   });
 
   it('reports every permanently unsupported walkaround material family from a material patch', () => {
@@ -237,7 +231,6 @@ describe('collectUnconsumedMaterialFields', () => {
       'unknownFutureField',
       ...WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS,
     ])).toEqual({
-      geometry: ['displacementBias', 'displacementMap', 'displacementScale'],
       spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
       volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
       layered: ['backLayer', 'frontLayer', 'thinFilmStack'],
@@ -576,7 +569,6 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
         JSON.stringify(w.details?.fields) === JSON.stringify(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS) &&
         JSON.stringify(w.details?.categories) === JSON.stringify({
-          geometry: ['displacementBias', 'displacementMap', 'displacementScale'],
           spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
           volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
           layered: ['backLayer', 'frontLayer', 'thinFilmStack'],

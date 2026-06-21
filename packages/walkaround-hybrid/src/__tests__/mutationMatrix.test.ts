@@ -113,9 +113,6 @@ function baseColorMapHandle(r: number): { width: number; height: number; data: U
 const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
 
 const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
-  displacementMap: { handle: { id: 'height' } },
-  displacementScale: 0.2,
-  displacementBias: -0.1,
   spectralAttenuation: {
     wavelengthStart: 380,
     wavelengthEnd: 700,
@@ -133,9 +130,6 @@ const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
 const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
   'backLayer',
   'dispersionAbbeNumber',
-  'displacementBias',
-  'displacementMap',
-  'displacementScale',
   'frontLayer',
   'scatteringAnisotropy',
   'scatteringCoefficient',
@@ -555,7 +549,6 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(materialWarning?.method).toBe('updatePrimitive');
       expect(materialWarning?.details?.fields).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
       expect(materialWarning?.details?.categories).toEqual({
-        geometry: ['displacementBias', 'displacementMap', 'displacementScale'],
         spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
         volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
         layered: ['backLayer', 'frontLayer', 'thinFilmStack'],

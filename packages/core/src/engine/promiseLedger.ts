@@ -442,9 +442,12 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // than native.
   bumpMap: 'approximate',
   bumpScale: 'approximate',
-  displacementMap: 'unsupported',
-  displacementScale: 'unsupported',
-  displacementBias: 'unsupported',
+  // CPU-readable displacement maps are applied as vertex displacement before the
+  // shared merged BVH is built. This is real geometry for existing vertices, but
+  // no tessellation/microdisplacement is synthesized, so the row is approximate.
+  displacementMap: 'approximate',
+  displacementScale: 'approximate',
+  displacementBias: 'approximate',
   lightMap: 'approximate',
   lightMapIntensity: 'approximate',
   // Scalar sheen rides material atlas metadata and adds a Charlie/Neubelt-
@@ -547,9 +550,12 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   specularIntensityMap: 'native',
   bumpMap: 'native',
   bumpScale: 'native',
-  displacementMap: 'unsupported',
-  displacementScale: 'unsupported',
-  displacementBias: 'unsupported',
+  // CPU-readable displacement maps run through shared-bvh vertex displacement
+  // before the WebGL2 merged BVH/material textures are uploaded. Vertex-only:
+  // no tessellation/microdisplacement.
+  displacementMap: 'approximate',
+  displacementScale: 'approximate',
+  displacementBias: 'approximate',
   lightMap: 'native',
   lightMapIntensity: 'native',
   sheen: 'native',
@@ -660,9 +666,12 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   specularIntensityMap: 'approximate',
   bumpMap: 'native',
   bumpScale: 'native',
-  displacementMap: 'unsupported',
-  displacementScale: 'unsupported',
-  displacementBias: 'unsupported',
+  // Full-tier packSceneFromCore and merged-mode paths apply CPU-readable
+  // displacement maps before BLAS/BVH construction. Vertex-only, not native
+  // microdisplacement/tessellation.
+  displacementMap: 'approximate',
+  displacementScale: 'approximate',
+  displacementBias: 'approximate',
   lightMap: 'native',
   lightMapIntensity: 'native',
   sheen: 'native',

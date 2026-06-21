@@ -173,18 +173,10 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
       'thicknessMap',
+      'displacementMap', 'displacementScale', 'displacementBias',
       'normalMap', 'normalScale', 'bumpMap', 'bumpScale', 'lightMap', 'lightMapIntensity',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);
-    }
-  });
-
-  it('does NOT include unsupported texture-map fields', () => {
-    const textureMaps = [
-      'displacementMap',
-    ];
-    for (const field of textureMaps) {
-      expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(false);
     }
   });
 });

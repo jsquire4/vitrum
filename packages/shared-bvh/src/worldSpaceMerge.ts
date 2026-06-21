@@ -37,6 +37,7 @@
 import type { Mat4, MaterialSpec, Scene, SceneNodeId, ScenePrimitive, TextureRef } from '@vitrum/core';
 import type { PlainAabb } from './aabb.js';
 import { buildArrayBvh } from './buildArrayBvh.js';
+import { maybeDisplaceMeshPositions } from './vertexDisplacement.js';
 
 const IDENTITY_MAT4: readonly number[] = [
   1, 0, 0, 0,
@@ -147,6 +148,9 @@ export interface WorldSpaceMergeResult {
   /** Per-source-primitive vertex ranges (mirrors the THREE path). */
   readonly meshVertexRanges: readonly MergedMeshVertexRange[];
 
+  /** Non-fatal ingestion warnings, including skipped unreadable vertex displacement maps. */
+  readonly warnings: readonly string[];
+
   /** Vertex count in the merged buffer (positions.length / stride). */
   readonly vertexCount: number;
   /** Triangle count in the merged buffer. */
@@ -189,6 +193,9 @@ export interface WorldSpaceMergeOptions {
    * per-vertex color binding.
    */
   readonly bakeConstantVertexColorIntoMaterial?: boolean;
+
+  /** Optional warning sink. Warnings are also returned on {@link WorldSpaceMergeResult.warnings}. */
+  readonly onWarning?: (warning: string) => void;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -656,6 +663,11 @@ export function mergeWorldSpaceFromCore(
   const mergedIndices: number[] = [];
   const mergedTriMaterialId: number[] = [];
   const meshVertexRanges: MergedMeshVertexRange[] = [];
+  const warnings: string[] = [];
+  const warn = (warning: string): void => {
+    warnings.push(warning);
+    opts.onWarning?.(warning);
+  };
 
   // Material value-dedup LUT (mirrors snapshotPreBuildMaterials).
   const materials: MaterialSpec[] = [];
@@ -719,6 +731,7 @@ export function mergeWorldSpaceFromCore(
     const baseTangents = primitive.tangents;
     const baseColors = primitive.colors;
     const baseUvs = primitive.uvs; // optional; (0,0) per vertex when absent
+    const baseUv1 = primitive.uv1;
     const localVertexCount = Math.floor(basePositions.length / 3);
     const hasCompleteTangents = baseTangents != null && baseTangents.length >= localVertexCount * 4;
     const colorStride = baseColors != null && baseColors.length >= localVertexCount * 4
@@ -727,6 +740,15 @@ export function mergeWorldSpaceFromCore(
         ? 3
         : 0;
     if (localVertexCount < 3) continue;
+    const sourcePositions = maybeDisplaceMeshPositions({
+      primitiveId: primitive.id,
+      material: primitive.material,
+      positions: basePositions,
+      normals: baseNormals,
+      ...(baseUvs != null ? { uvs: baseUvs } : {}),
+      ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
+      onWarning: warn,
+    }) ?? basePositions;
 
     // Sequential index when the primitive carries none (triangle-list), matching
     // `packOneMeshLikePrimitive` / SGG's index synthesis.
@@ -758,9 +780,9 @@ export function mergeWorldSpaceFromCore(
           );
           continue;
         }
-        const pa = applyMatrix4(m, basePositions[a * 3] ?? 0, basePositions[a * 3 + 1] ?? 0, basePositions[a * 3 + 2] ?? 0);
-        const pb = applyMatrix4(m, basePositions[b * 3] ?? 0, basePositions[b * 3 + 1] ?? 0, basePositions[b * 3 + 2] ?? 0);
-        const pc = applyMatrix4(m, basePositions[c * 3] ?? 0, basePositions[c * 3 + 1] ?? 0, basePositions[c * 3 + 2] ?? 0);
+        const pa = applyMatrix4(m, sourcePositions[a * 3] ?? 0, sourcePositions[a * 3 + 1] ?? 0, sourcePositions[a * 3 + 2] ?? 0);
+        const pb = applyMatrix4(m, sourcePositions[b * 3] ?? 0, sourcePositions[b * 3 + 1] ?? 0, sourcePositions[b * 3 + 2] ?? 0);
+        const pc = applyMatrix4(m, sourcePositions[c * 3] ?? 0, sourcePositions[c * 3 + 1] ?? 0, sourcePositions[c * 3 + 2] ?? 0);
         if (!finiteVec3(pa) || !finiteVec3(pb) || !finiteVec3(pc)) {
           warnFilteredTriangle(
             primitive.id,
@@ -778,9 +800,9 @@ export function mergeWorldSpaceFromCore(
 
       // Transform + append this instance's vertices (world space).
       for (let i = 0; i < localVertexCount; i += 1) {
-        const lx = basePositions[i * 3] ?? 0;
-        const ly = basePositions[i * 3 + 1] ?? 0;
-        const lz = basePositions[i * 3 + 2] ?? 0;
+        const lx = sourcePositions[i * 3] ?? 0;
+        const ly = sourcePositions[i * 3 + 1] ?? 0;
+        const lz = sourcePositions[i * 3 + 2] ?? 0;
         const [wx, wy, wz] = applyMatrix4(m, lx, ly, lz);
         positions.push(wx, wy, wz);
         if (stride === 4) positions.push(0);
@@ -877,6 +899,7 @@ export function mergeWorldSpaceFromCore(
       materials,
       boundingBox: { min: [-1, -1, -1], max: [1, 1, 1] },
       meshVertexRanges,
+      warnings,
       vertexCount: 3,
       triangleCount: 0,
     };
@@ -915,6 +938,7 @@ export function mergeWorldSpaceFromCore(
     materials,
     boundingBox: { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] },
     meshVertexRanges,
+    warnings,
     vertexCount,
     triangleCount,
   };

@@ -152,9 +152,9 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(sd.materials.anisotropyRotation).toBe('unsupported');
     expect(sd.materials.frontLayer).toBe('approximate');
     expect(sd.materials.backLayer).toBe('approximate');
-    expect(sd.materials.displacementMap).toBe('unsupported');
-    expect(sd.materials.displacementScale).toBe('unsupported');
-    expect(sd.materials.displacementBias).toBe('unsupported');
+    expect(sd.materials.displacementMap).toBe('approximate');
+    expect(sd.materials.displacementScale).toBe('approximate');
+    expect(sd.materials.displacementBias).toBe('approximate');
     engine.dispose();
     warn.mockRestore();
   });
@@ -359,7 +359,7 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('setScene warns when displacement material fields are supplied', async () => {
+  it('setScene warns when displacement map handles are not CPU-readable', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const engine = await createPTEngine_WebGPU({
@@ -392,27 +392,12 @@ describe('H12: lite-tier capabilities truth', () => {
     } catch {
       /* GPU stubs may throw after the warn — that's expected */
     }
-    const calls = warn.mock.calls.map((c) => c.join(' '));
-    expect(calls.some((c) =>
-      c.includes('displacementMap') &&
-      c.includes('displacementScale') &&
-      c.includes('displacementBias'),
-    )).toBe(true);
     expect(structured.some((w) =>
-      w.code === 'pt-webgpu.unsupported-displacement-material' &&
-      Array.isArray(w.details?.fields) &&
-      w.details.fields.includes('displacementMap') &&
-      w.details.fields.includes('displacementScale') &&
-      w.details.fields.includes('displacementBias') &&
-      Array.isArray(w.details?.primitiveIds) &&
-      w.details.primitiveIds.includes('m') &&
-      Array.isArray(w.details?.primitiveFields) &&
-      w.details.primitiveFields.some((entry) =>
-        entry.primitiveId === 'm' &&
-        entry.fields.includes('displacementMap') &&
-        entry.fields.includes('displacementScale') &&
-        entry.fields.includes('displacementBias')
-      ),
+      w.code === 'pt-webgpu.scene-pack-warning' &&
+      w.message.includes('displacementMap') &&
+      w.message.includes('vertex displacement skipped') &&
+      typeof w.details?.warning === 'string' &&
+      w.details.warning.includes('Primitive "m" displacementMap')
     )).toBe(true);
     engine.dispose();
     warn.mockRestore();
@@ -548,27 +533,20 @@ describe('H12: lite-tier capabilities truth', () => {
       /* GPU stubs may throw after the warn — that's expected */
     }
 
-    const displacementWarnings = structured.filter((w) =>
-      w.code === 'pt-webgpu.unsupported-displacement-material'
+    const repackWarnings = structured.filter((w) =>
+      w.code === 'pt-webgpu.primitive-material-repack'
     );
-    expect(displacementWarnings).toHaveLength(1);
-    expect(displacementWarnings[0]).toMatchObject({
+    expect(repackWarnings).toHaveLength(1);
+    expect(repackWarnings[0]).toMatchObject({
       backend: 'pt-webgpu',
       phase: 'mutation',
       method: 'updatePrimitive',
       details: {
         id: 'm',
-        fields: ['displacementBias', 'displacementScale'],
-        primitiveIds: ['m'],
-        primitiveFields: [{
-          primitiveId: 'm',
-          fields: ['displacementBias', 'displacementScale'],
-        }],
+        fallbackReason: 'material-texture-descriptor-repack',
+        geometryFields: ['displacementBias', 'displacementScale'],
       },
     });
-    expect(warn.mock.calls.flat().map(String).some((m) =>
-      m.includes('displacementBias') && m.includes('displacementScale')
-    )).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });

@@ -231,26 +231,27 @@ fn lo_analyticNEE(
     let cone = analyticSpotConeFalloff(lightDir, wi, cosInner, cosOuter);
     if (cone <= 0.0) { continue; }
 
-    var shadowT = 1.0;
+    var shadowT = vec3f(1.0);
     if (!castShadowDisabled) {
       // Shadow ray — same pattern as lo_direct (offset along geo normal, skipGlass=true).
       // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry
-      // and attenuate through readable alpha-blend coverage in the material atlas.
-      shadowT = traceSceneAlphaTransmittanceTextured(
+      // and attenuate through readable alpha-blend coverage in the material atlas;
+      // transparent glass additionally applies the Beer/material tint per channel.
+      shadowT = traceSceneAlphaTintTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-        pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH);
-      if (shadowT <= 0.001) { continue; }
+        pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.001) { continue; }
     }
 
     // Authored range/decay falloff; default decay=2 preserves inverse-square.
     let attenuation = analyticPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);
     let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
     // evalGGX* already includes the receiver cosine; nDotL is only a gate here.
-    Lo += lightLe * brdf * cone * attenuation * shadowT;
+    Lo += lightLe * shadowT * brdf * cone * attenuation;
   }
   return Lo;
 }

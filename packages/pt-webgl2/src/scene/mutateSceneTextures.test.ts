@@ -94,6 +94,7 @@ function fakeMerged(materials: readonly MaterialSpec[]): WorldSpaceMergeResult {
     meshVertexRanges: [
       { name: 'panel', vertexStart: 0, vertexCount: 4, triStart: 0, triCount: 2 },
     ],
+    warnings: [],
     vertexCount: 4,
     triangleCount: 2,
   };

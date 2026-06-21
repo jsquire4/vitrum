@@ -498,26 +498,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         }],
       };
       e.setScene(scene);
-      expect(warn.mock.calls.flat().map(String).some((m) =>
-        m.includes('displacementMap') &&
-        m.includes('displacementScale') &&
-        m.includes('displacementBias'),
-      )).toBe(true);
       expect(structured.some((w) =>
-        w.code === 'pt-webgl2.unsupported-displacement-material' &&
-        Array.isArray(w.details?.fields) &&
-        w.details.fields.includes('displacementMap') &&
-        w.details.fields.includes('displacementScale') &&
-        w.details.fields.includes('displacementBias') &&
-        Array.isArray(w.details?.primitiveIds) &&
-        w.details.primitiveIds.includes('tri') &&
-        Array.isArray(w.details?.primitiveFields) &&
-        w.details.primitiveFields.some((entry) =>
-          entry.primitiveId === 'tri' &&
-          entry.fields.includes('displacementMap') &&
-          entry.fields.includes('displacementScale') &&
-          entry.fields.includes('displacementBias')
-        ),
+        w.code === 'pt-webgl2.vertex-displacement-warning' &&
+        w.message.includes('displacementMap') &&
+        w.message.includes('vertex displacement skipped') &&
+        w.details?.source === 'mergeWorldSpaceFromCore'
       )).toBe(true);
     } finally {
       warn.mockRestore();
@@ -590,7 +575,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('warns when scalar displacement fields are supplied through the material mutation fast path', async () => {
+  it('falls back to a scene repack when scalar displacement fields are patched', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
@@ -608,29 +593,24 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         },
       } as never);
 
-      const displacementWarnings = structured.filter((w) =>
-        w.code === 'pt-webgl2.unsupported-displacement-material'
+      const fallbackWarnings = structured.filter((w) =>
+        w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild'
       );
-      expect(displacementWarnings).toHaveLength(1);
-      expect(displacementWarnings[0]).toMatchObject({
+      expect(fallbackWarnings.length).toBeGreaterThan(0);
+      expect(fallbackWarnings[0]).toMatchObject({
         backend: 'pt-webgl2',
         phase: 'mutation',
         method: 'updatePrimitive',
         details: {
-          fields: ['displacementBias', 'displacementScale'],
-          primitiveIds: ['tri'],
-          primitiveFields: [{
-            primitiveId: 'tri',
-            fields: ['displacementBias', 'displacementScale'],
-          }],
+          primitiveId: 'tri',
+          fields: ['material'],
+          materialFields: ['displacementBias', 'displacementScale', 'roughness'],
+          displacementFields: ['displacementBias', 'displacementScale'],
+          fallbackReason: 'displacement-geometry-repack',
+          nativePatchMissing: 'targeted-displacement-geometry-update',
         },
       });
-      expect(warn.mock.calls.flat().map(String).some((m) =>
-        m.includes('displacementBias') && m.includes('displacementScale')
-      )).toBe(true);
-      expect(structured.some((w) =>
-        w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild'
-      )).toBe(false);
+      expect(structured.some((w) => w.code === 'pt-webgl2.unsupported-displacement-material')).toBe(false);
     } finally {
       warn.mockRestore();
     }

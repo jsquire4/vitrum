@@ -112,10 +112,16 @@ const MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS: ReadonlySet<string> = new Set([
   'clearcoatNormalScale',
 ]);
 
+const GEOMETRY_MATERIAL_FIELDS: ReadonlySet<string> = new Set([
+  'displacementScale',
+  'displacementBias',
+]);
+
 export interface MaterialPatchRepackFields {
   readonly textureFields: readonly string[];
   readonly descriptorScalarFields: readonly string[];
   readonly layerDescriptorFields: readonly string[];
+  readonly geometryFields: readonly string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -148,13 +154,15 @@ export function materialPatchRepackFields(
 ): MaterialPatchRepackFields {
   const mat = patch.material as unknown as Record<string, unknown> | undefined;
   if (mat == null) {
-    return { textureFields: [], descriptorScalarFields: [], layerDescriptorFields: [] };
+    return { textureFields: [], descriptorScalarFields: [], layerDescriptorFields: [], geometryFields: [] };
   }
   const textureFields: string[] = [];
   const descriptorScalarFields: string[] = [];
+  const geometryFields: string[] = [];
   for (const field of Object.keys(mat)) {
     if (TEXTURE_MAP_FIELDS.has(field)) textureFields.push(field);
     if (MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS.has(field)) descriptorScalarFields.push(field);
+    if (GEOMETRY_MATERIAL_FIELDS.has(field)) geometryFields.push(field);
   }
 
   const layerDescriptorFields = collectLayerDescriptorPatchFields(mat);
@@ -163,6 +171,7 @@ export function materialPatchRepackFields(
     textureFields: textureFields.sort(),
     descriptorScalarFields: descriptorScalarFields.sort(),
     layerDescriptorFields: layerDescriptorFields.sort(),
+    geometryFields: geometryFields.sort(),
   };
 }
 
@@ -170,7 +179,8 @@ function hasMaterialPatchRepackFields(fields: MaterialPatchRepackFields): boolea
   return (
     fields.textureFields.length > 0 ||
     fields.descriptorScalarFields.length > 0 ||
-    fields.layerDescriptorFields.length > 0
+    fields.layerDescriptorFields.length > 0 ||
+    fields.geometryFields.length > 0
   );
 }
 

@@ -54,7 +54,6 @@ import { SceneMutationRouter } from './sceneMutationRouter.js';
 import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
 import {
   PT_WEBGPU_LITE_MATERIALS,
-  UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS,
   collectUnsupportedMaterialFieldsForTraceTier,
 } from './supportDetails.js';
 import { GpuResources, type PtWebgpuBvhTraversalMode } from './gpuResources.js';
@@ -153,10 +152,6 @@ function collectFieldUnion(uses: readonly UnsupportedMaterialFieldUse[]): string
     for (const field of use.fields) fields.add(field);
   }
   return Array.from(fields).sort();
-}
-
-function collectUnsupportedDisplacementFieldUses(scene: Scene): UnsupportedMaterialFieldUse[] {
-  return collectPrimitiveMaterialFieldUses(scene, UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS);
 }
 
 function collectUnsupportedMaterialFieldUses(
@@ -1268,28 +1263,9 @@ class PTEngineWebGPU implements Engine {
    * per-array index remap; see class header on the add/remove design choice).
    */
   #repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void {
-    const unsupportedDisplacementUses = collectUnsupportedDisplacementFieldUses(scene);
-    const unsupportedDisplacementFields = collectFieldUnion(unsupportedDisplacementUses);
-    if (unsupportedDisplacementFields.length > 0) {
-      this.#warn({
-        code: 'pt-webgpu.unsupported-displacement-material',
-        backend: 'pt-webgpu',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          `[vitrum/pt-webgpu] setScene: displacement material fields are supplied ` +
-          `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
-        details: {
-          fields: unsupportedDisplacementFields,
-          primitiveIds: unsupportedDisplacementUses.map((use) => use.primitiveId),
-          primitiveFields: unsupportedDisplacementUses,
-        },
-      });
-    }
     // CAP-01 — warn on the remaining silently-dropped material fields (matrix-
     // driven: every 'unsupported' row in the ledger's pt-webgpu material support
-    // matrix except displacement, which has its own warning above). Once per
-    // setScene/repack, mirroring the displacement warning.
+    // matrix). Once per setScene/repack.
     const unsupportedMaterialUses = collectUnsupportedMaterialFieldUses(scene, this.#traceTier);
     const unsupportedMaterialFields = collectFieldUnion(unsupportedMaterialUses);
     if (unsupportedMaterialFields.length > 0) {
@@ -1334,6 +1310,19 @@ class PTEngineWebGPU implements Engine {
       warningPhase: 'setScene',
       warningMethod: 'setScene',
     });
+    const preUploadWarnings = new Set(
+      packed.warnings.filter((warning) => warning.includes('displacementMap')),
+    );
+    for (const warning of preUploadWarnings) {
+      this.#warn({
+        code: 'pt-webgpu.scene-pack-warning',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        message: `[vitrum/pt-webgpu] ${warning}`,
+        details: { warning },
+      });
+    }
     this.#geoPack = scenePackResultFromPacked(packed);
     this.#sceneBuffers?.destroy();
     this.#sceneBuffers = uploadPackedScene(this.#device, packed);
@@ -1374,6 +1363,7 @@ class PTEngineWebGPU implements Engine {
         .filter((warning): warning is string => typeof warning === 'string'),
     );
     for (const warning of uploadedScene.warnings) {
+      if (preUploadWarnings.has(warning)) continue;
       if (structuredScenePackWarnings.has(warning)) continue;
       this.#warn({
         code: 'pt-webgpu.scene-pack-warning',

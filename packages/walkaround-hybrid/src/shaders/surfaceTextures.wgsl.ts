@@ -239,6 +239,124 @@ fn _bvhTintedTriAccumulate(
   return true;
 }
 
+fn materialGlassTintForShadowHit(
+  hit:          IntersectionResult,
+  materialWord: u32,
+  origin:       vec3f,
+  dir:          vec3f,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh_beer:     texture_2d<u32>,
+) -> vec3f {
+  if ((materialWord & 1u) != 0u) {
+    return vec3f(1.0);
+  }
+  let trans4 = (hit.matColorPacked >> 4u) & 0xFu;
+  if (trans4 <= 4u) {
+    return vec3f(1.0);
+  }
+  let idx = hit.indices.xyz;
+  let triIdx = hit.indices.w;
+  let matCol = decodeMaterialColor(hit.matColorPacked);
+  let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
+  let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
+  let beerColor = vec3f(
+    f32((beerPacked >> 24u) & 0xFFu) / 255.0,
+    f32((beerPacked >> 16u) & 0xFFu) / 255.0,
+    f32((beerPacked >>  8u) & 0xFFu) / 255.0,
+  );
+  let pa4 = (*bvh_position)[idx.x];
+  let pb4 = (*bvh_position)[idx.y];
+  let pc4 = (*bvh_position)[idx.z];
+  let a = pa4.xyz; let b = pb4.xyz; let c = pc4.xyz;
+  let p = origin + dir * hit.dist;
+  let ab = b - a; let ac = c - a; let ap = p - a;
+  let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
+  let d20 = dot(ap, ab); let d21 = dot(ap, ac);
+  let denom = max(d00 * d11 - d01 * d01, 1e-8);
+  var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
+  var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
+  let bw = 1.0 - u - v;
+  let uvA = unpack2x16float(bitcast<u32>(pa4.w));
+  let uvB = unpack2x16float(bitcast<u32>(pb4.w));
+  let uvC = unpack2x16float(bitcast<u32>(pc4.w));
+  let uvAt = bw * uvA + u * uvB + v * uvC;
+  let uv1A = materialAtlasPackedUvFromVec4(bvh_normal[idx.x]);
+  let uv1B = materialAtlasPackedUvFromVec4(bvh_normal[idx.y]);
+  let uv1C = materialAtlasPackedUvFromVec4(bvh_normal[idx.z]);
+  let uv1At = bw * uv1A + u * uv1B + v * uv1C;
+  let texId = decodeSurfaceTextureId(hit.matColorPacked);
+  let texMod = surfaceTextureMod(uvAt, texId);
+  let beerTint = applyThicknessMapToBeerTint(triIdx, uvAt, uv1At, beerColor);
+  return sqrt(max(vec3f(1e-8), beerTint * matCol.a * texMod));
+}
+
+fn traceSceneAlphaTintTransmittanceTextured(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh: ptr<storage, array<BVHNode>, read>,
+  tlasNodes: ptr<storage, array<BVHNode>, read>,
+  tlasInstanceIndices: ptr<storage, array<u32>, read>,
+  tlasBlasRoots: ptr<storage, array<u32>, read>,
+  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
+  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
+  origin: vec3f,
+  dir: vec3f,
+  tMax: f32,
+  triEps: f32,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+  bvh_beer: texture_2d<u32>,
+) -> vec3f {
+  var walkRay: Ray;
+  walkRay.origin = origin;
+  walkRay.direction = dir;
+  var traveled = 0.0;
+  var tau = vec3f(1.0);
+  let step = max(1e-4, triEps * 4.0);
+  for (var i = 0u; i < 32u; i = i + 1u) {
+    let remaining = tMax - traveled;
+    if (remaining <= step || max(max(tau.x, tau.y), tau.z) <= 0.001) {
+      return clamp(tau, vec3f(0.0), vec3f(1.0));
+    }
+    let hit = traceSceneFirstHit(
+      bvhMode, tlasNodeCount,
+      bvh_index, bvh_position, bvh,
+      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+      walkRay, triEps,
+    );
+    if (!hit.didHit || hit.dist >= remaining) {
+      return clamp(tau, vec3f(0.0), vec3f(1.0));
+    }
+    let word = textureLoad(
+      materialMask,
+      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
+      0,
+    ).r;
+    let alphaT = materialShadowTransmittanceForHit(hit, word, true);
+    if (alphaT <= 0.001) {
+      return vec3f(0.0);
+    }
+    tau = tau * vec3f(alphaT) * materialGlassTintForShadowHit(hit, word, walkRay.origin, dir, bvh_position, bvh_beer);
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = origin + dir * traveled;
+  }
+
+  if (traceSceneAnyCastMask(
+    bvhMode, tlasNodeCount,
+    bvh_index, bvh_position, bvh,
+    tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+    tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+    walkRay.origin, dir, max(0.0, tMax - traveled), triEps, true,
+    materialMask, materialMaskWidth,
+  )) {
+    return vec3f(0.0);
+  }
+  return clamp(tau, vec3f(0.0), vec3f(1.0));
+}
+
 // Inner helper: traverse one BLAS from blasRoot, accumulating tinted visibility.
 // Positions in bvh_position are LOCAL-space. In TLAS mode, hit barycentrics use
 // local t, but segment clipping uses world t reconstructed through localToWorld.

@@ -24,6 +24,7 @@ export const TRANSPARENT_OIT_WGSL = /* wgsl */ `
 @group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
 @group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
 @group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
+@group(1) @binding(5) var bvh_beer: texture_2d<u32>;
 @group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
 @group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
@@ -56,7 +57,29 @@ fn oitHitIsMaskDiscarded(hit: IntersectionResult, alpha: MaterialAlphaCoverage) 
   return false;
 }
 
-fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32 {
+fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> vec3f {
+  return traceSceneAlphaTintTransmittanceTextured(
+    ubo.bvhMode,
+    ubo.tlasNodeCount,
+    &bvh_index,
+    &bvh_position,
+    &bvh,
+    &tlasNodes,
+    &tlasInstanceIndices,
+    &tlasBlasRoots,
+    &tlasInstanceWorldToLocal,
+    &tlasInstanceLocalToWorld,
+    origin,
+    dir,
+    max(tMax, 0.0),
+    triEps,
+    bvh_material,
+    BVH_MATERIAL_TEX_WIDTH,
+    bvh_beer,
+  );
+}
+
+fn oitAlphaShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32 {
   return traceSceneAlphaTransmittanceTextured(
     ubo.bvhMode,
     ubo.tlasNodeCount,
@@ -235,7 +258,7 @@ fn oitLayerAnalyticNEE(
     let cone = oitSpotConeFalloff(lightDir, wi, cosInner, cosOuter);
     if (cone <= 0.0) { continue; }
 
-    var shadowT = 1.0;
+    var shadowT = vec3f(1.0);
     if (!castShadowDisabled) {
       shadowT = oitShadowTransmittance(
         hitPos + geoNormal * 1e-3,
@@ -243,7 +266,7 @@ fn oitLayerAnalyticNEE(
         max(dist - 2e-3, 0.0),
         ubo.triIntersectEpsilon,
       );
-      if (shadowT <= 0.001) { continue; }
+      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.001) { continue; }
     }
 
     let attenuation = oitPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);
@@ -269,7 +292,7 @@ fn oitLayerAnalyticNEE(
       wi,
     );
     // evalGGX* already includes the receiver cosine; nDotL is only a gate here.
-    Lo += lightLe * brdf * cone * attenuation * shadowT;
+    Lo += lightLe * shadowT * brdf * cone * attenuation;
   }
   return Lo;
 }
@@ -317,7 +340,7 @@ fn oitLayerAreaEmitterNEE(
       let nlDotL = max(0.0, dot(-ls.normal, wi));
       if (nDotL < 1e-6 || nlDotL < 1e-6) { continue; }
 
-      var shadowT = 1.0;
+      var shadowT = vec3f(1.0);
       if (e.castShadowDisabled < 0.5) {
         shadowT = oitShadowTransmittance(
           hitPos + geoNormal * 1e-3,
@@ -325,7 +348,7 @@ fn oitLayerAreaEmitterNEE(
           max(dist - 2e-3, 0.0),
           ubo.triIntersectEpsilon,
         );
-        if (shadowT <= 0.001) { continue; }
+        if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.001) { continue; }
       }
 
       let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
@@ -351,7 +374,7 @@ fn oitLayerAreaEmitterNEE(
         wi,
       );
       let Le = sampleEmitterLeAtXi(e, xi);
-      Lo += Le * brdf * G * ls.area * shadowT * sampleWeight;
+      Lo += Le * shadowT * brdf * G * ls.area * sampleWeight;
     }
   }
   return Lo;
@@ -409,7 +432,7 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   );
   var sunVisibility = 1.0;
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    sunVisibility = oitShadowTransmittance(
+    sunVisibility = oitAlphaShadowTransmittance(
       hitPos + hit.normal * 1e-3,
       toSun,
       1e6,
@@ -492,5 +515,5 @@ fn transparentOitMain(@builtin(global_invocation_id) gid: vec3u) {
 export const TRANSPARENT_OIT_MODULE: WgslModule = {
   name: 'transparentOit',
   source: TRANSPARENT_OIT_WGSL,
-  requires: ['common', 'materialAtlas', 'environmentSample', 'ggxBrdf', 'emitterLeAtXi'],
+  requires: ['common', 'materialAtlas', 'surfaceTextures', 'environmentSample', 'ggxBrdf', 'emitterLeAtXi'],
 };

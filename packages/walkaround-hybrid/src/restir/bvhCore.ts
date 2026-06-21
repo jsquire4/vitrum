@@ -612,6 +612,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     coreMaterials: merged.materials,
     emitterNormals: merged.normals,
     primitiveTlasBindings: [],
+    warnings: merged.warnings,
   };
 }
 

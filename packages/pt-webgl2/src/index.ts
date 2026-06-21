@@ -87,6 +87,12 @@ const GEOMETRY_REBUILD_PATCH_FIELDS = new Set([
   'morphWeights',
 ]);
 
+const DISPLACEMENT_GEOMETRY_MATERIAL_FIELDS = new Set([
+  'displacementMap',
+  'displacementScale',
+  'displacementBias',
+]);
+
 const FULL_SCENE_REPACK_PATCH_FIELDS = new Set([
   'shape',
   'params',
@@ -168,12 +174,6 @@ const SPECTRAL_IOR_CAUCHY: readonly [number, number, number] = [
 const FLAT_JAKOB_COEFFS: readonly [number, number, number] = [0, 0, 0];
 const NO_IOR_CAUCHY: readonly [number, number, number] = [0, 0, 0];
 
-const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
-  'displacementMap',
-  'displacementScale',
-  'displacementBias',
-] as const satisfies readonly (keyof MaterialSpec)[];
-
 interface UnsupportedMaterialFieldUse {
   readonly primitiveId: string;
   readonly fields: readonly string[];
@@ -207,10 +207,6 @@ function collectFieldUnion(uses: readonly UnsupportedMaterialFieldUse[]): string
   return Array.from(fields).sort();
 }
 
-function collectUnsupportedDisplacementFieldUses(scene: Scene): UnsupportedMaterialFieldUse[] {
-  return collectPrimitiveMaterialFieldUses(scene, UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS);
-}
-
 function collectUnsupportedMaterialFieldUses(scene: Scene): UnsupportedMaterialFieldUse[] {
   const uses: UnsupportedMaterialFieldUse[] = [];
   for (const primitive of scene.primitives) {
@@ -229,12 +225,11 @@ function collectUnsupportedMaterialFieldUses(scene: Scene): UnsupportedMaterialF
 
 // CAP-01 — the remaining material fields this backend silently drops, derived
 // from the ledger's per-field support matrix so warning + capability rows can
-// never drift. Displacement keeps its own dedicated warning above; `extensions`
-// is the contract-sanctioned host-discretionary escape hatch (no warning).
+// never drift. `extensions` is the contract-sanctioned host-discretionary escape
+// hatch (no warning).
 const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
   (field) =>
     BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.materials[field] === 'unsupported' &&
-    !(UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS as readonly string[]).includes(field) &&
     field !== 'extensions',
 );
 
@@ -541,26 +536,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   setScene(scene: Scene): void {
     this.#guardLive('setScene');
-    const unsupportedDisplacementUses = collectUnsupportedDisplacementFieldUses(scene);
-    const unsupportedDisplacementFields = collectFieldUnion(unsupportedDisplacementUses);
-    if (unsupportedDisplacementFields.length > 0) {
-      this.#warn({
-        code: 'pt-webgl2.unsupported-displacement-material',
-        backend: 'pt-webgl2',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          `[vitrum/pt-webgl2] setScene: displacement material fields are supplied ` +
-          `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
-        details: {
-          fields: unsupportedDisplacementFields,
-          primitiveIds: unsupportedDisplacementUses.map((use) => use.primitiveId),
-          primitiveFields: unsupportedDisplacementUses,
-        },
-      });
-    }
     // CAP-01 — warn on remaining unsupported material fields (matrix-driven).
-    // Once per setScene, mirroring the displacement warning above.
+    // Once per setScene.
     const unsupportedMaterialUses = collectUnsupportedMaterialFieldUses(scene);
     const unsupportedMaterialFields = collectFieldUnion(unsupportedMaterialUses);
     if (unsupportedMaterialFields.length > 0) {
@@ -1046,6 +1023,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     const fields = primitivePatchFields(patch);
     const materialFields = materialPatchFields(patch);
     const materialTextureFields = materialTextureMapPatchFields(patch);
+    const materialDisplacementFields = materialFields.filter((field) =>
+      DISPLACEMENT_GEOMETRY_MATERIAL_FIELDS.has(field),
+    );
     const patchFallback = primitiveFallbackReason(fields);
     const signature = fields.length > 0 ? fields.join(',') : '<none>';
     const key = `updatePrimitive:${id}:${signature}`;
@@ -1057,6 +1037,10 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       details.materialTextureFields = materialTextureFields;
       details.fallbackReason = 'texture-map-material-patch';
       details.nativePatchMissing = 'targeted-material-atlas-texture-update';
+    } else if (materialDisplacementFields.length > 0) {
+      details.displacementFields = materialDisplacementFields;
+      details.fallbackReason = 'displacement-geometry-repack';
+      details.nativePatchMissing = 'targeted-displacement-geometry-update';
     } else if (
       mutationFallback != null &&
       (patchFallback == null || patchFallback.fallbackReason === 'geometry-bvh-texture-rebuild')

@@ -22,15 +22,16 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('payload.sheen.rgb,');
     expect(TRANSPARENT_OIT_WGSL).toContain('let sunAngularRadius = max(ubo.sunAngular.x, 0.0);');
     expect(TRANSPARENT_OIT_WGSL).toContain('let toSun = safe_normalize(sunBase + sunTan * (sunR * cos(sunPhi)) + sunBit * (sunR * sin(sunPhi)));');
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32');
-    expect(TRANSPARENT_OIT_WGSL).toContain('return traceSceneAlphaTransmittanceTextured(');
-    expect(TRANSPARENT_OIT_WGSL).toContain('true,');
+    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> vec3f');
+    expect(TRANSPARENT_OIT_WGSL).toContain('return traceSceneAlphaTintTransmittanceTextured(');
     expect(TRANSPARENT_OIT_WGSL).toContain('bvh_material,');
     expect(TRANSPARENT_OIT_WGSL).toContain('BVH_MATERIAL_TEX_WIDTH,');
+    expect(TRANSPARENT_OIT_WGSL).toContain('bvh_beer,');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitCastsShadow(');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitHitIsScalarGlass(');
     expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + hit.normal * 1e-3,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('sunVisibility = oitShadowTransmittance(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitAlphaShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32');
+    expect(TRANSPARENT_OIT_WGSL).toContain('sunVisibility = oitAlphaShadowTransmittance(');
     expect(TRANSPARENT_OIT_WGSL).toContain('let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;');
     expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(13) var analytic_lights: texture_2d<f32>;');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAnalyticNEE(');
@@ -41,7 +42,7 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + geoNormal * 1e-3,');
     expect(TRANSPARENT_OIT_WGSL).toContain('shadowT = oitShadowTransmittance(');
     expect(TRANSPARENT_OIT_WGSL).toContain('let attenuation = oitPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += lightLe * brdf * cone * attenuation * shadowT;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let analyticDirect = oitLayerAnalyticNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
     expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAreaEmitterNEE(');
@@ -54,7 +55,7 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('shadowT = oitShadowTransmittance(');
     expect(TRANSPARENT_OIT_WGSL).toContain('let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);');
     expect(TRANSPARENT_OIT_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xi);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += Le * brdf * G * ls.area * shadowT * sampleWeight;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('Lo += Le * shadowT * brdf * G * ls.area * sampleWeight;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let areaDirect = oitLayerAreaEmitterNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
     expect(TRANSPARENT_OIT_WGSL).toContain('return (skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let hitPos = walkRay.origin + walkRay.direction * hit.dist;');
@@ -71,6 +72,7 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('sampleEmissiveMap(');
     expect(TRANSPARENT_OIT_WGSL).toContain('sampleLightMap(');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('materialAtlas');
+    expect(TRANSPARENT_OIT_MODULE.requires).toContain('surfaceTextures');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('ggxBrdf');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('emitterLeAtXi');
   });

@@ -2,20 +2,13 @@ import type { BackendSupportMode, MaterialSpec } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 import type { PtWebgpuTraceTier } from './traceTier.js';
 
-export const UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS = [
-  'displacementMap',
-  'displacementScale',
-  'displacementBias',
-] as const satisfies readonly (keyof MaterialSpec)[];
-
 // CAP-01 — the remaining material fields the full tier drops, derived from the
 // ledger's per-field support matrix so warning + capability rows can never drift.
-// Displacement keeps its own dedicated warning; `extensions` is the
-// contract-sanctioned host-discretionary escape hatch (no warning).
+// `extensions` is the contract-sanctioned host-discretionary escape hatch
+// (no warning).
 export const UNSUPPORTED_MATERIAL_FIELDS: readonly (keyof MaterialSpec)[] = MATERIAL_SPEC_FIELDS.filter(
   (field) =>
     BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials[field] === 'unsupported' &&
-    !(UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS as readonly string[]).includes(field) &&
     field !== 'extensions',
 );
 

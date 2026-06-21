@@ -26,7 +26,7 @@ describe('emitter castShadow:false shader gates', () => {
     expect(RIS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(SHADING_TERMS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(RIS_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
-    expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
+    expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
   });
 
   it('maps micro-emitter samples back to parent-triangle UV barycentrics', () => {

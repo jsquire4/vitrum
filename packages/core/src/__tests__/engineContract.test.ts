@@ -96,11 +96,11 @@ describe('backend promise ledger', () => {
     }
   });
 
-  it('marks reserved displacement material fields unsupported on every shipping backend', () => {
+  it('marks vertex displacement material fields approximate on every shipping backend', () => {
     for (const rec of Object.values(BACKEND_PROMISE_LEDGER)) {
-      expect(rec.supportDetails.materials.displacementMap).toBe('unsupported');
-      expect(rec.supportDetails.materials.displacementScale).toBe('unsupported');
-      expect(rec.supportDetails.materials.displacementBias).toBe('unsupported');
+      expect(rec.supportDetails.materials.displacementMap).toBe('approximate');
+      expect(rec.supportDetails.materials.displacementScale).toBe('approximate');
+      expect(rec.supportDetails.materials.displacementBias).toBe('approximate');
     }
   });
 

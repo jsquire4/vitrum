@@ -46,6 +46,37 @@ function unitTriMesh(id: string, transform?: Mat4): Scene['primitives'][number] 
   };
 }
 
+function displacedTriScene(): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'displaced',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          displacementMap: {
+            handle: {
+              width: 1,
+              height: 1,
+              data: new Float32Array([1]),
+              __vitrum_hint__: { channels: 1, dataType: 'float32', colorSpace: 'linear' },
+            },
+          },
+          displacementScale: 0.25,
+          displacementBias: -0.1,
+        },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function boxMesh(id: string, min: Vec3, max: Vec3, transform?: Mat4): Scene['primitives'][number] {
   const [x0, y0, z0] = min;
   const [x1, y1, z1] = max;
@@ -77,6 +108,34 @@ function boxMesh(id: string, min: Vec3, max: Vec3, transform?: Mat4): Scene['pri
 }
 
 describe('packSceneFromCore (SP-*)', () => {
+  it('applies CPU-readable vertex displacement before local BLAS/TLAS packing', () => {
+    const packed = packSceneFromCore(displacedTriScene(), { tlas: true, resolveMaterialId: () => 0 });
+
+    expect(Array.from(packed.positions.slice(0, 12))).toEqual([
+      0, 0, expect.closeTo(0.15), 0,
+      1, 0, expect.closeTo(0.15), 0,
+      0, 1, expect.closeTo(0.15), 0,
+    ]);
+    expect(packed.primitiveTlasBindings[0]?.localAabbMin).toEqual([0, 0, expect.closeTo(0.15)]);
+    expect(packed.primitiveTlasBindings[0]?.localAabbMax).toEqual([1, 1, expect.closeTo(0.15)]);
+    expect(packed.warnings).toEqual([]);
+  });
+
+  it('applies CPU-readable vertex displacement before merged world-space BVH packing', () => {
+    const merged = mergeWorldSpaceFromCore(displacedTriScene(), { positionStride: 4 });
+
+    expect(Array.from(merged.positions.slice(0, 12))).toEqual([
+      0, 0, expect.closeTo(0.15), 0,
+      1, 0, expect.closeTo(0.15), 0,
+      0, 1, expect.closeTo(0.15), 0,
+    ]);
+    expect(merged.boundingBox).toEqual({
+      min: [0, 0, expect.closeTo(0.15)],
+      max: [1, 1, expect.closeTo(0.15)],
+    });
+    expect(merged.warnings).toEqual([]);
+  });
+
   it('packs authored tangent.xyzw beside positions/normals/uvs and defaults missing tangents to zero', () => {
     const scene: Scene = {
       primitives: [

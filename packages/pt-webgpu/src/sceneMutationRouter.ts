@@ -54,7 +54,6 @@ import {
 } from './scene/emitterPacking.js';
 import { environmentParams } from './scene/environmentPacking.js';
 import {
-  UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS,
   collectUnsupportedMaterialFieldsForTraceTier,
 } from './supportDetails.js';
 
@@ -64,16 +63,6 @@ const IDENTITY_MAT4 = asMat4(new Float32Array([
   0, 0, 1, 0,
   0, 0, 0, 1,
 ]));
-
-function collectUnsupportedDisplacementPatchFields(
-  material: Record<string, unknown>,
-): string[] {
-  const fields: string[] = [];
-  for (const field of UNSUPPORTED_DISPLACEMENT_MATERIAL_FIELDS) {
-    if (material[field] != null) fields.push(field);
-  }
-  return fields.sort();
-}
 
 function warnHost(
   host: MutationHost,
@@ -572,24 +561,6 @@ export class SceneMutationRouter {
         // Item 2c — detect emissive-field changes so the implicit NEE emitter
         // (H14-A) is re-packed with the new radiance.
         const mat = (fastPathPatch as unknown as { material?: Record<string, unknown> }).material ?? {};
-        const unsupportedDisplacementFields = collectUnsupportedDisplacementPatchFields(mat);
-        if (unsupportedDisplacementFields.length > 0) {
-          warnHost(host, {
-            code: 'pt-webgpu.unsupported-displacement-material',
-            backend: 'pt-webgpu',
-            phase: 'mutation',
-            method: 'updatePrimitive',
-            message:
-              `[vitrum/pt-webgpu] updatePrimitive("${id}"): displacement material fields are supplied ` +
-              `but not rendered by this backend: ${unsupportedDisplacementFields.join(', ')}.`,
-            details: {
-              id,
-              fields: unsupportedDisplacementFields,
-              primitiveIds: [id],
-              primitiveFields: [{ primitiveId: id, fields: unsupportedDisplacementFields }],
-            },
-          });
-        }
         // CAP-01 — same matrix-driven warning for the remaining dropped fields,
         // narrowed by runtime trace tier so lite material patches cannot silently
         // accept fields that only the full tier renders.
@@ -683,7 +654,8 @@ export class SceneMutationRouter {
     if (
       repackFields.textureFields.length > 0 ||
       repackFields.descriptorScalarFields.length > 0 ||
-      repackFields.layerDescriptorFields.length > 0
+      repackFields.layerDescriptorFields.length > 0 ||
+      repackFields.geometryFields.length > 0
     ) {
       warnHost(host, {
         code: 'pt-webgpu.primitive-material-repack',
@@ -692,8 +664,8 @@ export class SceneMutationRouter {
         method: 'updatePrimitive',
         message:
           `[vitrum/pt-webgpu] updatePrimitive("${id}") material patch touches ` +
-          'texture-map or descriptor-resident fields, so the backend is using a full scene repack ' +
-          'to keep material descriptors and texture arrays coherent.',
+          'texture-map, geometry-affecting, or descriptor-resident fields, so the backend is using a full scene repack ' +
+          'to keep geometry, material descriptors, and texture arrays coherent.',
         details: {
           id,
           fallbackReason: 'material-texture-descriptor-repack',
@@ -701,6 +673,7 @@ export class SceneMutationRouter {
           textureFields: repackFields.textureFields,
           descriptorScalarFields: repackFields.descriptorScalarFields,
           layerDescriptorFields: repackFields.layerDescriptorFields,
+          geometryFields: repackFields.geometryFields,
         },
       });
     }

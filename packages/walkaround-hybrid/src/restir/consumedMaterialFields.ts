@@ -146,8 +146,8 @@
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
  * transmissionMap / thicknessMap / lightMap / specular maps / clearcoat maps /
- * sheen maps / anisotropyMap / iridescence maps / bumpMap,
- * remaining layered BSDF scalars, spectral curves, volume scattering,
+   * sheen maps / anisotropyMap / iridescence maps / bumpMap / displacementMap,
+   * remaining layered BSDF scalars, spectral curves, volume scattering,
  * thin-film stacks, layered BSDF, and unlisted future maps/extension families
  * — is rejected by the
  * warning/truthfulness surface rather than silently rendered as native.
@@ -204,6 +204,9 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'normalScale',
   'bumpMap',
   'bumpScale',
+  'displacementMap',
+  'displacementScale',
+  'displacementBias',
   'roughnessMap',
   'metallicMap',
   'aoMap',

@@ -193,9 +193,6 @@ for (const field of walkaroundConsumedFields) {
 }
 
 const permanentlyUnsupportedWalkaroundFields = [
-  "displacementMap",
-  "displacementScale",
-  "displacementBias",
   "spectralAttenuation",
   "dispersionAbbeNumber",
   "scatteringCoefficient",

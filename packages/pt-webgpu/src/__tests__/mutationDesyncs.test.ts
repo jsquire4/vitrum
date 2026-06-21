@@ -100,7 +100,32 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
       textureFields: ['baseColorMap'],
       descriptorScalarFields: ['opacity'],
       layerDescriptorFields: ['frontLayer.normalMap', 'frontLayer.normalScale'],
+      geometryFields: [],
     });
+  });
+
+  it('classifies displacement scalar changes as geometry-affecting repacks', () => {
+    expect(
+      materialPatchRepackFields({
+        material: {
+          displacementScale: 0.2,
+          displacementBias: -0.1,
+        },
+      } as never),
+    ).toEqual({
+      textureFields: [],
+      descriptorScalarFields: [],
+      layerDescriptorFields: [],
+      geometryFields: ['displacementBias', 'displacementScale'],
+    });
+    expect(
+      canFastPathMaterialPatch({
+        material: {
+          displacementScale: 0.2,
+          displacementBias: -0.1,
+        },
+      } as never),
+    ).toBe(false);
   });
 
   it('classifies layered descriptor removals as requiring a full repack', () => {
@@ -120,6 +145,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
         'frontLayer.normalMap',
         'frontLayer.normalScale',
       ],
+      geometryFields: [],
     });
     expect(
       canFastPathMaterialPatch({
@@ -697,6 +723,7 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
           textureFields: ['baseColorMap'],
           descriptorScalarFields: ['opacity'],
           layerDescriptorFields: [],
+          geometryFields: [],
         }),
       }),
     ]);
