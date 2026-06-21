@@ -182,6 +182,7 @@ export async function loadGltfForEngine<
     animationTargets: asset.animationTargets,
     ...(asset.convertedMaterials !== undefined ? { convertedMaterials: asset.convertedMaterials } : {}),
     ...(asset.materialVariantBindings !== undefined ? { materialVariantBindings: asset.materialVariantBindings } : {}),
+    ...(asset.materialBindings !== undefined ? { materialBindings: asset.materialBindings } : {}),
     ...(asset.instancingBindings !== undefined ? { instancingBindings: asset.instancingBindings } : {}),
   });
 

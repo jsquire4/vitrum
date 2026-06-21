@@ -115,6 +115,13 @@ export interface InverseEngineHooks {
    */
   getMaterialSupportDetails?(): Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>>;
   /**
+   * Emitter support rows for the active pt-webgpu runtime profile. Lite and full
+   * profiles differ here (mesh-area is ignored by the lite forward renderer), so
+   * inverse must not optimize an emitter target or adjoint direct-light term that
+   * the active profile reports as unsupported.
+   */
+  getEmitterSupportDetails?(): Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>;
+  /**
    * OPTIONAL Phase-1 path-replay adjoint. When present, the engine dispatches a
    * single-bounce adjoint compute pass over its scene buffers — re-tracing the
    * frozen-seed primary path + NEE, evaluating the analytic BSDF partials
@@ -420,7 +427,13 @@ export class PtWebgpuInverseSession implements InverseSession {
     let offset = 0;
     for (const param of opts.parameters) {
       const target = parseParamPath(param.path);
-      validateParam(scene, param, target, hooks.getMaterialSupportDetails?.());
+      validateParam(
+        scene,
+        param,
+        target,
+        hooks.getMaterialSupportDetails?.(),
+        hooks.getEmitterSupportDetails?.(),
+      );
       const length = paramLength(param);
       this.#slots.push({ param, target, offset, length });
       offset += length;
@@ -458,12 +471,14 @@ export class PtWebgpuInverseSession implements InverseSession {
     );
     const pathReplayRenderContext = hooks.getPathReplayRenderContext?.() ?? {};
     const pathReplayGeometryCapabilities = hooks.getPathReplayGeometryCapabilities?.() ?? {};
+    const emitterSupportDetails = hooks.getEmitterSupportDetails?.();
     const pathReplayDiagnostics = requestedMethod === 'path-replay'
       ? collectPathReplayDiagnostics(scene, this.#slots, {
           hasHook: hooks.computeAdjointGradient != null,
           iridescenceOptimizedPrimitiveIds,
           renderContext: pathReplayRenderContext,
           geometryCapabilities: pathReplayGeometryCapabilities,
+          emitterSupportDetails,
         })
       : [];
     this.#diagnostics = pathReplayDiagnostics;
@@ -487,6 +502,7 @@ export class PtWebgpuInverseSession implements InverseSession {
             iridescenceOptimizedPrimitiveIds,
             pathReplayGeometryCapabilities,
             pathReplayRenderContext,
+            emitterSupportDetails,
           ).length === 0,
         )
       : this.#slots.map(() => false);
@@ -690,6 +706,9 @@ function collectPathReplayDiagnostics(
     readonly iridescenceOptimizedPrimitiveIds: ReadonlySet<string>;
     readonly renderContext: InversePathReplayRenderContext;
     readonly geometryCapabilities: InversePathReplayGeometryCapabilities;
+    readonly emitterSupportDetails:
+      | Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>
+      | undefined;
   },
 ): InverseSessionDiagnostic[] {
   const diagnostics: InverseSessionDiagnostic[] = [];
@@ -722,6 +741,7 @@ function collectPathReplayDiagnostics(
       options.iridescenceOptimizedPrimitiveIds,
       options.geometryCapabilities,
       options.renderContext,
+      options.emitterSupportDetails,
     ));
   }
   return diagnostics;
@@ -769,6 +789,7 @@ function diagnosePathReplaySlot(
   iridescenceOptimizedPrimitiveIds: ReadonlySet<string>,
   geometryCapabilities: InversePathReplayGeometryCapabilities,
   renderContext: InversePathReplayRenderContext,
+  emitterSupportDetails?: Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>,
 ): InverseSessionDiagnostic[] {
   const path = slot.param.path;
   const target = slot.target;
@@ -844,7 +865,7 @@ function diagnosePathReplaySlot(
   }
 
   if (pathReplayTargetRequiresLighting(target.field, prim)) {
-    const lightingIssue = pathReplayLightingIssue(scene, renderContext);
+    const lightingIssue = pathReplayLightingIssue(scene, renderContext, emitterSupportDetails);
     if (lightingIssue != null) {
       return [{
         severity: 'info',
@@ -923,6 +944,7 @@ function diagnosePathReplayEmitterSlot(
   slot: ParamSlot,
   geometryCapabilities: InversePathReplayGeometryCapabilities,
   renderContext: InversePathReplayRenderContext,
+  emitterSupportDetails?: Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>,
 ): InverseSessionDiagnostic[] {
   const path = slot.param.path;
   const target = slot.target;
@@ -954,7 +976,7 @@ function diagnosePathReplayEmitterSlot(
     }];
   }
 
-  const lightingIssue = pathReplayLightingIssue(scene, renderContext);
+  const lightingIssue = pathReplayLightingIssue(scene, renderContext, emitterSupportDetails);
   if (lightingIssue != null) {
     return [{
       severity: 'info',
@@ -1659,11 +1681,29 @@ function pathReplayTargetRequiresLighting(field: string, primitive: ScenePrimiti
 function pathReplayLightingIssue(
   scene: Scene,
   context: InversePathReplayRenderContext,
+  emitterSupportDetails?: Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>,
 ): {
   code?: InverseSessionDiagnostic['code'];
   message: string;
   details: Record<string, string | number | readonly string[]>;
 } | null {
+  const unsupportedByProfile = scene.emitters.find((e) =>
+    emitterSupportDetails?.[e.kind] === 'unsupported' &&
+    directEmitterContributes(scene, e)
+  );
+  if (unsupportedByProfile != null) {
+    return {
+      message:
+        `emitter "${unsupportedByProfile.id}" (${unsupportedByProfile.kind}) is unsupported by ` +
+        'the active pt-webgpu runtime profile',
+      details: {
+        emitterId: unsupportedByProfile.id,
+        emitterKind: unsupportedByProfile.kind,
+        supportMode: 'unsupported',
+      },
+    };
+  }
+
   const unsupported = (scene.emitters as unknown as ReadonlyArray<{
     readonly id: string;
     readonly kind: string;
@@ -1903,6 +1943,7 @@ function validateParam(
   param: InverseParam,
   target: ResolvedParamTarget,
   materialSupportDetails?: Readonly<Partial<Record<keyof MaterialSpec, BackendSupportMode>>>,
+  emitterSupportDetails?: Readonly<Partial<Record<SceneEmitter['kind'], BackendSupportMode>>>,
 ): void {
   if (param.kind === 'texture') {
     throw new Error(
@@ -1951,6 +1992,13 @@ function validateParam(
     if (emitter == null) {
       throw new Error(
         `createInverseSession: no emitter with id "${target.id}" for path "${param.path}".`,
+      );
+    }
+    if (emitterSupportDetails?.[emitter.kind] === 'unsupported') {
+      throw new Error(
+        `createInverseSession: emitter kind "${emitter.kind}" (path "${param.path}") is not ` +
+          'optimizable on the active pt-webgpu runtime profile because that profile reports ' +
+          'the emitter kind as unsupported.',
       );
     }
     const isRgb = EMITTER_RGB_FIELDS.has(target.field);

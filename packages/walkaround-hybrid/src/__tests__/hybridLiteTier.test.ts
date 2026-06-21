@@ -99,6 +99,15 @@ describe('HybridEngine tier:lite — constructor validation', () => {
     expect(() => new HybridEngine(baseOpts({ tier: 'lite', nrcEnabled: false })))
       .not.toThrow();
   });
+
+  it('reports neural as unsupported in lite support details without mutating full-tier details', () => {
+    const lite = new HybridEngine(baseOpts({ tier: 'lite' }));
+    const full = new HybridEngine(baseOpts({ tier: 'full' }));
+    expect(lite.capabilities.supportDetails?.denoisers.neural).toBe('unsupported');
+    expect(lite.capabilities.supportDetails?.denoisers.auto).toBe('native');
+    expect(lite.capabilities.supportDetails?.denoisers['atrous-variance']).toBe('native');
+    expect(full.capabilities.supportDetails?.denoisers.neural).toBe('native');
+  });
 });
 
 describe('HybridEngine nrcEnabled — gate storage (full tier)', () => {

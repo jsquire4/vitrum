@@ -215,6 +215,28 @@ describe('InverseSession — path resolution + validation throws', () => {
     })).toThrow(/active pt-webgpu runtime profile/);
   });
 
+  it('throws when the active runtime profile reports an emitter kind unsupported', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mesh-light',
+        meshId: 'panel',
+        color: [1, 1, 1],
+        intensity: 1,
+      }],
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getEmitterSupportDetails: () => ({ 'mesh-area': 'unsupported' }),
+    };
+    expect(() => new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0, 0, 0]),
+      parameters: [{ path: 'emitters.mesh-light.intensity', kind: 'scalar' }],
+    })).toThrow(/emitter kind "mesh-area".*active pt-webgpu runtime profile/);
+  });
+
   it('throws when the declared kind disagrees with the resolved field', () => {
     const fake = makeFakeEngine();
     expect(() => new PtWebgpuInverseSession(fake.hooks, {
@@ -3460,6 +3482,47 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       details: expect.objectContaining({
         emitterId: 'bright-ies',
         emitterKind: 'ies',
+      }),
+    }));
+    session.dispose();
+  });
+
+  it('degrades path-replay when the active runtime profile ignores a contributing emitter kind', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mesh-light',
+        meshId: 'panel',
+        color: [1, 1, 1],
+        intensity: 1,
+      }],
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async () => new Float32Array(3),
+      getEmitterSupportDetails: () => ({ 'mesh-area': 'unsupported' }),
+      getPathReplayRenderContext: () => ({
+        bounces: 1,
+        causticStrategy: 'none',
+        directLighting: 'summed-expectation',
+      }),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-lighting',
+      path: 'materials.panel.baseColor',
+      details: expect.objectContaining({
+        emitterId: 'mesh-light',
+        emitterKind: 'mesh-area',
+        supportMode: 'unsupported',
       }),
     }));
     session.dispose();

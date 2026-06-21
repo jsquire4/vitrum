@@ -189,6 +189,18 @@ function buildWalkaroundExperimentalFeatures(cfg: ParsedHybridEngineConfig): Rea
   return features;
 }
 
+function buildWalkaroundSupportDetails(opts: HybridEngineOptions): NonNullable<EngineCapabilities['supportDetails']> {
+  const base = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails;
+  if (opts.tier !== 'lite') return base;
+  return {
+    ...base,
+    denoisers: {
+      ...base.denoisers,
+      neural: 'unsupported',
+    },
+  };
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // HybridEngine
 // ────────────────────────────────────────────────────────────────────────────
@@ -833,7 +845,7 @@ export class HybridEngine implements Engine {
       // limits, not because turbidity/rayleigh/mie are dropped.
       supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri', 'procedural-sky']),
       presentationMode:          'swapchain-required',
-      supportDetails:            BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails,
+      supportDetails:            buildWalkaroundSupportDetails(opts),
       experimentalFeatures:      buildWalkaroundExperimentalFeatures(this._cfg),
       // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
       // compatible with the walkaround engine's frame cadence; the walkaround

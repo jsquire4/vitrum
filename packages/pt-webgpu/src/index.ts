@@ -2047,6 +2047,9 @@ class PTEngineWebGPU implements Engine {
         this.#traceTier === 'lite'
           ? PT_WEBGPU_LITE_MATERIALS
           : BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials,
+      getEmitterSupportDetails: () =>
+        this.capabilities.supportDetails?.emitters ??
+        BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.emitters,
       computeAdjointGradient: (req) => this.#computeAdjointGradient(req),
     };
     return new PtWebgpuInverseSession(hooks, opts);

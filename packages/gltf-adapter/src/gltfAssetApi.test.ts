@@ -523,6 +523,65 @@ function makeInlineMaterialVariantGltf(): { gltf: GltfJson; buffers: Map<number,
   };
 }
 
+function makeInlineMaterialPointerAnimationGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const times = f32Buffer([0, 1]);
+  const colors = f32Buffer([
+    1, 0, 0, 1,
+    0, 1, 0, 1,
+  ]);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_animation_pointer'],
+      meshes: [{ primitives: [{ attributes: { POSITION: 0 }, material: 0 }] }],
+      materials: [{
+        pbrMetallicRoughness: {
+          baseColorFactor: [1, 0, 0, 1],
+        },
+      }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 2, componentType: 5126, count: 2, type: 'VEC4' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 1, byteOffset: 0, byteLength: times.byteLength },
+        { buffer: 2, byteOffset: 0, byteLength: colors.byteLength },
+      ],
+      buffers: [
+        { byteLength: positions.byteLength },
+        { byteLength: times.byteLength },
+        { byteLength: colors.byteLength },
+      ],
+      animations: [{
+        name: 'material-color',
+        samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }],
+        channels: [{
+          sampler: 0,
+          target: {
+            path: 'pointer',
+            extensions: {
+              KHR_animation_pointer: {
+                pointer: '/materials/0/pbrMetallicRoughness/baseColorFactor',
+              },
+            },
+          },
+        }],
+      }],
+    },
+    buffers: new Map([
+      [0, positions],
+      [1, times],
+      [2, colors],
+    ]),
+  };
+}
+
 function makeInlineTexturedVariantGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const imageBytes = bytes([0x89, 0x50, 0x4e, 0x47]);
@@ -6056,6 +6115,32 @@ describe('loadGltfForEngine', () => {
       }),
     );
     expect((result.controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 0, 1]);
+  });
+
+  it('preserves KHR_animation_pointer material bindings on bridge-created controllers', async () => {
+    const { gltf, buffers } = makeInlineMaterialPointerAnimationGltf();
+    const engine = { setScene: vi.fn(), updatePrimitive: vi.fn(), reset: vi.fn() };
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      engine,
+      backend: 'pt-webgl2',
+      attachScene: false,
+    });
+
+    const frame = result.controller.applyAnimation('material-color', 1);
+
+    expect(frame.diagnostics).toEqual([]);
+    expect(frame.usedSetScene).toBe(false);
+    expect(engine.setScene).not.toHaveBeenCalled();
+    expect(engine.updatePrimitive).toHaveBeenCalledWith(
+      'gltf-prim-0',
+      expect.objectContaining({
+        material: expect.objectContaining({ baseColor: [0, 1, 0] }),
+      }),
+    );
+    expect(engine.reset).toHaveBeenCalledTimes(1);
+    expect((result.controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 1, 0]);
   });
 
   it('rejects malformed root KHR_materials_variants lists before constructing engines', async () => {
