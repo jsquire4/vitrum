@@ -11,7 +11,11 @@ import {
   type BackendSupportMode,
   type MaterialSpec,
 } from '@vitrum/core';
-import { typeComponentCount } from './accessors.js';
+import {
+  accessorBufferViewRange,
+  componentByteSize,
+  typeComponentCount,
+} from './accessors.js';
 import type {
   GltfAnimationChannel,
   GltfAnimationSampler,
@@ -101,19 +105,23 @@ export type GltfMalformedPrimitiveKind =
   | 'invalid-position-accessor-component-type'
   | 'missing-position-buffer-view'
   | 'missing-position-buffer'
+  | 'truncated-position-buffer-view'
   | 'invalid-position-sparse-accessor'
   | 'missing-index-accessor'
   | 'invalid-index-accessor'
   | 'missing-index-buffer-view'
   | 'missing-index-buffer'
+  | 'truncated-index-buffer-view'
   | 'invalid-index-sparse-accessor'
   | 'empty-triangulated-primitive';
 
 export type GltfSparseAccessorStorageIssueKind =
   | 'missing-sparse-indices-buffer-view'
   | 'missing-sparse-indices-buffer'
+  | 'truncated-sparse-indices-buffer-view'
   | 'missing-sparse-values-buffer-view'
   | 'missing-sparse-values-buffer'
+  | 'truncated-sparse-values-buffer-view'
   | 'invalid-sparse-indices-component-type';
 
 export interface GltfMalformedPrimitiveIssue {
@@ -128,6 +136,8 @@ export interface GltfMalformedPrimitiveIssue {
   readonly componentType?: number;
   readonly sparseIssueKind?: GltfSparseAccessorStorageIssueKind;
   readonly mode?: number;
+  readonly requiredByteLength?: number;
+  readonly byteLength?: number;
 }
 
 export interface GltfPrimitiveAccessorStorageIssue {
@@ -143,6 +153,8 @@ export interface GltfPrimitiveAccessorStorageIssue {
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
   readonly componentType?: number;
+  readonly requiredByteLength?: number;
+  readonly byteLength?: number;
 }
 
 export type GltfPrimitiveAccessorImportIssueKind =
@@ -151,7 +163,8 @@ export type GltfPrimitiveAccessorImportIssueKind =
   | 'invalid-accessor-count'
   | 'invalid-accessor-component-type'
   | 'missing-buffer-view'
-  | 'missing-buffer';
+  | 'missing-buffer'
+  | 'truncated-buffer-view';
 
 export interface GltfPrimitiveAccessorImportIssue {
   readonly kind: GltfPrimitiveAccessorImportIssueKind;
@@ -171,6 +184,8 @@ export interface GltfPrimitiveAccessorImportIssue {
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
   readonly componentType?: number;
+  readonly requiredByteLength?: number;
+  readonly byteLength?: number;
 }
 
 export type GltfPrimitiveInstancingIssueKind =
@@ -309,6 +324,8 @@ export type GltfAnimationMalformedChannelKind =
   | 'missing-output-buffer-view'
   | 'missing-input-buffer'
   | 'missing-output-buffer'
+  | 'truncated-input-buffer-view'
+  | 'truncated-output-buffer-view'
   | 'invalid-input-sparse-accessor'
   | 'invalid-output-sparse-accessor'
   | 'missing-target-node'
@@ -332,6 +349,8 @@ export interface GltfAnimationMalformedChannelIssue {
   readonly sparseIssueKind?: GltfSparseAccessorStorageIssueKind;
   readonly expectedOutputFloats?: number;
   readonly actualOutputFloats?: number;
+  readonly requiredByteLength?: number;
+  readonly byteLength?: number;
 }
 
 export interface GltfSceneGraphFeatureReport {
@@ -1284,6 +1303,14 @@ function animationMalformedChannelMessage(issue: GltfAnimationMalformedChannelIs
       'the importer skips the channel.'
     );
   }
+  if (issue.kind === 'truncated-input-buffer-view' || issue.kind === 'truncated-output-buffer-view') {
+    return (
+      `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
+      `${String(issue.samplerIndex)} ${String(issue.accessorRole)} accessor ${String(issue.accessorIndex)} ` +
+      `whose bufferView ${String(issue.bufferViewIndex)} declares ${String(issue.byteLength)} bytes ` +
+      `but ${String(issue.requiredByteLength)} are required; the importer skips the channel.`
+    );
+  }
   if (issue.kind === 'invalid-input-sparse-accessor' || issue.kind === 'invalid-output-sparse-accessor') {
     return (
       `glTF animation channel ${issue.animationIndex}:${issue.channelIndex} references sampler ` +
@@ -1331,6 +1358,13 @@ function malformedPrimitiveMessage(issue: GltfMalformedPrimitiveIssue): string {
       `${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)}; the importer skips the primitive.`
     );
   }
+  if (issue.kind === 'truncated-position-buffer-view') {
+    return (
+      `${label} references POSITION accessor ${String(issue.accessorIndex)} whose bufferView ` +
+      `${String(issue.bufferViewIndex)} declares ${String(issue.byteLength)} bytes but ` +
+      `${String(issue.requiredByteLength)} are required; the importer skips the primitive.`
+    );
+  }
   if (issue.kind === 'invalid-position-sparse-accessor') {
     return (
       `${label} references POSITION accessor ${String(issue.accessorIndex)} with malformed sparse storage ` +
@@ -1355,6 +1389,13 @@ function malformedPrimitiveMessage(issue: GltfMalformedPrimitiveIssue): string {
       `${String(issue.bufferViewIndex)} references missing buffer ${String(issue.bufferIndex)}; the importer skips the primitive.`
     );
   }
+  if (issue.kind === 'truncated-index-buffer-view') {
+    return (
+      `${label} references index accessor ${String(issue.accessorIndex)} whose bufferView ` +
+      `${String(issue.bufferViewIndex)} declares ${String(issue.byteLength)} bytes but ` +
+      `${String(issue.requiredByteLength)} are required; the importer skips the primitive.`
+    );
+  }
   if (issue.kind === 'invalid-index-sparse-accessor') {
     return (
       `${label} references index accessor ${String(issue.accessorIndex)} with malformed sparse storage ` +
@@ -1370,6 +1411,8 @@ function sparseAccessorStorageIssueMessage(
     readonly bufferViewIndex?: number;
     readonly bufferIndex?: number;
     readonly componentType?: number;
+    readonly requiredByteLength?: number;
+    readonly byteLength?: number;
   },
 ): string {
   if (issue.sparseIssueKind === 'missing-sparse-indices-buffer-view') {
@@ -1381,6 +1424,12 @@ function sparseAccessorStorageIssueMessage(
       `buffer ${String(issue.bufferIndex)}`
     );
   }
+  if (issue.sparseIssueKind === 'truncated-sparse-indices-buffer-view') {
+    return (
+      `sparse indices bufferView ${String(issue.bufferViewIndex)} declares ` +
+      `${String(issue.byteLength)} bytes but ${String(issue.requiredByteLength)} are required`
+    );
+  }
   if (issue.sparseIssueKind === 'missing-sparse-values-buffer-view') {
     return `sparse values bufferView ${String(issue.bufferViewIndex)} is missing`;
   }
@@ -1388,6 +1437,12 @@ function sparseAccessorStorageIssueMessage(
     return (
       `sparse values bufferView ${String(issue.bufferViewIndex)} references missing ` +
       `buffer ${String(issue.bufferIndex)}`
+    );
+  }
+  if (issue.sparseIssueKind === 'truncated-sparse-values-buffer-view') {
+    return (
+      `sparse values bufferView ${String(issue.bufferViewIndex)} declares ` +
+      `${String(issue.byteLength)} bytes but ${String(issue.requiredByteLength)} are required`
     );
   }
   if (issue.sparseIssueKind === 'invalid-sparse-indices-component-type') {
@@ -1451,6 +1506,13 @@ function primitiveAccessorImportIssueMessage(issue: GltfPrimitiveAccessorImportI
     return (
       `${location} ${issue.semantic} accessor ${issue.accessorIndex} references missing ` +
       `bufferView ${String(issue.bufferViewIndex)}; ${consequence}`
+    );
+  }
+  if (issue.kind === 'truncated-buffer-view') {
+    return (
+      `${location} ${issue.semantic} accessor ${issue.accessorIndex} uses bufferView ` +
+      `${String(issue.bufferViewIndex)} declaring ${String(issue.byteLength)} bytes, but ` +
+      `${String(issue.requiredByteLength)} are required; ${consequence}`
     );
   }
   return (
@@ -2099,6 +2161,21 @@ function primitiveImportBlockers(
       return issues;
     }
   }
+  const positionStorageIssue = accessorDeclaredStorageIssue(gltf, positionAccessorIndex, positionAccessor);
+  if (positionStorageIssue !== undefined) {
+    issues.push({
+      kind: 'truncated-position-buffer-view',
+      path: positionStorageIssue.path,
+      meshIndex,
+      primitiveIndex,
+      accessorIndex: positionAccessorIndex,
+      bufferViewIndex: positionStorageIssue.bufferViewIndex,
+      mode,
+      requiredByteLength: positionStorageIssue.requiredByteLength,
+      byteLength: positionStorageIssue.byteLength,
+    });
+    return issues;
+  }
   const positionSparseIssue = sparseAccessorStorageIssue(gltf, positionAccessorIndex, positionAccessor);
   if (positionSparseIssue !== undefined) {
     issues.push({
@@ -2171,6 +2248,21 @@ function primitiveImportBlockers(
         return issues;
       }
     }
+    const indexStorageIssue = accessorDeclaredStorageIssue(gltf, indexAccessorIndex, indexAccessor);
+    if (indexStorageIssue !== undefined) {
+      issues.push({
+        kind: 'truncated-index-buffer-view',
+        path: indexStorageIssue.path,
+        meshIndex,
+        primitiveIndex,
+        accessorIndex: indexAccessorIndex,
+        bufferViewIndex: indexStorageIssue.bufferViewIndex,
+        mode,
+        requiredByteLength: indexStorageIssue.requiredByteLength,
+        byteLength: indexStorageIssue.byteLength,
+      });
+      return issues;
+    }
     const indexSparseIssue = sparseAccessorStorageIssue(gltf, indexAccessorIndex, indexAccessor);
     if (indexSparseIssue !== undefined) {
       issues.push({
@@ -2222,6 +2314,54 @@ interface SparseAccessorStorageIssue {
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
   readonly componentType?: number;
+  readonly requiredByteLength?: number;
+  readonly byteLength?: number;
+}
+
+interface AccessorDeclaredStorageIssue {
+  readonly path: string;
+  readonly bufferViewIndex: number;
+  readonly requiredByteLength: number;
+  readonly byteLength: number;
+}
+
+function accessorDeclaredStorageIssue(
+  gltf: GltfJson,
+  accessorIndex: number,
+  accessor: NonNullable<GltfJson['accessors']>[number],
+): AccessorDeclaredStorageIssue | undefined {
+  if (accessor.bufferView === undefined) return undefined;
+  const bufferView = gltf.bufferViews?.[accessor.bufferView];
+  if (bufferView === undefined) return undefined;
+  let range: ReturnType<typeof accessorBufferViewRange>;
+  try {
+    range = accessorBufferViewRange(accessor, bufferView);
+  } catch {
+    return undefined;
+  }
+  if (range.requiredByteLength <= bufferView.byteLength) return undefined;
+  return {
+    path: `accessors[${accessorIndex}].bufferView`,
+    bufferViewIndex: accessor.bufferView,
+    requiredByteLength: range.requiredByteLength,
+    byteLength: bufferView.byteLength,
+  };
+}
+
+function componentByteSizeOrUndefined(componentType: number): number | undefined {
+  try {
+    return componentByteSize(componentType);
+  } catch {
+    return undefined;
+  }
+}
+
+function typeComponentCountOrUndefined(type: string): number | undefined {
+  try {
+    return typeComponentCount(type);
+  } catch {
+    return undefined;
+  }
 }
 
 function sparseAccessorStorageIssue(
@@ -2249,7 +2389,6 @@ function sparseAccessorStorageIssue(
       bufferIndex: indicesBufferView.buffer,
     };
   }
-
   const valuesBufferViewIndex = sparse.values.bufferView;
   const valuesBufferView = gltf.bufferViews?.[valuesBufferViewIndex];
   if (valuesBufferView == null) {
@@ -2275,6 +2414,31 @@ function sparseAccessorStorageIssue(
       componentType: sparse.indices.componentType,
     };
   }
+  const indicesByteOffset = sparse.indices.byteOffset ?? 0;
+  const indicesRequiredByteLength = indicesByteOffset + sparse.count * componentByteSize(sparse.indices.componentType);
+  if (indicesRequiredByteLength > indicesBufferView.byteLength) {
+    return {
+      kind: 'truncated-sparse-indices-buffer-view',
+      path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
+      bufferViewIndex: indicesBufferViewIndex,
+      requiredByteLength: indicesRequiredByteLength,
+      byteLength: indicesBufferView.byteLength,
+    };
+  }
+  const valuesByteOffset = sparse.values.byteOffset ?? 0;
+  const valuesComponentSize = componentByteSizeOrUndefined(accessor.componentType);
+  const valueComponentCount = typeComponentCountOrUndefined(accessor.type);
+  if (valuesComponentSize === undefined || valueComponentCount === undefined) return undefined;
+  const valuesRequiredByteLength = valuesByteOffset + sparse.count * valueComponentCount * valuesComponentSize;
+  if (valuesRequiredByteLength > valuesBufferView.byteLength) {
+    return {
+      kind: 'truncated-sparse-values-buffer-view',
+      path: `accessors[${accessorIndex}].sparse.values.bufferView`,
+      bufferViewIndex: valuesBufferViewIndex,
+      requiredByteLength: valuesRequiredByteLength,
+      byteLength: valuesBufferView.byteLength,
+    };
+  }
 
   return undefined;
 }
@@ -2284,12 +2448,16 @@ function sparseIssueDetails(issue: SparseAccessorStorageIssue): {
   readonly bufferViewIndex?: number;
   readonly bufferIndex?: number;
   readonly componentType?: number;
+  readonly requiredByteLength?: number;
+  readonly byteLength?: number;
 } {
   return {
     sparseIssueKind: issue.kind,
     ...(issue.bufferViewIndex !== undefined ? { bufferViewIndex: issue.bufferViewIndex } : {}),
     ...(issue.bufferIndex !== undefined ? { bufferIndex: issue.bufferIndex } : {}),
     ...(issue.componentType !== undefined ? { componentType: issue.componentType } : {}),
+    ...(issue.requiredByteLength !== undefined ? { requiredByteLength: issue.requiredByteLength } : {}),
+    ...(issue.byteLength !== undefined ? { byteLength: issue.byteLength } : {}),
   };
 }
 
@@ -2486,6 +2654,18 @@ function addPrimitiveAccessorImportIssue(
       path: `bufferViews[${accessor.bufferView}].buffer`,
       bufferViewIndex: accessor.bufferView,
       bufferIndex: bufferView.buffer,
+    });
+    return;
+  }
+  const storageIssue = accessorDeclaredStorageIssue(gltf, input.accessorIndex, accessor);
+  if (storageIssue !== undefined) {
+    issues.push({
+      ...base,
+      kind: 'truncated-buffer-view',
+      path: storageIssue.path,
+      bufferViewIndex: storageIssue.bufferViewIndex,
+      requiredByteLength: storageIssue.requiredByteLength,
+      byteLength: storageIssue.byteLength,
     });
   }
 }
@@ -3494,6 +3674,24 @@ function addAnimationAccessorStorageIssues(
         accessorRole,
         bufferViewIndex,
         bufferIndex: bufferView.buffer,
+      });
+      return;
+    }
+    const storageIssue = accessorDeclaredStorageIssue(gltf, accessorIndex, accessor);
+    if (storageIssue !== undefined) {
+      issues.push({
+        kind: kindPrefix === 'input' ? 'truncated-input-buffer-view' : 'truncated-output-buffer-view',
+        path: storageIssue.path,
+        animationIndex,
+        channelIndex,
+        targetPath: channel.target.path,
+        samplerIndex: channel.sampler,
+        ...(channel.target.node !== undefined ? { nodeIndex: channel.target.node } : {}),
+        accessorIndex,
+        accessorRole,
+        bufferViewIndex: storageIssue.bufferViewIndex,
+        requiredByteLength: storageIssue.requiredByteLength,
+        byteLength: storageIssue.byteLength,
       });
       return;
     }

@@ -79,8 +79,10 @@ import {
 } from './textures.js';
 import { parseGlb } from './glbParser.js';
 import {
+  accessorBufferViewRange,
   unpackAccessorFloat,
   unpackAccessorUint32,
+  validateBufferViewAccess,
   type GltfAccessorDiagnostic,
   type GltfAccessorDiagnosticCode,
 } from './accessors.js';
@@ -2674,12 +2676,12 @@ function _unpackJoints(
     }
 
     const bvOffset = bv.byteOffset ?? 0;
-    const accOffset = accessor.byteOffset ?? 0;
-    const stride = bv.byteStride ?? compSize * 4;
-    const dataView = new DataView(buf, bvOffset + accOffset);
+    const range = accessorBufferViewRange(accessor, bv, 4);
+    validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'JOINTS_0 accessor');
+    const dataView = new DataView(buf, bvOffset, bv.byteLength);
 
     for (let i = 0; i < count; i++) {
-      const base = i * stride;
+      const base = range.byteOffset + i * range.byteStride;
       for (let c = 0; c < 4; c++) {
         result[i * 4 + c] = readJointComponent(dataView, base + c * compSize, ct);
       }
@@ -2787,17 +2789,57 @@ function applySparseJointPatch(
       ? 2
       : 4;
   const valueCompSize = accessor.componentType === GltfComponentType.UNSIGNED_BYTE ? 1 : 2;
+  const indexByteOffset = sparse.indices.byteOffset ?? 0;
+  const valueByteOffset = sparse.values.byteOffset ?? 0;
+  try {
+    validateBufferViewAccess(
+      indicesBuffer,
+      sparse.indices.bufferView,
+      indicesBufferView,
+      indexByteOffset + sparse.count * indexCompSize,
+      'sparse JOINTS_0 indices',
+    );
+    validateBufferViewAccess(
+      valuesBuffer,
+      sparse.values.bufferView,
+      valuesBufferView,
+      valueByteOffset + sparse.count * 4 * valueCompSize,
+      'sparse JOINTS_0 values',
+    );
+  } catch (error) {
+    onAccessorDiagnostic({
+      severity: 'warning',
+      code: String(error).includes('indices')
+        ? 'sparse-indices-buffer-view-truncated'
+        : 'sparse-values-buffer-view-truncated',
+      path: String(error).includes('indices')
+        ? `accessors[${accessorIndex}].sparse.indices.bufferView`
+        : `accessors[${accessorIndex}].sparse.values.bufferView`,
+      message: `${String(error)} Patch skipped.`,
+      accessorIndex,
+      bufferViewIndex: String(error).includes('indices')
+        ? sparse.indices.bufferView
+        : sparse.values.bufferView,
+    });
+    return;
+  }
   const indexView = new DataView(
     indicesBuffer,
-    (indicesBufferView.byteOffset ?? 0) + (sparse.indices.byteOffset ?? 0),
+    indicesBufferView.byteOffset ?? 0,
+    indicesBufferView.byteLength,
   );
   const valueView = new DataView(
     valuesBuffer,
-    (valuesBufferView.byteOffset ?? 0) + (sparse.values.byteOffset ?? 0),
+    valuesBufferView.byteOffset ?? 0,
+    valuesBufferView.byteLength,
   );
 
   for (let s = 0; s < sparse.count; s += 1) {
-    const jointIndex = readSparseIndexComponent(indexView, s * indexCompSize, sparseIndexComponentType);
+    const jointIndex = readSparseIndexComponent(
+      indexView,
+      indexByteOffset + s * indexCompSize,
+      sparseIndexComponentType,
+    );
     if (jointIndex < 0 || jointIndex >= accessor.count) {
       onAccessorDiagnostic({
         severity: 'warning',
@@ -2812,7 +2854,7 @@ function applySparseJointPatch(
     for (let c = 0; c < 4; c += 1) {
       result[jointIndex * 4 + c] = readJointComponent(
         valueView,
-        (s * 4 + c) * valueCompSize,
+        valueByteOffset + (s * 4 + c) * valueCompSize,
         accessor.componentType,
       );
     }

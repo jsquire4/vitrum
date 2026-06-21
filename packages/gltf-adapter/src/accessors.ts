@@ -7,7 +7,7 @@
 //
 // Reference: glTF 2.0 spec §3.6.2 (Accessors)
 
-import type { GltfJson, GltfAccessor } from './gltfTypes.js';
+import type { GltfJson, GltfAccessor, GltfBufferView } from './gltfTypes.js';
 import { GltfComponentType } from './gltfTypes.js';
 
 export type GltfAccessorDiagnosticCode =
@@ -16,6 +16,8 @@ export type GltfAccessorDiagnosticCode =
   | 'sparse-indices-buffer-unavailable'
   | 'sparse-values-buffer-view-not-found'
   | 'sparse-values-buffer-unavailable'
+  | 'sparse-indices-buffer-view-truncated'
+  | 'sparse-values-buffer-view-truncated'
   | 'invalid-sparse-indices-component-type'
   | 'sparse-index-out-of-range';
 
@@ -71,6 +73,33 @@ export function componentByteSize(ct: GltfComponentType): number {
     default:
       throw new Error(`[vitrum/gltf-adapter] Unknown componentType ${String(ct)}`);
   }
+}
+
+export interface GltfAccessorBufferViewRange {
+  readonly byteOffset: number;
+  readonly byteStride: number;
+  readonly elementByteLength: number;
+  readonly requiredByteLength: number;
+}
+
+export function accessorBufferViewRange(
+  accessor: GltfAccessor,
+  bufferView?: Pick<GltfBufferView, 'byteStride'>,
+  componentCount = typeComponentCount(accessor.type),
+): GltfAccessorBufferViewRange {
+  const compSize = componentByteSize(accessor.componentType);
+  const elementByteLength = compSize * componentCount;
+  const byteStride = bufferView?.byteStride ?? elementByteLength;
+  const byteOffset = accessor.byteOffset ?? 0;
+  const requiredByteLength = byteOffset + (accessor.count <= 0
+    ? 0
+    : (accessor.count - 1) * byteStride + elementByteLength);
+  return {
+    byteOffset,
+    byteStride,
+    elementByteLength,
+    requiredByteLength,
+  };
 }
 
 /**
@@ -163,13 +192,13 @@ function _readBufferViewIntoResult(
   const normalized = accessor.normalized ?? false;
 
   const bvOffset = bv.byteOffset ?? 0;
-  const accOffset = accessor.byteOffset ?? 0;
-  const stride = bv.byteStride ?? compSize * componentCount;
+  const range = accessorBufferViewRange(accessor, bv, componentCount);
+  validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'accessor');
 
-  const dataView = new DataView(buf, bvOffset + accOffset);
+  const dataView = new DataView(buf, bvOffset, bv.byteLength);
 
   for (let i = 0; i < accessor.count; i++) {
-    const elemOffset = i * stride;
+    const elemOffset = range.byteOffset + i * range.byteStride;
     for (let c = 0; c < componentCount; c++) {
       result[i * componentCount + c] = readScalar(
         dataView,
@@ -183,9 +212,11 @@ function _readBufferViewIntoResult(
 
 interface SparseViews {
   idxView: DataView;
+  idxByteOffset: number;
   idxCt: GltfComponentType;
   idxCompSize: number;
   valView: DataView;
+  valByteOffset: number;
   valCt: GltfComponentType;
   valCompSize: number;
   count: number;
@@ -209,6 +240,7 @@ function _resolveSparseViews(
   buffers: Map<number, ArrayBuffer>,
   accessorIndex: number,
   accessor: GltfAccessor,
+  componentCount: number,
   warnings: string[] | null,
   onDiagnostic: GltfAccessorDiagnosticSink | undefined,
 ): SparseViews | null {
@@ -293,12 +325,58 @@ function _resolveSparseViews(
   const idxCompSize = componentByteSize(idxCt);
   const valCt = accessor.componentType;
   const valCompSize = componentByteSize(valCt);
+  const idxByteOffset = sparse.indices.byteOffset ?? 0;
+  const valByteOffset = sparse.values.byteOffset ?? 0;
+  try {
+    validateBufferViewAccess(
+      idxBuf,
+      sparse.indices.bufferView,
+      idxBv,
+      idxByteOffset + sparse.count * idxCompSize,
+      'sparse indices',
+    );
+  } catch (error) {
+    const message = `${String(error)} Patch skipped.`;
+    emitAccessorDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'sparse-indices-buffer-view-truncated',
+      path: `accessors[${accessorIndex}].sparse.indices.bufferView`,
+      message,
+      accessorIndex,
+      bufferViewIndex: sparse.indices.bufferView,
+    });
+    if (!warnings) throw error;
+    return null;
+  }
+  try {
+    validateBufferViewAccess(
+      valBuf,
+      sparse.values.bufferView,
+      valBv,
+      valByteOffset + sparse.count * componentCount * valCompSize,
+      'sparse values',
+    );
+  } catch (error) {
+    const message = `${String(error)} Patch skipped.`;
+    emitAccessorDiagnostic(warnings, onDiagnostic, {
+      severity: 'warning',
+      code: 'sparse-values-buffer-view-truncated',
+      path: `accessors[${accessorIndex}].sparse.values.bufferView`,
+      message,
+      accessorIndex,
+      bufferViewIndex: sparse.values.bufferView,
+    });
+    if (!warnings) throw error;
+    return null;
+  }
 
   return {
-    idxView: new DataView(idxBuf, (idxBv.byteOffset ?? 0) + (sparse.indices.byteOffset ?? 0)),
+    idxView: new DataView(idxBuf, idxBv.byteOffset ?? 0, idxBv.byteLength),
+    idxByteOffset,
     idxCt,
     idxCompSize,
-    valView: new DataView(valBuf, (valBv.byteOffset ?? 0) + (sparse.values.byteOffset ?? 0)),
+    valView: new DataView(valBuf, valBv.byteOffset ?? 0, valBv.byteLength),
+    valByteOffset,
     valCt,
     valCompSize,
     count: sparse.count,
@@ -323,12 +401,12 @@ function _applySparsePatch(
     accessorIndex,
   });
 
-  const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, warnings, onDiagnostic);
+  const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, componentCount, warnings, onDiagnostic);
   if (!sv) return;
 
   const normalized = accessor.normalized ?? false;
   for (let s = 0; s < sv.count; s++) {
-    const idx = Math.round(readScalar(sv.idxView, s * sv.idxCompSize, sv.idxCt, false));
+    const idx = Math.round(readScalar(sv.idxView, sv.idxByteOffset + s * sv.idxCompSize, sv.idxCt, false));
     if (idx < 0 || idx >= accessor.count) {
       emitAccessorDiagnostic(warnings, onDiagnostic, {
         severity: 'warning',
@@ -343,7 +421,7 @@ function _applySparsePatch(
     for (let c = 0; c < componentCount; c++) {
       result[idx * componentCount + c] = readScalar(
         sv.valView,
-        (s * componentCount + c) * sv.valCompSize,
+        sv.valByteOffset + (s * componentCount + c) * sv.valCompSize,
         sv.valCt,
         normalized,
       );
@@ -393,12 +471,12 @@ export function unpackAccessorUint32(
     const buf = _getBuffer(buffers, bv.buffer, gltf);
     const compSize = componentByteSize(ct);
     const bvOffset = bv.byteOffset ?? 0;
-    const accOffset = accessor.byteOffset ?? 0;
-    const stride = bv.byteStride ?? compSize;
-    const dataView = new DataView(buf, bvOffset + accOffset);
+    const range = accessorBufferViewRange(accessor, bv, 1);
+    validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'index accessor');
+    const dataView = new DataView(buf, bvOffset, bv.byteLength);
 
     for (let i = 0; i < accessor.count; i++) {
-      result[i] = Math.round(readScalar(dataView, i * stride, ct, false));
+      result[i] = Math.round(readScalar(dataView, range.byteOffset + i * range.byteStride, ct, false));
     }
   }
   // If bufferView is absent, result stays zero-initialized before any sparse patch
@@ -415,10 +493,10 @@ export function unpackAccessorUint32(
       message: `[vitrum/gltf-adapter] Accessor uses sparse storage (count=${accessor.sparse.count}); applying patch.`,
       accessorIndex,
     });
-    const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, warnings, onDiagnostic);
+    const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, 1, warnings, onDiagnostic);
     if (sv) {
       for (let s = 0; s < sv.count; s++) {
-        const idx = Math.round(readScalar(sv.idxView, s * sv.idxCompSize, sv.idxCt, false));
+        const idx = Math.round(readScalar(sv.idxView, sv.idxByteOffset + s * sv.idxCompSize, sv.idxCt, false));
         if (idx < 0 || idx >= accessor.count) {
           emitAccessorDiagnostic(warnings, onDiagnostic, {
             severity: 'warning',
@@ -432,7 +510,7 @@ export function unpackAccessorUint32(
             `[vitrum/gltf-adapter] Sparse index ${idx} is outside accessor count ${accessor.count}`,
           );
         }
-        result[idx] = Math.round(readScalar(sv.valView, s * sv.valCompSize, sv.valCt, false));
+        result[idx] = Math.round(readScalar(sv.valView, sv.valByteOffset + s * sv.valCompSize, sv.valCt, false));
       }
     }
   }
@@ -450,6 +528,29 @@ function emitAccessorDiagnostic(
     return;
   }
   if (warnings) warnings.push(diagnostic.message);
+}
+
+export function validateBufferViewAccess(
+  buffer: ArrayBuffer,
+  bufferViewIndex: number,
+  bufferView: Pick<GltfBufferView, 'byteOffset' | 'byteLength'>,
+  requiredByteLength: number,
+  label: string,
+): void {
+  const byteOffset = bufferView.byteOffset ?? 0;
+  const byteLength = bufferView.byteLength;
+  if (byteOffset < 0 || byteLength < 0 || byteOffset + byteLength > buffer.byteLength) {
+    throw new Error(
+      `[vitrum/gltf-adapter] ${label} bufferView ${bufferViewIndex} declares byte range ` +
+      `[${byteOffset}, ${byteOffset + byteLength}) outside buffer length ${buffer.byteLength}`,
+    );
+  }
+  if (requiredByteLength > byteLength) {
+    throw new Error(
+      `[vitrum/gltf-adapter] ${label} requires ${requiredByteLength} bytes from bufferView ` +
+      `${bufferViewIndex}, but it declares byteLength ${byteLength}`,
+    );
+  }
 }
 
 function _getBuffer(

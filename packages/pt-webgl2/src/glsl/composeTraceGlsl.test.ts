@@ -293,6 +293,23 @@ describe('composeTraceGlsl', () => {
     expect(old.analytic).toBeCloseTo(1 / 3, 12);
     expect(old.mesh).toBeCloseTo(4 / 9, 12);
     expect(old.env).toBeCloseTo(2 / 9, 12);
+
+    const meshOnlyNoEnv = fixedSlots(0, 1, 0);
+    expect(meshOnlyNoEnv.mesh).toBeCloseTo(1, 12);
+    expect(meshOnlyNoEnv.env).toBeCloseTo(0, 12);
+  });
+
+  it('does not reserve a dead environment NEE slot for mesh-only scenes', () => {
+    const envSlotNeedle = '( environmentIntensity != 0.0 && envMapInfo.totalSum != 0.0 ? 1u : 0u )';
+    const envSlotOccurrences = src.match(
+      /\( environmentIntensity != 0\.0 && envMapInfo\.totalSum != 0\.0 \? 1u : 0u \)/g,
+    ) ?? [];
+
+    expect(envSlotOccurrences).toHaveLength(2);
+    expect(src).toContain(envSlotNeedle);
+    expect(src).not.toContain(
+      '( environmentIntensity == 0.0 || envMapInfo.totalSum == 0.0 ) && lights.count != 0u',
+    );
   });
 
   it('tracks rough transmission samples in the accumulated roughness filter', () => {
@@ -323,9 +340,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join length pin 32075', () => {
+  it('D10.4: RENDER_MAIN_SECTIONS join length pin 31938', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(32075);
+    expect(assembled).toHaveLength(31938);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');

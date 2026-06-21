@@ -1306,7 +1306,8 @@ Already native. **glTF instancing:** ordinary glTF multi-node reuse still flatte
 > "Ledger truth via `unsupported` grades" is NOT an acceptable terminal state for
 > walkaround material maps; rows are expected to promote to native/approximate
 > through the atlas. Permanent-unsupported exceptions remain only the 3F list
-> (spectral/displacement/thin-film/layers).
+> (spectral/scattering/thin-film/layers); displacement is handled separately as
+> approximate vertex-level shared-BVH geometry.
 
 #### 3A — P0 subsystem & pipeline correctness
 

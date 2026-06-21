@@ -3301,9 +3301,15 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const invalidIndexAccessor = shortPositionAccessor + 5;
     const missingIndexBufferViewAccessor = shortPositionAccessor + 6;
     const missingIndexBufferAccessor = shortPositionAccessor + 7;
+    const truncatedPositionAccessor = shortPositionAccessor + 8;
+    const truncatedIndexAccessor = shortPositionAccessor + 9;
+    const truncatedPositionBufferView = gltf.bufferViews!.length + 1;
+    const truncatedIndexBufferView = truncatedPositionBufferView + 1;
     gltf.bufferViews = [
       ...gltf.bufferViews!,
       { buffer: 99, byteOffset: 0, byteLength: 36 },
+      { buffer: 0, byteOffset: 0, byteLength: 8 },
+      { buffer: 0, byteOffset: 0, byteLength: 4 },
     ];
     gltf.accessors = [
       ...gltf.accessors!,
@@ -3315,6 +3321,8 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       { bufferView: 0, componentType: 5126, count: 3, type: 'SCALAR' },
       { bufferView: 99, componentType: 5123, count: 3, type: 'SCALAR' },
       { bufferView: missingBufferViewIndex, componentType: 5123, count: 3, type: 'SCALAR' },
+      { bufferView: truncatedPositionBufferView, componentType: 5126, count: 3, type: 'VEC3' },
+      { bufferView: truncatedIndexBufferView, componentType: 5123, count: 3, type: 'SCALAR' },
     ];
     gltf.meshes![0]!.primitives = [
       { attributes: {}, material: 0 },
@@ -3328,10 +3336,12 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       { attributes: { POSITION: 0 }, indices: missingIndexBufferViewAccessor, material: 0 },
       { attributes: { POSITION: 0 }, indices: missingIndexBufferAccessor, material: 0 },
       { mode: 5, attributes: { POSITION: shortPositionAccessor }, material: 0 },
+      { attributes: { POSITION: truncatedPositionAccessor }, material: 0 },
+      { attributes: { POSITION: 0 }, indices: truncatedIndexAccessor, material: 0 },
     ];
 
     const report = analyzeGltfAsset(gltf);
-    expect(report.primitives.malformedPrimitives).toHaveLength(11);
+    expect(report.primitives.malformedPrimitives).toHaveLength(13);
     expect(report.primitives.malformedPrimitives).toEqual(expect.arrayContaining([
       expect.objectContaining({
         kind: 'missing-position',
@@ -3394,6 +3404,22 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         path: 'meshes[0].primitives[10]',
         mode: 5,
       }),
+      expect.objectContaining({
+        kind: 'truncated-position-buffer-view',
+        path: `accessors[${truncatedPositionAccessor}].bufferView`,
+        accessorIndex: truncatedPositionAccessor,
+        bufferViewIndex: truncatedPositionBufferView,
+        requiredByteLength: 36,
+        byteLength: 8,
+      }),
+      expect.objectContaining({
+        kind: 'truncated-index-buffer-view',
+        path: `accessors[${truncatedIndexAccessor}].bufferView`,
+        accessorIndex: truncatedIndexAccessor,
+        bufferViewIndex: truncatedIndexBufferView,
+        requiredByteLength: 6,
+        byteLength: 4,
+      }),
     ]));
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
@@ -3433,6 +3459,18 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
         name: 'malformed.empty-triangulated-primitive',
         support: 'unsupported',
         path: 'meshes[0].primitives[10]',
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'malformed.truncated-position-buffer-view',
+        support: 'unsupported',
+        path: `accessors[${truncatedPositionAccessor}].bufferView`,
+      }),
+      expect.objectContaining({
+        category: 'primitive',
+        name: 'malformed.truncated-index-buffer-view',
+        support: 'unsupported',
+        path: `accessors[${truncatedIndexAccessor}].bufferView`,
       }),
     ]));
   });
@@ -4182,14 +4220,21 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addUnboundSkinAttributes(gltf, buffers);
     const colorAccessor = gltf.accessors!.length;
+    const truncatedTangentAccessor = colorAccessor + 1;
+    const truncatedTangentBufferView = gltf.bufferViews!.length;
     gltf.meshes![0]!.primitives[0] = {
       ...gltf.meshes![0]!.primitives[0]!,
       attributes: {
         ...gltf.meshes![0]!.primitives[0]!.attributes,
         COLOR_0: colorAccessor,
+        TANGENT: truncatedTangentAccessor,
       },
     };
-    gltf.accessors!.push({ bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' });
+    gltf.accessors!.push(
+      { bufferView: 1, componentType: 5126, count: 3, type: 'VEC2' },
+      { bufferView: truncatedTangentBufferView, componentType: 5126, count: 3, type: 'VEC4' },
+    );
+    gltf.bufferViews!.push({ buffer: 0, byteOffset: 0, byteLength: 8 });
 
     const report = analyzeGltfAsset(gltf);
 
@@ -4204,6 +4249,18 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       meshIndex: 0,
       primitiveIndex: 0,
     }));
+    expect(report.primitives.accessorImportIssues).toContainEqual(expect.objectContaining({
+      kind: 'truncated-buffer-view',
+      support: 'approximate',
+      semantic: 'attributes.TANGENT',
+      accessorIndex: truncatedTangentAccessor,
+      path: `accessors[${truncatedTangentAccessor}].bufferView`,
+      bufferViewIndex: truncatedTangentBufferView,
+      requiredByteLength: 48,
+      byteLength: 8,
+      meshIndex: 0,
+      primitiveIndex: 0,
+    }));
 
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
     expect(compatibility.issues).toContainEqual(expect.objectContaining({
@@ -4211,6 +4268,12 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       name: 'accessor.attributes.COLOR_0.invalid-accessor-type',
       support: 'approximate',
       path: `accessors[${colorAccessor}].type`,
+    }));
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'primitive',
+      name: 'accessor.attributes.TANGENT.truncated-buffer-view',
+      support: 'approximate',
+      path: `accessors[${truncatedTangentAccessor}].bufferView`,
     }));
   });
 
@@ -4320,6 +4383,46 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       name: 'channel.invalid-output-sparse-accessor',
       support: 'unsupported',
       path: `accessors[${outputAccessor}].sparse.indices.componentType`,
+    }));
+  });
+
+  it('reports truncated animation accessor storage before backend selection', () => {
+    const { gltf } = makeInlineTriangleGltf();
+    const inputAccessor = gltf.accessors!.length;
+    const outputAccessor = inputAccessor + 1;
+    const inputBufferView = gltf.bufferViews!.length;
+    const outputBufferView = inputBufferView + 1;
+    gltf.accessors!.push(
+      { bufferView: inputBufferView, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: outputBufferView, componentType: 5126, count: 2, type: 'VEC3' },
+    );
+    gltf.bufferViews!.push(
+      { buffer: 0, byteOffset: 0, byteLength: 4 },
+      { buffer: 0, byteOffset: 0, byteLength: 24 },
+    );
+    gltf.animations = [{
+      samplers: [{ input: inputAccessor, output: outputAccessor }],
+      channels: [{ sampler: 0, target: { node: 0, path: 'translation' } }],
+    }];
+
+    const report = analyzeGltfAsset(gltf);
+
+    expect(report.animations.malformedChannels).toContainEqual(expect.objectContaining({
+      kind: 'truncated-input-buffer-view',
+      path: `accessors[${inputAccessor}].bufferView`,
+      accessorIndex: inputAccessor,
+      accessorRole: 'input',
+      bufferViewIndex: inputBufferView,
+      requiredByteLength: 8,
+      byteLength: 4,
+    }));
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
+    expect(compatibility.issues).toContainEqual(expect.objectContaining({
+      category: 'animation',
+      name: 'channel.truncated-input-buffer-view',
+      support: 'unsupported',
+      path: `accessors[${inputAccessor}].bufferView`,
     }));
   });
 

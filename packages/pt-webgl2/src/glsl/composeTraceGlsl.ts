@@ -517,10 +517,11 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							// builds its own emitted-power CDF over analytic lights plus mesh-area
 							// emitters. The assignment below is retained for completeness and to keep
 							// the variable initialised in case a future subpath extension reads it.
-							lightsDenom =
-								( environmentIntensity == 0.0 || envMapInfo.totalSum == 0.0 ) && lights.count != 0u ?
-									float( lights.count + ( uMeshLightCount != 0u ? 1u : 0u ) ) :
-									float( lights.count + ( uMeshLightCount != 0u ? 1u : 0u ) + 1u );
+							lightsDenom = float(
+								lights.count +
+								( uMeshLightCount != 0u ? 1u : 0u ) +
+								( environmentIntensity != 0.0 && envMapInfo.totalSum != 0.0 ? 1u : 0u )
+							);
 
 							RenderState bdptState = initRenderState();
 							bdptState.wavelength = 550.0;
@@ -590,12 +591,13 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 						// B4: the NEE-strategy slot count = analytic lights + mesh-area triangle
 						// lights (counted as ONE strategy slot — area-proportional triangle pick)
 						// + 1 env slot when an environment is present. Each strategy is chosen
-						// with probability 1/lightsDenom. When uMeshLightCount==0 this reduces to
-						// the original analytic+env denom (byte-identical no-mesh-light path).
-						lightsDenom =
-							( environmentIntensity == 0.0 || envMapInfo.totalSum == 0.0 ) && lights.count != 0u ?
-								float( lights.count + ( uMeshLightCount != 0u ? 1u : 0u ) ) :
-								float( lights.count + ( uMeshLightCount != 0u ? 1u : 0u ) + 1u );
+						// with probability 1/lightsDenom. Mesh-only/no-env scenes must not reserve
+						// a dead environment slot; that stays unbiased but doubles direct-light variance.
+						lightsDenom = float(
+							lights.count +
+							( uMeshLightCount != 0u ? 1u : 0u ) +
+							( environmentIntensity != 0.0 && envMapInfo.totalSum != 0.0 ? 1u : 0u )
+						);
 
 						// Sprint 5: G-buffer accumulators (written at primary hit; sky fallback if NO_HIT).
 						// gNormalDepth.rgb = world normal encoded to [0,1] via (n*0.5+0.5).

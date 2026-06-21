@@ -275,6 +275,7 @@ function skinMorphAnimation(): GltfJson {
       ],
     }],
     accessors: Array.from({ length: 17 }, (_, index) => {
+      if (index === 2) return { bufferView: index, componentType: 5126, count: 3, type: 'VEC4' as const };
       if (index === 6) return { bufferView: index, componentType: 5121, count: 3, type: 'VEC4' as const };
       if (index === 7) return { bufferView: index, componentType: 5126, count: 3, type: 'VEC4' as const };
       if (index === 9) return { bufferView: index, componentType: 5126, count: 1, type: 'MAT4' as const };
@@ -287,12 +288,14 @@ function skinMorphAnimation(): GltfJson {
         type: index === 3 || index === 4 ? 'VEC2' as const : index === 16 ? 'VEC4' as const : 'VEC3' as const,
       };
     }),
-    bufferViews: Array.from({ length: 17 }, (_, index) => ({
+    bufferViews: [
+      36, 36, 48, 24, 24, 36, 12, 48, 36, 64, 36, 36, 36, 12, 36, 36, 48,
+    ].map((byteLength, index, byteLengths) => ({
       buffer: 0,
-      byteOffset: index * 16,
-      byteLength: index === 16 ? 48 : 16,
+      byteOffset: byteLengths.slice(0, index).reduce((sum, length) => sum + length, 0),
+      byteLength,
     })),
-    buffers: [{ byteLength: 304 }],
+    buffers: [{ byteLength: 604 }],
   };
 }
 

@@ -341,6 +341,12 @@ if (!road.includes("Scoped inverse/truthfulness and validation distance remainin
 if (road.includes("Document in ledger + planner: `displacement*`, `spectralAttenuation`")) {
   fail("road-to-100.md must not classify displacement* as a permanent walkaround unsupported row");
 }
+if (road.includes("spectral/displacement/thin-film/layers")) {
+  fail("road-to-100.md must not include displacement in the permanent walkaround unsupported shorthand");
+}
+if (!road.includes("displacement is handled separately as\n> approximate vertex-level shared-BVH geometry")) {
+  fail("road-to-100.md must keep the Phase 3 scope note aligned with the displacement approximate row");
+}
 if (!road.includes("`displacementMap` / `displacementScale` / `displacementBias` are not in this unsupported bucket")) {
   fail("road-to-100.md must retain the walkaround displacement approximate-vs-unsupported boundary");
 }
@@ -783,7 +789,8 @@ const gltfAccessors = await readText("packages/gltf-adapter/src/accessors.ts");
 for (const needle of [
   "If bufferView is absent, result stays zero-initialized before any sparse patch",
   "if (accessor.sparse) {",
-  "const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, warnings, onDiagnostic);",
+  "const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, 1, warnings, onDiagnostic);",
+  "validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'index accessor');",
 ]) {
   if (!gltfAccessors.includes(needle)) {
     fail(`gltf accessor unpacking must apply pure-sparse index patches instead of returning early: ${needle}`);
@@ -793,6 +800,9 @@ const gltfAccessorTest = await readText("packages/gltf-adapter/src/accessors.tes
 for (const needle of [
   "applies pure-sparse index accessors on top of the implicit zero base",
   "expect(Array.from(out)).toEqual([5, 0, 9, 0]);",
+  "rejects base accessors that read past the declared bufferView byteLength",
+  "rejects index accessors that read past the declared bufferView byteLength",
+  "warns and skips sparse patches that read past declared bufferView byteLength",
 ]) {
   if (!gltfAccessorTest.includes(needle)) {
     fail(`gltf accessor tests must pin pure-sparse index accessors: ${needle}`);

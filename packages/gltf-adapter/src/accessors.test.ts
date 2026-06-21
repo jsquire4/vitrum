@@ -177,6 +177,61 @@ describe('unpackAccessorFloat sparse accessors', () => {
       componentType: GltfComponentType.BYTE,
     }));
   });
+
+  it('rejects base accessors that read past the declared bufferView byteLength', () => {
+    const buffer = f32([1, 2, 3, 4, 5, 6]);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      accessors: [{
+        bufferView: 0,
+        componentType: GltfComponentType.FLOAT,
+        count: 3,
+        type: 'VEC2',
+      }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 8 }],
+      buffers: [{ byteLength: buffer.byteLength }],
+    };
+
+    expect(() => unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, []))
+      .toThrow('requires 24 bytes from bufferView 0, but it declares byteLength 8');
+  });
+
+  it('warns and skips sparse patches that read past declared bufferView byteLength', () => {
+    const indices = bytes([1]);
+    const values = f32([7, 8, 9, 10]);
+    const buffer = concat(indices, values);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      accessors: [{
+        componentType: GltfComponentType.FLOAT,
+        count: 2,
+        type: 'VEC2',
+        sparse: {
+          count: 1,
+          indices: { bufferView: 0, componentType: GltfComponentType.UNSIGNED_BYTE },
+          values: { bufferView: 1 },
+        },
+      }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: indices.byteLength },
+        { buffer: 0, byteOffset: indices.byteLength, byteLength: 4 },
+      ],
+      buffers: [{ byteLength: buffer.byteLength }],
+    };
+    const diagnostics: GltfAccessorDiagnostic[] = [];
+
+    const out = unpackAccessorFloat(gltf, new Map([[0, buffer]]), 0, [], (diagnostic) => {
+      diagnostics.push(diagnostic);
+    });
+
+    expect(Array.from(out)).toEqual([0, 0, 0, 0]);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'sparse-values-buffer-view-truncated',
+      path: 'accessors[0].sparse.values.bufferView',
+      accessorIndex: 0,
+      bufferViewIndex: 1,
+    }));
+  });
 });
 
 describe('unpackAccessorUint32 sparse accessors', () => {
@@ -243,5 +298,23 @@ describe('unpackAccessorUint32 sparse accessors', () => {
       path: 'accessors[0].sparse',
       accessorIndex: 0,
     }));
+  });
+
+  it('rejects index accessors that read past the declared bufferView byteLength', () => {
+    const buffer = u16([0, 1, 2]);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      accessors: [{
+        bufferView: 0,
+        componentType: GltfComponentType.UNSIGNED_SHORT,
+        count: 3,
+        type: 'SCALAR',
+      }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: 4 }],
+      buffers: [{ byteLength: buffer.byteLength }],
+    };
+
+    expect(() => unpackAccessorUint32(gltf, new Map([[0, buffer]]), 0))
+      .toThrow('requires 6 bytes from bufferView 0, but it declares byteLength 4');
   });
 });
