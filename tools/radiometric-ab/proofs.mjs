@@ -72,6 +72,23 @@ export const RESTIR_PT_SPECIALTY_PROOF = {
   },
 };
 
+export const PT_RADIOMETRIC_AB_HOST_STATUS_PROOF = {
+  harness: "pt-radiometric-ab",
+  statusPath: "tools/radiometric-ab/pt-ab-host-status.json",
+  preservedResultFiles: [
+    "tools/radiometric-ab/results-sppm.json",
+    "tools/radiometric-ab/results-bdpt.json",
+    "tools/radiometric-ab/results-restir-pt.json",
+  ],
+  allowedVerdicts: ["PASS", "PASS-PARTIAL", "HOST-BLOCKED"],
+  blockedReasonCodes: [
+    "pt-radiometric-ab-timeout",
+    "pt-radiometric-full-tier-unavailable",
+    "pt-radiometric-no-adapter",
+    "pt-radiometric-deno-wgpu-panic",
+  ],
+};
+
 export const WALKAROUND_AB_HOST_STATUS_PROOF = {
   harness: "walkaround-ab",
   statusPath: "tools/radiometric-ab/walkaround-ab-host-status.json",

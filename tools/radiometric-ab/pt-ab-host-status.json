@@ -1,0 +1,52 @@
+{
+  "generatedAt": "2026-06-21T20:53:33.323Z",
+  "harness": "pt-radiometric-ab",
+  "verdict": "PASS",
+  "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-*.mjs",
+  "selectedCases": [
+    "sppm",
+    "bdpt",
+    "restir-pt"
+  ],
+  "timeoutMs": 300000,
+  "icd": null,
+  "cases": [
+    {
+      "id": "sppm",
+      "status": "PASS",
+      "script": "tools/radiometric-ab/ab-sppm.mjs",
+      "resultFile": "tools/radiometric-ab/results-sppm.json",
+      "exitStatus": 0,
+      "signal": null,
+      "reason": null
+    },
+    {
+      "id": "bdpt",
+      "status": "PASS",
+      "script": "tools/radiometric-ab/ab-bdpt.mjs",
+      "resultFile": "tools/radiometric-ab/results-bdpt.json",
+      "exitStatus": 0,
+      "signal": null,
+      "reason": null
+    },
+    {
+      "id": "restir-pt",
+      "status": "PASS",
+      "script": "tools/radiometric-ab/ab-restir-pt.mjs",
+      "resultFile": "tools/radiometric-ab/results-restir-pt.json",
+      "exitStatus": 0,
+      "signal": null,
+      "reason": null
+    }
+  ],
+  "preservedResultFiles": [
+    "tools/radiometric-ab/results-sppm.json",
+    "tools/radiometric-ab/results-bdpt.json",
+    "tools/radiometric-ab/results-restir-pt.json"
+  ],
+  "reason": {
+    "code": "pt-radiometric-ab-complete",
+    "message": "All selected pt radiometric A/B recaptures completed on this host."
+  },
+  "nextSteps": []
+}

@@ -3,6 +3,7 @@
 // Verifies that committed radiometric A/B result JSONs still satisfy their proof metadata.
 
 import {
+  PT_RADIOMETRIC_AB_HOST_STATUS_PROOF,
   RADIOMETRIC_AB_PROOFS,
   RESTIR_PT_SPECIALTY_PROOF,
   WALKAROUND_AB_HOST_STATUS_PROOF,
@@ -179,6 +180,47 @@ async function checkRestirPtSpecialty(proof) {
   }
   if (result.summary?.maxRelativeError !== proof.summary.maxRelativeError) {
     fail("restir-pt-specialty: maxRelativeError differs from proofs.mjs");
+  }
+}
+
+/** @param {any} proof */
+async function checkPtRadiometricHostStatus(proof) {
+  const statusUrl = new URL(`../../${proof.statusPath}`, import.meta.url);
+  const status = JSON.parse(await Deno.readTextFile(statusUrl));
+  if (status.harness !== proof.harness) fail(`pt-radiometric-ab: harness ${status.harness} differs from proofs.mjs`);
+  if (!proof.allowedVerdicts.includes(status.verdict)) {
+    fail(`pt-radiometric-ab: verdict ${status.verdict} is outside ${proof.allowedVerdicts.join(", ")}`);
+  }
+  for (const resultFile of proof.preservedResultFiles) {
+    const resultUrl = new URL(`../../${resultFile}`, import.meta.url);
+    const resultStat = await Deno.stat(resultUrl);
+    if (!resultStat.isFile || resultStat.size <= 2) {
+      fail(`pt-radiometric-ab: preserved result ${resultFile} is missing or empty`);
+    }
+  }
+  /** @type {any[]} */
+  const cases = status.cases ?? [];
+  if (cases.length === 0) fail("pt-radiometric-ab: status must include at least one case");
+  const blockedCases = cases.filter((entry) => entry.status === "HOST-BLOCKED");
+  const failedCases = cases.filter((entry) => entry.status === "FAIL");
+  if (failedCases.length > 0) {
+    fail(`pt-radiometric-ab: committed status contains FAIL case(s): ${failedCases.map((entry) => entry.id).join(", ")}`);
+  }
+  if (status.verdict === "HOST-BLOCKED" || status.verdict === "PASS-PARTIAL") {
+    if (blockedCases.length === 0) fail("pt-radiometric-ab: blocked/partial status must include blocked cases");
+    for (const entry of blockedCases) {
+      if (!proof.blockedReasonCodes.includes(entry.reason?.code)) {
+        fail(`pt-radiometric-ab: blocked reason code ${entry.reason?.code} is not allowed`);
+      }
+    }
+    /** @type {any[]} */
+    const nextSteps = status.nextSteps ?? [];
+    if (!nextSteps.some((step) => String(step).includes("Do not promote"))) {
+      fail("pt-radiometric-ab: host-blocked status must preserve the do-not-promote warning");
+    }
+  }
+  if (status.verdict === "PASS" && cases.some((entry) => entry.status !== "PASS")) {
+    fail("pt-radiometric-ab: PASS status requires every case to pass");
   }
 }
 
@@ -387,7 +429,8 @@ for (const proof of RADIOMETRIC_AB_PROOFS) {
 }
 
 await checkRestirPtSpecialty(RESTIR_PT_SPECIALTY_PROOF);
+await checkPtRadiometricHostStatus(PT_RADIOMETRIC_AB_HOST_STATUS_PROOF);
 await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
 await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 specialty fixture, walkaround host status, 4 walkaround A/B cases)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 specialty fixture, pt host status, walkaround host status, 4 walkaround A/B cases)`);

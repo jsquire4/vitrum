@@ -40,6 +40,7 @@
     "radiometric-ab:sppm": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-sppm.mjs",
     "radiometric-ab:bdpt": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-bdpt.mjs",
     "radiometric-ab:restir-pt": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-restir-pt.mjs",
+    "radiometric-ab:pt-host-status": "node tools/radiometric-ab/run-pt-ab.mjs",
     "radiometric-ab:restir-pt-specialty": "node tools/radiometric-ab/ab-restir-pt-specialty.mjs --check",
     "radiometric-ab:proof-check": "deno run --sloppy-imports --allow-read tools/radiometric-ab/check-results.mjs",
     "road-to-100-source-check": "deno run --sloppy-imports --allow-read tools/road-to-100/check-ledger.mjs",
