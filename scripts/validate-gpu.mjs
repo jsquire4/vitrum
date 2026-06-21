@@ -9,8 +9,9 @@
  *
  * Tiers:
  *   --smoke           T1: shader-compile on both real backends + default-render
- *                     non-regression A/B vs the stored golden. Cheap (seconds on
- *                     dzn). Run on every push via the warn-only pre-push hook.
+ *                     non-regression A/B vs the stored golden. Bounded, but dzn
+ *                     hybrid captures can take several minutes on WSL. Run on
+ *                     every push via the warn-only pre-push hook.
  *   --items=V21,V23   T2: per-subsystem radiometric A/B. Expensive; on-demand.
  *
  * Flags:
@@ -18,7 +19,7 @@
  *                     pre-push hook passes this — visibility every push, never
  *                     blocks (the chosen gate hardness; see the plan §8).
  *   --timeout-ms=N    Wall-clock timeout for the delegated runner. Defaults to
- *                     120s for --smoke so the warn-only pre-push path cannot
+ *                     300s for --smoke so the warn-only pre-push path cannot
  *                     hang indefinitely; set 0 to disable. T2 runs are unbounded
  *                     unless this flag or VITRUM_VALIDATE_GPU_TIMEOUT_MS is set.
  *
@@ -57,7 +58,7 @@ function parseTimeoutMs(raw, label) {
 
 const explicitTimeoutMs = parseTimeoutMs(timeoutArg?.slice('--timeout-ms='.length), '--timeout-ms')
   ?? parseTimeoutMs(process.env.VITRUM_VALIDATE_GPU_TIMEOUT_MS, 'VITRUM_VALIDATE_GPU_TIMEOUT_MS');
-const RUNNER_TIMEOUT_MS = explicitTimeoutMs ?? (SMOKE ? 120_000 : 0);
+const RUNNER_TIMEOUT_MS = explicitTimeoutMs ?? (SMOKE ? 300_000 : 0);
 
 /** Exit per warn-only policy: code 0 always when --warn-only, else the real code. */
 function finish(code, regressionMsg) {

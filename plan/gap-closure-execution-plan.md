@@ -508,14 +508,15 @@ renderability/API behavior:
 These are not code blockers, but they are required before a high-confidence
 "100%" signoff.
 
-WSL smoke status (2026-06-21): direct lavapipe T1 smoke passes, including the
-Cornell DDGI non-regression capture plus RC/ReSTIR-TLAS/DDGI brute-force GPU
-oracles. The full `npm run validate:gpu:smoke` wrapper still times out during
-the dzn hybrid capture after successful lavapipe work and dzn probe/render
-startup; the pre-push hook is warn-only and reproduces the same timeout. Treat
-this as a validation-infrastructure/adapter tail, not a source-code render
-regression. Keep full browser/real-adapter validation in the queue; do not treat
-lavapipe smoke as a replacement for V28-B recaptures.
+WSL smoke status (2026-06-21): direct lavapipe and dzn T1 smoke both pass,
+including the Cornell DDGI non-regression capture plus RC/ReSTIR-TLAS/DDGI
+brute-force GPU oracles. The dzn direct run completed in about 210 seconds, so
+the old 120-second `npm run validate:gpu:smoke` wrapper timeout was too short
+for the current hybrid-capture path. `scripts/validate-gpu.mjs` now defaults the
+smoke timeout to 300 seconds, preserving a bounded pre-push gate without
+misclassifying a slow dzn PASS as a validation failure. Keep full
+browser/real-adapter validation in the queue; do not treat T1 smoke as a
+replacement for V28-B recaptures.
 
 - V28-B render-changing recaptures for PT and walkaround changes.
 - GRIS-on unbiasedness and biased-default error quantification.

@@ -54,6 +54,19 @@ test('validate-gpu smoke passes through a successful runner', async () => {
   assert.doesNotMatch(result.stderr, /timed out/);
 });
 
+test('validate-gpu smoke default timeout accommodates current dzn T1 runtime', async () => {
+  const fakeWslGpu = await makeFakeWslGpu(`
+    console.error('[fake-wsl-gpu] smoke ok');
+    process.exit(0);
+  `);
+
+  const result = await runValidate(['--smoke', '--warn-only'], fakeWslGpu);
+
+  assert.equal(result.status, 0);
+  assert.match(result.stderr, /runner timeout: 300000ms \(warn-only\)/);
+  assert.match(result.stderr, /smoke ok/);
+});
+
 test('validate-gpu smoke timeout exits nonzero outside warn-only mode', async () => {
   const fakeWslGpu = await makeFakeWslGpu(`
     console.error('[fake-wsl-gpu] hanging');
