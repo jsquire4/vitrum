@@ -60,6 +60,9 @@ The repo contains limited research checkpoints under
 `tools/neural-denoiser-training/checkpoints/` for local experiments, but the
 `@vitrum/walkaround-hybrid` package does **not** ship production neural weights.
 Those checkpoints are small CPU-trained artifacts, not a production default.
+Their exact bytes and research/production classification are pinned by
+`tools/neural-denoiser-training/checkpoints/manifest.json` and checked by
+`npm run learned-systems-proof-check`.
 See `tools/neural-denoiser-training/README.md` for training and export guidance.
 
 **Smoke-test path (no trained weights):** `buildRandomWeightsForSpec(spec, seed)`

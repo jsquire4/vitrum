@@ -129,6 +129,13 @@ and are not suitable as a production default. The walkaround engine uses
 `'atrous-variance'` denoising by default; `'neural'` is opt-in and requires
 validated weights to be provided at engine creation.
 
+`checkpoints/manifest.json` is the authoritative checkpoint classification
+ledger. It records every committed `.vitrum-model` file's role, byte size,
+SHA-256, parameter count, and production-default eligibility. The root
+`npm run learned-systems-proof-check` command fails if a checkpoint is
+unregistered, if its bytes drift from the manifest, or if any production/default
+checkpoint appears without a passing `quality-ab-production.json` A/B manifest.
+
 ## GPU capture (real dataset — for the GPU session)
 
 `capture-dataset.mjs` ships a **CPU** path-traced smoke set so the format and
@@ -163,6 +170,7 @@ fidelity and is the remaining real-hardware tail.
 | **CPU smoke capture runner**             | Shipped (`capture-dataset.mjs` — format-exercise, not a real dataset) |
 | **Round-trip test (export → load)**      | Shipped (`walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts`) |
 | **Pre-trained weights**                  | **Not shipped — host trains their own**                       |
+| **Checkpoint manifest**                  | Shipped (`checkpoints/manifest.json` — research/production classification + hashes) |
 | **GPU batched capture runner**           | **Documented, not wired here** — needs a WebGPU adapter (see "GPU capture") |
 | **Reference Cornell test dataset**       | **Not shipped — too large + scene-licensing concerns**        |
 

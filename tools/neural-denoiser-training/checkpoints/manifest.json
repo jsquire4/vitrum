@@ -1,0 +1,27 @@
+{
+  "schema": "vitrum.neural-denoiser.checkpoints.v1",
+  "generatedAt": "2026-06-21",
+  "productionCheckpoint": null,
+  "checkpoints": [
+    {
+      "name": "starter-v1.vitrum-model",
+      "role": "research",
+      "productionDefaultEligible": false,
+      "paramCount": 535107,
+      "sizeBytes": 2140724,
+      "sha256": "9fbf951ac6d0960436243f9326339108b96410afc4b5d9efcd39c8784161f13f",
+      "trainingScope": "tiny Cornell-only CPU-rendered dataset",
+      "qualityPosture": "format/runtime compatibility checkpoint only; not production quality"
+    },
+    {
+      "name": "v2-random.vitrum-model",
+      "role": "research",
+      "productionDefaultEligible": false,
+      "paramCount": 535107,
+      "sizeBytes": 2140724,
+      "sha256": "6f59e32b8f84f05e90f4afdfa025a98ef97ae60f163a1a4a9f7703ac4fa3d9cb",
+      "trainingScope": "small 128x128 CPU-rendered Cornell plus randomized Lambertian scenes",
+      "qualityPosture": "research checkpoint for loader/runtime validation; not production quality"
+    }
+  ]
+}
