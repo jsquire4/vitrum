@@ -566,9 +566,9 @@ fn evaluateBrdfFullWithClearcoatNormal(
     let anisoT = c * tanT + s * tanB;
     let anisoB = -s * tanT + c * tanB;
     spec = evalBrdfSpecAnisotropic(f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
-    // B9 — Kulla-Conty for anisotropic path: use the isotropic E LUT as an
-    // approximation (the LUT is rotationally symmetric; anisotropy changes the
-    // per-direction albedo distribution but the average E(μ) stays similar).
+    // B9 — Kulla-Conty for anisotropic path: consumed but still approximate.
+    // The anisotropic sampler/eval/PDF are native; multiscatter uses the
+    // isotropic E LUT until the anisotropic furnace/reference row is promoted.
     ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
   } else {
     let alpha = max(roughness * roughness, 1e-3);

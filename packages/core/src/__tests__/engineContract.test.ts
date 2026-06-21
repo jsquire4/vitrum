@@ -170,12 +170,13 @@ describe('backend promise ledger', () => {
     expect(gpu.alphaMap).toBe('native');
     expect(gpu.emissiveMap).toBe('native');
     expect(gpu.aoMap).toBe('native');
-    expect(gpu.anisotropyMap).toBe('native');
+    expect(gpu.anisotropyMap).toBe('approximate');
     expect(gpu.bumpMap).toBe('native');
     expect(gpu.lightMap).toBe('native');
     expect(gpu.normalMap).toBe('native');
     expect(gpu.normalScale).toBe('native');
-    expect(gpu.anisotropy).toBe('native');
+    expect(gpu.anisotropy).toBe('approximate');
+    expect(gpu.anisotropyRotation).toBe('approximate');
     expect(gpu.scatteringCoefficientRGB).toBe('native');
     expect(gpu.frontLayer).toBe('native');
     expect(gpu.backLayer).toBe('native');

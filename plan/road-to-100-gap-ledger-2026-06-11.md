@@ -32,7 +32,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens; npm run gltf-browser-proof-check:required fails on HOST-BLOCKED until real browser PNG/golden PASS exists",
     "GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT quality and radiometric A/B evidence",
     "browser and real-adapter validation outside WSL GPU smoke coverage",
-    "production neural checkpoint and NRC/neural default-tier decisions; displacement, spectral/scattering, layered/thin-film, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
+    "production neural checkpoint and NRC/neural default-tier decisions; displacement/microdisplacement limits, walkaround spectral/scattering/layered/thin-film fields, pt-webgl2 unpromoted specialty rows, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
   ],
   "requiredGreenGates": [
     "npm run typecheck",

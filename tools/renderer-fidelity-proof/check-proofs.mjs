@@ -83,7 +83,7 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
     },
   },
   {
-    feature: "Material fields parity (cornell)",
+    feature: "Cornell/core material fixture parity",
     matrixNeedles: [
       "strict-hash re-capture == committed `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png`",
       "PSNR 999 dB",
@@ -367,6 +367,13 @@ const architecture = await readText(ARCHITECTURE_PATH);
 const hardwareValidation = await readText(HARDWARE_VALIDATION_PATH);
 const gapExecutionPlan = await readText(GAP_EXECUTION_PLAN_PATH);
 const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
+
+if (!matrix.includes("| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebGPU) |")) {
+  fail("renderer fidelity matrix must label the pt-webgpu column as full-tier proof");
+}
+if (matrix.includes("| Feature | pt-webgl2 (WebGL2) | pt-webgpu (WebGPU) |")) {
+  fail("renderer fidelity matrix must not use the stale unqualified pt-webgpu column heading");
+}
 
 for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
   const row = findMatrixRow(matrix, proof.feature);

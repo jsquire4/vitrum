@@ -662,7 +662,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   sheenRoughnessMap: 'approximate',
   iridescenceMap: 'approximate',
   iridescenceThicknessMap: 'approximate',
-  anisotropyMap: 'native',
+  // Full-tier samplers consume KHR_materials_anisotropy RG/B map data, but the
+  // anisotropic lobe still uses isotropic Kulla-Conty multiscatter compensation
+  // and lacks a full anisotropic material-furnace promotion gate.
+  anisotropyMap: 'approximate',
   specularColorMap: 'approximate',
   specularIntensityMap: 'approximate',
   bumpMap: 'native',
@@ -705,8 +708,11 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   backLayer: 'native',
   // Full TMM evaluation; 8-layer cap (contract sanctions backend caps).
   thinFilmStack: 'native',
-  anisotropy: 'native',
-  anisotropyRotation: 'native',
+  // Anisotropic GGX sampler/eval/PDF and map rotation are live, including inverse
+  // direct-light replay, but energy compensation and specialty-integrator proof
+  // remain approximate until the anisotropic furnace/reference row is promoted.
+  anisotropy: 'approximate',
+  anisotropyRotation: 'approximate',
   // Contract-sanctioned escape hatch this backend deliberately does not read
   // (no warning — `extensions` is host-discretionary by design).
   extensions: 'unsupported',

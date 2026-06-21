@@ -98,6 +98,7 @@ if (result.status === 0) {
   const partial = Object.values(caseVerdicts).some((verdict) =>
     verdict === 'PASS-PARTIAL' ||
     verdict === 'PASS-WEAK' ||
+    verdict === 'SMOKE' ||
     verdict === 'FINDING' ||
     verdict === 'SMALL' ||
     verdict === 'MODERATE' ||

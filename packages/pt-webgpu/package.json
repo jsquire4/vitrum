@@ -2,7 +2,7 @@
   "name": "@vitrum/pt-webgpu",
   "version": "0.0.0",
   "private": true,
-  "description": "WebGPU-native experimental path tracing backend for @vitrum/core (internal-focused; not production).",
+  "description": "Peer WebGPU-native path tracing backend for @vitrum/core with full/lite adapter tiers and row-level fidelity tracking.",
   "keywords": ["webgpu", "path-tracing", "vitrum"],
   "author": "jsquire4",
   "license": "MIT",

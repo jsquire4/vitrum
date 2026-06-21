@@ -97,7 +97,7 @@ export const WALKAROUND_AB_RESULT_PROOF = {
     },
     glass: {
       id: "GLASS",
-      allowedVerdicts: ["PASS", "PASS-WEAK"],
+      allowedVerdicts: ["PASS", "SMOKE"],
       minCentreRatio: 0.5,
       minSignalDeltaForPass: 1e-4,
     },

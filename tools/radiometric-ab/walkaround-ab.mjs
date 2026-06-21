@@ -589,8 +589,7 @@ async function runGlass() {
   const materialEffectObserved =
     Math.max(absDelta(glassCenter, noGlassCenter), absDelta(overallGlass, overallNoGlass)) >= MIN_SIGNAL_DELTA;
   const verdict   = notBlack && ratioPass && materialEffectObserved ? "PASS"
-                  : notBlack && ratioPass ? "PASS-WEAK"
-                  : notBlack ? "PASS-WEAK"
+                  : notBlack ? "SMOKE"
                   : "FAIL";
 
   console.log(`  glass centre:   ${glassCenter.toFixed(4)}  overall=${overallGlass.toFixed(4)}`);
@@ -629,7 +628,7 @@ async function runGlass() {
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
       "Expected centreRatio ≥ 0.50 — conservative for mild Beer tint and low-Spp transport.",
       "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
-      "PASS-WEAK means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.",
+      "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.",
     ],
   };
 }

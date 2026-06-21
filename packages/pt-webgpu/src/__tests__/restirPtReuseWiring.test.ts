@@ -137,7 +137,7 @@ describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
     // The reuse path composes SEPARATE per-pass modules; it must never mutate the
     // default megakernel string. This is a cheap guard alongside the SHA pin in
     // wgslContract.test.ts (which is the authoritative byte-identity check).
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(395705); // re-pinned 2026-06-21 (iridescence sampled-Fresnel parity). See wgslContract.test.ts for the authoritative SHA.
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(395703); // re-pinned 2026-06-21 (anisotropy comment-only wording). See wgslContract.test.ts for the authoritative SHA.
     // The default trace must NOT contain any restir-pt reuse entry point, nor the
     // A1 composite megakernel's rpt_result_in binding (that is a SEPARATE pipeline).
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('fn restirPtProduce');

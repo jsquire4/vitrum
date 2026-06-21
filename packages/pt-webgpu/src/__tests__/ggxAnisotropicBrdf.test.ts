@@ -10,9 +10,11 @@
  *    pdf to within MC tolerance via: |pdf_analytic - pdf_empirical| / pdf_analytic < tol.
  *    Tested at anisotropy ∈ {0, 0.5, 0.9}.
  *
- * 2. WHITE-FURNACE ENERGY CONSERVATION: anisotropic VNDF sampling collapses the MC
- *    estimator to G1(wi) — furnace throughput must be in [0.5, 1]. Note: GGX
- *    single-scatter has energy loss (same as isotropic), so we require < 1, not = 1.
+ * 2. WHITE-FURNACE HONESTY: anisotropic VNDF sampling collapses the MC estimator
+ *    to G1(wi). The renderer consumes anisotropy, but its Kulla-Conty
+ *    multiscatter compensation is still the isotropic LUT approximation, so this
+ *    file deliberately proves bounded single-scatter loss rather than a native
+ *    anisotropic multiscatter furnace promotion.
  *
  * 3. ZERO-ANISOTROPY IDENTITY: at anisotropy=0, aspect=1, αx=αy=α — the aniso code
  *    path reduces to the isotropic algorithm. We verify this numerically.
@@ -296,8 +298,10 @@ describe('Item 7 — Anisotropic GGX white-furnace energy conservation', () => {
     }
   });
 
-  it('furnace mean strictly < 1 (single-scatter energy loss present)', () => {
-    // GGX single-scatter loses energy — same as isotropic. Verify not accidentally > 1.
+  it('furnace mean remains below native white-furnace closure until anisotropic multiscatter is promoted', () => {
+    // GGX single-scatter loses energy. This guards the promise-ledger grade:
+    // pt-webgpu anisotropy is approximate until an anisotropic multiscatter
+    // furnace/reference proof replaces the current isotropic compensation.
     const e = furnaceMean(0.8, 0.8, nDotV);
     expect(e).toBeLessThan(1.0);
     expect(e).toBeGreaterThan(0.3);

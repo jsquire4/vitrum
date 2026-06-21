@@ -270,7 +270,7 @@ Render time: 4.5 s.
 
 ### GLASS — Glass-GI Transmitted Light Validation
 
-**Verdict: PASS-WEAK** — the through-glass region is non-black, but the
+**Verdict: SMOKE** — the through-glass region is non-black, but the
 glass/no-glass captures are indistinguishable at this SPP (`delta=0`), so this
 is not material-transport promotion evidence.
 
@@ -317,7 +317,7 @@ walkaround rows beyond their current approximate status. Render time: 8.4 s.
 |-----|---------|-----------|
 | A8 GRIS bias | NEGLIGIBLE | overall delta = -0.000020 (0.03% of mean) |
 | SUN analytic | PASS-PARTIAL | floor ratio = 0.371; shadow correctness passes |
-| GLASS GI | PASS-WEAK | centre ratio = 1.000; delta = 0 |
+| GLASS GI | SMOKE | centre ratio = 1.000; delta = 0 |
 | GLOSSY probe | PASS-WEAK | floor ratio = 1.000; delta = 0 |
 
 ### Legacy 8-bit Baseline (2026-06-10)

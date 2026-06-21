@@ -312,6 +312,17 @@ function checkWalkaroundGlass(proof, result) {
       `is below ${proof.minSignalDeltaForPass}`,
     );
   }
+  if (result.verdict === "SMOKE") {
+    if (result.materialEffectObserved !== false) {
+      fail("walkaround-ab GLASS: SMOKE must not masquerade as observed material transport");
+    }
+    if (signal >= proof.minSignalDeltaForPass) {
+      fail(
+        `walkaround-ab GLASS: SMOKE should be promoted to PASS/FINDING once signal ${signal} ` +
+        `exceeds ${proof.minSignalDeltaForPass}`,
+      );
+    }
+  }
 }
 
 /**

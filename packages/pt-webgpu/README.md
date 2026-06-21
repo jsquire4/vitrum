@@ -1,12 +1,14 @@
 # @vitrum/pt-webgpu
 
-WebGPU-native experimental path tracing backend for `@vitrum/core`.
+Peer WebGPU-native path tracing backend for `@vitrum/core`, with full/lite
+adapter tiers and row-level fidelity tracking.
 
-## Experimental boundary
+## Fidelity boundary
 
-This package is **experimental and internal-focused**. `@vitrum/pt-webgpu` is
-a peer WebGPU-native path tracing backend that runs alongside `@vitrum/pt-webgl2`,
-serving the same contract surface at different quality/capability tiers. Until
+`@vitrum/pt-webgpu` is a peer WebGPU-native path tracing backend that runs
+alongside `@vitrum/pt-webgl2`, serving the same contract surface at different
+quality/capability tiers. Experimental posture is row-level or
+productionisation-specific, not a package-wide stub/prototype label. Until
 productionisation is complete:
 
 - **No public API stability**. Types, options, and binding shapes can

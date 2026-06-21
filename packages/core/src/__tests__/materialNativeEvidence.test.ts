@@ -183,11 +183,11 @@ const MATERIAL_NATIVE_EVIDENCE: Record<BackendWithMaterialEvidence, Record<strin
       'iridescence', 'iridescenceIor', 'iridescenceThicknessRange',
       'envMapIntensity', 'spectralAttenuation', 'dispersionAbbeNumber',
       'scatteringCoefficient', 'scatteringAnisotropy', 'scatteringCoefficientRGB',
-      'thinFilmStack', 'anisotropy', 'anisotropyRotation',
+      'thinFilmStack',
     ], PT_WEBGPU_SCALARS),
     ...group([
       'baseColorMap', 'normalMap', 'roughnessMap', 'metallicMap',
-      'transmissionMap', 'emissiveMap', 'alphaMap', 'aoMap', 'anisotropyMap',
+      'transmissionMap', 'emissiveMap', 'alphaMap', 'aoMap',
       'bumpMap', 'lightMap', 'frontLayer', 'backLayer',
     ], PT_WEBGPU_TEXTURES),
   },

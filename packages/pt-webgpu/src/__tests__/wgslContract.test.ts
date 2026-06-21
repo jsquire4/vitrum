@@ -294,8 +294,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // BDPT light-subpath sampling now feed iridescenceModifiedF0 into their
     // Fresnel/lobe-pdf paths, matching the direct full-BRDF evaluator.
     // RENDER-CHANGING for iridescent materials on sampled indirect paths.
-    expect(digest).toBe('0036f9a52dda37223b2fb034d0ff537bef9fb5870cea020e598c525d236a802b');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(395705);
+    // Re-pinned 2026-06-21: anisotropy comment-only contract wording; no WGSL
+    // executable logic changed.
+    expect(digest).toBe('ff6a875f0b5526b9c79379e4a5d3ccb10e9ad80f7f10b94b4776a97b7d47d112');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(395703);
   });
 });
 

@@ -114,7 +114,7 @@ describe('H42 — renderer-fidelity matrix reconciliation guard', () => {
     expect(items).toContain('**H42 ✅ CLOSED');
     expect(items).not.toContain('**H42 ◻');
     expect(matrix).toContain('`@vitrum/pt-webgl2`');
-    expect(matrix).toContain('| Feature | pt-webgl2 (WebGL2) | pt-webgpu (WebGPU) |');
+    expect(matrix).toContain('| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebGPU) |');
     expect(matrix).toContain('The former `@vitrum/pt-webgl` (fork-backed) column was removed');
     expect(matrix).toContain('`npm run fork-shader-smoke` was removed');
     expect(matrix).toContain('pre-push T1 GPU smoke');
