@@ -408,7 +408,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
     const prologueIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('baseColorV = vec3f(reflScalarV);');
-    const f0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf('let f0V = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);');
+    const f0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf('let f0BaseV = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);');
     expect(f0Idx).toBeGreaterThan(prologueIdx);
   });
 
@@ -435,6 +435,23 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
+  });
+
+  it('uses iridescence-modified F0 for visible-vertex source sampling', () => {
+    const f0BaseIdx = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'let f0BaseV = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);',
+    );
+    const f0Idx = RESTIR_PT_PRODUCER_WGSL.indexOf('let f0V = iridescenceModifiedF0(', f0BaseIdx);
+    const fresnelIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let fresV = fresnelSchlick(cosO, f0V);', f0Idx);
+    const sampleIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let wiRecon = rptSampleSourceReconnectionDirection(', fresnelIdx);
+    const pdfIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let pdfSrc = rptSourceDirectionalPdfFull(', sampleIdx);
+
+    expect(f0BaseIdx).toBeGreaterThanOrEqual(0);
+    expect(f0Idx).toBeGreaterThan(f0BaseIdx);
+    expect(fresnelIdx).toBeGreaterThan(f0Idx);
+    expect(sampleIdx).toBeGreaterThan(fresnelIdx);
+    expect(pdfIdx).toBeGreaterThan(sampleIdx);
+    expect(RESTIR_PT_PRODUCER_WGSL.slice(f0Idx, fresnelIdx)).toContain('iridescenceThicknessMaxV,');
   });
 
   it('applies layer, thin-film, spectral albedo, and spectral emission in suffix Lo', () => {

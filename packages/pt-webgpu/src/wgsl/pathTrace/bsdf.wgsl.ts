@@ -653,7 +653,15 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
     if (nDotV <= 1e-5) { return 0.0; }
     let h = safe_normalize(wi + wo);
     let vDotH = max(dot(wo, h), 1e-6);
-    let f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+    let f0Base = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+    let f0 = iridescenceModifiedF0(
+      f0Base,
+      iridescence,
+      iridescenceIor,
+      iridescenceThicknessMin,
+      iridescenceThicknessMax,
+      vDotH,
+    );
     let fresnel = fresnelSchlick(vDotH, f0);
     let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
     let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
@@ -677,19 +685,18 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
     let pdfDiff = nDotL * INV_PI;
     basePdf = diffProb * pdfDiff + specProb * pdfSpec;
   } else {
-    basePdf = brdfDirectionalPdf(
+    basePdf = brdfDirectionalPdfWithIridescence(
       baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
       specularColor, specularIntensity,
+      iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     );
   }
   // Clearcoat PDF: VNDF GGX at clearcoat roughness, weighted by clearcoat scalar.
   let ccPdf = clearcoat * clearcoatPdf(clearcoat, clearcoatRoughness, clearcoatNormal, wo, wi);
   // Sheen PDF: Charlie half-vector sampler matching evalSheenLobe.
   let sheenPdf = sheen * charlieSheenPdf(sheen, sheenRoughness, normal, wo, wi);
-  // Iridescence does NOT add a new sampling lobe (it modifies F0 of the existing
-  // specular lobe, which the base brdfDirectionalPdf already accounts for).
-  // These parameters are present for API symmetry with evaluateBrdfFull.
-  // WGSL does not penalise unused function parameters.
+  // Iridescence does NOT add a new sampling lobe; it modifies the F0 of the
+  // existing specular lobe, so the base PDF helper folds it into the lobe split.
   // Total pdf: sum of all lobe pdfs.
   let total = basePdf + ccPdf + sheenPdf;
   return total;
@@ -822,7 +829,7 @@ fn evaluateBrdf(
   return diff + spec + ms;
 }
 
-fn brdfDirectionalPdf(
+fn brdfDirectionalPdfWithIridescence(
   baseColor: vec3f,
   roughness: f32,
   metallic: f32,
@@ -833,6 +840,10 @@ fn brdfDirectionalPdf(
   wi: vec3f,
   specularColor: vec3f,
   specularIntensity: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
 ) -> f32 {
   let wiDotN = dot(normal, wi);
   let woDotN = dot(normal, wo);
@@ -843,7 +854,15 @@ fn brdfDirectionalPdf(
   let h = safe_normalize(wi + wo);
   let nDotH = max(dot(normal, h), 0.0);
   let vDotH = max(dot(wo, h), 1e-6);
-  let f0 = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  let f0Base = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);
+  let f0 = iridescenceModifiedF0(
+    f0Base,
+    iridescence,
+    iridescenceIor,
+    iridescenceThicknessMin,
+    iridescenceThicknessMax,
+    vDotH,
+  );
   let fresnel = fresnelSchlick(vDotH, f0);
   let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
   let baseTransProb = clamp(transmission * (1.0 - metallic), 0.0, 0.95);
@@ -882,6 +901,25 @@ fn brdfDirectionalPdf(
   let pdfSpec = (d * g1Wo) / max(4.0 * nDotV, 1e-6);
   let pdfDiff = nDotL * INV_PI;
   return diffProb * pdfDiff + specProb * pdfSpec;
+}
+
+fn brdfDirectionalPdf(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  transmission: f32,
+  ior: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  specularColor: vec3f,
+  specularIntensity: f32,
+) -> f32 {
+  return brdfDirectionalPdfWithIridescence(
+    baseColor, roughness, metallic, transmission, ior, normal, wo, wi,
+    specularColor, specularIntensity,
+    0.0, 1.3, 0.0, 0.0,
+  );
 }
 
 fn buildOnb(n: vec3f, t: ptr<function, vec3f>, b: ptr<function, vec3f>) {

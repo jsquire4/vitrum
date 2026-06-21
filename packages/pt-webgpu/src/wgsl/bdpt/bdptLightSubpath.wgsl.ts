@@ -594,7 +594,15 @@ fn bdptExtendLightSubpath(@builtin(global_invocation_id) gid: vec3u) {
       let prevRough = max(prevMat.roughness, 0.02);
       let prevMetal = prevMat.metallic;
       let cosOPrev = max(dot(prevNormal, woAtPrev), 0.0);
-      let f0Prev = materialSpecularF0(prevBc, prevMetal, prevMat.specularColor, prevMat.specularIntensity);
+      let f0BasePrev = materialSpecularF0(prevBc, prevMetal, prevMat.specularColor, prevMat.specularIntensity);
+      let f0Prev = iridescenceModifiedF0(
+        f0BasePrev,
+        prevMat.iridescence,
+        prevMat.iridescenceIor,
+        prevMat.iridescenceThicknessMin,
+        prevMat.iridescenceThicknessMax,
+        cosOPrev,
+      );
       let fresPrev = fresnelSchlick(cosOPrev, f0Prev);
       let bsPrev = sampleNextBounceDirectionWithClearcoatNormal(
         &rng,

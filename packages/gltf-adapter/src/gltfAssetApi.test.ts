@@ -1397,6 +1397,40 @@ describe('loadGltfAsset', () => {
     expect(result.textureDecodeWarnings[0]).toContain('invalid pixels');
   });
 
+  it('reports too-short decodePixels payloads as texture diagnostics instead of padding missing texels', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      decodePixels: () => ({
+        width: 2,
+        height: 2,
+        data: new Uint8Array([
+          255, 0, 0, 255,
+          0, 255, 0, 255,
+          0, 0, 255,
+        ]),
+        channels: 4,
+        dataType: 'uint8',
+      }),
+    });
+
+    expect(result.decodedTextureCount).toBe(0);
+    expect(result.unchangedTextureCount).toBe(1);
+    expect(result.textureDecodeDiagnostics).toEqual([
+      expect.objectContaining({
+        code: 'decode-pixels-invalid',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        materialField: 'baseColorMap',
+        width: 2,
+        height: 2,
+        textureIndex: 0,
+        imageIndex: 0,
+      }),
+    ]);
+    expect(result.textureDecodeWarnings[0]).toContain('data length 11 is too short for 2x2x4');
+  });
+
   it('loadGltfAndDecodeTextures bypasses browser ImageBitmap handles when a pixel decoder is supplied', async () => {
     const { gltf, buffers, png } = makeInlineTexturedGltf();
     const decodePixels = vi.fn((

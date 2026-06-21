@@ -137,7 +137,15 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       }
     }
     let cosThetaO = max(0.0, dot(normal, wo));
-    let f0 = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);
+    let f0Base = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);
+    let f0 = iridescenceModifiedF0(
+      f0Base,
+      mat.iridescence,
+      mat.iridescenceIor,
+      mat.iridescenceThicknessMin,
+      mat.iridescenceThicknessMax,
+      cosThetaO,
+    );
     let fresnel = fresnelSchlick(cosThetaO, f0);
 
     // B12 — lite-tier NEE: directional + env/sky + point + spot + rect-area.

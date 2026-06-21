@@ -727,6 +727,9 @@ function validateDecodedTexturePixels(pixels: GltfDecodedTexturePixels): string 
   }
   const width = Math.floor(pixels.width);
   const height = Math.floor(pixels.height);
+  if (!Number.isInteger(pixels.width) || !Number.isInteger(pixels.height)) {
+    return `dimensions must be integers, got ${pixels.width}x${pixels.height}`;
+  }
   if (width <= 0 || height <= 0) {
     return `dimensions must be positive, got ${pixels.width}x${pixels.height}`;
   }
@@ -749,6 +752,12 @@ function validateDecodedTexturePixels(pixels: GltfDecodedTexturePixels): string 
     pixels.dataType !== 'float32'
   ) {
     return `dataType must be uint8, uint16, or float32, got ${String(pixels.dataType)}`;
+  }
+  const channels = pixels.channels ?? inferDecodedChannels(pixels.data, width, height);
+  const requiredLength = width * height * channels;
+  if (pixels.data.length < requiredLength) {
+    return `data length ${pixels.data.length} is too short for ${width}x${height}x${channels}; ` +
+      `expected at least ${requiredLength}`;
   }
   if (
     pixels.colorSpace !== undefined &&

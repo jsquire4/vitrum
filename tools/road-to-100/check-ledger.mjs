@@ -760,6 +760,45 @@ for (const needle of [
   }
 }
 
+const gltfTexturePipeline = await readText("packages/gltf-adapter/src/texturePipeline.ts");
+for (const needle of [
+  "data length ${pixels.data.length} is too short",
+  "expected at least ${requiredLength}",
+  "code: 'decode-pixels-invalid'",
+]) {
+  if (!gltfTexturePipeline.includes(needle)) {
+    fail(`gltf texture decode validation must fail closed on undersized decoder payloads: ${needle}`);
+  }
+}
+for (const needle of [
+  "reports too-short decodePixels payloads as texture diagnostics instead of padding missing texels",
+  "data length 11 is too short for 2x2x4",
+]) {
+  if (!gltfAssetApiTest.includes(needle)) {
+    fail(`gltf asset API tests must pin short decoded-payload diagnostics: ${needle}`);
+  }
+}
+
+const gltfAccessors = await readText("packages/gltf-adapter/src/accessors.ts");
+for (const needle of [
+  "If bufferView is absent, result stays zero-initialized before any sparse patch",
+  "if (accessor.sparse) {",
+  "const sv = _resolveSparseViews(gltf, buffers, accessorIndex, accessor, warnings, onDiagnostic);",
+]) {
+  if (!gltfAccessors.includes(needle)) {
+    fail(`gltf accessor unpacking must apply pure-sparse index patches instead of returning early: ${needle}`);
+  }
+}
+const gltfAccessorTest = await readText("packages/gltf-adapter/src/accessors.test.ts");
+for (const needle of [
+  "applies pure-sparse index accessors on top of the implicit zero base",
+  "expect(Array.from(out)).toEqual([5, 0, 9, 0]);",
+]) {
+  if (!gltfAccessorTest.includes(needle)) {
+    fail(`gltf accessor tests must pin pure-sparse index accessors: ${needle}`);
+  }
+}
+
 const gltfReadme = await readText("packages/gltf-adapter/README.md");
 for (const needle of [
   "Skinned/morphed instancing is supported as a renderable `fallback-generated-mesh` route",
@@ -947,6 +986,33 @@ for (const needle of [
   if (!ptWebgpuMaterialWgsl.includes(needle)) {
     fail(`pt-webgpu WGSL material sampler must consume per-map mip policy: ${needle}`);
   }
+}
+
+const ptWebgpuBsdfWgsl = await readText("packages/pt-webgpu/src/wgsl/pathTrace/bsdf.wgsl.ts");
+for (const needle of [
+  "fn brdfDirectionalPdfWithIridescence(",
+  "let f0Base = materialSpecularF0(baseColor, metallic, specularColor, specularIntensity);",
+  "let f0 = iridescenceModifiedF0(",
+  "iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,",
+]) {
+  if (!ptWebgpuBsdfWgsl.includes(needle)) {
+    fail(`pt-webgpu sampled BRDF PDFs must retain iridescence-modified F0 parity: ${needle}`);
+  }
+}
+for (const [label, path] of [
+  ["full PT sampled Fresnel", "packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts"],
+  ["lite PT sampled Fresnel", "packages/pt-webgpu/src/wgsl/pathTrace/kernelLite.wgsl.ts"],
+  ["ReSTIR-PT source sampling", "packages/pt-webgpu/src/wgsl/pathTrace/restirPtProducer.wgsl.ts"],
+  ["BDPT light-subpath sampling", "packages/pt-webgpu/src/wgsl/bdpt/bdptLightSubpath.wgsl.ts"],
+]) {
+  const source = await readText(path);
+  if (!source.includes("iridescenceModifiedF0(")) {
+    fail(`${label} must use iridescence-modified F0 for sampled Fresnel/lobe selection`);
+  }
+}
+const ptWebgpuWgslContractTest = await readText("packages/pt-webgpu/src/__tests__/wgslContract.test.ts");
+if (!ptWebgpuWgslContractTest.includes("uses iridescence-modified F0 for sampled Fresnel and the full sampled PDF")) {
+  fail("pt-webgpu WGSL contract tests must pin sampled iridescence Fresnel/PDF parity");
 }
 
 const ptWebgpuUploadSceneBuffersSamplerPolicy = await readText("packages/pt-webgpu/src/scene/uploadSceneBuffers.ts");

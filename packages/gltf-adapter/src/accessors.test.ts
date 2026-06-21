@@ -208,4 +208,40 @@ describe('unpackAccessorUint32 sparse accessors', () => {
     const out = unpackAccessorUint32(gltf, new Map([[0, buffer]]), 0);
     expect(Array.from(out)).toEqual([0, 7, 2]);
   });
+
+  it('applies pure-sparse index accessors on top of the implicit zero base', () => {
+    const indices = bytes([0, 2]);
+    const values = u16([5, 9]);
+    const buffer = concat(indices, values);
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      accessors: [{
+        componentType: GltfComponentType.UNSIGNED_SHORT,
+        count: 4,
+        type: 'SCALAR',
+        sparse: {
+          count: 2,
+          indices: { bufferView: 0, componentType: GltfComponentType.UNSIGNED_BYTE },
+          values: { bufferView: 1 },
+        },
+      }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: indices.byteLength },
+        { buffer: 0, byteOffset: indices.byteLength, byteLength: values.byteLength },
+      ],
+      buffers: [{ byteLength: buffer.byteLength }],
+    };
+    const diagnostics: unknown[] = [];
+
+    const out = unpackAccessorUint32(gltf, new Map([[0, buffer]]), 0, [], (diagnostic) => {
+      diagnostics.push(diagnostic);
+    });
+
+    expect(Array.from(out)).toEqual([5, 0, 9, 0]);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'sparse-accessor-applied',
+      path: 'accessors[0].sparse',
+      accessorIndex: 0,
+    }));
+  });
 });

@@ -199,6 +199,9 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let bsPrev = sampleNextBounceDirectionWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoat,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.sheenRoughness,');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let f0BasePrev = materialSpecularF0(prevBc, prevMetal, prevMat.specularColor, prevMat.specularIntensity);');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let f0Prev = iridescenceModifiedF0(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.iridescenceThicknessMax,');
     // f and throughput computed at prevPos (prevMat/prevNormal/woAtPrev/scatterDir).
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = evaluateBrdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.specularColor, prevMat.specularIntensity,');

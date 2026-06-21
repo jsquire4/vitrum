@@ -863,7 +863,15 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     tanB = rotatedB;
   }
   let cosO = max(dot(nv, woV), 0.0);
-  let f0V = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);
+  let f0BaseV = materialSpecularF0(baseColorV, metallicV, specularColorV, specularIntensityV);
+  let f0V = iridescenceModifiedF0(
+    f0BaseV,
+    iridescenceV,
+    iridescenceIorV,
+    iridescenceThicknessMinV,
+    iridescenceThicknessMaxV,
+    cosO,
+  );
   let fresV = fresnelSchlick(cosO, f0V);
   // Sample from the normalized source-lobe mixture used by pdfSrc below:
   //   p_src = (p_base + clearcoat*p_clearcoat + sheen*p_sheen) /

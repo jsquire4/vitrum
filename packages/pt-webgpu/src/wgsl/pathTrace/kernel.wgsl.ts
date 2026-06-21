@@ -512,7 +512,15 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_
     let throughputAtVertex = throughput;
 ${transmissiveBlock}
     let cosThetaO = max(0.0, dot(normal, wo));
-    let f0 = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);
+    let f0Base = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);
+    let f0 = iridescenceModifiedF0(
+      f0Base,
+      mat.iridescence,
+      mat.iridescenceIor,
+      mat.iridescenceThicknessMin,
+      mat.iridescenceThicknessMax,
+      cosThetaO,
+    );
     let fresnel = fresnelSchlick(cosThetaO, f0);
 
     var lightCount = 0u;

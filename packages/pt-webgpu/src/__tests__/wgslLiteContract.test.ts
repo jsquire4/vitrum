@@ -116,8 +116,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Shirley-Chiu signed-denominator bug. Disc-area sampling was previously
     // mirrored into the wrong quadrant for two square quadrants; render-changing
     // for lite-tier disc-area lights, now pinned by oracle.concentricDiscSample.
-    expect(digest).toBe('e221dd2673b2391cc5af24927f6a38b78908b48eda03cdf6c4892d7edfb072e8');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(156964);
+    // Re-pinned 2026-06-21: lite sampled indirect Fresnel now uses
+    // iridescenceModifiedF0 before the shared bounce sampler. RENDER-CHANGING for
+    // scalar iridescent materials on lite sampled indirect paths.
+    expect(digest).toBe('e4a32145ff6e74113c57e0988dc4463b983b16712aa00eadb0c0bc90d5a5e029');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(157991);
   });
 });
 

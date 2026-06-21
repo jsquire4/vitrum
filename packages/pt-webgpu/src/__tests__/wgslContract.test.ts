@@ -290,8 +290,12 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // explicit-LOD full-tier sampler.
     // Re-pinned 2026-06-20: material texture sampling appended per-map filter
     // policy lanes and uses a nearest `textureLoad` branch for regular maps.
-    expect(digest).toBe('d742e8b1a929dc063e14e81e886b1255a7d004d7147d32ac525fb7197e270ff0');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(394442);
+    // Re-pinned 2026-06-21: sampled indirect PT, ReSTIR-PT source sampling, and
+    // BDPT light-subpath sampling now feed iridescenceModifiedF0 into their
+    // Fresnel/lobe-pdf paths, matching the direct full-BRDF evaluator.
+    // RENDER-CHANGING for iridescent materials on sampled indirect paths.
+    expect(digest).toBe('0036f9a52dda37223b2fb034d0ff537bef9fb5870cea020e598c525d236a802b');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(395705);
   });
 });
 
@@ -345,6 +349,37 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let shBrdf = evalSheenLobe(sheen, sheenRoughness, sheenColor, normal, -incomingDir, result.sampledDir);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let scatterPdfFwd = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let swappedRev = brdfDirectionalPdfFullSampledWithClearcoatNormal(');
+  });
+
+  it('uses iridescence-modified F0 for sampled Fresnel and the full sampled PDF', () => {
+    const fullKernelFresnel = PT_WEBGPU_TRACE_WGSL.slice(
+      PT_WEBGPU_TRACE_WGSL.indexOf('let f0Base = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);'),
+      PT_WEBGPU_TRACE_WGSL.indexOf('let fresnel = fresnelSchlick(cosThetaO, f0);') + 80,
+    );
+    expect(fullKernelFresnel).toContain('let f0 = iridescenceModifiedF0(');
+    expect(fullKernelFresnel).toContain('mat.iridescenceThicknessMax,');
+
+    const liteKernelFresnel = PT_WEBGPU_TRACE_LITE_WGSL.slice(
+      PT_WEBGPU_TRACE_LITE_WGSL.indexOf('let f0Base = materialSpecularF0(baseColor, metallic, mat.specularColor, mat.specularIntensity);'),
+      PT_WEBGPU_TRACE_LITE_WGSL.indexOf('let fresnel = fresnelSchlick(cosThetaO, f0);') + 80,
+    );
+    expect(liteKernelFresnel).toContain('let f0 = iridescenceModifiedF0(');
+    expect(liteKernelFresnel).toContain('mat.iridescenceThicknessMax,');
+
+    const pdfHelper = PT_WEBGPU_TRACE_WGSL.slice(
+      PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfWithIridescence('),
+      PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdf(', PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfWithIridescence(')),
+    );
+    expect(pdfHelper).toContain('iridescenceThicknessMax: f32,');
+    expect(pdfHelper).toContain('let f0 = iridescenceModifiedF0(');
+    expect(pdfHelper).toContain('vDotH,');
+
+    const fullPdf = PT_WEBGPU_TRACE_WGSL.slice(
+      PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullWithClearcoatNormal('),
+      PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFull(', PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullWithClearcoatNormal(')),
+    );
+    expect(fullPdf).toContain('basePdf = brdfDirectionalPdfWithIridescence(');
+    expect(fullPdf).toContain('iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,');
   });
 
   it('keeps transmissive dielectric source sampling aligned with the full sampled pdf', () => {

@@ -385,25 +385,24 @@ export function unpackAccessorUint32(
 
   const result = new Uint32Array(accessor.count);
 
-  if (accessor.bufferView === undefined) {
-    // Zero-initialized — valid for pure-sparse, but unusual for indices.
-    return result;
+  if (accessor.bufferView !== undefined) {
+    const bvIdx = accessor.bufferView;
+    const bv = gltf.bufferViews?.[bvIdx];
+    if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);
+
+    const buf = _getBuffer(buffers, bv.buffer, gltf);
+    const compSize = componentByteSize(ct);
+    const bvOffset = bv.byteOffset ?? 0;
+    const accOffset = accessor.byteOffset ?? 0;
+    const stride = bv.byteStride ?? compSize;
+    const dataView = new DataView(buf, bvOffset + accOffset);
+
+    for (let i = 0; i < accessor.count; i++) {
+      result[i] = Math.round(readScalar(dataView, i * stride, ct, false));
+    }
   }
-
-  const bvIdx = accessor.bufferView;
-  const bv = gltf.bufferViews?.[bvIdx];
-  if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);
-
-  const buf = _getBuffer(buffers, bv.buffer, gltf);
-  const compSize = componentByteSize(ct);
-  const bvOffset = bv.byteOffset ?? 0;
-  const accOffset = accessor.byteOffset ?? 0;
-  const stride = bv.byteStride ?? compSize;
-  const dataView = new DataView(buf, bvOffset + accOffset);
-
-  for (let i = 0; i < accessor.count; i++) {
-    result[i] = Math.round(readScalar(dataView, i * stride, ct, false));
-  }
+  // If bufferView is absent, result stays zero-initialized before any sparse patch
+  // is applied, which is valid for pure-sparse accessors.
 
   if (accessor.sparse) {
     // Sparse integer index buffers are legal but extremely rare.
