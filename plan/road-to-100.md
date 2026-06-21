@@ -17,6 +17,11 @@
 > failures, and ignored high-UV texture fields as approximate import degradations instead of allowing construction;
 > `ppgGuidedSampling.test.ts` now mirrors the production equal-area cylindrical PPG direction map rather than the
 > retired octahedral map.
+> **2026-06-21 runtime-capability truth follow-up:** walkaround runtime `supportDetails.denoisers.neural`
+> is now provision-aware (`native` only when host `neuralWeights` are supplied; otherwise `unsupported` despite
+> the static provisioned-ledger row), `pt-webgl2.supportsAuxBuffers` is false because the core flag requires
+> both `FrameOutput.variance` and `FrameOutput.motionVectors` rather than just normal/albedo MRT products, and
+> `pt-webgpu` lite tier reports `supportsAuxBuffers:false` to match its disabled motion/variance resources.
 > For this ledger, "100%" = everything fully implemented.
 > **R7a-R7d campaign additions:** behavioral gate coverage (43 lanes today: 33
 > pt-webgpu + 10 walkaround-hybrid; permanent CI); anisotropic
@@ -1036,7 +1041,7 @@ buckets that the A–D framing was missing:**
 
 | Gate | Plug-in | Footgun |
 |------|---------|---------|
-| **GATE-01** | ✅ CLOSED — `core/src/__tests__/ledgerVsCapabilities.test.ts` imports live pt-webgl2 support/capability data and pins full-tier aux buffers, lite-tier downgrade, primitive/emitter/env/support-detail parity, and analytic fallback-generated-mesh rows against `BACKEND_PROMISE_LEDGER`. | Historical footgun resolved; keep this gate as the regression guard. |
+| **GATE-01** | ✅ CLOSED — `core/src/__tests__/ledgerVsCapabilities.test.ts` imports live pt-webgl2 support/capability data and pins the strict aux-buffer contract (`supportsAuxBuffers:false` until variance + motion-vector outputs exist), primitive/emitter/env/support-detail parity, and analytic fallback-generated-mesh rows against `BACKEND_PROMISE_LEDGER`. pt-webgpu lite-tier aux downgrade is pinned in `pt-webgpu/src/__tests__/liteTierCapabilities.test.ts`. | Historical footgun resolved; keep this gate as the regression guard. |
 | **GATE-02** | ✅ CLOSED — `core/src/__tests__/materialNativeEvidence.test.ts` enumerates every `native` material row from `BACKEND_PROMISE_LEDGER` and fails unless that backend/field has a named packer+shader/shared-classifier/readback evidence record with existing test/source file paths. | This is the ledger-evidence gate; renderer A/B and material-furnace proof still live in Phase 5 where required. |
 | **GATE-06** | CPU GLSL gate now runs under ordinary `npm test` via `@vitrum/shader-gate`; WGSL/PASS_ORDER parse gate is source-verified present as root `npm run shader-gate` and CI-backed with lavapipe (51 production modules + self-test). Keep it explicit rather than default `npm test` because that path needs a WebGPU adapter. | WGSL string tests don't compile shaders; pipeline-layout creation remains a stronger future proof gate |
 | **GATE-GLTF** | ✅ CLOSED — `gltfKhronosSweep.test.ts` exercises representative Khronos-style JSON fixtures through `analyzeGltfAsset` + compatibility ranking only: scalar mesh, textured PBR, extension glass, skin/morph/animation, compression hooks, source-path diagnostics, and full-vs-lite WebGPU profile differences. 2026-06-18 verification: `npm run gltf-material-sweep` passes (`maps=18`, `recommended=pt-webgl2/pt-webgl2`, `proof=pt/gltf-material-sweep`), and `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json npm run behavioral-gate -- --filter gltf` passes 11 adapter-backed render lanes including unlit, textured PBR, transmission, skinned animation, Draco/mock, point/line fallback, strip/fan, material sweep, real Box textured, real Draco, and real meshopt. | Live URL tests stay out of CI; broader material-furnace/reference-render promotion remains a later proof gate, not missing bridge/planner code. |
@@ -1576,7 +1581,7 @@ loadGltfForEngine(url, { fetch, dracoDecode, meshoptDecode, decodeImage, decodeT
 | Mode | When to throw |
 |------|----------------|
 | `best-effort` | Never; converter degradations in `GltfAssetResult.warnings` plus `GltfAssetResult.diagnostics`; runtime/controller/backend warnings still surface through controller result warnings and `Engine.onWarning` |
-| `reject-unsupported` | Any used field `unsupported` on selected backend |
+| `reject-unsupported` | Any used field `unsupported` on selected backend, plus unsatisfied required host-hook rows that make legal import impossible before backend construction (for example a required texture-source extension with no selected/decode hook) |
 | `reject-degraded` | Any non-`native` issue including `approximate`, `requires-hook` without hook |
 
 ✅ **UPDATED (2026-06-16):** `engineBridge.ts` strict modes now distinguish unsupported primitive modes from fallback-generated point/line topology. Unknown modes still reject under `reject-unsupported`; `POINTS`/`LINES`/`LINE_LOOP`/`LINE_STRIP` import as `fallback-generated-mesh`, so `reject-unsupported` accepts them while `reject-degraded` rejects with a source-pathed compatibility issue (`primitive:mode:1=fallback-generated-mesh at meshes[0].primitives[0].mode`).
@@ -2245,8 +2250,8 @@ the browser for anyone).
 ### F3 — Shipped denoiser weights (out-of-the-box UX)
 
 OIDN arrives via host-supplied ONNX with no weights shipped (A10 production
-neural weights = declared non-goal of the campaign). SOTA UX is denoised by
-default. **Closed 2026-06-20:** `denoiser:'auto'` is now a truthful API policy
+neural weights = declared non-goal of the campaign). SOTA denoising is
+host-provisioned, not default-bundled. **Closed 2026-06-20:** `denoiser:'auto'` is now a truthful API policy
 resolver: walkaround-hybrid selects host `neuralWeights`, then host
 `oidnModelUrl`, then the preset/default denoiser; pt-webgl2 and pt-webgpu select
 host `oidn.modelUrl` or no-denoise. All three emit backend-scoped

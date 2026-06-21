@@ -361,7 +361,7 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 | `engine.capabilities` truth | ✓ | ✓ | Already improved; keep in sync with tiers |
 | TLAS / BLAS packer | ✓ | ✓ | Shared `packSceneFromCore`; RC moving-instance refit (PR-5.3) |
 | GPU skinning compute | polish | polish | CPU `solveSkin` shipped (C1) |
-| OIDN / neural / svgf-real | opt-in | opt-in | shared-denoisers |
+| Denoisers | opt-in | opt-in | Realtime owns SVGF/BMFR/neural (neural requires host weights); converged PT exposes host-provisioned OIDN-final, with unsupported/degraded rows for regime-mismatched realtime denoisers |
 | Examples + hero viewer | ✓ | ✓ | Game-like example benefits both |
 | Complexity / bind-group dedup | ✓ | ✓ | Ongoing hygiene (2026-05-28 sweep) |
 

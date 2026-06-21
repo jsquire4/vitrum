@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Engine, EngineWarning, Scene } from '@vitrum/core';
+import { resetGpuDetectionCache, type Engine, type EngineWarning, type Scene } from '@vitrum/core';
 import type { SceneAABB } from '../sceneAABB.js';
 
 const hybridFactory = vi.hoisted(() => vi.fn());
@@ -37,6 +37,7 @@ vi.mock('@vitrum/pt-webgpu', () => ({
 }));
 
 import {
+  createEngine,
   constructPathTracerWebGPU,
   constructWalkaround,
   resolveAdvancedForBackend,
@@ -91,6 +92,7 @@ function makeAdapter(device: GPUDevice): GPUAdapter {
       maxStorageBuffersPerShaderStage: 64,
       maxStorageTexturesPerShaderStage: 8,
     },
+    features: new Set(),
     requestDevice: vi.fn(async () => device),
   } as unknown as GPUAdapter;
 }
@@ -109,12 +111,14 @@ function makeOptions(
 
 describe('createEngine backend construction safety', () => {
   beforeEach(() => {
+    resetGpuDetectionCache();
     hybridFactory.mockReset();
     ptFactory.mockReset();
     ptRequiredLimits.mockClear();
   });
 
   afterEach(() => {
+    resetGpuDetectionCache();
     Object.defineProperty(globalThis, 'navigator', { value: ORIG_NAVIGATOR, configurable: true });
   });
 
@@ -198,6 +202,64 @@ describe('createEngine backend construction safety', () => {
     );
 
     expect(ptRequiredLimits).toHaveBeenCalledWith(adapter, { restirPtReuse: true });
+  });
+
+  it('routes auto-selected walkaround-unsupported material fields to pt-webgpu with a structured warning', async () => {
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter: vi.fn(async () => adapter),
+          getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'),
+        },
+      },
+      configurable: true,
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: EngineWarning[] = [];
+    const engine = makeEngine();
+    ptFactory.mockResolvedValue(engine);
+    const materialRouteScene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'thin-film-triangle',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.2,
+          metallic: 0,
+          thinFilmStack: {
+            layers: [{ ior: 1.45, thicknessNm: 180 }],
+          },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await createEngine({
+      canvas: makeCanvas(),
+      scene: materialRouteScene,
+      prefer: 'auto',
+      onWarning: (warning) => warnings.push(warning),
+    });
+
+    expect(result.backendId).toBe('pt-webgpu');
+    expect(ptFactory).toHaveBeenCalledTimes(1);
+    expect(hybridFactory).not.toHaveBeenCalled();
+    expect(engine.setScene).toHaveBeenCalledWith(materialRouteScene);
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'createEngine.material-feature-backend-recommended',
+      details: expect.objectContaining({
+        fields: ['thinFilmStack'],
+        defaultAutoBackend: 'walkaround-hybrid',
+        resolvedBackend: 'pt-webgpu',
+      }),
+    }));
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 
   it('forces full pt-webgpu trace tier on the shared-device progressive path', async () => {
