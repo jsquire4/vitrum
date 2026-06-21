@@ -82,10 +82,9 @@ export const surface_record_struct = /* glsl */`
 		// Set in getSurfaceRecord; consumed by bsdfEval guards.
 		uint lobeMask;
 
-		// Sprint 4: P2 — lite BSDF flag for indirect bounces (depth > 1).
-		// When true, bsdfEval skips sheen/clearcoat/iridescence and
-		// replaces multiscatter GGX with single-scatter.
-		// Respects forceFullBSDF material override.
+		// Internal BSDF policy flag. Ordinary path tracing keeps this false so
+		// clearcoat/sheen/iridescence and multiscatter GGX remain active at all
+		// depths; tests pin that secondary transport does not silently drop lobes.
 		bool liteMode;
 	};
 

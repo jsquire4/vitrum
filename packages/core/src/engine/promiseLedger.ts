@@ -873,13 +873,15 @@ const PT_WEBGL2_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] =
 
 /** pt-webgpu mutations — geometry/transform/topology/emitter/env patches have
  *  targeted native paths. Material scalar edits that live in `materialsBuffer`
- *  also update one slot in-place, but material texture handles and descriptor-
- *  resident fields (`alphaMode`/cutoff/opacity, AO/light/env intensity,
- *  normal/bump/clearcoat-normal scale, anisotropy, layer normal descriptors)
- *  fall back to a full scene repack so descriptor buffers and texture arrays
- *  stay coherent. The coarse row is therefore `fallback-rebuild` rather than
- *  `native`. Add/remove are fallback-rebuild (insert/evict forces a full
- *  BLAS/TLAS repack). Resize and lighting are unsupported. */
+ *  update one slot in-place. Full-tier scalar descriptor edits
+ *  (`alphaMode`/cutoff/opacity, AO/light/env intensity, normal/bump/
+ *  clearcoat-normal scale, anisotropy) also rewrite the matching
+ *  `materialTexDescriptorsBuffer` slice. Material texture handles, layer
+ *  normal descriptors, displacement geometry, and lite-tier descriptor scalars
+ *  still fall back to full scene repack so texture arrays and unsupported
+ *  descriptors stay coherent. The coarse row is therefore `fallback-rebuild`
+ *  rather than `native`. Add/remove are fallback-rebuild (insert/evict forces
+ *  a full BLAS/TLAS repack). Resize and lighting are unsupported. */
 const PT_WEBGPU_MUTATIONS: BackendPromiseRecord['supportDetails']['mutations'] = Object.freeze({
   transform: 'native',
   positions: 'native',

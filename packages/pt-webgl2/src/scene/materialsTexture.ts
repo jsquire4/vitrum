@@ -170,13 +170,9 @@ function sampleSpectralCurve(curve: MaterialSpec['spectralAttenuation'], lambdaN
 /**
  * Texture id as a PLAIN FLOAT (-1 = none). The fork stores texture indices as
  * plain floats — `floatBitsToInt` is broken on some devices (Pixel 6); the GLSL
- * decodes via `int(round(...))`. The core scene-binding layer would resolve a
- * `TextureRef` to an atlas index; until that atlas exists in pt-webgl2 we have no
- * id to assign, so every texture id is -1 (none). When the atlas lands this is
- * the one hook that changes (and the GLSL stays byte-compatible).
+ * decodes via `int(round(...))`. Atlas-backed maps pass a layer lookup into this
+ * packer; absent, unreadable, or unmapped handles keep the sentinel.
  */
-// _NO_TEXTURE: retained as the named sentinel for the pending atlas integration.
-// When the atlas lands, replace every literal `-1` texture id with this constant.
 const _NO_TEXTURE = -1;
 
 /** Default attenuation color when `attenuationColor` is absent — fork default (1,1,1). */

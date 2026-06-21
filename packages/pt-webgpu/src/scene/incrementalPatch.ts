@@ -94,9 +94,9 @@ const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
 
 /**
  * Scalar material fields that are packed into `materialTexDescriptorsBuffer`
- * instead of `materialsBuffer`. Until the mutation path can rewrite that
- * descriptor buffer in-place, changes to these fields need the same full repack
- * as texture-handle changes.
+ * instead of `materialsBuffer`. The full WebGPU tier can rewrite these scalar
+ * descriptor slots in-place; lite still treats them as full-tier-only fields
+ * because its shader/pipeline contract does not consume the descriptor buffer.
  */
 const MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS: ReadonlySet<string> = new Set([
   'alphaMode',
@@ -187,11 +187,12 @@ function hasMaterialPatchRepackFields(fields: MaterialPatchRepackFields): boolea
 /**
  * Material-only patch: `material` present and no other facet keys touched.
  *
- * Item 2a — fields stored outside `materialsBuffer` are NOT eligible for the
- * material fast path because the fast path only rewrites the packed BSDF float
- * scalars in `materialsBuffer`. Texture-map changes and descriptor-resident
- * scalar changes require a full repack so `materialTexDescriptorsBuffer` and the
- * GPU texture_2d_arrays are rebuilt. Any such patch falls through to `setScene`.
+ * Item 2a — this helper describes the `materialsBuffer`-only fast path used by
+ * compatibility tests and lite-tier routing. The full-tier router has an
+ * additional scalar-descriptor slice path for `descriptorScalarFields`; texture
+ * handles, layer-normal descriptors, and displacement geometry still fall
+ * through to scene repack paths because their texture arrays or geometry data
+ * can change shape.
  */
 export function canFastPathMaterialPatch(
   patch: Partial<ScenePrimitive>,

@@ -297,6 +297,7 @@ export const bdpt_light_subpath = /* glsl */`
 		int maxLightBounces,
 		sampler2D lightPathTex,
 		Material fogMat,
+		float heroWavelength,
 		out vec4 gBdptVertex0,
 		out vec4 gBdptVertex1,
 		out vec4 gBdptVertex2,
@@ -501,11 +502,11 @@ export const bdpt_light_subpath = /* glsl */`
 
 				// Surface vertex: reuse the same material/texture BSDF sampler as the eye path.
 				SurfaceRecord prevSurf;
-				if ( ! bdptLoadSurfaceRecord( prevMatId, v4prev, prevNormal, 550.0, prevSurf ) ) {
+				if ( ! bdptLoadSurfaceRecord( prevMatId, v4prev, prevNormal, heroWavelength, prevSurf ) ) {
 					writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
 					return;
 				}
-				ScatterRecord scatterRec = bsdfSample( woAtPrev, prevSurf, 550.0 );
+				ScatterRecord scatterRec = bsdfSample( woAtPrev, prevSurf, heroWavelength );
 				scatterDir = scatterRec.direction;
 				pdfScatter = scatterRec.pdf;
 				segmentThroughput = scatterRec.throughput;
@@ -534,7 +535,7 @@ export const bdpt_light_subpath = /* glsl */`
 			uint matIdx  = uTexelFetch1D( materialIndexAttribute, scatterHit.faceIndices.w ).r;
 			Material mat = readMaterialInfo( materials, matIdx );
 			SurfaceRecord newSurf;
-			if ( getSurfaceRecord( mat, matIdx, scatterHit, attributesArray, 0.0, vertexCol, 550.0, newSurf ) != HIT_SURFACE ) {
+			if ( getSurfaceRecord( mat, matIdx, scatterHit, attributesArray, 0.0, vertexCol, heroWavelength, newSurf ) != HIT_SURFACE ) {
 				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
 				return;
 			}

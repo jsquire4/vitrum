@@ -598,13 +598,11 @@ export const get_surface_record_function = /* glsl */`
 		if ( surf.iridescence > 0.001 ) surf.lobeMask |= 16u;
 		if ( surf.transmission > 0.001 ) surf.lobeMask |= 32u;
 
-		// Sprint 4: P2 — lite BSDF for indirect bounces.
-		// At depth > 1 (second bounce and beyond), skip sheen/clearcoat/iridescence
-		// and replace multiscatter GGX with single-scatter. Transmission is always
-		// kept (visually important at all depths for glass).
-		// liteMode is overridden to false when lobeMask has no optional lobes, as a
-		// cheap no-op guard — the real override is via forceFullBSDF (lobeMask = 0xFF).
-		surf.liteMode = ( pathDepth > 1 );
+		// Full-fidelity BSDF at every depth. The old indirect-bounce lite path
+		// skipped sheen/clearcoat/iridescence and multiscatter GGX after bounce 1;
+		// keep the field for shader-internal policy experiments, but do not silently
+		// drop authored glTF lobes on secondary transport.
+		surf.liteMode = false;
 
 		return HIT_SURFACE;
 

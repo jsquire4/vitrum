@@ -667,7 +667,22 @@ function backendProfileIdFromEngine(engine: GltfScenePatchTarget | undefined): G
   if (engine == null) return undefined;
   const profileId = (engine as { readonly backendProfileId?: unknown; readonly profileId?: unknown }).backendProfileId ??
     (engine as { readonly profileId?: unknown }).profileId;
-  return isBackendProfileId(profileId) ? profileId : undefined;
+  if (isBackendProfileId(profileId)) return profileId;
+  const backendId = backendIdFromEngine(engine);
+  if (backendId === 'pt-webgpu' && engineHasExperimentalFeature(engine, 'pt-webgpu-lite-tier')) {
+    return 'pt-webgpu-lite';
+  }
+  return undefined;
+}
+
+function engineHasExperimentalFeature(engine: GltfScenePatchTarget, feature: string): boolean {
+  const capabilities = (engine as {
+    readonly capabilities?: { readonly experimentalFeatures?: unknown };
+  }).capabilities;
+  const features = capabilities?.experimentalFeatures;
+  if (features == null || typeof features !== 'object') return false;
+  const has = (features as { readonly has?: unknown }).has;
+  return typeof has === 'function' && has.call(features, feature) === true;
 }
 
 function isBackendId(value: unknown): value is BackendId {

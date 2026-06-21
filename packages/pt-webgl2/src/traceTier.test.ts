@@ -123,8 +123,9 @@ describe('Road D9 trace-tier contract', () => {
     const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 
     expect(traceTierSource).toContain('The path-tracing kernel itself');
-    expect(traceTierSource).toContain('runs');
-    expect(traceTierSource).toContain('UNCHANGED in lite tier');
+    expect(traceTierSource).toContain('keeps the same bounce count');
+    expect(traceTierSource).toContain('optional BSDF lobes');
+    expect(traceTierSource).toContain('only aux-buffer products are');
     expect(readme).toContain('The path-tracing kernel');
     expect(readme).toContain('runs **unchanged**');
   });

@@ -3,6 +3,7 @@ import type { EngineWarning, Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import { MATERIAL_FLOAT_STRIDE } from '../scene/materialPacking.js';
+import { MATERIAL_TEX_FLOAT_STRIDE } from '../scene/materialTextures.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 function installWebGpuConstStubs(): void {
@@ -296,7 +297,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     expect(writeByteOffset).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
-  it('rebuilds descriptor buffers for full-tier material patches with descriptor-resident scalar fields', async () => {
+  it('updates material and descriptor slices in-place for full-tier descriptor-resident scalar fields', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeStubDevice();
     const engine = await createPTEngine_WebGPU({ device });
@@ -318,8 +319,20 @@ describe('pt-webgpu incremental primitive updates', () => {
       },
     });
 
-    expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore);
-    expect(writeBuffer.mock.calls.length).not.toBe(writesBefore + 1);
+    expect(createBuffer.mock.calls.length).toBe(buffersBefore);
+    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 2);
+
+    const updateWrites = writeBuffer.mock.calls.slice(writesBefore);
+    expect((updateWrites[0]?.[0] as { label?: string } | undefined)?.label).toBe(
+      'vitrum.pt-webgpu.scene.materialTexDescriptors',
+    );
+    expect(updateWrites[0]?.[1]).toBe(1 * MATERIAL_TEX_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
+    expect(updateWrites[0]?.[4]).toBe(MATERIAL_TEX_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
+
+    expect((updateWrites[1]?.[0] as { label?: string } | undefined)?.label).toBe(
+      'vitrum.pt-webgpu.scene.materials',
+    );
+    expect(updateWrites[1]?.[1]).toBe(1 * MATERIAL_FLOAT_STRIDE * Float32Array.BYTES_PER_ELEMENT);
   });
 
   it('lite tier rebuilds and warns when material patches include full-tier-only scalar fields', async () => {

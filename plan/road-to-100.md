@@ -1266,15 +1266,19 @@ Primary-hit inverse classifier note (2026-06-20): camera-visible additive/materi
 2026-06-20 primitive-shadow mutation follow-up: pt-webgl2 `updatePrimitive({ castShadow })` and combined `material + castShadow` patches now ride the material-lane fast path instead of falling back to `setScene()`. `mutateSceneTextures.ts` accepts `castShadow` as a material-lane field, reuses `materialWithCastShadow()`, and `engineContract.test.ts` pins no fallback warning, no GL texture allocation, preserved BVH/position objects, and updated material texture payload.
 
 Same-day pt-webgpu mutation-truth follow-up: material `updatePrimitive()`
-patches that touch texture-map handles or descriptor-resident material fields now
-emit `pt-webgpu.primitive-material-repack` before taking the existing full-scene
-repack path, with structured `textureFields`, `descriptorScalarFields`, and
-`layerDescriptorFields` details. This does not promote those edits to targeted
-native descriptor/texture-array updates; it makes the fallback visible and
-machine-readable for hosts and mutation-matrix proof. Follow-up: the coarse
-promise-ledger row for pt-webgpu material mutation is therefore
-`fallback-rebuild`, while `incrementalPatchSupport.material` remains true for
-descriptor-free scalar material writes that update `materialsBuffer` in-place.
+patches that touch texture-map handles, layer-normal descriptors, displacement
+geometry, or lite-tier descriptor scalars emit
+`pt-webgpu.primitive-material-repack` before taking the existing full-scene
+repack path, with structured `textureFields`, `descriptorScalarFields`,
+`layerDescriptorFields`, and `geometryFields` details. 2026-06-21 follow-up:
+full-tier scalar descriptor fields (`alphaMode`/cutoff/opacity, AO/light/env
+intensity, normal/bump/clearcoat-normal scale, anisotropy) now rewrite the
+matching `materialTexDescriptorsBuffer` slice in-place beside the packed
+`materialsBuffer` slot. The coarse promise-ledger row for pt-webgpu material
+mutation remains `fallback-rebuild` because texture handles, layer descriptors,
+displacement geometry, and lite-tier descriptor scalars still use bounded scene
+repack paths; `incrementalPatchSupport.material` remains true for
+descriptor-free and full-tier descriptor-scalar material writes.
 
 2026-06-20 diagnostic truthfulness follow-up: dimension-changing pt-webgl2 geometry fallbacks now report `nativePatchMissing:"targeted-primitive-geometry-splice"` rather than the misleading old `"targeted-geometry-bvh-refit"` wording. Refit is already the same-topology native path; the remaining topology/list promotion tail is a true primitive/range splice plus BVH rebuild from the spliced stream.
 

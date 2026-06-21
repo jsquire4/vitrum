@@ -106,6 +106,11 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('state.accumulatedRoughness, int( state.depth ), state.wavelength');
   });
 
+  it('keeps optional BSDF lobes active after the first bounce', () => {
+    expect(src).toContain('surf.liteMode = false;');
+    expect(src).not.toContain('surf.liteMode = ( pathDepth > 1 )');
+  });
+
   it('orders the uniform declarations before main() reads them', () => {
     const uniformDecls = idx('uniform BVH bvh;');
     const mainEntry = idx('void main() {');
@@ -151,7 +156,10 @@ describe('composeTraceGlsl', () => {
     expect(bdptSrc).toContain('bdptVisibilityColor');
     expect(bdptSrc).toContain('vec3 contribution = bdptVisibilityColor * lightThroughput * lightBsdfCosTheta * gTerm * eyeBsdfCosTheta * misW;');
     expect(bdptSrc).toContain('for ( int bdptLvi = 1; bdptLvi < uBdptMaxLightBounces; bdptLvi ++ )');
-    expect(bdptSrc).toContain('ScatterRecord scatterRec = bsdfSample( woAtPrev, prevSurf, 550.0 );');
+    expect(bdptSrc).toContain('bdptState.wavelength = sampleHeroWavelengthMIS( rand( 30 ), rand( 31 ), bdptState.wavelengthPdf );');
+    expect(bdptSrc).toContain('bdptState.wavelength,');
+    expect(bdptSrc).toContain('ScatterRecord scatterRec = bsdfSample( woAtPrev, prevSurf, heroWavelength );');
+    expect(bdptSrc).not.toContain('bsdfSample( woAtPrev, prevSurf, 550.0 )');
     expect(bdptSrc).toContain('lightBsdfPdfToEye = bsdfResult( lightWoPrev, -connDir, lightSurf, eyeState.wavelength, lightBsdfCosTheta );');
     expect(bdptSrc).toContain('gBdptVertex4 = bdptSurfacePayload( scatterHit );');
     expect(bdptSrc).toContain('const float BDPT_LV_AREA_EMITTER_MATID = -2.0;');
@@ -340,9 +348,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join length pin 31938', () => {
+  it('D10.4: RENDER_MAIN_SECTIONS join length pin 31999', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(31938);
+    expect(assembled).toHaveLength(31999);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');

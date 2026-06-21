@@ -35,7 +35,6 @@ import {
   analyticIndexForPrimitive,
   canFastPathGeometryPatch,
   canFastPathInstancedTopologyPatch,
-  canFastPathMaterialPatch,
   canFastPathTopologyResizePatch,
   canFastPathTransformPatch,
   canReuseTlasBufferLengths,
@@ -44,6 +43,11 @@ import {
 } from './scene/incrementalPatch.js';
 import { patchEmitterInScene, patchPrimitiveInScene } from './scene/patchScene.js';
 import { MATERIAL_FLOAT_STRIDE } from './scene/materialPacking.js';
+import {
+  collectMaterialTextures,
+  MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET,
+  MATERIAL_TEX_FLOAT_STRIDE,
+} from './scene/materialTextures.js';
 import {
   defaultDirectionalAngularDiameter,
   defaultDirectionalIrradiance,
@@ -136,6 +140,94 @@ interface FastPathCommit {
    * repack.
    */
   readonly changedEmissiveField?: boolean;
+}
+
+const MATERIAL_DESCRIPTOR_SCALAR_OFFSETS = [
+  4,  // alphaMode
+  5,  // alphaCutoff
+  6,  // opacity
+  16, // aoMapIntensity
+  17, // lightMapIntensity
+  18, // bumpScale
+  19, // envMapIntensity
+  20, // anisotropy
+  21, // anisotropyRotation
+  23, // normalScale
+  MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET * 4 + 1, // clearcoatNormalScale
+] as const;
+
+function isMaterialOnlyPatch(patch: Partial<ScenePrimitive>): patch is Partial<ScenePrimitive> & {
+  material: ScenePrimitive['material'];
+} {
+  if (patch.material == null) return false;
+  return Object.keys(patch).every((key) => key === 'material' || key === 'id' || key === 'kind');
+}
+
+function materialSpecsForScene(
+  scene: Scene,
+  supportedAnalyticShapes: ReadonlySet<string>,
+): readonly ScenePrimitive['material'][] {
+  const materials: ScenePrimitive['material'][] = [];
+  for (const primitive of scene.primitives) {
+    if (primitive.kind === 'analytic') {
+      if (supportedAnalyticShapes.has(primitive.shape)) {
+        materials.push(primitive.material);
+      }
+      continue;
+    }
+    if (
+      primitive.kind === 'mesh' ||
+      primitive.kind === 'skinned-mesh' ||
+      primitive.kind === 'instanced-mesh'
+    ) {
+      materials.push(primitive.material);
+    }
+  }
+  return materials;
+}
+
+function rewriteMaterialDescriptorScalarSlice(
+  device: GPUDevice,
+  sceneBuffers: UploadedSceneBuffers,
+  nextScene: Scene,
+  materialIndex: number,
+  supportedAnalyticShapes: ReadonlySet<string>,
+): boolean {
+  const nextDescriptors = collectMaterialTextures(
+    materialSpecsForScene(nextScene, supportedAnalyticShapes),
+  ).descriptors;
+  const descriptorOffset = materialIndex * MATERIAL_TEX_FLOAT_STRIDE;
+  if (
+    descriptorOffset < 0 ||
+    descriptorOffset + MATERIAL_TEX_FLOAT_STRIDE > sceneBuffers.materialTexDescriptors.length ||
+    descriptorOffset + MATERIAL_TEX_FLOAT_STRIDE > nextDescriptors.length
+  ) {
+    return false;
+  }
+
+  const descriptorData = new Float32Array(MATERIAL_TEX_FLOAT_STRIDE);
+  descriptorData.set(sceneBuffers.materialTexDescriptors.subarray(
+    descriptorOffset,
+    descriptorOffset + MATERIAL_TEX_FLOAT_STRIDE,
+  ));
+  const nextSlice = nextDescriptors.subarray(
+    descriptorOffset,
+    descriptorOffset + MATERIAL_TEX_FLOAT_STRIDE,
+  );
+  for (const relativeOffset of MATERIAL_DESCRIPTOR_SCALAR_OFFSETS) {
+    descriptorData[relativeOffset] = nextSlice[relativeOffset] ?? descriptorData[relativeOffset] ?? 0;
+  }
+
+  const byteOffset = descriptorOffset * Float32Array.BYTES_PER_ELEMENT;
+  device.queue.writeBuffer(
+    sceneBuffers.materialTexDescriptorsBuffer,
+    byteOffset,
+    descriptorData.buffer,
+    descriptorData.byteOffset,
+    descriptorData.byteLength,
+  );
+  sceneBuffers.materialTexDescriptors.set(descriptorData, descriptorOffset);
+  return true;
 }
 
 export class SceneMutationRouter {
@@ -522,7 +614,10 @@ export class SceneMutationRouter {
         });
         return { invalidateBindGroups: false, warnings: tlas.warnings, reshapedWorldPositions: true };
       },
-      // 6) material-only: in-place rewrite of one material slot.
+      // 6) material-only: in-place rewrite of one material slot. Full-tier
+      // scalar descriptor fields also rewrite the matching descriptor slice;
+      // texture handles, layer-normal descriptors, and displacement geometry
+      // still fall through to the bounded scene repack below.
       // H10 — also re-applies the emissive fold when cameraVisibleEmitters is on
       // and this primitive is backed by a mesh-area emitter, so a roughness/color
       // patch on the primitive doesn't lose the fold that was applied at setScene.
@@ -531,7 +626,18 @@ export class SceneMutationRouter {
       // mesh-area emitter and rebuilds the light tree.
       () => {
         const sceneBuffers = host.getSceneBuffers();
-        if (!canFastPathMaterialPatch(fastPathPatch) || sceneBuffers == null) return null;
+        if (!isMaterialOnlyPatch(fastPathPatch) || sceneBuffers == null) return null;
+        const repackFields = materialPatchRepackFields(fastPathPatch);
+        if (
+          repackFields.textureFields.length > 0 ||
+          repackFields.layerDescriptorFields.length > 0 ||
+          repackFields.geometryFields.length > 0
+        ) {
+          return null;
+        }
+        if (repackFields.descriptorScalarFields.length > 0 && host.isLiteTier?.() === true) {
+          return null;
+        }
         const materialIndex = materialIndexForPrimitive(
           nextScene,
           id,
@@ -550,6 +656,18 @@ export class SceneMutationRouter {
         const materialData = new Float32Array(packed);
         const floatOffset = materialIndex * MATERIAL_FLOAT_STRIDE;
         const byteOffset = floatOffset * Float32Array.BYTES_PER_ELEMENT;
+        if (
+          repackFields.descriptorScalarFields.length > 0 &&
+          !rewriteMaterialDescriptorScalarSlice(
+            device,
+            sceneBuffers,
+            nextScene,
+            materialIndex,
+            host.supportedAnalyticShapes(),
+          )
+        ) {
+          return null;
+        }
         device.queue.writeBuffer(
           sceneBuffers.materialsBuffer,
           byteOffset,
@@ -664,8 +782,8 @@ export class SceneMutationRouter {
         method: 'updatePrimitive',
         message:
           `[vitrum/pt-webgpu] updatePrimitive("${id}") material patch touches ` +
-          'texture-map, geometry-affecting, or descriptor-resident fields, so the backend is using a full scene repack ' +
-          'to keep geometry, material descriptors, and texture arrays coherent.',
+          'texture-map, layer-normal descriptor, geometry-affecting, or lite-tier descriptor fields, so the backend is ' +
+          'using a full scene repack to keep geometry, material descriptors, and texture arrays coherent.',
         details: {
           id,
           fallbackReason: 'material-texture-descriptor-repack',

@@ -524,8 +524,7 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							);
 
 							RenderState bdptState = initRenderState();
-							bdptState.wavelength = 550.0;
-							bdptState.wavelengthPdf = 1.0;
+							bdptState.wavelength = sampleHeroWavelengthMIS( rand( 30 ), rand( 31 ), bdptState.wavelengthPdf );
 							#if FEATURE_FOG
 
 							Ray fogRay;
@@ -549,6 +548,7 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 								uBdptMaxLightBounces,
 								uBdptLightPathTex,
 								bdptState.fogMaterial,
+								bdptState.wavelength,
 								bdptV0,
 								bdptV1,
 								bdptV2,

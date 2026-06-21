@@ -15,9 +15,10 @@
 // `lite` tier: disables the auxiliary G-buffer outputs (gNormalDepth and gAlbedo
 // at MRT attachments 1 and 2) by setting supportsAuxBuffers=false. This means
 // FrameRendered.normalDepth and .albedo are null — denoising and post-processing
-// that depend on those buffers have no input. The path-tracing kernel itself (all
-// bounces, full BSDF sampling, spectral, all texture maps, all emitter types) runs
-// UNCHANGED in lite tier — there is no bounce/texture/feature cap below `full`.
+// that depend on those buffers have no input. The path-tracing kernel itself
+// keeps the same bounce count, material-map sampling, optional BSDF lobes,
+// spectral path, and emitter families as full tier; only aux-buffer products are
+// missing below `full`.
 // `lite` is the graceful-degradation tier for contexts where MAX_DRAW_BUFFERS < 3
 // or MAX_TEXTURE_IMAGE_UNITS < 12 or MAX_TEXTURE_SIZE < 8192.
 //

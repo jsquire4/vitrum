@@ -338,7 +338,7 @@ describe('backend promise ledger', () => {
     expect(webgpu.methodPromises.updateLighting).toBe(false);
   });
 
-  it('pins pt-webgpu material mutation as fallback-rebuild for descriptor-backed material edits', () => {
+  it('pins pt-webgpu material mutation as fallback-rebuild despite scalar descriptor fast paths', () => {
     const webgpu = BACKEND_PROMISE_LEDGER['pt-webgpu'];
 
     expect(webgpu.incrementalPatchSupport.material).toBe(true);

@@ -87,7 +87,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     ).toBe(false);
   });
 
-  it('classifies material fields that require a full descriptor/texture repack', () => {
+  it('classifies texture, layer, and scalar descriptor material fields separately', () => {
     expect(
       materialPatchRepackFields({
         material: {
