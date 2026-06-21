@@ -191,6 +191,9 @@ const road = await readText("plan/road-to-100.md");
 const packageJson = JSON.parse(await readText(PACKAGE_PATH));
 const items = await readText("items_to_fix.md");
 const shaderGateReadme = await readText("tools/shader-gate/README.md");
+const radiometricReadme = await readText("tools/radiometric-ab/README.md");
+const walkaroundAbHostStatus = JSON.parse(await readText("tools/radiometric-ab/walkaround-ab-host-status.json"));
+const walkaroundAbResults = JSON.parse(await readText("tools/radiometric-ab/walkaround-ab-results.json"));
 
 for (const [docName, docText] of [
   ["plan/road-to-100.md", road],
@@ -222,6 +225,56 @@ if (!/keep the command output as the count\s+source of truth/.test(shaderGateRea
 }
 if (!shaderGateReadme.includes("| `sobol-on` | false | false | 0 | false | `RANDOM_TYPE=1` Sobol RNG path |")) {
   fail("shader-gate README must include the production Sobol GLSL gate row");
+}
+
+if (walkaroundAbHostStatus.verdict === "HOST-BLOCKED") {
+  for (const [docName, docText] of [
+    ["plan/road-to-100.md", road],
+    ["tools/radiometric-ab/README.md", radiometricReadme],
+  ]) {
+    for (const stalePhrase of [
+      "walkaround A/B host now runs to completion",
+      "records `PASS-PARTIAL` rather than `HOST-BLOCKED`",
+      "the walkaround harness at `PASS-PARTIAL`",
+      "radiometric walkaround lane is no longer\nhost-blocked",
+      "now records\n`PASS-PARTIAL` in `tools/radiometric-ab/walkaround-ab-host-status.json`",
+    ]) {
+      if (docText.includes(stalePhrase)) {
+        fail(`${docName} contains stale walkaround radiometric host status wording: ${stalePhrase}`);
+      }
+    }
+  }
+  if (!/current\s+committed native-Deno radiometric host status is `HOST-BLOCKED`/.test(road)) {
+    fail("road-to-100.md must mirror walkaround-ab-host-status.json HOST-BLOCKED verdict");
+  }
+  if (!/current\s+committed native-Deno host status is `HOST-BLOCKED`/.test(radiometricReadme)) {
+    fail("radiometric README must mirror walkaround-ab-host-status.json HOST-BLOCKED verdict");
+  }
+}
+
+if (walkaroundAbResults?.glossy?.verdict === "FINDING") {
+  for (const [docName, docText] of [
+    ["plan/road-to-100.md", road],
+    ["tools/radiometric-ab/README.md", radiometricReadme],
+  ]) {
+    for (const stalePhrase of [
+      "GLOSSY `PASS-WEAK`",
+      "**Verdict: PASS-WEAK**",
+      "| GLOSSY probe | PASS-WEAK |",
+      "GLOSSY material probes are currently no-delta checks",
+      "no observed\nmaterial-effect delta at 16 spp",
+    ]) {
+      if (docText.includes(stalePhrase)) {
+        fail(`${docName} contains stale GLOSSY PASS-WEAK wording: ${stalePhrase}`);
+      }
+    }
+  }
+  if (!road.includes("GLOSSY is a material-effect `FINDING`")) {
+    fail("road-to-100.md must mirror walkaround-ab-results.json glossy FINDING verdict");
+  }
+  if (!radiometricReadme.includes("**Verdict: FINDING**")) {
+    fail("radiometric README must mirror walkaround-ab-results.json glossy FINDING verdict");
+  }
 }
 
 const walkaroundPromiseLedger = await readText("packages/core/src/engine/promiseLedger.ts");

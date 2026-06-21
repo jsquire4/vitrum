@@ -332,15 +332,18 @@ export const HYBRID_LITE_LIMITS: Record<string, number> = {
 
 /**
  * Extra device limits required ONLY when `nrcEnabled` (opt-in NRC). These exceed
- * the WebGPU defaults (maxBindGroups 4, maxComputeWorkgroupStorageSize 16384), so
- * a host that opts into NRC must create the device with these in `requiredLimits`.
- * GPU validation (2026-05-29, V20) confirmed dzn/RTX-4090 exposes 8 / 32768 and
- * renders NRC-ON. The pipeline throws a clear error at init if the device is
- * under-spec (host-owns-lifecycle), rather than failing cryptically in
- * createComputePipeline. NRC is full-tier only — these are additive to
- * {@link HYBRID_WEBGPU_REQUIRED_LIMITS}, never applicable on the lite tier.
+ * the WebGPU defaults (maxBindGroups 4, maxStorageBuffersPerShaderStage 8,
+ * maxComputeWorkgroupStorageSize 16384), so a host that opts into NRC must create
+ * the device with these in `requiredLimits`.
+ * GPU validation (2026-05-29, V20) confirmed NRC-ON renders on the dzn/RTX-4090
+ * lane; keep the explicit constants below as the live required-limit source of
+ * truth. The pipeline throws a clear error at init if the device is under-spec
+ * (host-owns-lifecycle), rather than failing cryptically in createComputePipeline.
+ * NRC is full-tier only — these are additive to {@link HYBRID_WEBGPU_REQUIRED_LIMITS},
+ * never applicable on the lite tier.
  */
 export const NRC_REQUIRED_MAX_BIND_GROUPS = 5; // the @group(4) NRC bind group
+export const NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE = 22; // gi-ris frame 1 + scene 11 + hybrid layers 4 + NRC 6
 export const NRC_REQUIRED_WORKGROUP_STORAGE_BYTES = 24576; // fused-MLP workgroup tiles
 
 /**
@@ -352,18 +355,23 @@ export const NRC_REQUIRED_WORKGROUP_STORAGE_BYTES = 24576; // fused-MLP workgrou
  */
 export function assertNrcDeviceCapable(limits: GPUSupportedLimits): void {
   const maxBindGroups = limits.maxBindGroups ?? 4;
+  const maxStorageBuffers = limits.maxStorageBuffersPerShaderStage ?? 8;
   const maxWgStorage = limits.maxComputeWorkgroupStorageSize ?? 16384;
   if (maxBindGroups < NRC_REQUIRED_MAX_BIND_GROUPS
+    || maxStorageBuffers < NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
     || maxWgStorage < NRC_REQUIRED_WORKGROUP_STORAGE_BYTES) {
     throw new TypeError(
       `[HybridEngine] nrcEnabled requires a device created with `
       + `maxBindGroups >= ${NRC_REQUIRED_MAX_BIND_GROUPS} (the @group(4) NRC group; `
-      + `default is 4) and maxComputeWorkgroupStorageSize >= `
+      + `default is 4), maxStorageBuffersPerShaderStage >= `
+      + `${NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE} (gi-ris uses frame/scene/`
+      + `hybrid-layer storage plus NRC query/train buffers; default is 8), and `
+      + `maxComputeWorkgroupStorageSize >= `
       + `${NRC_REQUIRED_WORKGROUP_STORAGE_BYTES} (the fused-MLP workgroup tiles; `
       + `default is 16384), but this device reports maxBindGroups=${maxBindGroups}, `
+      + `maxStorageBuffersPerShaderStage=${maxStorageBuffers}, `
       + `maxComputeWorkgroupStorageSize=${maxWgStorage}. The host owns device `
-      + `creation — request these in requiredLimits (real full-tier GPUs expose `
-      + `them, e.g. 8 / 32768), or omit nrcEnabled.`,
+      + `creation — request these in requiredLimits, or omit nrcEnabled.`,
     );
   }
 }

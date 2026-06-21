@@ -208,12 +208,14 @@ describe('collectUnconsumedMaterialFields', () => {
   });
 
   it('scans a material patch without needing a primitive wrapper', () => {
-    expect(collectUnconsumedMaterialFieldsForMaterial({
+    const fields = collectUnconsumedMaterialFieldsForMaterial({
       baseColor: [1, 1, 1],
       displacementMap: { handle: 'height' },
       displacementScale: 0.25,
       displacementBias: -0.05,
-    })).toEqual([]);
+    });
+    expect(fields).toEqual([]);
+    expect(categorizeUnconsumedMaterialFields(fields)).toEqual({});
   });
 
   it('reports every permanently unsupported walkaround material family from a material patch', () => {

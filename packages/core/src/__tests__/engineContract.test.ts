@@ -154,9 +154,9 @@ describe('backend promise ledger', () => {
     expect(gl2.backLayer).toBe('native');
 
     // pt-webgpu: KHR_materials_specular scalars are consumed by the ordinary PT
-    // BRDF/PDF path; extension maps are full-tier-megakernel approximate until
-    // specialized reuse/source-lobe sampler paths carry the same modulation.
-    // anisotropy trio IS native; scatteringCoefficientRGB is genuine σ_s.
+    // BRDF/PDF path; extension maps and anisotropy controls remain approximate
+    // until specialty reference/furnace promotion closes. scatteringCoefficientRGB
+    // is genuine sigma_s.
     expect(gpu.specularIntensity).toBe('approximate');
     expect(gpu.specularColor).toBe('approximate');
     expect(gpu.shadingModel).toBe('approximate');

@@ -41,6 +41,7 @@ import type { BGLCache } from '../src/pipeline/bindGroupLayouts.js';
 import {
   assertNrcDeviceCapable,
   NRC_REQUIRED_MAX_BIND_GROUPS,
+  NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
   NRC_REQUIRED_WORKGROUP_STORAGE_BYTES,
 } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
@@ -174,20 +175,25 @@ describe('gi-ris PIPELINE LAYOUT + registered-pass set — gated at compile time
   });
 });
 
-// NRC-ON capability gate — NRC's @group(4) 5th bind group + the fused-MLP
-// workgroup tiles exceed the WebGPU defaults; the host (which owns device
-// creation) must request the higher limits, else init fails fast + legibly
-// (GPU-validation V20 surfaced this: dzn/RTX-4090 = 8 / 32768 renders NRC-ON).
+// NRC-ON capability gate — NRC's @group(4) 5th bind group, GI-RIS storage-buffer
+// stage pressure, and fused-MLP workgroup tiles exceed the WebGPU defaults; the
+// host (which owns device creation) must request the higher limits, else init
+// fails fast + legibly.
 describe('NRC-ON device capability gate', () => {
-  it('passes when the device meets both NRC limits', () => {
+  it('passes when the device meets all NRC limits', () => {
     expect(() => assertNrcDeviceCapable(
       {
         maxBindGroups: NRC_REQUIRED_MAX_BIND_GROUPS,
+        maxStorageBuffersPerShaderStage: NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
         maxComputeWorkgroupStorageSize: NRC_REQUIRED_WORKGROUP_STORAGE_BYTES,
       } as unknown as GPUSupportedLimits,
     )).not.toThrow();
     expect(() => assertNrcDeviceCapable(
-      { maxBindGroups: 8, maxComputeWorkgroupStorageSize: 32768 } as unknown as GPUSupportedLimits,
+      {
+        maxBindGroups: 8,
+        maxStorageBuffersPerShaderStage: NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+        maxComputeWorkgroupStorageSize: 32768,
+      } as unknown as GPUSupportedLimits,
     )).not.toThrow();
   });
 
@@ -199,7 +205,21 @@ describe('NRC-ON device capability gate', () => {
 
   it('throws when workgroup storage is below the fused-MLP requirement (16384 < 24576)', () => {
     expect(() => assertNrcDeviceCapable(
-      { maxBindGroups: 8, maxComputeWorkgroupStorageSize: 16384 } as unknown as GPUSupportedLimits,
+      {
+        maxBindGroups: 8,
+        maxStorageBuffersPerShaderStage: NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+        maxComputeWorkgroupStorageSize: 16384,
+      } as unknown as GPUSupportedLimits,
     )).toThrow(/maxComputeWorkgroupStorageSize/);
+  });
+
+  it('throws when storage-buffer stage budget is below the GI-RIS NRC requirement', () => {
+    expect(() => assertNrcDeviceCapable(
+      {
+        maxBindGroups: 8,
+        maxStorageBuffersPerShaderStage: NRC_REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE - 1,
+        maxComputeWorkgroupStorageSize: 32768,
+      } as unknown as GPUSupportedLimits,
+    )).toThrow(/maxStorageBuffersPerShaderStage/);
   });
 });

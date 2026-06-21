@@ -274,10 +274,12 @@ floor albedo 0.8. Analytic Lambertian: `Lo = I × cosθ × albedo = 0.3 × 0.808
 | Left wall (sun-shadowed) | 0.0009 |
 | Shadow correct? | YES |
 
-The SUN case remains useful as a live-path proof: the directional light produces
-finite direct signal and the sun-shadowed wall stays dark. It is not promotion
-evidence for analytic absolute radiometry yet; the committed host status keeps
-the walkaround harness at `PASS-PARTIAL` and preserves a do-not-promote warning.
+The SUN case remains useful as a preserved live-path proof: the directional
+light produces finite direct signal and the sun-shadowed wall stays dark. It is
+not promotion evidence for analytic absolute radiometry yet. The current
+committed native-Deno host status is `HOST-BLOCKED` on the known wgpu-hal panic,
+so this result snapshot is preserved for continuity while browser/real-adapter
+recapture remains the promotion lane.
 Render time: 4.5 s.
 
 ### GLASS — Glass-GI Transmitted Light Validation
@@ -304,24 +306,25 @@ Render time: 8.5 s for the pair.
 
 ### GLOSSY — B2 Metallic Probe Check (Specular Indirect)
 
-**Verdict: PASS-WEAK** — the metallic floor is non-black and passes the broad
-ratio floor, but the metal/diffuse captures are indistinguishable at this SPP
-(`delta=0`), so this is not glossy probe promotion evidence.
+**Verdict: FINDING** — the material path is live and visibly changes the render,
+but this low-SPP capture is a do-not-promote rich-material GI result.
 
 Metal floor (metalness=1.0, rough=0.05) vs diffuse floor (metalness=0.0, rough=1.0), Cornell,
 ceiling emitter, SPP=16.
 
 | Metric | Value |
 |--------|-------|
-| Metal floor lum | 0.0526 |
-| Diffuse floor lum | 0.0526 |
-| Floor ratio | 1.000 |
-| Floor delta | 0.0000 |
+| Metal floor lum | 0.0009 |
+| Diffuse floor lum | 0.1715 |
+| Floor ratio | 0.005 |
+| Floor delta | -0.1706 |
 
-The metallic-probe check remains a bounded non-black live-path proof for the
-current walkaround approximation, not a glossy-reference material furnace. Higher-SPP
-or case-specific reference captures are still required before promoting glossy
-walkaround rows beyond their current approximate status. Render time: 8.4 s.
+The metallic-probe check proves the authored roughness/metalness path is not a
+dead branch: the diffuse control keeps the same base color and the measured
+delta isolates material behavior. It is still not a glossy-reference material
+furnace. The walkaround DDGI atlas stores cosine-weighted irradiance, not
+GGX-filtered radiance, and the low-SPP mirror arm can legitimately reflect a
+darker scene direction than the diffuse control. Render time: 9.1 s.
 
 ### Summary
 
@@ -330,7 +333,7 @@ walkaround rows beyond their current approximate status. Render time: 8.4 s.
 | A8 GRIS bias | NEGLIGIBLE | overall delta = -0.000020 (0.03% of mean) |
 | SUN analytic | PASS-PARTIAL | floor ratio = 0.371; shadow correctness passes |
 | GLASS GI | SMOKE | centre ratio = 1.000; delta = 0 |
-| GLOSSY probe | PASS-WEAK | floor ratio = 1.000; delta = 0 |
+| GLOSSY probe | FINDING | floor ratio = 0.005; material-effect observed |
 
 ### Legacy 8-bit Baseline (2026-06-10)
 

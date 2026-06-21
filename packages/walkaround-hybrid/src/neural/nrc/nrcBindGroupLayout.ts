@@ -17,18 +17,14 @@
  *   3 — level descriptors (read-only storage, NrcLevelDesc)
  *   4 — record gather     (read_write storage, f32) — self-training records
  *   5 — encoding config   (uniform, NrcCfgUBO)
+ *   6 — slot claim flags  (read_write storage, atomic<u32>) — torn-record guard
  *
- * Storage-buffer budget on the gi-ris pipeline (NRC ON): gi-ris reuses the shade
- * layout (frame/scene/ubo/hybrid) whose scene+frame groups carry 16 storage
- * buffers at the full-tier floor — BUT @group(4) adds 5 MORE storage buffers,
- * which would push gi-ris to 21 > the 16 floor. So unlike GRIS (which kept under
- * the floor), the NRC gi-ris layout must NOT reuse the 16-buffer shade layout's
- * scene group verbatim if it also binds 5 NRC storage buffers. This is handled
- * in compilePipelines by binding NRC as a 5th group on a layout that the device
- * accepts (full-tier maxStorageBuffersPerShaderStage is the gate; NRC is
- * full-tier-only and the host must confirm the budget — see V20). The 4 NRC
- * storage buffers + 1 uniform here are declared read-only except the record
- * gather, matching nrcQuery.wgsl.
+ * Storage-buffer budget on the gi-ris pipeline (NRC ON): gi-ris binds the
+ * risGi-frame storage buffer, the shared scene group, the hybrid-layer group,
+ * and this NRC group. The NRC group adds 6 storage buffers, so the opt-in
+ * capability gate requires maxStorageBuffersPerShaderStage >= 22 before
+ * compilePipelines reaches createComputePipeline. The default NRC-OFF path never
+ * references this group.
  */
 
 import type { BGLCache } from '../../bglTypes.js';

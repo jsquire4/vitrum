@@ -153,7 +153,7 @@ struct NrcCfgUBO {
   spreadC    : f32,           // Müller §5 termination constant c
   aabbMax    : vec3f,
   recordCap  : u32,           // max training records this frame (record buffer capacity)
-  recordStride    : u32,      // f32s per record = NRC_IN_W + OUT_W
+  recordStride    : u32,      // f32s per record = NRC_IN_W + OUT_W + 3 world-position floats
   // H26 — camera per-pixel solid-angle pdf (host-updated every frame).
   // For a pinhole camera: pdf = cot²(fovY/2) · W · H / 4.
   // Used as the primary-edge pdf in nrcSegmentSpreadTerm so a0 is the

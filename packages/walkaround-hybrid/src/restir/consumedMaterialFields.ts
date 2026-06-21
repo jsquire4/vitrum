@@ -305,9 +305,6 @@ export type UnconsumedMaterialFieldCategory =
   | 'unknown';
 
 const UNCONSUMED_MATERIAL_FIELD_CATEGORIES: Readonly<Record<string, UnconsumedMaterialFieldCategory>> = {
-  displacementMap: 'geometry',
-  displacementScale: 'geometry',
-  displacementBias: 'geometry',
   spectralAttenuation: 'spectral',
   dispersionAbbeNumber: 'spectral',
   scatteringCoefficient: 'volume',
