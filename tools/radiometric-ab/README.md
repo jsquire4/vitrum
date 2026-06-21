@@ -212,14 +212,14 @@ pre-tonemap `resolvedTexture` through `engine.captureFrame({ colorSpace:"linear"
 luminance statistics are therefore linear-HDR float32 values rather than display-encoded
 8-bit swap-chain samples.
 
-**Current WSL validation status (2026-06-21):** `npm run radiometric-ab:walkaround`
-is currently host-blocked on this native WSL/Deno path by the known
-`wgpu-hal-28.0.0/src/gles/command.rs:771:21` panic, even when the harness is
-targeted to `VITRUM_WALKAROUND_AB_CASES=sun` and the Vulkan/lavapipe ICD is
-pinned. The wrapper records that as `verdict:"HOST-BLOCKED"` and preserves the
-last committed result file rather than turning a host crash into a renderer
-PASS/FAIL. Slow native-Deno hosts can raise the default 180-second wrapper
-budget with `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
+**Current WSL validation status (2026-06-21):** the latest committed native-Deno
+status is `PASS-PARTIAL` from a targeted `VITRUM_WALKAROUND_AB_CASES=sun` run.
+That run exited 0 and records SUN as `PASS` with receiver ratio = 0.99948; the
+wrapper keeps the aggregate status partial because the preserved result file
+still includes GLASS `SMOKE` and GLOSSY `FINDING`. The wrapper can still record
+`HOST-BLOCKED` if Deno/wgpu-hal panics or times out before a verdict; slow
+native-Deno hosts can raise the default 180-second wrapper budget with
+`VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
 
 The harness now accepts `VITRUM_WALKAROUND_AB_CASES=a8,sun,glass,glossy` to
 rerun a subset of cases while preserving the other committed results. The SUN

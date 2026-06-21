@@ -250,6 +250,42 @@ if (walkaroundAbHostStatus.verdict === "HOST-BLOCKED") {
   if (!/current\s+committed native-Deno host status is `HOST-BLOCKED`/.test(radiometricReadme)) {
     fail("radiometric README must mirror walkaround-ab-host-status.json HOST-BLOCKED verdict");
   }
+} else if (walkaroundAbHostStatus.verdict === "PASS-PARTIAL") {
+  for (const [docName, docText] of [
+    ["plan/road-to-100.md", road],
+    ["tools/radiometric-ab/README.md", radiometricReadme],
+  ]) {
+    for (const stalePhrase of [
+      "current committed native-Deno radiometric host status is `HOST-BLOCKED`",
+      "current committed native-Deno host status is `HOST-BLOCKED`",
+      "is currently host-blocked on this native WSL/Deno path",
+      "records the same native-Deno host class",
+      "is `HOST-BLOCKED` on the known wgpu-hal panic",
+    ]) {
+      if (docText.includes(stalePhrase)) {
+        fail(`${docName} contains stale walkaround radiometric HOST-BLOCKED wording: ${stalePhrase}`);
+      }
+    }
+  }
+  if (!/current\s+committed native-Deno radiometric host status now records `PASS-PARTIAL`/.test(road)) {
+    fail("road-to-100.md must mirror walkaround-ab-host-status.json PASS-PARTIAL verdict");
+  }
+  if (!/latest\s+committed native-Deno\s+status is `PASS-PARTIAL`/.test(radiometricReadme)) {
+    fail("radiometric README must mirror walkaround-ab-host-status.json PASS-PARTIAL verdict");
+  }
+  if (walkaroundAbResults?.sun?.verdict === "PASS") {
+    for (const [docName, docText] of [
+      ["plan/road-to-100.md", road],
+      ["tools/radiometric-ab/README.md", radiometricReadme],
+    ]) {
+      if (!docText.includes("SUN is `PASS`") && !docText.includes("records SUN as `PASS`")) {
+        fail(`${docName} must describe the committed SUN PASS lane when host status is PASS-PARTIAL`);
+      }
+      if (!docText.includes("receiver ratio = 0.99948")) {
+        fail(`${docName} must pin the committed SUN receiver ratio when host status is PASS-PARTIAL`);
+      }
+    }
+  }
 }
 
 if (walkaroundAbResults?.glossy?.verdict === "FINDING") {
