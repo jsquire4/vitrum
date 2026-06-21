@@ -388,6 +388,22 @@ npm run typecheck
 These are real, but they should not block contract-complete unless the user
 explicitly widens the target.
 
+Current source-verification pass (2026-06-21): the active runtime
+implementation queue is empty. The only source-verified "code gap" phrasing left
+in the Road is native promotion or future contract expansion, not broken
+renderability/API behavior:
+
+- pt-webgl2 dimension-changing topology/list edits are supported through
+  resident-storage `fallback-rebuild` with structured diagnostics; true targeted
+  primitive splice/refit remains a native-mutation promotion task.
+- glTF skinned/morphed `EXT_mesh_gpu_instancing` is renderable through
+  fallback-expanded skinned/morphed primitives; native instanced-skinned
+  primitives remain a performance/core-contract expansion.
+- glTF high UV sets are supported for `TEXCOORD_1` plus a single lossless high-UV
+  remap into `uv1`; arbitrary UV arrays remain a future core/backend contract.
+- glTF `COLOR_1+` and native point/line topologies remain explicit diagnostics
+  or generated-mesh fallbacks, not silent drops.
+
 - Production neural denoiser checkpoint and default-on `denoiser:'auto'`.
 - NRC default-on decision after quality/convergence A/B.
 - GRIS default flip after unbiasedness/error/perf evidence.

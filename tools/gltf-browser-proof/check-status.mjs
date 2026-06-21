@@ -51,6 +51,7 @@ for (const asset of manifest.assets) {
 if (status.verdict === "HOST-BLOCKED") {
   for (const row of statusAssets) {
     if (row.verdict !== "HOST-BLOCKED" && row.verdict !== "PASS") fail(`${row.assetId}: unexpected verdict ${row.verdict}`);
+    assertNoStaleBrowserBuildWarnings(row);
     if (row.verdict === "HOST-BLOCKED") {
       if (row.step !== "canvas-screenshot" && row.step !== "canvas-data-url") {
         fail(`${row.assetId}: unexpected host-blocked step ${row.step}`);
@@ -94,6 +95,25 @@ if (status.verdict === "HOST-BLOCKED") {
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF proof)");
 } else {
   fail(`status verdict must be PASS or HOST-BLOCKED, got ${status.verdict}`);
+}
+
+function assertNoStaleBrowserBuildWarnings(row) {
+  const fragments = [
+    row.error,
+    row.serverLog,
+    ...(Array.isArray(row.console) ? row.console : []),
+    ...(Array.isArray(row.consoleMessages) ? row.consoleMessages : []),
+    ...(Array.isArray(row.pageMessages) ? row.pageMessages : []),
+    ...(Array.isArray(row.logs) ? row.logs : []),
+  ].map((value) => String(value ?? ""));
+  const joined = fragments.join("\n");
+  if (
+    joined.includes("vite:import-analysis") ||
+    joined.includes("dynamic import cannot be analyzed") ||
+    joined.includes("texturePipeline.ts")
+  ) {
+    fail(`${row.assetId}: stale browser build warning present in committed status`);
+  }
 }
 
 function byKey(items, key) {
