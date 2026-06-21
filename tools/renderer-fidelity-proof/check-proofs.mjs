@@ -8,6 +8,7 @@ const PLAYBOOK_PATH = "plan/fidelity-promotion-playbook.md";
 const README_PATH = "README.md";
 const ARCHITECTURE_PATH = "plan/library-architecture.md";
 const HARDWARE_VALIDATION_PATH = "HARDWARE-VALIDATION-NEEDS.md";
+const GAP_EXECUTION_PLAN_PATH = "plan/gap-closure-execution-plan.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
 
 const PT_WEBGPU_SUPPORTED_ROWS = [
@@ -122,6 +123,145 @@ const PLAYBOOK_FORBIDDEN_STALE_NEEDLES = [
   "no dedicated BDPT gap-closure scenario exists",
 ];
 
+const PT_WEBGL2_MATERIAL_FURNACE_PROOFS = [
+  {
+    feature: "GGX multiscatter white furnace",
+    files: [
+      {
+        path: "packages/pt-webgl2/src/glsl/shader/bsdf/__tests__/b9Multiscatter.test.ts",
+        needles: [
+          "WHITE-FURNACE",
+          "without compensation, a rough conductor is dark",
+          "with compensation, energy is recovered",
+          "expect(Math.abs(r)).toBeLessThan(0.06)",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/glsl/shader/bsdf/ggx_functions.glsl.js",
+        needles: [
+          "ggxDirectionalAlbedo",
+          "ggxAverageAlbedo",
+          "ggxMultiscatter",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/glsl/shader/bsdf/bsdf_functions.glsl.js",
+        needles: [
+          "color += ggxMultiscatter(",
+          "1.0 / 21.0",
+        ],
+      },
+    ],
+  },
+  {
+    feature: "thickness and SSS transport",
+    files: [
+      {
+        path: "packages/pt-webgl2/src/glsl/composeTraceGlsl.test.ts",
+        needles: [
+          "D10: SSS free-flight helper is defined before the SSS sample path uses it",
+          "D10: SSS consumes packed sigmaS and derives albedo in shader",
+          "sampleExponentialDistance( rand( 17 ), sigmaTMajorant, 1e6 )",
+          "vec3 sigmaS = max( surf.sssSigmaS, vec3( 0.0 ) );",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/scene/materialsTexture.test.ts",
+        needles: [
+          "scatteringCoefficientRGB packs per-channel sigmaS override and majorant sigmaT",
+          "scatteringCoefficientRGB alone activates translucent SSS and packs sigmaS",
+          "packs thicknessMap layer, thickness scalar, UV1 bit, transform, and wrap mode",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/glsl/render/get_surface_record_function.glsl.js",
+        needles: [
+          "material.thicknessMap != - 1",
+          "material.thicknessMapTransform * vec3( MAP_UV( 20u ), 1 )",
+          "surf.sssSigmaS = material.sssSigmaS;",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/glsl/render/attenuate_hit_function.glsl.js",
+        needles: [
+          "material.thickness > 0.0 || material.thicknessMap != - 1",
+          "material.thicknessMapTransform * vec3( ATTENUATE_MAP_UV( 20u ), 1 )",
+          "attenuationDist = min( attenuationDist, max( attenuationThickness, 0.0 ) );",
+          "transmissionAttenuationThroughput(",
+        ],
+      },
+    ],
+  },
+  {
+    feature: "procedural sky bake and sampling",
+    files: [
+      {
+        path: "packages/pt-webgl2/src/capabilities.ts",
+        needles: [
+          "supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri', 'procedural-sky'])",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/scene/equirectHdrInfo.ts",
+        needles: [
+          "if (env.kind === 'procedural-sky')",
+          "bakePreethamSkyEquirect({",
+          "source = { width: baked.width, height: baked.height, data: baked.texels };",
+          "const marginalData = new Float32Array(height * 4);",
+          "const conditionalData = new Float32Array(pixelCount * 4);",
+          "conditional: { data: conditionalData, width, height },",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/scene/equirectHdrInfo.test.ts",
+        needles: [
+          "bakes procedural-sky environments into the equirect HDRI path",
+          "honors zero procedural-sky intensity as a black environment",
+          "places the procedural-sky maximum near the authored sun direction",
+        ],
+      },
+    ],
+  },
+  {
+    feature: "emissive-map panels and mesh-area MIS",
+    files: [
+      {
+        path: "packages/pt-webgl2/src/scene/meshAreaLights.test.ts",
+        needles: [
+          "subdivides CPU-readable emissiveMap implicit triangle lights with UV-local radiance",
+          "clips CPU-readable emissiveMap UV footprints to exact texel cells",
+          "subdivides explicit mesh-area triangle lights through the referenced material emissiveMap",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/scene/meshAreaMis.test.ts",
+        needles: [
+          "forward pdf equals the sample pdf for the same emitted-power density",
+          "uses the textured implicit-emitter pack total power for forward/sample pdf parity",
+          "neeForwardPdf(distSq, cosLight, out.totalEmissivePower",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/glsl/shader/sampling/light_sampling_functions.glsl.js",
+        needles: [
+          "LightRecord sampleMeshAreaLight(",
+          "float meshAreaLightForwardPdf(",
+          "float uPick = ruv.x * totalEmissivePower;",
+          "float areaDensity = max( tri.power, 0.0 ) / ( max( tri.area, EPSILON ) * totalEmissivePower );",
+        ],
+      },
+      {
+        path: "packages/pt-webgl2/src/glsl/render/get_surface_record_function.glsl.js",
+        needles: [
+          "if ( useTextures && material.emissiveMap != - 1 )",
+          "material.emissiveMapTransform * vec3( MAP_UV( 4u ), 1 )",
+          "emission *= sampleMaterialTexture(",
+        ],
+      },
+    ],
+  },
+];
+
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -203,11 +343,29 @@ async function assertDznStatus(status, feature) {
   }
 }
 
+/**
+ * @param {{
+ *   feature: string,
+ *   files: Array<{ path: string, needles: string[] }>,
+ * }} proof
+ */
+async function assertPtWebgl2MaterialFurnaceProof(proof) {
+  for (const file of proof.files) {
+    const text = await readText(file.path);
+    for (const needle of file.needles) {
+      if (!text.includes(needle)) {
+        fail(`${proof.feature}: ${file.path} missing proof needle: ${needle}`);
+      }
+    }
+  }
+}
+
 const matrix = await readText(MATRIX_PATH);
 const playbook = await readText(PLAYBOOK_PATH);
 const readme = await readText(README_PATH);
 const architecture = await readText(ARCHITECTURE_PATH);
 const hardwareValidation = await readText(HARDWARE_VALIDATION_PATH);
+const gapExecutionPlan = await readText(GAP_EXECUTION_PLAN_PATH);
 const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
 
 for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
@@ -218,6 +376,13 @@ for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
   }
   for (const path of proof.goldenPaths ?? []) await assertPng(path);
   if (proof.dznStatus) await assertDznStatus(proof.dznStatus, proof.feature);
+}
+
+for (const proof of PT_WEBGL2_MATERIAL_FURNACE_PROOFS) {
+  await assertPtWebgl2MaterialFurnaceProof(proof);
+}
+if (!gapExecutionPlan.includes("pt-webgl2 material furnace | pt-webgl2 | Source/oracle proof is guarded by `npm run renderer-fidelity-proof-check`")) {
+  fail("gap closure execution plan must classify pt-webgl2 material furnace as source/oracle-proof guarded, with remaining A/B called out separately");
 }
 
 if (ptWebgl2BrowserStatus.backend !== "pt-webgl2") {
@@ -263,5 +428,5 @@ if (hardwareValidation.includes("WSL2 with SwiftShader only") ||
 }
 
 console.log(
-  `[renderer-fidelity-proof-check] PASS (${PT_WEBGPU_SUPPORTED_ROWS.length} pt-webgpu supported rows verified; pt-webgl2 browser-promotion guard checked)`,
+  `[renderer-fidelity-proof-check] PASS (${PT_WEBGPU_SUPPORTED_ROWS.length} pt-webgpu supported rows verified; ${PT_WEBGL2_MATERIAL_FURNACE_PROOFS.length} pt-webgl2 material-furnace source/oracle proof groups verified; pt-webgl2 browser-promotion guard checked)`,
 );
