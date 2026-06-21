@@ -53,6 +53,26 @@ export const RADIOMETRIC_AB_PROOFS = [
       varRatioMax: 3.0,
     },
   },
+  {
+    id: "sobol",
+    ab: "sobol-equal-frame-rmse",
+    scriptPath: "tools/radiometric-ab/ab-sobol.mjs",
+    resultPath: "tools/radiometric-ab/results-sobol.json",
+    resolution: { width: 80, height: 80 },
+    traceTier: "lite",
+    reference: { sampling: "pcg", frames: 40 },
+    candidateFrames: 12,
+    sceneIds: ["cornell-indirect", "caustic-floor"],
+    thresholds: {
+      maxGlobalRmseRatio: 1.5,
+      maxRoiRmseRatio: 1.5,
+      maxElapsedMsRatio: 20.0,
+    },
+    promotion: {
+      defaultReady: false,
+      reason: "WSL-lite evidence bounds correctness but does not show equal-time convergence superiority.",
+    },
+  },
 ];
 
 export const RESTIR_PT_SPECIALTY_PROOF = {
@@ -79,6 +99,7 @@ export const PT_RADIOMETRIC_AB_HOST_STATUS_PROOF = {
     "tools/radiometric-ab/results-sppm.json",
     "tools/radiometric-ab/results-bdpt.json",
     "tools/radiometric-ab/results-restir-pt.json",
+    "tools/radiometric-ab/results-sobol.json",
   ],
   allowedVerdicts: ["PASS", "PASS-PARTIAL", "HOST-BLOCKED"],
   blockedReasonCodes: [

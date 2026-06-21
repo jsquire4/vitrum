@@ -412,7 +412,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
-  var rng = pcgInit(gid.x, gid.y, params.frameSeed ^ params.frameIndex);
+  var rng = pcgInit(gid.x, gid.y, ptRngFrameKey(params.frameSeed, params.frameIndex));
   let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));
   var ray = generatePrimaryRay(gid.x, gid.y, jitter);
 

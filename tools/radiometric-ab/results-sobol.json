@@ -1,0 +1,101 @@
+{
+  "ab": "sobol-equal-frame-rmse",
+  "verdict": "PASS",
+  "generatedAt": "2026-06-21T23:14:54.297Z",
+  "resolution": {
+    "width": 80,
+    "height": 80
+  },
+  "reference": {
+    "sampling": "pcg",
+    "frames": 40,
+    "note": "Higher-frame PCG reference. Candidate arms use equal frame budgets and record wall time."
+  },
+  "candidateFrames": 12,
+  "traceTier": "lite",
+  "thresholds": {
+    "maxGlobalRmseRatio": 1.5,
+    "maxRoiRmseRatio": 1.5,
+    "maxElapsedMsRatio": 20
+  },
+  "roi": {
+    "x0": 18,
+    "y0": 18,
+    "x1": 62,
+    "y1": 62
+  },
+  "scenes": [
+    {
+      "id": "cornell-indirect",
+      "description": "diffuse Cornell-box indirect transport",
+      "roi": {
+        "x0": 18,
+        "y0": 18,
+        "x1": 62,
+        "y1": 62
+      },
+      "referenceFrames": 40,
+      "candidateFrames": 12,
+      "pcg": {
+        "elapsedMs": 243.147,
+        "globalRmse": 0.16505210144891194,
+        "roiRmse": 0.1868436839403521,
+        "roiSpatialVariance": 0.08715452022264168
+      },
+      "sobol": {
+        "elapsedMs": 269.143,
+        "globalRmse": 0.2255655900430353,
+        "roiRmse": 0.25824795375720655,
+        "roiSpatialVariance": 0.10351736489447134
+      },
+      "ratios": {
+        "globalRmse": 1.366632645467128,
+        "roiRmse": 1.3821604686388516,
+        "roiSpatialVariance": 1.1877452211317296,
+        "elapsedMs": 1.1069160531365312
+      },
+      "relativeErrors": {
+        "globalRmse": 0.3666326454671279,
+        "roiRmse": 0.3821604686388516,
+        "roiSpatialVariance": 0.18774522113172962
+      },
+      "pass": true
+    },
+    {
+      "id": "caustic-floor",
+      "description": "caustic-floor convergence stress scene",
+      "roi": {
+        "x0": 26,
+        "y0": 48,
+        "x1": 56,
+        "y1": 74
+      },
+      "referenceFrames": 40,
+      "candidateFrames": 12,
+      "pcg": {
+        "elapsedMs": 235.958,
+        "globalRmse": 0.102152466786741,
+        "roiRmse": 0.10838683436319543,
+        "roiSpatialVariance": 0.05704836354670967
+      },
+      "sobol": {
+        "elapsedMs": 255.107,
+        "globalRmse": 0.15177721037463837,
+        "roiRmse": 0.13927672277901698,
+        "roiSpatialVariance": 0.05275532693701063
+      },
+      "ratios": {
+        "globalRmse": 1.4857909470898696,
+        "roiRmse": 1.2849966843049596,
+        "roiSpatialVariance": 0.9247474188074822,
+        "elapsedMs": 1.0811566345311436
+      },
+      "relativeErrors": {
+        "globalRmse": 0.4857909470898697,
+        "roiRmse": 0.2849966843049595,
+        "roiSpatialVariance": 0.07525258119251779
+      },
+      "pass": true
+    }
+  ]
+}

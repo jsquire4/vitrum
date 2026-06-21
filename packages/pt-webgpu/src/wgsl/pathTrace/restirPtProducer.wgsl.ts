@@ -744,7 +744,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   }
   let pixelIdx = gid.y * params.width + gid.x;
 
-  var rng = pcgInit(gid.x, gid.y, params.frameSeed ^ params.frameIndex);
+  var rng = pcgInit(gid.x, gid.y, ptRngFrameKey(params.frameSeed, params.frameIndex));
   let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));
   var primaryRay = generatePrimaryRay(gid.x, gid.y, jitter);
   var heroLambda = params.heroLambdaNm;

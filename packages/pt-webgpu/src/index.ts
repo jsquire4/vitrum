@@ -308,8 +308,8 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    * the megakernel plus SPPM/ReSTIR-PT/BDPT auxiliary pipelines. This is
    * hash-based Owen-scrambled Sobol over the first-four direction-table set
    * with a tiled ranked rotation; the dimension-assignment audit is pinned by
-   * source-level tests, and RMSE promotion evidence remains tracked in the Road
-   * ledger.
+   * source-level tests. The WSL-lite RMSE A/B is bounded and committed, but
+   * full-tier equal-time evidence still gates default promotion.
    */
   readonly sampling?: 'pcg' | 'sobol';
   /**
@@ -2435,7 +2435,8 @@ export const createPTEngine_WebGPU: EngineFactory<
         "[vitrum/pt-webgpu] sampling:'sobol' enables an opt-in hash-based " +
         'Owen-scrambled Sobol RNG across the pt-webgpu megakernel and auxiliary ' +
         'SPPM/ReSTIR-PT/BDPT pipelines with a tiled ranked rotation. The ' +
-        'dimension-assignment audit is pinned; equal-time RMSE promotion evidence remains a Road-to-100 tail.',
+        'dimension-assignment audit is pinned; WSL-lite RMSE evidence is bounded, ' +
+        'while full-tier default-promotion evidence remains a Road-to-100 tail.',
       details: {
         sampling: 'sobol',
         fallback: 'none',

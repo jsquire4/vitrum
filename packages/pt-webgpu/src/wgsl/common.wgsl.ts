@@ -16,7 +16,7 @@ export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
  * Promotion caveat: higher dimensions are hash-decorrelated over the first four
  * direction tables and the stream uses a small tiled ranked rotation. The
  * bounce/lobe/light dimension assignment is pinned by source-level regression
- * tests; measured equal-time RMSE promotion evidence is still tracked separately.
+ * tests; measured equal-time RMSE promotion evidence is tracked separately.
  */
 export const PT_WEBGPU_SOBOL_RNG_WGSL = /* wgsl */ `
 const PT_SOBOL_FACTOR = 0.000000059604644775390625; // 1 / 2^24
@@ -151,8 +151,8 @@ fn ptSobolBlueNoiseRotation(tile: u32, dim: u32) -> u32 {
 
 fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32 {
   let pixelSeed = ptSobolHash(ptSobolHashCombine(ptSobolHash(px), py));
-  let sampleIndex = (frameSeed ^ pixelSeed) & 0x0000ffffu;
-  let rotationTile = ((py & 7u) << 3u) | (px & 7u);
+  let sampleIndex = frameSeed & 0x0000ffffu;
+  let rotationTile = ptSobolHash(ptSobolHashCombine(pixelSeed, frameSeed >> 16u)) & 0xffu;
   return (sampleIndex << 16u) | (rotationTile << 8u);
 }
 
@@ -191,6 +191,18 @@ fn rand3(state: ptr<function, u32>) -> vec3f {
 }
 `;
 
+const PCG_FRAME_KEY_WGSL = /* wgsl */ `
+fn ptRngFrameKey(frameSeed: u32, frameIndex: u32) -> u32 {
+  return frameSeed ^ frameIndex;
+}
+`;
+
+const SOBOL_FRAME_KEY_WGSL = /* wgsl */ `
+fn ptRngFrameKey(frameSeed: u32, frameIndex: u32) -> u32 {
+  return (ptSobolHash(frameSeed) & 0xffff0000u) | (frameIndex & 0x0000ffffu);
+}
+`;
+
 /**
  * Early shared WGSL include for pt-webgpu.
  *
@@ -205,6 +217,7 @@ export function composePtWebgpuCommonWgsl(
   sampling: PtWebgpuSamplingMode = 'pcg',
 ): string {
   const rng = sampling === 'sobol' ? PT_WEBGPU_SOBOL_RNG_WGSL : PCG_WGSL;
+  const frameKey = sampling === 'sobol' ? SOBOL_FRAME_KEY_WGSL : PCG_FRAME_KEY_WGSL;
   return /* wgsl */ `
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
@@ -232,6 +245,8 @@ struct HitResult {
 };
 
 ${rng}
+
+${frameKey}
 
 fn safe_normalize(v: vec3f) -> vec3f {
   let len = length(v);

@@ -93,6 +93,7 @@ describe('pt-webgpu sampling options', () => {
       expect(wgsl).toContain('fn ptSobolNextU32(state: ptr<function, u32>) -> u32');
       expect(wgsl).toContain('fn ptSobolNestedUniformScrambleBase2(x: u32, seed: u32) -> u32');
       expect(wgsl).toContain('fn pcgInit(px: u32, py: u32, frameSeed: u32) -> u32');
+      expect(wgsl).toContain('fn ptRngFrameKey(frameSeed: u32, frameIndex: u32) -> u32');
       expect(wgsl).toContain('fn rand_f32(state: ptr<function, u32>) -> f32');
       expect(wgsl).not.toContain('(*state) = (*state) * 747796405u + 2891336453u;');
     }
@@ -144,6 +145,8 @@ describe('pt-webgpu sampling options', () => {
   it('pins the Sobol dimension stream and assignment anchors across pt-webgpu pipelines', () => {
     expect(SOBOL_DIMENSION_AUDIT_2026_06_21).toBe(true);
     expectOrderedNeedles(PT_WEBGPU_SOBOL_RNG_WGSL, [
+      ['monotonic frame sample key', 'let sampleIndex = frameSeed & 0x0000ffffu;'],
+      ['per-pixel scramble slot', 'let rotationTile = ptSobolHash(ptSobolHashCombine(pixelSeed, frameSeed >> 16u)) & 0xffu;'],
       ['sample index high bits', 'let pathIndex = ((*state) >> 16u) & 0x0000ffffu;'],
       ['tile rank middle bits', 'let rotationTile = ((*state) >> 8u) & 0xffu;'],
       ['dimension low bits', 'let dim = (*state) & 0xffu;'],
@@ -159,7 +162,7 @@ describe('pt-webgpu sampling options', () => {
     expect(new Set(first32Dimensions).size).toBe(first32Dimensions.length);
 
     expectOrderedNeedles(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL, [
-      ['main stream seed', 'var rng = pcgInit(gid.x, gid.y, params.frameSeed ^ params.frameIndex);'],
+      ['main stream seed', 'var rng = pcgInit(gid.x, gid.y, ptRngFrameKey(params.frameSeed, params.frameIndex));'],
       ['camera jitter dims 0-1', 'let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));'],
       ['primary ray consumes jitter', 'var ray = generatePrimaryRay(gid.x, gid.y, jitter);'],
       ['spectral hero dims 2-3 when enabled', 'let hero = sampleHeroWavelengthMIS(rand_f32(&rng), rand_f32(&rng));'],
@@ -198,7 +201,7 @@ describe('pt-webgpu sampling options', () => {
       expect(RESTIR_PT_PRODUCER_WGSL, label).toContain(needle);
     }
     expectOrderedNeedles(RESTIR_PT_PRODUCER_WGSL, [
-      ['producer stream seed', 'var rng = pcgInit(gid.x, gid.y, params.frameSeed ^ params.frameIndex);'],
+      ['producer stream seed', 'var rng = pcgInit(gid.x, gid.y, ptRngFrameKey(params.frameSeed, params.frameIndex));'],
       ['producer camera jitter dims 0-1', 'let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));'],
       ['producer spectral hero dims 2-3', 'let hero = sampleHeroWavelengthMIS(rand_f32(&rng), rand_f32(&rng));'],
       ['producer alpha visibility uses stream', 'alphaTestPassThrough(hitMaterialId(vHit), vHit.triIndex, vHit.baryVW, &rng)'],

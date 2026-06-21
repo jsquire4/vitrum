@@ -463,6 +463,12 @@ if (!road.includes("pt-webgpu Sobol now carries a binding-free 8x8 ranked tiled"
 if (!road.includes("source-level\n   dimension audit now pins the monotonic RNG state")) {
   fail("road-to-100.md must retain the pt-webgpu Sobol dimension-audit closure summary");
 }
+if (!road.includes("tools/radiometric-ab/ab-sobol.mjs")) {
+  fail("road-to-100.md must retain the committed pt-webgpu Sobol RMSE A/B harness summary");
+}
+if (!road.includes("full-tier/real-adapter equal-time evidence before changing defaults")) {
+  fail("road-to-100.md must keep the Sobol default-promotion boundary precise");
+}
 if (!road.includes("to backend-upload-ready CPU/data texture payloads, not live `GPUTexture`")) {
   fail("road-to-100.md must retain the precise glTF decode target boundary");
 }
@@ -530,9 +536,14 @@ if (ptWebgpuSource.includes("broader dimension audits and RMSE promotion")) {
 if (!ptWebgpuSource.includes("with a tiled ranked rotation; the dimension-assignment audit is pinned")) {
   fail("pt-webgpu sampling option docs must retain the Sobol rotation and dimension-audit boundary");
 }
+if (!ptWebgpuSource.includes("WSL-lite RMSE evidence is bounded")) {
+  fail("pt-webgpu sampling option docs must retain the bounded-RMSE/default-promotion boundary");
+}
 const ptWebgpuSamplingOptionsTest = await readText("packages/pt-webgpu/src/__tests__/samplingOptions.test.ts");
 for (const needle of [
   "SOBOL_DIMENSION_AUDIT_2026_06_21",
+  "monotonic frame sample key",
+  "per-pixel scramble slot",
   "monotonic dimension increment",
   "area-light surface pair consumes adjacent dimensions",
   "photon stream seed",
@@ -540,6 +551,16 @@ for (const needle of [
 ]) {
   if (!ptWebgpuSamplingOptionsTest.includes(needle)) {
     fail(`pt-webgpu Sobol dimension audit test must retain source-level draw-order proof: ${needle}`);
+  }
+}
+const radiometricProofs = await readText("tools/radiometric-ab/proofs.mjs");
+for (const needle of [
+  'id: "sobol"',
+  'resultPath: "tools/radiometric-ab/results-sobol.json"',
+  'defaultReady: false',
+]) {
+  if (!radiometricProofs.includes(needle)) {
+    fail(`radiometric A/B proofs must retain Sobol bounded-evidence metadata: ${needle}`);
   }
 }
 

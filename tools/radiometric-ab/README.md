@@ -3,19 +3,22 @@
 Radiometric A/B harnesses for `pt-webgpu`. Most scripts run full-tier render
 variants in the linear HDR domain (`captureFrame({ colorSpace:'linear' })`) —
 the raw `accumTexture` float32 values, NOT the tonemapped display output. The
+Sobol lane intentionally runs on the WSL-available lite tier as a bounded
+correctness/convergence proxy; it is not default-promotion evidence. The
 ReSTIR-PT specialty-lobe script is a CPU/static identity proof for scalar and
 map-backed-effective lobe payloads, not a GPU recapture.
 
 ## What this tests
 
 "Does the math converge to the same answer?" — the tier above the behavioral gate's
-"does it render?".  Three comparisons:
+"does it render?".  Comparisons:
 
 | Script | Test | Reference | Candidate |
 |--------|------|-----------|-----------|
 | `ab-sppm.mjs` | SPPM convergence | `causticStrategy:'manifold-nee'` (GPU-validated MNEE) | `causticStrategy:'photon-map'` at 20/50/80 frames |
 | `ab-bdpt.mjs` | BDPT unbiasedness + variance | `bdpt:false` (unidirectional) | `bdpt:true` |
 | `ab-restir-pt.mjs` | ReSTIR-PT bias + variance | `restirPtReuse:false` (default megakernel) | `restirPtReuse:true` (composite megakernel) |
+| `ab-sobol.mjs` | Sobol equal-frame RMSE proxy | higher-frame PCG | `sampling:'sobol'` at the same frame count as low-frame PCG |
 | `ab-restir-pt-specialty.mjs` | ReSTIR-PT specialty-lobe identity | base-path CPU estimator | one-sample ReSTIR-PT producer/finalize/resolve identity for scalar + map-backed-effective clearcoat/sheen/iridescence/aniso/specular payloads |
 
 ## How to run
@@ -23,8 +26,11 @@ map-backed-effective lobe payloads, not a GPU recapture.
 Prerequisites: Deno ≥ 2.8 and a pt-webgpu full-tier WebGPU adapter. The SPPM,
 BDPT, and ReSTIR-PT A/B scripts now force `traceTier:"full"` and fail fast when
 the adapter resolves to lite, because lite disables caustics/BDPT/ReSTIR-PT and
-can otherwise produce false all-zero "passes". They also require non-black
-linear-HDR captures, so two black arms cannot be reported as a passing A/B.
+can otherwise produce false all-zero "passes". The Sobol script forces
+`traceTier:"lite"` because its current committed role is WSL-recappable proof
+that the opt-in sampler is bounded and non-regressing, not evidence for changing
+the default. All GPU A/Bs require non-black linear-HDR captures, so two black
+arms cannot be reported as a passing A/B.
 
 ```bash
 # From the repo root:
@@ -36,6 +42,8 @@ npm run radiometric-ab:sppm
 npm run radiometric-ab:bdpt
 
 npm run radiometric-ab:restir-pt
+
+npm run radiometric-ab:sobol
 
 # Static CPU fixture check:
 npm run radiometric-ab:restir-pt-specialty
@@ -179,6 +187,24 @@ FINDING entry (pre-fix numbers) preserved above for history.
 | SPPM | relErr < 500% AND convergence trend decreasing | N/A |
 | BDPT | global relErr < 10% (unbiasedness) | ratio ≤ 2.0 |
 | ReSTIR-PT | global relErr < 10% (bias check) | ratio ≤ 3.0 |
+| Sobol | global/ROI RMSE ratio ≤ 1.5 vs equal-frame PCG proxy | elapsed ratio ≤ 20.0 on WSL lite |
+
+### A/B #4 — Sobol equal-frame RMSE proxy
+
+**PASS as bounded opt-in evidence, not a default-promotion claim** (captured
+2026-06-21 on WSL lavapipe lite tier).
+
+The harness compares `sampling:'sobol'` against low-frame PCG at the same
+12-frame budget, using a 40-frame PCG image as the reference. It covers the
+Cornell indirect scene and the caustic-floor stress scene. The Sobol frame key
+now preserves a monotonic low 16-bit sample index while using high bits as the
+scramble seed, so the source-level sampler is no longer just a hashed random
+index stream.
+
+Current result: Sobol stays within the committed 1.5x global/ROI RMSE envelope
+on both scenes, but it does not beat PCG enough to justify default promotion.
+Keep Sobol opt-in until a full-tier real-adapter equal-time capture shows a
+clear convergence win.
 
 ## Shared infrastructure
 

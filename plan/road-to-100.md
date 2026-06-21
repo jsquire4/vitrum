@@ -2084,8 +2084,14 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    ReSTIR-PT Sobol variants. 2026-06-21 follow-up: the pt-webgpu source-level
    dimension audit now pins the monotonic RNG state plus camera, spectral,
    alpha-visibility, light selection, area-light, environment, BSDF lobe, SPPM
-   photon, and ReSTIR-PT producer draw anchors. Remaining work is equal-time
-   RMSE convergence proof.
+   photon, and ReSTIR-PT producer draw anchors. 2026-06-21 follow-up B:
+   pt-webgpu Sobol now derives its low 16 state bits from the monotonic frame
+   sample index rather than a hashed `frameSeed ^ pixelSeed`, preserving the
+   intended low-discrepancy ordering while retaining a per-pixel scramble slot.
+   `tools/radiometric-ab/ab-sobol.mjs` records a WSL-lite equal-frame RMSE A/B
+   over Cornell-indirect and caustic-floor reference scenes; it passes the
+   bounded 1.5x RMSE envelope but does not justify default promotion. Remaining
+   work is full-tier/real-adapter equal-time evidence before changing defaults.
 2. Compressed wide BVH traversal (`WBVH-01`): the shared substrate is now
    opt-in renderer landed: `shared-bvh` exports CWBVH-style 8-wide packing, quantized
    child bounds, deterministic packed metadata, conservative dequantized bounds
@@ -2176,16 +2182,19 @@ render-health lanes for full, lite, BDPT, and ReSTIR-PT reuse Sobol variants:
 the normal behavioral gate and individual WSL dzn status artifacts prove finite
 non-black readbacks with zero GPU errors for `pt/sobol-default`,
 `pt/sobol-lite`, `pt/sobol-bdpt`, and `pt/sobol-restirPtReuse`. 2026-06-20
-follow-up: the pt-webgpu RNG state now packs a 16-bit Sobol sample index, an
-8x8 pixel-tile rank, and the 8-bit dimension counter; `ptSobolNextU32` applies
-a per-dimension 24-bit Cranley-Patterson rotation from that rank, and
+follow-up: the pt-webgpu Sobol now carries a binding-free 8x8 ranked tiled
+rotation; its RNG state packs a 16-bit Sobol sample index, an 8-bit
+per-pixel scramble/rotation slot, and the 8-bit dimension counter;
+`ptSobolNextU32` applies a per-dimension 24-bit Cranley-Patterson rotation
+from that slot, and
 `shared-samplers` pins the same table/state/oracle values. 2026-06-21
 follow-up: `samplingOptions.test.ts` now carries the pt-webgpu source-level
 dimension audit, covering the monotonic dimension counter and camera/spectral/
 alpha-visibility/light/lobe/SPPM/ReSTIR-PT draw anchors.
 
-**Remaining work:** equal-time RMSE A/B on the reference scenes
-(self-validating error curves, not eyeballs).
+**Remaining work:** full-tier/real-adapter equal-time RMSE A/B before default
+promotion. The WSL-lite `radiometric-ab:sobol` proof is now committed as bounded
+opt-in evidence, not as a convergence-superiority claim.
 
 ### F2 — Compressed wide BVH traversal (biggest throughput win)
 

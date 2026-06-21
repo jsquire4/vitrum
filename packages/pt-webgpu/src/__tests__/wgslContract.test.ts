@@ -297,8 +297,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-21: anisotropic GGX sampled/evaluated paths now use a
     // conservative projected-roughness Kulla-Conty multiscatter approximation.
     // RENDER-CHANGING for rough anisotropic materials.
-    expect(digest).toBe('aedaf61498b150b56446e2aedc4e5369c411620c0506e285c0e99d5f9f6231c9');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(399598);
+    // Re-pinned 2026-06-21: ptRngFrameKey preserves PCG's old frameSeed^frameIndex
+    // expression while letting Sobol use a monotonic sample key in the opt-in module.
+    expect(digest).toBe('3c1009ff490eda39f0423bb447af94d4f3200d359d6c7c370dcfe75623ed188f');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(399709);
   });
 });
 

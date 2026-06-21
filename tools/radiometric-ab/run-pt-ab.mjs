@@ -31,6 +31,10 @@ const CASES = {
     script: 'tools/radiometric-ab/ab-restir-pt.mjs',
     resultFile: 'tools/radiometric-ab/results-restir-pt.json',
   },
+  sobol: {
+    script: 'tools/radiometric-ab/ab-sobol.mjs',
+    resultFile: 'tools/radiometric-ab/results-sobol.json',
+  },
 };
 
 function parseTimeoutMs(raw) {
@@ -158,7 +162,7 @@ const status = {
   nextSteps: hasBlocked
     ? [
       'Run these A/B scripts on a native-Deno full-tier adapter or browser/real-adapter validation lane.',
-      'Do not promote SPPM, BDPT multi-vertex, or ReSTIR-PT specialty rows from this host-blocked recapture.',
+      'Do not promote SPPM, BDPT multi-vertex, ReSTIR-PT specialty, or Sobol default rows from this host-blocked recapture.',
       'Use the preserved result JSONs only as committed historical evidence until a full recapture replaces them.',
     ]
     : [],

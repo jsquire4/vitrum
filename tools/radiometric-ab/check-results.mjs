@@ -154,6 +154,57 @@ function checkRestirPt(proof, result) {
   }
 }
 
+/**
+ * @param {any} proof
+ * @param {any} result
+ */
+function checkSobol(proof, result) {
+  if (result.traceTier !== proof.traceTier) fail("sobol: traceTier differs from proofs.mjs");
+  if (result.reference?.sampling !== proof.reference.sampling) fail("sobol: reference sampling differs from proofs.mjs");
+  if (result.reference?.frames !== proof.reference.frames) fail("sobol: reference frame count differs from proofs.mjs");
+  if (result.candidateFrames !== proof.candidateFrames) fail("sobol: candidate frame count differs from proofs.mjs");
+  if (result.thresholds?.maxGlobalRmseRatio !== proof.thresholds.maxGlobalRmseRatio) {
+    fail("sobol: maxGlobalRmseRatio differs from proofs.mjs");
+  }
+  if (result.thresholds?.maxRoiRmseRatio !== proof.thresholds.maxRoiRmseRatio) {
+    fail("sobol: maxRoiRmseRatio differs from proofs.mjs");
+  }
+  if (result.thresholds?.maxElapsedMsRatio !== proof.thresholds.maxElapsedMsRatio) {
+    fail("sobol: maxElapsedMsRatio differs from proofs.mjs");
+  }
+  /** @type {any[]} */
+  const scenes = result.scenes ?? [];
+  const sceneIds = scenes.map((scene) => scene.id);
+  if (!sameJson(sceneIds, proof.sceneIds)) {
+    fail(`sobol: scene ids ${JSON.stringify(sceneIds)} differ from proofs.mjs`);
+  }
+  for (const scene of scenes) {
+    if (scene.referenceFrames !== proof.reference.frames) {
+      fail(`sobol ${scene.id}: referenceFrames differs from proofs.mjs`);
+    }
+    if (scene.candidateFrames !== proof.candidateFrames) {
+      fail(`sobol ${scene.id}: candidateFrames differs from proofs.mjs`);
+    }
+    if (scene.pass !== true) fail(`sobol ${scene.id}: scene pass must be true`);
+    assertFiniteNumber(scene.pcg?.globalRmse, `sobol ${scene.id}: pcg.globalRmse`);
+    assertFiniteNumber(scene.sobol?.globalRmse, `sobol ${scene.id}: sobol.globalRmse`);
+    assertFiniteNumber(scene.pcg?.roiRmse, `sobol ${scene.id}: pcg.roiRmse`);
+    assertFiniteNumber(scene.sobol?.roiRmse, `sobol ${scene.id}: sobol.roiRmse`);
+    assertFiniteNumber(scene.ratios?.globalRmse, `sobol ${scene.id}: ratios.globalRmse`);
+    assertFiniteNumber(scene.ratios?.roiRmse, `sobol ${scene.id}: ratios.roiRmse`);
+    assertFiniteNumber(scene.ratios?.elapsedMs, `sobol ${scene.id}: ratios.elapsedMs`);
+    if (scene.ratios.globalRmse > proof.thresholds.maxGlobalRmseRatio) {
+      fail(`sobol ${scene.id}: global RMSE ratio ${scene.ratios.globalRmse} exceeds ${proof.thresholds.maxGlobalRmseRatio}`);
+    }
+    if (scene.ratios.roiRmse > proof.thresholds.maxRoiRmseRatio) {
+      fail(`sobol ${scene.id}: ROI RMSE ratio ${scene.ratios.roiRmse} exceeds ${proof.thresholds.maxRoiRmseRatio}`);
+    }
+    if (scene.ratios.elapsedMs > proof.thresholds.maxElapsedMsRatio) {
+      fail(`sobol ${scene.id}: elapsed ratio ${scene.ratios.elapsedMs} exceeds ${proof.thresholds.maxElapsedMsRatio}`);
+    }
+  }
+}
+
 /** @param {any} proof */
 async function checkRestirPtSpecialty(proof) {
   const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
@@ -425,6 +476,7 @@ for (const proof of RADIOMETRIC_AB_PROOFS) {
   if (proof.id === "sppm") checkSppm(proof, result);
   else if (proof.id === "bdpt") checkBdpt(proof, result);
   else if (proof.id === "restir-pt") checkRestirPt(proof, result);
+  else if (proof.id === "sobol") checkSobol(proof, result);
   else fail(`unknown proof id ${proof.id}`);
 }
 
