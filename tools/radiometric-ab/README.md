@@ -200,18 +200,23 @@ pre-tonemap `resolvedTexture` through `engine.captureFrame({ colorSpace:"linear"
 luminance statistics are therefore linear-HDR float32 values rather than display-encoded
 8-bit swap-chain samples.
 
-**Current WSL validation status (2026-06-18):** `npm run radiometric-ab:walkaround`
-now completes on the current native WSL WebGPU host and writes
-`walkaround-ab-host-status.json` with `verdict:"PASS-PARTIAL"`. The host is no
-longer classified as blocked for this lane. The partial verdict is intentional:
-the SUN case proves nonzero direct sun plus shadow correctness, but its analytic
-floor ratio is outside the full promotion band at 16 spp, so the status keeps a
-do-not-promote warning. If a future host times out or hits the known native-Deno
-WebGPU panic, the wrapper still records `HOST-BLOCKED` rather than a renderer
-PASS/FAIL verdict. Slow native-Deno hosts can raise the default 180-second
-wrapper budget with `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
+**Current WSL validation status (2026-06-21):** `npm run radiometric-ab:walkaround`
+is currently host-blocked on this native WSL/Deno path by the known
+`wgpu-hal-28.0.0/src/gles/command.rs:771:21` panic, even when the harness is
+targeted to `VITRUM_WALKAROUND_AB_CASES=sun` and the Vulkan/lavapipe ICD is
+pinned. The wrapper records that as `verdict:"HOST-BLOCKED"` and preserves the
+last committed result file rather than turning a host crash into a renderer
+PASS/FAIL. Slow native-Deno hosts can raise the default 180-second wrapper
+budget with `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
 
-### Current Linear-HDR Results (2026-06-18)
+The harness now accepts `VITRUM_WALKAROUND_AB_CASES=a8,sun,glass,glossy` to
+rerun a subset of cases while preserving the other committed results. The SUN
+fixture was corrected after the preserved 2026-06-18 capture: it now compares a
+diffuse-only directional receiver against `Lo = I * cos(theta) * albedo / pi`
+and disables sky, GTAO, and denoising for that case. Rerun the SUN case on a
+browser/real-adapter or a fixed native-Deno host before promoting that row.
+
+### Preserved Linear-HDR Results (2026-06-18)
 
 The committed `walkaround-ab-results.json` values below are post-denoise,
 pre-tonemap linear-HDR float32 captures. They supersede the old 8-bit

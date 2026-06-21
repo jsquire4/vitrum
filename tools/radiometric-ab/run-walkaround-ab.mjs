@@ -35,6 +35,7 @@ const denoArgs = [
   'tools/radiometric-ab/walkaround-ab.mjs',
 ];
 const timeoutMs = parseTimeoutMs(process.env.VITRUM_WALKAROUND_AB_TIMEOUT_MS);
+const selectedCases = process.env.VITRUM_WALKAROUND_AB_CASES ?? null;
 
 const result = spawnSync('deno', denoArgs, {
   cwd: repoRoot,
@@ -55,6 +56,7 @@ if (timedOut) {
     harness: 'walkaround-ab',
     verdict: 'HOST-BLOCKED',
     command: `deno ${denoArgs.join(' ')}`,
+    selectedCases,
     timeoutMs,
     icd: process.env.VK_ICD_FILENAMES ?? null,
     exitStatus: result.status,
@@ -106,6 +108,7 @@ if (result.status === 0) {
     harness: 'walkaround-ab',
     verdict: partial ? 'PASS-PARTIAL' : 'PASS',
     command: `deno ${denoArgs.join(' ')}`,
+    selectedCases,
     timeoutMs,
     icd: process.env.VK_ICD_FILENAMES ?? null,
     exitStatus: result.status,
@@ -144,6 +147,7 @@ if (knownDenoWgpuPanic) {
     harness: 'walkaround-ab',
     verdict: 'HOST-BLOCKED',
     command: `deno ${denoArgs.join(' ')}`,
+    selectedCases,
     icd: process.env.VK_ICD_FILENAMES ?? null,
     exitStatus: result.status,
     signal: result.signal,

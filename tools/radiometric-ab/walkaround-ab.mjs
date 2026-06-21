@@ -15,7 +15,7 @@
  *
  *   SUN  Sun-NEE analytic validation:
  *       directional-lit diffuse floor (no area emitter). Compares rendered floor
- *       luminance to the analytic direct irradiance E = I·cosθ·albedo.
+ *       luminance to the analytic outgoing radiance Lo = I·cosθ·albedo/π.
  *       A shadowed region (back of the box) must be near-zero. Self-validating
  *       harness pattern.
  *
@@ -90,14 +90,14 @@ const proj   = asMat4(makePerspectiveMatrix(60, W / H, 0.1, 50));
 const view   = asMat4(makeLookAtMatrix(EYE, CENTER, [0,1,0]));
 
 // ── Scene builders ────────────────────────────────────────────────────────────
-function makeQuad(id, verts, normal, color, roughness = 1.0, metallic = 0.0) {
+function makeQuad(id, verts, normal, color, roughness = 1.0, metallic = 0.0, materialExtras = {}) {
   return {
     kind: "mesh", id,
     positions: new Float32Array(verts.flat()),
     normals:   new Float32Array([...normal, ...normal, ...normal, ...normal]),
     uvs:       new Float32Array(8),
     indices:   new Uint32Array([0, 2, 1, 2, 0, 3]),
-    material:  { baseColor: color, roughness, metallic },
+    material:  { baseColor: color, roughness, metallic, ...materialExtras },
   };
 }
 
@@ -160,14 +160,15 @@ function makeCornellScene(opts = {}) {
 
 /** Directional-only scene: just a flat diffuse floor + walls, no area emitter. */
 function makeDirOnlyScene() {
+  const diffuseOnly = { specularIntensity: 0.0 };
   return {
     primitives: [
       // Large diffuse floor — the analytic check region
-      makeQuad("floor",     [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]], [0,1,0], [0.8,0.8,0.8]),
+      makeQuad("floor",     [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]], [0,1,0], [0.8,0.8,0.8], 1.0, 0.0, diffuseOnly),
       // Back wall (in shadow from camera's angle)
-      makeQuad("back-wall", [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], [0.8,0.8,0.8]),
-      makeQuad("left-wall", [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1]),
-      makeQuad("right-wall",[[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1]),
+      makeQuad("back-wall", [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], [0.8,0.8,0.8], 1.0, 0.0, diffuseOnly),
+      makeQuad("left-wall", [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1], 1.0, 0.0, diffuseOnly),
+      makeQuad("right-wall",[[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1], 1.0, 0.0, diffuseOnly),
     ],
     emitters:    [],
     environment: { kind: "none" },
@@ -419,15 +420,15 @@ async function runA8() {
 //   cosθ = dot(floorNormal, toSun) = dot([0,1,0], normalize(-[0.3,-0.8,0.5]))
 //         = dot([0,1,0], normalize([-0.3, 0.8, -0.5]))
 //         = 0.8 / sqrt(0.09 + 0.64 + 0.25) = 0.8 / sqrt(0.98) ≈ 0.808
-// Analytic direct irradiance on floor = I × cosθ = 3.0 × 0.808 = 2.424
-// After Lambertian BRDF (albedo/π) and the cosine-weighted outgoing integration:
-//   Rendered luminance = I × cosθ × (albedo / π) × π = I × cosθ × albedo
-//   (the π from Lambertian BRDF cancels the ∫cosθdω hemisphere integral)
-//   = 3.0 × 0.808 × 0.8 ≈ 1.939 in linear HDR units.
+// Analytic outgoing radiance from a directional light:
+//   Lo = Li × f_r × cosθ = I × (albedo / π) × cosθ
+// The hemisphere ∫cosθdω=π cancellation applies to uniform diffuse irradiance,
+// not to a delta/directional emitter. The walkaround shader's evalGGX path
+// likewise returns `albedo * INV_PI * NdotL` for a diffuse-only material.
 // The harness reads `captureFrame({ colorSpace:"linear" })` after rendering, so
 // the signal is not tonemapped or quantized by the host swap-chain. We still use
 // a lower intensity (0.3) to keep the analytic value near the rest of the scene:
-//   I=0.3 → E = 0.3 × 0.808 × 0.8 ≈ 0.194
+//   I=0.3 → Lo = 0.3 × 0.808 × 0.8 / π ≈ 0.062
 //
 // Back wall: normal [0,0,-1]. cos(wallNormal, toSun) = dot([0,0,-1], [-0.3,0.8,-0.5]*norm)
 //   = dot([0,0,-1], [-0.303, 0.808, -0.505]) ≈ 0.505 > 0, so back wall IS lit.
@@ -445,6 +446,10 @@ async function runSun() {
   const sunResult = await runVariant("sun", {
     primaryLightDir:       [0.3, -0.8, 0.5],
     primaryLightIntensity: 0.3,
+    skyTint:               [0, 0, 0],
+    skyIrradiance:         0.0,
+    denoiser:              "none",
+    gtaoMode:              "off",
   }, () => makeDirOnlyScene());
 
   const dt = ((Date.now() - t0) / 1000).toFixed(1);
@@ -462,7 +467,7 @@ async function runSun() {
   const leftLum   = regionLuminance(pixels, W,  0, 30,  15,  98); // left wall (should be dark — sun comes from the right of left-wall)
   const overallLum = sunResult.lum;
 
-  // Analytic: I × cosθ × albedo (diffuse reciprocal Lambertian: brdf=albedo/π, ∫cos dω=π)
+  // Analytic: directional Li × Lambertian BRDF × NdotL.
   // sunDir = [0.3, -0.8, 0.5], floor normal = [0,1,0]
   // toSun from floor = normalize(-sunDir) = normalize([-0.3, 0.8, -0.5])
   const sd = [0.3, -0.8, 0.5];
@@ -471,11 +476,11 @@ async function runSun() {
   const cosTheta = Math.max(0, toSun[1]); // dot([0,1,0], toSun)
   const intensity = 0.3;
   const albedo    = 0.8; // floor baseColor luminance (0.8,0.8,0.8 → Y≈0.8)
-  // Analytic rendered luminance (Lambertian: Lo = albedo/π × E = albedo × I × cosθ)
-  const analyticFloor = intensity * cosTheta * albedo;
+  // Analytic rendered luminance for a diffuse-only directional receiver.
+  const analyticFloor = intensity * cosTheta * albedo / Math.PI;
 
-  // Tolerance: the walkaround pipeline applies denoising, temporal accumulation,
-  // GTAO AO, and the atrous filter — these can attenuate. We use a ±50% band.
+  // Tolerance: this is still the full walkaround render/capture path on lavapipe
+  // with temporal accumulation and finite pixel windows, so keep a broad band.
   const tol = 0.5;
   const floorRatioToAnalytic = analyticFloor > 0 ? floorLum / analyticFloor : 0;
   const analyticPasses = floorRatioToAnalytic >= (1 - tol) && floorRatioToAnalytic <= (1 + tol);
@@ -488,17 +493,18 @@ async function runSun() {
   console.log(`  left-wall:   ${leftLum.toFixed(4)}  (expected < floor×0.7 = ${(floorLum*0.7).toFixed(4)})`);
   console.log(`  overall:     ${overallLum.toFixed(4)}`);
   console.log(`  cosTheta:    ${cosTheta.toFixed(4)}`);
-  console.log(`  analytic Lo: ${analyticFloor.toFixed(4)}  (I=${intensity} × cosθ=${cosTheta.toFixed(3)} × albedo=${albedo})`);
+  console.log(`  analytic Lo: ${analyticFloor.toFixed(4)}  (I=${intensity} × cosθ=${cosTheta.toFixed(3)} × albedo=${albedo} / π)`);
   console.log(`  verdict:     ${verdict} — render time ${dt}s`);
 
   return {
     id: "SUN",
-    description: "Sun-NEE analytic validation: directional-lit diffuse floor vs analytic E=I·cosθ·albedo",
+    description: "Sun-NEE analytic validation: directional-lit diffuse floor vs analytic Lo=I·cosθ·albedo/π",
     spp: SPP,
     resolution: `${W}x${H}`,
     sunDirection: [0.3, -0.8, 0.5],
     sunIntensity: intensity,
     floorAlbedo:  albedo,
+    diffuseOnly: true,
     cosTheta,
     analyticExpectedFloorLum: analyticFloor,
     rendered: {
@@ -512,8 +518,8 @@ async function runSun() {
     renderTimeSec: parseFloat(dt),
     verdict,
     notes: [
-      "analytic = I × cosθ × albedo (Lambertian: brdf=albedo/π, hemisphere integral=π → Lo=albedo×I×cosθ).",
-      "±50% tolerance accounts for GTAO attenuation, temporal accumulation damping, denoiser.",
+      "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
+      "Sun proof disables sky, GTAO, and denoising; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.",
       "Left wall has dot([1,0,0], toSun) < 0 → receives no direct sun (shadow test).",
       "Lavapipe — SPP=16.",
     ],
@@ -726,16 +732,46 @@ async function runGlossy() {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
+const CASE_RUNNERS = {
+  a8: runA8,
+  sun: runSun,
+  glass: runGlass,
+  glossy: runGlossy,
+};
+
+function parseSelectedCases(raw) {
+  if (raw == null || raw.trim() === "") return Object.keys(CASE_RUNNERS);
+  const requested = raw.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
+  const unknown = requested.filter((name) => !(name in CASE_RUNNERS));
+  if (unknown.length > 0) {
+    throw new Error(`Unknown VITRUM_WALKAROUND_AB_CASES value(s): ${unknown.join(", ")}`);
+  }
+  return [...new Set(requested)];
+}
+
 console.log("=== walkaround radiometric A/Bs ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
 console.log(`Resolution: ${W}×${H}, SPP: ${SPP}`);
 
-const a8Result     = await runA8();
-const sunResult    = await runSun();
-const glassResult  = await runGlass();
-const glossyResult = await runGlossy();
+const selectedCases = parseSelectedCases(Deno.env.get("VITRUM_WALKAROUND_AB_CASES"));
+console.log(`Cases: ${selectedCases.join(", ")}`);
 
-const results = { a8: a8Result, sun: sunResult, glass: glassResult, glossy: glossyResult };
+const outPath = new URL("./walkaround-ab-results.json", import.meta.url).pathname;
+let results = {};
+if (selectedCases.length !== Object.keys(CASE_RUNNERS).length) {
+  try {
+    results = JSON.parse(await Deno.readTextFile(outPath));
+  } catch {
+    results = {};
+  }
+}
+
+const selectedResults = [];
+for (const caseName of selectedCases) {
+  const result = await CASE_RUNNERS[caseName]();
+  results[caseName] = result;
+  selectedResults.push(result);
+}
 
 console.log("\n=== SUMMARY ===");
 for (const r of Object.values(results)) {
@@ -743,9 +779,8 @@ for (const r of Object.values(results)) {
 }
 
 // Write JSON results
-const outPath = new URL("./walkaround-ab-results.json", import.meta.url).pathname;
 await Deno.writeTextFile(outPath, JSON.stringify(results, null, 2));
 console.log(`\nResults written to: ${outPath}`);
 
-const anyFail = Object.values(results).some(r => r.verdict === "FAIL" || r.verdict === "ERROR");
+const anyFail = selectedResults.some(r => r.verdict === "FAIL" || r.verdict === "ERROR");
 Deno.exit(anyFail ? 1 : 0);

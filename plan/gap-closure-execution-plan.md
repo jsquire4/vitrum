@@ -565,6 +565,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 |-----------|------|-------------------|
 | V28-B recaptures | all render-changing lanes | Before/after captures with deltas attributed to intended changes. |
 | GRIS-on unbiasedness | walkaround ReSTIR-GI | Converged reference comparison and biased-default error quantification. |
+| Walkaround radiometric A/B harness | walkaround/tools | **UPDATED 2026-06-21.** The SUN fixture now uses the directional-light radiance baseline `Lo = I * cos(theta) * albedo / pi`, runs as diffuse-only, and disables sky/GTAO/denoising for that analytic case. `VITRUM_WALKAROUND_AB_CASES` can rerun selected cases while preserving the other committed results. Current WSL native-Deno validation is `HOST-BLOCKED` by the known `wgpu-hal-28.0.0/src/gles/command.rs:771:21` panic even for `VITRUM_WALKAROUND_AB_CASES=sun`; rerun on browser/real-adapter or a fixed native-Deno host before promotion. |
 | PPG quality | walkaround PPG | Favorable-scene A/B showing convergence or variance win. |
 | NRC quality/default tier | walkaround NRC | Quality/convergence A/B after warm-up gate; decide default/off/experimental. |
 | Neural denoiser quality | shared/walkaround | Production checkpoint plus quality A/B; otherwise keep opt-in. |
