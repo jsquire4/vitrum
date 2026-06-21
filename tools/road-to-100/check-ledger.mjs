@@ -31,6 +31,85 @@ async function readText(path) {
   return await Deno.readTextFile(repoUrl(path));
 }
 
+/**
+ * @param {string} source
+ * @param {string} name
+ */
+function extractFrozenObjectBlock(source, name) {
+  const start = source.indexOf(`const ${name}`);
+  if (start < 0) fail(`missing ${name} declaration`);
+  const open = source.indexOf("Object.freeze({", start);
+  if (open < 0) fail(`${name} must remain an Object.freeze object`);
+  const close = source.indexOf("\n});", open);
+  if (close < 0) fail(`${name} object block is not closed as expected`);
+  return source.slice(open, close + 4);
+}
+
+/**
+ * @param {string} source
+ * @param {string} needle
+ */
+function extractArrayBlock(source, needle) {
+  const start = source.indexOf(needle);
+  if (start < 0) fail(`missing array declaration: ${needle}`);
+  const open = source.indexOf("[", start);
+  if (open < 0) fail(`${needle} array has no opening bracket`);
+  const close = source.indexOf("];", open);
+  if (close < 0) fail(`${needle} array block is not closed as expected`);
+  return source.slice(open, close + 1);
+}
+
+/**
+ * @param {string} source
+ * @param {string} name
+ */
+function parseStringSupportObject(source, name) {
+  const block = extractFrozenObjectBlock(source, name);
+  /** @type {Map<string, string>} */
+  const rows = new Map();
+  for (const match of block.matchAll(/^\s{2}([A-Za-z0-9_]+): '([^']+)'/gm)) {
+    rows.set(match[1], match[2]);
+  }
+  if (rows.size === 0) fail(`${name} parsed zero support rows`);
+  return rows;
+}
+
+/** @param {string} source */
+function parseConsumedMaterialFields(source) {
+  const start = source.indexOf("export const CONSUMED_MATERIAL_FIELDS");
+  if (start < 0) fail("missing CONSUMED_MATERIAL_FIELDS declaration");
+  const open = source.indexOf("[", start);
+  if (open < 0) fail("CONSUMED_MATERIAL_FIELDS set has no opening bracket");
+  const close = source.indexOf("]);", open);
+  if (close < 0) fail("CONSUMED_MATERIAL_FIELDS set is not closed as expected");
+  const block = source.slice(open, close + 1);
+  return new Set([...block.matchAll(/'([^']+)'/g)].map((match) => match[1]));
+}
+
+/** @param {string} source */
+function parseAtlasMapFieldUnion(source) {
+  const start = source.indexOf("export type AtlasMapField =");
+  if (start < 0) fail("missing AtlasMapField union");
+  const close = source.indexOf(";", start);
+  if (close < 0) fail("AtlasMapField union is not closed as expected");
+  return new Set([...source.slice(start, close).matchAll(/'([^']+)'/g)].map((match) => match[1]));
+}
+
+/** @param {string} source */
+function parseAtlasMapFields(source) {
+  const block = extractArrayBlock(source, "const ATLAS_MAP_FIELDS");
+  return new Set([...block.matchAll(/field: '([^']+)'/g)].map((match) => match[1]));
+}
+
+/** @param {string} source */
+function parseMaterialAtlasOffsetNames(source) {
+  const start = source.indexOf("export const MATERIAL_MAP_META_TEXEL_OFFSETS = {");
+  if (start < 0) fail("missing MATERIAL_MAP_META_TEXEL_OFFSETS declaration");
+  const close = source.indexOf("} as const;", start);
+  if (close < 0) fail("MATERIAL_MAP_META_TEXEL_OFFSETS block is not closed as expected");
+  return new Set([...source.slice(start, close).matchAll(/^\s{2}([A-Z0-9_]+):/gm)].map((match) => match[1]));
+}
+
 for (const path of REQUIRED_SOURCE_FILES) {
   try {
     const stat = await Deno.stat(repoUrl(path));
@@ -81,6 +160,97 @@ if (!Array.isArray(metadata.requiredGreenGates) || !metadata.requiredGreenGates.
 
 const road = await readText("plan/road-to-100.md");
 const packageJson = JSON.parse(await readText(PACKAGE_PATH));
+
+const walkaroundPromiseLedger = await readText("packages/core/src/engine/promiseLedger.ts");
+if (!/row !== 'unsupported'[\s\S]*CONSUMED_MATERIAL_FIELDS/.test(walkaroundPromiseLedger)) {
+  fail("walkaround material ledger must keep the consumed-field equivalence comment");
+}
+
+const walkaroundMaterialRows = parseStringSupportObject(walkaroundPromiseLedger, "WALKAROUND_MATERIALS");
+const walkaroundConsumedFieldsSource = await readText("packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts");
+const walkaroundConsumedFields = parseConsumedMaterialFields(walkaroundConsumedFieldsSource);
+const walkaroundMaterialAtlas = await readText("packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts");
+const atlasMapFieldUnion = parseAtlasMapFieldUnion(walkaroundMaterialAtlas);
+const atlasMapFields = parseAtlasMapFields(walkaroundMaterialAtlas);
+const atlasOffsetNames = parseMaterialAtlasOffsetNames(walkaroundMaterialAtlas);
+const materialAtlasWgsl = await readText("packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts");
+
+for (const [field, support] of walkaroundMaterialRows) {
+  const consumed = walkaroundConsumedFields.has(field);
+  const shouldConsume = support !== "unsupported";
+  if (consumed !== shouldConsume) {
+    fail(
+      `walkaround material row drift for ${field}: ledger=${support}, ` +
+        `CONSUMED_MATERIAL_FIELDS=${consumed ? "present" : "absent"}`,
+    );
+  }
+}
+
+for (const field of walkaroundConsumedFields) {
+  if (!walkaroundMaterialRows.has(field)) {
+    fail(`CONSUMED_MATERIAL_FIELDS contains ${field}, but WALKAROUND_MATERIALS has no row for it`);
+  }
+}
+
+const permanentlyUnsupportedWalkaroundFields = [
+  "displacementMap",
+  "displacementScale",
+  "displacementBias",
+  "spectralAttenuation",
+  "dispersionAbbeNumber",
+  "scatteringCoefficient",
+  "scatteringAnisotropy",
+  "scatteringCoefficientRGB",
+  "frontLayer",
+  "backLayer",
+  "thinFilmStack",
+];
+
+for (const field of permanentlyUnsupportedWalkaroundFields) {
+  if (walkaroundMaterialRows.get(field) !== "unsupported") {
+    fail(`walkaround permanent unsupported field was promoted without source-check update: ${field}`);
+  }
+  if (walkaroundConsumedFields.has(field)) {
+    fail(`walkaround permanent unsupported field is present in CONSUMED_MATERIAL_FIELDS: ${field}`);
+  }
+  if (atlasMapFieldUnion.has(field) || atlasMapFields.has(field)) {
+    fail(`walkaround permanent unsupported field is present in material texture atlas fields: ${field}`);
+  }
+}
+
+for (const atlasField of atlasMapFieldUnion) {
+  if (!atlasMapFields.has(atlasField)) {
+    fail(`AtlasMapField union includes ${atlasField}, but ATLAS_MAP_FIELDS does not pack it`);
+  }
+  if (!walkaroundConsumedFields.has(atlasField)) {
+    fail(`material atlas exposes ${atlasField}, but CONSUMED_MATERIAL_FIELDS does not include it`);
+  }
+}
+for (const atlasField of atlasMapFields) {
+  if (!atlasMapFieldUnion.has(atlasField)) {
+    fail(`ATLAS_MAP_FIELDS packs ${atlasField}, but AtlasMapField union does not include it`);
+  }
+}
+
+for (const forbiddenOffsetNeedle of [
+  "DISPLACEMENT",
+  "SPECTRAL",
+  "DISPERSION",
+  "SCATTERING",
+  "FRONT_LAYER",
+  "BACK_LAYER",
+  "THIN_FILM",
+]) {
+  for (const offsetName of atlasOffsetNames) {
+    if (offsetName.includes(forbiddenOffsetNeedle)) {
+      fail(`material atlas offset ${offsetName} appears to pack unsupported walkaround material data`);
+    }
+  }
+  if (materialAtlasWgsl.includes(`MATERIAL_MAP_${forbiddenOffsetNeedle}`)) {
+    fail(`materialAtlas.wgsl declares an unsupported walkaround atlas offset: ${forbiddenOffsetNeedle}`);
+  }
+}
+
 if (!road.includes('For this ledger, "100%" = everything fully implemented')) {
   fail("road-to-100.md must retain the explicit 100% definition");
 }
