@@ -54,6 +54,7 @@
  *   Functions declared by required modules (common, surfaceTextures,
  *   ddgiGridUbo, sampleCascadeC0, stainedGlassShade, environmentSample):
  *     traceSceneAny, traceSceneAnyAlphaMaskTextured (SHADOW-01 / ALPHA-03),
+ *     traceSceneAlphaTintTransmittanceTextured,
  *     traceSceneFirstHit, loadReservoirDI_rw,
  *     loadReservoirGI_rw, sampleEmitterPoint, emitterGeometry,
  *     evalGGX, evalGGXSpecularOnly, decodeSurfaceTextureId,
@@ -311,7 +312,16 @@ fn lo_direct(
     if (nDotL < 1e-6) { return vec3f(0.0); }
     let envColor = envRadiance(envDir) * max(envMapIntensity, 0.0);
     let brdfE = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, envDir);
-    return envColor * brdfE * r.W;
+    let shadowTint = traceSceneAlphaTintTransmittanceTextured(
+      ubo.bvhMode, ubo.tlasNodeCount,
+      &bvh_index, &bvh_position, &bvh,
+      &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
+      &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
+      pos + geoNormal * 1e-3, envDir, 1e20, ubo.triIntersectEpsilon,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+    let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);
+    if (shadowScalar <= 0.001) { return vec3f(0.0); }
+    return envColor * brdfE * r.W * (shadowTint / vec3f(max(shadowScalar, 1e-4)));
   }
 
   if (lid >= ubo.emitterCount) { return vec3f(0.0); }
@@ -332,16 +342,25 @@ fn lo_direct(
     // (light passes through glass; per-channel tinted-visibility handles tint).
     // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
     // shading normal can dip below the surface near silhouettes → self-hit).
-    // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry
-    // and readable texture-alpha cutouts through the material atlas.
-    let occ = traceSceneAnyAlphaMaskTextured(
+    // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry,
+    // apply readable texture-alpha cutouts, and carry glass Beer tint through
+    // the material atlas. The producer scalarizes that RGB visibility for the
+    // reservoir W; divide by the same scalar here so the final contribution
+    // preserves color instead of becoming gray attenuation.
+    let shadowTint = traceSceneAlphaTintTransmittanceTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
       &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-      pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH);
-    if (occ) { return vec3f(0.0); }
+      pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+    let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);
+    if (shadowScalar <= 0.001) { return vec3f(0.0); }
+    let shadowColorCorrection = shadowTint / vec3f(max(shadowScalar, 1e-4));
+    let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
+    let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
+    let Le = sampleEmitterLeAtXi(e, r.xi);
+    return Le * brdf * G * r.W * shadowColorCorrection;
   }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
   let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
@@ -440,22 +459,21 @@ fn lo_sunNEE(
   if (nDotSun <= 1e-6) { return vec3f(0.0); }
 
   // Shadow ray — offset along geometric normal (same pattern as lo_direct / lo_analyticNEE).
-  // skipGlass=true: glass panes do NOT block direct sun in this estimator —
-  // lo_sg_caustic handles the tinted-glass path separately when the stained-glass
-  // flag is set. This conservative transparency matches the analytic-NEE convention
-  // and avoids double-counting with the tinted-visibility path in lo_sg_caustic.
+  // Generic direct sun now uses the same RGB alpha/transmission/thickness/Beer
+  // visibility as analytic NEE and transparent OIT. The stained-glass caustic
+  // term remains an optional boosted artistic estimator layered on top.
   // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry and
   // attenuate through readable alpha-blend coverage in the material atlas.
-  var sunShadowT = 1.0;
+  var sunShadowT = vec3f(1.0);
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    sunShadowT = traceSceneAlphaTransmittanceTextured(
+    sunShadowT = traceSceneAlphaTintTransmittanceTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
       &bvh_index, &bvh_position, &bvh,
       &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
       &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-      pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon, true,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH);
-    if (sunShadowT <= 0.001) { return vec3f(0.0); }
+      pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon,
+      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+    if (max(max(sunShadowT.x, sunShadowT.y), sunShadowT.z) <= 0.001) { return vec3f(0.0); }
   }
 
   // Full BRDF evaluation (diffuse + GGX specular) — same pattern as lo_analyticNEE.

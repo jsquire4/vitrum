@@ -25,7 +25,10 @@ describe('emitter castShadow:false shader gates', () => {
     expect(RESERVOIR_DI_WGSL).toContain('castShadowDisabled: f32');
     expect(RIS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
     expect(SHADING_TERMS_WGSL).toContain('if (e.castShadowDisabled < 0.5)');
-    expect(RIS_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
+    expect(RIS_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+    expect(RIS_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
+    expect(RIS_WGSL).toContain('restirDirectVisibilityScalar(shadowTint)');
+    expect(RIS_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
   });
 

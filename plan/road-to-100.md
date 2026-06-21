@@ -112,7 +112,14 @@
 > for anisotropic direct-light BRDF materials instead of downgrading the
 > whole fit to finite difference merely because KHR_materials_anisotropy is
 > present, made transparent-OIT direct sun
-> cast-shadow-aware, rejected adjoint path replay for primitive targets the
+> cast-shadow-aware, and the current direct-light tint follow-up routes
+> transparent-OIT sun, opaque shade sun, and ReSTIR-DI environment/emitter
+> visibility through the same RGB alpha/transmission/thickness/Beer helper used
+> by OIT point/spot and finite-emitter lighting. ReSTIR-DI keeps a scalar
+> reservoir by storing luminance of that RGB visibility and reapplying the
+> recomputed tint during shade consumption; this still does not promote
+> transparent surfaces to ReSTIR/GI transport vertices.
+> The same wave rejected adjoint path replay for primitive targets the
 > triangle-only replay pass cannot actually hit, added material-lobe analytic point/spot and
 > camera-visible finite-emitter direct lighting to transparent OIT, and
 > warm-up gated NRC substitution so spread-fired records

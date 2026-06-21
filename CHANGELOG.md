@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround transparent direct-light tint, 2026-06-20)
+
+- **Walkaround direct-light shadows now carry RGB transparent transmittance:** `@vitrum/walkaround-hybrid` routes transparent-OIT sun, opaque shade sun, and ReSTIR-DI environment/emitter finalization through `traceSceneAlphaTintTransmittanceTextured()`, so readable `transmissionMap`, `thicknessMap`, Beer tint, and atlas alpha coverage affect direct-light shadow color instead of scalar alpha-only visibility. ReSTIR-DI keeps its scalar reservoir contract by storing luminance of RGB visibility and reapplying the recomputed tint during shade consumption. Transparent ReSTIR/GI transport vertices remain a separate approximation tail.
+
 ### Added (pt-webgl2 inverse session, 2026-06-20)
 
 - **`@vitrum/pt-webgl2` now exposes `createInverseSession()` with finite-difference gradients:** the WebGL2 backend uses the retained last camera, a frozen seed sequence, normal `renderFrame()` accumulation, RGBA32F readback, and existing material/emitter mutation hooks to support the public inverse-rendering session contract. Requested `method:'path-replay'` downgrades with a structured diagnostic; analytic adjoint replay remains pt-webgpu-only.

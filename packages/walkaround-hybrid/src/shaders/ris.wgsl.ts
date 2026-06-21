@@ -38,6 +38,7 @@ export const RIS_WGSL = /* wgsl */ `
 @group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
 @group(1) @binding(3) var<storage, read> emitters:     array<EmitterTri>;
 @group(1) @binding(4) var<storage, read> emitterCdf:   array<f32>;
+@group(1) @binding(5) var bvh_beer: texture_2d<u32>;
 @group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
 @group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
@@ -45,8 +46,8 @@ export const RIS_WGSL = /* wgsl */ `
 @group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
 // WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
 // normal. ris uses it for the BRDF / candidate p̂; the geometric normal is
-// kept for the shadow-ray offset. (Beer texture binding 5 is shade-only — ris
-// declares a subset of the scene BGL; WGSL permits that.)
+// kept for the shadow-ray offset. Beer binding 5 feeds RGB transparent-shadow
+// visibility; the scalar reservoir stores luminance(visibility).
 // B1 — per-triangle roughness+metalness (r32uint texture). Decoded into the
 // real GGX roughness/metal that feed evalGGX in the candidate p̂ (was hardcoded
 // rough=0.85/0.05, metal=0).
@@ -91,6 +92,10 @@ const M_BRDF  = 1u;
 // w = 0 → reservoir unchanged), so M_ENV = 1 is a no-op for all
 // emitter-only scenes — byte-identical with the pre-Wave-4 kernel.
 const M_ENV   = 1u;
+
+fn restirDirectVisibilityScalar(tint: vec3f) -> f32 {
+  return clamp(luminance(tint), 0.0, 1.0);
+}
 
 @compute @workgroup_size(8, 8, 1)
 fn risMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -439,14 +444,17 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     if (lid == ENV_SAMPLE_SENTINEL) {
       let envDir = envDirFromXi(r.xi);
       // SHADOW-01 / ALPHA-03 — DI shadow rays honor primitive castShadow:false
-      // and attenuate through readable alpha-blend coverage via the material atlas.
-      let shadowT = traceSceneAlphaTransmittanceTextured(
+      // and attenuate through readable alpha-blend coverage plus glass Beer tint.
+      // Reservoir weights are scalar, so RGB visibility is scalarized by
+      // luminance; shade recomputes the same tint for the final RGB contribution.
+      let shadowTint = traceSceneAlphaTintTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-        shadowOrig, envDir, 1e20, ubo.triIntersectEpsilon, true,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH);
+        shadowOrig, envDir, 1e20, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+      let shadowT = restirDirectVisibilityScalar(shadowTint);
       if (shadowT <= 0.001) {
         r.w_sum = 0.0;
         r.W     = 0.0;
@@ -471,17 +479,20 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
       // SHADOW-01 / ALPHA-03 — castShadow:false geometry is skipped and readable
-      // alpha-blend coverage attenuates visibility via the material atlas.
+      // alpha-blend coverage and glass Beer tint attenuate visibility via the
+      // material atlas. Reservoir weights store luminance(visibility); shade
+      // recomputes and re-colors the selected sample.
       // Emitter castShadow:false disables the emitter's own NEE shadow ray.
       var shadowT = 1.0;
       if (e.castShadowDisabled < 0.5) {
-        shadowT = traceSceneAlphaTransmittanceTextured(
+        let shadowTint = traceSceneAlphaTintTransmittanceTextured(
           ubo.bvhMode, ubo.tlasNodeCount,
           &bvh_index, &bvh_position, &bvh,
           &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
           &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-          shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon, true,
-          bvh_material, BVH_MATERIAL_TEX_WIDTH);
+          shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon,
+          bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer);
+        shadowT = restirDirectVisibilityScalar(shadowTint);
       }
       if (shadowT <= 0.001) {
         r.w_sum = 0.0;
@@ -521,6 +532,7 @@ export const RIS_MODULE: WgslModule = {
   // `common, restirPHat, lightTree, regir, ris`.
   // B3 — environmentSample adds the scene-group env bindings (15-19) + the
   // directional lookup/importance helpers; ordered after restirPHat→common so
-  // WalkaroundUBO/safe_normalize/rand_f32 are in scope.
-  requires: ['restirPHat', 'materialAtlas', 'regir', 'environmentSample'],
+  // WalkaroundUBO/safe_normalize/rand_f32 are in scope. surfaceTextures supplies
+  // RGB transparent-shadow visibility for DI finalization.
+  requires: ['restirPHat', 'materialAtlas', 'surfaceTextures', 'regir', 'environmentSample'],
 };

@@ -224,13 +224,14 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     expect(COMMON_WGSL).toContain('tlasNodeCount:');
   });
 
-  it('ris: COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL', () => {
-    // RIS_MODULE.requires === ['restirPHat', 'regir', 'environmentSample'].
+  it('ris: COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + SURFACE_TEXTURES_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL', () => {
+    // RIS_MODULE.requires === ['restirPHat', 'materialAtlas', 'surfaceTextures', 'regir', 'environmentSample'].
     // restirPHat requires common + materialAtlas + environmentSample: materialAtlas
     // supplies UV-varying emissive-map Le for source-indexed emitter triangles,
-    // while environmentSample supplies the sentinel env pHat branch.
+    // while environmentSample supplies the sentinel env pHat branch. surfaceTextures
+    // supplies RGB transparent-shadow transmittance for ReSTIR-DI finalization.
     expect(composeWgsl(RIS_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL,
+      COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + SURFACE_TEXTURES_WGSL + LIGHT_TREE_WGSL + REGIR_WGSL + RIS_WGSL,
     );
   });
 
@@ -674,7 +675,8 @@ describe('Theme-C — temporalGiCommon dedup (byte-identity minus the deleted de
 //      mode common.wgsl.ts documents for honest inter-sibling `requires`.
 //
 //  (b) The block is NOT identical across consumers: shade adds `bvh_beer`
-//      (binding 5) + `bvh_emissive` (binding 12); risGi omits
+//      (binding 5) + `bvh_emissive` (binding 12); ris adds `bvh_beer` for
+//      RGB transparent-shadow finalization; risGi omits
 //      `emitters`/`emitterCdf` (bindings 3/4). `bvh_normal` (binding 11) is now
 //      dependency-owned by materialAtlas.wgsl because alpha-map traversal and
 //      smooth-normal shading both need the same UV1/normal stream.
@@ -693,11 +695,13 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     }
   });
 
-  it('shade carries bvh_beer (binding 5) + bvh_emissive (binding 12) that no other consumer has', () => {
+  it('shade and ris carry bvh_beer (binding 5), while shade alone carries bvh_emissive (binding 12)', () => {
     expect(SHADE_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+    expect(RIS_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
     expect(SHADE_WGSL).toContain('@group(1) @binding(12) var bvh_emissive: texture_2d<f32>;');
-    expect(RIS_WGSL).not.toContain('bvh_beer');
     expect(TEMPORAL_WGSL).not.toContain('bvh_beer');
+    expect(SPATIAL_WGSL).not.toContain('bvh_beer');
+    expect(RIS_WGSL).not.toContain('bvh_emissive');
   });
 
   it('risGi omits emitters/emitterCdf (bindings 3/4) that ris/temporal/spatial declare', () => {
@@ -718,8 +722,10 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     // ris declares bvh_material @binding(14) INLINE (its candidate p̂ decodes
     // real roughness/metal), while temporal/spatial pull bvh_material via the
     // shared restirCastPrimary module (a SEPARATE source), so temporal.wgsl's
-    // own group(1) block no longer carries binding 14. The ≥3-distinct-shapes
-    // rationale for keeping the block inlined holds even more strongly now.
+    // own group(1) block no longer carries binding 14. The 2026-06-20 transparent
+    // direct-light tint wave adds bvh_beer @binding(5) to RIS only. The
+    // ≥3-distinct-shapes rationale for keeping the block inlined holds even more
+    // strongly now.
     const group1Lines = (src: string): string =>
       src
         .split('\n')
@@ -733,7 +739,13 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     expect(ris).not.toBe(temporal); // B1 — ris gained inline bvh_material @binding(14); temporal gets it via restirCastPrimary
     expect(ris).not.toBe(risGi);
     expect(shade).not.toBe(temporal);
-    // ris/temporal still share every binding EXCEPT the B1 bvh_material line.
-    expect(temporal).toBe(ris.split('\n').filter((l) => !l.includes('binding(14)')).join('\n'));
+    // ris/temporal still share every binding EXCEPT the RIS-only bvh_beer and
+    // B1 bvh_material lines.
+    expect(temporal).toBe(
+      ris
+        .split('\n')
+        .filter((l) => !l.includes('binding(5)') && !l.includes('binding(14)'))
+        .join('\n'),
+    );
   });
 });

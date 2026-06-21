@@ -30,8 +30,9 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitCastsShadow(');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitHitIsScalarGlass(');
     expect(TRANSPARENT_OIT_WGSL).toContain('hitPos + hit.normal * 1e-3,');
-    expect(TRANSPARENT_OIT_WGSL).toContain('fn oitAlphaShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32');
-    expect(TRANSPARENT_OIT_WGSL).toContain('sunVisibility = oitAlphaShadowTransmittance(');
+    expect(TRANSPARENT_OIT_WGSL).not.toContain('fn oitAlphaShadowTransmittance(');
+    expect(TRANSPARENT_OIT_WGSL).toContain('var sunVisibility = vec3f(1.0);');
+    expect(TRANSPARENT_OIT_WGSL).toContain('sunVisibility = oitShadowTransmittance(');
     expect(TRANSPARENT_OIT_WGSL).toContain('let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;');
     expect(TRANSPARENT_OIT_WGSL).toContain('@group(1) @binding(13) var analytic_lights: texture_2d<f32>;');
     expect(TRANSPARENT_OIT_WGSL).toContain('fn oitLayerAnalyticNEE(');

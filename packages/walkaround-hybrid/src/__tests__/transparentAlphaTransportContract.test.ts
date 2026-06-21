@@ -32,9 +32,11 @@ describe('transparent alpha transport contract', () => {
   });
 
   it('keeps shade-side direct-light visibility on alpha-aware transmittance predicates', () => {
-    expect(SHADING_TERMS_WGSL).toContain('traceSceneAnyAlphaMaskTextured(');
     expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
     expect(SHADING_TERMS_WGSL).toContain('var shadowT = vec3f(1.0);');
+    expect(SHADING_TERMS_WGSL).toContain('var sunShadowT = vec3f(1.0);');
+    expect(SHADING_TERMS_WGSL).toContain('shadowColorCorrection');
+    expect(SHADING_TERMS_WGSL).not.toContain('sunShadowT = traceSceneAlphaTransmittanceTextured(');
   });
 
   it('keeps transparent OIT lighting local instead of coupling it to ReSTIR reservoirs', () => {

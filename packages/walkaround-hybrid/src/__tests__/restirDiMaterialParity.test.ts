@@ -5,7 +5,7 @@ import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
 import { RESTIR_CAST_PRIMARY_WGSL } from '../shaders/restirCastPrimary.wgsl.js';
 import { RESTIR_PHAT_WGSL } from '../shaders/restirPHat.wgsl.js';
 import { buildReservoirGiWgsl } from '../shaders/reservoirGi.wgsl.js';
-import { RIS_WGSL } from '../shaders/ris.wgsl.js';
+import { RIS_MODULE, RIS_WGSL } from '../shaders/ris.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shaders/shadingTerms.wgsl.js';
 
 describe('ReSTIR-DI material parity', () => {
@@ -99,5 +99,19 @@ describe('ReSTIR-DI material parity', () => {
     expect(RIS_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xiTri);');
     expect(RIS_WGSL).toContain('bestLe = sampleEmitterLeAtXi(eb, bestXi);');
     expect(SHADING_TERMS_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, r.xi);');
+  });
+
+  it('uses RGB transparent-shadow visibility for ReSTIR-DI finalization and shade consumption', () => {
+    expect(RIS_MODULE.requires).toContain('surfaceTextures');
+    expect(RIS_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+    expect(RIS_WGSL).toContain('fn restirDirectVisibilityScalar(tint: vec3f) -> f32');
+    expect(RIS_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
+    expect(RIS_WGSL).toContain('let shadowT = restirDirectVisibilityScalar(shadowTint);');
+    expect(RIS_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
+
+    expect(SHADING_TERMS_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
+    expect(SHADING_TERMS_WGSL).toContain('let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(SHADING_TERMS_WGSL).toContain('let shadowColorCorrection = shadowTint / vec3f(max(shadowScalar, 1e-4));');
+    expect(SHADING_TERMS_WGSL).toContain('return Le * brdf * G * r.W * shadowColorCorrection;');
   });
 });

@@ -79,28 +79,6 @@ fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> 
   );
 }
 
-fn oitAlphaShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> f32 {
-  return traceSceneAlphaTransmittanceTextured(
-    ubo.bvhMode,
-    ubo.tlasNodeCount,
-    &bvh_index,
-    &bvh_position,
-    &bvh,
-    &tlasNodes,
-    &tlasInstanceIndices,
-    &tlasBlasRoots,
-    &tlasInstanceWorldToLocal,
-    &tlasInstanceLocalToWorld,
-    origin,
-    dir,
-    max(tMax, 0.0),
-    triEps,
-    true,
-    bvh_material,
-    BVH_MATERIAL_TEX_WIDTH,
-  );
-}
-
 fn oitSpotConeFalloff(lightDir: vec3f, wi: vec3f, cosInner: f32, cosOuter: f32) -> f32 {
   let axisLen2 = dot(lightDir, lightDir);
   if (axisLen2 <= 0.01) { return 1.0; }
@@ -430,9 +408,9 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
     wo,
     toSun,
   );
-  var sunVisibility = 1.0;
+  var sunVisibility = vec3f(1.0);
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    sunVisibility = oitAlphaShadowTransmittance(
+    sunVisibility = oitShadowTransmittance(
       hitPos + hit.normal * 1e-3,
       toSun,
       1e6,
