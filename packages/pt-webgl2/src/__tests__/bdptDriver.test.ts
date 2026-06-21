@@ -22,8 +22,7 @@ function mesh(id: string, y: number): MeshPrimitive {
   };
 }
 function sceneWithAnalyticLight(): Scene {
-  // BDPT's light subpath samples ANALYTIC lights (randomLightSample), so the driver
-  // only runs the subpath passes when scene.lightCount > 0 — use a rect-area light.
+  // Use a finite rect-area light so the BDPT driver has an analytic endpoint source.
   return {
     primitives: [mesh('floor', 0)],
     emitters: [
@@ -268,31 +267,25 @@ describe('A5 BDPT host driver', () => {
     expect(passFlags).toEqual([0]);
   });
 
-  it('warns when bdpt:true has only mesh-area light sources', async () => {
+  it('builds BDPT light subpaths for mesh-area-only light sources', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const log: { op: string; v?: unknown }[] = [];
     try {
       const engine = await createPTEngine_WebGL2({
-        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        device: orderedGl(log) as unknown as WebGL2RenderingContext,
         bdpt: true,
         onWarning: (w) => structured.push(w),
       });
 
       engine.setScene(sceneWithMeshAreaLight());
+      engine.renderFrame(frame());
 
       expect(warn.mock.calls.some((c) =>
         String(c[0]).includes('BDPT connections fall back to the unidirectional'),
-      )).toBe(true);
-      expect(structured).toContainEqual(expect.objectContaining({
-        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
-        phase: 'setScene',
-        method: 'setScene',
-        details: expect.objectContaining({
-          analyticLightCount: 0,
-          meshLightCount: 2,
-          hasEnvironmentMap: false,
-        }),
-      }));
+      )).toBe(false);
+      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-environment-light-subpaths-unsupported')).toBe(false);
+      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0]);
     } finally {
       warn.mockRestore();
     }
@@ -311,10 +304,10 @@ describe('A5 BDPT host driver', () => {
       engine.setScene(sceneWithEnvironmentLight());
 
       expect(warn.mock.calls.some((c) =>
-        String(c[0]).includes('BDPT connections fall back to the unidirectional'),
+        String(c[0]).includes('Environment sources are not part of the light-subpath sampler yet'),
       )).toBe(true);
       expect(structured).toContainEqual(expect.objectContaining({
-        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
+        code: 'pt-webgl2.bdpt-environment-light-subpaths-unsupported',
         phase: 'setScene',
         method: 'setScene',
         details: expect.objectContaining({
@@ -324,38 +317,32 @@ describe('A5 BDPT host driver', () => {
           envTotalSum: expect.any(Number),
         }),
       }));
-      const warning = structured.find((w) => w.code === 'pt-webgl2.bdpt-analytic-light-subpaths-only');
+      const warning = structured.find((w) => w.code === 'pt-webgl2.bdpt-environment-light-subpaths-unsupported');
       expect(Number(warning?.details?.envTotalSum)).toBeGreaterThan(0);
     } finally {
       warn.mockRestore();
     }
   });
 
-  it('warns when bdpt:true mixes analytic and mesh-area light sources', async () => {
+  it('builds BDPT light subpaths when analytic and mesh-area sources are mixed', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
+    const log: { op: string; v?: unknown }[] = [];
     try {
       const engine = await createPTEngine_WebGL2({
-        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        device: orderedGl(log) as unknown as WebGL2RenderingContext,
         bdpt: true,
         onWarning: (w) => structured.push(w),
       });
 
       engine.setScene(sceneWithAnalyticAndMeshAreaLight());
+      engine.renderFrame(frame());
 
       expect(warn.mock.calls.some((c) =>
         String(c[0]).includes('BDPT connections fall back to the unidirectional'),
-      )).toBe(true);
-      expect(structured).toContainEqual(expect.objectContaining({
-        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
-        phase: 'setScene',
-        method: 'setScene',
-        details: expect.objectContaining({
-          analyticLightCount: 1,
-          meshLightCount: 2,
-          hasEnvironmentMap: false,
-        }),
-      }));
+      )).toBe(false);
+      expect(structured.some((w) => w.code === 'pt-webgl2.bdpt-environment-light-subpaths-unsupported')).toBe(false);
+      expect(log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v)).toEqual([0]);
     } finally {
       warn.mockRestore();
     }
@@ -374,10 +361,10 @@ describe('A5 BDPT host driver', () => {
       engine.setScene(sceneWithAnalyticAndEnvironmentLight());
 
       expect(warn.mock.calls.some((c) =>
-        String(c[0]).includes('BDPT connections fall back to the unidirectional'),
+        String(c[0]).includes('Environment sources are not part of the light-subpath sampler yet'),
       )).toBe(true);
       expect(structured).toContainEqual(expect.objectContaining({
-        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
+        code: 'pt-webgl2.bdpt-environment-light-subpaths-unsupported',
         phase: 'setScene',
         method: 'setScene',
         details: expect.objectContaining({
@@ -387,7 +374,7 @@ describe('A5 BDPT host driver', () => {
           envTotalSum: expect.any(Number),
         }),
       }));
-      const warning = structured.find((w) => w.code === 'pt-webgl2.bdpt-analytic-light-subpaths-only');
+      const warning = structured.find((w) => w.code === 'pt-webgl2.bdpt-environment-light-subpaths-unsupported');
       expect(Number(warning?.details?.envTotalSum)).toBeGreaterThan(0);
     } finally {
       warn.mockRestore();

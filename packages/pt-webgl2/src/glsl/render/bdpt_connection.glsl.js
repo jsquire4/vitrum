@@ -266,12 +266,18 @@ export const bdpt_connection = /* glsl */`
 			return vec3( 0.0 );
 		}
 
-		// Light vertex BSDF × cosθ toward the eye. Emitter sentinels keep the
-		// diffuse emission profile; surface vertices reuse the full material BSDF.
+		// Light vertex BSDF × cosθ toward the eye. Legacy synthetic emitter
+		// sentinels keep the diffuse emission profile; finite area-emitter
+		// sentinels already carry Le / (p_pick · p_area), so their endpoint
+		// factor is 1 and the geometry term owns the emitter cosine. Surface
+		// vertices reuse the full material BSDF.
 		float cosLight = max( dot( lightNormal, -connDir ), 0.0 );
 		if ( cosLight <= 0.0 ) return vec3( 0.0 );
-		vec3 lightBsdfCosTheta = vec3( cosLight / PI );
 		float lightBsdfPdfToEye = bdptEmitterDirPdf( lightNormal, -connDir );
+		vec3 lightBsdfCosTheta = vec3( 1.0 );
+		if ( lightMatId == BDPT_LV_EMITTER_MATID ) {
+			lightBsdfCosTheta = vec3( cosLight / PI );
+		}
 		if ( lightHasSurfaceMaterial ) {
 			lightBsdfPdfToEye = bsdfResult( lightWoPrev, -connDir, lightSurf, eyeState.wavelength, lightBsdfCosTheta );
 			if ( lightBsdfPdfToEye <= 0.0 ) return vec3( 0.0 );

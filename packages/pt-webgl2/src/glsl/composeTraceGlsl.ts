@@ -514,16 +514,13 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							envRotation3x3 = mat3( environmentRotation );
 							invEnvRotation3x3 = inverse( envRotation3x3 );
 							// NOTE: lightsDenom is not read by the subpath kernel — writeLightSubpathVertex
-							// uses the lights texture directly (randomLightSample) and does not consult
-							// lightsDenom. The assignment below is retained for completeness and to keep
-							// the variable initialised in case a future subpath extension reads it;
-							// it intentionally omits the mesh-light slot (subpath uses analytic lights
-							// only). If/when mesh-area NEE is added to the subpath, align with the eye
-							// pass formula at the bottom of this function that includes uMeshLightCount.
+							// builds its own emitted-power CDF over analytic lights plus mesh-area
+							// emitters. The assignment below is retained for completeness and to keep
+							// the variable initialised in case a future subpath extension reads it.
 							lightsDenom =
 								( environmentIntensity == 0.0 || envMapInfo.totalSum == 0.0 ) && lights.count != 0u ?
-									float( lights.count ) :
-									float( lights.count + 1u );
+									float( lights.count + ( uMeshLightCount != 0u ? 1u : 0u ) ) :
+									float( lights.count + ( uMeshLightCount != 0u ? 1u : 0u ) + 1u );
 
 							RenderState bdptState = initRenderState();
 							bdptState.wavelength = 550.0;

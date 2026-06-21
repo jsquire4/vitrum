@@ -59,6 +59,7 @@ export const bdpt_light_subpath = /* glsl */`
 	}
 
 	const float BDPT_LV_EMITTER_MATID = -1.0;
+	const float BDPT_LV_AREA_EMITTER_MATID = -2.0;
 
 	vec4 bdptSurfacePayload( SurfaceHit hit ) {
 		return vec4(
@@ -103,6 +104,169 @@ export const bdpt_light_subpath = /* glsl */`
 		v4 = vec4( 0.0 );
 	}
 
+	float bdptAnalyticEmitterPower( uint index ) {
+		return max( readLightInfo( lights.tex, index ).power, 1e-20 );
+	}
+
+	float bdptMeshEmitterPower( uint index ) {
+		return max( readMeshTriLight( uMeshLights, index ).power, 0.0 );
+	}
+
+	float bdptTotalEmitterPower() {
+		float sumPower = 0.0;
+		for ( uint ii = 0u; ii < lights.count; ii ++ ) {
+			sumPower += bdptAnalyticEmitterPower( ii );
+		}
+		for ( uint ii = 0u; ii < uMeshLightCount; ii ++ ) {
+			sumPower += bdptMeshEmitterPower( ii );
+		}
+		return sumPower;
+	}
+
+	LightRecord bdptSampleAnalyticEmitterAtIndex( uint index, vec3 rayOrigin, vec3 ruv ) {
+		Light light = readLightInfo( lights.tex, index );
+		LightRecord result;
+
+		if ( light.type == SPOT_LIGHT_TYPE ) {
+
+			result = randomSpotLightSample( light, rayOrigin, ruv.yz );
+
+		} else if ( light.type == POINT_LIGHT_TYPE ) {
+
+			vec3 lightRay = light.u - rayOrigin;
+			float lightDist = length( lightRay );
+			float cutoffDistance = light.distance;
+			float distanceFalloff = 1.0 / max( pow( lightDist, light.decay ), 0.01 );
+			if ( cutoffDistance > 0.0 ) {
+				distanceFalloff *= pow2( saturate( 1.0 - pow4( lightDist / cutoffDistance ) ) );
+			}
+
+			LightRecord rec;
+			rec.point = light.u;
+			rec.direction = normalize( lightRay );
+			rec.dist = lightDist;
+			rec.normal = - rec.direction;
+			rec.pdf = 1.0;
+			rec.emission = light.color * light.intensity * distanceFalloff;
+			rec.type = light.type;
+			rec.discretePdf = 1.0;
+			rec.castShadowDisabled = light.castShadowDisabled;
+			rec.delta = 1.0;
+			result = rec;
+
+		} else if ( light.type == DIR_LIGHT_TYPE ) {
+
+			LightRecord rec;
+			rec.dist = 1e10;
+			if ( light.angularDiameter > 0.0 ) {
+				float conePdf;
+				rec.direction = sampleDirectionalCone( light.u, light.angularDiameter, ruv.yz, conePdf );
+				rec.pdf = conePdf;
+				rec.delta = 0.0;
+			} else {
+				rec.direction = light.u;
+				rec.pdf = 1.0;
+				rec.delta = 1.0;
+			}
+			rec.point = - rec.direction * rec.dist;
+			rec.normal = rec.direction;
+			rec.emission = light.color * light.intensity;
+			rec.type = light.type;
+			rec.discretePdf = 1.0;
+			rec.castShadowDisabled = light.castShadowDisabled;
+			result = rec;
+
+		} else {
+
+			result = randomAreaLightSample( light, rayOrigin, ruv.yz );
+
+		}
+
+		result.discretePdf = 1.0;
+		return result;
+	}
+
+	bool bdptSampleMeshEmitterAtIndex(
+		uint index,
+		vec2 uv,
+		out vec3 emitPos,
+		out vec3 emitNormal,
+		out vec3 emitRadiance,
+		out float pdfArea,
+		out float castShadowDisabled
+	) {
+		MeshTriLight tri = readMeshTriLight( uMeshLights, index );
+		emitRadiance = tri.radiance;
+		castShadowDisabled = tri.castShadowDisabled;
+		if ( tri.area <= EPSILON || tri.power <= 0.0 || tri.radiance == vec3( 0.0 ) ) {
+			return false;
+		}
+
+		float su = sqrt( max( uv.x, 0.0 ) );
+		float b0 = 1.0 - su;
+		float b1 = uv.y * su;
+		float b2 = 1.0 - b0 - b1;
+		emitPos = tri.v0 * b0 + tri.v1 * b1 + tri.v2 * b2;
+
+		vec3 n = cross( tri.v1 - tri.v0, tri.v2 - tri.v0 );
+		float nLen = length( n );
+		if ( nLen <= 1e-8 ) return false;
+		emitNormal = n / nLen;
+		pdfArea = 1.0 / max( tri.area, EPSILON );
+		return true;
+	}
+
+	void writeBdptCosineEmitterVertex(
+		vec3 emitPos,
+		vec3 emitNormal,
+		vec3 emitRadiance,
+		float pdfLight,
+		float castShadowDisabled,
+		out vec4 gBdptVertex0,
+		out vec4 gBdptVertex1,
+		out vec4 gBdptVertex2,
+		out vec4 gBdptVertex3,
+		out vec4 gBdptVertex4
+	) {
+		vec3 scatterDir = sampleHemisphere( emitNormal, rand2( 52 ) );
+		float cosEmit   = max( dot( emitNormal, scatterDir ), 0.0 );
+		float pdfHemi   = cosEmit / PI;
+		float pdfJoint  = max( pdfLight * pdfHemi, 1e-8 );
+		vec3 emitThroughput = emitRadiance * cosEmit / pdfJoint;
+
+		gBdptVertex0 = vec4( emitPos,        0.0 );
+		gBdptVertex1 = vec4( emitNormal,     pdfJoint );
+		gBdptVertex2 = vec4( emitThroughput, pdfHemi );
+		gBdptVertex3 = vec4( emitNormal,     BDPT_LV_EMITTER_MATID );
+		gBdptVertex4 = vec4( castShadowDisabled, 0.0, 0.0, 0.0 );
+	}
+
+	void writeBdptAreaEmitterVertex(
+		vec3 emitPos,
+		vec3 emitNormal,
+		vec3 emitRadiance,
+		float pdfLight,
+		float pdfArea,
+		float castShadowDisabled,
+		out vec4 gBdptVertex0,
+		out vec4 gBdptVertex1,
+		out vec4 gBdptVertex2,
+		out vec4 gBdptVertex3,
+		out vec4 gBdptVertex4
+	) {
+		vec3 scatterDir = sampleHemisphere( emitNormal, rand2( 52 ) );
+		float cosEmit   = max( dot( emitNormal, scatterDir ), 0.0 );
+		float pdfHemi   = cosEmit / PI;
+		float pdfPos    = max( pdfLight * pdfArea, 1e-8 );
+		vec3 emitThroughput = emitRadiance / pdfPos;
+
+		gBdptVertex0 = vec4( emitPos,        0.0 );
+		gBdptVertex1 = vec4( emitNormal,     pdfPos );
+		gBdptVertex2 = vec4( emitThroughput, pdfHemi );
+		gBdptVertex3 = vec4( emitNormal,     BDPT_LV_AREA_EMITTER_MATID );
+		gBdptVertex4 = vec4( castShadowDisabled, 0.0, 0.0, 0.0 );
+	}
+
 	// ── Main light-subpath vertex writer ─────────────────────────────────────
 	// Writes one vertex per call; called from the BDPT light-subpath pass main().
 	//
@@ -126,7 +290,8 @@ export const bdpt_light_subpath = /* glsl */`
 	) {
 
 		// Bounds guard.
-		if ( vertexCol < 0 || vertexCol >= maxLightBounces || lights.count == 0u ) {
+		bool hasMeshBdptEmitters = uMeshLightCount != 0u && uTotalEmissivePower > 0.0;
+		if ( vertexCol < 0 || vertexCol >= maxLightBounces || ( lights.count == 0u && ! hasMeshBdptEmitters ) ) {
 			writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
 			return;
 		}
@@ -134,52 +299,105 @@ export const bdpt_light_subpath = /* glsl */`
 		if ( vertexCol == 0 ) {
 
 			// ── Bounce 0: sample emitter surface ─────────────────────────────
-			// Pick a random area light / emitter via the existing light sampling CDF.
-			// Use seeds 50–52 (isolated from eye-path seeds 0–30).
-			LightRecord lightRec = randomLightSample(
-				lights.tex, lights.count,
-				vec3( 0.0 ),   // origin is irrelevant for emitter-surface sampling
-				rand3( 50 )
-			);
-
-			if ( lightRec.pdf <= 0.0 || lightRec.emission == vec3( 0.0 ) ) {
+			// Pick an analytic or mesh-area emitter by the same emitted-power
+			// measure used by pt-webgpu's BDPT light-subpath builder.
+			float totalEmitterPower = bdptTotalEmitterPower();
+			if ( totalEmitterPower <= 0.0 ) {
 				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
 				return;
 			}
 
-			// Emitter position and normal from the light sampler.
-			// Area lights use the sampled surface point and geometric normal;
-			// punctual/directional lights provide synthetic stable vertices.
-			vec3 emitPos    = lightRec.point;
-			vec3 emitNormal = normalize( lightRec.normal );
+			float uPick = rand( 50 ) * totalEmitterPower;
+			float cumPower = 0.0;
+			bool pickedMesh = false;
+			uint pickedIndex = 0u;
+			float pickedPower = 0.0;
 
-			// Cosine-weighted hemisphere scatter direction from the emitter surface.
-			// This gives the first scattered ray direction from the light.
-			// Seed 51 (isolated from bounce k>0 seeds 53+).
-			vec3 scatterDir = sampleHemisphere( emitNormal, rand2( 51 ) );
-			float cosEmit   = max( dot( emitNormal, scatterDir ), 0.0 );
-			float pdfHemi   = cosEmit / PI; // cosine-weighted hemisphere PDF = cosθ/π
+			for ( uint ii = 0u; ii < lights.count; ii ++ ) {
+				float p = bdptAnalyticEmitterPower( ii );
+				cumPower += p;
+				if ( pickedPower <= 0.0 && uPick <= cumPower ) {
+					pickedMesh = false;
+					pickedIndex = ii;
+					pickedPower = p;
+				}
+			}
+			for ( uint ii = 0u; ii < uMeshLightCount; ii ++ ) {
+				float p = bdptMeshEmitterPower( ii );
+				cumPower += p;
+				if ( pickedPower <= 0.0 && uPick <= cumPower ) {
+					pickedMesh = true;
+					pickedIndex = ii;
+					pickedPower = p;
+				}
+			}
 
-			// Joint PDF = p_light × p_hemisphere.
-			float pdfJoint = lightRec.pdf * pdfHemi;
-			if ( pdfJoint <= 0.0 ) {
+			if ( pickedPower <= 0.0 ) {
+				if ( hasMeshBdptEmitters ) {
+					pickedMesh = true;
+					pickedIndex = uMeshLightCount - 1u;
+					pickedPower = bdptMeshEmitterPower( pickedIndex );
+				} else if ( lights.count != 0u ) {
+					pickedMesh = false;
+					pickedIndex = lights.count - 1u;
+					pickedPower = bdptAnalyticEmitterPower( pickedIndex );
+				}
+			}
+
+			float discretePdf = pickedPower / max( totalEmitterPower, 1e-20 );
+			if ( discretePdf <= 0.0 ) {
 				writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
 				return;
 			}
 
-			// Throughput at emitter: Le × cosθ / pdfJoint.
-			vec3 emitThroughput = lightRec.emission * cosEmit / pdfJoint;
+			if ( pickedMesh ) {
+				vec3 emitPos;
+				vec3 emitNormal;
+				vec3 emitRadiance;
+				float pdfArea;
+				float castShadowDisabled;
+				if ( ! bdptSampleMeshEmitterAtIndex( pickedIndex, rand2( 51 ), emitPos, emitNormal, emitRadiance, pdfArea, castShadowDisabled ) ) {
+					writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
+					return;
+				}
+				writeBdptAreaEmitterVertex(
+					emitPos,
+					emitNormal,
+					emitRadiance,
+					discretePdf,
+					pdfArea,
+					castShadowDisabled,
+					gBdptVertex0,
+					gBdptVertex1,
+					gBdptVertex2,
+					gBdptVertex3,
+					gBdptVertex4
+				);
+			} else {
+				LightRecord lightRec = bdptSampleAnalyticEmitterAtIndex(
+					pickedIndex,
+					vec3( 0.0 ),
+					rand3( 51 )
+				);
 
-			// pdfFwd = joint PDF of choosing this emitter surface point + direction.
-			float pdfFwd = pdfJoint;
-			// pdfRev: approximated as the cosine-hemisphere PDF for the reverse direction.
-			float pdfRev = pdfHemi;
+				if ( lightRec.pdf <= 0.0 || lightRec.emission == vec3( 0.0 ) ) {
+					writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
+					return;
+				}
 
-			gBdptVertex0 = vec4( emitPos,        0.0 );    // kind = BDPT_KIND_LIGHT
-			gBdptVertex1 = vec4( emitNormal,     pdfFwd );
-			gBdptVertex2 = vec4( emitThroughput, pdfRev );
-			gBdptVertex3 = vec4( emitNormal, BDPT_LV_EMITTER_MATID );
-			gBdptVertex4 = vec4( lightRec.castShadowDisabled, 0.0, 0.0, 0.0 );
+				writeBdptCosineEmitterVertex(
+					lightRec.point,
+					normalize( lightRec.normal ),
+					lightRec.emission,
+					discretePdf * lightRec.pdf,
+					lightRec.castShadowDisabled,
+					gBdptVertex0,
+					gBdptVertex1,
+					gBdptVertex2,
+					gBdptVertex3,
+					gBdptVertex4
+				);
+			}
 
 		} else {
 

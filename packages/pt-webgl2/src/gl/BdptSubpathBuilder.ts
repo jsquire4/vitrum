@@ -42,8 +42,8 @@ export class BdptSubpathBuilder {
    * A5 — build the BDPT light subpath for this sample and return the texture holding
    * all light-path vertex columns (to be bound as `uBdptLightPathTex` for the eye
    * pass's connection sweep). Returns null when there is nothing to connect to (no
-   * analytic lights) — the caller then leaves the dummy bound and the frame renders
-   * unidirectionally.
+   * analytic or mesh-area emitters) — the caller then leaves the dummy bound and the
+   * frame renders unidirectionally.
    *
    * Per-column protocol (one fullscreen draw over a 3×5 viewport per bounce):
    *   read  = the texture holding columns < col already built this frame
@@ -66,7 +66,8 @@ export class BdptSubpathBuilder {
     bindSceneTextures: (prog: GlProgram, scene: UploadedSceneTextures, bdptTex: WebGLTexture | null) => void,
     drawFullscreen: () => void,
   ): WebGLTexture | null {
-    if (scene.lightCount === 0) return null; // nothing to sample → unidirectional fallback
+    const hasMeshEmitters = scene.meshLightCount > 0 && scene.totalEmissivePower > 0;
+    if (scene.lightCount === 0 && !hasMeshEmitters) return null; // nothing to sample → unidirectional fallback
     const gl = this.#gl;
     this.#ensurePair();
     const pair = this.#lightPath;

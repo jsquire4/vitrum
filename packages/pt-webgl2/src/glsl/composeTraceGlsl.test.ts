@@ -154,6 +154,13 @@ describe('composeTraceGlsl', () => {
     expect(bdptSrc).toContain('ScatterRecord scatterRec = bsdfSample( woAtPrev, prevSurf, 550.0 );');
     expect(bdptSrc).toContain('lightBsdfPdfToEye = bsdfResult( lightWoPrev, -connDir, lightSurf, eyeState.wavelength, lightBsdfCosTheta );');
     expect(bdptSrc).toContain('gBdptVertex4 = bdptSurfacePayload( scatterHit );');
+    expect(bdptSrc).toContain('const float BDPT_LV_AREA_EMITTER_MATID = -2.0;');
+    expect(bdptSrc).toContain('float bdptMeshEmitterPower( uint index )');
+    expect(bdptSrc).toContain('bool bdptSampleMeshEmitterAtIndex(');
+    expect(bdptSrc).toContain('void writeBdptAreaEmitterVertex(');
+    expect(bdptSrc).toContain('bool hasMeshBdptEmitters = uMeshLightCount != 0u && uTotalEmissivePower > 0.0;');
+    expect(bdptSrc).toContain('if ( pickedMesh ) {');
+    expect(bdptSrc).toContain('vec3 lightBsdfCosTheta = vec3( 1.0 );');
   });
 
   it('item 11: CMF upload-gap guard — wavelengthToRGB returns 0 when uYCmfIntegral < 1e-3', () => {
@@ -310,9 +317,9 @@ describe('composeTraceGlsl', () => {
   });
 
   // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join length pin 32258', () => {
+  it('D10.4: RENDER_MAIN_SECTIONS join length pin 32075', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(32258);
+    expect(assembled).toHaveLength(32075);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(8);
     expect(assembled).toContain('void main() {');
