@@ -106,6 +106,7 @@ import { ProbeUpdatePass } from '../probeUpdatePass.js';
 import { ProbeGrid } from '../probeGrid.js';
 import { SceneBvh } from '@vitrum/shared-bvh';
 import { detectGpu } from '@vitrum/core';
+import { EMITTER_TRI_STRIDE_BYTES } from '../../restir/emitterList.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -248,6 +249,36 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
       const mockBuf = buf as unknown as { destroy: ReturnType<typeof vi.fn> };
       expect(mockBuf.destroy).toHaveBeenCalledOnce();
     }
+  });
+
+  it('allocates DDGI TLAS node placeholder at the BVHNode binding minimum', async () => {
+    const bvh = new SceneBvh();
+    const grid = new ProbeGrid();
+    const pass = new ProbeUpdatePass(bvh, grid);
+
+    const rendererAdapter = {
+      backend: { device: mockDevice, isWebGPUBackend: true as const },
+    };
+
+    await pass.init(rendererAdapter);
+
+    const internal = pass as unknown as { _gpu: {
+      bvhBuf: GPUBuffer;
+      tlasNodesBuf: GPUBuffer;
+      tlasInstIdxBuf: GPUBuffer;
+      tlasW2lBuf: GPUBuffer;
+      traceParamsBuf: GPUBuffer;
+      emitterTrisBuf: GPUBuffer;
+    }};
+    const gpu = internal._gpu;
+    expect(gpu.bvhBuf.size).toBe(32);
+    expect(gpu.tlasNodesBuf.size).toBe(32);
+    expect(gpu.tlasInstIdxBuf.size).toBe(16);
+    expect(gpu.tlasW2lBuf.size).toBe(16);
+    expect(gpu.traceParamsBuf.size).toBe(16);
+    expect(gpu.emitterTrisBuf.size).toBe(EMITTER_TRI_STRIDE_BYTES);
+
+    pass.dispose();
   });
 });
 

@@ -7,6 +7,8 @@ import type { RestirBvhSnapshot } from '../restir/restirBvhSnapshot.js';
 import { padTriangleIndicesToVec4 } from './probeUpdateMaterials.js';
 
 const RO = 0x80 | 0x08; // STORAGE | COPY_DST — literal for Node vitest import chain
+const BVH_NODE_PLACEHOLDER_BYTES = 32;
+const STORAGE_PLACEHOLDER_BYTES = 16;
 
 export interface ProbeUpdateBvhGpuBuffers {
   bvhBuf: GPUBuffer;
@@ -58,9 +60,13 @@ export function rebuildProbeBvhFromRestir(
   g.idxBuf = upload(g.idxBuf, snap.bvhIndex);
   g.normBuf = upload(g.normBuf, snap.normals);
   g.matIdBuf = upload(g.matIdBuf, snap.triMaterialIds);
-  const empty = new ArrayBuffer(16);
+  // No-TLAS snapshots still bind the declared TLAS storage arrays. `tlasNodes`
+  // is `array<BVHNode>` (32-byte stride), so strict WebGPU backends reject the
+  // old generic 16-byte dummy at bind-group creation even when bvhMode=merged.
+  const emptyTlasNodes = new ArrayBuffer(BVH_NODE_PLACEHOLDER_BYTES);
+  const empty = new ArrayBuffer(STORAGE_PLACEHOLDER_BYTES);
   const tlas = snap.tlas;
-  g.tlasNodesBuf = upload(g.tlasNodesBuf, tlas?.nodes ?? empty);
+  g.tlasNodesBuf = upload(g.tlasNodesBuf, tlas?.nodes ?? emptyTlasNodes);
   g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, tlas?.instanceIndices ?? empty);
   g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, tlas?.blasRoots ?? empty);
   g.tlasW2lBuf = upload(g.tlasW2lBuf, tlas?.worldToLocal ?? empty);
@@ -88,8 +94,9 @@ export function rebuildProbeBvhFromScene(
   // empty placeholder so the merged-mode bind group is valid on every backend.
   // (The TLAS-mode path uploads real, larger buffers via `rebuildProbeBvhFromRestir`,
   // so it was never affected.)
-  const empty = new ArrayBuffer(32);
-  g.tlasNodesBuf = upload(g.tlasNodesBuf, empty);
+  const emptyTlasNodes = new ArrayBuffer(BVH_NODE_PLACEHOLDER_BYTES);
+  const empty = new ArrayBuffer(STORAGE_PLACEHOLDER_BYTES);
+  g.tlasNodesBuf = upload(g.tlasNodesBuf, emptyTlasNodes);
   g.tlasInstIdxBuf = upload(g.tlasInstIdxBuf, empty);
   g.tlasBlasRootsBuf = upload(g.tlasBlasRootsBuf, empty);
   g.tlasW2lBuf = upload(g.tlasW2lBuf, empty);

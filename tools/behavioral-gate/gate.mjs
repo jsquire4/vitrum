@@ -147,6 +147,9 @@ const EXPECTATION_TABLE = {
   "wh/skinned-mesh":      { expected: "ok" },
   "wh/hdri-env":          { expected: "ok" },
   "wh/rect-area-emitter": { expected: "ok" },
+  "wh/mutation-material": { expected: "ok" },
+  "wh/mutation-transform": { expected: "ok" },
+  "wh/mutation-emitter": { expected: "ok" },
   // item 4 (2026-06-10) — direct sun NEE default-on. Strong directional emitter,
   // no rect-area emitter; asserts non-black + higher luminance than the no-sun default.
   // Pin provenance: sun-NEE default-on, 2026-06-10 — RENDER-CHANGING for directional-lit scenes, A/B in R8-C.
@@ -255,6 +258,9 @@ const WH_CONFIGS = [
       primaryLightDir:       [0.45, -0.8, 0.2],
       primaryLightIntensity: 1.4,
     },                                                                          scene: { transparentOit: true } },
+  { label: "wh/mutation-material",  eng: {},                                    scene: { mutation: "material" } },
+  { label: "wh/mutation-transform", eng: {},                                    scene: { mutation: "transform" } },
+  { label: "wh/mutation-emitter",   eng: {},                                    scene: { mutation: "emitter" } },
 ];
 
 const REAL_GLTF_GOLDENS = Object.fromEntries(REAL_GLTF_BEHAVIORAL_PROOFS.map((proof) => [
@@ -2514,8 +2520,63 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
 
   let engine   = null;
   let pixels   = null;
+  let beforeMutationPixels = null;
   let swapTex  = null;
   let errorMsg = null;
+  let mutation = null;
+
+  async function renderFramesAndReadback() {
+    const swapView = swapTex.createView();
+    let frameOutput = null;
+
+    for (let fi = 0; fi < SPP; fi++) {
+      frameOutput = engine.renderFrame({
+        viewMatrix: whView,
+        projMatrix: whProj,
+        cameraPosition: WH_EYE,
+        viewport: { width: W, height: H, devicePixelRatio: 1 },
+        frameIndex: fi,
+        frameSeed:  fi * 1664525 + 1013904223,
+        swapChainView:   swapView,
+        swapChainFormat: "bgra8unorm",
+      });
+      await device.queue.onSubmittedWorkDone();
+    }
+
+    if (frameOutput?.kind !== "rendered") return null;
+    return await readbackBgra8(device, swapTex, W, H);
+  }
+
+  function applyWhMutation() {
+    if (sceneOpts.mutation === "material") {
+      engine.updatePrimitive("mutation-quad", {
+        material: {
+          shadingModel: "unlit",
+          baseColor: [0.05, 0.08, 1.0],
+          roughness: 1.0,
+          metallic: 0.0,
+        },
+      });
+    } else if (sceneOpts.mutation === "emitter") {
+      engine.updateEmitter("mutation-lamp", {
+        color: [0.08, 0.18, 1.0],
+        intensity: 14.0,
+        position: [0.18, -0.08, 1.15],
+        castShadow: false,
+      });
+    } else if (sceneOpts.mutation === "transform") {
+      engine.updatePrimitive("mutation-transform-quad", {
+        transform: asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          0.95, 0, 0, 1,
+        ])),
+      });
+    } else {
+      throw new Error(`unknown walkaround mutation gate kind: ${sceneOpts.mutation}`);
+    }
+  }
 
   try {
     engine = await createWalkaroundEngine_Hybrid({
@@ -2544,23 +2605,16 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
       format: "bgra8unorm",
       usage:  GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
     });
-    const swapView = swapTex.createView();
 
-    for (let fi = 0; fi < SPP; fi++) {
-      engine.renderFrame({
-        viewMatrix: whView,
-        projMatrix: whProj,
-        cameraPosition: WH_EYE,
-        viewport: { width: W, height: H, devicePixelRatio: 1 },
-        frameIndex: fi,
-        frameSeed:  fi * 1664525 + 1013904223,
-        swapChainView:   swapView,
-        swapChainFormat: "bgra8unorm",
-      });
-      await device.queue.onSubmittedWorkDone();
+    pixels = await renderFramesAndReadback();
+    if (sceneOpts.mutation) {
+      beforeMutationPixels = pixels;
+      applyWhMutation();
+      pixels = await renderFramesAndReadback();
+      if (beforeMutationPixels != null && pixels != null) {
+        mutation = { kind: sceneOpts.mutation, ...comparePixels(pixels, beforeMutationPixels) };
+      }
     }
-
-    pixels = await readbackBgra8(device, swapTex, W, H);
   } catch (e) {
     errorMsg = e.message;
   } finally {
@@ -2583,17 +2637,26 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
 
   const nans = hasNaN(pixels);
   const lum  = meanLuminance(pixels);
-  const golden = (!nans && errCount === 0 && lum >= LUM_THRESHOLD)
+  const mutationThreshold = sceneOpts.mutation ? MUTATION_DELTA_THRESHOLDS[sceneOpts.mutation] : null;
+  const mutationFailed =
+    sceneOpts.mutation != null &&
+    (mutation == null ||
+      mutationThreshold == null ||
+      mutation.meanAbs < mutationThreshold.meanAbs ||
+      mutation.maxAbs < mutationThreshold.maxAbs);
+  const golden = (!mutationFailed && !nans && errCount === 0 && lum >= LUM_THRESHOLD)
     ? await compareOrUpdateGolden(label, pixels)
     : null;
-  const rawStatus = nans
-    ? "NaN"
-    : (errCount > 0
-      ? "GPU-ERROR"
-      : (lum < LUM_THRESHOLD
-        ? "BLACK"
-        : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK")));
-  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden };
+  const rawStatus = mutationFailed
+    ? "NO-MUTATION"
+    : (nans
+      ? "NaN"
+      : (errCount > 0
+        ? "GPU-ERROR"
+        : (lum < LUM_THRESHOLD
+          ? "BLACK"
+          : (golden && !golden.pass ? "GOLDEN-DELTA" : "OK"))));
+  return { label, rawStatus, lum, errCount, nans, gpuErrorMsg, golden, mutation };
 }
 
 // ── Self-test config (injected when --self-test) ───────────────────────────────
@@ -2697,12 +2760,14 @@ for (const cfg of whConfigs) {
   const { pass, note } = checkExpectation(r.label, r.rawStatus, r.lum, r.errCount, r.nans);
   const marker = pass ? "PASS" : "FAIL";
   const goldenDetail = formatGolden(r.golden);
+  const mutationDetail = formatMutation(r.mutation);
   const detail = r.errorMsg
     ? `${r.rawStatus} | ${r.errorMsg.replace(/\n/g, " ").slice(0, 160)}`
     : r.gpuErrorMsg
       ? `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans} | ${r.gpuErrorMsg.replace(/\n/g, " ").slice(0, 220)}`
     : `${r.rawStatus} | lum=${r.lum.toFixed(4)} gpuErrs=${r.errCount} nan=${r.nans}`;
-  const detailWithGolden = goldenDetail ? `${detail} | ${goldenDetail}` : detail;
+  const extraDetails = [mutationDetail, goldenDetail].filter(Boolean).join(" | ");
+  const detailWithGolden = extraDetails ? `${detail} | ${extraDetails}` : detail;
   console.log(`  ${marker} | ${r.label.padEnd(28)} | ${detailWithGolden}${note ? " | " + note : ""}`);
 }
 

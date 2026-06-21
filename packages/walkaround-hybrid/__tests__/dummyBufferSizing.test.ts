@@ -337,7 +337,7 @@ describe('rebuildProbeBvhFromScene — DDGI probe-update TLAS dummy buffers', ()
     };
   }
 
-  it('TLAS dummy buffers are ≥ 32 bytes (BVHNode min-binding-size)', () => {
+  it('TLAS node dummy buffer is ≥ 32 bytes (BVHNode min-binding-size)', () => {
     // In merged mode, rebuildProbeBvhFromScene creates 5 dummy TLAS buffers.
     // The first one (tlasNodesBuf) backs `array<BVHNode>` whose minimum binding
     // size is 32 bytes.  This was the ea88803 bug: 16→32 fix.
@@ -351,14 +351,18 @@ describe('rebuildProbeBvhFromScene — DDGI probe-update TLAS dummy buffers', ()
       makeSceneBvhBuffers() as unknown as Parameters<typeof rebuildProbeBvhFromScene>[2],
     );
 
-    // All newly created TLAS dummy buffers should be ≥ 32 bytes.
     const newAllocs = device.allocations.slice(bufsBefore);
-    // There are 5 TLAS dummy buffers (tlasNodes, tlasInstIdx, tlasBlasRoots, tlasW2l, tlasL2w).
-    const tlasLike = newAllocs.filter((a) => a.size >= BVHNODE_MIN_BINDING_BYTES);
-    expect(tlasLike.length).toBeGreaterThanOrEqual(5);
+    // Buffer creation order after geometry uploads:
+    // bvh, positions, indices, normals, materialIds, then the five TLAS dummies.
+    // Only tlasNodes backs `array<BVHNode>` and needs the 32-byte minimum.
+    expect(newAllocs[5]?.size).toBeGreaterThanOrEqual(BVHNODE_MIN_BINDING_BYTES);
+    expect(newAllocs[6]?.size).toBeGreaterThanOrEqual(16);
+    expect(newAllocs[7]?.size).toBeGreaterThanOrEqual(16);
+    expect(newAllocs[8]?.size).toBeGreaterThanOrEqual(16);
+    expect(newAllocs[9]?.size).toBeGreaterThanOrEqual(16);
 
-    // Specifically: none of the newly created buffers should be 16 bytes (the
-    // historical bug size).
+    // Scalar/vector TLAS placeholders may be 16 bytes; every allocation must
+    // still satisfy WebGPU's legal nonzero storage-buffer floor.
     for (const a of newAllocs) {
       expect(a.size).toBeGreaterThanOrEqual(16);
     }

@@ -67,6 +67,7 @@ import {
   DDGI_FRAME_PARAMS_UBO,
   PROBE_RAY_STRIDE_BYTES,
 } from './probeUpdateUbos.js';
+import { EMITTER_TRI_STRIDE_BYTES } from '../restir/emitterList.js';
 
 const DDGI_PLACEHOLDER_MATERIAL_ATLAS: MaterialTextureAtlasPayload = {
   atlasData: new Float32Array([1, 1, 1, 1]),
@@ -548,6 +549,12 @@ export class ProbeUpdatePass {
     });
 
     // Allocate placeholder buffers (1 element each, replaced on first update).
+    // WebGPU validates unsized storage-array bindings against at least one
+    // element of the declared WGSL type. BVHNode is 32 bytes, so a generic
+    // 16-byte placeholder is invalid for array<BVHNode> even when TLAS is off.
+    const BVH_NODE_PLACEHOLDER_BYTES = 32;
+    const VEC4_PLACEHOLDER_BYTES = 16;
+    const U32_PLACEHOLDER_BYTES = 16;
     const makeBuffer = (label: string, size: number, usage: number) =>
       device.createBuffer({ label, size: Math.max(size, 16), usage });
 
@@ -576,16 +583,16 @@ export class ProbeUpdatePass {
       ...pipelines,
       irrScratchTex:  null,
       visScratchTex:  null,
-      bvhBuf:          makeBuffer('ddgi.bvh.nodes.placeholder', 16, RO),
-      posBuf:          makeBuffer('ddgi.bvh.positions.placeholder', 12, RO),
-      idxBuf:          makeBuffer('ddgi.bvh.indices.placeholder', 12, RO),
-      normBuf:         makeBuffer('ddgi.bvh.normals.placeholder', 12, RO),
-      matIdBuf:        makeBuffer('ddgi.bvh.material-ids.placeholder', 4,  RO),
-      tlasNodesBuf:    makeBuffer('ddgi.tlas.nodes.placeholder', 16, RO),
-      tlasInstIdxBuf:  makeBuffer('ddgi.tlas.instance-indices.placeholder', 16, RO),
-      tlasBlasRootsBuf: makeBuffer('ddgi.tlas.blas-roots.placeholder', 16, RO),
-      tlasW2lBuf:      makeBuffer('ddgi.tlas.world-to-local.placeholder', 16, RO),
-      tlasL2wBuf:      makeBuffer('ddgi.tlas.local-to-world.placeholder', 16, RO),
+      bvhBuf:          makeBuffer('ddgi.bvh.nodes.placeholder', BVH_NODE_PLACEHOLDER_BYTES, RO),
+      posBuf:          makeBuffer('ddgi.bvh.positions.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+      idxBuf:          makeBuffer('ddgi.bvh.indices.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+      normBuf:         makeBuffer('ddgi.bvh.normals.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+      matIdBuf:        makeBuffer('ddgi.bvh.material-ids.placeholder', U32_PLACEHOLDER_BYTES, RO),
+      tlasNodesBuf:    makeBuffer('ddgi.tlas.nodes.placeholder', BVH_NODE_PLACEHOLDER_BYTES, RO),
+      tlasInstIdxBuf:  makeBuffer('ddgi.tlas.instance-indices.placeholder', U32_PLACEHOLDER_BYTES, RO),
+      tlasBlasRootsBuf: makeBuffer('ddgi.tlas.blas-roots.placeholder', U32_PLACEHOLDER_BYTES, RO),
+      tlasW2lBuf:      makeBuffer('ddgi.tlas.world-to-local.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
+      tlasL2wBuf:      makeBuffer('ddgi.tlas.local-to-world.placeholder', VEC4_PLACEHOLDER_BYTES, RO),
       traceParamsBuf:  makeBuffer('ddgi.trace-params', 16, UB),
       materialsBuf:    makeBuffer('ddgi.materials', this._ddgiMaxMaterials * DDGI_MATERIAL_STRIDE_BYTES, UB),
       lightsBuf:       makeBuffer('ddgi.lights', DDGI_PROBE_LIGHTS_BUFFER_BYTES, UB),
@@ -595,8 +602,10 @@ export class ProbeUpdatePass {
       borderVisUboBuf: makeBuffer('ddgi.border-vis-ubo', DDGI_BORDER_UBO_BYTES, UB),
       rayResultsBuf:   makeBuffer('ddgi.ray-results', PROBE_RAY_STRIDE_BYTES, RW),
       activeProbesBuf: makeBuffer('ddgi.active-probes', 4, RO),
-      // H18 — placeholder (16 bytes); real data uploaded by setEmitterTris().
-      emitterTrisBuf:  makeBuffer('ddgi.emitter-tris.placeholder', 16, RO),
+      // H18 — one full packed EmitterTri record. The shader statically indexes
+      // five vec4 lanes per candidate, so layout:auto validates a 32+ byte
+      // storage binding even when traceParams.emitterTriCount is zero.
+      emitterTrisBuf:  makeBuffer('ddgi.emitter-tris.placeholder', EMITTER_TRI_STRIDE_BYTES, RO),
       emitterTrisCount: 0,
       materialTextureAtlas: placeholderMaterialAtlas.atlasTexture,
       materialTextureAtlasView: placeholderMaterialAtlas.atlasTextureView,
@@ -941,7 +950,7 @@ export class ProbeUpdatePass {
     const count = this._emitterTrisCount;
     const data  = this._emitterTrisData;
     if (count === 0) {
-      // Sun-only scene: keep the existing 16-byte dummy; update the count only.
+      // Sun-only scene: keep the existing full-record dummy; update the count only.
       gpu.emitterTrisCount = 0;
       return;
     }

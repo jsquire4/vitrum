@@ -44,6 +44,21 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter wh/mutation --require-full-tier",
+    filter: "wh/mutation",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 3,
+    failures: 0,
+    configs: [
+      { label: "wh/mutation-material", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "material", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-transform", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "transform", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-emitter", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "emitter", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-default-status.json",
     command: "npm run behavioral-gate:dzn -- --filter default --require-full-tier",
     filter: "default",

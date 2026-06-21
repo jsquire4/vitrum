@@ -67,6 +67,8 @@ type BindingKind =
 interface BindingDescriptor {
   readonly binding: number;
   readonly kind: BindingKind;
+  /** Expected minimum byte size for buffer bindings with fixed WGSL structs. */
+  readonly minSizeBytes?: number;
   /** Optional rationale — load-bearing for inert / placeholder bindings. */
   readonly note?: string;
 }
@@ -97,6 +99,14 @@ export interface BindGroupTableEntry {
   readonly visibility: 'compute' | 'fragment';
   readonly entries: readonly BindingDescriptor[];
 }
+
+// Fixed uniform binding sizes mirrored from the WGSL structs. These keep the
+// descriptor table honest and make stale placeholder/cached-resource mistakes
+// fail with an actionable table+binding error before backend validation does.
+const WALKAROUND_UBO_BYTES = 432;
+const ENV_PARAMS_BYTES = 32;
+const GTAO_UBO_BYTES = 32;
+const UBO_16_BYTES = 16;
 
 // ── The table ────────────────────────────────────────────────────────────────
 
@@ -215,7 +225,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 16, kind: 'tex', note: 'env_marginal (1×H inverse-CDF, r32float; random→row v)' },
       { binding: 17, kind: 'tex', note: 'env_conditional (W×H inverse-CDF, r32float; random→col u)' },
       { binding: 18, kind: 'sampler:nf', note: 'env_sampler (declared for completeness; lookups use textureLoad)' },
-      { binding: 19, kind: 'uniform', note: 'EnvParams { hasEnv, width, height, rotationY, intensity } — own uniform (WalkaroundUBO is frozen at 416B)' },
+      { binding: 19, kind: 'uniform', minSizeBytes: ENV_PARAMS_BYTES, note: 'EnvParams { hasEnv, width, height, rotationY, intensity } — own uniform (WalkaroundUBO is frozen at 432B)' },
       // Phase-3D material-map atlas and per-triangle metadata.
       // Both are textures (not storage buffers) so the scene group stays inside
       // the full-tier WebGPU storage-buffer floor.
@@ -230,7 +240,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     label: 'ubo',
     visibility: 'compute',
     entries: [
-      { binding: 0, kind: 'uniform', note: 'WalkaroundUBO (256 bytes)' },
+      { binding: 0, kind: 'uniform', minSizeBytes: WALKAROUND_UBO_BYTES, note: 'WalkaroundUBO (432 bytes)' },
       { binding: 1, kind: 'tex', note: 'Sprint 15 — full-res GTAO occlusion factor (rgba16float), 1-frame lagged' },
       // Slot 2 — Sprint 9 adaptive-sampling tier (r32uint, sample-budget output).
       // risGi reads it to scale M_GI per pixel; ris/temporal/spatial/shade
@@ -245,7 +255,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'tex', note: 'gNormalDepth' },
       { binding: 1, kind: 'storage-tex:rgba16float', note: 'aoHalf out (E1 multi-bounce: bumped from r16float)' },
-      { binding: 2, kind: 'uniform', note: 'GTAOUniforms' },
+      { binding: 2, kind: 'uniform', minSizeBytes: GTAO_UBO_BYTES, note: 'GTAOUniforms' },
       { binding: 3, kind: 'tex', note: 'E1 — hdrAlbedoOut (Jiménez 2016 §5.2 multi-bounce term)' },
     ],
   },
@@ -257,7 +267,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 0, kind: 'tex', note: 'aoHalf in (per-channel multi-bounce AO)' },
       { binding: 1, kind: 'tex', note: 'gNormalDepth' },
       { binding: 2, kind: 'storage-tex:rgba16float', note: 'aoFull out (per-channel Jiménez 2016 §5.2 AO in .rgb)' },
-      { binding: 3, kind: 'uniform', note: 'GTAOUniforms (audit B3 — bilateralDepthSigma)' },
+      { binding: 3, kind: 'uniform', minSizeBytes: GTAO_UBO_BYTES, note: 'GTAOUniforms (audit B3 — bilateralDepthSigma)' },
     ],
   },
   {
@@ -267,7 +277,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'storage-rw', note: 'reservoirGiCurrent' },
       { binding: 1, kind: 'storage-ro', note: 'reservoirGiPrevious' },
-      { binding: 2, kind: 'uniform', note: 'WalkaroundUBO' },
+      { binding: 2, kind: 'uniform', minSizeBytes: WALKAROUND_UBO_BYTES, note: 'WalkaroundUBO' },
     ],
   },
   {
@@ -277,7 +287,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'storage-ro', note: 'input reservoir' },
       { binding: 1, kind: 'storage-rw', note: 'output reservoir' },
-      { binding: 2, kind: 'uniform', note: 'WalkaroundUBO' },
+      { binding: 2, kind: 'uniform', minSizeBytes: WALKAROUND_UBO_BYTES, note: 'WalkaroundUBO' },
     ],
   },
   {
@@ -317,7 +327,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'tex', note: 'gNormalDepth in' },
       { binding: 1, kind: 'storage-tex:rgba32float', note: 'motion out' },
-      { binding: 2, kind: 'uniform', note: 'WalkaroundUBO' },
+      { binding: 2, kind: 'uniform', minSizeBytes: WALKAROUND_UBO_BYTES, note: 'WalkaroundUBO' },
     ],
   },
   {
@@ -325,7 +335,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     label: 'resolve',
     visibility: 'compute',
     entries: [
-      { binding: 0, kind: 'uniform', note: 'ResolveUniforms (screen size + frame parity)' },
+      { binding: 0, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'ResolveUniforms (screen size + frame parity)' },
       { binding: 1, kind: 'tex', note: 'current radiance' },
       { binding: 2, kind: 'tex', note: 'previous radiance' },
       { binding: 3, kind: 'tex', note: 'motion vectors' },
@@ -337,10 +347,10 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     label: 'sample-budget',
     visibility: 'compute',
     entries: [
-      { binding: 0, kind: 'uniform', note: 'SampleBudgetUniforms (thresholds + screen size)' },
+      { binding: 0, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'SampleBudgetUniforms (thresholds + screen size)' },
       { binding: 1, kind: 'tex', note: 'variance source (rgba32float, welford)' },
       { binding: 2, kind: 'storage-tex:r32uint', note: 'tier output' },
-      { binding: 3, kind: 'uniform', note: 'SampleCountUniforms (sample-count counter)' },
+      { binding: 3, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'SampleCountUniforms (sample-count counter)' },
     ],
   },
   {
@@ -350,7 +360,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'tex', note: 'final blit source' },
       { binding: 1, kind: 'sampler:nf', note: 'composite sampler' },
-      { binding: 2, kind: 'uniform', note: 'CompositeUniforms (tonemapMode, exposure, outputColorSpace)' },
+      { binding: 2, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'CompositeUniforms (tonemapMode, exposure, outputColorSpace)' },
     ],
   },
   {
@@ -358,7 +368,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     label: 'cb-prefill',
     visibility: 'compute',
     entries: [
-      { binding: 0, kind: 'uniform', note: 'CbPrefillUniforms (screenW/H, frameParity, pad)' },
+      { binding: 0, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'CbPrefillUniforms (screenW/H, frameParity, pad)' },
       { binding: 1, kind: 'tex', note: 'readAccum — previous-frame accumulated radiance' },
       { binding: 2, kind: 'tex', note: 'motionVectors — rgba32float NDC motion' },
       { binding: 3, kind: 'storage-tex:rgba16float', note: 'hdrColorTexture — gap-pixel fill output' },
@@ -392,14 +402,25 @@ function visibilityFlag(v: 'compute' | 'fragment'): number {
 }
 
 /** Map a {@link BindingKind} to the resource-specific part of a layout entry. */
-function layoutResourceFor(kind: BindingKind): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> {
+function layoutResourceFor(
+  kind: BindingKind,
+  minSizeBytes?: number,
+): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> {
+  const buffer = (
+    type: GPUBufferBindingType,
+  ): Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'> => ({
+    buffer: {
+      type,
+      ...(minSizeBytes !== undefined ? { minBindingSize: minSizeBytes } : {}),
+    },
+  });
   switch (kind) {
     case 'storage-ro':
-      return { buffer: { type: 'read-only-storage' } };
+      return buffer('read-only-storage');
     case 'storage-rw':
-      return { buffer: { type: 'storage' } };
+      return buffer('storage');
     case 'uniform':
-      return { buffer: { type: 'uniform' } };
+      return buffer('uniform');
     case 'tex':
       return { texture: { sampleType: 'unfilterable-float' } };
     case 'tex-array':
@@ -428,8 +449,28 @@ export function bglEntriesFor(id: BindGroupTableId): GPUBindGroupLayoutEntry[] {
   return t.entries.map((d) => ({
     binding: d.binding,
     visibility: vis,
-    ...layoutResourceFor(d.kind),
+    ...layoutResourceFor(d.kind, d.minSizeBytes),
   }));
+}
+
+function bindingResourceSize(resource: GPUBindingResource): number | undefined {
+  if (resource == null || typeof resource !== 'object' || !('buffer' in resource)) {
+    return undefined;
+  }
+  const binding = resource as GPUBufferBinding;
+  const buffer = binding.buffer as GPUBuffer & { readonly size?: number; readonly label?: string };
+  if (typeof binding.size === 'number') return binding.size;
+  if (typeof buffer.size !== 'number') return undefined;
+  const offset = typeof binding.offset === 'number' ? binding.offset : 0;
+  return Math.max(0, buffer.size - offset);
+}
+
+function bindingResourceLabel(resource: GPUBindingResource): string {
+  if (resource == null || typeof resource !== 'object' || !('buffer' in resource)) {
+    return '';
+  }
+  const buffer = (resource as GPUBufferBinding).buffer as GPUBuffer & { readonly label?: string };
+  return buffer.label ?? '';
 }
 
 /**
@@ -457,6 +498,22 @@ export function buildBindGroupFromTable(
       `[bindGroupDescriptors] '${id}' expects ${t.entries.length} resources, ` +
         `got ${resources.length}`,
     );
+  }
+  for (let i = 0; i < resources.length; i += 1) {
+    const descriptor = t.entries[i]!;
+    const minSizeBytes = descriptor.minSizeBytes;
+    if (minSizeBytes === undefined) continue;
+    const resource = resources[i]!;
+    const actualSizeBytes = bindingResourceSize(resource);
+    if (actualSizeBytes !== undefined && actualSizeBytes < minSizeBytes) {
+      const label = bindingResourceLabel(resource);
+      throw new RangeError(
+        `[bindGroupDescriptors] '${id}' binding ${descriptor.binding} requires ` +
+          `${minSizeBytes} bytes for ${descriptor.note ?? descriptor.kind}, ` +
+          `but received ${actualSizeBytes} bytes` +
+          `${label ? ` from '${label}'` : ''}.`,
+      );
+    }
   }
   // Map over `resources` (not the table) so each element is a non-undefined
   // GPUBindingResource under noUncheckedIndexedAccess; the length check above

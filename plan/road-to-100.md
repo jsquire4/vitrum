@@ -577,8 +577,14 @@
 > are `rgba32float` textures read with `textureLoad`, so their bind-group layout
 > entries must be `unfilterable-float`, not filterable `float`. The broad run is
 > now host-blocked by timeout on this WSL/dzn runner, so the durable proof is the
-> eleven committed per-label dzn PASS artifacts verified by
-> `npm run behavioral-gate:dzn-status-check`.
+> eleven committed per-label dzn PASS artifacts plus the combined
+> `wh/mutation` shard verified by `npm run behavioral-gate:dzn-status-check`.
+> **2026-06-21 walkaround mutation dzn follow-up:** `behavioral-gate:dzn -- --filter wh/mutation --require-full-tier`
+> now proves walkaround material, transform, and emitter mutation rows on the
+> dzn adapter with visible pixel deltas and zero GPU validation errors. The run
+> exposed and closed a DDGI resource bug: no-TLAS ReSTIR snapshots rebuilt TLAS
+> node buffers with a stale 16-byte dummy even though the shader binding is
+> `array<BVHNode>` and strict adapters require a 32-byte minimum.
 > **2026-06-18 baseline/lite/spectral/skinned/analytic dzn follow-up:** focused
 > dzn status artifacts for `--filter default`, `--filter lite-tier`,
 > `--filter spectral`, `--filter skinned`, and `--filter analytic` now prove

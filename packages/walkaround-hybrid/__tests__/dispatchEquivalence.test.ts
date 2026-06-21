@@ -216,7 +216,7 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
     hdrTotalTexture: tex('hdrTotal'),
     denoisedPingTexture: tex('denoisedPing'),
     denoisedPongTexture: tex('denoisedPong'),
-    uboBuffer: buf('ubo'),
+    uboBuffer: buf('ubo', 432),
     combinedDenoisedTexture: tex('combinedDenoisedTex'),
     albedoTexture: tex('albedo'),
     hdrIndirectTexture: tex('hdrIndirect'),

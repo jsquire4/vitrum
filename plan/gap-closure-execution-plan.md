@@ -561,9 +561,11 @@ replacement for V28-B recaptures.
   `wh/gtao-off`, `wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`,
   `wh/rect-area-emitter`, `wh/directional-sun`, `wh/glass-gi`, and
   `wh/transparent-oit` each have a committed PASS status artifact with zero GPU
-  errors. The dzn status checker
-  verifies those shard artifacts instead of requiring the fragile monolithic
-  run. The original broad run had found and fixed an RC-only validation bug: the
+  errors. The walkaround mutation shard
+  (`behavioral-gate:dzn -- --filter wh/mutation --require-full-tier`) now also
+  proves material, transform, and emitter mutation rows with visible pixel
+  deltas and zero GPU validation errors. The dzn status checker verifies those
+  shard artifacts instead of requiring the fragile monolithic run. The original broad run had found and fixed an RC-only validation bug: the
   RC material atlas/meta bindings were declared filterable even though their
   `rgba32float` textures are unfilterable and read only with `textureLoad`.
 - pt-webgpu full-tier material-furnace/reference-render sweeps. WSL lavapipe is
@@ -593,8 +595,11 @@ replacement for V28-B recaptures.
   focused shared-denoiser and walkaround tests. Walkaround material-only
   mutations now also refresh DDGI's `RestirBvhSnapshot` material payload without
   RC geometry propagation, and roughness/metallic edits invalidate DDGI probe
-  cache because probe rays consume those fields. Broader combined real-adapter
-  mutation-matrix promotion remains.
+  cache because probe rays consume those fields. Walkaround material/transform/
+  emitter mutation rows now have a focused dzn proof at
+  `tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json`; that run
+  also closed the DDGI no-TLAS placeholder-buffer bug in `rebuildProbeBvhFromRestir`.
+  Broader cross-backend/browser mutation-matrix promotion remains.
 
 ## How To Use This Plan
 
@@ -669,13 +674,13 @@ for promotion from "implemented/approximate" to "trusted/native".
 | SPPM / MNEE caustic radiometric proof | pt-webgpu | Focused dzn full-tier behavioral status proves `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` boot/render finite non-black with zero GPU errors. The committed SPPM-vs-MNEE radiometric A/B is freshly recaptured and passes the loose convergence proof (`finalRelErr=23.4%`, trend improving by 80 frames). Remaining work is tighter/equal-quality caustic promotion evidence, not baseline proof existence. |
 | Baseline/lite/spectral/skinned/analytic execution | pt-webgpu/walkaround | Focused dzn status now proves default pt/walkaround, explicit pt-webgpu lite fallback, spectral combos, skinned/glTF-skinned animation, and full-tier analytic sphere lanes boot/render finite non-black with zero GPU errors. The dzn status checker now fails if any real behavioral-gate label lacks committed coverage. Remaining work is reference-quality or radiometric promotion where applicable. |
 | Analytic emitter/environment proof | pt-webgpu/walkaround | Focused dzn status now proves point/disc/spot/directional, HDRI, and procedural-sky lanes boot/render finite non-black with zero GPU errors on their selected full/lite/walkaround rows. Remaining work is reference-quality radiometric sweep coverage. |
-| Walkaround behavioral matrix | walkaround | The broad `behavioral-gate:dzn -- --filter wh/ --require-full-tier` aggregate is host-blocked on this WSL/dzn runner, but each walkaround row now has an individual committed PASS status artifact (`wh/default`, `wh/rcEnabled`, `wh/ppgEnabled`, `wh/gtao-off`, `wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`, `wh/rect-area-emitter`, `wh/directional-sun`, `wh/glass-gi`, `wh/transparent-oit`) with zero GPU errors, and `npm run behavioral-gate:dzn-status-check` verifies those shards. Remaining work is A/B quality proof, not boot/render validity. |
+| Walkaround behavioral matrix | walkaround | The broad `behavioral-gate:dzn -- --filter wh/ --require-full-tier` aggregate is host-blocked on this WSL/dzn runner, but each walkaround row now has an individual committed PASS status artifact (`wh/default`, `wh/rcEnabled`, `wh/ppgEnabled`, `wh/gtao-off`, `wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`, `wh/rect-area-emitter`, `wh/directional-sun`, `wh/glass-gi`, `wh/transparent-oit`) with zero GPU errors. The focused `wh/mutation` dzn shard additionally proves material/transform/emitter mutation rows with visible deltas and zero GPU errors, and `npm run behavioral-gate:dzn-status-check` verifies all of those shards. Remaining work is A/B quality proof, not boot/render validity. |
 | pt-webgpu full-tier material furnace | pt-webgpu | Scalar and CPU-readable map-backed clearcoat/sheen/iridescence/aniso/specular full-tier captures are now covered by `pt/material-lobes` and `pt/material-lobe-maps` dzn golden proof, and the ReSTIR-PT specialty fixture pins the matching scalar/map-backed-effective reservoir identity. Remaining work is GPU/radiometric A/B before promotion. |
 | pt-webgl2 material furnace | pt-webgl2 | Source/oracle proof is guarded by `npm run renderer-fidelity-proof-check`: GGX white furnace, thickness/SSS packing and shader consumption, procedural-sky bake into the HDRI/CDF path, and emissive-map mesh-area MIS all have source/test needles. Remaining work is browser/real-adapter reference A/B before any supported-row promotion. |
 | Rich-material GI | walkaround | A/B showing receiver-lobe material target improves or preserves correctness. |
 | Transparent OIT visual proof | walkaround | `wh/transparent-oit` now has a committed `dzn-full` PNG golden plus a dzn PASS status proving a fractional alpha-blend pane with sun, point-light, and finite-area lighting against that golden, while preserving the approximation warning. Remaining work is reference-quality A/B proof for alpha shadow transmittance and layered-transport boundaries. |
 | Real glTF golden sweep | glTF/tools | pt-webgpu WSL public-asset golden lane covered; recommended-backend/browser import/decode readiness is proven for textured GLB, Draco, and meshopt rows. The pt-webgl2 browser harness now tries locator screenshot, clipped page screenshot, public `engine.captureFrame({ colorSpace:'output' })`, canvas data URL, and opt-in Chromium GL/ANGLE args via `VITRUM_CHROMIUM_EXTRA_ARGS`; this WSL Playwright host still blocks on pixel readback, so PNG goldens/tolerance remain a browser-host validation item, not a source-code import gap. |
-| Mutation matrix on real GPU | engine/backends | Real buffers, bind groups, denoiser history, GI propagation together. |
+| Mutation matrix on real GPU | engine/backends | pt-webgpu mutation rows and walkaround material/transform/emitter rows now have committed dzn full-tier status artifacts. Remaining work is browser/adapter promotion plus any additional backend-specific mutation rows not covered by those shards. |
 | Browser/adapter coverage | tools | Browser or real-adapter validation for rows WSL lavapipe cannot prove. |
 
 ### A3 — Product Decisions
