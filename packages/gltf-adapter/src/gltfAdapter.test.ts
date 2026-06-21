@@ -1979,6 +1979,97 @@ describe('skin → SkinnedMeshPrimitive', () => {
     return { gltf, buffers: new Map([[0, totalBuf]]) };
   }
 
+  function makeSkinnedSecondaryInfluencesGltf(): {
+    gltf: GltfJson;
+    buffers: Map<number, ArrayBuffer>;
+  } {
+    const posBuf = f32Buffer(TRIANGLE_POSITIONS);
+    const ibm = new Array(96).fill(0);
+    for (let joint = 0; joint < 6; joint++) {
+      const base = joint * 16;
+      ibm[base + 0] = 1;
+      ibm[base + 5] = 1;
+      ibm[base + 10] = 1;
+      ibm[base + 15] = 1;
+    }
+    const ibmBuf = f32Buffer(ibm);
+    const weights0 = [
+      0.35, 0.25, 0.15, 0.05,
+      0.35, 0.25, 0.15, 0.05,
+      0.35, 0.25, 0.15, 0.05,
+    ];
+    const weights1 = [
+      0.12, 0.04, 0.03, 0.01,
+      0.12, 0.04, 0.03, 0.01,
+      0.12, 0.04, 0.03, 0.01,
+    ];
+    const joints0 = [
+      0, 1, 2, 3,
+      0, 1, 2, 3,
+      0, 1, 2, 3,
+    ];
+    const joints1 = [
+      4, 5, 2, 1,
+      4, 5, 2, 1,
+      4, 5, 2, 1,
+    ];
+    const weights0Buf = f32Buffer(weights0);
+    const joints0Buf = u8Buffer(joints0);
+    const weights1Buf = f32Buffer(weights1);
+    const joints1Buf = u8Buffer(joints1);
+    const totalBuf = concatBuffers(posBuf, ibmBuf, weights0Buf, joints0Buf, weights1Buf, joints1Buf);
+    const posOff = 0;
+    const ibmOff = posBuf.byteLength;
+    const weights0Off = ibmOff + ibmBuf.byteLength;
+    const joints0Off = weights0Off + weights0Buf.byteLength;
+    const weights1Off = joints0Off + joints0Buf.byteLength;
+    const joints1Off = weights1Off + weights1Buf.byteLength;
+    const gltf: GltfJson = {
+      asset: { version: '2.0' },
+      scenes: [{ nodes: [0] }],
+      scene: 0,
+      nodes: [
+        { mesh: 0, skin: 0, children: [1, 2, 3, 4, 5, 6] },
+        {},
+        {},
+        {},
+        {},
+        {},
+        {},
+      ],
+      meshes: [{
+        primitives: [{
+          attributes: {
+            POSITION: 0,
+            WEIGHTS_0: 2,
+            JOINTS_0: 3,
+            WEIGHTS_1: 4,
+            JOINTS_1: 5,
+          },
+        }],
+      }],
+      skins: [{ joints: [1, 2, 3, 4, 5, 6], inverseBindMatrices: 1 }],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 6, type: 'MAT4' },
+        { bufferView: 2, componentType: 5126, count: 3, type: 'VEC4' },
+        { bufferView: 3, componentType: 5121, count: 3, type: 'VEC4' },
+        { bufferView: 4, componentType: 5126, count: 3, type: 'VEC4' },
+        { bufferView: 5, componentType: 5121, count: 3, type: 'VEC4' },
+      ],
+      bufferViews: [
+        { buffer: 0, byteOffset: posOff, byteLength: posBuf.byteLength },
+        { buffer: 0, byteOffset: ibmOff, byteLength: ibmBuf.byteLength },
+        { buffer: 0, byteOffset: weights0Off, byteLength: weights0Buf.byteLength },
+        { buffer: 0, byteOffset: joints0Off, byteLength: joints0Buf.byteLength },
+        { buffer: 0, byteOffset: weights1Off, byteLength: weights1Buf.byteLength },
+        { buffer: 0, byteOffset: joints1Off, byteLength: joints1Buf.byteLength },
+      ],
+      buffers: [{ byteLength: totalBuf.byteLength }],
+    };
+    return { gltf, buffers: new Map([[0, totalBuf]]) };
+  }
+
   it('emits kind:skinned-mesh when node has a skin (JOINTS_0 u8)', async () => {
     const { gltf, buffers } = makeSkinnedGltf(5121);
     const { scene } = await gltfToScene(gltf, { buffers });
@@ -2053,6 +2144,30 @@ describe('skin → SkinnedMeshPrimitive', () => {
     expect(prim.skinWeights[1]).toBeCloseTo(0.5);
     expect(prim.skinWeights[2]).toBeCloseTo(0);
     expect(prim.skinWeights[3]).toBeCloseTo(0);
+  });
+
+  it('collapses secondary skin influence sets into strongest four unique joints', async () => {
+    const { gltf, buffers } = makeSkinnedSecondaryInfluencesGltf();
+    const { scene, diagnostics } = await gltfToScene(gltf, { buffers });
+    const prim = scene.primitives[0] as SkinnedMeshPrimitive;
+
+    expect(prim.kind).toBe('skinned-mesh');
+    expect(Array.from(prim.skinIndices.slice(0, 4))).toEqual([0, 1, 2, 4]);
+    expect(prim.skinWeights[0]).toBeCloseTo(0.35 / 0.91);
+    expect(prim.skinWeights[1]).toBeCloseTo(0.26 / 0.91);
+    expect(prim.skinWeights[2]).toBeCloseTo(0.18 / 0.91);
+    expect(prim.skinWeights[3]).toBeCloseTo(0.12 / 0.91);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'collapsed-skin-influence-sets',
+      path: 'meshes[0].primitives[0].attributes.JOINTS_1',
+    }));
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.primitives.hasCollapsedSkinInfluenceSets).toBe(true);
+    expect(report.primitives.issuePaths.collapsedSkinInfluenceSets).toEqual([
+      'meshes[0].primitives[0].attributes.JOINTS_1',
+      'meshes[0].primitives[0].attributes.WEIGHTS_1',
+    ]);
   });
 
   it('boneInverses are the identity matrices for both joints', async () => {

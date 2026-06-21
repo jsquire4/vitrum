@@ -63,4 +63,9 @@ describe('CWBVH_INTERSECT_WGSL', () => {
     expect(CWBVH_INTERSECT_WGSL).toContain('let trans4 = (idxEntry.w >> 4u) & 0xFu;');
     expect(CWBVH_INTERSECT_WGSL).toContain('if (trans4 > 4u)');
   });
+
+  it('decodes position.w UV payloads as packed f16 pairs', () => {
+    expect(CWBVH_INTERSECT_WGSL).toContain('unpack2x16float(bitcast<u32>(pa4.w))');
+    expect(CWBVH_INTERSECT_WGSL).not.toContain('unpack2x16unorm(bitcast<u32>(pa4.w))');
+  });
 });

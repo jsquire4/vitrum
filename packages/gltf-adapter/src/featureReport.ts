@@ -86,6 +86,7 @@ export interface GltfPrimitiveFeatureReport {
   readonly hasUnsupportedMorphTargetTexcoords: boolean;
   readonly hasSkins: boolean;
   readonly hasInstancedSkinnedOrMorphed: boolean;
+  readonly hasCollapsedSkinInfluenceSets: boolean;
   readonly hasIgnoredSkinAttributes: boolean;
   readonly hasIncompleteSkinAttributes: boolean;
   readonly malformedPrimitives: readonly GltfMalformedPrimitiveIssue[];
@@ -823,6 +824,18 @@ export function evaluateGltfBackendProfileCompatibility(
         'glTF EXT_mesh_gpu_instancing on skinned or morphed meshes is fallback-expanded into one SkinnedMeshPrimitive ' +
         'per authored instance. This keeps every instance renderable under the current core Scene contract, but it is ' +
         'not native instanced skinning and may cost more memory/BVH work than a future first-class primitive.',
+    });
+  }
+
+  if (report.primitives.hasCollapsedSkinInfluenceSets) {
+    addIssue({
+      category: 'primitive',
+      name: 'skinInfluenceSets.collapsedToFour',
+      support: 'approximate',
+      path: firstSourcePath(report.primitives.issuePaths, 'collapsedSkinInfluenceSets', 'meshes'),
+      message:
+        'glTF secondary skin influence sets are imported by merging duplicate joints, retaining the strongest ' +
+        'four unique joint weights per vertex, and renormalizing to fit the current core SkinnedMeshPrimitive contract.',
     });
   }
 
@@ -1783,6 +1796,17 @@ function classifyImage(image: GltfImage, index: number): GltfResourceUse {
   return { index, kind: 'external-uri', uri: image.uri, ...mime };
 }
 
+function collectSkinInfluenceSetIndices(attributes: GltfPrimitive['attributes'] | undefined): number[] {
+  const sets = new Set<number>();
+  for (const attrName of Object.keys(attributes ?? {})) {
+    const match = /^(?:JOINTS|WEIGHTS)_([0-9]+)$/.exec(attrName);
+    if (!match) continue;
+    const setIndex = Number(match[1]);
+    if (Number.isSafeInteger(setIndex) && setIndex >= 0) sets.add(setIndex);
+  }
+  return [...sets].sort((a, b) => a - b);
+}
+
 function analyzePrimitives(
   gltf: GltfJson,
   sceneScope: GltfSceneReachability | undefined,
@@ -1806,6 +1830,7 @@ function analyzePrimitives(
   let hasBoundSkinAttrs = false;
   let hasInstancing = false;
   let hasInstancedSkinnedOrMorphed = false;
+  let hasCollapsedSkinInfluenceSets = false;
   let hasIgnoredSkinAttributes = false;
   let hasIncompleteSkinAttributes = false;
   const malformedPrimitives: GltfMalformedPrimitiveIssue[] = [];
@@ -1850,6 +1875,7 @@ function analyzePrimitives(
         : undefined;
       const meshHasSkinnedNode = meshNodesWithSkin.has(meshIndex);
       const meshHasUnskinnedNode = meshNodesWithoutSkin.has(meshIndex);
+      const skinInfluenceSetIndices = collectSkinInfluenceSetIndices(primitive.attributes);
       for (const [semantic, accessorIndex] of Object.entries(primitive.attributes ?? {})) {
         attributeSemantics.add(semantic);
         if (semantic !== 'POSITION' && accessorIndex !== undefined) {
@@ -1887,16 +1913,43 @@ function analyzePrimitives(
           hasBoundSkinAttrs = true;
           addSourcePath(issuePaths, 'kind:skinned-mesh', `${primitivePath}.attributes.JOINTS_0`);
           addSourcePath(issuePaths, 'kind:skinned-mesh', `${primitivePath}.attributes.WEIGHTS_0`);
+          for (const setIndex of skinInfluenceSetIndices) {
+            if (setIndex === 0) continue;
+            const hasSetJoints = primitive.attributes?.[`JOINTS_${setIndex}`] !== undefined;
+            const hasSetWeights = primitive.attributes?.[`WEIGHTS_${setIndex}`] !== undefined;
+            if (hasSetJoints && hasSetWeights) {
+              hasCollapsedSkinInfluenceSets = true;
+              addSourcePath(
+                issuePaths,
+                'collapsedSkinInfluenceSets',
+                `${primitivePath}.attributes.JOINTS_${setIndex}`,
+              );
+              addSourcePath(
+                issuePaths,
+                'collapsedSkinInfluenceSets',
+                `${primitivePath}.attributes.WEIGHTS_${setIndex}`,
+              );
+            } else if (hasSetJoints || hasSetWeights) {
+              hasIncompleteSkinAttributes = true;
+              addSourcePath(issuePaths, 'incompleteSkinAttributes', primitivePath);
+            }
+          }
         } else {
           hasIncompleteSkinAttributes = true;
           addSourcePath(issuePaths, 'incompleteSkinAttributes', primitivePath);
         }
       }
-      if (hasJoints || hasWeights) {
+      if (skinInfluenceSetIndices.length > 0) {
         if (!meshHasSkinnedNode || meshHasUnskinnedNode) {
           hasIgnoredSkinAttributes = true;
-          if (hasJoints) addSourcePath(issuePaths, 'ignoredSkinAttributes', `${primitivePath}.attributes.JOINTS_0`);
-          if (hasWeights) addSourcePath(issuePaths, 'ignoredSkinAttributes', `${primitivePath}.attributes.WEIGHTS_0`);
+          for (const setIndex of skinInfluenceSetIndices) {
+            if (primitive.attributes?.[`JOINTS_${setIndex}`] !== undefined) {
+              addSourcePath(issuePaths, 'ignoredSkinAttributes', `${primitivePath}.attributes.JOINTS_${setIndex}`);
+            }
+            if (primitive.attributes?.[`WEIGHTS_${setIndex}`] !== undefined) {
+              addSourcePath(issuePaths, 'ignoredSkinAttributes', `${primitivePath}.attributes.WEIGHTS_${setIndex}`);
+            }
+          }
         }
       }
       const ext = primitive.extensions ?? {};
@@ -2050,6 +2103,7 @@ function analyzePrimitives(
     hasUnsupportedMorphTargetTexcoords,
     hasSkins,
     hasInstancedSkinnedOrMorphed,
+    hasCollapsedSkinInfluenceSets,
     hasIgnoredSkinAttributes,
     hasIncompleteSkinAttributes,
     malformedPrimitives: malformedPrimitives.sort((a, b) =>

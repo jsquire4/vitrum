@@ -11,9 +11,11 @@
 //
 // Supported:
 //   - Skins → SkinnedMeshPrimitive when a mesh node binds `skin` and the
-//     primitive provides both JOINTS_0 + WEIGHTS_0 (JOINTS_0 u8/u16,
-//     WEIGHTS_0 float/u8/u16, inverseBindMatrices, rest-pose joint transforms
-//     converted into the skinned mesh node's local space).
+//     primitive provides both JOINTS_0 + WEIGHTS_0 (JOINTS_N u8/u16,
+//     WEIGHTS_N float/u8/u16, inverseBindMatrices, rest-pose joint transforms
+//     converted into the skinned mesh node's local space). Secondary influence
+//     sets are collapsed into the core contract's strongest four unique joints
+//     per vertex with an explicit import diagnostic.
 //   - Morph targets → SkinnedMeshPrimitive.morphTargets / morphTargetNormals /
 //     morphTargetTangents / morphTargetUvs / morphTargetUv1s / morphWeights
 //     (POSITION + NORMAL + TANGENT + TEXCOORD_0 plus the glTF UV semantic mapped
@@ -427,6 +429,7 @@ export type GltfImportDiagnosticCode =
   | 'unreadable-skin-weights'
   | 'ignored-skin-attributes'
   | 'incomplete-skin-attributes'
+  | 'collapsed-skin-influence-sets'
   | 'scene-not-found'
   | 'ignored-gpu-instancing'
   | 'ignored-gpu-instancing-attribute'
@@ -955,52 +958,125 @@ export async function gltfToScene(
       }
 
       // ── Skinning attributes ────────────────────────────────────────────────
-      // Only unpacked when this node has a skin. JOINTS_0 / WEIGHTS_0 without
+      // Only unpacked when this node has a skin. JOINTS_N / WEIGHTS_N without
       // node.skin carry no glTF skinning semantics, but report the ignored data
       // so strict one-call loading can reject the degradation before rendering.
       let skinIndices: Uint32Array | undefined;
       let skinWeights: Float32Array | undefined;
+      const skinInfluenceSetIndices = collectSkinInfluenceSetIndices(prim.attributes);
       const jointsIdx = prim.attributes['JOINTS_0'];
       const weightsIdx = prim.attributes['WEIGHTS_0'];
-      if (!skinData && (jointsIdx !== undefined || weightsIdx !== undefined)) {
+      if (!skinData && skinInfluenceSetIndices.length > 0) {
+        const firstSet = skinInfluenceSetIndices[0] ?? 0;
+        const firstJoints = prim.attributes[`JOINTS_${firstSet}`];
         emitImportDiagnostic(warnings, diagnostics, {
           severity: 'warning',
           code: 'ignored-skin-attributes',
-          path: jointsIdx !== undefined
-            ? `${primitivePath}.attributes.JOINTS_0`
-            : `${primitivePath}.attributes.WEIGHTS_0`,
+          path: firstJoints !== undefined
+            ? `${primitivePath}.attributes.JOINTS_${firstSet}`
+            : `${primitivePath}.attributes.WEIGHTS_${firstSet}`,
           message:
             `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ` +
-            'JOINTS_0/WEIGHTS_0 data, but the node does not bind a skin. ' +
+            'JOINTS_N/WEIGHTS_N data, but the node does not bind a skin. ' +
             'Skin attributes are ignored and the primitive is imported as a static mesh.',
         });
       }
       if (skinData && bones && boneInverses) {
         if (jointsIdx !== undefined && weightsIdx !== undefined) {
-          try {
-            skinIndices = _unpackJoints(gltf, buffers, jointsIdx, onAccessorDiagnostic);
-          } catch (e) {
-            emitImportDiagnostic(warnings, diagnostics, {
-              severity: 'warning',
-              code: 'unreadable-skin-joints',
-              path: `${primitivePath}.attributes.JOINTS_0`,
-              message:
-                `[vitrum/gltf-adapter] Failed to read JOINTS_0 for "${mesh.name ?? node.mesh}": ` +
-                String(e) + '. Falling back to static mesh.',
-            });
+          const decodedSets: SkinInfluenceSet[] = [];
+          let primaryReadable = true;
+          for (const setIndex of skinInfluenceSetIndices) {
+            const setJointsIdx = prim.attributes[`JOINTS_${setIndex}`];
+            const setWeightsIdx = prim.attributes[`WEIGHTS_${setIndex}`];
+            if (setJointsIdx === undefined || setWeightsIdx === undefined) {
+              emitImportDiagnostic(warnings, diagnostics, {
+                severity: 'warning',
+                code: 'incomplete-skin-attributes',
+                path: `${primitivePath}.attributes.${setJointsIdx === undefined ? `JOINTS_${setIndex}` : `WEIGHTS_${setIndex}`}`,
+                message:
+                  `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, ` +
+                  `but influence set ${setIndex} does not provide both JOINTS_${setIndex} and WEIGHTS_${setIndex}. ` +
+                  (setIndex === 0
+                    ? 'Skinning is omitted and the primitive is imported as a static mesh.'
+                    : 'That secondary influence set is ignored.'),
+              });
+              if (setIndex === 0) primaryReadable = false;
+              continue;
+            }
+
+            let decodedJoints: Uint32Array | undefined;
+            let decodedWeights: Float32Array | undefined;
+            try {
+              decodedJoints = _unpackJoints(gltf, buffers, setJointsIdx, onAccessorDiagnostic, `JOINTS_${setIndex}`);
+            } catch (e) {
+              emitImportDiagnostic(warnings, diagnostics, {
+                severity: 'warning',
+                code: 'unreadable-skin-joints',
+                path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
+                message:
+                  `[vitrum/gltf-adapter] Failed to read JOINTS_${setIndex} for "${mesh.name ?? node.mesh}": ` +
+                  String(e) +
+                  (setIndex === 0 ? '. Falling back to static mesh.' : '. Secondary influence set skipped.'),
+              });
+              if (setIndex === 0) primaryReadable = false;
+            }
+            try {
+              decodedWeights = unpackAccessorFloat(gltf, buffers, setWeightsIdx, warnings, onAccessorDiagnostic);
+            } catch (e) {
+              emitImportDiagnostic(warnings, diagnostics, {
+                severity: 'warning',
+                code: 'unreadable-skin-weights',
+                path: `${primitivePath}.attributes.WEIGHTS_${setIndex}`,
+                message:
+                  `[vitrum/gltf-adapter] Failed to read WEIGHTS_${setIndex} for "${mesh.name ?? node.mesh}": ` +
+                  String(e) +
+                  (setIndex === 0 ? '. Falling back to static mesh.' : '. Secondary influence set skipped.'),
+              });
+              if (setIndex === 0) primaryReadable = false;
+            }
+
+            if (!decodedJoints || !decodedWeights) continue;
+            const expectedLength = Math.floor(positions.length / 3) * 4;
+            if (decodedJoints.length !== expectedLength || decodedWeights.length !== expectedLength) {
+              emitImportDiagnostic(warnings, diagnostics, {
+                severity: 'warning',
+                code: 'invalid-primitive-attribute',
+                path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
+                message:
+                  `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" influence set ${setIndex} has ` +
+                  `JOINTS_${setIndex}/WEIGHTS_${setIndex} length mismatch for ${expectedLength / 4} vertices. ` +
+                  (setIndex === 0
+                    ? 'Skinning is omitted and the primitive is imported as a static mesh.'
+                    : 'That secondary influence set is ignored.'),
+              });
+              if (setIndex === 0) primaryReadable = false;
+              continue;
+            }
+            decodedSets.push({ setIndex, joints: decodedJoints, weights: decodedWeights });
           }
-          try {
-            skinWeights = unpackAccessorFloat(gltf, buffers, weightsIdx, warnings, onAccessorDiagnostic);
-          } catch (e) {
-            emitImportDiagnostic(warnings, diagnostics, {
-              severity: 'warning',
-              code: 'unreadable-skin-weights',
-              path: `${primitivePath}.attributes.WEIGHTS_0`,
-              message:
-                `[vitrum/gltf-adapter] Failed to read WEIGHTS_0 for "${mesh.name ?? node.mesh}": ` +
-                String(e) + '. Falling back to static mesh.',
-            });
-            skinIndices = undefined; // don't emit skinned if weights failed
+
+          if (primaryReadable && decodedSets.length > 0) {
+            const hasSecondarySets = decodedSets.some((set) => set.setIndex !== 0);
+            if (hasSecondarySets) {
+              const collapsed = collapseSkinInfluenceSets(decodedSets, Math.floor(positions.length / 3));
+              skinIndices = collapsed.skinIndices;
+              skinWeights = collapsed.skinWeights;
+              emitImportDiagnostic(warnings, diagnostics, {
+                severity: 'warning',
+                code: 'collapsed-skin-influence-sets',
+                path: `${primitivePath}.attributes.JOINTS_1`,
+                message:
+                  `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" provides ${decodedSets.length} ` +
+                  'skinning influence sets. The core Scene contract carries four unique joint weights per vertex, ' +
+                  'so the importer retained the strongest four, merged duplicate joints, and renormalized weights' +
+                  (collapsed.droppedPositiveInfluences > 0
+                    ? ` (${collapsed.droppedPositiveInfluences} positive lower-weight influences dropped).`
+                    : '.'),
+              });
+            } else {
+              skinIndices = decodedSets[0]!.joints;
+              skinWeights = decodedSets[0]!.weights;
+            }
           }
         } else {
           emitImportDiagnostic(warnings, diagnostics, {
@@ -1020,6 +1096,7 @@ export async function gltfToScene(
         if (
           !['POSITION', 'NORMAL', 'TEXCOORD_0', 'TEXCOORD_1', 'TANGENT', 'COLOR_0',
             'JOINTS_0', 'WEIGHTS_0'].includes(attrName) &&
+          !isSkinInfluenceAttribute(attrName) &&
           !attrName.startsWith('TEXCOORD_') &&
           !attrName.startsWith('COLOR_')
         ) {
@@ -2635,11 +2712,78 @@ function _convertPunctualLight(
  * Reference: glTF 2.0 spec §3.7.2 (Skinned Mesh Attributes)
  * https://www.khronos.org/registry/glTF/specs/2.0/glTF-2.0.html#skinned-mesh-attributes
  */
+interface SkinInfluenceSet {
+  readonly setIndex: number;
+  readonly joints: Uint32Array;
+  readonly weights: Float32Array;
+}
+
+interface CollapsedSkinInfluences {
+  readonly skinIndices: Uint32Array;
+  readonly skinWeights: Float32Array;
+  readonly droppedPositiveInfluences: number;
+}
+
+function isSkinInfluenceAttribute(attrName: string): boolean {
+  return /^JOINTS_[0-9]+$/.test(attrName) || /^WEIGHTS_[0-9]+$/.test(attrName);
+}
+
+function collectSkinInfluenceSetIndices(attributes: GltfPrimitive['attributes']): number[] {
+  const sets = new Set<number>();
+  for (const attrName of Object.keys(attributes ?? {})) {
+    const match = /^(?:JOINTS|WEIGHTS)_([0-9]+)$/.exec(attrName);
+    if (!match) continue;
+    const setIndex = Number(match[1]);
+    if (Number.isSafeInteger(setIndex) && setIndex >= 0) sets.add(setIndex);
+  }
+  return [...sets].sort((a, b) => a - b);
+}
+
+function collapseSkinInfluenceSets(
+  sets: readonly SkinInfluenceSet[],
+  vertexCount: number,
+): CollapsedSkinInfluences {
+  const skinIndices = new Uint32Array(vertexCount * 4);
+  const skinWeights = new Float32Array(vertexCount * 4);
+  let droppedPositiveInfluences = 0;
+
+  for (let v = 0; v < vertexCount; v++) {
+    const merged = new Map<number, number>();
+    for (const set of sets) {
+      const base = v * 4;
+      for (let lane = 0; lane < 4; lane++) {
+        const weight = set.weights[base + lane] ?? 0;
+        if (!Number.isFinite(weight) || weight <= 0) continue;
+        const joint = set.joints[base + lane] ?? 0;
+        merged.set(joint, (merged.get(joint) ?? 0) + weight);
+      }
+    }
+
+    const sortedInfluences = [...merged.entries()]
+      .sort(([jointA, weightA], [jointB, weightB]) => weightB - weightA || jointA - jointB);
+    const retained = sortedInfluences.slice(0, 4);
+    for (const [, weight] of sortedInfluences.slice(4)) {
+      if (weight > 1e-7) droppedPositiveInfluences++;
+    }
+
+    const sum = retained.reduce((acc, [, weight]) => acc + weight, 0);
+    if (sum <= 0) continue;
+    for (let lane = 0; lane < retained.length; lane++) {
+      const [joint, weight] = retained[lane]!;
+      skinIndices[v * 4 + lane] = joint;
+      skinWeights[v * 4 + lane] = weight / sum;
+    }
+  }
+
+  return { skinIndices, skinWeights, droppedPositiveInfluences };
+}
+
 function _unpackJoints(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   accessorIndex: number,
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+  semantic = 'JOINTS_0',
 ): Uint32Array {
   const accessor = gltf.accessors?.[accessorIndex];
   if (!accessor) {
@@ -2647,13 +2791,13 @@ function _unpackJoints(
   }
   if (accessor.type !== 'VEC4') {
     throw new Error(
-      `[vitrum/gltf-adapter] JOINTS_0 accessor must be VEC4, got "${accessor.type}"`,
+      `[vitrum/gltf-adapter] ${semantic} accessor must be VEC4, got "${accessor.type}"`,
     );
   }
   const ct = accessor.componentType;
   if (ct !== GltfComponentType.UNSIGNED_BYTE && ct !== GltfComponentType.UNSIGNED_SHORT) {
     throw new Error(
-      `[vitrum/gltf-adapter] JOINTS_0 componentType must be UNSIGNED_BYTE or UNSIGNED_SHORT, ` +
+      `[vitrum/gltf-adapter] ${semantic} componentType must be UNSIGNED_BYTE or UNSIGNED_SHORT, ` +
         `got ${ct}`,
     );
   }
@@ -2671,13 +2815,13 @@ function _unpackJoints(
     const buf = buffers.get(bv.buffer);
     if (!buf) {
       throw new Error(
-        `[vitrum/gltf-adapter] Buffer ${bv.buffer} is not available (JOINTS_0).`,
+        `[vitrum/gltf-adapter] Buffer ${bv.buffer} is not available (${semantic}).`,
       );
     }
 
     const bvOffset = bv.byteOffset ?? 0;
     const range = accessorBufferViewRange(accessor, bv, 4);
-    validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'JOINTS_0 accessor');
+    validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, `${semantic} accessor`);
     const dataView = new DataView(buf, bvOffset, bv.byteLength);
 
     for (let i = 0; i < count; i++) {
@@ -2689,7 +2833,7 @@ function _unpackJoints(
   }
 
   if (accessor.sparse) {
-    applySparseJointPatch(gltf, buffers, accessorIndex, accessor, result, onAccessorDiagnostic);
+    applySparseJointPatch(gltf, buffers, accessorIndex, accessor, result, onAccessorDiagnostic, semantic);
   }
 
   return result;
@@ -2702,13 +2846,14 @@ function applySparseJointPatch(
   accessor: GltfAccessor,
   result: Uint32Array,
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
+  semantic: string,
 ): void {
   const sparse = accessor.sparse!;
   onAccessorDiagnostic({
     severity: 'warning',
     code: 'sparse-accessor-applied',
     path: `accessors[${accessorIndex}].sparse`,
-    message: `[vitrum/gltf-adapter] Accessor uses sparse storage (count=${sparse.count}); applying patch.`,
+    message: `[vitrum/gltf-adapter] ${semantic} accessor uses sparse storage (count=${sparse.count}); applying patch.`,
     accessorIndex,
   });
 
@@ -2797,14 +2942,14 @@ function applySparseJointPatch(
       sparse.indices.bufferView,
       indicesBufferView,
       indexByteOffset + sparse.count * indexCompSize,
-      'sparse JOINTS_0 indices',
+      `sparse ${semantic} indices`,
     );
     validateBufferViewAccess(
       valuesBuffer,
       sparse.values.bufferView,
       valuesBufferView,
       valueByteOffset + sparse.count * 4 * valueCompSize,
-      'sparse JOINTS_0 values',
+      `sparse ${semantic} values`,
     );
   } catch (error) {
     onAccessorDiagnostic({

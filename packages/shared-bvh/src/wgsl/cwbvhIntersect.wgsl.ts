@@ -214,9 +214,9 @@ fn cwbvhIntersectFirstHitRangeFromRoot(
             best.normal = normalize(cross(pb4.xyz - pa4.xyz, pc4.xyz - pa4.xyz)) * sign(tri.det);
             best.side = sign(tri.det);
             best.matColorPacked = idxEntry.w;
-            let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
-            let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
-            let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
+            let uvA = unpack2x16float(bitcast<u32>(pa4.w));
+            let uvB = unpack2x16float(bitcast<u32>(pb4.w));
+            let uvC = unpack2x16float(bitcast<u32>(pc4.w));
             best.uv = tri.bary.x * uvA + tri.bary.y * uvB + tri.bary.z * uvC;
           }
         }

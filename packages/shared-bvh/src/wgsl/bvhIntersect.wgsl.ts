@@ -368,12 +368,12 @@ fn bvhIntersectFirstHitAtRoot(
           best = tri;
           best.indices        = vec4u(idx, triIdx);
           best.matColorPacked = idxEntry.w;
-          // Interpolate UV from 16:16 unorm packed in each position's .w word.
-          // For DDGI/RC who zero-fill .w, unpack2x16unorm returns vec2f(0) and
+          // Interpolate UV from two f16 values packed in each position's .w word.
+          // For DDGI/RC who zero-fill .w, unpack2x16float returns vec2f(0) and
           // the consumers ignore best.uv.
-          let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
-          let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
-          let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
+          let uvA = unpack2x16float(bitcast<u32>(pa4.w));
+          let uvB = unpack2x16float(bitcast<u32>(pb4.w));
+          let uvC = unpack2x16float(bitcast<u32>(pc4.w));
           best.uv = best.barycoord.x * uvA + best.barycoord.y * uvB + best.barycoord.z * uvC;
         }
       }

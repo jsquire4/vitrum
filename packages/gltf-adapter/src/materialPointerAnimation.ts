@@ -6,15 +6,19 @@ export type GltfMaterialPointerField =
   | 'roughnessFactor'
   | 'emissiveFactor'
   | 'alphaCutoff'
+  | 'normalScale'
+  | 'aoMapIntensity'
   | 'emissiveStrength'
   | 'transmissionFactor'
   | 'thicknessFactor'
+  | 'attenuationColor'
   | 'attenuationDistance'
   | 'ior'
   | 'specularFactor'
   | 'specularColorFactor'
   | 'clearcoatFactor'
   | 'clearcoatRoughnessFactor'
+  | 'clearcoatNormalScale'
   | 'sheenColorFactor'
   | 'sheenRoughnessFactor'
   | 'iridescenceFactor'
@@ -22,7 +26,8 @@ export type GltfMaterialPointerField =
   | 'iridescenceThicknessMinimum'
   | 'iridescenceThicknessMaximum'
   | 'anisotropyStrength'
-  | 'anisotropyRotation';
+  | 'anisotropyRotation'
+  | 'dispersion';
 
 export interface GltfMaterialPointerTarget {
   readonly pointer: string;
@@ -39,15 +44,22 @@ const MATERIAL_POINTER_SPECS: Readonly<Record<string, PointerSpec>> = Object.fre
   'pbrMetallicRoughness/roughnessFactor': { field: 'roughnessFactor', components: 1 },
   emissiveFactor: { field: 'emissiveFactor', components: 3 },
   alphaCutoff: { field: 'alphaCutoff', components: 1 },
+  'normalTexture/scale': { field: 'normalScale', components: 1 },
+  'occlusionTexture/strength': { field: 'aoMapIntensity', components: 1 },
   'extensions/KHR_materials_emissive_strength/emissiveStrength': { field: 'emissiveStrength', components: 1 },
   'extensions/KHR_materials_transmission/transmissionFactor': { field: 'transmissionFactor', components: 1 },
   'extensions/KHR_materials_volume/thicknessFactor': { field: 'thicknessFactor', components: 1 },
+  'extensions/KHR_materials_volume/attenuationColor': { field: 'attenuationColor', components: 3 },
   'extensions/KHR_materials_volume/attenuationDistance': { field: 'attenuationDistance', components: 1 },
   'extensions/KHR_materials_ior/ior': { field: 'ior', components: 1 },
   'extensions/KHR_materials_specular/specularFactor': { field: 'specularFactor', components: 1 },
   'extensions/KHR_materials_specular/specularColorFactor': { field: 'specularColorFactor', components: 3 },
   'extensions/KHR_materials_clearcoat/clearcoatFactor': { field: 'clearcoatFactor', components: 1 },
   'extensions/KHR_materials_clearcoat/clearcoatRoughnessFactor': { field: 'clearcoatRoughnessFactor', components: 1 },
+  'extensions/KHR_materials_clearcoat/clearcoatNormalTexture/scale': {
+    field: 'clearcoatNormalScale',
+    components: 1,
+  },
   'extensions/KHR_materials_sheen/sheenColorFactor': { field: 'sheenColorFactor', components: 3 },
   'extensions/KHR_materials_sheen/sheenRoughnessFactor': { field: 'sheenRoughnessFactor', components: 1 },
   'extensions/KHR_materials_iridescence/iridescenceFactor': { field: 'iridescenceFactor', components: 1 },
@@ -56,6 +68,7 @@ const MATERIAL_POINTER_SPECS: Readonly<Record<string, PointerSpec>> = Object.fre
   'extensions/KHR_materials_iridescence/iridescenceThicknessMaximum': { field: 'iridescenceThicknessMaximum', components: 1 },
   'extensions/KHR_materials_anisotropy/anisotropyStrength': { field: 'anisotropyStrength', components: 1 },
   'extensions/KHR_materials_anisotropy/anisotropyRotation': { field: 'anisotropyRotation', components: 1 },
+  'extensions/KHR_materials_dispersion/dispersion': { field: 'dispersion', components: 1 },
 });
 
 export function resolveGltfMaterialAnimationPointer(pointer: string | undefined): GltfMaterialPointerTarget | undefined {
@@ -111,6 +124,12 @@ export function applyGltfMaterialPointerValue(
     case 'alphaCutoff':
       out.alphaCutoff = clamp01(scalar);
       break;
+    case 'normalScale':
+      out.normalScale = Math.max(0, scalar);
+      break;
+    case 'aoMapIntensity':
+      out.aoMapIntensity = Math.max(0, scalar);
+      break;
     case 'emissiveStrength':
       out.emissiveIntensity = Math.max(0, scalar);
       break;
@@ -119,6 +138,13 @@ export function applyGltfMaterialPointerValue(
       break;
     case 'thicknessFactor':
       out.thickness = Math.max(0, scalar);
+      break;
+    case 'attenuationColor':
+      out.attenuationColor = [
+        clamp01(finiteOr(value[0], 1)),
+        clamp01(finiteOr(value[1], 1)),
+        clamp01(finiteOr(value[2], 1)),
+      ] satisfies Vec3;
       break;
     case 'attenuationDistance':
       out.attenuationDistance = scalar > 0 ? scalar : Infinity;
@@ -141,6 +167,9 @@ export function applyGltfMaterialPointerValue(
       break;
     case 'clearcoatRoughnessFactor':
       out.clearcoatRoughness = clamp01(scalar);
+      break;
+    case 'clearcoatNormalScale':
+      out.clearcoatNormalScale = Math.max(0, scalar);
       break;
     case 'sheenColorFactor':
       out.sheen = 1;
@@ -175,6 +204,9 @@ export function applyGltfMaterialPointerValue(
       break;
     case 'anisotropyRotation':
       out.anisotropyRotation = finiteOr(value[0], 0);
+      break;
+    case 'dispersion':
+      out.dispersionAbbeNumber = scalar > 0 ? 20 / scalar : undefined;
       break;
   }
   return out as unknown as MaterialSpec;

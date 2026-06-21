@@ -32,4 +32,9 @@ describe('TLAS WGSL pipeline exports', () => {
     expect(BVH_INTERSECT_WGSL).toContain('let trans4 = (idxEntry.w >> 4u) & 0xFu;');
     expect(BVH_INTERSECT_WGSL).toContain('if (trans4 > 4u) { continue; }');
   });
+
+  it('decodes position.w UV payloads as packed f16 pairs', () => {
+    expect(BVH_INTERSECT_WGSL).toContain('unpack2x16float(bitcast<u32>(pa4.w))');
+    expect(BVH_INTERSECT_WGSL).not.toContain('unpack2x16unorm(bitcast<u32>(pa4.w))');
+  });
 });
