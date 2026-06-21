@@ -14,9 +14,9 @@ export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
  * binding-free for WebGPU.
  *
  * Promotion caveat: higher dimensions are hash-decorrelated over the first four
- * direction tables and the stream uses a small tiled ranked rotation; measured
- * RMSE promotion evidence and a broader dimension-assignment audit are still
- * tracked separately.
+ * direction tables and the stream uses a small tiled ranked rotation. The
+ * bounce/lobe/light dimension assignment is pinned by source-level regression
+ * tests; measured equal-time RMSE promotion evidence is still tracked separately.
  */
 export const PT_WEBGPU_SOBOL_RNG_WGSL = /* wgsl */ `
 const PT_SOBOL_FACTOR = 0.000000059604644775390625; // 1 / 2^24

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning } from '@vitrum/core';
+import { owenScrambledSobolU32 } from '@vitrum/shared-samplers';
 import { createPTEngine_WebGPU } from '../index.js';
 import { GpuResources } from '../gpuResources.js';
 import {
@@ -18,7 +19,25 @@ import {
 import {
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
 } from '../webgpuLimits.js';
+import { PT_WEBGPU_SOBOL_RNG_WGSL } from '../wgsl/common.wgsl.js';
+import { PT_WEBGPU_PATH_TRACE_BSDF_WGSL } from '../wgsl/pathTrace/bsdf.wgsl.js';
+import { PT_WEBGPU_PATH_TRACE_KERNEL_WGSL } from '../wgsl/pathTrace/kernel.wgsl.js';
+import { RESTIR_PT_PRODUCER_WGSL } from '../wgsl/pathTrace/restirPtProducer.wgsl.js';
+import { SPPM_PHOTON_PASS_WGSL } from '../wgsl/pathTrace/sppmBindings.wgsl.js';
 import { installGpuConstStubs } from './gpuStub.js';
+
+const SOBOL_DIMENSION_AUDIT_2026_06_21 = true;
+
+function expectOrderedNeedles(source: string, needles: Array<readonly [label: string, needle: string]>): void {
+  let cursor = 0;
+  for (const [label, needle] of needles) {
+    const at = source.indexOf(needle, cursor);
+    if (at < cursor) {
+      throw new Error(`Missing or out-of-order Sobol dimension audit needle "${label}": ${needle}`);
+    }
+    cursor = at + needle.length;
+  }
+}
 
 function makeDevice(): GPUDevice {
   return {
@@ -110,14 +129,81 @@ describe('pt-webgpu sampling options', () => {
       Array.isArray(w.details?.promotionTails) &&
       !w.details.promotionTails.includes('owen-scrambling') &&
       !w.details.promotionTails.includes('blue-noise-rotation') &&
-      w.details.promotionTails.includes('broader-dimension-audit') &&
+      !w.details.promotionTails.includes('broader-dimension-audit') &&
       w.details.promotionTails.includes('equal-time-rmse-ab'),
     )).toBe(true);
     const warningText = warn.mock.calls.map((c) => c.join(' ')).join('\n');
     expect(warningText).toContain("sampling:'sobol'");
     expect(warningText).toContain('Owen-scrambled Sobol RNG');
     expect(warningText).toContain('tiled ranked rotation');
+    expect(warningText).toContain('dimension-assignment audit is pinned');
     expect(warningText).not.toContain('Owen scrambling, blue-noise');
     warn.mockRestore();
+  });
+
+  it('pins the Sobol dimension stream and assignment anchors across pt-webgpu pipelines', () => {
+    expect(SOBOL_DIMENSION_AUDIT_2026_06_21).toBe(true);
+    expectOrderedNeedles(PT_WEBGPU_SOBOL_RNG_WGSL, [
+      ['sample index high bits', 'let pathIndex = ((*state) >> 16u) & 0x0000ffffu;'],
+      ['tile rank middle bits', 'let rotationTile = ((*state) >> 8u) & 0xffu;'],
+      ['dimension low bits', 'let dim = (*state) & 0xffu;'],
+      ['dimension-seeded scramble', 'let seed = ptSobolHash(ptSobolHashCombine(pathIndex, dim));'],
+      ['dimension-indexed component', 'var result = ptSobolTextureComponent(shuffledIndex, dim);'],
+      ['dimension-indexed rotation', 'ptSobolBlueNoiseRotation(rotationTile, dim)'],
+      ['monotonic dimension increment', '((dim + 1u) & 0xffu)'],
+    ]);
+    const first32Dimensions = Array.from(
+      { length: 32 },
+      (_unused, dim) => owenScrambledSobolU32(12_345, dim, 7),
+    );
+    expect(new Set(first32Dimensions).size).toBe(first32Dimensions.length);
+
+    expectOrderedNeedles(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL, [
+      ['main stream seed', 'var rng = pcgInit(gid.x, gid.y, params.frameSeed ^ params.frameIndex);'],
+      ['camera jitter dims 0-1', 'let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));'],
+      ['primary ray consumes jitter', 'var ray = generatePrimaryRay(gid.x, gid.y, jitter);'],
+      ['spectral hero dims 2-3 when enabled', 'let hero = sampleHeroWavelengthMIS(rand_f32(&rng), rand_f32(&rng));'],
+      ['alpha visibility uses same stream', 'alphaTestPassThrough(hitMaterialId(hit), hit.triIndex, hit.baryVW, &rng)'],
+      ['light tree selection consumes next dimensions', 'sampleLightTree(hitPos, LT_DIST2_FLOOR, params.lightTreeNodeCount, &rng)'],
+      ['uniform light fallback consumes one dimension', 'floor(rand_f32(&rng) * f32(lightCount))'],
+      ['area-light surface pair consumes adjacent dimensions', 'let xi1 = rand_f32(&rng);\n          let xi2 = rand_f32(&rng);'],
+      ['environment importance uses the shared stream', 'let envSample = sampleEnvironmentImportance(&rng);'],
+      ['next-bounce source lobe uses the remaining stream', 'let bs = sampleNextBounceDirectionWithClearcoatNormal('],
+      ['russian roulette consumes after bounce sampling', 'let rr = russianRoulette(&rng, throughput);'],
+    ]);
+
+    expectOrderedNeedles(PT_WEBGPU_PATH_TRACE_BSDF_WGSL, [
+      ['transmission lobe mixture', 'let xiLobe = rand_f32(rng) * lobeWeightSum;'],
+      ['transmissive glossy branch samples the shared stream', 'bs = glossyReflectionSample(rng, wo, normal, tanT, tanB, roughness);'],
+      ['transmissive sheen branch samples the shared stream', 'let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);'],
+      ['opaque lobe mixture', 'let xiLobe = rand_f32(rng) * lobeWeightSum;'],
+      ['opaque diffuse branch samples the shared stream', 'let bs = cosineHemisphereSample(rng, normal);'],
+    ]);
+
+    expectOrderedNeedles(SPPM_PHOTON_PASS_WGSL, [
+      ['photon stream seed', 'var rng = pcgInit(photonIdx, params.frameSeed, params.frameIndex ^ 0xdeadbeefu);'],
+      ['photon light pick', 'floor(rand_f32(&rng) * f32(availableLightCount))'],
+      ['directional source disk pair', 'let r2d  = sqrt(rand_f32(&rng)) * extent;\n      let phi2 = 2.0 * PI * rand_f32(&rng);'],
+      ['point source sphere pair', 'photonDir    = uniformSphere(vec2f(rand_f32(&rng), rand_f32(&rng)));'],
+      ['rect/disc emitter pair', 'let xi1 = rand_f32(&rng);\n        let xi2 = rand_f32(&rng);'],
+      ['environment launch disk pair', 'let r2d = sqrt(rand_f32(&rng)) * extent;\n      let phi = 2.0 * PI * rand_f32(&rng);'],
+      ['photon hash reservoir tie-breaker', 'sppmInsertPhoton(hp, flux, ray.direction, sppmStats.currentRadius, rand_f32(&rng));'],
+    ]);
+
+    for (const [label, needle] of [
+      ['source lobe selection uses stream', 'let xiSource = rand_f32(rng) * lobeWeightSum;'],
+      ['source base split uses stream', 'if (rand_f32(rng) < specProb)'],
+      ['suffix direct area pair uses stream', 'let xi1r = rand_f32(rng);\n    let xi2r = rand_f32(rng);'],
+    ] as Array<readonly [string, string]>) {
+      expect(RESTIR_PT_PRODUCER_WGSL, label).toContain(needle);
+    }
+    expectOrderedNeedles(RESTIR_PT_PRODUCER_WGSL, [
+      ['producer stream seed', 'var rng = pcgInit(gid.x, gid.y, params.frameSeed ^ params.frameIndex);'],
+      ['producer camera jitter dims 0-1', 'let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));'],
+      ['producer spectral hero dims 2-3', 'let hero = sampleHeroWavelengthMIS(rand_f32(&rng), rand_f32(&rng));'],
+      ['producer alpha visibility uses stream', 'alphaTestPassThrough(hitMaterialId(vHit), vHit.triIndex, vHit.baryVW, &rng)'],
+      ['producer calls source-lobe sampler', 'let wiRecon = rptSampleSourceReconnectionDirection('],
+      ['reservoir update tie-breaker uses stream', 'updateReservoirPT(&r, xs, ns, Lo, pdfSrc, wCandidate, &rng);'],
+    ]);
   });
 });

@@ -307,8 +307,9 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    * stream. `'sobol'` compiles the opt-in pt-webgpu WGSL Sobol RNG module across
    * the megakernel plus SPPM/ReSTIR-PT/BDPT auxiliary pipelines. This is
    * hash-based Owen-scrambled Sobol over the first-four direction-table set
-   * with a tiled ranked rotation; broader dimension audits and RMSE promotion
-   * evidence remain tracked in the Road ledger.
+   * with a tiled ranked rotation; the dimension-assignment audit is pinned by
+   * source-level tests, and RMSE promotion evidence remains tracked in the Road
+   * ledger.
    */
   readonly sampling?: 'pcg' | 'sobol';
   /**
@@ -2433,13 +2434,13 @@ export const createPTEngine_WebGPU: EngineFactory<
       message:
         "[vitrum/pt-webgpu] sampling:'sobol' enables an opt-in hash-based " +
         'Owen-scrambled Sobol RNG across the pt-webgpu megakernel and auxiliary ' +
-        'SPPM/ReSTIR-PT/BDPT pipelines with a tiled ranked rotation. Broader ' +
-        'dimension audits and equal-time RMSE promotion evidence remain Road-to-100 tails.',
+        'SPPM/ReSTIR-PT/BDPT pipelines with a tiled ranked rotation. The ' +
+        'dimension-assignment audit is pinned; equal-time RMSE promotion evidence remains a Road-to-100 tail.',
       details: {
         sampling: 'sobol',
         fallback: 'none',
         rotation: 'ranked-8x8',
-        promotionTails: ['broader-dimension-audit', 'equal-time-rmse-ab'],
+        promotionTails: ['equal-time-rmse-ab'],
       },
     });
   }

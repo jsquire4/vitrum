@@ -2081,8 +2081,11 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    follow-up: pt-webgpu Sobol now carries a binding-free 8x8 ranked tiled
    rotation in the RNG state, mirrored by the shared CPU oracle; shader-gate and
    individual dzn full-tier health artifacts cover the rotated full/lite/BDPT/
-   ReSTIR-PT Sobol variants. Remaining work is broader bounce/lobe/light
-   dimension assignment audit and equal-time RMSE convergence proof.
+   ReSTIR-PT Sobol variants. 2026-06-21 follow-up: the pt-webgpu source-level
+   dimension audit now pins the monotonic RNG state plus camera, spectral,
+   alpha-visibility, light selection, area-light, environment, BSDF lobe, SPPM
+   photon, and ReSTIR-PT producer draw anchors. Remaining work is equal-time
+   RMSE convergence proof.
 2. Compressed wide BVH traversal (`WBVH-01`): the shared substrate is now
    opt-in renderer landed: `shared-bvh` exports CWBVH-style 8-wide packing, quantized
    child bounds, deterministic packed metadata, conservative dequantized bounds
@@ -2165,7 +2168,7 @@ reuse passes, and BDPT light-subpath pass all switch coherently. It is explicitl
 tagged `pt-webgpu-sobol-sampling` in `capabilities.experimentalFeatures` and
 warns that this is hash-based Owen-scrambled Sobol over the first-four
 direction-table set with a tiled ranked rotation, not the final
-per-dimension-audited sampler.
+RMSE-promoted sampler.
 `shared-samplers` now exposes a CPU oracle for the exact stream, so shader and
 host-side tests can detect future CPU/GPU drift in the scramble or dimension
 decorrelation behavior. 2026-06-19 behavioral proof added adapter-backed
@@ -2176,10 +2179,12 @@ non-black readbacks with zero GPU errors for `pt/sobol-default`,
 follow-up: the pt-webgpu RNG state now packs a 16-bit Sobol sample index, an
 8x8 pixel-tile rank, and the 8-bit dimension counter; `ptSobolNextU32` applies
 a per-dimension 24-bit Cranley-Patterson rotation from that rank, and
-`shared-samplers` pins the same table/state/oracle values.
+`shared-samplers` pins the same table/state/oracle values. 2026-06-21
+follow-up: `samplingOptions.test.ts` now carries the pt-webgpu source-level
+dimension audit, covering the monotonic dimension counter and camera/spectral/
+alpha-visibility/light/lobe/SPPM/ReSTIR-PT draw anchors.
 
-**Remaining work:** broader per-dimension assignment audit
-(bounce/lobe/light dims), and equal-time RMSE A/B on the reference scenes
+**Remaining work:** equal-time RMSE A/B on the reference scenes
 (self-validating error curves, not eyeballs).
 
 ### F2 — Compressed wide BVH traversal (biggest throughput win)

@@ -451,11 +451,17 @@ if (!road.includes("The remaining research/promotion tail is explicit\n> multi-v
 if (road.includes("blue-noise rotation, broader") || road.includes("blue-noise/per-dimension-audited")) {
   fail("road-to-100.md contains stale Sobol blue-noise-rotation pending wording");
 }
+if (road.includes("broader bounce/lobe/light\n   dimension assignment audit")) {
+  fail("road-to-100.md must not keep the pt-webgpu Sobol dimension audit as pending after the source-level proof landed");
+}
 if (road.includes("to backend-ready texture payloads")) {
   fail("road-to-100.md contains ambiguous glTF decode target wording");
 }
 if (!road.includes("pt-webgpu Sobol now carries a binding-free 8x8 ranked tiled")) {
   fail("road-to-100.md must retain the reconciled pt-webgpu Sobol rotation summary");
+}
+if (!road.includes("source-level\n   dimension audit now pins the monotonic RNG state")) {
+  fail("road-to-100.md must retain the pt-webgpu Sobol dimension-audit closure summary");
 }
 if (!road.includes("to backend-upload-ready CPU/data texture payloads, not live `GPUTexture`")) {
   fail("road-to-100.md must retain the precise glTF decode target boundary");
@@ -518,8 +524,23 @@ const ptWebgpuSource = await readText("packages/pt-webgpu/src/index.ts");
 if (ptWebgpuSource.includes("blue-noise rotation, broader dimension audits")) {
   fail("pt-webgpu sampling option docs contain stale Sobol blue-noise pending wording");
 }
-if (!ptWebgpuSource.includes("with a tiled ranked rotation; broader dimension audits")) {
-  fail("pt-webgpu sampling option docs must retain the Sobol rotation boundary");
+if (ptWebgpuSource.includes("broader dimension audits and RMSE promotion")) {
+  fail("pt-webgpu sampling option docs must not keep the Sobol dimension audit as pending");
+}
+if (!ptWebgpuSource.includes("with a tiled ranked rotation; the dimension-assignment audit is pinned")) {
+  fail("pt-webgpu sampling option docs must retain the Sobol rotation and dimension-audit boundary");
+}
+const ptWebgpuSamplingOptionsTest = await readText("packages/pt-webgpu/src/__tests__/samplingOptions.test.ts");
+for (const needle of [
+  "SOBOL_DIMENSION_AUDIT_2026_06_21",
+  "monotonic dimension increment",
+  "area-light surface pair consumes adjacent dimensions",
+  "photon stream seed",
+  "source lobe selection uses stream",
+]) {
+  if (!ptWebgpuSamplingOptionsTest.includes(needle)) {
+    fail(`pt-webgpu Sobol dimension audit test must retain source-level draw-order proof: ${needle}`);
+  }
 }
 
 const ptWebgl2ConstructionSourceForBdpt = await readText("packages/pt-webgl2/src/index.ts");
@@ -552,6 +573,9 @@ for (const [label, source] of [
 const behavioralGateReadme = await readText("tools/behavioral-gate/README.md");
 if (behavioralGateReadme.includes("blue-noise rotation, dimension-assignment audit")) {
   fail("behavioral-gate README contains stale Sobol blue-noise pending wording");
+}
+if (behavioralGateReadme.includes("dimension-assignment\naudit and equal-time RMSE promotion remain")) {
+  fail("behavioral-gate README must not keep the Sobol dimension audit as pending");
 }
 if (!behavioralGateReadme.includes("variants with the tiled ranked Sobol rotation")) {
   fail("behavioral-gate README must retain the Sobol rotation proof boundary");
