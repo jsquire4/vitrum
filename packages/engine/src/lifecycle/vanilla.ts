@@ -605,7 +605,23 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     try {
       if (typeof engine.getScene === 'function') {
         const liveScene = engine.getScene();
-        if (liveScene != null) currentScene = liveScene;
+        if (liveScene != null) {
+          currentScene = liveScene;
+        } else {
+          reportWarning({
+            code: 'attachVitrum.auto-recreate-scene-snapshot-unavailable',
+            backend: engine.backendId,
+            phase: 'lifecycle',
+            method: 'attachVitrum',
+            message:
+              '[attachVitrum] auto-recreate could not snapshot the backend-retained live scene because ' +
+              'getScene() returned null; recreating from the latest scene seen by attachVitrum.',
+            details: {
+              backendId: engine.backendId,
+              fallback: 'tracked-scene',
+            },
+          });
+        }
       } else {
         reportWarning({
           code: 'attachVitrum.auto-recreate-scene-snapshot-unavailable',

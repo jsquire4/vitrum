@@ -189,6 +189,29 @@ describe('ProgressiveHandoffCoordinator', () => {
     expect(cv.removePrimitive).toHaveBeenCalledWith('q');
   });
 
+  it('exposes the authoritative scene snapshot after coordinator-routed patches', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const scene = sceneWithPrimitive();
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      scene,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    expect(c.getScene()).toBe(scene);
+
+    const material = { baseColor: [0.1, 0.2, 0.3] as [number, number, number], roughness: 0.65, metallic: 0.15 };
+    c.updatePrimitive('p', { material } as Partial<ScenePrimitive>);
+
+    const patched = c.getScene();
+    expect(patched).not.toBe(scene);
+    expect(patched?.primitives[0]?.material).toEqual(material);
+    expect(rt.updatePrimitive).toHaveBeenCalledWith('p', { material });
+    expect(cv.updatePrimitive).toHaveBeenCalledWith('p', { material });
+  });
+
   it('falls back to setScene on both engines when an incremental primitive method is absent', () => {
     const rt = makeStubEngine();
     const cv = makeStubEngine();

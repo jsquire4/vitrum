@@ -228,6 +228,11 @@ export class ProgressiveHandoffCoordinator {
     return this.#stillFrames;
   }
 
+  /** Authoritative scene shared by both engines, including coordinator-routed patches. */
+  getScene(): Scene | null {
+    return this.#scene;
+  }
+
   /**
    * Force back to real-time and invalidate the converged accumulation. Call when
    * the shared scene changes (both engines must re-`setScene` first) so the next

@@ -80,7 +80,7 @@ function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): EngineWithB
     get state() { return handle.realtime.state; },
     get capabilities() { return handle.realtime.capabilities; },
     setScene: (scene: Scene) => coordinator.setScene(scene),
-    getScene: () => handle.realtime.getScene?.() ?? null,
+    getScene: () => coordinator.getScene() ?? handle.realtime.getScene?.() ?? null,
     updatePrimitive: (id: string, patch: Parameters<NonNullable<EngineWithBackendId['updatePrimitive']>>[1]) =>
       coordinator.updatePrimitive(id, patch),
     addPrimitive: (primitive: Parameters<NonNullable<EngineWithBackendId['addPrimitive']>>[0]) =>

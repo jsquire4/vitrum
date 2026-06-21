@@ -159,6 +159,48 @@ describe('attachVitrum auto-recreate scene tracking', () => {
     handle.dispose();
   });
 
+  it('warns and falls back to the tracked scene when backend scene snapshot returns null', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const first = makeEngine('pt-webgl2', null);
+    const second = makeEngine();
+    const structuredWarnings: unknown[] = [];
+    createEngineMock
+      .mockResolvedValueOnce(first.engine)
+      .mockResolvedValueOnce(second.engine);
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      onWarning: (warning) => structuredWarnings.push(warning),
+    });
+
+    handle.engine.setScene(sceneB);
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    } as EngineError);
+
+    await vi.waitFor(() => expect(createEngineMock).toHaveBeenCalledTimes(2));
+    expect(createEngineMock.mock.calls[1]![0].scene).toBe(sceneB);
+    expect(structuredWarnings).toContainEqual(expect.objectContaining({
+      code: 'attachVitrum.auto-recreate-scene-snapshot-unavailable',
+      backend: 'pt-webgl2',
+      phase: 'lifecycle',
+      method: 'attachVitrum',
+      details: {
+        backendId: 'pt-webgl2',
+        fallback: 'tracked-scene',
+      },
+    }));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('getScene() returned null'));
+
+    handle.dispose();
+    warn.mockRestore();
+  });
+
   it('warns and falls back to the tracked scene when backend scene snapshot throws', async () => {
     const first = makeEngine('pt-webgl2');
     const second = makeEngine();

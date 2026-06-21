@@ -17,6 +17,10 @@
  *   --warn-only       Always exit 0 (print a loud WARN on regression). The
  *                     pre-push hook passes this — visibility every push, never
  *                     blocks (the chosen gate hardness; see the plan §8).
+ *   --timeout-ms=N    Wall-clock timeout for the delegated runner. Defaults to
+ *                     120s for --smoke so the warn-only pre-push path cannot
+ *                     hang indefinitely; set 0 to disable. T2 runs are unbounded
+ *                     unless this flag or VITRUM_VALIDATE_GPU_TIMEOUT_MS is set.
  *
  * Graceful skip (exit 0, never an error): when wsl-gpu is absent, when its T1
  * runner isn't built yet, or when no GPU is reachable — so non-WSL contributors
@@ -37,8 +41,23 @@ const args = process.argv.slice(2);
 const SMOKE = args.includes('--smoke');
 const WARN_ONLY = args.includes('--warn-only');
 const itemsArg = args.find((a) => a.startsWith('--items='));
+const timeoutArg = args.find((a) => a.startsWith('--timeout-ms='));
 
 function log(msg) { process.stderr.write(`[validate-gpu] ${msg}\n`); }
+
+function parseTimeoutMs(raw, label) {
+  if (raw === undefined || raw === '') return null;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0 || !Number.isInteger(value)) {
+    log(`invalid ${label}=${raw}; expected a non-negative integer millisecond timeout`);
+    process.exit(2);
+  }
+  return value;
+}
+
+const explicitTimeoutMs = parseTimeoutMs(timeoutArg?.slice('--timeout-ms='.length), '--timeout-ms')
+  ?? parseTimeoutMs(process.env.VITRUM_VALIDATE_GPU_TIMEOUT_MS, 'VITRUM_VALIDATE_GPU_TIMEOUT_MS');
+const RUNNER_TIMEOUT_MS = explicitTimeoutMs ?? (SMOKE ? 120_000 : 0);
 
 /** Exit per warn-only policy: code 0 always when --warn-only, else the real code. */
 function finish(code, regressionMsg) {
@@ -94,9 +113,13 @@ const runnerArgs = SMOKE
   : (itemsArg ? [itemsArg] : []);
 
 log(`invoking ${SMOKE ? 'T1 smoke' : 'T2 radiometric'} runner: ${runner} ${runnerArgs.join(' ')}`);
+if (RUNNER_TIMEOUT_MS > 0) {
+  log(`runner timeout: ${RUNNER_TIMEOUT_MS}ms${WARN_ONLY ? ' (warn-only)' : ''}`);
+}
 const child = spawn('node', [runner, ...runnerArgs], {
   cwd: wslGpuDir,
   stdio: 'inherit',
+  detached: process.platform !== 'win32',
   // The wsl-gpu runner pins/validates THIS working tree rather than vitrum's main tip.
   // The capture worker's walkaroundUbo headless shim reads the raw WGSL from
   // $VITRUM_PINNED_DIR via Deno.readTextFileSync (NOT the import map); for the
@@ -110,8 +133,43 @@ const child = spawn('node', [runner, ...runnerArgs], {
   },
 });
 
+let timedOut = false;
+let timeoutHandle = null;
+if (RUNNER_TIMEOUT_MS > 0) {
+  timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    log(`runner timed out after ${RUNNER_TIMEOUT_MS}ms; terminating child process tree`);
+    try {
+      if (process.platform !== 'win32' && child.pid !== undefined) {
+        process.kill(-child.pid, 'SIGTERM');
+      } else {
+        child.kill('SIGTERM');
+      }
+    } catch (err) {
+      log(`failed to terminate runner cleanly (${err instanceof Error ? err.message : String(err)})`);
+    }
+    setTimeout(() => {
+      try {
+        if (process.platform !== 'win32' && child.pid !== undefined) {
+          process.kill(-child.pid, 'SIGKILL');
+        } else {
+          child.kill('SIGKILL');
+        }
+      } catch {
+        // Process already exited.
+      }
+    }, 2_000).unref();
+  }, RUNNER_TIMEOUT_MS);
+  timeoutHandle.unref();
+}
+
 child.on('error', (err) => skip(`could not launch wsl-gpu runner (${err.message})`));
 child.on('exit', (code, signal) => {
+  if (timeoutHandle) clearTimeout(timeoutHandle);
+  if (timedOut) {
+    finish(124, `wsl-gpu runner timed out after ${RUNNER_TIMEOUT_MS}ms.`);
+    return;
+  }
   if (signal) finish(1, `runner terminated by signal ${signal}`);
   finish(code ?? 1, code !== 0 ? `wsl-gpu runner exited ${code} — GPU validation regression.` : null);
 });
