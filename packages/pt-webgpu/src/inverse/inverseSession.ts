@@ -314,6 +314,7 @@ const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([
 ]);
 const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);
 const PATH_REPLAY_GEOMETRY_ONLY_FIELDS = new Set(['displacementScale', 'displacementBias']);
+const PATH_REPLAY_ALPHA_STABLE_OPAQUE_MARGIN = 1e-3;
 
 interface ParamSlot {
   readonly param: InverseParam;
@@ -889,7 +890,8 @@ function isPathReplayZeroGradientSlot(scene: Scene, slot: ParamSlot): boolean {
   if (target.field !== 'opacity' && target.field !== 'alphaCutoff') return false;
   const prim = findPrimitive(scene, target.id);
   if (prim == null) return false;
-  return (prim.material.alphaMode ?? 'opaque') === 'opaque';
+  if ((prim.material.alphaMode ?? 'opaque') === 'opaque') return true;
+  return pathReplayMaskCoverageIsStablyOpaque(prim.material, prim);
 }
 
 function pathReplayFiniteDifferenceOnlyFieldIssue(
@@ -1432,7 +1434,7 @@ function materialIssueCommon(
 ): PathReplayMaterialIssue | null {
   const alphaVisibilityIssue = pathReplayAlphaVisibilityIssue(material, primitive);
   if (alphaVisibilityIssue != null) return alphaVisibilityIssue;
-  if ((material.transmission ?? 0) > 1e-6) {
+  if (pathReplayEffectiveTransmissionMayTransport(material)) {
     return {
       code: 'path-replay-unsupported-transport',
       message: 'transmission transport is not replayed',
@@ -1498,10 +1500,15 @@ function pathReplayAlphaVisibilityIssue(
 
   const opacity = material.opacity ?? 1;
   const alphaCutoff = material.alphaCutoff ?? 0.5;
-  const alphaInputs: string[] = [];
-  if (baseColorMapCanReduceAlpha(material.baseColorMap)) alphaInputs.push('baseColorMap.a');
-  if (material.alphaMap != null) alphaInputs.push('alphaMap');
-  if (primitiveHasNonOpaqueVertexAlpha(primitive)) alphaInputs.push('COLOR_0.a');
+  const coverage = pathReplayAlphaCoverage(material, primitive);
+  if (alphaMode === 'mask' && coverage.known && coverage.min >= alphaCutoff + PATH_REPLAY_ALPHA_STABLE_OPAQUE_MARGIN) {
+    return null;
+  }
+  if (alphaMode === 'blend' && coverage.known && coverage.min >= 1 - PATH_REPLAY_ALPHA_STABLE_OPAQUE_MARGIN) {
+    return null;
+  }
+
+  const alphaInputs = [...coverage.affectedInputs];
   if (alphaMode === 'mask' && opacity < alphaCutoff) alphaInputs.push('opacity<alphaCutoff');
   if (alphaMode === 'blend' && opacity < 1) alphaInputs.push('opacity<1');
 
@@ -1522,12 +1529,116 @@ function pathReplayAlphaVisibilityIssue(
   };
 }
 
+function pathReplayMaskCoverageIsStablyOpaque(material: MaterialSpec, primitive: ScenePrimitive): boolean {
+  if ((material.alphaMode ?? 'opaque') !== 'mask') return false;
+  const coverage = pathReplayAlphaCoverage(material, primitive);
+  return coverage.known &&
+    coverage.min >= (material.alphaCutoff ?? 0.5) + PATH_REPLAY_ALPHA_STABLE_OPAQUE_MARGIN;
+}
+
+function pathReplayAlphaCoverage(
+  material: MaterialSpec,
+  primitive: ScenePrimitive,
+): { readonly known: boolean; readonly min: number; readonly affectedInputs: readonly string[] } {
+  const inputs: string[] = [];
+  let known = true;
+  let min = material.opacity ?? 1;
+
+  const baseColorAlpha = textureChannelMinimum(material.baseColorMap, 3, 'baseColorMap.a');
+  if (!baseColorAlpha.known) known = false;
+  min *= baseColorAlpha.min;
+  inputs.push(...baseColorAlpha.affectedInputs);
+
+  const alphaMap = textureChannelMinimum(material.alphaMap, 0, 'alphaMap');
+  if (!alphaMap.known) known = false;
+  min *= alphaMap.min;
+  inputs.push(...alphaMap.affectedInputs);
+
+  const vertexAlpha = primitiveVertexAlphaMinimum(primitive);
+  min *= vertexAlpha.min;
+  inputs.push(...vertexAlpha.affectedInputs);
+
+  return { known, min, affectedInputs: inputs };
+}
+
 function asTextureHandle(value: unknown): unknown | null {
   if (value == null) return null;
   if (typeof value === 'object' && 'handle' in value) {
     return (value as { readonly handle?: unknown }).handle ?? null;
   }
   return value;
+}
+
+function textureChannelMinimum(
+  value: unknown,
+  channel: number,
+  affectedInput: string,
+): { readonly known: boolean; readonly min: number; readonly affectedInputs: readonly string[] } {
+  const stats = textureChannelStats(value, channel, affectedInput);
+  return { known: stats.known, min: stats.min, affectedInputs: stats.affectedInputs };
+}
+
+function textureChannelMaximum(
+  value: unknown,
+  channel: number,
+  affectedInput: string,
+): { readonly known: boolean; readonly max: number; readonly affectedInputs: readonly string[] } {
+  const stats = textureChannelStats(value, channel, affectedInput);
+  return { known: stats.known, max: stats.max, affectedInputs: stats.affectedInputs };
+}
+
+function textureChannelStats(
+  value: unknown,
+  channel: number,
+  affectedInput: string,
+): { readonly known: boolean; readonly min: number; readonly max: number; readonly affectedInputs: readonly string[] } {
+  if (value == null) return { known: true, min: 1, max: 1, affectedInputs: [] };
+  const handle = asTextureHandle(value);
+  if (handle == null || typeof handle !== 'object') {
+    return { known: false, min: 0, max: 1, affectedInputs: [affectedInput] };
+  }
+  const h = handle as {
+    readonly width?: number;
+    readonly height?: number;
+    readonly data?: ArrayLike<number>;
+    readonly image?: { readonly width?: number; readonly height?: number; readonly data?: ArrayLike<number> };
+  };
+  const src = h.data ?? h.image?.data;
+  const width = Math.floor(Number(h.width ?? h.image?.width ?? 0));
+  const height = Math.floor(Number(h.height ?? h.image?.height ?? 0));
+  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
+    return { known: false, min: 0, max: 1, affectedInputs: [affectedInput] };
+  }
+
+  const pixelCount = width * height;
+  if (pixelCount <= 0 || src.length < pixelCount) {
+    return { known: false, min: 0, max: 1, affectedInputs: [affectedInput] };
+  }
+  const hint = textureHint(handle);
+  const heuristicStride = src.length / pixelCount;
+  const stride = hint?.channels ?? heuristicStride;
+  if (!Number.isInteger(stride) || stride <= 0 || stride > 4) {
+    return { known: false, min: 0, max: 1, affectedInputs: [affectedInput] };
+  }
+  if (channel >= stride) return { known: true, min: 1, max: 1, affectedInputs: [] };
+
+  let min = 1;
+  let max = 0;
+  for (let p = 0; p < pixelCount; p += 1) {
+    const sample = decodedUnitAlpha(Number(src[p * stride + channel] ?? 1), src, hint?.dataType);
+    if (!Number.isFinite(sample)) {
+      return { known: false, min: 0, max: 1, affectedInputs: [affectedInput] };
+    }
+    const clamped = Math.max(0, Math.min(1, sample));
+    min = Math.min(min, clamped);
+    max = Math.max(max, clamped);
+  }
+  return {
+    known: true,
+    min,
+    max,
+    affectedInputs: min < 1 - PATH_REPLAY_ALPHA_STABLE_OPAQUE_MARGIN ? [affectedInput] : [],
+  };
 }
 
 function textureHint(handle: unknown): {
@@ -1562,46 +1673,24 @@ function decodedUnitAlpha(value: number, src: ArrayLike<number>, hintDataType: s
   return max > 0 ? value / max : value;
 }
 
-function baseColorMapCanReduceAlpha(value: unknown): boolean {
-  if (value == null) return false;
-  const handle = asTextureHandle(value);
-  if (handle == null || typeof handle !== 'object') return true;
-  const h = handle as {
-    readonly width?: number;
-    readonly height?: number;
-    readonly data?: ArrayLike<number>;
-    readonly image?: { readonly width?: number; readonly height?: number; readonly data?: ArrayLike<number> };
-  };
-  const src = h.data ?? h.image?.data;
-  const width = Math.floor(Number(h.width ?? h.image?.width ?? 0));
-  const height = Math.floor(Number(h.height ?? h.image?.height ?? 0));
-  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) return true;
-
-  const pixelCount = width * height;
-  if (pixelCount <= 0 || src.length < pixelCount) return true;
-  const hint = textureHint(handle);
-  const heuristicStride = src.length / pixelCount;
-  const stride = hint?.channels ?? heuristicStride;
-  if (!Number.isInteger(stride) || stride <= 0 || stride > 4) return true;
-  if (stride < 4) return false;
-
-  for (let p = 0; p < pixelCount; p += 1) {
-    const alpha = decodedUnitAlpha(Number(src[p * stride + 3] ?? 1), src, hint?.dataType);
-    if (!Number.isFinite(alpha) || alpha < 0.999) return true;
-  }
-  return false;
-}
-
-function primitiveHasNonOpaqueVertexAlpha(primitive: ScenePrimitive): boolean {
-  if (primitive.kind === 'analytic') return false;
+function primitiveVertexAlphaMinimum(
+  primitive: ScenePrimitive,
+): { readonly min: number; readonly affectedInputs: readonly string[] } {
+  if (primitive.kind === 'analytic') return { min: 1, affectedInputs: [] };
   const colors = primitive.colors;
-  if (colors == null || colors.length === 0) return false;
+  if (colors == null || colors.length === 0) return { min: 1, affectedInputs: [] };
   const vertexCount = Math.floor(primitive.positions.length / 3);
-  if (vertexCount <= 0 || colors.length < vertexCount * 4) return false;
+  if (vertexCount <= 0 || colors.length < vertexCount * 4) return { min: 1, affectedInputs: [] };
+  let min = 1;
   for (let i = 0; i < vertexCount; i += 1) {
-    if (Math.abs((colors[i * 4 + 3] ?? 1) - 1) > 1e-6) return true;
+    const alpha = colors[i * 4 + 3] ?? 1;
+    if (!Number.isFinite(alpha)) return { min: 0, affectedInputs: ['COLOR_0.a'] };
+    min = Math.min(min, Math.max(0, Math.min(1, alpha)));
   }
-  return false;
+  return {
+    min,
+    affectedInputs: min < 1 - PATH_REPLAY_ALPHA_STABLE_OPAQUE_MARGIN ? ['COLOR_0.a'] : [],
+  };
 }
 
 function materialMapIssue(maps: readonly string[]): PathReplayMaterialIssue {
@@ -1877,7 +1966,7 @@ function isPathReplayCompatibleUnlitBaseColorMaterial(primitive: ScenePrimitive)
   const m = primitive.material;
   if (m.shadingModel !== 'unlit') return false;
   if (pathReplayAlphaVisibilityIssue(m, primitive) != null) return false;
-  if ((m.transmission ?? 0) > 1e-6) return false;
+  if (pathReplayEffectiveTransmissionMayTransport(m)) return false;
   if (pathReplayLayeredMaterialAffectsBrdf(m)) return false;
   if (pathReplaySpectralOrDispersionAffectsTransport(m)) return false;
   if (pathReplayScatteringAffectsTransport(m)) return false;
@@ -1899,23 +1988,33 @@ function listPathReplayTransportOrGeometryMaps(m: MaterialSpec): readonly string
 }
 
 function pathReplayTransmissionMapAffectsTransport(m: MaterialSpec): boolean {
-  return m.transmissionMap != null && (m.transmission ?? 0) > 1e-6;
+  if (m.transmissionMap == null || (m.transmission ?? 0) <= 1e-6) return false;
+  const transmission = textureChannelMaximum(m.transmissionMap, 0, 'transmissionMap');
+  return !transmission.known || transmission.max > 1e-6;
 }
 
 function pathReplayThicknessMapAffectsTransport(m: MaterialSpec): boolean {
-  return m.thicknessMap != null && (m.transmission ?? 0) > 1e-6;
+  return m.thicknessMap != null && pathReplayEffectiveTransmissionMayTransport(m);
 }
 
 function pathReplaySpectralOrDispersionAffectsTransport(m: MaterialSpec): boolean {
-  return (m.transmission ?? 0) > 1e-6 &&
+  return pathReplayEffectiveTransmissionMayTransport(m) &&
     (m.spectralAttenuation != null || m.dispersionAbbeNumber != null);
 }
 
 function pathReplayScatteringAffectsTransport(m: MaterialSpec): boolean {
-  if ((m.transmission ?? 0) <= 1e-6) return false;
+  if (!pathReplayEffectiveTransmissionMayTransport(m)) return false;
   if ((m.scatteringCoefficient ?? 0) > 0) return true;
   const rgb = m.scatteringCoefficientRGB;
   return rgb != null && ((rgb[0] ?? 0) > 0 || (rgb[1] ?? 0) > 0 || (rgb[2] ?? 0) > 0);
+}
+
+function pathReplayEffectiveTransmissionMayTransport(m: MaterialSpec): boolean {
+  const scalar = m.transmission ?? 0;
+  if (scalar <= 1e-6) return false;
+  if (m.transmissionMap == null) return true;
+  const transmission = textureChannelMaximum(m.transmissionMap, 0, 'transmissionMap');
+  return !transmission.known || scalar * transmission.max > 1e-6;
 }
 
 function pathReplayLayeredMaterialAffectsBrdf(m: MaterialSpec): boolean {
@@ -1935,7 +2034,9 @@ function pathReplayLayerAffectsBrdf(layer: MaterialSpec['frontLayer']): boolean 
 }
 
 function pathReplayAlphaMapAffectsVisibility(m: MaterialSpec): boolean {
-  return m.alphaMap != null && (m.alphaMode ?? 'opaque') !== 'opaque';
+  if (m.alphaMap == null || (m.alphaMode ?? 'opaque') === 'opaque') return false;
+  const coverage = textureChannelMinimum(m.alphaMap, 0, 'alphaMap');
+  return !coverage.known || coverage.min < 1 - PATH_REPLAY_ALPHA_STABLE_OPAQUE_MARGIN;
 }
 
 // ── path resolution / field validation ────────────────────────────────────────

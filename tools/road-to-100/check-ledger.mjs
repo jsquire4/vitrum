@@ -1477,9 +1477,12 @@ for (const needle of [
 
 const ptWebgpuInverseSession = await readText("packages/pt-webgpu/src/inverse/inverseSession.ts");
 for (const needle of [
-  "baseColorMapCanReduceAlpha(material.baseColorMap)",
-  "function baseColorMapCanReduceAlpha",
-  "if (stride < 4) return false;",
+  "const coverage = pathReplayAlphaCoverage(material, primitive);",
+  "function pathReplayAlphaCoverage",
+  "textureChannelMinimum(material.baseColorMap, 3, 'baseColorMap.a')",
+  "textureChannelMinimum(material.alphaMap, 0, 'alphaMap')",
+  "function textureChannelStats",
+  "if (channel >= stride) return { known: true, min: 1, max: 1, affectedInputs: [] };",
 ]) {
   if (!ptWebgpuInverseSession.includes(needle)) {
     fail(`pt-webgpu inverse alpha-visibility diagnostics must stay baseColor-alpha aware: ${needle}`);

@@ -480,6 +480,16 @@ implementation queue is empty. The only source-verified "code gap" phrasing left
 in the Road is native promotion or future contract expansion, not broken
 renderability/API behavior:
 
+Follow-up implementation narrowing (2026-06-21): while checking the inverse
+classifier tails, two bounded false downgrades were code-closed in
+`packages/pt-webgpu/src/inverse/inverseSession.ts` and pinned by
+`inverseSession.test.ts`: readable all-opaque base-color/standalone alpha
+coverage plus stably-opaque `mask` scalars now remain on path replay, and
+positive authored `transmission` is treated as dormant when a readable
+`transmissionMap` has zero R coverage everywhere. Active fractional alpha,
+positive transmission coverage, layered/volume/spectral transport, and true
+visibility/transport derivatives remain finite-difference/proof tails.
+
 - pt-webgl2 dimension-changing topology/list edits are supported through
   resident-storage `fallback-rebuild` with structured diagnostics; true targeted
   primitive splice/refit remains a native-mutation promotion task.

@@ -1638,7 +1638,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
                 ...pr.material,
                 emissive: [1, 1, 1],
                 alphaMode: 'mask',
-                alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
+                alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([0.25, 1, 1, 1]) } },
               },
             }
           : pr,
@@ -2173,7 +2173,51 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
-  it('keeps alpha coverage params on finite-difference until path replay mirrors visibility', () => {
+  it('keeps active cutout alpha coverage params on finite-difference until path replay mirrors visibility', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'mask',
+                opacity: 0.25,
+                alphaCutoff: 0.4,
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(2) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [
+        { path: 'materials.panel.opacity', kind: 'scalar' },
+        { path: 'materials.panel.alphaCutoff', kind: 'scalar' },
+      ],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(0.25, 6)]);
+    expect(session.currentValues()[1]).toEqual([expect.closeTo(0.4, 6)]);
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-visibility',
+      path: 'materials.panel.opacity',
+      details: expect.objectContaining({ field: 'opacity', finiteDifferenceReason: 'visibility' }),
+    }));
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-visibility',
+      path: 'materials.panel.alphaCutoff',
+      details: expect.objectContaining({ field: 'alphaCutoff', finiteDifferenceReason: 'visibility' }),
+    }));
+    session.dispose();
+  });
+
+  it('keeps stably-opaque mask alpha scalars on path-replay as zero-gradient lanes', () => {
     const fake = makeFakeEngine();
     fake.scene = {
       ...fake.scene,
@@ -2201,19 +2245,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
       method: 'path-replay',
     });
 
-    expect(session.method).toBe('finite-difference');
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
     expect(session.currentValues()[0]).toEqual([expect.closeTo(0.75, 6)]);
     expect(session.currentValues()[1]).toEqual([expect.closeTo(0.4, 6)]);
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-visibility',
-      path: 'materials.panel.opacity',
-      details: expect.objectContaining({ field: 'opacity', finiteDifferenceReason: 'visibility' }),
-    }));
-    expect(session.diagnostics).toContainEqual(expect.objectContaining({
-      code: 'path-replay-unsupported-visibility',
-      path: 'materials.panel.alphaCutoff',
-      details: expect.objectContaining({ field: 'alphaCutoff', finiteDifferenceReason: 'visibility' }),
-    }));
     session.dispose();
   });
 
@@ -3121,6 +3156,38 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when a readable transmission map makes positive scalar transmission dormant', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                transmission: 0.8,
+                transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([0, 0, 0, 1]) } },
+                thickness: 0.75,
+                thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([0, 0.5, 0, 1]) } },
+                dispersionAbbeNumber: 42,
+                scatteringCoefficientRGB: [0.1, 0.2, 0.3],
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it('keeps path-replay when spectral and scattering metadata are dormant on an opaque material', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -3220,6 +3287,34 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('keeps path-replay when active alphaMode reads only opaque baseColor texture alpha', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'mask',
+                baseColorMap: { handle: { width: 1, height: 1, data: new Float32Array([0.8, 0.7, 0.6, 1]) } },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
   it('keeps path-replay when active alphaMode uses an RGB-only baseColor texture', () => {
     const fake = makeFakeEngine();
     fake.scene = {
@@ -3239,6 +3334,34 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
                     __vitrum_hint__: { channels: 3, dataType: 'uint8' },
                   },
                 },
+              },
+            }
+          : pr,
+      ),
+    };
+    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('path-replay');
+    expect(session.diagnostics).toEqual([]);
+    session.dispose();
+  });
+
+  it('keeps path-replay when active alphaMode uses an all-opaque readable alpha map', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((pr) =>
+        pr.id === 'panel'
+          ? {
+              ...pr,
+              material: {
+                ...pr.material,
+                alphaMode: 'mask',
+                alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } },
               },
             }
           : pr,
@@ -3295,7 +3418,7 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     ['mask opacity below cutoff', { alphaMode: 'mask' as const, opacity: 0.25, alphaCutoff: 0.5 }, 'path-replay-unsupported-visibility', 'visibility'],
     ['blend opacity', { alphaMode: 'blend' as const, opacity: 0.75 }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission', { transmission: 0.25 }, 'path-replay-unsupported-transport', 'transport'],
-    ['alpha map', { alphaMode: 'mask' as const, alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
+    ['alpha map', { alphaMode: 'mask' as const, alphaMap: { handle: { width: 1, height: 1, data: new Float32Array([0.25, 1, 1, 1]) } } }, 'path-replay-unsupported-visibility', 'visibility'],
     ['transmission map', { transmission: 0.25, transmissionMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
     ['thickness map', { transmission: 0.25, thicknessMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-transport', 'transport'],
     ['displacement map', { displacementMap: { handle: { width: 1, height: 1, data: new Float32Array([1, 1, 1, 1]) } } }, 'path-replay-unsupported-geometry', 'geometry'],
