@@ -538,9 +538,9 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     expect(webgl2.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
         category: 'material',
-        name: 'baseColorMap.samplerPolicy',
+        name: 'emissiveMap.texelPdf',
         support: 'approximate',
-        path: 'samplers[0].minFilter',
+        path: 'materials[0].emissiveTexture',
       }),
     ]));
   });

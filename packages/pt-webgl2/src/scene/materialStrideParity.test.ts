@@ -98,8 +98,8 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(shader).toContain('activeNormalMap = material.backLayerNormalMap;');
     expect(shader).toContain('activeNormalUv = material.frontLayerNormalTexCoord > 0.5 ? uv1 : uv;');
     expect(shader).toContain('sampleMaterialTexture( textures, uvPrime.xy, activeNormalMap, activeNormalMapWrap )');
-    expect(shader).toContain('m.anisotropyMapWrap = w9.ba;');
-    expect(shader).toContain('m.thicknessMapWrap = w10.rg;');
+    expect(shader).toContain('m.anisotropyMapWrap = texelFetch1D( tex, i + 119u );');
+    expect(shader).toContain('m.thicknessMapWrap = texelFetch1D( tex, i + 120u );');
     expect(shader).toContain('vec3 uvPrime = material.anisotropyMapTransform * vec3( MAP_UV( 19u ), 1 );');
     expect(shader).toContain('anisotropy *= anisotropyTexel.b;');
     expect(shader).toContain('anisotropyRotation += atan( rg.y, rg.x );');

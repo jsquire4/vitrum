@@ -6354,37 +6354,30 @@ describe('loadGltfForEngine', () => {
     }));
   });
 
-  it('rejects degraded authored sampler policies before constructing an engine', async () => {
+  it('accepts authored sampler policies on pt-webgl2 before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     gltf.textures![0] = { ...gltf.textures![0]!, sampler: 0 };
     gltf.samplers = [{ magFilter: 9728, minFilter: 9984 }];
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
-
-    let error: unknown;
-    try {
-      await loadGltfForEngine(gltf, {
-        buffers,
-        decodeImage: async () => ({ kind: 'decoded-texture' }),
-        backend: 'pt-webgl2',
-        compatibilityMode: 'reject-degraded',
-        createEngine,
-      });
-    } catch (err) {
-      error = err;
-    }
-
-    expect(error).toBeInstanceOf(GltfCompatibilityError);
-    expect((error as GltfCompatibilityError).message).toContain(
-      'material:baseColorMap.samplerPolicy=approximate at samplers[0].minFilter',
-    );
-    expect((error as GltfCompatibilityError).failureDetails).toContainEqual(expect.objectContaining({
-      source: 'compatibility-issue',
-      category: 'material',
-      name: 'baseColorMap.samplerPolicy',
-      support: 'approximate',
-      path: 'samplers[0].minFilter',
+    const decodePixels = vi.fn(() => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 255]),
+      channels: 4 as const,
+      dataType: 'uint8' as const,
+      colorSpace: 'srgb' as const,
     }));
-    expect(createEngine).not.toHaveBeenCalled();
+
+    await loadGltfForEngine(gltf, {
+      buffers,
+      decodePixels,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(createEngine).toHaveBeenCalledTimes(1);
   });
 
   it('keeps structured import diagnostic details on strict compatibility errors', async () => {

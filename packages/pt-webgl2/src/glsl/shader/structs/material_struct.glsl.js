@@ -2,6 +2,7 @@ import {
 	MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
 	MATERIAL_PIXELS,
 	MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
+	MATERIAL_WRAP_TEXEL_OFFSET,
 } from './materialStride.js';
 
 /** @public — dynamic-access test-load-bearing; accessed via namespace import in untestedMaterialMaps.test.ts */
@@ -95,7 +96,7 @@ export const material_struct = /* glsl */ `
 		int frontLayerNormalMap;
 		vec2 frontLayerNormalScale;
 		mat3 frontLayerNormalMapTransform;
-		vec2 frontLayerNormalMapWrap;
+		vec4 frontLayerNormalMapWrap;
 		float frontLayerNormalTexCoord;
 		vec3 backLayerTransmission;
 		float backLayerRoughness;
@@ -103,7 +104,7 @@ export const material_struct = /* glsl */ `
 		int backLayerNormalMap;
 		vec2 backLayerNormalScale;
 		mat3 backLayerNormalMapTransform;
-		vec2 backLayerNormalMapWrap;
+		vec4 backLayerNormalMapWrap;
 		float backLayerNormalTexCoord;
 		vec3 spectralReflectanceCoeffs;
 		bool hasSpectralReflectance;
@@ -146,27 +147,27 @@ export const material_struct = /* glsl */ `
 		mat3 anisotropyMapTransform;
 		mat3 thicknessMapTransform;
 
-		vec2 mapWrap;
-		vec2 metalnessMapWrap;
-		vec2 roughnessMapWrap;
-		vec2 transmissionMapWrap;
-		vec2 emissiveMapWrap;
-		vec2 normalMapWrap;
-		vec2 alphaMapWrap;
-		vec2 clearcoatMapWrap;
-		vec2 clearcoatRoughnessMapWrap;
-		vec2 clearcoatNormalMapWrap;
-		vec2 sheenColorMapWrap;
-		vec2 sheenRoughnessMapWrap;
-		vec2 iridescenceMapWrap;
-		vec2 iridescenceThicknessMapWrap;
-		vec2 specularColorMapWrap;
-		vec2 specularIntensityMapWrap;
-		vec2 aoMapWrap;
-		vec2 lightMapWrap;
-		vec2 bumpMapWrap;
-		vec2 anisotropyMapWrap;
-		vec2 thicknessMapWrap;
+		vec4 mapWrap;
+		vec4 metalnessMapWrap;
+		vec4 roughnessMapWrap;
+		vec4 transmissionMapWrap;
+		vec4 emissiveMapWrap;
+		vec4 normalMapWrap;
+		vec4 alphaMapWrap;
+		vec4 clearcoatMapWrap;
+		vec4 clearcoatRoughnessMapWrap;
+		vec4 clearcoatNormalMapWrap;
+		vec4 sheenColorMapWrap;
+		vec4 sheenRoughnessMapWrap;
+		vec4 iridescenceMapWrap;
+		vec4 iridescenceThicknessMapWrap;
+		vec4 specularColorMapWrap;
+		vec4 specularIntensityMapWrap;
+		vec4 aoMapWrap;
+		vec4 lightMapWrap;
+		vec4 bumpMapWrap;
+		vec4 anisotropyMapWrap;
+		vec4 thicknessMapWrap;
 
 		// D3 — transforms for the new maps (texels 87/89/91, 2 texels per mat3 —
 		// see readMaterialInfo). Identity when the corresponding map id == -1.
@@ -206,9 +207,126 @@ export const material_struct = /* glsl */ `
 
 	}
 
-	vec4 sampleMaterialTexture( sampler2DArray tex, vec2 uv, int layer, vec2 wrapMode ) {
+	int wrapMaterialTextureIndex( int coord, int size, float mode ) {
 
-		return texture2D( tex, vec3( wrapMaterialTextureUv( uv, wrapMode ), float( layer ) ) );
+		int m = int( round( mode ) );
+		if ( m == 1 ) {
+
+			return clamp( coord, 0, size - 1 );
+
+		}
+
+		if ( m == 2 ) {
+
+			int period = max( size * 2, 1 );
+			int c = coord - period * int( floor( float( coord ) / float( period ) ) );
+			return c < size ? c : period - 1 - c;
+
+		}
+
+		return coord - size * int( floor( float( coord ) / float( size ) ) );
+
+	}
+
+	bool materialTextureUsesLinearFilter( vec4 samplerPolicy, bool minifying ) {
+
+		int packed = int( round( samplerPolicy.w ) );
+		int magFilter = packed - ( packed / 2 ) * 2;
+		int minFilter = packed / 2;
+		return ( minifying ? minFilter : magFilter ) == 1;
+
+	}
+
+	float materialTextureRawLod( vec2 uv, vec2 baseSize ) {
+
+		vec2 dx = dFdx( uv * baseSize );
+		vec2 dy = dFdy( uv * baseSize );
+		float rho = max( length( dx ), length( dy ) );
+		return max( log2( max( rho, 1e-8 ) ), 0.0 );
+
+	}
+
+	vec4 sampleMaterialTextureNearestLevel( sampler2DArray tex, vec2 uv, int layer, vec4 samplerPolicy, int level ) {
+
+		ivec2 size = textureSize( tex, level ).xy;
+		ivec2 p = ivec2( floor( uv * vec2( size ) ) );
+		int x = wrapMaterialTextureIndex( p.x, size.x, samplerPolicy.x );
+		int y = wrapMaterialTextureIndex( p.y, size.y, samplerPolicy.y );
+		return texelFetch( tex, ivec3( x, y, layer ), level );
+
+	}
+
+	vec4 sampleMaterialTextureLinearLevel( sampler2DArray tex, vec2 uv, int layer, vec4 samplerPolicy, int level ) {
+
+		ivec2 size = textureSize( tex, level ).xy;
+		vec2 p = uv * vec2( size ) - vec2( 0.5 );
+		ivec2 p0 = ivec2( floor( p ) );
+		vec2 f = fract( p );
+		int x0 = wrapMaterialTextureIndex( p0.x, size.x, samplerPolicy.x );
+		int y0 = wrapMaterialTextureIndex( p0.y, size.y, samplerPolicy.y );
+		int x1 = wrapMaterialTextureIndex( p0.x + 1, size.x, samplerPolicy.x );
+		int y1 = wrapMaterialTextureIndex( p0.y + 1, size.y, samplerPolicy.y );
+
+		vec4 c00 = texelFetch( tex, ivec3( x0, y0, layer ), level );
+		vec4 c10 = texelFetch( tex, ivec3( x1, y0, layer ), level );
+		vec4 c01 = texelFetch( tex, ivec3( x0, y1, layer ), level );
+		vec4 c11 = texelFetch( tex, ivec3( x1, y1, layer ), level );
+		return mix( mix( c00, c10, f.x ), mix( c01, c11, f.x ), f.y );
+
+	}
+
+	vec4 sampleMaterialTextureLevel(
+		sampler2DArray tex,
+		vec2 uv,
+		int layer,
+		vec4 samplerPolicy,
+		int level,
+		bool linearFilter
+	) {
+
+		return linearFilter
+			? sampleMaterialTextureLinearLevel( tex, uv, layer, samplerPolicy, level )
+			: sampleMaterialTextureNearestLevel( tex, uv, layer, samplerPolicy, level );
+
+	}
+
+	vec4 sampleMaterialTexture( sampler2DArray tex, vec2 uv, int layer, vec4 samplerPolicy ) {
+
+		if ( layer < 0 ) {
+
+			return vec4( 1.0 );
+
+		}
+
+		ivec2 baseSizeI = textureSize( tex, 0 ).xy;
+		vec2 baseSize = vec2( baseSizeI );
+		float rawLod = materialTextureRawLod( uv, baseSize );
+		bool minifying = rawLod > 0.0;
+		bool linearFilter = materialTextureUsesLinearFilter( samplerPolicy, minifying );
+		int mipFilter = int( round( samplerPolicy.z ) );
+		int maxLevel = max( 0, int( floor( log2( float( max( baseSizeI.x, baseSizeI.y ) ) ) ) ) );
+
+		if ( mipFilter == 0 || maxLevel == 0 ) {
+
+			return sampleMaterialTextureLevel( tex, uv, layer, samplerPolicy, 0, linearFilter );
+
+		}
+
+		if ( mipFilter == 1 ) {
+
+			int level = clamp( int( floor( rawLod + 0.5 ) ), 0, maxLevel );
+			return sampleMaterialTextureLevel( tex, uv, layer, samplerPolicy, level, linearFilter );
+
+		}
+
+		float clampedLod = clamp( rawLod, 0.0, float( maxLevel ) );
+		int level0 = int( floor( clampedLod ) );
+		int level1 = min( level0 + 1, maxLevel );
+		float t = clampedLod - float( level0 );
+		vec4 a = sampleMaterialTextureLevel( tex, uv, layer, samplerPolicy, level0, linearFilter );
+		vec4 b = sampleMaterialTextureLevel( tex, uv, layer, samplerPolicy, level1, linearFilter );
+		return mix( a, b, t );
+
 
 	}
 
@@ -234,7 +352,8 @@ export const material_struct = /* glsl */ `
 		// ids + scalars + envMapIntensity; texels 87..92 carry their 3 transforms;
 		// texels 93/94 carry alphaMapTransform; texels 95/96 carry anisotropyMapTransform;
 		// texel 97 carries volume thickness + thicknessMap; texels 98/99 carry
-		// thicknessMapTransform; texels 100..110 carry per-map wrap; texel 111
+		// thicknessMapTransform; texels ${MATERIAL_WRAP_TEXEL_OFFSET}..${MATERIAL_WRAP_TEXEL_OFFSET + 20}
+		// carry per-map sampler policy; texel ${MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET}
 		// carries per-material Jakob-Hanika spectral reflectance coefficients.
 		uint i = index * ${MATERIAL_PIXELS}u;
 
@@ -357,10 +476,9 @@ export const material_struct = /* glsl */ `
 		m.backLayerNormalScale = vec2( layerNormal.a );
 		m.frontLayerNormalMapTransform = m.frontLayerNormalMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 1}u );
 		m.backLayerNormalMapTransform = m.backLayerNormalMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 3}u );
-		vec4 layerNormalWrap = texelFetch1D( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5}u );
-		m.frontLayerNormalMapWrap = layerNormalWrap.rg;
-		m.backLayerNormalMapWrap = layerNormalWrap.ba;
-		vec4 layerNormalUv = texelFetch1D( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6}u );
+		m.frontLayerNormalMapWrap = texelFetch1D( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5}u );
+		m.backLayerNormalMapWrap = texelFetch1D( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6}u );
+		vec4 layerNormalUv = texelFetch1D( tex, i + ${MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 7}u );
 		m.frontLayerNormalTexCoord = layerNormalUv.r;
 		m.backLayerNormalTexCoord = layerNormalUv.g;
 
@@ -404,39 +522,29 @@ export const material_struct = /* glsl */ `
 		m.lightMapTransform = m.lightMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 89u );
 		m.bumpMapTransform = m.bumpMap == - 1 ? mat3( 1.0 ) : readTextureTransform( tex, i + 91u );
 
-		// TextureRef.wrapS/wrapT: 0 repeat, 1 clamp-to-edge, 2 mirrored-repeat.
-		vec4 w0 = texelFetch1D( tex, i + 100u );
-		vec4 w1 = texelFetch1D( tex, i + 101u );
-		vec4 w2 = texelFetch1D( tex, i + 102u );
-		vec4 w3 = texelFetch1D( tex, i + 103u );
-		vec4 w4 = texelFetch1D( tex, i + 104u );
-		vec4 w5 = texelFetch1D( tex, i + 105u );
-		vec4 w6 = texelFetch1D( tex, i + 106u );
-		vec4 w7 = texelFetch1D( tex, i + 107u );
-		vec4 w8 = texelFetch1D( tex, i + 108u );
-		vec4 w9 = texelFetch1D( tex, i + 109u );
-		vec4 w10 = texelFetch1D( tex, i + 110u );
-		m.mapWrap = w0.rg;
-		m.metalnessMapWrap = w0.ba;
-		m.roughnessMapWrap = w1.rg;
-		m.transmissionMapWrap = w1.ba;
-		m.emissiveMapWrap = w2.rg;
-		m.normalMapWrap = w2.ba;
-		m.alphaMapWrap = w3.rg;
-		m.clearcoatMapWrap = w3.ba;
-		m.clearcoatRoughnessMapWrap = w4.rg;
-		m.clearcoatNormalMapWrap = w4.ba;
-		m.sheenColorMapWrap = w5.rg;
-		m.sheenRoughnessMapWrap = w5.ba;
-		m.iridescenceMapWrap = w6.rg;
-		m.iridescenceThicknessMapWrap = w6.ba;
-		m.specularColorMapWrap = w7.rg;
-		m.specularIntensityMapWrap = w7.ba;
-		m.aoMapWrap = w8.rg;
-		m.lightMapWrap = w8.ba;
-		m.bumpMapWrap = w9.rg;
-		m.anisotropyMapWrap = w9.ba;
-		m.thicknessMapWrap = w10.rg;
+		// Texture sampler policy: .x/.y wrapS/wrapT (0 repeat, 1 clamp, 2 mirror),
+		// .z mip filter (0 none, 1 nearest, 2 linear), .w packed mag/min filter.
+		m.mapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 0}u );
+		m.metalnessMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 1}u );
+		m.roughnessMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 2}u );
+		m.transmissionMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 3}u );
+		m.emissiveMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 4}u );
+		m.normalMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 5}u );
+		m.alphaMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 6}u );
+		m.clearcoatMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 7}u );
+		m.clearcoatRoughnessMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 8}u );
+		m.clearcoatNormalMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 9}u );
+		m.sheenColorMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 10}u );
+		m.sheenRoughnessMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 11}u );
+		m.iridescenceMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 12}u );
+		m.iridescenceThicknessMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 13}u );
+		m.specularColorMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 14}u );
+		m.specularIntensityMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 15}u );
+		m.aoMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 16}u );
+		m.lightMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 17}u );
+		m.bumpMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 18}u );
+		m.anisotropyMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 19}u );
+		m.thicknessMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 20}u );
 
 		return m;
 

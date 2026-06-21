@@ -12,7 +12,7 @@
 // All layers share one dimension (sampler2DArray requirement): the max source dim,
 // nearest-neighbour resampled. Provenance: gkjohnson/three-gpu-pathtracer (MIT).
 
-import type { EngineWarning, MaterialSpec, TextureFilterMode, TextureMipFilterMode } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec } from '@vitrum/core';
 
 /** The material-map fields the fork GLSL samples (others are inert until wired).
  *  D3 (Wave C) added the clearcoat/sheen/iridescence/specular maps — the fork
@@ -80,11 +80,18 @@ export interface TextureAtlas {
   /** RGBA32F, `layerCount` layers each `dim × dim`. */
   readonly data: Float32Array;
   readonly dim: number;
+  /** Complete RGBA32F mip chain; level 0 aliases `data`. */
+  readonly mipLevels: readonly TextureAtlasMipLevel[];
   readonly layerCount: number;
   /** Back-compat default map: first layer for a handle, regardless of role. */
   readonly layerOf: Map<unknown, number>;
   /** Role-aware layer maps; color/tint maps and data maps can share a handle safely. */
   readonly layerOfByColorSpace: TextureAtlasLayerMap;
+}
+
+export interface TextureAtlasMipLevel {
+  readonly data: Float32Array;
+  readonly dim: number;
 }
 
 export function textureAtlasLayerCapacity(layerCount: number, maxLayers: number): number {
@@ -100,13 +107,6 @@ export interface TextureAtlasBuildOptions {
   readonly onWarning?: (warning: EngineWarning) => void;
   readonly warningPhase?: string;
   readonly warningMethod?: string;
-}
-
-interface TextureRefSamplerPolicy {
-  readonly handle?: unknown;
-  readonly magFilter?: TextureFilterMode;
-  readonly minFilter?: TextureFilterMode;
-  readonly mipFilter?: TextureMipFilterMode;
 }
 
 function handleType(handle: unknown): string {
@@ -158,45 +158,6 @@ function collectHandle(
     seenSpaces.add(colorSpace);
     handles.push({ handle, colorSpace });
   }
-}
-
-function ptWebgl2SamplerPolicyIsNative(ref: TextureRefSamplerPolicy | undefined): boolean {
-  if (ref == null || ref.handle == null) return true;
-  if (ref.magFilter != null && ref.magFilter !== 'nearest') return false;
-  if (ref.minFilter != null && ref.minFilter !== 'nearest') return false;
-  if (ref.mipFilter != null && ref.mipFilter !== 'none') return false;
-  return true;
-}
-
-function samplerPolicyDetails(ref: TextureRefSamplerPolicy): Record<string, unknown> {
-  return {
-    ...(ref.magFilter != null ? { magFilter: ref.magFilter } : {}),
-    ...(ref.minFilter != null ? { minFilter: ref.minFilter } : {}),
-    ...(ref.mipFilter != null ? { mipFilter: ref.mipFilter } : {}),
-  };
-}
-
-function emitSamplerPolicyWarning(
-  options: TextureAtlasBuildOptions | undefined,
-  ref: TextureRefSamplerPolicy | undefined,
-  materialIndex: number,
-  field: string,
-): void {
-  if (ptWebgl2SamplerPolicyIsNative(ref)) return;
-  emitTextureWarning(options, {
-    code: 'pt-webgl2.texture-sampler-policy-approximation',
-    message:
-      `[pt-webgl2] material ${materialIndex} field ${field} requests texture sampler policy ` +
-      `${JSON.stringify(samplerPolicyDetails(ref as TextureRefSamplerPolicy))}, but pt-webgl2 material maps ` +
-      'are packed into one nearest-filtered texture array; the map will render with nearest filtering and no mip chain.',
-    details: {
-      materialIndex,
-      field,
-      requestedSamplerPolicy: samplerPolicyDetails(ref as TextureRefSamplerPolicy),
-      backendSamplerPolicy: { magFilter: 'nearest', minFilter: 'nearest', mipFilter: 'none' },
-      fallback: 'shared-nearest-atlas-sampler',
-    },
-  });
 }
 
 /** IEEE-754 half (uint16) → float32 (DataTextures may ship HalfFloat). */
@@ -328,6 +289,48 @@ function blitLayer(
   }
 }
 
+function buildAtlasMipLevels(data: Float32Array, dim: number, layerCount: number): readonly TextureAtlasMipLevel[] {
+  const levels: TextureAtlasMipLevel[] = [{ data, dim }];
+  let src = data;
+  let srcDim = dim;
+  while (srcDim > 1) {
+    const dstDim = Math.max(1, Math.floor(srcDim / 2));
+    const dst = new Float32Array(dstDim * dstDim * 4 * layerCount);
+    for (let layer = 0; layer < layerCount; layer += 1) {
+      const srcLayerBase = layer * srcDim * srcDim * 4;
+      const dstLayerBase = layer * dstDim * dstDim * 4;
+      for (let y = 0; y < dstDim; y += 1) {
+        for (let x = 0; x < dstDim; x += 1) {
+          const dstOffset = dstLayerBase + (y * dstDim + x) * 4;
+          const sx0 = Math.floor(x * srcDim / dstDim);
+          const sx1 = Math.max(sx0 + 1, Math.floor((x + 1) * srcDim / dstDim));
+          const sy0 = Math.floor(y * srcDim / dstDim);
+          const sy1 = Math.max(sy0 + 1, Math.floor((y + 1) * srcDim / dstDim));
+          const sums: [number, number, number, number] = [0, 0, 0, 0];
+          let count = 0;
+          for (let sy = sy0; sy < sy1; sy += 1) {
+            for (let sx = sx0; sx < sx1; sx += 1) {
+              const srcOffset = srcLayerBase + (Math.min(srcDim - 1, sy) * srcDim + Math.min(srcDim - 1, sx)) * 4;
+              sums[0] += src[srcOffset] ?? 0;
+              sums[1] += src[srcOffset + 1] ?? 0;
+              sums[2] += src[srcOffset + 2] ?? 0;
+              sums[3] += src[srcOffset + 3] ?? 0;
+              count += 1;
+            }
+          }
+          for (let c = 0; c < 4; c += 1) {
+            dst[dstOffset + c] = sums[c]! / Math.max(1, count);
+          }
+        }
+      }
+    }
+    levels.push({ data: dst, dim: dstDim });
+    src = dst;
+    srcDim = dstDim;
+  }
+  return levels;
+}
+
 /**
  * Build the material-map atlas: gather every unique readable map handle across the
  * scene materials, resample each to a common dim, and assign a layer index. Returns
@@ -340,15 +343,12 @@ export function packTextureAtlas(
   // unique (handle, color-space role) pairs in first-seen order
   const handles: { handle: unknown; colorSpace: TextureSampleColorSpace }[] = [];
   const seen = new Map<unknown, Set<TextureSampleColorSpace>>();
-  for (const [materialIndex, m] of materials.entries()) {
+  for (const m of materials) {
     for (const key of SAMPLED_MAP_KEYS) {
-      const ref = m[key] as TextureRefSamplerPolicy | undefined;
-      emitSamplerPolicyWarning(options, ref, materialIndex, key);
+      const ref = m[key] as { readonly handle?: unknown } | undefined;
       collectHandle(handles, seen, ref, textureColorSpaceForMapKey(key));
     }
-    emitSamplerPolicyWarning(options, m.frontLayer?.normalMap, materialIndex, 'frontLayer.normalMap');
     collectHandle(handles, seen, m.frontLayer?.normalMap, 'linear');
-    emitSamplerPolicyWarning(options, m.backLayer?.normalMap, materialIndex, 'backLayer.normalMap');
     collectHandle(handles, seen, m.backLayer?.normalMap, 'linear');
   }
   if (handles.length === 0) return null;
@@ -392,7 +392,7 @@ export function packTextureAtlas(
     (layerOfByColorSpace[colorSpace] as Map<unknown, number>).set(handle, layer);
     blitLayer(px, dim, data, layer * dim * dim * 4, colorSpace);
   });
-  return { data, dim, layerCount, layerOf, layerOfByColorSpace };
+  return { data, dim, mipLevels: buildAtlasMipLevels(data, dim, layerCount), layerCount, layerOf, layerOfByColorSpace };
 }
 
 function checkedTextureAtlasLayerCapacity(
@@ -436,12 +436,12 @@ function configureTextureAtlasParameters(gl: WebGL2RenderingContext): void {
   gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 }
 
-function textureAtlasUploadData(atlas: TextureAtlas, layerCapacity: number): Float32Array {
-  const uploadData = layerCapacity === atlas.layerCount
-    ? atlas.data
+function textureAtlasUploadData(level: TextureAtlasMipLevel, layerCount: number, layerCapacity: number): Float32Array {
+  const uploadData = layerCapacity === layerCount
+    ? level.data
     : (() => {
-        const expanded = new Float32Array(atlas.dim * atlas.dim * 4 * layerCapacity);
-        expanded.set(atlas.data);
+        const expanded = new Float32Array(level.dim * level.dim * 4 * layerCapacity);
+        expanded.set(level.data);
         return expanded;
       })();
   return uploadData;
@@ -452,11 +452,15 @@ function uploadTextureAtlasStorage(
   atlas: TextureAtlas,
   layerCapacity: number,
 ): void {
-  const uploadData = textureAtlasUploadData(atlas, layerCapacity);
-  gl.texImage3D(
-    gl.TEXTURE_2D_ARRAY, 0, gl.RGBA32F, atlas.dim, atlas.dim, layerCapacity,
-    0, gl.RGBA, gl.FLOAT, uploadData,
-  );
+  atlas.mipLevels.forEach((level, lod) => {
+    const uploadData = textureAtlasUploadData(level, atlas.layerCount, layerCapacity);
+    gl.texImage3D(
+      gl.TEXTURE_2D_ARRAY, lod, gl.RGBA32F, level.dim, level.dim, layerCapacity,
+      0, gl.RGBA, gl.FLOAT, uploadData,
+    );
+  });
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_BASE_LEVEL, 0);
+  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAX_LEVEL, atlas.mipLevels.length - 1);
 }
 
 /** Upload the atlas as an RGBA32F TEXTURE_2D_ARRAY (NEAREST, ClampToEdge). */
@@ -493,17 +497,19 @@ export function updateTextureAtlasLayers(
   atlas: TextureAtlas,
 ): void {
   gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-  gl.texSubImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,
-    0,
-    0,
-    0,
-    atlas.dim,
-    atlas.dim,
-    atlas.layerCount,
-    gl.RGBA,
-    gl.FLOAT,
-    atlas.data,
-  );
+  atlas.mipLevels.forEach((level, lod) => {
+    gl.texSubImage3D(
+      gl.TEXTURE_2D_ARRAY,
+      lod,
+      0,
+      0,
+      0,
+      level.dim,
+      level.dim,
+      atlas.layerCount,
+      gl.RGBA,
+      gl.FLOAT,
+      level.data,
+    );
+  });
 }

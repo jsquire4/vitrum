@@ -20,16 +20,16 @@ function texel(mi: number, s: number, c: number): number {
   return mi * MATERIAL_PIXELS * 4 + s * 4 + c;
 }
 
-describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
+describe('packMaterialsTexture — RGBA32F byte layout', () => {
   it('exposes the verified MATERIAL_PIXELS constant', () => {
     // D3 (2026-06-10): fork base 85 + texels 85..92 (ao/light/bump ids + scalars
     // + envMapIntensity at 85/86, their transforms at 87..92) + alphaMap transform
     // at 93/94 + anisotropyMap transform at 95/96 + thickness payload/transform
-    // at 97..99 + per-map wrap modes at 100..110 + spectral reflectance at 111
-    // + front/back layer normal payload at 112..118.
+    // at 97..99 + per-map sampler policies at 100..120 + spectral reflectance at 121
+    // + front/back layer normal payload at 122..129.
     // Single-sourced with every GLSL fetch site via glsl/shader/structs/materialStride.js
     // — see materialStrideParity.test.ts for the packer↔shader guard.
-    expect(MATERIAL_PIXELS).toBe(119);
+    expect(MATERIAL_PIXELS).toBe(130);
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {
@@ -51,8 +51,8 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     const out = packMaterialsTexture([m]);
     expect(out.kind).toBe('rgba32f');
     expect(out.materialCount).toBe(1);
-    // dim = ceil(sqrt(119)) = 11 → backing data is 11*11*4 = 484 floats.
-    expect(out.dim).toBe(11);
+    // dim = ceil(sqrt(130)) = 12 → backing data is 12*12*4 = 576 floats.
+    expect(out.dim).toBe(12);
     expect(out.data.length).toBe(out.dim * out.dim * 4);
 
     const d = out.data;
@@ -305,6 +305,9 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
           transform: { offset: [0.25, 0.5], scale: [0.5, 0.25], rotation: Math.PI / 2 },
           wrapS: 'clamp-to-edge',
           wrapT: 'mirrored-repeat',
+          magFilter: 'linear',
+          minFilter: 'nearest',
+          mipFilter: 'linear',
         },
         normalScale: 0.75,
       },
@@ -316,6 +319,9 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
           transform: { offset: [0.1, 0.2], scale: [0.3, 0.4], rotation: 0 },
           wrapS: 'repeat',
           wrapT: 'clamp-to-edge',
+          magFilter: 'nearest',
+          minFilter: 'linear',
+          mipFilter: 'nearest',
         },
         normalScale: 0.5,
       },
@@ -334,13 +340,18 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     expect(d[texel(0, ln + 3, 0)]).toBeCloseTo(0.3, 6);
     expect(d[texel(0, ln + 3, 1)]).toBeCloseTo(0.0, 6);
     expect(d[texel(0, ln + 3, 2)]).toBeCloseTo(0.1, 6);
-    // wrap encoding: repeat=0, clamp=1, mirror=2.
+    // sampler policy: wrap repeat=0/clamp=1/mirror=2, mip none=0/nearest=1/linear=2,
+    // packed filters = mag + min*2 with nearest=0, linear=1.
     expect(d[texel(0, ln + 5, 0)]).toBe(1);
     expect(d[texel(0, ln + 5, 1)]).toBe(2);
-    expect(d[texel(0, ln + 5, 2)]).toBe(0);
+    expect(d[texel(0, ln + 5, 2)]).toBe(2);
     expect(d[texel(0, ln + 5, 3)]).toBe(1);
-    expect(d[texel(0, ln + 6, 0)]).toBe(1);
-    expect(d[texel(0, ln + 6, 1)]).toBe(0);
+    expect(d[texel(0, ln + 6, 0)]).toBe(0);
+    expect(d[texel(0, ln + 6, 1)]).toBe(1);
+    expect(d[texel(0, ln + 6, 2)]).toBe(1);
+    expect(d[texel(0, ln + 6, 3)]).toBe(2);
+    expect(d[texel(0, ln + 7, 0)]).toBe(1);
+    expect(d[texel(0, ln + 7, 1)]).toBe(0);
   });
 
   it('spectralAttenuation fills the 32-sample grid (s20..) + sets feature bit 1', () => {
@@ -435,7 +446,7 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     expect(d[texel(0, 1, 3)]).toBe(9); // roughnessMap: linear atlas layer.
   });
 
-  it('packs per-map wrap modes at texels 100..110', () => {
+  it('packs per-map sampler policies at texels 100..120', () => {
     const baseHandle = {};
     const metalHandle = {};
     const bumpHandle = {};
@@ -448,21 +459,33 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      baseColorMap: { handle: baseHandle, wrapS: 'clamp-to-edge', wrapT: 'mirrored-repeat' },
+      baseColorMap: {
+        handle: baseHandle,
+        wrapS: 'clamp-to-edge',
+        wrapT: 'mirrored-repeat',
+        magFilter: 'linear',
+        minFilter: 'nearest',
+        mipFilter: 'linear',
+      },
       metallicMap: { handle: metalHandle, wrapS: 'mirrored-repeat', wrapT: 'repeat' },
       bumpMap: { handle: bumpHandle, wrapS: 'clamp-to-edge', wrapT: 'repeat' },
     };
     const d = packMaterialsTexture([m], layerOf).data;
 
     // Map order is shared with UV_SET_BIT:
-    //   0 baseColorMap -> first wrap texel.rg, 1 metallicMap -> first wrap texel.ba,
-    //   18 bumpMap -> final wrap texel.rg. Encodings: 0 repeat, 1 clamp, 2 mirror.
+    //   0 baseColorMap -> first sampler texel, 1 metallicMap -> second sampler texel,
+    //   18 bumpMap -> sampler texel 18. Encodings: wrap 0 repeat/1 clamp/2 mirror,
+    //   mip 0 none/1 nearest/2 linear, filter packed = mag + min*2.
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 0)]).toBe(1);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 1)]).toBe(2);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 2)]).toBe(2);
-    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 3)]).toBe(0);
-    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 0)]).toBe(1);
-    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 1)]).toBe(0);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 3)]).toBe(1);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 0)]).toBe(2);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 1)]).toBe(0);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 2)]).toBe(0);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 3)]).toBe(0);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 18, 0)]).toBe(1);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 18, 1)]).toBe(0);
   });
 
   it('packs anisotropyMap layer, UV1 bit, transform, and wrap mode', () => {
@@ -500,9 +523,9 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     expect(d[texel(0, 96, 1)]).toBeCloseTo(3, 6);
     expect(d[texel(0, 96, 2)]).toBeCloseTo(0.25, 6);
 
-    // Bit 19 shares the final wrap texel with bumpMap: .ba are anisotropyMap's wrapS/T.
-    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 2)]).toBe(2);
-    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 9, 3)]).toBe(1);
+    // Bit 19 maps to sampler-policy texel 19.
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 19, 0)]).toBe(2);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 19, 1)]).toBe(1);
   });
 
   it('packs thicknessMap layer, thickness scalar, UV1 bit, transform, and wrap mode', () => {
@@ -541,9 +564,9 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     expect(d[texel(0, 99, 1)]).toBeCloseTo(5, 6);
     expect(d[texel(0, 99, 2)]).toBeCloseTo(0.625, 6);
 
-    // Bit 20 starts the final wrap texel pair: .rg are thicknessMap wrapS/T.
-    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 10, 0)]).toBe(1);
-    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 10, 1)]).toBe(2);
+    // Bit 20 maps to sampler-policy texel 20.
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 20, 0)]).toBe(1);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 20, 1)]).toBe(2);
   });
 
   // D3 — ao/lightMap/bumpMap transforms at texels 87/89/91 (item 26).
@@ -699,8 +722,8 @@ describe('packMaterialsTexture — 112px RGBA32F byte layout', () => {
     const b: MaterialSpec = { baseColor: [0, 1, 0], roughness: 1, metallic: 0 };
     const out = packMaterialsTexture([a, b]);
     expect(out.materialCount).toBe(2);
-    // dim = ceil(sqrt(238)) = 16 → 16*16*4 = 1024 floats.
-    expect(out.dim).toBe(16);
+    // dim = ceil(sqrt(260)) = 17 → 17*17*4 = 1156 floats.
+    expect(out.dim).toBe(17);
     // material 0 color.
     expect(out.data[texel(0, 0, 0)]).toBe(1);
     expect(out.data[texel(0, 0, 1)]).toBe(0);

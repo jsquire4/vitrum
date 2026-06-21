@@ -13,7 +13,13 @@
 // Provenance: gkjohnson/three-gpu-pathtracer (MIT) — `MaterialsTexture.js`.
 // CREDITS.md attributes the absorbed fork.
 
-import type { MaterialSpec, TextureWrapMode, Vec3 } from '@vitrum/core';
+import type {
+  MaterialSpec,
+  TextureFilterMode,
+  TextureMipFilterMode,
+  TextureWrapMode,
+  Vec3,
+} from '@vitrum/core';
 import { rgbToSpectralCoefficients } from '@vitrum/shared-samplers';
 import type { MaterialsTextureData } from './sceneTextures.js';
 import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesArray.js';
@@ -31,7 +37,8 @@ import {
  *  site via `materialStride.js` (fork base layout 85 + D3 ao/light/bump/env
  *  texels 85..92 + alphaMap transform texels 93..94 + anisotropyMap transform
  *  texels 95..96 + thickness payload/transform texels 97..99 + wrap texels
- *  100..110 + spectral reflectance texel 111). Re-exported for tests and parity guards. */
+ *  sampler-policy texels 100..120 + spectral reflectance texel 121). Re-exported
+ *  for tests and parity guards. */
 export {
   MATERIAL_MAP_FIELD_ORDER,
   MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
@@ -183,6 +190,17 @@ const WRAP_MODE_INDEX: Readonly<Record<TextureWrapMode, number>> = {
   'mirrored-repeat': 2,
 };
 
+const FILTER_MODE_INDEX: Readonly<Record<TextureFilterMode, number>> = {
+  nearest: 0,
+  linear: 1,
+};
+
+const MIP_FILTER_INDEX: Readonly<Record<TextureMipFilterMode, number>> = {
+  none: 0,
+  nearest: 1,
+  linear: 2,
+};
+
 /**
  * Pack a list of core `MaterialSpec`s into the RGBA32F material square the
  * GLSL `readMaterialInfo` reads. Returns a CPU `MaterialsTextureData` grid
@@ -237,13 +255,23 @@ function writeTransform(
   data[o + 4] = -sy * s; data[o + 5] = sy * c; data[o + 6] = oy; data[o + 7] = 0;
 }
 
-function writeWrapPair(
+function writeSamplerPolicy(
   data: Float32Array,
   offset: number,
-  ref: { wrapS?: TextureWrapMode; wrapT?: TextureWrapMode } | undefined,
+  ref: {
+    wrapS?: TextureWrapMode;
+    wrapT?: TextureWrapMode;
+    magFilter?: TextureFilterMode;
+    minFilter?: TextureFilterMode;
+    mipFilter?: TextureMipFilterMode;
+  } | undefined,
 ): void {
   data[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'];
   data[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'];
+  data[offset + 2] = MIP_FILTER_INDEX[ref?.mipFilter ?? 'none'];
+  data[offset + 3] =
+    FILTER_MODE_INDEX[ref?.magFilter ?? 'nearest'] +
+    FILTER_MODE_INDEX[ref?.minFilter ?? 'nearest'] * 2;
 }
 
 // ── D10.8: per-section packer helpers ────────────────────────────────────
@@ -562,7 +590,7 @@ function packThinFilm(data: Float32Array, index: number, m: MaterialSpec): numbe
  * D10.8: Write texture-transform mat3s at samples 55..84, the D3 auxiliary block
  * at texels 85..92, alphaMapTransform at 93..94, anisotropyMapTransform at
  * 95..96, thickness payload at 97, thicknessMapTransform at 98..99, and per-map
- * wrap modes at
+ * sampler policy at
  * MATERIAL_WRAP_TEXEL_OFFSET.. Uses absolute texel offsets from `base` (not
  * `index`) — these writes are non-sequential (the transform slots are at fixed
  * positions).
@@ -635,13 +663,19 @@ function packTextureTransforms(
   data[volume + 3] = 0.0;
 
   for (let mapIdx = 0; mapIdx < MATERIAL_MAP_FIELD_ORDER.length; mapIdx += 1) {
-    const texel = MATERIAL_WRAP_TEXEL_OFFSET + Math.floor(mapIdx / 2);
-    const pairOffset = base + texel * 4 + (mapIdx % 2) * 2;
+    const texel = MATERIAL_WRAP_TEXEL_OFFSET + mapIdx;
+    const samplerOffset = base + texel * 4;
     const field = MATERIAL_MAP_FIELD_ORDER[mapIdx] as keyof MaterialSpec;
-    writeWrapPair(
+    writeSamplerPolicy(
       data,
-      pairOffset,
-      m[field] as { wrapS?: TextureWrapMode; wrapT?: TextureWrapMode } | undefined,
+      samplerOffset,
+      m[field] as {
+        wrapS?: TextureWrapMode;
+        wrapT?: TextureWrapMode;
+        magFilter?: TextureFilterMode;
+        minFilter?: TextureFilterMode;
+        mipFilter?: TextureMipFilterMode;
+      } | undefined,
     );
   }
 
@@ -659,10 +693,11 @@ function packTextureTransforms(
   if (ids.backLayerNormal >= 0) {
     writeTransform(data, base, MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 3, m.backLayer?.normalMap);
   }
-  const layerWrap = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5) * 4;
-  writeWrapPair(data, layerWrap, m.frontLayer?.normalMap);
-  writeWrapPair(data, layerWrap + 2, m.backLayer?.normalMap);
-  const layerUv = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6) * 4;
+  const frontLayerSampler = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 5) * 4;
+  writeSamplerPolicy(data, frontLayerSampler, m.frontLayer?.normalMap);
+  const backLayerSampler = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6) * 4;
+  writeSamplerPolicy(data, backLayerSampler, m.backLayer?.normalMap);
+  const layerUv = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 7) * 4;
   data[layerUv] = m.frontLayer?.normalMap?.texCoord ?? 0;
   data[layerUv + 1] = m.backLayer?.normalMap?.texCoord ?? 0;
   data[layerUv + 2] = 0;

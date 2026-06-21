@@ -118,9 +118,7 @@ export function expectedSamplerPolicy(textureIndex) {
 
 export function samplerPolicyIsNativeForBackend(backend, policy, field = undefined) {
   if (backend === "walkaround-hybrid") return false;
-  if (backend === "pt-webgl2") {
-    return policy.magFilter === "nearest" && policy.minFilter === "nearest" && policy.mipFilter === "none";
-  }
+  if (backend === "pt-webgl2") return true;
   if (backend === "pt-webgpu" && field === "bumpMap") {
     return policy.magFilter === "linear" && policy.minFilter === "linear" && policy.mipFilter === "none";
   }

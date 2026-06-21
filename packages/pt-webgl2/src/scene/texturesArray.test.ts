@@ -32,6 +32,8 @@ describe('packTextureAtlas', () => {
     expect(atlas).not.toBeNull();
     expect(atlas!.layerCount).toBe(1);
     expect(atlas!.dim).toBe(1);
+    expect(atlas!.mipLevels).toHaveLength(1);
+    expect(atlas!.mipLevels[0]!.data).toBe(atlas!.data);
     expect(atlas!.layerOf.get(handle)).toBe(0);
     expect(Array.from(atlas!.data)).toEqual([1, 0, 0, 1]);
   });
@@ -53,6 +55,34 @@ describe('packTextureAtlas', () => {
     expect(atlas!.layerOf.get(h2)).toBe(1);
     // layer 0 (the 1×1 white) nearest-upsampled to 2×2 → all white
     expect(Array.from(atlas!.data.slice(0, 16))).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(atlas!.mipLevels).toHaveLength(2);
+    expect(atlas!.mipLevels[1]!.dim).toBe(1);
+    expect(Array.from(atlas!.mipLevels[1]!.data.slice(0, 4))).toEqual([1, 1, 1, 1]);
+    expect(atlas!.mipLevels[1]!.data[4]).toBeCloseTo(srgbToLinear(0.5), 6);
+    expect(atlas!.mipLevels[1]!.data[5]).toBeCloseTo(srgbToLinear(0.5), 6);
+    expect(atlas!.mipLevels[1]!.data[6]).toBeCloseTo(srgbToLinear(0.5), 6);
+    expect(atlas!.mipLevels[1]!.data[7]).toBeCloseTo(0.5, 6);
+  });
+
+  it('averages every source texel when generating odd-sized mip levels', () => {
+    const data = new Float32Array(3 * 3 * 4);
+    for (let i = 0; i < 9; i += 1) {
+      data[i * 4] = i;
+      data[i * 4 + 3] = 1;
+    }
+    const handle = dataTexHandle(data, 3, 3);
+    const atlas = packTextureAtlas([{
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      roughnessMap: { handle },
+    }]);
+
+    expect(atlas).not.toBeNull();
+    expect(atlas!.mipLevels).toHaveLength(2);
+    expect(atlas!.mipLevels[1]!.dim).toBe(1);
+    expect(atlas!.mipLevels[1]!.data[0]).toBeCloseTo(4, 6);
+    expect(atlas!.mipLevels[1]!.data[3]).toBeCloseTo(1, 6);
   });
 
   it('collects front/back layer normal maps as linear atlas layers', () => {
@@ -73,7 +103,7 @@ describe('packTextureAtlas', () => {
     expect(atlas!.layerOfByColorSpace.srgb.size).toBe(0);
   });
 
-  it('emits structured warnings when material maps request unsupported sampler policy', () => {
+  it('keeps authored sampler policy warning-free because filtering is shader-resolved', () => {
     const handle = dataTexHandle(new Float32Array([1, 1, 1, 1]), 1, 1);
     const onWarning = vi.fn();
     const atlas = packTextureAtlas([
@@ -91,27 +121,7 @@ describe('packTextureAtlas', () => {
     ], { onWarning, warningPhase: 'setScene', warningMethod: 'setScene' });
 
     expect(atlas).not.toBeNull();
-    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
-      code: 'pt-webgl2.texture-sampler-policy-approximation',
-      backend: 'pt-webgl2',
-      phase: 'setScene',
-      method: 'setScene',
-      details: expect.objectContaining({
-        materialIndex: 0,
-        field: 'baseColorMap',
-        requestedSamplerPolicy: {
-          magFilter: 'linear',
-          minFilter: 'linear',
-          mipFilter: 'linear',
-        },
-        backendSamplerPolicy: {
-          magFilter: 'nearest',
-          minFilter: 'nearest',
-          mipFilter: 'none',
-        },
-        fallback: 'shared-nearest-atlas-sampler',
-      }),
-    }));
+    expect(onWarning).not.toHaveBeenCalled();
   });
 });
 

@@ -675,12 +675,42 @@ for (const needle of [
 
 const ptWebgl2TexturesArray = await readText("packages/pt-webgl2/src/scene/texturesArray.ts");
 for (const needle of [
-  "pt-webgl2.texture-sampler-policy-approximation",
-  "backendSamplerPolicy: { magFilter: 'nearest', minFilter: 'nearest', mipFilter: 'none' }",
-  "fallback: 'shared-nearest-atlas-sampler'",
+  "readonly mipLevels: readonly TextureAtlasMipLevel[];",
+  "function buildAtlasMipLevels(",
+  "atlas.mipLevels.forEach((level, lod) =>",
+  "gl.TEXTURE_MAX_LEVEL, atlas.mipLevels.length - 1",
+  "updateTextureAtlasLayers(",
 ]) {
   if (!ptWebgl2TexturesArray.includes(needle)) {
-    fail(`pt-webgl2 texture atlas must warn on ignored sampler filter/mip policy: ${needle}`);
+    fail(`pt-webgl2 texture atlas must retain exact mipmapped sampler-policy support: ${needle}`);
+  }
+}
+
+const ptWebgl2MaterialsTexture = await readText("packages/pt-webgl2/src/scene/materialsTexture.ts");
+for (const needle of [
+  "const FILTER_MODE_INDEX",
+  "const MIP_FILTER_INDEX",
+  "function writeSamplerPolicy(",
+  "FILTER_MODE_INDEX[ref?.magFilter ?? 'nearest']",
+  "FILTER_MODE_INDEX[ref?.minFilter ?? 'nearest'] * 2",
+]) {
+  if (!ptWebgl2MaterialsTexture.includes(needle)) {
+    fail(`pt-webgl2 material texture packer must retain per-map sampler-policy metadata: ${needle}`);
+  }
+}
+
+const ptWebgl2MaterialStruct = await readText("packages/pt-webgl2/src/glsl/shader/structs/material_struct.glsl.js");
+for (const needle of [
+  "vec4 sampleMaterialTexture( sampler2DArray tex, vec2 uv, int layer, vec4 samplerPolicy )",
+  "float materialTextureRawLod(",
+  "vec4 sampleMaterialTextureLinearLevel(",
+  "textureSize( tex, level ).xy",
+  "texelFetch( tex, ivec3( x0, y0, layer ), level )",
+  "m.mapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 0}u );",
+  "m.thicknessMapWrap = texelFetch1D( tex, i + ${MATERIAL_WRAP_TEXEL_OFFSET + 20}u );",
+]) {
+  if (!ptWebgl2MaterialStruct.includes(needle)) {
+    fail(`pt-webgl2 GLSL material sampler must consume per-map sampler policy: ${needle}`);
   }
 }
 

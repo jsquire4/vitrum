@@ -394,7 +394,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('dedupes repeated sampler-policy approximation warnings at the engine surface', async () => {
+  it('accepts authored sampler policies at the engine surface without approximation warnings', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
@@ -423,28 +423,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       e.setScene(scene);
       e.setScene(scene);
 
-      const samplerWarnings = structured.filter((w) =>
-        w.code === 'pt-webgl2.texture-sampler-policy-approximation'
-      );
-      expect(samplerWarnings).toHaveLength(1);
-      expect(samplerWarnings[0]).toMatchObject({
-        backend: 'pt-webgl2',
-        phase: 'setScene',
-        method: 'setScene',
-        details: {
-          materialIndex: 0,
-          field: 'baseColorMap',
-          requestedSamplerPolicy: {
-            magFilter: 'linear',
-            minFilter: 'nearest',
-            mipFilter: 'linear',
-          },
-          fallback: 'shared-nearest-atlas-sampler',
-        },
-      });
+      const samplerWarnings = structured.filter((w) => w.code.includes('sampler-policy'));
+      expect(samplerWarnings).toHaveLength(0);
       expect(warn.mock.calls.flat().map(String).filter((m) =>
         m.includes('texture sampler policy')
-      )).toHaveLength(1);
+      )).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }
@@ -1282,9 +1265,14 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
 
       expect(structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toHaveLength(0);
       expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texImage3D.mock.calls.length - initialImage3D).toBe(1);
-      expect(texImage3D.mock.calls.at(-1)?.[3]).toBe(2);
-      expect(texImage3D.mock.calls.at(-1)?.[5]).toBe(2);
+      const image3DRefreshCalls = texImage3D.mock.calls.slice(initialImage3D);
+      expect(image3DRefreshCalls).toHaveLength(2);
+      expect(image3DRefreshCalls[0]?.[1]).toBe(0);
+      expect(image3DRefreshCalls[0]?.[3]).toBe(2);
+      expect(image3DRefreshCalls[0]?.[5]).toBe(2);
+      expect(image3DRefreshCalls[1]?.[1]).toBe(1);
+      expect(image3DRefreshCalls[1]?.[3]).toBe(1);
+      expect(image3DRefreshCalls[1]?.[5]).toBe(2);
       expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(0);
       expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
       const atlasWarnings = structured.filter((w) => w.code === 'pt-webgl2.material-atlas-texture-refresh');

@@ -590,7 +590,7 @@ describe('glTF common extension policy', () => {
     }));
   });
 
-  it('reports authored mipmapped nearest sampler policy as approximate on pt-webgl2', () => {
+  it('treats authored mipmapped nearest sampler policy as exact on pt-webgl2', () => {
     const { gltf } = minimalMaterialGltf({
       pbrMetallicRoughness: {
         baseColorTexture: { index: 0 },
@@ -615,22 +615,15 @@ describe('glTF common extension policy', () => {
         usesMipmaps: true,
       },
     ]);
-    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          category: 'material',
-          name: 'baseColorMap.samplerPolicy',
-          support: 'approximate',
-          path: 'samplers[0].minFilter',
-        }),
-      ]),
-    );
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues.some(
+      (issue) => issue.name === 'baseColorMap.samplerPolicy',
+    )).toBe(false);
     expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues.some(
       (issue) => issue.name === 'baseColorMap.samplerPolicy',
     )).toBe(false);
   });
 
-  it('treats linear mipmapped sampler policy as exact on pt-webgpu full but approximate elsewhere', () => {
+  it('treats linear mipmapped sampler policy as exact on pt-webgpu full and pt-webgl2', () => {
     const { gltf } = minimalMaterialGltf({
       pbrMetallicRoughness: {
         baseColorTexture: { index: 0 },
@@ -655,16 +648,9 @@ describe('glTF common extension policy', () => {
     expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues.some(
       (issue) => issue.name === 'baseColorMap.samplerPolicy',
     )).toBe(false);
-    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          category: 'material',
-          name: 'baseColorMap.samplerPolicy',
-          support: 'approximate',
-          path: 'samplers[0].minFilter',
-        }),
-      ]),
-    );
+    expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues.some(
+      (issue) => issue.name === 'baseColorMap.samplerPolicy',
+    )).toBe(false);
     expect(evaluateGltfBackendCompatibility(report, 'walkaround-hybrid').issues).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

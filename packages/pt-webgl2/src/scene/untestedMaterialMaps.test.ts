@@ -269,13 +269,13 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
   // uv1 (ATTR_UV1, attribute layer 4) instead of uv0 (ATTR_UV, layer 2).
   // The GLSL reads uv1 from ATTR_UV1 and selects per-map via the MAP_UV macro.
 
-  it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform, wrap, spectral, and layer-normal texels', () => {
+  it('pt-webgl2 MATERIAL_PIXELS stride includes alphaMapTransform, sampler policy, spectral, and layer-normal texels', () => {
     // The bitmask lives at texel 86.a; texels 93/94 carry alphaMapTransform;
     // texels 95/96 carry anisotropyMapTransform; texel 97 carries thickness;
-    // texels 98/99 carry thicknessMapTransform; texels 100..110 carry per-map wrap modes;
-    // texel 111 carries per-material spectral reflectance coefficients;
-    // texels 112..118 carry front/back layer normal map payloads.
-    expect(MATERIAL_PIXELS).toBe(119);
+    // texels 98/99 carry thicknessMapTransform; texels 100..120 carry per-map sampler policy;
+    // texel 121 carries per-material spectral reflectance coefficients;
+    // texels 122..129 carry front/back layer normal map payloads.
+    expect(MATERIAL_PIXELS).toBe(130);
   });
 
   it('packer writes non-zero bitmask when any map has texCoord:1', () => {
@@ -352,10 +352,11 @@ describe('pt-webgl2 texCoord — uv1 selection IMPLEMENTED (item 25 closure)', (
   });
 
   it('material_struct decodes per-map wrap modes and exposes the wrap-aware sample helper', () => {
-    expect(material_struct).toContain('sampleMaterialTexture( sampler2DArray tex, vec2 uv, int layer, vec2 wrapMode )');
-    expect(material_struct).toContain('m.mapWrap = w0.rg');
-    expect(material_struct).toContain('m.metalnessMapWrap = w0.ba');
-    expect(material_struct).toContain('m.bumpMapWrap = w9.rg');
+    expect(material_struct).toContain('sampleMaterialTexture( sampler2DArray tex, vec2 uv, int layer, vec4 samplerPolicy )');
+    expect(material_struct).toContain('sampleMaterialTextureLinearLevel');
+    expect(material_struct).toContain('m.mapWrap = texelFetch1D( tex, i + 100u )');
+    expect(material_struct).toContain('m.metalnessMapWrap = texelFetch1D( tex, i + 101u )');
+    expect(material_struct).toContain('m.bumpMapWrap = texelFetch1D( tex, i + 118u )');
   });
 
   it('GLSL material fetches use wrap-aware sampling instead of raw texture2D calls', () => {

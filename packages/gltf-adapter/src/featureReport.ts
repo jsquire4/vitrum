@@ -1126,12 +1126,7 @@ function samplerPolicySupport(
   policy: GltfTextureSamplerPolicyUse,
 ): BackendSupportMode {
   if (profileId === 'walkaround-hybrid') return 'approximate';
-  if (profileId === 'pt-webgl2') {
-    if ((policy.magFilter ?? 'nearest') !== 'nearest') return 'approximate';
-    if ((policy.minFilter ?? 'nearest') !== 'nearest') return 'approximate';
-    if ((policy.mipFilter ?? 'none') !== 'none') return 'approximate';
-    return 'native';
-  }
+  if (profileId === 'pt-webgl2') return 'native';
   if (policy.materialField === 'bumpMap') {
     if ((policy.magFilter ?? 'linear') !== 'linear') return 'approximate';
     if ((policy.minFilter ?? 'linear') !== 'linear') return 'approximate';
