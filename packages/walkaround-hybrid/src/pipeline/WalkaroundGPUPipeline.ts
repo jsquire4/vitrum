@@ -1479,6 +1479,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this._device, indexSlice, beerFull, emissiveFull, roughMetalFull);
   }
 
+  refreshBvhEmissiveLe(emissiveFull: { data: ArrayBuffer; triCount: number }): void {
+    if (!this._initialized) return;
+    this._bvhHost.refreshBvhEmissiveLe(this._device, emissiveFull);
+  }
+
   refreshMaterialTextureAtlas(materialTextureAtlas: MaterialTextureAtlasPayload): void {
     if (!this._initialized) return;
     this._bvhHost.refreshMaterialTextureAtlas(this._device, materialTextureAtlas);

@@ -100,6 +100,25 @@ function referenceTotalForSources(sources: readonly SourceId[]): V3 {
 
 const refTotal: V3 = referenceTotalForSources(ALL_SOURCES);
 
+function attenuatePhotonFluxThroughMedium(
+  flux: V3,
+  sigmaA: V3,
+  scatteringRgb: V3,
+  scatteringCoeff: number,
+  distance: number,
+): V3 {
+  const sigmaT: V3 = [
+    Math.max(0, sigmaA[0] + Math.max(scatteringRgb[0], scatteringCoeff)),
+    Math.max(0, sigmaA[1] + Math.max(scatteringRgb[1], scatteringCoeff)),
+    Math.max(0, sigmaA[2] + Math.max(scatteringRgb[2], scatteringCoeff)),
+  ];
+  return [
+    flux[0] * Math.exp(-sigmaT[0] * distance),
+    flux[1] * Math.exp(-sigmaT[1] * distance),
+    flux[2] * Math.exp(-sigmaT[2] * distance),
+  ];
+}
+
 // ── transcribed photon seeding (sppmBindings.wgsl.ts:370-571) ─────────────────
 // invPdfOverride lets the test simulate the OLD missing-invPdf bug (=1) and an
 // over-correction (=K²·(1/K)=K extra) to prove the oracle separates the three.
@@ -234,5 +253,20 @@ describe('SPPM oracle — photon flux energy conservation (lightSelectInvPdf)', 
       expect(over[c] / refTotal[c]).toBeGreaterThan(K - 0.5);
       expect(over[c] / refTotal[c]).toBeLessThan(K + 0.5);
     }
+  });
+
+  it('attenuates photon flux by Beer-Lambert transmittance inside transmissive media', () => {
+    const flux: V3 = [10, 6, 2];
+    const sigmaA: V3 = [0.1, 0.2, 0.3];
+    const scatteringRgb: V3 = [0.02, 0.04, 0.01];
+    const distance = 3.5;
+    const out = attenuatePhotonFluxThroughMedium(flux, sigmaA, scatteringRgb, 0.05, distance);
+
+    expect(out[0]).toBeCloseTo(10 * Math.exp(-0.15 * distance), 12);
+    expect(out[1]).toBeCloseTo(6 * Math.exp(-0.25 * distance), 12);
+    expect(out[2]).toBeCloseTo(2 * Math.exp(-0.35 * distance), 12);
+
+    const noMedium = attenuatePhotonFluxThroughMedium(flux, [0, 0, 0], [0, 0, 0], 0, distance);
+    expect(noMedium).toEqual(flux);
   });
 });

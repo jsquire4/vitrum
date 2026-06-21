@@ -94,6 +94,16 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).not.toContain('TODO(PTWG-03 area/env)');
   });
 
+  it('applies Beer-Lambert extinction while photon chains travel inside transmissive media', () => {
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('var photonInMedium = false;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('var photonSigmaT = vec3f(0.0);');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('flux = flux * exp(-photonSigmaT * hit.dist);');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('let segSigmaA = select(vec3f(0.0), mat.sigmaA, mat.hasSigmaA);');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('let segSigmaS = max(mat.scatteringRgb, vec3f(mat.scatteringCoeff));');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('photonSigmaT = max(segSigmaA + segSigmaS, vec3f(0.0));');
+    expect(SPPM_PHOTON_PASS_WGSL).not.toContain('Beer-Lambert medium extinction omitted');
+  });
+
   it('composes the full connect helpers before the SPPM photon entry point', () => {
     const wgsl = composeSppmPhotonPassWgsl();
     const envSampler = wgsl.indexOf('fn sampleEnvironmentImportance(');

@@ -575,6 +575,40 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(1);
   });
 
+  it('resetPose can restore base pose through updatePrimitive and reset playback state', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const setScene = vi.fn();
+    const updatePrimitive = vi.fn();
+    const reset = vi.fn();
+    const engine: GltfScenePatchTarget = { setScene, updatePrimitive, reset };
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    controller.play('parent-slide', { time: 0.5, engine });
+    expect(controller.playing).toBe(true);
+    expect(controller.currentTime).toBeCloseTo(0.5);
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(1);
+    setScene.mockClear();
+    updatePrimitive.mockClear();
+    reset.mockClear();
+
+    controller.resetPose({ engine, forceSetScene: false, resetPlayback: true });
+
+    expect(setScene).not.toHaveBeenCalled();
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(updatePrimitive).toHaveBeenCalledWith(
+      'gltf-prim-0',
+      expect.objectContaining({ transform: expect.any(Float32Array) }),
+    );
+    const patch = updatePrimitive.mock.calls[0]![1] as { transform: Float32Array };
+    expect(patch.transform[12]).toBeCloseTo(0);
+    expect(reset).toHaveBeenCalledTimes(1);
+    expect(controller.playing).toBe(false);
+    expect(controller.currentTime).toBe(0);
+    expect(controller.activeClip).toBeUndefined();
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(0);
+  });
+
   it('updates camera metadata when an authored camera ancestor is animated', async () => {
     const { gltf, buffers } = animatedCameraGltf();
     const result = await gltfToScene(gltf, { buffers });

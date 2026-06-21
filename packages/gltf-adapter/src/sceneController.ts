@@ -84,6 +84,12 @@ export interface GltfApplyVariantOptions {
   readonly forceSetScene?: boolean;
 }
 
+export interface GltfResetPoseOptions {
+  readonly engine?: GltfScenePatchTarget;
+  readonly forceSetScene?: boolean;
+  readonly resetPlayback?: boolean;
+}
+
 export interface GltfPrimitivePatchRecord {
   readonly id: string;
   readonly patch: Partial<ScenePrimitive>;
@@ -192,6 +198,15 @@ function errorMessage(err: unknown): string {
 
 function resetAfterIncrementalPrimitivePatch(target: GltfScenePatchTarget): void {
   target.reset?.();
+}
+
+function primitiveResetPatch(primitive: ScenePrimitive): Partial<ScenePrimitive> {
+  const patch: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(primitive as unknown as Record<string, unknown>)) {
+    if (key === 'id' || key === 'kind') continue;
+    patch[key] = value;
+  }
+  return patch as Partial<ScenePrimitive>;
 }
 
 function emitControllerDiagnostic(
@@ -578,16 +593,44 @@ export class GltfSceneController {
     };
   }
 
-  resetPose(options: { readonly engine?: GltfScenePatchTarget; readonly forceSetScene?: boolean } = {}): void {
+  resetPose(options: GltfResetPoseOptions = {}): void {
     const target = options.engine ?? this.#engine;
-    this.#scene = {
+    const previousScene = this.#scene;
+    const nextScene = {
       ...this.#scene,
       primitives: this.#scene.primitives.map((primitive) =>
         this.#basePrimitiveById.get(String(primitive.id)) ?? primitive,
       ),
     };
+    this.#scene = nextScene;
     this.#cameras = this.#baseCameras;
-    if (target) target.setScene(this.#scene);
+    if (options.resetPlayback === true) {
+      this.#activeClip = undefined;
+      this.#clock = 0;
+      this.#playing = false;
+    }
+    if (!target) return;
+    if (options.forceSetScene === false && target.updatePrimitive) {
+      const patches = nextScene.primitives
+        .map((primitive, index) => ({
+          id: String(primitive.id),
+          patch: primitiveResetPatch(primitive),
+          changed: previousScene.primitives[index] !== primitive,
+        }))
+        .filter((entry) => entry.changed);
+      if (patches.length === 0) return;
+      try {
+        for (const { id, patch } of patches) {
+          target.updatePrimitive(id, patch);
+        }
+        resetAfterIncrementalPrimitivePatch(target);
+        return;
+      } catch {
+        target.setScene(this.#scene);
+        return;
+      }
+    }
+    target.setScene(this.#scene);
   }
 
   #defaultClip(caller: 'play' | 'resume'): AnimationClip {

@@ -47,7 +47,7 @@ interface Vector3Like {
   readonly z: number;
 }
 
-interface CoreBvhBuildOptions {
+export interface CoreBvhBuildOptions {
   bvhMode?: ReSTIRBvhMode;
   primaryLightDir?: Vector3Like;
   primaryLightIntensity?: number;
@@ -331,6 +331,36 @@ function applyMeshAreaLeOverridesToCoreMaterials(
     patched[slot] = { ...patched[slot]!, emissive: [Le[0], Le[1], Le[2]] as const, emissiveIntensity: 1 };
   }
   return patched;
+}
+
+export function rebuildBvhEmissiveLeFromCoreScene(
+  scene: Scene,
+  bvh: Pick<SceneBVHBuffers, 'bvhMode' | 'coreMaterials' | 'triangleMaterialIds' | 'bvhBeerColors'>,
+  options: CoreBvhBuildOptions = {},
+): SceneBVHBuffers['bvhEmissiveLe'] {
+  const triMaterialIds = new Uint32Array(bvh.triangleMaterialIds.cpuData);
+  const triCount = bvh.bvhBeerColors.count;
+  if (bvh.bvhMode === 'tlas') {
+    const emissiveCoreMats = applyMeshAreaLeOverridesToCoreMaterials(scene, bvh.coreMaterials);
+    return makeStorageHandle(
+      packBVHEmissiveLeFromCore(triMaterialIds, emissiveCoreMats, triCount),
+      16,
+    );
+  }
+
+  const overrides = buildMeshAreaLeOverrides(scene, bvh.coreMaterials, {
+    ...options,
+    suppressMeshAreaMissingReferenceWarnings: true,
+  });
+  const emissiveMaterials = bvh.coreMaterials.map((material, slot) => {
+    const le = overrides.get(slot);
+    if (le == null) return toProductionEmissiveRadiance(material);
+    return { ...material, emissive: [le[0], le[1], le[2]] as const, emissiveIntensity: 1 };
+  });
+  return makeStorageHandle(
+    packBVHEmissiveLeFromCore(triMaterialIds, emissiveMaterials, triCount),
+    16,
+  );
 }
 
 function buildTlasEmitterSourceTriMapper(

@@ -153,6 +153,7 @@ function makePipeline() {
   return {
     dispose: vi.fn(),
     refreshBvhMaterialSlice: vi.fn(),
+    refreshBvhEmissiveLe: vi.fn(),
     refreshBvhNormalsSlice: vi.fn(),
     refreshBvhRefit: vi.fn(),
     refreshBvhFullRebuild: vi.fn(),
@@ -1491,6 +1492,45 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updatePrimitive(material) rebuilds BVH geometry when displacement state changes', () => {
+    const base = baseScene();
+    const prim = base.primitives[0];
+    if (prim == null || prim.kind !== 'mesh') throw new Error('expected mesh');
+    const seededScene: Scene = {
+      ...base,
+      primitives: [
+        {
+          ...prim,
+          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+          material: {
+            ...prim.material,
+            displacementMap: { handle: baseColorMapHandle(255) },
+            displacementScale: 0,
+            displacementBias: 0,
+          },
+        },
+        ...base.primitives.slice(1),
+      ],
+    };
+    const { engine, pipeline } = seedEngine(seededScene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        material: {
+          displacementScale: 0.5,
+        },
+      } as Partial<ScenePrimitive>);
+
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      expect(pipeline.refreshBvhFullRebuild).toHaveBeenCalledTimes(1);
+      const [rebuilt] = pipeline.refreshBvhFullRebuild.mock.calls[0] as [SceneBVHBuffers];
+      const positions = new Float32Array(rebuilt.bvhPositions.cpuData);
+      expect(positions[2]).toBeCloseTo(0.5, 5);
+      expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updateEmitter repacks emitters, invalidates GI lighting state, invalidates RC bindings, and resets accumulation', () => {
     const { engine, pipeline, ddgi, rc } = seedEngine(baseScene([pointEmitter()]), {
       bvhMode: 'tlas',
@@ -1500,6 +1540,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       engine.updateEmitter('lamp', { intensity: 4, position: [2, 3, 4] } as Partial<SceneEmitter>);
 
       expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhEmissiveLe).toHaveBeenCalledTimes(1);
       expect(rc?.invalidateBindings).toHaveBeenCalledTimes(1);
       expect(ddgi.setSunIntensityMultiplier).toHaveBeenCalledTimes(1);
       expect(ddgi.setLights).toHaveBeenCalledTimes(1);
@@ -1510,6 +1551,41 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(ddgi.setEnvironment).toHaveBeenCalledWith(null, null, 0, 0, false);
       expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
       expect((storedScene(engine).emitters[0] as { intensity: number }).intensity).toBe(4);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updateEmitter refreshes camera-visible mesh-area emissive radiance', () => {
+    const { engine, pipeline } = seedEngine(baseScene([{
+      kind: 'mesh-area',
+      id: 'panel-light',
+      meshId: 'mesh-a',
+      color: [1, 0, 0],
+      intensity: 1,
+    }]), { bvhMode: 'tlas' });
+    try {
+      engine.updateEmitter('panel-light', {
+        color: [0, 1, 0],
+        intensity: 3,
+      } as Partial<SceneEmitter>);
+
+      expect(pipeline.updateEmitters).toHaveBeenCalledTimes(1);
+      expect(pipeline.refreshBvhEmissiveLe).toHaveBeenCalledTimes(1);
+      const [payload] = pipeline.refreshBvhEmissiveLe.mock.calls[0] as [{
+        data: ArrayBuffer;
+        triCount: number;
+      }];
+      const emissive = new Float32Array(payload.data);
+      expect(payload.triCount).toBeGreaterThan(0);
+      expect(emissive[0]).toBeCloseTo(0, 5);
+      expect(emissive[1]).toBeCloseTo(3, 5);
+      expect(emissive[2]).toBeCloseTo(0, 5);
+
+      const stored = new Float32Array(storedBvh(engine).bvhEmissiveLe.cpuData);
+      expect(stored[0]).toBeCloseTo(0, 5);
+      expect(stored[1]).toBeCloseTo(3, 5);
+      expect(stored[2]).toBeCloseTo(0, 5);
     } finally {
       engine.dispose();
     }

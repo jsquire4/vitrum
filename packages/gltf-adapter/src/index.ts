@@ -87,6 +87,7 @@ export type {
   GltfClipSelector,
   GltfPlaybackOptions,
   GltfPrimitivePatchRecord,
+  GltfResetPoseOptions,
   GltfSceneControllerDiagnostic,
   GltfSceneControllerDiagnosticCode,
   GltfSceneControllerInput,

@@ -1229,8 +1229,15 @@ function textureMapPatchRequiresFullRebuild(
   next: MaterialSpec | undefined,
   field: (typeof ATLAS_MATERIAL_MAP_FIELDS)[number],
 ): boolean {
-  const a = textureRefLike(prev?.[field]);
-  const b = textureRefLike(next?.[field]);
+  return textureRefPatchChanged(prev?.[field], next?.[field]);
+}
+
+function textureRefPatchChanged(
+  prevValue: unknown,
+  nextValue: unknown,
+): boolean {
+  const a = textureRefLike(prevValue);
+  const b = textureRefLike(nextValue);
   if (a == null || b == null) return a !== b;
   if (a.handle !== b.handle) return true;
   if ((a.texCoord ?? 0) !== (b.texCoord ?? 0)) return true;
@@ -1246,6 +1253,22 @@ function textureMapPatchRequiresFullRebuild(
   if (uv2Component(at?.scale, 0, 1) !== uv2Component(bt?.scale, 0, 1)) return true;
   if (uv2Component(at?.scale, 1, 1) !== uv2Component(bt?.scale, 1, 1)) return true;
   return (at?.rotation ?? 0) !== (bt?.rotation ?? 0);
+}
+
+export function materialPatchAffectsDisplacementGeometry(
+  prev: MaterialSpec | undefined,
+  patch: Partial<MaterialSpec>,
+): boolean {
+  const next: MaterialSpec =
+    prev != null
+      ? mergeMaterialPatch(prev, patch)
+      : patch as MaterialSpec;
+  if (textureRefPatchChanged(prev?.displacementMap, next.displacementMap)) return true;
+  const prevHasMap = textureRefLike(prev?.displacementMap) != null;
+  const nextHasMap = textureRefLike(next.displacementMap) != null;
+  if (!prevHasMap && !nextHasMap) return false;
+  return (prev?.displacementScale ?? 1) !== (next.displacementScale ?? 1) ||
+    (prev?.displacementBias ?? 0) !== (next.displacementBias ?? 0);
 }
 
 function alphaModeAtlasIndex(mode: MaterialSpec['alphaMode'] | undefined): number {

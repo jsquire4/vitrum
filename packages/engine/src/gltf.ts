@@ -179,6 +179,7 @@ export async function loadGltfWithProgressiveEngine(
     scene: loaded.asset.scene,
     controller: loaded.controller,
   });
+  loaded.controller.attachEngine(engine.coordinator, { setScene: false });
 
   return {
     asset: loaded.asset,

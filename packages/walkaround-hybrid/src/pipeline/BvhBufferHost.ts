@@ -508,6 +508,19 @@ export class BvhBufferHost {
     }
   }
 
+  refreshBvhEmissiveLe(
+    device: GPUDevice,
+    emissiveFull: { data: ArrayBuffer; triCount: number },
+  ): void {
+    if (!this.initialized) return;
+    refreshEmissiveTexture(
+      device,
+      this._bvhEmissiveTexture!,
+      new Float32Array(emissiveFull.data),
+      emissiveFull.triCount,
+    );
+  }
+
   refreshMaterialTextureAtlas(
     device: GPUDevice,
     materialTextureAtlas: MaterialTextureAtlasPayload,

@@ -17,6 +17,7 @@ import { Window } from 'happy-dom';
 import type { Scene } from '@vitrum/core';
 import type { GltfAssetResult, GltfForEngineResult, GltfJson } from '@vitrum/gltf-adapter';
 import type { EngineWithBackendId } from '../src/createEngine.js';
+import type { GltfProgressiveEngineResult } from '../src/gltf.js';
 import type { CameraLike } from '../src/lifecycle/vanilla.js';
 import type { AttachVitrumHandle } from '../src/lifecycle/vanilla.js';
 
@@ -164,6 +165,40 @@ function makeMockGltfForEngineResult(
     profileId: engine.backendId,
     engine,
     controller: controller as unknown as GltfForEngineResult<EngineWithBackendId>['controller'],
+    attached: true,
+    textureDecodeReport: asset.textureDecodeReport,
+    decodedTextureCount: 0,
+    unchangedTextureCount: 0,
+    textureDecodeDiagnostics: [],
+    textureDecodeWarnings: [],
+    warnings: [],
+    diagnostics: asset.diagnostics,
+  };
+}
+
+function makeMockProgressiveGltfResult(
+  asset: GltfAssetResult,
+  coordinator: Record<string, unknown>,
+): GltfProgressiveEngineResult {
+  return {
+    asset,
+    backend: 'pt-webgpu',
+    profileId: 'pt-webgpu',
+    engine: {
+      coordinator,
+      realtime: {
+        ...makeMockEngine(),
+        backendId: undefined,
+        capabilities: { presentationMode: 'swapchain-required' },
+      },
+      converged: {
+        ...makeMockEngine(),
+        backendId: undefined,
+        capabilities: { presentationMode: 'offscreen-texture' },
+      },
+      dispose: vi.fn(),
+    } as unknown as GltfProgressiveEngineResult['engine'],
+    controller: { attachEngine: vi.fn(), advance: vi.fn(), warnings: [] } as unknown as GltfProgressiveEngineResult['controller'],
     attached: true,
     textureDecodeReport: asset.textureDecodeReport,
     decodedTextureCount: 0,
@@ -439,6 +474,87 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     expect(() => opts.onAdapterProfile?.(profile as never)).not.toThrow();
     expect(onWarning).toHaveBeenCalledTimes(2);
     expect(onAdapterProfile).toHaveBeenCalledTimes(2);
+
+    root.unmount();
+  });
+
+  it('loads progressive glTF and adapts the coordinator to attachVitrum without double-driving the controller', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    const attachSpy = vi.spyOn(vanillaModule, 'attachVitrum').mockResolvedValue(makeMockHandle());
+    const gltfModule = await import('../src/gltf.js');
+
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const importedScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const asset = makeMockGltfAsset(gltf, importedScene);
+    const frameOutput = { kind: 'skipped', samplesAccumulated: 0, isConverged: false } as const;
+    const coordinator = {
+      setScene: vi.fn(),
+      updatePrimitive: vi.fn(),
+      addPrimitive: vi.fn(),
+      removePrimitive: vi.fn(),
+      reset: vi.fn(),
+      frame: vi.fn(() => ({ phase: 'realtime', output: frameOutput })),
+    };
+    const progressiveResult = makeMockProgressiveGltfResult(asset, coordinator);
+    const loadProgressiveSpy = vi.spyOn(gltfModule, 'loadGltfWithProgressiveEngine')
+      .mockResolvedValue(progressiveResult);
+    const loadSingleSpy = vi.spyOn(gltfModule, 'loadGltfWithEngine');
+    const onGltfLoaded = vi.fn();
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
+
+    const root = createRoot(container);
+    root.render(React.createElement(VitrumCanvas, {
+      gltf,
+      gltfOptions: { buffers },
+      gltfProgressive: true,
+      gltfProgressiveOptions: {
+        seedFromRealtime: false,
+        stillFramesBeforeHandoff: 2,
+      },
+      gltfPlayback: { loop: false },
+      camera: CAMERA,
+      debug: true,
+      onGltfLoaded,
+    }));
+    await happyWindow.happyDOM.waitUntilComplete();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await happyWindow.happyDOM.waitUntilComplete();
+
+    expect(loadSingleSpy).not.toHaveBeenCalled();
+    expect(loadProgressiveSpy).toHaveBeenCalledWith(
+      gltf,
+      expect.objectContaining({
+        buffers,
+        engineOptions: expect.objectContaining({
+          seedFromRealtime: false,
+          stillFramesBeforeHandoff: 2,
+          controllerLoop: false,
+          debug: true,
+        }),
+      }),
+    );
+    expect(onGltfLoaded).toHaveBeenCalledWith(asset, progressiveResult);
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    const opts = attachSpy.mock.calls[0]![0];
+    expect(opts.scene).toBe(importedScene);
+    expect(opts.gltfAsset).toBe(asset);
+    expect(opts.engine?.backendId).toBe('pt-webgpu');
+    expect(opts.sceneController).toBeUndefined();
+    expect(opts.sceneControllerPlayback).toBeUndefined();
+
+    const output = opts.engine?.renderFrame({} as Parameters<NonNullable<typeof opts.engine>['renderFrame']>[0]);
+    expect(output).toBe(frameOutput);
+    expect(coordinator.frame).toHaveBeenCalledTimes(1);
 
     root.unmount();
   });

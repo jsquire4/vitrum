@@ -53,6 +53,44 @@ function makeInlineTexturedTriangleGltf(): { gltf: GltfJson; buffers: Map<number
   };
 }
 
+function makeInlineVariantTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_materials_variants'],
+      extensionsRequired: ['KHR_materials_variants'],
+      extensions: {
+        KHR_materials_variants: {
+          variants: [{ name: 'blue' }],
+        },
+      },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }],
+            },
+          },
+        }],
+      }],
+      materials: [
+        { name: 'base red', pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+        { name: 'variant blue', pbrMetallicRoughness: { baseColorFactor: [0, 0, 1, 1] } },
+      ],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [{ buffer: 0, byteOffset: 0, byteLength: positions.byteLength }],
+      buffers: [{ byteLength: positions.byteLength }],
+    },
+    buffers: new Map([[0, positions]]),
+  };
+}
+
 describe('@vitrum/engine/gltf progressive helper', () => {
   beforeEach(() => {
     createProgressiveEngineMock.mockReset();
@@ -190,6 +228,40 @@ describe('@vitrum/engine/gltf progressive helper', () => {
     expect(result.engine).toBe(handle);
     expect(probeAdapterProfileMock).not.toHaveBeenCalled();
     expect(createProgressiveEngineMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('attaches the returned controller to the progressive coordinator for default mutations', async () => {
+    const { gltf, buffers } = makeInlineVariantTriangleGltf();
+    const coordinator = {
+      setScene: vi.fn(),
+      updatePrimitive: vi.fn(),
+      reset: vi.fn(),
+    };
+    const handle = {
+      coordinator,
+      realtime: {},
+      converged: {},
+      dispose: vi.fn(),
+    };
+    createProgressiveEngineMock.mockResolvedValueOnce(handle);
+
+    const result = await loadGltfWithProgressiveEngine(gltf, {
+      buffers,
+      engineOptions: {
+        canvas: {} as HTMLCanvasElement,
+        seedFromRealtime: false,
+      },
+    });
+
+    expect(coordinator.setScene).not.toHaveBeenCalled();
+    result.controller.setVariant('blue');
+    expect(coordinator.updatePrimitive).toHaveBeenCalledWith(
+      'gltf-prim-0',
+      expect.objectContaining({
+        material: expect.objectContaining({ baseColor: [0, 0, 1] }),
+      }),
+    );
+    expect(coordinator.reset).toHaveBeenCalledTimes(1);
   });
 
   it('reports the full runtime profile for full-tier progressive loads', async () => {

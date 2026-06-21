@@ -77,6 +77,7 @@ import {
 } from './HybridEngineFrameOrchestrator.js';
 import {
   rebuildEmitterBuffersFromCoreScene,
+  rebuildBvhEmissiveLeFromCoreScene,
   disposeSceneBVH,
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
@@ -91,6 +92,7 @@ import {
   positionsRefit,
   topologyRebuild,
   materialPatch,
+  materialPatchAffectsDisplacementGeometry,
   skinnedPosePatch,
   refitSkinnedMeshAfterGpuWrite,
   SKIN_POSE_PATCH_FIELDS,
@@ -1455,7 +1457,20 @@ export class HybridEngine implements Engine {
     if (has('positions')) return positionsRefit(id, patch, ctx);
     if (has('normals')) return topologyRebuild(id, patch, ctx);
     if (has('transform')) return transformRefit(id, patch, ctx);
-    if (has('material')) return materialPatch(id, patch, ctx);
+    if (has('material')) {
+      const previousPrimitive = ctx.lastScene.primitives.find((p) => String(p.id) === id);
+      const previousMaterial =
+        previousPrimitive != null && 'material' in previousPrimitive
+          ? previousPrimitive.material
+          : undefined;
+      if (materialPatchAffectsDisplacementGeometry(
+        previousMaterial,
+        patch.material as unknown as Parameters<typeof materialPatchAffectsDisplacementGeometry>[1],
+      )) {
+        return topologyRebuild(id, patch, ctx);
+      }
+      return materialPatch(id, patch, ctx);
+    }
     return null;
   }
 
@@ -1865,9 +1880,15 @@ export class HybridEngine implements Engine {
       warningMethod: 'updateEmitter',
     };
     const emitterSlice = rebuildEmitterBuffersFromCoreScene(this._renderScene, emitterOptions);
+    const emissiveLe = rebuildBvhEmissiveLeFromCoreScene(
+      this._renderScene,
+      this._bvhBuffers,
+      emitterOptions,
+    );
 
     this._bvhBuffers = {
       ...this._bvhBuffers,
+      bvhEmissiveLe: emissiveLe,
       emitters: emitterSlice.emitters,
       emitterCdf: emitterSlice.emitterCdf,
       emitterCount: emitterSlice.emitterCount,
@@ -1878,6 +1899,10 @@ export class HybridEngine implements Engine {
     };
 
     this._pipeline?.updateEmitters(this._bvhBuffers);
+    this._pipeline?.refreshBvhEmissiveLe({
+      data: this._bvhBuffers.bvhEmissiveLe.cpuData,
+      triCount: this._bvhBuffers.bvhEmissiveLe.count,
+    });
     this._rc?.invalidateBindings();
     this._syncDdgiLightsFromCoreScene();
     this._pipeline?.requestAccumReset();

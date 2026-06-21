@@ -663,11 +663,18 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
   var ray  = Ray(photonOrigin + photonDir * 1e-3, photonDir);
   var flux = photonFlux;
   let maxBounces = clamp(params.mneeMaxChainLength, 1u, 8u);
+  var photonInMedium = false;
+  var photonSigmaT = vec3f(0.0);
 
   for (var bounce = 0u; bounce < 8u; bounce = bounce + 1u) {
     if (bounce >= maxBounces) { break; }
     let hit = traceClosest(ray, 1e-4, INFINITY);
     if (!hit.didHit) { break; }
+
+    if (photonInMedium && max(photonSigmaT.x, max(photonSigmaT.y, photonSigmaT.z)) > 1e-6) {
+      flux = flux * exp(-photonSigmaT * hit.dist);
+      if (max(flux.r, max(flux.g, flux.b)) < 1e-5) { break; }
+    }
 
     let matId = hitMaterialId(hit);
     let mat   = decodeMaterial(matId);
@@ -688,10 +695,10 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       break;
     }
 
-    // Transmissive / specular bounce (follow the specular chain exactly like
-    // traceSpecularTransmissiveChain — Beer-Lambert medium extinction omitted here
-    // for simplicity; SPPM caustics are a first-order effect so the ~2% energy error
-    // from ignoring medium extinction is well within the SPPM variance).
+    // Transmissive / specular bounce. Keep the same single-scatter
+    // Beer-Lambert extinction state as traceSpecularTransmissiveChain: a
+    // front-face refraction enters the material for the NEXT segment, and an
+    // exiting refraction clears the medium.
     let ior = mat.ior;
     let eta = select(ior, 1.0 / ior, frontFace);
     let refr = refract(ray.direction, surfNormal, eta);
@@ -700,6 +707,15 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     flux = flux * mix(vec3f(1.0), clamp(mat.baseColor, vec3f(0.0), vec3f(1.0)), 0.2) *
            max(mat.transmission, 0.05);
     if (max(flux.r, max(flux.g, flux.b)) < 1e-5) { break; }
+    if (hasRefr && frontFace) {
+      let segSigmaA = select(vec3f(0.0), mat.sigmaA, mat.hasSigmaA);
+      let segSigmaS = max(mat.scatteringRgb, vec3f(mat.scatteringCoeff));
+      photonSigmaT = max(segSigmaA + segSigmaS, vec3f(0.0));
+      photonInMedium = max(photonSigmaT.x, max(photonSigmaT.y, photonSigmaT.z)) > 1e-6;
+    } else if (hasRefr && !frontFace) {
+      photonInMedium = false;
+      photonSigmaT = vec3f(0.0);
+    }
     ray.origin    = hp + nextDir * 1e-3;
     ray.direction = nextDir;
   }
