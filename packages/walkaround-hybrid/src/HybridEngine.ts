@@ -193,7 +193,7 @@ function buildWalkaroundExperimentalFeatures(cfg: ParsedHybridEngineConfig): Rea
 
 function buildWalkaroundSupportDetails(opts: HybridEngineOptions): NonNullable<EngineCapabilities['supportDetails']> {
   const base = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails;
-  if (opts.tier !== 'lite') return base;
+  if (opts.tier !== 'lite' && opts.neuralWeights != null) return base;
   return {
     ...base,
     denoisers: {

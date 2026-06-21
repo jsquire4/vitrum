@@ -49,7 +49,13 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(sorted(caps.supportedEmitterKinds)).toEqual(sorted(expected.supportedEmitterKinds));
     expect(sorted(caps.supportedEnvironmentKinds ?? [])).toEqual(sorted(expected.supportedEnvironmentKinds));
     expect(sorted(caps.supportedAnalyticShapes)).toEqual(sorted(expected.supportedAnalyticShapes));
-    expect(caps.supportDetails).toEqual(expected.supportDetails);
+    expect(caps.supportDetails).toEqual({
+      ...expected.supportDetails,
+      denoisers: {
+        ...expected.supportDetails.denoisers,
+        neural: 'unsupported',
+      },
+    });
 
     expect(typeof engineView.updatePrimitive === 'function').toBe(expected.methodPromises.updatePrimitive);
     expect(typeof engineView.updateEmitter === 'function').toBe(expected.methodPromises.updateEmitter);

@@ -923,9 +923,9 @@ export function evaluateGltfBackendProfileCompatibility(
         'animations',
       ),
       message: targetPath === 'pointer'
-        ? 'glTF KHR_animation_pointer channel targets an unsupported JSON pointer; material factor pointers are imported, other mutable asset properties remain unsupported.'
+        ? 'glTF KHR_animation_pointer channel targets an unsupported JSON pointer; supported material-field pointers are imported, other mutable asset properties remain unsupported.'
         : `glTF animation target path "${targetPath}" is not imported into the core animation controller; ` +
-          'supported target paths are translation, rotation, scale, weights, and supported KHR_animation_pointer material factors.',
+          'supported target paths are translation, rotation, scale, weights, and supported KHR_animation_pointer material-field pointers.',
     });
   }
 

@@ -188,7 +188,7 @@ export function convertAnimations(
           targetPath: path,
           message:
             `[vitrum/gltf-adapter] Animation "${label}" channel ${chIdx} targets unsupported ` +
-            `path "${String(path)}" (supported: translation, rotation, scale, weights). Channel skipped.`,
+            `path "${String(path)}" (supported: translation, rotation, scale, weights, pointer). Channel skipped.`,
         });
         continue;
       }

@@ -128,6 +128,7 @@ describe('H12: lite-tier capabilities truth', () => {
       emitter: true,
       topology: false,
     });
+    expect(engine.capabilities.supportsAuxBuffers).toBe(false);
     const primitiveKinds = engine.capabilities.supportedPrimitiveKinds!;
     expect(primitiveKinds.has('mesh')).toBe(true);
     expect(primitiveKinds.has('skinned-mesh')).toBe(true);

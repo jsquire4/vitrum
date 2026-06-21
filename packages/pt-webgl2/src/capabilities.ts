@@ -52,7 +52,7 @@ export function buildCapabilities(
   causticStrategy: EngineCapabilities['causticStrategy'],
   maxBounces: number,
   maxSamplesPerPixel: number,
-  supportsAuxBuffers: boolean,
+  _supportsAuxBuffers: boolean,
   experimental?: { bdpt?: boolean; spectral?: boolean; oidn?: boolean },
 ): EngineCapabilities {
   // experimentalFeatures advertises OFF-default research paths that are HOST-DRIVEN
@@ -74,7 +74,9 @@ export function buildCapabilities(
       topology: true,
     },
     supportsAddRemovePrimitive: true,
-    supportsAuxBuffers,
+    // The renderer may allocate normalDepth/albedo MRTs for denoisers, but the
+    // EngineCapabilities flag is stricter: it requires variance + motionVectors.
+    supportsAuxBuffers: false,
     accumulates: true,
     maxSamplesPerPixel,
     maxBounces,

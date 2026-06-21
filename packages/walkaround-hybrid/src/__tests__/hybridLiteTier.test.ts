@@ -100,13 +100,13 @@ describe('HybridEngine tier:lite — constructor validation', () => {
       .not.toThrow();
   });
 
-  it('reports neural as unsupported in lite support details without mutating full-tier details', () => {
+  it('reports neural support details from the runtime provisioning state', () => {
     const lite = new HybridEngine(baseOpts({ tier: 'lite' }));
     const full = new HybridEngine(baseOpts({ tier: 'full' }));
     expect(lite.capabilities.supportDetails?.denoisers.neural).toBe('unsupported');
     expect(lite.capabilities.supportDetails?.denoisers.auto).toBe('native');
     expect(lite.capabilities.supportDetails?.denoisers['atrous-variance']).toBe('native');
-    expect(full.capabilities.supportDetails?.denoisers.neural).toBe('native');
+    expect(full.capabilities.supportDetails?.denoisers.neural).toBe('unsupported');
   });
 });
 

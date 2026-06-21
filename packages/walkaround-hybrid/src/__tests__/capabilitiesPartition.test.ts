@@ -264,6 +264,7 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     try {
       expect(resolvedDenoiser(engine)).toBe('atrous-variance');
       expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(false);
+      expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('unsupported');
       expect(warnings).toEqual([
         expect.objectContaining({
           code: 'walkaround-hybrid.denoiser-auto-resolved',
@@ -296,6 +297,7 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     try {
       expect(resolvedDenoiser(engine)).toBe('neural');
       expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(true);
+      expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('native');
       expect(warnings).toEqual(expect.arrayContaining([
         expect.objectContaining({
           code: 'walkaround-hybrid.denoiser-auto-resolved',

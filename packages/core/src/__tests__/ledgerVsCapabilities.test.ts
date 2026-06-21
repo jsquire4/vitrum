@@ -84,10 +84,10 @@ describe('BACKEND_PROMISE_LEDGER["pt-webgl2"] vs PT_WEBGL2_SUPPORT', () => {
     expect(ledger.methodPromises.debug).toBe(caps.debugSurface);
   });
 
-  it('supportsAuxBuffers matches the full-tier ledger row while lite remains a per-instance downgrade', () => {
+  it('supportsAuxBuffers stays false because WebGL2 lacks variance and motion-vector outputs', () => {
     const fullCaps = buildPtWebgl2Capabilities('none', 8, Infinity, true);
     const liteCaps = buildPtWebgl2Capabilities('none', 8, Infinity, false);
-    expect(fullCaps.supportsAuxBuffers).toBe(true);
+    expect(fullCaps.supportsAuxBuffers).toBe(false);
     expect(ledger.supportsAuxBuffers).toBe(fullCaps.supportsAuxBuffers);
     expect(liteCaps.supportsAuxBuffers).toBe(false);
   });

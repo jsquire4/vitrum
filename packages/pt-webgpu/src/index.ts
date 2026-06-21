@@ -742,7 +742,7 @@ class PTEngineWebGPU implements Engine {
       // Explicit whole-primitive add/remove API (addPrimitive / removePrimitive)
       // is implemented via a full buildPackedScene repack of the mutated scene.
       supportsAddRemovePrimitive: true,
-      supportsAuxBuffers: true,
+      supportsAuxBuffers: this.#traceTier === 'full',
       accumulates: true,
       // Progressive walkaround→PT handoff (P8): this engine can seed its accum
       // buffers with an initial image as a decaying prior (seedAccumulator).

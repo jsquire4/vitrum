@@ -1055,10 +1055,12 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     supportsIncrementalScene: true,
     incrementalPatchSupport: ALL_PATCHES_SUPPORTED,
     supportsAddRemovePrimitive: true,
-    // Full-tier WebGL2 exposes normalDepth + albedo MRT aux textures. Lite-tier
-    // WebGL2 reports `supportsAuxBuffers:false` at runtime when MRT limits force
-    // auxiliary attachments off; the ledger row records the default/full promise.
-    supportsAuxBuffers: true,
+    // WebGL2 full-tier exposes useful normalDepth + albedo MRT products, but the
+    // core `supportsAuxBuffers` flag promises BOTH FrameOutput.variance and
+    // FrameOutput.motionVectors. Those are not emitted by pt-webgl2 today, so the
+    // contract-level flag stays false even when OIDN-style albedo/normal inputs
+    // are available.
+    supportsAuxBuffers: false,
     accumulates: true,
     // The native WebGL2 packer ingests triangle geometry. Authored analytic
     // primitives are accepted at the contract boundary and tessellated to
