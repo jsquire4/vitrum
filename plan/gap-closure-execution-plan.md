@@ -579,7 +579,7 @@ These need a call, not blind implementation.
 | Displacement support | Keep approximate vertex-displacement wording unless tessellation/microdisplacement lands | CPU-readable maps are applied before BVH construction, but no new geometry is synthesized. |
 | Native point/line primitives | Keep generated-mesh fallback | Good enough for arbitrary glTF routing; native contract is a new feature. |
 | Arbitrary UV arrays | Keep narrow remap + diagnostics | Native array support touches core/backend contracts. |
-| Instanced skinned/morphed glTF | Keep unsupported diagnostic | Needs a new core primitive contract. |
+| Instanced skinned/morphed glTF | Keep fallback-expanded primitives; do not claim native instanced skinning | Arbitrary glTF is renderable through generated skinned/morphed primitives today; a first-class instanced-skinned primitive remains a new performance/core-contract feature. |
 
 ### A4 — Parked SOTA / Performance Track
 
