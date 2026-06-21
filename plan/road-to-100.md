@@ -601,7 +601,8 @@
 - **Foundations + default render paths: solid, advancing toward 100%.** The `@vitrum/core`
   contract, each backend's default integrator, shared-bvh/samplers/denoisers are real,
   correct, type-clean (typecheck green across 12 packages), and test-backed (~3,300+
-  assertions). CI rewritten; in-repo shader compile gate (48 WGSL shaders, naga-validated).
+  assertions). CI rewritten; in-repo shader compile gate discovers the live WGSL inventory
+  and runs adapter-backed shader-module plus pipeline-creation checks via `npm run shader-gate`.
   The P0 default-path correctness issues from prior audits are resolved.
 - **The real distance to "fully implemented + professional" is four buckets:**
   **A** frontier features that are implemented but still need fidelity promotion/default-tier
@@ -902,13 +903,13 @@ buckets that the A–D framing was missing:**
   executable behavior coverage.
   Source reconciliation on 2026-06-15 verified that the WebGPU WGSL/PASS_ORDER
   parse gate itself is already present and CI-backed: `npm run shader-gate`
-  compiles 51 production WGSL modules (pt-webgpu full/lite/ReSTIR-PT/SPPM,
+  compiles the live production WGSL inventory (pt-webgpu full/lite/ReSTIR-PT/SPPM,
   walkaround PASS_ORDER roots including NRC when the adapter supports it,
-  shared-denoisers, and walkaround-rc), and `--self-test` catches an injected
-  broken shader. Follow-up reconciliation on 2026-06-15 strengthened the WGSL
-  gate from parse-only to adapter-backed pipeline creation: the same command now
-  creates 28 compute/production pipeline variants, including pt-webgpu full,
-  lite, ReSTIR-PT, and SPPM entries; shared-denoiser and walkaround-rc kernels;
+  shared-denoisers, shared-bvh CWBVH, and walkaround-rc), and `--self-test` catches
+  an injected broken shader. Follow-up reconciliation on 2026-06-15 strengthened the
+  WGSL gate from parse-only to adapter-backed pipeline creation: the same command now
+  creates adapter-backed compute/production pipeline variants, including pt-webgpu full,
+  lite, ReSTIR-PT, and SPPM entries; shared-denoiser, shared-bvh, and walkaround-rc kernels;
   and walkaround production default, GRIS, PPG, ReGIR, and NRC-capable layouts
   via `compilePipelines()`. Remaining D10/H55 proof work is now the non-mirrored
   WGSL behavior-oracle class, not missing shader or pipeline creation gates.

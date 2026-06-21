@@ -189,6 +189,40 @@ if (ledger.includes("historical audit provenance plus\n  any explicitly marked o
 
 const road = await readText("plan/road-to-100.md");
 const packageJson = JSON.parse(await readText(PACKAGE_PATH));
+const items = await readText("items_to_fix.md");
+const shaderGateReadme = await readText("tools/shader-gate/README.md");
+
+for (const [docName, docText] of [
+  ["plan/road-to-100.md", road],
+  ["items_to_fix.md", items],
+  ["tools/shader-gate/README.md", shaderGateReadme],
+]) {
+  for (const stalePhrase of [
+    "48 WGSL shaders",
+    "47→48 WGSL shaders",
+    "51 production WGSL modules",
+    "compiles **51 shaders**",
+    "creates 28 compute/production pipeline variants",
+    "**28 pipeline variants**",
+    "shader-gate 48/48",
+    "6 feature combinations",
+    "The 6 combinations above",
+    "RANDOM_TYPE=1/2",
+  ]) {
+    if (docText.includes(stalePhrase)) {
+      fail(`${docName} contains stale hard-coded shader-gate count: ${stalePhrase}`);
+    }
+  }
+}
+if (!road.includes("shader compile gate discovers the live WGSL inventory")) {
+  fail("road-to-100.md must describe shader-gate coverage without stale exact counts");
+}
+if (!/keep the command output as the count\s+source of truth/.test(shaderGateReadme)) {
+  fail("shader-gate README must keep count-source-of-truth wording");
+}
+if (!shaderGateReadme.includes("| `sobol-on` | false | false | 0 | false | `RANDOM_TYPE=1` Sobol RNG path |")) {
+  fail("shader-gate README must include the production Sobol GLSL gate row");
+}
 
 const walkaroundPromiseLedger = await readText("packages/core/src/engine/promiseLedger.ts");
 if (!/row !== 'unsupported'[\s\S]*CONSUMED_MATERIAL_FIELDS/.test(walkaroundPromiseLedger)) {
@@ -395,7 +429,6 @@ if (!behavioralGateReadme.includes("variants with the tiled ranked Sobol rotatio
   fail("behavioral-gate README must retain the Sobol rotation proof boundary");
 }
 
-const items = await readText("items_to_fix.md");
 if (!items.includes("HISTORICAL AUDIT ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONCILIATION")) {
   fail("items_to_fix.md must retain the current historical-audit/provenance markers");
 }

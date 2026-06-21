@@ -46,9 +46,9 @@ npm run shader-gate:glsl
 npm run shader-gate:glsl -- --self-test
 ```
 
-On the dev rig the WGSL gate compiles **51 shaders** (51 OK, 0 FAILED), creates
-**28 pipeline variants** (28 OK, 0 FAILED), and the GLSL gate compiles **6 feature
-combinations** (6 OK, 0 FAILED).
+The WGSL and GLSL gates print live shader-module, pipeline-variant, and feature-
+combination totals at the end of each run; keep the command output as the count
+source of truth rather than hard-coding those numbers in planning docs.
 
 The underlying npm scripts are:
 
@@ -100,7 +100,7 @@ explicit bind-group layouts used by the engine for these variants:
 
 | Subsystem | Combinations compiled |
 |-----------|----------------------|
-| `pt-webgl2` — full fragment program | 6 feature combinations (see table below) |
+| `pt-webgl2` — full fragment program | Production-reachable feature combinations (see table below) |
 
 **Validator:** `glslangValidator` (KhronosGroup/glslang) without `--target-env`.
 This mode validates GLSL in-place (parse + type-check) without generating SPIR-V,
@@ -123,17 +123,18 @@ GLSL3 compat `#define` bridges) prepended exactly as `GlProgram.#relink()` does.
 | `cameraType-ortho` | false | false | **1** | false | `CAMERA_TYPE=1` #if paths |
 | `cameraType-equirect` | false | false | **2** | false | `CAMERA_TYPE=2` #if paths |
 | `stained-glass` | false | false | 0 | **true** | `FEATURE_STAINED_GLASS_*=1` path |
+| `sobol-on` | false | false | 0 | false | `RANDOM_TYPE=1` Sobol RNG path |
 
 The only compose-time branch is `bdpt` (includes/excludes `bdpt_light_subpath` +
 `bdpt_connection` chunks).  All other flags only affect `#define` values that the
-GLSL preprocessor resolves.  The 6 combinations above exercise every distinct
+GLSL preprocessor resolves.  The combinations above exercise every distinct
 compile-time code path in the composed program.
 
 **Limits of this gate** (known gaps, not regressions):
 - Validates GLSL ES semantics but not WebGL2-specific driver extensions or uniform block
   interface rules that ANGLE/Mesa would enforce at link time.  The wsl-gpu T1 GPU smoke
   provides that gate (real WebGL2 context on lavapipe).
-- `FEATURE_FOG`, `FEATURE_BACKGROUND_MAP`, `RANDOM_TYPE=1/2` are pinned-off in
+- `FEATURE_FOG`, `FEATURE_BACKGROUND_MAP`, and `RANDOM_TYPE=2` are pinned-off in
   production (`featureTypes.ts`) and are therefore not exercised here.
 
 ## What is NOT covered
