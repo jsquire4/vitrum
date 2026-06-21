@@ -223,13 +223,17 @@ export interface MaterialSpec {
    *  atlas-backed visible shade path. */
   readonly bumpScale?: number;
   /** Vertex displacement height map.
-   *  @reserved Accepted; not yet consumed by any backend (road-to-100 texture tier). */
+   *  @reserved Accepted for ingestion, diagnostics, and future geometry pipelines;
+   *  shipping renderers currently report displacement as unsupported rather than
+   *  silently sampling it as a normal/BRDF field. */
   readonly displacementMap?: TextureRef;
   /** Displacement amplitude scale. Default 1.
-   *  @reserved Accepted; not yet consumed by any backend. */
+   *  @reserved Accepted for diagnostics/inverse finite-difference parameters;
+   *  no shipping backend applies real geometry/BVH displacement yet. */
   readonly displacementScale?: number;
   /** Displacement bias (shifts the zero point). Default 0.
-   *  @reserved Accepted; not yet consumed by any backend. */
+   *  @reserved Accepted for diagnostics/inverse finite-difference parameters;
+   *  no shipping backend applies real geometry/BVH displacement yet. */
   readonly displacementBias?: number;
   /** Baked diffuse irradiance / light map (additive to emissive).
    *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and approximately by

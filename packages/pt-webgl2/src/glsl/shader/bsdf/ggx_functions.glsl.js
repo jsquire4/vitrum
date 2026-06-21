@@ -12,10 +12,9 @@ export const ggx_functions = /* glsl */`
 
 	vec3 ggxDirection( vec3 incidentDir, vec2 roughness, vec2 uv ) {
 
-		// TODO: try GGXVNDF implementation from reference [2], here. Needs to update ggxDistribution
-		// function below, as well
-
-		// Implementation from reference [1]
+		// Fork-compatible implementation from reference [1]. The WebGPU backend
+		// has a VNDF-specific path; this WebGL2 port keeps the paired sampler/PDF
+		// convention used by the original fork for numeric A/B stability.
 		// stretch view
 		vec3 V = normalize( vec3( roughness * incidentDir.xy, incidentDir.z ) );
 

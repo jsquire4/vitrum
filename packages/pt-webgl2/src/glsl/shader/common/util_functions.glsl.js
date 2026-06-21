@@ -2,7 +2,7 @@ import { MATERIAL_PIXELS } from '../structs/materialStride.js';
 
 export const util_functions = /* glsl */`
 
-	// TODO: possibly this should be renamed something related to material or path tracing logic
+	// General path-tracing utility helpers shared by material, BSDF, and ray code.
 
 	#ifndef RAY_OFFSET
 	#define RAY_OFFSET 1e-4

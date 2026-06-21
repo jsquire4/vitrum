@@ -45,9 +45,12 @@ export const attenuate_hit_function = /* glsl */`
 
 				}
 
-				// TODO: attenuate the contribution based on the PDF of the resulting ray including refraction values
-				// Should be able to work using the material BSDF functions which will take into account specularity, etc.
-				// TODO: should we account for emissive surfaces here?
+				// Shadow visibility through transmissive layers is intentionally a
+				// bounded attenuation approximation here: this helper answers whether
+				// a direct-light/BDPT connection remains visible and returns tint/medium
+				// throughput. It does not add emissive surface radiance or try to make
+				// the shadow ray a second full BSDF path; those are handled by hit/NEE
+				// estimators rather than this visibility predicate.
 
 				uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.w ).r;
 				Material material = readMaterialInfo( materials, materialIndex );
