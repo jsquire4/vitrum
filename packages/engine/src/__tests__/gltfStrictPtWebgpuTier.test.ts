@@ -650,6 +650,77 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     );
   });
 
+  it('derives pt-webgpu texture decode caps from the runtime adapter profile', async () => {
+    mocks.probeAdapterProfile.mockResolvedValueOnce({
+      hasWebGPU: true,
+      hybridCapable: true,
+      hybridLiteCapable: true,
+      ptWebgpuTier: 'full',
+      maxStorageBuffersPerStage: 28,
+      maxStorageTexturesPerStage: 5,
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      hasWebGL2: true,
+      recommendedRealtimeTier: 'ultra',
+      recommendedHeroBackend: 'pt-webgpu-full',
+      limits: Object.freeze({ maxTextureDimension2D: 4096 }),
+    });
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engineOptions: {
+          canvas: {} as HTMLCanvasElement,
+          prefer: 'quality-webgpu',
+        },
+      }),
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.loadGltfForEngine).toHaveBeenCalledWith(
+      'asset.glb',
+      expect.objectContaining({
+        backend: 'pt-webgpu',
+        maxTextureSize: 4096,
+      }),
+    );
+  });
+
+  it('does not override an explicit glTF maxTextureSize with the runtime adapter cap', async () => {
+    mocks.probeAdapterProfile.mockResolvedValueOnce({
+      hasWebGPU: true,
+      hybridCapable: true,
+      hybridLiteCapable: true,
+      ptWebgpuTier: 'full',
+      maxStorageBuffersPerStage: 28,
+      maxStorageTexturesPerStage: 5,
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      hasWebGL2: true,
+      recommendedRealtimeTier: 'ultra',
+      recommendedHeroBackend: 'pt-webgpu-full',
+      limits: Object.freeze({ maxTextureDimension2D: 4096 }),
+    });
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engineOptions: {
+          canvas: {} as HTMLCanvasElement,
+          prefer: 'quality-webgpu',
+        },
+        maxTextureSize: 256,
+      }),
+    ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
+
+    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(mocks.loadGltfForEngine).toHaveBeenCalledWith(
+      'asset.glb',
+      expect.objectContaining({
+        backend: 'pt-webgpu',
+        maxTextureSize: 256,
+      }),
+    );
+  });
+
   it('allows reject-degraded pt-webgpu glTF loads on full tier adapters', async () => {
     mocks.probeAdapterProfile.mockResolvedValueOnce({
       hasWebGPU: true,

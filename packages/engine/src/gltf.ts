@@ -100,7 +100,9 @@ export async function loadGltfWithEngine(
   const preferredAdapterBackend =
     adapterOptions.backend ?? backendSelectionForExplicitPrefer(engineOptions?.prefer);
   if (adapterOptions.engine != null) {
-    const { engine, attachScene, ...loadOptions } = adapterOptions;
+    const { engine, attachScene, ...baseLoadOptions } = adapterOptions;
+    const runtimeProfile = await maybeProbePtWebgpuRuntimeProfile(engine.backendId, baseLoadOptions);
+    const loadOptions = withRuntimeTextureCap(baseLoadOptions, runtimeProfile);
     const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
       ...loadOptions,
       backend: engine.backendId,
@@ -111,7 +113,8 @@ export async function loadGltfWithEngine(
       engine.backendId,
       adapterOptions.compatibilityMode ?? 'best-effort',
       loaded.asset,
-      adapterOptions,
+      loadOptions,
+      runtimeProfile,
     );
     loaded.controller.attachEngine(engine, { setScene: attachScene ?? true });
     return {
@@ -125,16 +128,19 @@ export async function loadGltfWithEngine(
   }
 
   let runtimeProfileId: GltfBackendProfileId | undefined;
+  const runtimeProfile = await maybeProbePtWebgpuRuntimeProfile(preferredAdapterBackend, adapterOptions);
+  const loadOptions = withRuntimeTextureCap(adapterOptions, runtimeProfile);
   const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
-    ...adapterOptions,
+    ...loadOptions,
     ...(preferredAdapterBackend !== undefined ? { backend: preferredAdapterBackend } : {}),
     engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     createEngine: async ({ scene, backend, asset, options: createOptions }) => {
       runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
         backend,
-        adapterOptions.compatibilityMode ?? 'best-effort',
+        loadOptions.compatibilityMode ?? 'best-effort',
         asset,
-        adapterOptions,
+        loadOptions,
+        runtimeProfile,
       );
       const engine = await createEngine({
         ...createOptions,
@@ -146,9 +152,10 @@ export async function loadGltfWithEngine(
         try {
           runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
             engine.backendId,
-            adapterOptions.compatibilityMode ?? 'best-effort',
+            loadOptions.compatibilityMode ?? 'best-effort',
             asset,
-            adapterOptions,
+            loadOptions,
+            runtimeProfile,
           );
         } catch (err) {
           disposeEngineAfterRejectedGltfRuntimeProfile(engine);
@@ -203,6 +210,7 @@ async function resolvePtWebgpuRuntimeProfile(
   compatibilityMode: GltfCompatibilityMode,
   asset: GltfAssetResult,
   options: LoadGltfWithEngineOptions,
+  runtimeProfile: PtWebgpuRuntimeProfile | null = null,
 ): Promise<GltfBackendProfileId | undefined> {
   if (backend !== 'pt-webgpu') return undefined;
 
@@ -229,7 +237,7 @@ async function resolvePtWebgpuRuntimeProfile(
     return options.runtimeProfile;
   }
 
-  const profile = await probeAdapterProfile();
+  const profile = runtimeProfile ?? await probeAdapterProfile();
   if (profile.ptWebgpuTier === 'full') return 'pt-webgpu';
   if (profile.ptWebgpuTier === 'none') {
     validatePtWebgpuRuntimeUnavailable(compatibilityMode);
@@ -245,6 +253,34 @@ async function resolvePtWebgpuRuntimeProfile(
     options,
   );
   return profileId;
+}
+
+type PtWebgpuRuntimeProfile = Awaited<ReturnType<typeof probeAdapterProfile>>;
+
+async function maybeProbePtWebgpuRuntimeProfile(
+  backend: CreateEngineBackendId | GltfEngineSelection | undefined,
+  options: Pick<LoadGltfWithEngineOptions, 'runtimeProfile' | 'maxTextureSize'>,
+): Promise<PtWebgpuRuntimeProfile | null> {
+  if (options.runtimeProfile !== undefined) return null;
+  if (backend !== 'pt-webgpu' && backend !== 'pt-webgpu-lite') return null;
+  return probeAdapterProfile();
+}
+
+function withRuntimeTextureCap<TOptions extends Pick<LoadGltfWithEngineOptions, 'maxTextureSize'>>(
+  options: TOptions,
+  runtimeProfile: PtWebgpuRuntimeProfile | null,
+): TOptions {
+  if (options.maxTextureSize !== undefined || runtimeProfile == null) return options;
+  const maxTextureSize = runtimeMaxTextureSize(runtimeProfile);
+  return maxTextureSize === undefined
+    ? options
+    : { ...options, maxTextureSize };
+}
+
+function runtimeMaxTextureSize(profile: PtWebgpuRuntimeProfile): number | undefined {
+  const limit = profile.limits.maxTextureDimension2D;
+  if (typeof limit !== 'number' || !Number.isFinite(limit) || limit <= 0) return undefined;
+  return Math.floor(limit);
 }
 
 function validatePtWebgpuRuntimeUnavailable(
