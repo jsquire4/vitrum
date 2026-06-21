@@ -487,8 +487,11 @@ if (!road.includes("pt-webgpu` exposes\n   the explicit full-tier `bvhTraversal:
 if (!road.includes("zero-delta readback against binary traversal plus same-scene timing/memory\n   evidence on both the simple Cornell lane and a 144-primitive complex lane")) {
   fail("road-to-100.md must retain the reconciled CWBVH timing/memory proof summary");
 }
-if (!road.includes("Remaining work is\n   cross-workload/cross-adapter default-promotion throughput evidence")) {
-  fail("road-to-100.md must retain the reconciled CWBVH promotion-only residual");
+if (!road.includes("dzn shards\n   now also prove exact full-tier parity on both CWBVH lanes")) {
+  fail("road-to-100.md must retain the dzn CWBVH cross-adapter parity summary");
+}
+if (!road.includes("Remaining work is browser/real-adapter default-promotion throughput evidence")) {
+  fail("road-to-100.md must retain the narrowed CWBVH promotion-only residual");
 }
 if (!road.includes("fidelity matrix tracks the active `pt-webgl2` / `pt-webgpu` columns and records")) {
   fail("road-to-100.md must retain the reconciled C5 renderer-matrix summary");

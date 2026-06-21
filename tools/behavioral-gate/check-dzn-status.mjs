@@ -138,6 +138,54 @@ const EXPECTED = [
     ],
   },
   {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter cwbvh-binary-parity --require-full-tier",
+    filter: "cwbvh-binary-parity",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      {
+        label: "pt/cwbvh-binary-parity",
+        verdict: "PASS",
+        rawStatus: "OK",
+        tier: "full",
+        minLuminance: 0.005,
+        cwbvhParityKind: "binary",
+        maxCwbvhParityRmse: 1,
+        maxCwbvhParityMeanAbs: 0.5,
+        maxCwbvhParityMaxAbs: 8,
+        minCwbvhRenderMsRatio: 1.0,
+      },
+    ],
+  },
+  {
+    path: "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter cwbvh-complex-parity --require-full-tier",
+    filter: "cwbvh-complex-parity",
+    goldenVariant: "dzn-full",
+    verdict: "PASS",
+    exitStatus: 0,
+    totalConfigs: 1,
+    failures: 0,
+    configs: [
+      {
+        label: "pt/cwbvh-complex-parity",
+        verdict: "PASS",
+        rawStatus: "OK",
+        tier: "full",
+        minLuminance: 0.005,
+        cwbvhParityKind: "binary",
+        maxCwbvhParityRmse: 1,
+        maxCwbvhParityMeanAbs: 0.5,
+        maxCwbvhParityMaxAbs: 8,
+        minCwbvhRenderMsRatio: 1.0,
+      },
+    ],
+  },
+  {
     path: "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
     command: "npm run behavioral-gate:dzn -- --filter spectral --require-full-tier",
     filter: "spectral",
@@ -515,15 +563,42 @@ for (const expected of EXPECTED) {
       })) {
         fail(`${expected.path}: ${expectedConfig.label} cwbvhParityThresholds mismatch`);
       }
+      if (config.cwbvhPerfKind !== "same-scene") {
+        fail(`${expected.path}: ${expectedConfig.label} cwbvhPerfKind mismatch`);
+      }
+      for (const [key, value] of Object.entries({
+        cwbvhBinaryRenderMs: config.cwbvhBinaryRenderMs,
+        cwbvhRenderMs: config.cwbvhRenderMs,
+        cwbvhRenderMsRatio: config.cwbvhRenderMsRatio,
+        cwbvhBinaryMemoryBytes: config.cwbvhBinaryMemoryBytes,
+        cwbvhMemoryBytes: config.cwbvhMemoryBytes,
+        cwbvhBinarySceneBytes: config.cwbvhBinarySceneBytes,
+        cwbvhSceneBytes: config.cwbvhSceneBytes,
+      })) {
+        if (!(Number.isFinite(value) && value > 0)) {
+          fail(`${expected.path}: ${expectedConfig.label} ${key} must be positive`);
+        }
+      }
+      for (const [key, value] of Object.entries({
+        cwbvhMemoryBytesDelta: config.cwbvhMemoryBytesDelta,
+        cwbvhSceneBytesDelta: config.cwbvhSceneBytesDelta,
+      })) {
+        if (!Number.isFinite(value)) {
+          fail(`${expected.path}: ${expectedConfig.label} ${key} must be finite`);
+        }
+      }
+      if (
+        expectedConfig.minCwbvhRenderMsRatio != null &&
+        !(config.cwbvhRenderMsRatio >= expectedConfig.minCwbvhRenderMsRatio)
+      ) {
+        fail(`${expected.path}: ${expectedConfig.label} cwbvhRenderMsRatio should preserve the no-default-promotion finding`);
+      }
     }
   }
 }
 
 const gateSource = await Deno.readTextFile(new URL("./gate.mjs", import.meta.url));
-const labelsCoveredByFocusedProofs = new Set([
-  "pt/cwbvh-binary-parity",
-  "pt/cwbvh-complex-parity",
-]);
+const labelsCoveredByFocusedProofs = new Set([]);
 const gateLabels = [...gateSource.matchAll(/label:\s*"([^"]+)"/g)]
   .map((match) => match[1])
   .filter((label) => label.includes("/") && !label.startsWith("__self-test/"));
@@ -536,5 +611,5 @@ if (missingLabels.length > 0) {
 
 console.log(
   `[behavioral-gate-dzn-status-check] PASS (${EXPECTED.length} committed dzn status artifacts; ` +
-  "all regular gate labels covered; focused labels are covered by their own proof checks)",
+  "all regular and focused dzn-covered gate labels verified)",
 );

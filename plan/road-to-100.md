@@ -2108,8 +2108,10 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    evidence on both the simple Cornell lane and a 144-primitive complex lane
    (`complex binaryMs=5911.334`, `complex cwbvhMs=5738.875`,
    `complex ratio=0.971`, `complex binaryScene=373464`, `memDelta=0`,
-   `sceneDelta=0`) in the checked-in status artifact. Remaining work is
-   cross-workload/cross-adapter default-promotion throughput evidence.
+   `sceneDelta=0`) in the checked-in status artifact. 2026-06-21 dzn shards
+   now also prove exact full-tier parity on both CWBVH lanes, but record slower
+   CWBVH timing on that adapter (`ratio=1.312` simple, `ratio=1.340` complex).
+   Remaining work is browser/real-adapter default-promotion throughput evidence.
 
 ### Execution dependency
 
@@ -2264,12 +2266,18 @@ readback with `rmse=0`, and records `binaryMs=5911.334`,
 `cwbvhMem=668888`, `binaryScene=373464`, `cwbvhScene=373464`,
 `memDelta=0`, and `sceneDelta=0`. The proof checker now requires both lanes
 and requires the complex lane to have a larger scene/memory footprint than the
-simple lane.
+simple lane. 2026-06-21 dzn cross-adapter follow-up: the two CWBVH parity lanes
+were recaptured as separate dzn full-tier shards because the combined shard can
+exceed the WSL/dzn timeout. Both shards pass exact binary-vs-CWBVH readback
+parity with zero GPU errors (`pt/cwbvh-binary-parity`, `pt/cwbvh-complex-parity`),
+but dzn timing is slower for CWBVH (`ratio=1.312` simple, `ratio=1.340`
+complex). `behavioral-gate:dzn-status-check` now preserves that as a checked
+no-default-promotion finding rather than treating parity as speed evidence.
 
-**Remaining work:** cross-workload/cross-adapter throughput A/B before any
-renderer default promotion. The current artifacts prove opt-in same-scene
-non-regression on one tiny Cornell scene and one deterministic complex stress
-scene, not a generalized default-performance claim. Becomes decisive if/when a
+**Remaining work:** browser/real-adapter throughput A/B over broader workloads
+before any renderer default promotion. The current artifacts prove opt-in
+same-scene correctness on lavapipe and dzn, with dzn explicitly showing a
+slowdown, so the default remains binary traversal. Becomes decisive if/when a
 WebGPU ray-tracing extension ships (whole-field handicap today: no RT cores in
 the browser for anyone).
 
