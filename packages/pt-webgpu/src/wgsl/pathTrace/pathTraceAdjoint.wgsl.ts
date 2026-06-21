@@ -750,6 +750,211 @@ fn dBrdf_dSpecularIntensityWithAnisotropy(
   return (fp - fm) / denom;
 }
 
+fn dBrdf_dBaseColorWithAnisotropyAndIridescence(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+) -> vec3f {
+  if (iridescence <= 1e-4) {
+    return dBrdf_dBaseColorWithAnisotropy(
+      baseColor, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    );
+  }
+  var outv = vec3f(0.0);
+  for (var c: u32 = 0u; c < 3u; c = c + 1u) {
+    let plus = adjointPerturbChannelClamped(baseColor, c, ANISOTROPIC_BASE_PARAM_DERIV_STEP);
+    let minus = adjointPerturbChannelClamped(baseColor, c, -ANISOTROPIC_BASE_PARAM_DERIV_STEP);
+    let denom = plus[c] - minus[c];
+    if (denom > 1e-8) {
+      let fp = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+        plus, roughness, metallic, normal, wo, wi,
+        anisotropy, anisotropyRotation, specularColor, specularIntensity,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      );
+      let fm = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+        minus, roughness, metallic, normal, wo, wi,
+        anisotropy, anisotropyRotation, specularColor, specularIntensity,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      );
+      outv[c] = (fp[c] - fm[c]) / denom;
+    }
+  }
+  return outv;
+}
+
+fn dBrdf_dRoughnessWithAnisotropyAndIridescence(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+) -> vec3f {
+  if (iridescence <= 1e-4) {
+    return dBrdf_dRoughnessWithAnisotropy(
+      baseColor, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    );
+  }
+  let rp = clamp(roughness + ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let rm = clamp(roughness - ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let denom = rp - rm;
+  if (denom <= 1e-8) { return vec3f(0.0); }
+  let fp = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+    baseColor, rp, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  );
+  let fm = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+    baseColor, rm, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  );
+  return (fp - fm) / denom;
+}
+
+fn dBrdf_dMetallicWithAnisotropyAndIridescence(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+) -> vec3f {
+  if (iridescence <= 1e-4) {
+    return dBrdf_dMetallicWithAnisotropy(
+      baseColor, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    );
+  }
+  let mp = clamp(metallic + ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let mm = clamp(metallic - ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let denom = mp - mm;
+  if (denom <= 1e-8) { return vec3f(0.0); }
+  let fp = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+    baseColor, roughness, mp, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  );
+  let fm = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+    baseColor, roughness, mm, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  );
+  return (fp - fm) / denom;
+}
+
+fn dBrdf_dSpecularColorWithAnisotropyAndIridescence(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+) -> vec3f {
+  if (iridescence <= 1e-4) {
+    return dBrdf_dSpecularColorWithAnisotropy(
+      baseColor, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    );
+  }
+  var outv = vec3f(0.0);
+  for (var c: u32 = 0u; c < 3u; c = c + 1u) {
+    let plus = adjointPerturbChannelClamped(specularColor, c, ANISOTROPIC_BASE_PARAM_DERIV_STEP);
+    let minus = adjointPerturbChannelClamped(specularColor, c, -ANISOTROPIC_BASE_PARAM_DERIV_STEP);
+    let denom = plus[c] - minus[c];
+    if (denom > 1e-8) {
+      let fp = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+        baseColor, roughness, metallic, normal, wo, wi,
+        anisotropy, anisotropyRotation, plus, specularIntensity,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      );
+      let fm = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+        baseColor, roughness, metallic, normal, wo, wi,
+        anisotropy, anisotropyRotation, minus, specularIntensity,
+        iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+      );
+      outv[c] = (fp[c] - fm[c]) / denom;
+    }
+  }
+  return outv;
+}
+
+fn dBrdf_dSpecularIntensityWithAnisotropyAndIridescence(
+  baseColor: vec3f,
+  roughness: f32,
+  metallic: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  iridescence: f32,
+  iridescenceIor: f32,
+  iridescenceThicknessMin: f32,
+  iridescenceThicknessMax: f32,
+) -> vec3f {
+  if (iridescence <= 1e-4) {
+    return dBrdf_dSpecularIntensityWithAnisotropy(
+      baseColor, roughness, metallic, normal, wo, wi,
+      anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    );
+  }
+  let ip = clamp(specularIntensity + ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let im = clamp(specularIntensity - ANISOTROPIC_BASE_PARAM_DERIV_STEP, 0.0, 1.0);
+  let denom = ip - im;
+  if (denom <= 1e-8) { return vec3f(0.0); }
+  let fp = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, ip,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  );
+  let fm = adjointEvaluateBrdfWithAnisotropyAndIridescence(
+    baseColor, roughness, metallic, normal, wo, wi,
+    anisotropy, anisotropyRotation, specularColor, im,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
+  );
+  return (fp - fm) / denom;
+}
+
 fn dBrdf_dAnisotropy(
   baseColor: vec3f,
   roughness: f32,

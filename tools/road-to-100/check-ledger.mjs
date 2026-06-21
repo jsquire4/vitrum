@@ -347,6 +347,12 @@ if (!road.includes("`displacementMap` / `displacementScale` / `displacementBias`
 if (road.includes("**Implementation distance remaining:** full analytic adjoint replay")) {
   fail("road-to-100.md must not reopen full analytic adjoint replay as a generic implementation-distance blocker");
 }
+if (road.includes("remaining proof/implementation tail is explicit")) {
+  fail("road-to-100.md must not classify guarded multi-vertex BDPT as generic implementation debt");
+}
+if (!road.includes("The remaining research/promotion tail is explicit\n> multi-vertex BDPT")) {
+  fail("road-to-100.md must classify guarded multi-vertex BDPT as research/promotion distance");
+}
 if (road.includes("blue-noise rotation, broader") || road.includes("blue-noise/per-dimension-audited")) {
   fail("road-to-100.md contains stale Sobol blue-noise-rotation pending wording");
 }
@@ -419,6 +425,33 @@ if (ptWebgpuSource.includes("blue-noise rotation, broader dimension audits")) {
 }
 if (!ptWebgpuSource.includes("with a tiled ranked rotation; broader dimension audits")) {
   fail("pt-webgpu sampling option docs must retain the Sobol rotation boundary");
+}
+
+const ptWebgl2ConstructionSourceForBdpt = await readText("packages/pt-webgl2/src/index.ts");
+const bdptResearchGateSources = [
+  ["pt-webgpu constructor", ptWebgpuSource],
+  ["pt-webgl2 constructor", ptWebgl2ConstructionSourceForBdpt],
+];
+for (const [label, source] of bdptResearchGateSources) {
+  for (const needle of [
+    "opts.bdptOptions?.experimentalMultiVertex !== true",
+    "bdptOptions.maxLightBounces > 1 activates the multi-vertex BDPT research path",
+    "bdpt-multivertex-research-mode",
+  ]) {
+    if (!source.includes(needle)) {
+      fail(`${label} must retain the explicit multi-vertex BDPT research opt-in gate: ${needle}`);
+    }
+  }
+}
+const ptWebgpuBdptGateTest = await readText("packages/pt-webgpu/src/__tests__/h51WarnCoercions.test.ts");
+const ptWebgl2BdptGateTest = await readText("packages/pt-webgl2/src/__tests__/bdptDriver.test.ts");
+for (const [label, source] of [
+  ["pt-webgpu BDPT gate test", ptWebgpuBdptGateTest],
+  ["pt-webgl2 BDPT gate test", ptWebgl2BdptGateTest],
+]) {
+  if (!source.includes("rejects multi-vertex BDPT unless the research flag is explicit")) {
+    fail(`${label} must pin rejection of multi-vertex BDPT without experimentalMultiVertex`);
+  }
 }
 
 const behavioralGateReadme = await readText("tools/behavioral-gate/README.md");
@@ -1226,6 +1259,30 @@ for (const needle of [
     fail(`pt-webgpu adjoint pass must retain ${needle} while H14 is reconciled`);
   }
 }
+const pathTraceAdjoint = await readText("packages/pt-webgpu/src/wgsl/pathTrace/pathTraceAdjoint.wgsl.ts");
+for (const needle of [
+  "dBrdf_dBaseColorWithAnisotropyAndIridescence",
+  "dBrdf_dRoughnessWithAnisotropyAndIridescence",
+  "dBrdf_dMetallicWithAnisotropyAndIridescence",
+  "dBrdf_dSpecularColorWithAnisotropyAndIridescence",
+  "dBrdf_dSpecularIntensityWithAnisotropyAndIridescence",
+  "adjointEvaluateBrdfWithAnisotropyAndIridescence",
+]) {
+  if (!pathTraceAdjoint.includes(needle)) {
+    fail(`pt-webgpu adjoint BRDF partials must retain fixed-iridescence path replay support: ${needle}`);
+  }
+}
+for (const needle of [
+  "dBrdf_dBaseColorWithAnisotropyAndIridescence(",
+  "dBrdf_dRoughnessWithAnisotropyAndIridescence(",
+  "dBrdf_dMetallicWithAnisotropyAndIridescence(",
+  "dBrdf_dSpecularColorWithAnisotropyAndIridescence(",
+  "dBrdf_dSpecularIntensityWithAnisotropyAndIridescence(",
+]) {
+  if (!adjointPass.includes(needle)) {
+    fail(`pt-webgpu adjoint direct-light replay must call fixed-iridescence BRDF partial: ${needle}`);
+  }
+}
 
 const adjointHarnessTest = await readText("packages/pt-webgpu/src/__tests__/adjointHarness.test.ts");
 for (const needle of [
@@ -1301,6 +1358,86 @@ for (const needle of [
 ]) {
   if (!ptWebgpuInverseSessionTest.includes(needle)) {
     fail(`pt-webgpu inverse tests must pin scoped path-replay fallback/replay behavior: ${needle}`);
+  }
+}
+const brdfIssueStart = ptWebgpuInverseSession.indexOf("function materialIssueForBrdf");
+const brdfIssueEnd = ptWebgpuInverseSession.indexOf("function materialIssueForAdditiveLobe", brdfIssueStart);
+if (brdfIssueStart < 0 || brdfIssueEnd < 0) {
+  fail("pt-webgpu inverse session must retain materialIssueForBrdf before materialIssueForAdditiveLobe");
+}
+const brdfIssueBlock = ptWebgpuInverseSession.slice(brdfIssueStart, brdfIssueEnd);
+for (const needle of [
+  "allowIridescence: true",
+  "allowAnisotropy: true",
+]) {
+  if (!brdfIssueBlock.includes(needle)) {
+    fail(`pt-webgpu inverse base BRDF classifier must retain fixed iridescence/anisotropy replay support: ${needle}`);
+  }
+}
+for (const needle of [
+  "keeps AO map intensity on path-replay when fixed anisotropy is active",
+  "keeps base-BRDF field %s on path-replay when fixed iridescence is active",
+]) {
+  if (!ptWebgpuInverseSessionTest.includes(needle)) {
+    fail(`pt-webgpu inverse tests must pin fixed-lobe path replay support: ${needle}`);
+  }
+}
+const ptWebgpuBrdfAdjointEmissiveIorTest = await readText("packages/pt-webgpu/src/__tests__/brdfAdjointEmissiveIor.test.ts");
+for (const needle of [
+  "keeps base/specular BRDF params on path-replay when fixed iridescence is present",
+  "keeps additive clearcoat params on path-replay when fixed iridescence is present",
+  "keeps clean extension-lobe BRDF params on path-replay when no coupled iridescence lobe is present",
+]) {
+  if (!ptWebgpuBrdfAdjointEmissiveIorTest.includes(needle)) {
+    fail(`pt-webgpu BRDF adjoint tests must pin fixed-iridescence routing: ${needle}`);
+  }
+}
+
+const walkaroundRisGi = await readText("packages/walkaround-hybrid/src/shaders/risGi.wgsl.ts");
+const walkaroundRisGiNrc = await readText("packages/walkaround-hybrid/src/shaders/risGiNrc.wgsl.ts");
+for (const [name, source] of [
+  ["risGi", walkaroundRisGi],
+  ["risGiNrc", walkaroundRisGiNrc],
+]) {
+  for (const needle of [
+    "let ppgGuidedOn_g = (ubo.ppgEnabled == 1u);",
+    "let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);",
+    "wi = ppgSampleGuidedDir(walkHitPos, &rng);",
+    "let pGuide_g = ppgEvalPdf(walkHitPos, wi);",
+    "let pSrc_g = alpha_g * pGuide_g + (1.0 - alpha_g) * pCos_g;",
+  ]) {
+    if (!source.includes(needle)) {
+      fail(`walkaround ${name} primary-glass GI branch must retain PPG defensive mixture: ${needle}`);
+    }
+  }
+  if (source.includes("PPG is off for glass pixels")) {
+    fail(`walkaround ${name} must not claim PPG is off for glass pixels after primary-glass PPG parity`);
+  }
+}
+const walkaroundRestirGiMaterialParityTest = await readText("packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts");
+if (!walkaroundRestirGiMaterialParityTest.includes("keeps primary-glass GI branches on the same PPG defensive mixture as opaque GI")) {
+  fail("walkaround ReSTIR-GI material parity tests must pin primary-glass PPG parity");
+}
+
+const walkaroundBvhCore = await readText("packages/walkaround-hybrid/src/restir/bvhCore.ts");
+for (const needle of [
+  "function warnScenePackWarnings",
+  "walkaround-hybrid.vertex-displacement-skipped",
+  "walkaround-hybrid.scene-pack-warning",
+  "source: 'shared-bvh'",
+]) {
+  if (!walkaroundBvhCore.includes(needle)) {
+    fail(`walkaround BVH packer warnings must surface structured shared-BVH warnings: ${needle}`);
+  }
+}
+const walkaroundBvhCoreMaterialResolverTest = await readText("packages/walkaround-hybrid/src/restir/__tests__/bvhCoreMaterialResolver.test.ts");
+for (const needle of [
+  "routes scene-pack vertex-displacement skips through structured warnings in %s mode",
+  "walkaround-hybrid.vertex-displacement-skipped",
+  "fallback: 'vertex displacement skipped'",
+]) {
+  if (!walkaroundBvhCoreMaterialResolverTest.includes(needle)) {
+    fail(`walkaround BVH core tests must pin structured displacement warning surfacing: ${needle}`);
   }
 }
 

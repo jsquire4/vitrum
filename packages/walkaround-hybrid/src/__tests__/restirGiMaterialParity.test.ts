@@ -95,6 +95,17 @@ describe('ReSTIR-GI material parity', () => {
     expect(body).not.toContain('let ddgiLo = irrAtXs * xsMat.rgb * INV_PI;');
   });
 
+  it('keeps primary-glass GI branches on the same PPG defensive mixture as opaque GI', () => {
+    for (const body of [RIS_GI_WGSL, nrcModule.source]) {
+      expect(body).toContain('let ppgGuidedOn_g = (ubo.ppgEnabled == 1u);');
+      expect(body).toContain('let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);');
+      expect(body).toContain('wi = ppgSampleGuidedDir(walkHitPos, &rng);');
+      expect(body).toContain('let pGuide_g = ppgEvalPdf(walkHitPos, wi);');
+      expect(body).toContain('let pSrc_g = alpha_g * pGuide_g + (1.0 - alpha_g) * pCos_g;');
+      expect(body).not.toContain('PPG is off for glass pixels');
+    }
+  });
+
   it('wires GI temporal/spatial reuse through receiver-material p-hat', () => {
     for (const module of [TEMPORAL_GI_MODULE, TEMPORAL_GI_GRIS_MODULE, SPATIAL_GI_MODULE, SPATIAL_GI_GRIS_MODULE]) {
       expect(module.requires).toContain('restirCastPrimary');

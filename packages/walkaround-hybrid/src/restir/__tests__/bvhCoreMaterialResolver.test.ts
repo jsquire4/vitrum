@@ -158,6 +158,48 @@ describe('ReSTIR bvhCore material resolver', () => {
     },
   );
 
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'routes scene-pack vertex-displacement skips through structured warnings in %s mode',
+    (bvhMode) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const warnings: EngineWarning[] = [];
+      const sourceScene = scene([
+        triangle('panel', 0, {
+          ...material([1, 1, 1]),
+          displacementMap: { handle: { id: 'height' } },
+          displacementScale: 0.25,
+          displacementBias: -0.05,
+        }),
+      ]);
+
+      const buffers = buildReSTIRSceneBVHForCoreScene(sourceScene, {
+        bvhMode,
+        onWarning: (warning) => warnings.push(warning),
+        warningPhase: 'setScene',
+        warningMethod: 'setScene',
+      });
+
+      const scenePackWarnings = buffers.warnings ?? [];
+      expect(scenePackWarnings.some((warning) =>
+        warning.includes('Primitive "panel" displacementMap') &&
+        warning.includes('vertex displacement skipped'),
+      )).toBe(true);
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(warnings).toContainEqual(expect.objectContaining({
+        code: 'walkaround-hybrid.vertex-displacement-skipped',
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'setScene',
+        details: expect.objectContaining({
+          source: 'shared-bvh',
+          fallback: 'vertex displacement skipped',
+          warning: expect.stringContaining('Primitive "panel" displacementMap'),
+        }),
+      }));
+      warnSpy.mockRestore();
+    },
+  );
+
   it('routes mesh-area Le overrides by full material signatures when maps differ', () => {
     const handleA = { name: 'alpha-a' };
     const handleB = { name: 'alpha-b' };

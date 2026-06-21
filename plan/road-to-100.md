@@ -588,7 +588,7 @@
 > `params:[cx,cy,cz,radius]`), and pt-webgpu suppresses the shared-bvh
 > triangle-stream "skipped" warning for analytic primitives that it actually
 > consumes through full-tier analytic buffers.
-> The remaining proof/implementation tail is explicit
+> The remaining research/promotion tail is explicit
 > multi-vertex BDPT: `controls.byMaxLightBounces` still shows the finding starting
 > at `maxLightBounces:2` (+13.21% global luminance) and reaching +17.08% at
 > `maxLightBounces:3`. **2026-06-19 API guard:** requesting that mode now requires

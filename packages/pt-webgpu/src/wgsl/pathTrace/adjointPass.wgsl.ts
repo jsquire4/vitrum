@@ -1497,25 +1497,30 @@ fn directLightAdjoint(
   nDotL: f32,
   Li: vec3f,
 ) -> DirectLightAdjoint {
-  let gBaseColor = dLoss_dR * dBrdf_dBaseColorWithAnisotropy(
+  let gBaseColor = dLoss_dR * dBrdf_dBaseColorWithAnisotropyAndIridescence(
     baseColor, roughness, metallic, n, wo, wi,
     anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) * nDotL * Li;
-  let gRough = dot(dLoss_dR, dBrdf_dRoughnessWithAnisotropy(
+  let gRough = dot(dLoss_dR, dBrdf_dRoughnessWithAnisotropyAndIridescence(
     baseColor, roughness, metallic, n, wo, wi,
     anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) * nDotL * Li);
-  let gSpecularColor = dLoss_dR * dBrdf_dSpecularColorWithAnisotropy(
+  let gSpecularColor = dLoss_dR * dBrdf_dSpecularColorWithAnisotropyAndIridescence(
     baseColor, roughness, metallic, n, wo, wi,
     anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) * nDotL * Li;
-  let gSpecularIntensity = dot(dLoss_dR, dBrdf_dSpecularIntensityWithAnisotropy(
+  let gSpecularIntensity = dot(dLoss_dR, dBrdf_dSpecularIntensityWithAnisotropyAndIridescence(
     baseColor, roughness, metallic, n, wo, wi,
     anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) * nDotL * Li);
-  let gMetallic = dot(dLoss_dR, dBrdf_dMetallicWithAnisotropy(
+  let gMetallic = dot(dLoss_dR, dBrdf_dMetallicWithAnisotropyAndIridescence(
     baseColor, roughness, metallic, n, wo, wi,
     anisotropy, anisotropyRotation, specularColor, specularIntensity,
+    iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
   ) * nDotL * Li);
   let gClearcoat = dot(dLoss_dR, dBrdf_dClearcoat(
     clearcoatRoughness, clearcoatNormal, wo, wi,

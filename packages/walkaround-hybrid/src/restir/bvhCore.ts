@@ -105,6 +105,30 @@ function warnCoreBvh(options: Pick<CoreBvhBuildOptions, 'onWarning'>, warning: E
   console.warn(warning.message);
 }
 
+function warnScenePackWarnings(
+  options: CoreBvhBuildOptions,
+  warnings: readonly string[],
+): void {
+  for (const warning of warnings) {
+    const isVertexDisplacementSkip = warning.includes('displacementMap') &&
+      warning.includes('vertex displacement skipped');
+    warnCoreBvh(options, {
+      code: isVertexDisplacementSkip
+        ? 'walkaround-hybrid.vertex-displacement-skipped'
+        : 'walkaround-hybrid.scene-pack-warning',
+      backend: 'walkaround-hybrid',
+      phase: options.warningPhase ?? 'setScene',
+      method: options.warningMethod ?? 'buildReSTIRSceneBVHForCoreScene',
+      message: `[vitrum/walkaround-hybrid] ${warning}`,
+      details: {
+        warning,
+        source: 'shared-bvh',
+        fallback: isVertexDisplacementSkip ? 'vertex displacement skipped' : 'scene pack warning retained',
+      },
+    });
+  }
+}
+
 function warnMissingMeshAreaEmitterReference(
   options: CoreBvhBuildOptions,
   emitterId: unknown,
@@ -489,6 +513,7 @@ function buffersFromCoreScenePack(
     triStart: b.triStart,
     triCount: b.triCount,
   }));
+  warnScenePackWarnings(options, geo.warnings);
 
   return {
     bvhMode: 'tlas',
@@ -584,6 +609,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
     packSourceTriIndex: true,
     suppressMeshAreaMissingReferenceWarnings: true,
   });
+  warnScenePackWarnings(options, merged.warnings);
 
   return {
     bvhMode: 'merged',

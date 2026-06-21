@@ -355,9 +355,21 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     let tier_raw_g = textureLoad(gi_tier, vec2i(fullPx), 0).r;
     let tier_g = clamp(tier_raw_g, 1u, 4u);
     let M_GI_g = M_GI_BASE * tier_g / 2u;
+    let ppgGuidedOn_g = (ubo.ppgEnabled == 1u);
+    let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);
 
     for (var i: u32 = 0u; i < M_GI_g; i = i + 1u) {
-      let wi = sampleCosineHemisphere(walkHitNormal, &rng);
+      var wi: vec3f;
+      if (alpha_g > 0.0) {
+        let bern_g = rand_f32(&rng);
+        if (bern_g < alpha_g) {
+          wi = ppgSampleGuidedDir(walkHitPos, &rng);
+        } else {
+          wi = sampleCosineHemisphere(walkHitNormal, &rng);
+        }
+      } else {
+        wi = sampleCosineHemisphere(walkHitNormal, &rng);
+      }
       let cosTheta = max(0.0, dot(walkHitNormal, wi));
       if (cosTheta < 1e-4) { continue; }
 
@@ -410,9 +422,15 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
         Lo_g,
       );
       if (pHat_g < 1e-9) { continue; }
-      // PPG is off for glass pixels (ppgMixAlpha=0 when glass → pure cosine).
       let pCos_g = cosTheta * INV_PI;
-      let w_g = select(0.0, pHat_g / pCos_g, pCos_g > 1e-12);
+      var w_g: f32;
+      if (alpha_g > 0.0) {
+        let pGuide_g = ppgEvalPdf(walkHitPos, wi);
+        let pSrc_g = alpha_g * pGuide_g + (1.0 - alpha_g) * pCos_g;
+        w_g = select(0.0, pHat_g / pSrc_g, pSrc_g > 1e-12);
+      } else {
+        w_g = select(0.0, pHat_g / pCos_g, pCos_g > 1e-12);
+      }
       updateReservoirGI(&rGlass, xs_g, ns_g, Lo_g, w_g, &rng);
     }
 
