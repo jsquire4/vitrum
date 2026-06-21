@@ -999,6 +999,7 @@ for (const needle of [
 }
 
 const ptWebgl2Mutations = await readText("packages/pt-webgl2/src/scene/mutateSceneTextures.ts");
+const ptWebgl2Capabilities = await readText("packages/pt-webgl2/src/capabilities.ts");
 for (const needle of [
   "materialAtlasLayerCapacity = refreshTextureAtlasStorage(",
   "textures2DArray = current.textures2DArray;",
@@ -1012,6 +1013,29 @@ for (const needle of [
   if (!ptWebgl2Mutations.includes(needle)) {
     fail(`pt-webgl2 primitive-list fallbacks must retain resident atlas/storage refresh: ${needle}`);
   }
+}
+for (const needle of [
+  "topology: 'fallback-rebuild'",
+  "addPrimitive: 'fallback-rebuild'",
+  "removePrimitive: 'fallback-rebuild'",
+]) {
+  if (!ptWebgl2Capabilities.includes(needle)) {
+    fail(`pt-webgl2 capabilities must keep topology/list mutation supportDetails truthful: ${needle}`);
+  }
+  if (!walkaroundPromiseLedger.includes(needle)) {
+    fail(`core promise ledger must keep topology/list mutation supportDetails truthful: ${needle}`);
+  }
+}
+for (const needle of [
+  "Remaining tail is performance/promotion only",
+  "current predictable API truthfully uses bounded rebuild/repack with structured diagnostics",
+]) {
+  if (!road.includes(needle)) {
+    fail(`road-to-100.md must classify pt-webgl2 topology/list splice as promotion/performance tail: ${needle}`);
+  }
+}
+if (road.includes("Remaining implementation tail before full mutation promotion")) {
+  fail("road-to-100.md must not describe truthful topology/list fallback as an implementation blocker");
 }
 
 const ptWebgl2DenoiserEngineContractTest = await readText("packages/pt-webgl2/src/__tests__/engineContract.test.ts");
