@@ -283,6 +283,12 @@ if (!road.includes('For this ledger, "100%" = everything fully implemented')) {
 if (!road.includes("Still OPEN for full-path parity")) {
   fail("road-to-100.md must retain explicit open full-path parity language while active");
 }
+if (!road.includes("Scoped inverse/truthfulness and validation distance remaining")) {
+  fail("road-to-100.md must classify inverse residuals as scoped truthfulness/validation distance, not generic implementation distance");
+}
+if (road.includes("**Implementation distance remaining:** full analytic adjoint replay")) {
+  fail("road-to-100.md must not reopen full analytic adjoint replay as a generic implementation-distance blocker");
+}
 if (road.includes("blue-noise rotation, broader") || road.includes("blue-noise/per-dimension-audited")) {
   fail("road-to-100.md contains stale Sobol blue-noise-rotation pending wording");
 }
@@ -1128,6 +1134,46 @@ for (const needle of [
 ]) {
   if (!ptWebgpuInverseSession.includes(needle)) {
     fail(`pt-webgpu inverse alpha-visibility diagnostics must stay baseColor-alpha aware: ${needle}`);
+  }
+}
+for (const needle of [
+  "const PATH_REPLAY_TRANSPORT_ONLY_FIELDS = new Set([",
+  "'transmission'",
+  "'dispersionAbbeNumber'",
+  "'scatteringCoefficientRGB'",
+  "const PATH_REPLAY_VISIBILITY_ONLY_FIELDS = new Set(['opacity', 'alphaCutoff']);",
+  "const PATH_REPLAY_GEOMETRY_ONLY_FIELDS = new Set(['displacementScale', 'displacementBias']);",
+  "message: 'transmission transport is not replayed'",
+  "message: 'layered/thin-film material stacks are not replayed'",
+  "message: 'spectral/dispersion material transport is not replayed'",
+  "message: 'volume/scattering material transport is not replayed'",
+  "code: 'path-replay-unsupported-visibility'",
+  "finiteDifferenceReason: 'visibility'",
+  "code: 'path-replay-unsupported-geometry'",
+  "finiteDifferenceReason: 'geometry'",
+  "code: 'path-replay-unsupported-normal'",
+  "finiteDifferenceReason = 'normal'",
+  "function pathReplayEnvironmentIssue",
+  "supportedEnvironmentKinds: ['none', 'hdri', 'procedural-sky']",
+  "code: 'path-replay-unsupported-light-selection'",
+  "directLighting: context.directLighting ?? 'sampled-selection'",
+]) {
+  if (!ptWebgpuInverseSession.includes(needle)) {
+    fail(`pt-webgpu inverse session must keep scoped path-replay finite-difference fallback taxonomy: ${needle}`);
+  }
+}
+for (const needle of [
+  "code: 'path-replay-unsupported-render-regime'",
+  "code: 'path-replay-unsupported-transport'",
+  "code: 'path-replay-unsupported-visibility'",
+  "code: 'path-replay-unsupported-geometry'",
+  "path-replay-unsupported-light-selection",
+  "finiteDifferenceReason",
+  "keeps emitter path-replay when receiver materials use replayed top-level normal maps",
+  "keeps base BRDF controls on path-replay when a clearcoat-normal map is present",
+]) {
+  if (!ptWebgpuInverseSessionTest.includes(needle)) {
+    fail(`pt-webgpu inverse tests must pin scoped path-replay fallback/replay behavior: ${needle}`);
   }
 }
 

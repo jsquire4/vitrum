@@ -509,8 +509,9 @@
 > payload, and the ordinary forward emissive-hit MIS estimator skips those
 > emitters while preserving camera/specular-visible emission. The pt-webgl2
 > `emitterCastShadow` promise row is now native.
-> **Implementation distance remaining:** full analytic adjoint replay beyond the
-> current scoped single-bounce RGB direct-light/unlit-primary/environment-NEE slice; walkaround transparent
+> **Scoped inverse/truthfulness and validation distance remaining:** full analytic
+> adjoint replay beyond the current scoped single-bounce RGB direct-light/unlit-primary/environment-NEE
+> slice is intentionally a finite-difference fallback/research lane, not a silent contract promise; walkaround transparent
 > ReSTIR/GI promotion plus validation of first-hit light-map/emissive
 > approximations, finite-emitter/light-map promotion
 > decisions, and rich-material GI GPU A/B evidence;
