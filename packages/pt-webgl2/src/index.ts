@@ -615,11 +615,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     for (const warning of built.structuredWarnings) {
       this.#warn(warning);
     }
-    if (
-      this.#bdpt &&
-      built.textures.lightCount === 0 &&
-      (built.textures.meshLightCount > 0 || built.textures.envMap != null || built.textures.envTotalSum > 0)
-    ) {
+    const hasNonAnalyticBdptSources =
+      built.textures.meshLightCount > 0 || built.textures.envMap != null || built.textures.envTotalSum > 0;
+    if (this.#bdpt && hasNonAnalyticBdptSources) {
       this.#warn({
         code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
         backend: 'pt-webgl2',
@@ -627,8 +625,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         method: 'setScene',
         message:
           '[vitrum/pt-webgl2] bdpt:true currently builds light subpaths only from analytic ' +
-          'Scene.emitters. This scene has mesh-area and/or environment lighting but no ' +
-          'analytic light records, so BDPT connections fall back to the unidirectional ' +
+          'Scene.emitters. Mesh-area and environment sources are not part of the ' +
+          'light-subpath sampler yet; BDPT connections fall back to the unidirectional ' +
           'mesh/environment NEE and BSDF paths for those sources.',
         details: {
           analyticLightCount: built.textures.lightCount,

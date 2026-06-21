@@ -56,6 +56,38 @@ function sceneWithMeshAreaLight(): Scene {
     environment: { kind: 'none' },
   };
 }
+function sceneWithEnvironmentLight(): Scene {
+  return {
+    primitives: [mesh('floor', 0)],
+    emitters: [],
+    environment: {
+      kind: 'hdri',
+      hdri: {
+        width: 1,
+        height: 1,
+        data: new Float32Array([1, 1, 1, 1]),
+      },
+      intensity: 1,
+    },
+  };
+}
+function sceneWithAnalyticAndMeshAreaLight(): Scene {
+  const base = sceneWithMeshAreaLight();
+  return {
+    ...base,
+    emitters: [
+      ...base.emitters,
+      ...sceneWithAnalyticLight().emitters,
+    ],
+  };
+}
+function sceneWithAnalyticAndEnvironmentLight(): Scene {
+  const analytic = sceneWithAnalyticLight();
+  return {
+    ...sceneWithEnvironmentLight(),
+    emitters: analytic.emitters,
+  };
+}
 function frame(): FrameInput {
   const view = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -5, 1]);
   const proj = new Float32Array([1.5, 0, 0, 0, 0, 1.5, 0, 0, 0, 0, -1.002, -1, 0, 0, -0.2, 0]);
@@ -261,6 +293,102 @@ describe('A5 BDPT host driver', () => {
           hasEnvironmentMap: false,
         }),
       }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns when bdpt:true has only environment light sources', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const engine = await createPTEngine_WebGL2({
+        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        bdpt: true,
+        onWarning: (w) => structured.push(w),
+      });
+
+      engine.setScene(sceneWithEnvironmentLight());
+
+      expect(warn.mock.calls.some((c) =>
+        String(c[0]).includes('BDPT connections fall back to the unidirectional'),
+      )).toBe(true);
+      expect(structured).toContainEqual(expect.objectContaining({
+        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
+        phase: 'setScene',
+        method: 'setScene',
+        details: expect.objectContaining({
+          analyticLightCount: 0,
+          meshLightCount: 0,
+          hasEnvironmentMap: true,
+          envTotalSum: expect.any(Number),
+        }),
+      }));
+      const warning = structured.find((w) => w.code === 'pt-webgl2.bdpt-analytic-light-subpaths-only');
+      expect(Number(warning?.details?.envTotalSum)).toBeGreaterThan(0);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns when bdpt:true mixes analytic and mesh-area light sources', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const engine = await createPTEngine_WebGL2({
+        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        bdpt: true,
+        onWarning: (w) => structured.push(w),
+      });
+
+      engine.setScene(sceneWithAnalyticAndMeshAreaLight());
+
+      expect(warn.mock.calls.some((c) =>
+        String(c[0]).includes('BDPT connections fall back to the unidirectional'),
+      )).toBe(true);
+      expect(structured).toContainEqual(expect.objectContaining({
+        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
+        phase: 'setScene',
+        method: 'setScene',
+        details: expect.objectContaining({
+          analyticLightCount: 1,
+          meshLightCount: 2,
+          hasEnvironmentMap: false,
+        }),
+      }));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('warns when bdpt:true mixes analytic and environment light sources', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: EngineWarning[] = [];
+    try {
+      const engine = await createPTEngine_WebGL2({
+        device: orderedGl([]) as unknown as WebGL2RenderingContext,
+        bdpt: true,
+        onWarning: (w) => structured.push(w),
+      });
+
+      engine.setScene(sceneWithAnalyticAndEnvironmentLight());
+
+      expect(warn.mock.calls.some((c) =>
+        String(c[0]).includes('BDPT connections fall back to the unidirectional'),
+      )).toBe(true);
+      expect(structured).toContainEqual(expect.objectContaining({
+        code: 'pt-webgl2.bdpt-analytic-light-subpaths-only',
+        phase: 'setScene',
+        method: 'setScene',
+        details: expect.objectContaining({
+          analyticLightCount: 1,
+          meshLightCount: 0,
+          hasEnvironmentMap: true,
+          envTotalSum: expect.any(Number),
+        }),
+      }));
+      const warning = structured.find((w) => w.code === 'pt-webgl2.bdpt-analytic-light-subpaths-only');
+      expect(Number(warning?.details?.envTotalSum)).toBeGreaterThan(0);
     } finally {
       warn.mockRestore();
     }
