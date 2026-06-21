@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Fixed (walkaround transparent direct-light tint, 2026-06-20)
 
 - **Walkaround direct-light shadows now carry RGB transparent transmittance:** `@vitrum/walkaround-hybrid` routes transparent-OIT sun, opaque shade sun, and ReSTIR-DI environment/emitter finalization through `traceSceneAlphaTintTransmittanceTextured()`, so readable `transmissionMap`, `thicknessMap`, Beer tint, and atlas alpha coverage affect direct-light shadow color instead of scalar alpha-only visibility. ReSTIR-DI keeps its scalar reservoir contract by storing luminance of RGB visibility and reapplying the recomputed tint during shade consumption. Transparent ReSTIR/GI transport vertices remain a separate approximation tail.
+- **ReSTIR-GI final visibility now uses the same transparent RGB tint path:** default GI-RIS and NRC GI-RIS bind the Beer texture and scalarize RGB `traceSceneAlphaTintTransmittanceTextured()` visibility through luminance for reservoir weighting, so selected GI reconnection samples no longer ignore transparent shadow color. The helper dependency is narrowed to focused traversal/material modules so GI does not import the full direct-light common aggregate.
 
 ### Added (pt-webgl2 inverse session, 2026-06-20)
 

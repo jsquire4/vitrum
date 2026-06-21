@@ -361,13 +361,11 @@ const MATERIAL_SCALAR_FIELDS = new Set([
   'dispersionAbbeNumber',
   'scatteringCoefficient',
   'scatteringAnisotropy',
-]);
-const EMITTER_RGB_FIELDS = new Set(['color']);
-const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
-const UNSUPPORTED_RENDERER_INVERSE_MATERIAL_FIELDS = new Set([
   'displacementScale',
   'displacementBias',
 ]);
+const EMITTER_RGB_FIELDS = new Set(['color']);
+const EMITTER_SCALAR_FIELDS = new Set(['intensity']);
 
 type PathReplayUnsupportedCode = InverseSessionDiagnostic['code'];
 type PathReplayMaterialIssue = {
@@ -1956,13 +1954,6 @@ function validateParam(
     if (prim == null) {
       throw new Error(
         `createInverseSession: no primitive with id "${target.id}" for path "${param.path}".`,
-      );
-    }
-    if (UNSUPPORTED_RENDERER_INVERSE_MATERIAL_FIELDS.has(target.field)) {
-      throw new Error(
-        `createInverseSession: material field "${target.field}" (path "${param.path}") is not ` +
-          'optimizable in pt-webgpu because the renderer does not implement displacement; ' +
-          'use a geometry/topology update or remove the field from inverse parameters.',
       );
     }
     const isRgb = MATERIAL_RGB_FIELDS.has(target.field);

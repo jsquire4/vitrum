@@ -598,5 +598,5 @@ fn bvhTraceTintedVisibility(
 export const SURFACE_TEXTURES_MODULE: WgslModule = {
   name: 'surfaceTextures',
   source: SURFACE_TEXTURES_WGSL,
-  requires: ['common', 'materialAtlas'],
+  requires: ['sceneTraversal', 'sharedPrimitives', 'materialAtlas'],
 };

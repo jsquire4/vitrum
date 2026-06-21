@@ -57,6 +57,7 @@ export const RIS_GI_WGSL = /* wgsl */ `
 @group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
 @group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
 @group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
+@group(1) @binding(5) var bvh_beer: texture_2d<u32>;
 @group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
 @group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
 @group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
@@ -422,14 +423,15 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       if (distS_g > 1e-4) {
         let wiZ_g = toS_g / distS_g;
         let shadowOrig_g = rGlass.xv + rGlass.nv * NORMAL_BIAS_GI;
-        let shadowT_g = traceSceneAlphaTransmittanceTextured(
+        let shadowTint_g = traceSceneAlphaTintTransmittanceTextured(
           ubo.bvhMode, ubo.tlasNodeCount,
           &bvh_index, &bvh_position, &bvh,
           &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
           &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-          shadowOrig_g, wiZ_g, distS_g - 2e-3, ubo.triIntersectEpsilon, true,
-          bvh_material, BVH_MATERIAL_TEX_WIDTH,
+          shadowOrig_g, wiZ_g, distS_g - 2e-3, ubo.triIntersectEpsilon,
+          bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
         );
+        let shadowT_g = clamp(luminance(shadowTint_g), 0.0, 1.0);
         if (shadowT_g <= 0.001) {
           rGlass.w_sum = 0.0;
           rGlass.W = 0.0;
@@ -615,14 +617,15 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
       let shadowOrig = r.xv + r.nv * NORMAL_BIAS_GI;
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
-      let shadowT = traceSceneAlphaTransmittanceTextured(
+      let shadowTint = traceSceneAlphaTintTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
         &bvh_index, &bvh_position, &bvh,
         &tlasNodes, &tlasInstanceIndices, &tlasBlasRoots,
         &tlasInstanceWorldToLocal, &tlasInstanceLocalToWorld,
-        shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon, true,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH,
+        shadowOrig, wiZ, distS - 2e-3, ubo.triIntersectEpsilon,
+        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
       );
+      let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);
       if (shadowT <= 0.001) {
         r.w_sum = 0.0;
         r.W = 0.0;
@@ -693,5 +696,5 @@ export const RIS_GI_MODULE: WgslModule = {
   source: RIS_GI_WGSL,
   // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
   // transitively, and adds the DDGIGridUBO struct + binding + sampleDDGIAtPoint).
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'restirGiMaterial', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialDecode', 'materialAtlas', 'surfaceTextures', 'restirGiMaterial', 'cameraRays', 'ddgiGridUbo', 'ppgPdf', 'environmentSample'],
 };

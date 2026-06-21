@@ -333,6 +333,7 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SHARED_PRIMITIVES_WGSL +
       MATERIAL_DECODE_WGSL +
       MATERIAL_ATLAS_WGSL +
+      SURFACE_TEXTURES_WGSL +
       GGX_BRDF_WGSL +
       RESTIR_GI_MATERIAL_WGSL +
       CAMERA_RAYS_WGSL +
@@ -695,9 +696,10 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     }
   });
 
-  it('shade and ris carry bvh_beer (binding 5), while shade alone carries bvh_emissive (binding 12)', () => {
+  it('shade, ris, and risGi carry bvh_beer (binding 5), while shade alone carries bvh_emissive (binding 12)', () => {
     expect(SHADE_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
     expect(RIS_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+    expect(RIS_GI_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
     expect(SHADE_WGSL).toContain('@group(1) @binding(12) var bvh_emissive: texture_2d<f32>;');
     expect(TEMPORAL_WGSL).not.toContain('bvh_beer');
     expect(SPATIAL_WGSL).not.toContain('bvh_beer');

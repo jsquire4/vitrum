@@ -354,9 +354,10 @@ npm run shader-gate
 Status 2026-06-20: **CLOSED.** A follow-up source-reader pass found four
 bounded code tails that were implementation work rather than proof work:
 
-- pt-webgpu inverse now rejects displacement scalar parameters at construction
-  instead of optimizing renderer-unsupported no-op fields through finite
-  difference.
+- pt-webgpu inverse now treats scalar `displacementScale` / `displacementBias`
+  as finite-difference inverse parameters, matching the shared-BVH vertex
+  displacement renderer path, while requested path replay still downgrades with
+  a structured geometry diagnostic.
 - pt-webgpu inverse receives active full/lite material support details, so
   runtime-profile-unsupported material fields are rejected before session start.
 - walkaround material atlas and DDGI probe-hit material sampling now transform
@@ -364,6 +365,10 @@ bounded code tails that were implementation work rather than proof work:
   direction matrix before normal/bump-map evaluation; DDGI smooth probe-hit
   normals use the TLAS inverse-transpose normal transform before material
   response/direct-lighting.
+- walkaround default and NRC ReSTIR-GI producers now run selected-sample final
+  visibility through the RGB transparent-tint helper and scalarize the result
+  for reservoir weighting, matching the direct-light tint path without
+  broadening the GI shader closure to the full common aggregate.
 - TLAS stained-glass tinted visibility reconstructs world-space hit distance
   for the caller's finite `tMax`, and glTF anisotropy-only texture assets now
   trigger generated tangents just like normal/clearcoat-normal/bump maps.
@@ -571,7 +576,7 @@ These need a call, not blind implementation.
 | GRIS default flip | Keep biased realtime default until validation says otherwise | Unbiased path has cost; decision should be evidence-based. |
 | pt-webgl2 caustic naming | Keep approximate wording unless true MNEE/SPPM parity lands | Avoid claiming algorithmic equivalence. |
 | Walkaround transparent transport | Keep approximate/unsupported for true layered transport | OIT is not full reservoir/GI participation. |
-| Displacement support | Keep unsupported unless a real geometry/BVH path is built | Shader-only promise would be misleading. |
+| Displacement support | Keep approximate vertex-displacement wording unless tessellation/microdisplacement lands | CPU-readable maps are applied before BVH construction, but no new geometry is synthesized. |
 | Native point/line primitives | Keep generated-mesh fallback | Good enough for arbitrary glTF routing; native contract is a new feature. |
 | Arbitrary UV arrays | Keep narrow remap + diagnostics | Native array support touches core/backend contracts. |
 | Instanced skinned/morphed glTF | Keep unsupported diagnostic | Needs a new core primitive contract. |

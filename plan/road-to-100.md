@@ -117,7 +117,9 @@
 > visibility through the same RGB alpha/transmission/thickness/Beer helper used
 > by OIT point/spot and finite-emitter lighting. ReSTIR-DI keeps a scalar
 > reservoir by storing luminance of that RGB visibility and reapplying the
-> recomputed tint during shade consumption; this still does not promote
+> recomputed tint during shade consumption. ReSTIR-GI and NRC GI-RIS now use
+> the same RGB helper for selected-sample final visibility, scalarized by
+> luminance for reservoir weighting; this still does not promote
 > transparent surfaces to ReSTIR/GI transport vertices.
 > The same wave rejected adjoint path replay for primitive targets the
 > triangle-only replay pass cannot actually hit, added material-lobe analytic point/spot and

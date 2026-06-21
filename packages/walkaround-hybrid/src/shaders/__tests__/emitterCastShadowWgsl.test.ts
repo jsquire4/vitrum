@@ -77,7 +77,10 @@ describe('emitter castShadow:false shader gates', () => {
     expect(ddgi).toContain('let glassTransmission = ddgiSampleTransmissionMapForHit(hit, mat.transmission);');
 
     for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
-      expect(src).toContain('traceSceneAlphaTransmittanceTextured(');
+      expect(src).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+      expect(src).toContain('traceSceneAlphaTintTransmittanceTextured(');
+      expect(src).toContain('clamp(luminance(shadowTint');
+      expect(src).not.toContain('traceSceneAlphaTransmittanceTextured(');
       expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
     }
 

@@ -67,8 +67,11 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo');
   });
 
-  it('runs the final visibility test on the chosen sample and attenuates W by alpha transmittance', () => {
-    expect(RIS_GI_WGSL).toContain('traceSceneAlphaTransmittanceTextured(');
+  it('runs the final visibility test on the chosen sample and attenuates W by tinted alpha transmittance', () => {
+    expect(RIS_GI_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+    expect(RIS_GI_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
+    expect(RIS_GI_WGSL).toContain('let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(RIS_GI_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(RIS_GI_WGSL).toMatch(/if \(shadowT <= 0\.001\)/);
     expect(RIS_GI_WGSL).toContain('r.w_sum = r.w_sum * shadowT;');
     expect(RIS_GI_WGSL).toMatch(/r\.W\s*=\s*0\.0/);

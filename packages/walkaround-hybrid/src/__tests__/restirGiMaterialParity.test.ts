@@ -61,6 +61,8 @@ describe('ReSTIR-GI material parity', () => {
 
   it('wires default risGi bounce hits through mapped material payloads', () => {
     expect(RIS_GI_MODULE.requires).toContain('restirGiMaterial');
+    expect(RIS_GI_MODULE.requires).toContain('surfaceTextures');
+    expect(RIS_GI_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
     expect(RIS_GI_WGSL).toContain('let normalMapped = applyNormalMapForHit(hit, smoothNormal);');
     expect(RIS_GI_WGSL).toContain('let normal = applyBumpMapForHit(hit, normalMapped);');
     expect(RIS_GI_WGSL).toContain('let smoothNs = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);');
@@ -68,12 +70,17 @@ describe('ReSTIR-GI material parity', () => {
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
     expect(RIS_GI_WGSL).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
     expect(RIS_GI_WGSL).toContain('restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
+    expect(RIS_GI_WGSL).toContain('let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(RIS_GI_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(RIS_GI_WGSL).not.toContain('Lo = irrAtXs * xsMat.rgb * INV_PI;');
   });
 
   it('wires NRC risGi bounce hits and training records through the same payload', () => {
     const body = nrcModule.source;
     expect(nrcModule.requires).toContain('restirGiMaterial');
+    expect(nrcModule.requires).toContain('surfaceTextures');
+    expect(body).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
     expect(body).toContain('let normalMapped = applyNormalMapForHit(hit, smoothNormal);');
     expect(body).toContain('let normal = applyBumpMapForHit(hit, normalMapped);');
     expect(body).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
@@ -82,6 +89,9 @@ describe('ReSTIR-GI material parity', () => {
     expect(body).toContain('let xsRough = xsPayload.rough;');
     expect(body).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
     expect(body).toContain('restir_gi_receiver_phat_from_payload(');
+    expect(body).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
+    expect(body).toContain('let shadowT = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(body).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(body).not.toContain('let ddgiLo = irrAtXs * xsMat.rgb * INV_PI;');
   });
 
@@ -114,6 +124,8 @@ describe('ReSTIR-GI material parity', () => {
       expect(shader).toContain('fn applyBumpMapForHit(');
       expect(shader).toContain('var restir_gi_bvh_emissive: texture_2d<f32>');
       expect(shader).toContain('fn sampleEmissiveMap(');
+      expect(shader).toContain('fn traceSceneAlphaTintTransmittanceTextured(');
+      expect(shader).toContain('textureLoad(bvh_beer');
     }
   });
 });
