@@ -337,8 +337,17 @@ if (!behavioralGateReadme.includes("variants with the tiled ranked Sobol rotatio
 }
 
 const items = await readText("items_to_fix.md");
-if (!items.includes("OPEN ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONCILIATION")) {
-  fail("items_to_fix.md must retain the current open-items/provenance markers");
+if (!items.includes("HISTORICAL AUDIT ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONCILIATION")) {
+  fail("items_to_fix.md must retain the current historical-audit/provenance markers");
+}
+if (items.includes("**OPEN ITEMS (2026-06-06):**")) {
+  fail("items_to_fix.md must not revive the stale 2026-06-06 OPEN ITEMS heading");
+}
+if (items.includes("## Section E — Open items discovered 2026-05-19")) {
+  fail("items_to_fix.md must keep Section E labeled as historical/closed");
+}
+if (items.includes("## Section F — Open follow-ups (post-2026-05-30 wave)")) {
+  fail("items_to_fix.md must keep Section F labeled as historical/closed-or-proof-tail");
 }
 for (const [stalePhrase, message] of [
   ["### A1. `createEngine` proxy drops `updateEnvironment` pass-through", "stale A1 updateEnvironment facade heading"],

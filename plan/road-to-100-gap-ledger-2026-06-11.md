@@ -9,7 +9,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
 {
   "schema": "vitrum.road-to-100.gap-ledger.v1",
   "ledgerDate": "2026-06-11",
-  "currentAsOf": "2026-06-20",
+  "currentAsOf": "2026-06-21",
   "status": "active",
   "canonicalDetail": "plan/road-to-100.md",
   "historicalBugLedger": "items_to_fix.md",
@@ -24,7 +24,8 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "engine glTF subpath, progressive handoff, RAF controller playback, and recreate scene retention",
     "method-scoped PT receiveShadow diagnostics, glTF variant generated-texture retention, and required-extension source-path diagnostics",
     "glTF planner routing for walkaround-unsupported rich material fields, including source-pathed strict rejection",
-    "inverse active-profile material support truthfulness, walkaround TLAS material-frame parity, and anisotropy-map tangent generation"
+    "inverse active-profile material support truthfulness, walkaround TLAS material-frame parity, and anisotropy-map tangent generation",
+    "historical items_to_fix open-heading reconciliation guarded by road-to-100-source-check"
   ],
   "openPromotionBuckets": [
     "GPU material-furnace and reference-render sweeps",
