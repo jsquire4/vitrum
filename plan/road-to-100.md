@@ -522,7 +522,11 @@
 > `lvi=0`, the emitter endpoint already covered by per-bounce NEE. `bdpt:true` now
 > defaults to endpoint-only light-subpath depth (`maxLightBounces:1`), so the default
 > A/B agrees exactly with `bdpt:false` and `results-bdpt.json` records
-> `"verdict":"PASS"`. **2026-06-18 dzn follow-up:** `behavioral-gate:dzn -- --filter bdpt --require-full-tier`
+> `"verdict":"PASS"`. **2026-06-20 pt-webgl2 follow-up:** the WebGL2 BDPT light
+> subpath sampler now includes HDRI environment sources through the same bounded
+> pseudo-distant endpoint model used by pt-webgpu, so the old environment-only
+> unsupported warning is gone. Radiometric promotion remains in the BDPT material/A/B
+> proof queue. **2026-06-18 dzn follow-up:** `behavioral-gate:dzn -- --filter bdpt --require-full-tier`
 > now has a committed status artifact proving `pt/bdpt` and `pt/spectral+bdpt`
 > boot/render finite non-black on the dzn full-tier adapter with zero GPU errors.
 > A second dzn status artifact for

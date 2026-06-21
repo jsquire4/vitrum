@@ -158,8 +158,14 @@ describe('composeTraceGlsl', () => {
     expect(bdptSrc).toContain('float bdptMeshEmitterPower( uint index )');
     expect(bdptSrc).toContain('bool bdptSampleMeshEmitterAtIndex(');
     expect(bdptSrc).toContain('void writeBdptAreaEmitterVertex(');
-    expect(bdptSrc).toContain('bool hasMeshBdptEmitters = uMeshLightCount != 0u && uTotalEmissivePower > 0.0;');
+    expect(bdptSrc).toContain('bool bdptHasEnvironmentEmitter()');
+    expect(bdptSrc).toContain('float bdptEnvironmentPower()');
+    expect(bdptSrc).toContain('vec3 bdptDistantEnvironmentEmitterPosition( vec3 lightDir )');
+    expect(bdptSrc).toContain('bool hasEnvironmentBdptEmitter = bdptHasEnvironmentEmitter();');
+    expect(bdptSrc).toContain('float envPdf = sampleEquirectProbability( rand2( 51 ), envColor, envDirectionLocal );');
+    expect(bdptSrc).toContain('envColor * environmentIntensity');
     expect(bdptSrc).toContain('if ( pickedMesh ) {');
+    expect(bdptSrc).toContain('} else if ( pickedEnvironment ) {');
     expect(bdptSrc).toContain('vec3 lightBsdfCosTheta = vec3( 1.0 );');
   });
 

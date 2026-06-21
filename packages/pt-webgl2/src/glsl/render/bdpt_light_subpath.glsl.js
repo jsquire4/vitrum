@@ -112,6 +112,18 @@ export const bdpt_light_subpath = /* glsl */`
 		return max( readMeshTriLight( uMeshLights, index ).power, 0.0 );
 	}
 
+	bool bdptHasEnvironmentEmitter() {
+		return envMapInfo.totalSum > 0.0 && environmentIntensity > 0.0;
+	}
+
+	float bdptEnvironmentPower() {
+		return max( envMapInfo.totalSum * environmentIntensity, 1e-20 );
+	}
+
+	vec3 bdptDistantEnvironmentEmitterPosition( vec3 lightDir ) {
+		return - lightDir * 1.0e6;
+	}
+
 	float bdptTotalEmitterPower() {
 		float sumPower = 0.0;
 		for ( uint ii = 0u; ii < lights.count; ii ++ ) {
@@ -119,6 +131,9 @@ export const bdpt_light_subpath = /* glsl */`
 		}
 		for ( uint ii = 0u; ii < uMeshLightCount; ii ++ ) {
 			sumPower += bdptMeshEmitterPower( ii );
+		}
+		if ( bdptHasEnvironmentEmitter() ) {
+			sumPower += bdptEnvironmentPower();
 		}
 		return sumPower;
 	}
@@ -291,7 +306,8 @@ export const bdpt_light_subpath = /* glsl */`
 
 		// Bounds guard.
 		bool hasMeshBdptEmitters = uMeshLightCount != 0u && uTotalEmissivePower > 0.0;
-		if ( vertexCol < 0 || vertexCol >= maxLightBounces || ( lights.count == 0u && ! hasMeshBdptEmitters ) ) {
+		bool hasEnvironmentBdptEmitter = bdptHasEnvironmentEmitter();
+		if ( vertexCol < 0 || vertexCol >= maxLightBounces || ( lights.count == 0u && ! hasMeshBdptEmitters && ! hasEnvironmentBdptEmitter ) ) {
 			writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
 			return;
 		}
@@ -310,6 +326,7 @@ export const bdpt_light_subpath = /* glsl */`
 			float uPick = rand( 50 ) * totalEmitterPower;
 			float cumPower = 0.0;
 			bool pickedMesh = false;
+			bool pickedEnvironment = false;
 			uint pickedIndex = 0u;
 			float pickedPower = 0.0;
 
@@ -327,18 +344,36 @@ export const bdpt_light_subpath = /* glsl */`
 				cumPower += p;
 				if ( pickedPower <= 0.0 && uPick <= cumPower ) {
 					pickedMesh = true;
+					pickedEnvironment = false;
 					pickedIndex = ii;
+					pickedPower = p;
+				}
+			}
+			if ( hasEnvironmentBdptEmitter ) {
+				float p = bdptEnvironmentPower();
+				cumPower += p;
+				if ( pickedPower <= 0.0 && uPick <= cumPower ) {
+					pickedMesh = false;
+					pickedEnvironment = true;
+					pickedIndex = 0u;
 					pickedPower = p;
 				}
 			}
 
 			if ( pickedPower <= 0.0 ) {
-				if ( hasMeshBdptEmitters ) {
+				if ( hasEnvironmentBdptEmitter ) {
+					pickedMesh = false;
+					pickedEnvironment = true;
+					pickedIndex = 0u;
+					pickedPower = bdptEnvironmentPower();
+				} else if ( hasMeshBdptEmitters ) {
 					pickedMesh = true;
+					pickedEnvironment = false;
 					pickedIndex = uMeshLightCount - 1u;
 					pickedPower = bdptMeshEmitterPower( pickedIndex );
 				} else if ( lights.count != 0u ) {
 					pickedMesh = false;
+					pickedEnvironment = false;
 					pickedIndex = lights.count - 1u;
 					pickedPower = bdptAnalyticEmitterPower( pickedIndex );
 				}
@@ -367,6 +402,28 @@ export const bdpt_light_subpath = /* glsl */`
 					discretePdf,
 					pdfArea,
 					castShadowDisabled,
+					gBdptVertex0,
+					gBdptVertex1,
+					gBdptVertex2,
+					gBdptVertex3,
+					gBdptVertex4
+				);
+			} else if ( pickedEnvironment ) {
+				vec3 envColor;
+				vec3 envDirectionLocal;
+				float envPdf = sampleEquirectProbability( rand2( 51 ), envColor, envDirectionLocal );
+				vec3 envDirection = normalize( invEnvRotation3x3 * envDirectionLocal );
+				if ( envPdf <= 0.0 || luminance( envColor ) <= 0.0 ) {
+					writeBdptInvalidVertex( gBdptVertex0, gBdptVertex1, gBdptVertex2, gBdptVertex3, gBdptVertex4 );
+					return;
+				}
+
+				writeBdptCosineEmitterVertex(
+					bdptDistantEnvironmentEmitterPosition( envDirection ),
+					envDirection,
+					envColor * environmentIntensity,
+					discretePdf * envPdf,
+					0.0,
 					gBdptVertex0,
 					gBdptVertex1,
 					gBdptVertex2,

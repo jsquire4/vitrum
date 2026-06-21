@@ -615,26 +615,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     for (const warning of built.structuredWarnings) {
       this.#warn(warning);
     }
-    const hasEnvironmentBdptSources = built.textures.envMap != null || built.textures.envTotalSum > 0;
-    if (this.#bdpt && hasEnvironmentBdptSources) {
-      this.#warn({
-        code: 'pt-webgl2.bdpt-environment-light-subpaths-unsupported',
-        backend: 'pt-webgl2',
-        phase: 'setScene',
-        method: 'setScene',
-        message:
-          '[vitrum/pt-webgl2] bdpt:true builds light subpaths from analytic and mesh-area ' +
-          'Scene.emitters. Environment sources are not part of the light-subpath sampler yet; ' +
-          'BDPT connections fall back to the unidirectional environment NEE and BSDF paths ' +
-          'for those sources.',
-        details: {
-          analyticLightCount: built.textures.lightCount,
-          meshLightCount: built.textures.meshLightCount,
-          hasEnvironmentMap: built.textures.envMap != null,
-          envTotalSum: built.textures.envTotalSum,
-        },
-      });
-    }
     this.#sceneTextures?.destroy();
     this.#sceneTextures = built.textures;
     this.#geoPack = built.merged;
