@@ -20,6 +20,7 @@ const timeoutMs = Number(process.env.VITRUM_CAPTURE_TIMEOUT_MS ?? '120000');
 const screenshotTimeoutMs = Number(process.env.VITRUM_SCREENSHOT_TIMEOUT_MS ?? '15000');
 const dataUrlTimeoutMs = Number(process.env.VITRUM_DATA_URL_TIMEOUT_MS ?? '15000');
 const statusPath = resolveStatusPath(process.env.VITRUM_GLTF_BROWSER_STATUS_PATH);
+const browserExtraArgs = parseEnvArgs(process.env.VITRUM_CHROMIUM_EXTRA_ARGS);
 const thresholds = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
 const REAL_BROWSER_ASSETS = [
   {
@@ -122,6 +123,11 @@ function readMultiFlag(name) {
   return values.flatMap((value) => value.split(',').map((item) => item.trim()).filter(Boolean));
 }
 
+function parseEnvArgs(rawValue) {
+  if (rawValue == null || rawValue.trim().length === 0) return [];
+  return rawValue.split(/[\s,]+/u).map((arg) => arg.trim()).filter(Boolean);
+}
+
 function selectedAssets() {
   if (selectedAssetIds.length === 0) return REAL_BROWSER_ASSETS;
   const selected = REAL_BROWSER_ASSETS.filter((asset) => selectedAssetIds.includes(asset.assetId));
@@ -142,6 +148,7 @@ async function capture(asset) {
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
+      ...browserExtraArgs,
     ],
   });
   activeBrowser = browser;
@@ -237,29 +244,97 @@ async function captureCanvasPng(page) {
       bytes: await canvas.screenshot({ type: 'png', timeout }),
     };
   } catch (error) {
-    captureStep = 'canvas-data-url';
-    const dataUrlTimeout = Math.max(1000, Math.min(timeoutMs, dataUrlTimeoutMs));
-    const dataUrl = await withTimeout(
-      page.evaluate(() => {
-        const canvas = document.querySelector('canvas');
-        if (!(canvas instanceof HTMLCanvasElement)) {
-          throw new Error('no HTMLCanvasElement is present for capture');
-        }
-        return canvas.toDataURL('image/png');
-      }),
-      dataUrlTimeout,
-      'canvas PNG data URL fallback timed out',
-    ).catch((fallbackError) => {
-      throw new Error(
-        `Playwright canvas screenshot failed (${error instanceof Error ? error.message : String(error)}); ` +
-          `canvas PNG data URL fallback failed (${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)})`,
-      );
-    });
-    return {
-      method: 'canvas-data-url',
-      bytes: pngBytesFromDataUrl(dataUrl),
-    };
+    try {
+      captureStep = 'page-canvas-clip-screenshot';
+      return {
+        method: 'page-canvas-clip-screenshot',
+        bytes: await pageCanvasClipScreenshot(page, timeout),
+      };
+    } catch (clipError) {
+      try {
+        captureStep = 'engine-captureFrame-output';
+        return {
+          method: 'engine-captureFrame-output',
+          bytes: await captureEngineFramePng(page, timeout),
+        };
+      } catch (engineError) {
+        captureStep = 'canvas-data-url';
+        return await captureCanvasDataUrlPng(page, error, clipError, engineError);
+      }
+    }
   }
+}
+
+async function pageCanvasClipScreenshot(page, timeout) {
+  const box = await page.locator('canvas').first().boundingBox({ timeout });
+  if (box == null) throw new Error('canvas bounding box unavailable for clipped page screenshot');
+  return page.screenshot({
+    type: 'png',
+    timeout,
+    clip: {
+      x: Math.max(0, box.x),
+      y: Math.max(0, box.y),
+      width: Math.max(1, box.width),
+      height: Math.max(1, box.height),
+    },
+  });
+}
+
+async function captureEngineFramePng(page, timeout) {
+  const frame = await withTimeout(
+    page.evaluate(async () => {
+      const capture = globalThis.VITRUM_CAPTURE_FRAME;
+      if (typeof capture !== 'function') {
+        throw new Error('VITRUM_CAPTURE_FRAME is not installed by the example page');
+      }
+      return capture('output');
+    }),
+    timeout,
+    'engine captureFrame fallback timed out',
+  );
+  if (frame == null || typeof frame !== 'object') throw new Error('engine captureFrame returned no frame');
+  const width = Number(frame.width);
+  const height = Number(frame.height);
+  const rgba = frame.rgba;
+  if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+    throw new Error(`engine captureFrame returned invalid dimensions ${width}x${height}`);
+  }
+  if (!Array.isArray(rgba) || rgba.length !== width * height * 4) {
+    throw new Error(`engine captureFrame returned invalid rgba payload length ${Array.isArray(rgba) ? rgba.length : typeof rgba}`);
+  }
+  const png = new PNG({ width, height });
+  for (let i = 0; i < rgba.length; i += 1) {
+    const value = Number(rgba[i]);
+    png.data[i] = floatToByte(value);
+  }
+  return PNG.sync.write(png);
+}
+
+async function captureCanvasDataUrlPng(page, screenshotError, clipError, engineError) {
+  captureStep = 'canvas-data-url';
+  const dataUrlTimeout = Math.max(1000, Math.min(timeoutMs, dataUrlTimeoutMs));
+  const dataUrl = await withTimeout(
+    page.evaluate(() => {
+      const canvas = document.querySelector('canvas');
+      if (!(canvas instanceof HTMLCanvasElement)) {
+        throw new Error('no HTMLCanvasElement is present for capture');
+      }
+      return canvas.toDataURL('image/png');
+    }),
+    dataUrlTimeout,
+    'canvas PNG data URL fallback timed out',
+  ).catch((fallbackError) => {
+    throw new Error(
+      `Playwright canvas screenshot failed (${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)}); ` +
+        `page clipped screenshot failed (${clipError instanceof Error ? clipError.message : String(clipError)}); ` +
+        `engine captureFrame fallback failed (${engineError instanceof Error ? engineError.message : String(engineError)}); ` +
+        `canvas PNG data URL fallback failed (${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)})`,
+    );
+  });
+  return {
+    method: 'canvas-data-url',
+    bytes: pngBytesFromDataUrl(dataUrl),
+  };
 }
 
 function summarizeTelemetry(telemetry) {
@@ -454,6 +529,11 @@ function pngBytesFromDataUrl(dataUrl) {
   const match = /^data:image\/png;base64,(.+)$/i.exec(dataUrl);
   if (match == null) throw new Error('canvas PNG data URL fallback did not return image/png data');
   return Buffer.from(match[1], 'base64');
+}
+
+function floatToByte(value) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(255, Math.round(value * 255)));
 }
 
 function resolveStatusPath(rawPath) {

@@ -53,11 +53,21 @@ if (status.verdict === "HOST-BLOCKED") {
     if (row.verdict !== "HOST-BLOCKED" && row.verdict !== "PASS") fail(`${row.assetId}: unexpected verdict ${row.verdict}`);
     assertNoStaleBrowserBuildWarnings(row);
     if (row.verdict === "HOST-BLOCKED") {
-      if (row.step !== "canvas-screenshot" && row.step !== "canvas-data-url") {
+      if (
+        row.step !== "canvas-screenshot" &&
+        row.step !== "page-canvas-clip-screenshot" &&
+        row.step !== "engine-captureFrame-output" &&
+        row.step !== "canvas-data-url"
+      ) {
         fail(`${row.assetId}: unexpected host-blocked step ${row.step}`);
       }
       const error = String(row.error ?? "");
-      if (!error.includes("browser capture timed out") && !error.includes("canvas PNG data URL fallback failed")) {
+      if (
+        !error.includes("browser capture timed out") &&
+        !error.includes("canvas PNG data URL fallback failed") &&
+        !error.includes("engine captureFrame fallback timed out") &&
+        !error.includes("page clipped screenshot failed")
+      ) {
         fail(`${row.assetId}: HOST-BLOCKED status must preserve the timeout/readback reason`);
       }
     }
@@ -73,6 +83,8 @@ if (status.verdict === "HOST-BLOCKED") {
     if (
       row.captureMethod !== undefined &&
       row.captureMethod !== "playwright-screenshot" &&
+      row.captureMethod !== "page-canvas-clip-screenshot" &&
+      row.captureMethod !== "engine-captureFrame-output" &&
       row.captureMethod !== "canvas-data-url"
     ) {
       fail(`${row.assetId}: unexpected captureMethod ${row.captureMethod}`);

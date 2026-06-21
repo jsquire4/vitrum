@@ -132,6 +132,16 @@ async function main(): Promise<void> {
     engine.setScene(renderScene);
   }
 
+  (globalThis as Record<string, unknown>).VITRUM_CAPTURE_FRAME = async (colorSpace: 'linear' | 'output' = 'output') => {
+    if (typeof engine.captureFrame !== 'function') return null;
+    const frame = await engine.captureFrame({ colorSpace });
+    if (frame == null) return null;
+    return {
+      width: frame.width,
+      height: frame.height,
+      rgba: Array.from(frame.rgba),
+    };
+  };
   (globalThis as Record<string, unknown>).VITRUM_GLTF_BACKEND = result.backend;
   (globalThis as Record<string, unknown>).VITRUM_GLTF_TEXTURE_REPORT = result.textureDecodeReport;
   (globalThis as Record<string, unknown>).VITRUM_GLTF_WARNINGS = result.warnings;
