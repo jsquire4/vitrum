@@ -1,6 +1,7 @@
 // Scale-derived defaults and backend selection for createEngine().
 
-import type { Vec3 } from '@vitrum/core';
+import type { MaterialSpec, Scene, Vec3 } from '@vitrum/core';
+import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 
 export type EnginePreference = 'realtime' | 'quality' | 'quality-webgpu' | 'auto';
 export type EngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl2';
@@ -20,6 +21,11 @@ export interface ScaleDefaults {
   readonly triIntersectEpsilon: number;
 }
 
+export interface SceneMaterialBackendRecommendation {
+  readonly backend: EngineBackendId;
+  readonly fields: readonly string[];
+}
+
 export function deriveScaleDefaults(D: number): ScaleDefaults {
   return {
     cameraMoveResetThresholdSq: (D * 1e-3) ** 2,
@@ -35,9 +41,13 @@ export function pickBackend(
   triangleCount: number,
   needsTlas = false,
   gltfRecommendedBackend?: EngineBackendId,
+  materialRecommendedBackend?: EngineBackendId,
 ): EngineBackendId {
   if (prefer === 'auto' && gltfRecommendedBackend !== undefined) {
     return resolveGltfRecommendedBackend(gltfRecommendedBackend, hasWebGPU);
+  }
+  if (prefer === 'auto' && materialRecommendedBackend !== undefined) {
+    return resolveGltfRecommendedBackend(materialRecommendedBackend, hasWebGPU);
   }
   if (prefer === 'quality-webgpu') return hasWebGPU ? 'pt-webgpu' : 'pt-webgl2';
   if (prefer === 'quality') {
@@ -59,6 +69,18 @@ export function pickBackend(
   return 'pt-webgl2';
 }
 
+export function recommendBackendForSceneMaterials(
+  scene: Scene,
+  hasWebGPU: boolean,
+): SceneMaterialBackendRecommendation | null {
+  const fields = collectWalkaroundUnsupportedMaterialFieldsWithPtSupport(scene);
+  if (fields.length === 0) return null;
+  return {
+    backend: hasWebGPU ? 'pt-webgpu' : 'pt-webgl2',
+    fields,
+  };
+}
+
 function resolveGltfRecommendedBackend(
   backend: EngineBackendId,
   hasWebGPU: boolean,
@@ -66,4 +88,39 @@ function resolveGltfRecommendedBackend(
   if (backend === 'pt-webgl2') return 'pt-webgl2';
   if (hasWebGPU) return backend;
   return 'pt-webgl2';
+}
+
+function collectWalkaroundUnsupportedMaterialFieldsWithPtSupport(scene: Scene): readonly string[] {
+  const out = new Set<string>();
+  const walkaroundRows = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.materials ?? {};
+  const ptWebgl2Rows = BACKEND_PROMISE_LEDGER['pt-webgl2'].supportDetails.materials ?? {};
+  const ptWebgpuRows = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials ?? {};
+
+  for (const primitive of scene.primitives) {
+    const material = (primitive as { readonly material?: MaterialSpec }).material;
+    if (material == null) continue;
+    for (const field of MATERIAL_SPEC_FIELDS) {
+      if (walkaroundRows[field] !== 'unsupported') continue;
+      if (!isMaterialFieldAuthored(material, field)) continue;
+      const gl2Support = ptWebgl2Rows[field];
+      const gpuSupport = ptWebgpuRows[field];
+      if (gl2Support !== 'unsupported' || gpuSupport !== 'unsupported') out.add(field);
+    }
+  }
+  return [...out].sort();
+}
+
+function isMaterialFieldAuthored(
+  material: MaterialSpec,
+  field: (typeof MATERIAL_SPEC_FIELDS)[number],
+): boolean {
+  const value = material[field];
+  if (value == null) return false;
+  if (typeof value === 'number') return Number.isFinite(value) && value !== 0;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.length > 0;
+  if (ArrayBuffer.isView(value)) return value.byteLength > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return true;
 }

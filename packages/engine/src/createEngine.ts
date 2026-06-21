@@ -26,6 +26,7 @@ import { auditSceneNeedsTlas, detectGpu } from '@vitrum/core';
 import {
   pickBackend,
   deriveScaleDefaults,
+  recommendBackendForSceneMaterials,
   type EnginePreference,
   type ScaleDefaults,
 } from './createEngineScale.js';
@@ -106,13 +107,43 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
   const aabb = computeSceneAABB(vitrumScene);
   const tlasAudit = auditSceneNeedsTlas(vitrumScene);
   const gpu = await detectGpu({ publishToWindow: false });
+  const materialRecommendation = opts.gltfAsset == null
+    ? recommendBackendForSceneMaterials(vitrumScene, gpu.isWebGPU)
+    : null;
   const backend = pickBackend(
     opts.prefer ?? 'auto',
     gpu.isWebGPU,
     aabb.triangleCount,
     tlasAudit.needsTlas,
     opts.gltfAsset?.recommendedBackend?.backend,
+    materialRecommendation?.backend,
   );
+  const backendWithoutMaterialRecommendation = materialRecommendation == null
+    ? backend
+    : pickBackend(
+      opts.prefer ?? 'auto',
+      gpu.isWebGPU,
+      aabb.triangleCount,
+      tlasAudit.needsTlas,
+      opts.gltfAsset?.recommendedBackend?.backend,
+    );
+  if (materialRecommendation != null && backend !== backendWithoutMaterialRecommendation) {
+    emitCreateEngineWarning(opts.onWarning, {
+      code: 'createEngine.material-feature-backend-recommended',
+      backend: 'createEngine',
+      phase: 'construction',
+      method: 'createEngine',
+      message:
+        `[vitrum/createEngine] prefer:'auto' selected ${backend} because the scene uses ` +
+        `material fields that walkaround-hybrid reports unsupported: ` +
+        `${materialRecommendation.fields.join(', ')}.`,
+      details: {
+        fields: materialRecommendation.fields,
+        defaultAutoBackend: backendWithoutMaterialRecommendation,
+        resolvedBackend: backend,
+      },
+    });
+  }
   // When the audit recommends a TLAS-capable backend but we resolved to pt-webgl2
   // (the only merged-BVH backend), surface the recommendation + detail so the host
   // can switch to walkaround-hybrid or pt-webgpu for correct instancing behaviour.
