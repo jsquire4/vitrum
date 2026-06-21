@@ -128,6 +128,7 @@ if (!match) fail(`${LEDGER_PATH} must contain a \`\`\`json road-to-100-ledger.v1
 /** @type {{
  *   schema?: string;
  *   ledgerDate?: string;
+ *   currentAsOf?: string;
  *   status?: string;
  *   canonicalDetail?: string;
  *   historicalBugLedger?: string;
@@ -142,6 +143,12 @@ const metadata = JSON.parse(match[1]);
 
 if (metadata.schema !== "vitrum.road-to-100.gap-ledger.v1") fail("ledger schema mismatch");
 if (metadata.ledgerDate !== "2026-06-11") fail("ledgerDate must remain 2026-06-11 for this named artifact");
+if (typeof metadata.currentAsOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(metadata.currentAsOf)) {
+  fail("ledger currentAsOf must be a YYYY-MM-DD string");
+}
+if (metadata.currentAsOf < "2026-06-21") {
+  fail("ledger currentAsOf predates the historical-provenance reconciliation");
+}
 if (metadata.status !== "active") fail("ledger status must be active until Road-to-100 is complete");
 if (metadata.canonicalDetail !== "plan/road-to-100.md") fail("canonicalDetail must point at plan/road-to-100.md");
 if (metadata.historicalBugLedger !== "items_to_fix.md") fail("historicalBugLedger must point at items_to_fix.md");
@@ -156,6 +163,28 @@ if (!Array.isArray(metadata.openPromotionBuckets) || metadata.openPromotionBucke
 }
 if (!Array.isArray(metadata.requiredGreenGates) || !metadata.requiredGreenGates.includes("npm run proof-check")) {
   fail("requiredGreenGates must include npm run proof-check");
+}
+const closedCampaigns = metadata.closedContractCampaigns.map((entry) => String(entry));
+if (!closedCampaigns.some((entry) => entry.includes("historical items_to_fix open-heading reconciliation"))) {
+  fail("closedContractCampaigns must record the items_to_fix historical-heading reconciliation");
+}
+const openBuckets = metadata.openPromotionBuckets.map((entry) => String(entry));
+for (const [needle, label] of [
+  ["gltf-browser-proof-check:required", "required browser glTF proof command"],
+  ["HOST-BLOCKED", "browser host-blocked status"],
+  ["GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT", "learned/biased-system evidence bucket"],
+  ["explicit unsupported/approximate contract rows", "unsupported/approximate contract boundary"],
+  ["future contract expands them", "future-contract expansion boundary"],
+]) {
+  if (!openBuckets.some((entry) => entry.includes(needle))) {
+    fail(`openPromotionBuckets must retain ${label}`);
+  }
+}
+if (!ledger.includes("not the active implementation queue")) {
+  fail("compact gap ledger must label items_to_fix.md as historical provenance, not the active queue");
+}
+if (ledger.includes("historical audit provenance plus\n  any explicitly marked open bug rows")) {
+  fail("compact gap ledger must not imply items_to_fix.md is a live open-row queue");
 }
 
 const road = await readText("plan/road-to-100.md");

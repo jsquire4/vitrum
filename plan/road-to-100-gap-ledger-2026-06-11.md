@@ -48,8 +48,10 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
 
 - Treat source code and tests as the implementation truth.
 - Treat [road-to-100.md](./road-to-100.md) as the detailed gap ledger.
-- Treat [items_to_fix.md](../items_to_fix.md) as historical audit provenance plus
-  any explicitly marked open bug rows.
+- Treat [items_to_fix.md](../items_to_fix.md) as historical audit provenance,
+  not the active implementation queue. Any future suspected live bug from that
+  file must be re-verified against current source and promoted into the detailed
+  Road or execution plan before work begins.
 - Do not promote a row to closed from this file alone. A row is closed only when
   code, tests, and the detailed Road entry agree.
 
