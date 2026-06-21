@@ -670,6 +670,52 @@ for (const needle of [
   }
 }
 
+const gltfReadme = await readText("packages/gltf-adapter/README.md");
+for (const needle of [
+  "Skinned/morphed instancing is supported as a renderable `fallback-generated-mesh` route",
+  "the importer expands it to one `SkinnedMeshPrimitive` per authored instance",
+  "`reject-unsupported` accepts it",
+  "`reject-degraded` rejects it as a non-native approximation",
+]) {
+  if (!gltfReadme.includes(needle)) {
+    fail(`gltf-adapter README must describe instanced skinned/morphed fallback expansion: ${needle}`);
+  }
+}
+if (gltfReadme.includes("imports the skinned/morphed primitive once")) {
+  fail("gltf-adapter README must not revive the stale instanced skinned/morphed single-import wording");
+}
+
+const gltfFeatureReport = await readText("packages/gltf-adapter/src/featureReport.ts");
+const gltfToScene = await readText("packages/gltf-adapter/src/gltfToScene.ts");
+for (const needle of [
+  "name: 'EXT_mesh_gpu_instancing.skinnedOrMorphed'",
+  "support: 'fallback-generated-mesh'",
+  "fallback-expanded into one SkinnedMeshPrimitive",
+]) {
+  if (!gltfFeatureReport.includes(needle)) {
+    fail(`gltf feature report must keep instanced skinned/morphed fallback classification: ${needle}`);
+  }
+}
+for (const needle of [
+  "code: 'fallback-expanded-gpu-instancing'",
+  "per authored instance so every instance remains renderable",
+  "const instanceId = `${id}-instance-${instanceIndex}`;",
+]) {
+  if (!gltfToScene.includes(needle)) {
+    fail(`gltf importer must keep instanced skinned/morphed fallback expansion: ${needle}`);
+  }
+}
+for (const needle of [
+  "allows fallback-expanded instanced morphed meshes in reject-unsupported mode before constructing an engine",
+  "expect(result.asset.scene.primitives).toHaveLength(2);",
+  "rejects fallback-expanded instanced morphed meshes in reject-degraded mode before constructing an engine",
+  "primitive:EXT_mesh_gpu_instancing.skinnedOrMorphed=fallback-generated-mesh",
+]) {
+  if (!gltfAssetApiTest.includes(needle)) {
+    fail(`gltf asset API tests must pin fallback-expanded instanced morph/skinning compatibility: ${needle}`);
+  }
+}
+
 const gltfTextures = await readText("packages/gltf-adapter/src/textures.ts");
 for (const needle of [
   "interface SelectedTextureImageSource",
