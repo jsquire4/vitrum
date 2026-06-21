@@ -358,7 +358,7 @@ fn ddgiWrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
 }
 
 fn ddgiPackedUvFromVec4(v: vec4f) -> vec2f {
-  return unpack2x16unorm(bitcast<u32>(v.w));
+  return unpack2x16float(bitcast<u32>(v.w));
 }
 
 fn ddgiBvhVertexColorTexel(vertexIndex: u32) -> vec4f {

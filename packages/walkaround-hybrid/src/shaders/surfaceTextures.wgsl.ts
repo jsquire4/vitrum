@@ -218,9 +218,9 @@ fn _bvhTintedTriAccumulate(
     var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
     var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
     let bw = 1.0 - u - v;
-    let uvA = unpack2x16unorm(bitcast<u32>(pa4.w));
-    let uvB = unpack2x16unorm(bitcast<u32>(pb4.w));
-    let uvC = unpack2x16unorm(bitcast<u32>(pc4.w));
+    let uvA = unpack2x16float(bitcast<u32>(pa4.w));
+    let uvB = unpack2x16float(bitcast<u32>(pb4.w));
+    let uvC = unpack2x16float(bitcast<u32>(pc4.w));
     let uvAt = bw * uvA + u * uvB + v * uvC;
     let uv1A = materialAtlasPackedUvFromVec4(bvh_normal[idx.x]);
     let uv1B = materialAtlasPackedUvFromVec4(bvh_normal[idx.y]);

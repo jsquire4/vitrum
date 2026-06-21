@@ -3,7 +3,7 @@
  *
  * Sits on top of `@vitrum/shared-bvh`'s `buildSceneBVH` shared-core output
  * and re-packs the layouts ReSTIR's WGSL shaders consume:
- *   - position.w slot ← packed UV pair
+ *   - position.w slot ← packed raw UV pair
  *   - bvhIndex.w slot ← RGBA8 baseColor | (trans4 | texType4)
  *   - bvh_beer    u32 ← Beer-Lambert visible color per triangle
  *
@@ -75,7 +75,7 @@ function applyBeerLambert(
 }
 
 /**
- * Pack UV (16-bit unorm pair) into the .w slot of every vec4f position.
+ * Pack UV (two f16 values) into the .w slot of every vec4f position.
  * See the ReSTIR BVH builders for the rationale (single storage buffer per stage).
  */
 export function packUVIntoPositionW(
@@ -87,7 +87,7 @@ export function packUVIntoPositionW(
 }
 
 /**
- * Pack UV (16-bit unorm pair) into the .w slot of a vec4f-strided stream.
+ * Pack UV (two f16 values) into the .w slot of a vec4f-strided stream.
  * The xyz lanes are preserved verbatim. Used for position.w (uv0, consumed by
  * traversal) and normal.w (uv1, consumed by material texture sampling).
  */
@@ -102,15 +102,33 @@ export function packUVIntoVec4W(
   const sourceUvs = uvAttr?.array;
 
   for (let i = 0; i < vertCount; i++) {
-    let u = sourceUvs?.[i * 2 + 0] ?? 0;
-    let v = sourceUvs?.[i * 2 + 1] ?? 0;
-    u = u - Math.floor(u);
-    v = v - Math.floor(v);
-    const u16 = Math.min(0xFFFF, Math.max(0, Math.round(u * 0xFFFF))) & 0xFFFF;
-    const v16 = Math.min(0xFFFF, Math.max(0, Math.round(v * 0xFFFF))) & 0xFFFF;
+    const u16 = floatToHalfBits(sourceUvs?.[i * 2 + 0] ?? 0);
+    const v16 = floatToHalfBits(sourceUvs?.[i * 2 + 1] ?? 0);
     u32View[i * 4 + 3] = (v16 << 16) | u16;
   }
   return out;
+}
+
+function floatToHalfBits(value: number): number {
+  const input = Number.isFinite(value) ? Math.fround(value) : 0;
+  const sign = input < 0 || Object.is(input, -0) ? 0x8000 : 0;
+  const abs = Math.abs(input);
+  if (abs === 0) return sign;
+  if (abs >= 65504) return sign | 0x7bff;
+  if (abs < 2 ** -24) return sign;
+  if (abs < 2 ** -14) {
+    return sign | Math.min(0x03ff, Math.round(abs / (2 ** -24)));
+  }
+
+  let exp = Math.floor(Math.log2(abs));
+  let mant = Math.round((abs / (2 ** exp) - 1) * 1024);
+  if (mant === 1024) {
+    mant = 0;
+    exp += 1;
+  }
+  const halfExp = exp + 15;
+  if (halfExp >= 31) return sign | 0x7bff;
+  return sign | ((halfExp & 0x1f) << 10) | (mant & 0x03ff);
 }
 
 /**

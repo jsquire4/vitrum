@@ -3,6 +3,7 @@ import {
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
   type GltfTextureSourceExtension,
 } from './textures.js';
+import { resolveGltfMaterialAnimationPointer } from './materialPointerAnimation.js';
 
 export interface GltfSceneReachability {
   readonly sceneIndex: number;
@@ -92,6 +93,15 @@ export function collectGltfSceneReachability(
   for (const root of scene?.nodes ?? []) visitNode(root);
   for (const animation of gltf.animations ?? []) {
     for (const channel of animation.channels ?? []) {
+      if (channel.target.path === 'pointer') {
+        const pointer = channel.target.extensions?.KHR_animation_pointer?.pointer;
+        const pointerTarget = resolveGltfMaterialAnimationPointer(pointer);
+        if (pointerTarget === undefined || !materialIndices.has(pointerTarget.materialIndex)) continue;
+        const sampler = animation.samplers?.[channel.sampler];
+        collectAccessorBufferViews(gltf, sampler?.input, bufferViewIndices);
+        collectAccessorBufferViews(gltf, sampler?.output, bufferViewIndices);
+        continue;
+      }
       const targetNode = channel.target.node;
       if (targetNode === undefined || !nodeIndices.has(targetNode)) continue;
       const sampler = animation.samplers?.[channel.sampler];

@@ -66,9 +66,9 @@ fn wrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
 }
 
 fn interpolateUv1FromNormalW(hit: IntersectionResult, n0: vec4f, n1: vec4f, n2: vec4f) -> vec2f {
-  let uvA = unpack2x16unorm(bitcast<u32>(n0.w));
-  let uvB = unpack2x16unorm(bitcast<u32>(n1.w));
-  let uvC = unpack2x16unorm(bitcast<u32>(n2.w));
+  let uvA = unpack2x16float(bitcast<u32>(n0.w));
+  let uvB = unpack2x16float(bitcast<u32>(n1.w));
+  let uvC = unpack2x16float(bitcast<u32>(n2.w));
   return hit.barycoord.x * uvA + hit.barycoord.y * uvB + hit.barycoord.z * uvC;
 }
 
@@ -80,7 +80,7 @@ fn materialAtlasUv1ForHit(hit: IntersectionResult) -> vec2f {
 }
 
 fn materialAtlasPackedUvFromVec4(v: vec4f) -> vec2f {
-  return unpack2x16unorm(bitcast<u32>(v.w));
+  return unpack2x16float(bitcast<u32>(v.w));
 }
 
 fn sampleMaterialAtlasRawAtOffsetDelta(

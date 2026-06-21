@@ -4873,6 +4873,174 @@ describe('loadGltfForEngine', () => {
     )).toBe(false);
   });
 
+  it('fetches selected-scene KHR_animation_pointer material sampler buffers before conversion', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const originalBuffer = buffers.get(0)!;
+    gltf.extensionsUsed = ['KHR_animation_pointer'];
+    gltf.extensionsRequired = ['KHR_animation_pointer'];
+    gltf.materials = [{ pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } }];
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      material: 0,
+    };
+    const times = f32Buffer([0, 1]);
+    const baseValues = f32Buffer([
+      1, 0, 0, 1,
+      0, 0, 1, 1,
+    ]);
+    const samplerBuffer = concatArrayBuffers([times, baseValues]);
+    const timeOffset = 0;
+    const valueOffset = times.byteLength;
+    const sparseIndices = u16Buffer([1]);
+    const sparseValues = f32Buffer([0, 1, 0, 1]);
+    const sparseBuffer = concatArrayBuffers([sparseIndices, sparseValues]);
+    gltf.accessors = [
+      ...(gltf.accessors ?? []),
+      { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+      {
+        bufferView: 3,
+        componentType: 5126,
+        count: 2,
+        type: 'VEC4',
+        sparse: {
+          count: 1,
+          indices: { bufferView: 4, componentType: 5123 },
+          values: { bufferView: 5 },
+        },
+      },
+    ];
+    gltf.bufferViews = [
+      ...(gltf.bufferViews ?? []),
+      { buffer: 1, byteOffset: timeOffset, byteLength: times.byteLength },
+      { buffer: 1, byteOffset: valueOffset, byteLength: baseValues.byteLength },
+      { buffer: 2, byteOffset: 0, byteLength: sparseIndices.byteLength },
+      { buffer: 2, byteOffset: sparseIndices.byteLength, byteLength: sparseValues.byteLength },
+    ];
+    gltf.buffers = [
+      { byteLength: originalBuffer.byteLength },
+      { uri: 'selected-pointer-animation.bin', byteLength: samplerBuffer.byteLength },
+      { uri: 'selected-pointer-animation-sparse.bin', byteLength: sparseBuffer.byteLength },
+    ];
+    gltf.animations = [{
+      name: 'selected-material-pointer',
+      samplers: [{ input: 2, output: 3 }],
+      channels: [{
+        sampler: 0,
+        target: {
+          path: 'pointer',
+          extensions: {
+            KHR_animation_pointer: {
+              pointer: '/materials/0/pbrMetallicRoughness/baseColorFactor',
+            },
+          },
+        },
+      }],
+    }];
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith('/selected-pointer-animation.bin')) return response(samplerBuffer);
+      if (url.endsWith('/selected-pointer-animation-sparse.bin')) return response(sparseBuffer);
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const result = await loadGltfAsset(gltf, {
+      buffers,
+      sceneIndex: 0,
+      baseUri: 'https://assets.example/model.gltf',
+      fetch,
+    });
+
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual([
+      'https://assets.example/selected-pointer-animation.bin',
+      'https://assets.example/selected-pointer-animation-sparse.bin',
+    ]);
+    expect(result.animations).toHaveLength(1);
+    expect(result.animations[0]!.channels[0]!.target).toMatchObject({
+      path: 'pointer',
+      pointer: '/materials/0/pbrMetallicRoughness/baseColorFactor',
+    });
+    expect(Array.from(result.animations[0]!.channels[0]!.sampler.values)).toEqual([
+      1, 0, 0, 1,
+      0, 1, 0, 1,
+    ]);
+    expect(result.diagnostics.some((diagnostic) =>
+      diagnostic.code === 'sparse-values-buffer-unavailable' ||
+      diagnostic.code === 'unreadable-animation-sampler' ||
+      diagnostic.code === 'dropped-animation',
+    )).toBe(false);
+  });
+
+  it('does not fetch KHR_animation_pointer sampler buffers for materials reachable only from unused scenes', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const originalBuffer = buffers.get(0)!;
+    gltf.extensionsUsed = ['KHR_animation_pointer'];
+    gltf.extensionsRequired = ['KHR_animation_pointer'];
+    gltf.scenes = [{ nodes: [0] }, { nodes: [1] }];
+    gltf.nodes = [{ mesh: 0 }, { mesh: 1 }];
+    gltf.materials = [
+      { pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+      { pbrMetallicRoughness: { baseColorFactor: [0, 1, 0, 1] } },
+    ];
+    gltf.meshes = [
+      { primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 0 }] },
+      { primitives: [{ attributes: { POSITION: 0, NORMAL: 1 }, material: 1 }] },
+    ];
+    const times = f32Buffer([0, 1]);
+    const values = f32Buffer([
+      0, 1, 0, 1,
+      0, 0, 1, 1,
+    ]);
+    const animationBuffer = concatArrayBuffers([times, values]);
+    gltf.accessors = [
+      ...(gltf.accessors ?? []),
+      { bufferView: 2, componentType: 5126, count: 2, type: 'SCALAR' },
+      { bufferView: 3, componentType: 5126, count: 2, type: 'VEC4' },
+    ];
+    gltf.bufferViews = [
+      ...(gltf.bufferViews ?? []),
+      { buffer: 1, byteOffset: 0, byteLength: times.byteLength },
+      { buffer: 1, byteOffset: times.byteLength, byteLength: values.byteLength },
+    ];
+    gltf.buffers = [
+      { byteLength: originalBuffer.byteLength },
+      { uri: 'unused-pointer-animation.bin', byteLength: animationBuffer.byteLength },
+    ];
+    gltf.animations = [{
+      name: 'unused-material-pointer',
+      samplers: [{ input: 2, output: 3 }],
+      channels: [{
+        sampler: 0,
+        target: {
+          path: 'pointer',
+          extensions: {
+            KHR_animation_pointer: {
+              pointer: '/materials/1/pbrMetallicRoughness/baseColorFactor',
+            },
+          },
+        },
+      }],
+    }];
+    const fetch = vi.fn(async (url: string) => {
+      throw new Error(`unexpected fetch: ${url}`);
+    });
+
+    const result = await loadGltfAsset(gltf, {
+      buffers,
+      sceneIndex: 0,
+      baseUri: 'https://assets.example/model.gltf',
+      fetch,
+    });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(result.featureReport.animations.count).toBe(0);
+    expect(result.featureReport.animations.channelCount).toBe(0);
+    expect(result.animations).toEqual([]);
+    expect(result.diagnostics.some((diagnostic) =>
+      diagnostic.path.startsWith('animations[0]') ||
+      diagnostic.code === 'unreadable-animation-sampler' ||
+      diagnostic.code === 'dropped-animation',
+    )).toBe(false);
+  });
+
   it('fetches selected-scene variant material textures without disabled texture-source sidecars', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.extensionsUsed = ['KHR_materials_variants', 'EXT_texture_webp'];

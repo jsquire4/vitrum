@@ -257,9 +257,18 @@ function unpackUvFromVec4W(stream: Float32Array, vertexIndex: number): [number, 
   const words = new Uint32Array(stream.buffer, stream.byteOffset, stream.byteLength / 4);
   const word = words[vertexIndex * 4 + 3] ?? 0;
   return [
-    (word & 0xFFFF) / 0xFFFF,
-    ((word >>> 16) & 0xFFFF) / 0xFFFF,
+    halfBitsToFloat(word & 0xFFFF),
+    halfBitsToFloat((word >>> 16) & 0xFFFF),
   ];
+}
+
+function halfBitsToFloat(bits: number): number {
+  const sign = (bits & 0x8000) === 0 ? 1 : -1;
+  const exp = (bits >>> 10) & 0x1f;
+  const mant = bits & 0x03ff;
+  if (exp === 0) return sign * 2 ** -14 * (mant / 1024);
+  if (exp === 0x1f) return mant === 0 ? sign * Infinity : NaN;
+  return sign * 2 ** (exp - 15) * (1 + mant / 1024);
 }
 
 describe('HybridEngine mutation matrix (non-GPU seam)', () => {
@@ -282,7 +291,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
         uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
-        uv1: new Float32Array([0.125, 0.25, 0.5, 0.625, 0.75, 0.875]),
+        uv1: new Float32Array([-0.25, 1.25, 2.5, -1.5, 0.75, 0.875]),
         material: {
           baseColor: [1, 1, 1] as [number, number, number],
           roughness: 0.5,
@@ -303,10 +312,10 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       const uv1 = unpackUvFromVec4W(normals, 1);
       const uv2 = unpackUvFromVec4W(normals, 2);
 
-      expect(uv0[0]).toBeCloseTo(0.125, 4);
-      expect(uv0[1]).toBeCloseTo(0.25, 4);
-      expect(uv1[0]).toBeCloseTo(0.5, 4);
-      expect(uv1[1]).toBeCloseTo(0.625, 4);
+      expect(uv0[0]).toBeCloseTo(-0.25, 4);
+      expect(uv0[1]).toBeCloseTo(1.25, 4);
+      expect(uv1[0]).toBeCloseTo(2.5, 4);
+      expect(uv1[1]).toBeCloseTo(-1.5, 4);
       expect(uv2[0]).toBeCloseTo(0.75, 4);
       expect(uv2[1]).toBeCloseTo(0.875, 4);
       expect(buffers.materialTextureAtlas.baseColorMetaData[0]).toBe(0);

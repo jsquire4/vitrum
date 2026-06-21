@@ -133,6 +133,26 @@ describe('makeRestirBvhSnapshot (PR-5.1)', () => {
     expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
   });
 
+  it('uses the shader BVH normal stream so DDGI and RC keep packed UV1 payloads', () => {
+    const shaderNormalsA = new Float32Array([0, 0, 1, 12345]);
+    const shaderNormalsB = new Float32Array([0, 0, 1, 54321]);
+    const emitterNormals = new Float32Array([0, 0, 1, 0]);
+    const snapA = makeRestirBvhSnapshot(minimalSceneBVH({
+      bvhNormals: { cpuData: shaderNormalsA.buffer, byteLength: shaderNormalsA.byteLength, count: 1 },
+      emitterNormals,
+    }));
+    const snapB = makeRestirBvhSnapshot(minimalSceneBVH({
+      bvhNormals: { cpuData: shaderNormalsB.buffer, byteLength: shaderNormalsB.byteLength, count: 1 },
+      emitterNormals,
+    }));
+
+    expect(snapA.normals).toBe(shaderNormalsA.buffer);
+    expect(Array.from(new Float32Array(snapA.normals))).toEqual([0, 0, 1, 12345]);
+    expect(snapA.blasContentVersion).not.toBe(snapB.blasContentVersion);
+    expect(snapA.tlasContentVersion).toBe(snapB.tlasContentVersion);
+    expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
+  });
+
   it('splits blas vs tlas content versions on transform-only TLAS refit', () => {
     const w2lA = new Float32Array(16);
     w2lA[12] = 0;
