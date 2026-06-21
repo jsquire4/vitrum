@@ -96,6 +96,7 @@ describe('ReSTIR-PT hero reservoir — ReservoirPTHero stride = 56 u32 / 224 byt
     expect(RESTIR_PT_PARAMS_WGSL).toContain('struct RestirPtParams {');
     expect(RESTIR_PT_PARAMS_WGSL).toContain('wCap:     f32,');
     expect(RESTIR_PT_PARAMS_WGSL).toContain('mClamp:   u32,');
+    expect(RESTIR_PT_PARAMS_WGSL).toContain('allowGlossyReuse: u32,');
   });
 });
 

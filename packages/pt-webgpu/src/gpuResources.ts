@@ -117,7 +117,7 @@ class ReservoirResources {
   /** `rpt_result`: one vec4f / px (16 B) — the resolve pass's reconnection
    *  indirect (.rgb) + contributing flag (.a). STORAGE | COPY_SRC. */
   rptResultBuffer: GPUBuffer | null = null;
-  /** RestirPtParams UBO (32 B: width/height/mClamp/_padA u32 + wCap/3×_pad f32). */
+  /** RestirPtParams UBO (32 B: width/height/mClamp/allowGlossyReuse u32 + wCap/3×_pad f32). */
   rptParamsBuffer: GPUBuffer | null = null;
   rptReservoirByteSize = 0;
   rptResultByteSize = 0;
@@ -1043,10 +1043,17 @@ export class GpuResources {
   }
 
   /**
-   * Write the RestirPtParams UBO (width/height/mClamp + wCap). No-op when reuse is
-   * OFF or the buffer is absent. Called per-frame by the engine before dispatch.
+   * Write the RestirPtParams UBO (width/height/mClamp/allowGlossyReuse + wCap).
+   * No-op when reuse is OFF or the buffer is absent. Called per-frame by the
+   * engine before dispatch.
    */
-  writeReservoirParams(width: number, height: number, mClamp: number, wCap: number): void {
+  writeReservoirParams(
+    width: number,
+    height: number,
+    mClamp: number,
+    wCap: number,
+    allowGlossyReuse: boolean,
+  ): void {
     if (!this.#restirPtReuse || this.rptParamsBuffer == null) return;
     const ubo = new ArrayBuffer(GpuResources.RESTIR_PT_PARAMS_BYTES);
     const u = new Uint32Array(ubo);
@@ -1054,7 +1061,7 @@ export class GpuResources {
     u[0] = width >>> 0;
     u[1] = height >>> 0;
     u[2] = Math.max(1, Math.floor(mClamp)) >>> 0;
-    u[3] = 0; // _padA
+    u[3] = allowGlossyReuse ? 1 : 0;
     f[4] = wCap;
     f[5] = 0; f[6] = 0; f[7] = 0; // _padB/_padC/_padD
     this.#device.queue.writeBuffer(this.rptParamsBuffer, 0, ubo);

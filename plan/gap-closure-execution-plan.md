@@ -430,12 +430,18 @@ replacement for V28-B recaptures.
   multi-vertex radiometry, and broader promotion evidence remain.
 - ReSTIR-PT reuse A/B. Full-tier dzn boot/render proof now covers
   `pt/restirPtReuse` through
-  `behavioral-gate:dzn -- --filter restirPtReuse --require-full-tier`; equal-spp
-  variance reduction and specialty/radiometric promotion remain.
+  `behavioral-gate:dzn -- --filter restirPtReuse --require-full-tier`; the
+  repaired-Cornell default equal-spp A/B is now recaptured and PASS
+  (`globalRelErr=7.91%`, `varRatio=0.9403`) after restricting default reuse to
+  diffuse-safe visible vertices. Glossy/metallic visible-vertex reuse remains
+  available only through `restirPtReuseOptions.experimentalGlossyReuse:true` and
+  still needs research-mode promotion evidence.
 - SPPM/MNEE caustic A/B. Full-tier dzn boot/render proof now covers
   `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` through
-  the focused `caustic` and `photon` dzn status artifacts; caustic radiometric
-  convergence remains.
+  the focused `caustic` and `photon` dzn status artifacts; the SPPM-vs-MNEE
+  radiometric A/B is now freshly recaptured on dzn full-tier and passes the
+  committed loose convergence proof (`finalRelErr=23.4%`, threshold <500%).
+  Tighter/equal-quality caustic promotion remains future evidence work.
 - Analytic emitter/environment render proof. Focused dzn status artifacts now
   cover pt-webgpu point/disc/spot/directional emitters, pt-webgpu HDRI and
   procedural-sky environments, the matching lite point/HDRI rows, and walkaround
@@ -550,8 +556,8 @@ for promotion from "implemented/approximate" to "trusted/native".
 | PPG quality | walkaround PPG | Favorable-scene A/B showing convergence or variance win. |
 | NRC quality/default tier | walkaround NRC | Quality/convergence A/B after warm-up gate; decide default/off/experimental. |
 | Neural denoiser quality | shared/walkaround | **Checkpoint classification guard added 2026-06-21:** every committed `.vitrum-model` is now manifest-pinned by role/size/SHA/param count and `learned-systems-proof-check` fails on unregistered or production-like weights without a passing production A/B manifest. Remaining work is still the actual production checkpoint plus quality A/B; otherwise keep opt-in. |
-| BDPT / ReSTIR-PT material and radiometric proof | pt-webgpu/pt-webgl2 | Safe-default BDPT, SPPM, and ReSTIR-PT committed snapshots are checked by `npm run radiometric-ab:proof-check`; focused dzn full-tier behavioral status now proves `pt/bdpt`, `pt/spectral+bdpt`, and off-default `pt/restirPtReuse` boot/render finite non-black with zero GPU errors. The ReSTIR-PT specialty fixture now pins scalar plus map-backed-effective clearcoat/sheen/iridescence/aniso/specular one-sample producer/finalize/resolve identity. Remaining work is GPU/radiometric material-furnace promotion, equal-spp ReSTIR-PT variance proof, and multi-vertex BDPT promotion evidence. |
-| SPPM / MNEE caustic radiometric proof | pt-webgpu | Focused dzn full-tier behavioral status now proves `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` boot/render finite non-black with zero GPU errors. Remaining work is caustic radiometric convergence / forward-traced oracle A/B. |
+| BDPT / ReSTIR-PT material and radiometric proof | pt-webgpu/pt-webgl2 | Safe-default BDPT, SPPM, and ReSTIR-PT committed snapshots are checked by `npm run radiometric-ab:proof-check`; focused dzn full-tier behavioral status now proves `pt/bdpt`, `pt/spectral+bdpt`, and off-default `pt/restirPtReuse` boot/render finite non-black with zero GPU errors. The repaired-Cornell ReSTIR-PT equal-spp default A/B now passes on dzn full-tier (`globalRelErr=7.91%`, `varRatio=0.9403`) after moving glossy/metal visible-vertex reuse behind `experimentalGlossyReuse`. The ReSTIR-PT specialty fixture pins scalar plus map-backed-effective clearcoat/sheen/iridescence/aniso/specular one-sample producer/finalize/resolve identity. Remaining work is GPU/radiometric material-furnace promotion, glossy-ReSTIR-PT research-mode evidence, and multi-vertex BDPT promotion evidence. |
+| SPPM / MNEE caustic radiometric proof | pt-webgpu | Focused dzn full-tier behavioral status proves `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` boot/render finite non-black with zero GPU errors. The committed SPPM-vs-MNEE radiometric A/B is freshly recaptured and passes the loose convergence proof (`finalRelErr=23.4%`, trend improving by 80 frames). Remaining work is tighter/equal-quality caustic promotion evidence, not baseline proof existence. |
 | Baseline/lite/spectral/skinned/analytic execution | pt-webgpu/walkaround | Focused dzn status now proves default pt/walkaround, explicit pt-webgpu lite fallback, spectral combos, skinned/glTF-skinned animation, and full-tier analytic sphere lanes boot/render finite non-black with zero GPU errors. The dzn status checker now fails if any real behavioral-gate label lacks committed coverage. Remaining work is reference-quality or radiometric promotion where applicable. |
 | Analytic emitter/environment proof | pt-webgpu/walkaround | Focused dzn status now proves point/disc/spot/directional, HDRI, and procedural-sky lanes boot/render finite non-black with zero GPU errors on their selected full/lite/walkaround rows. Remaining work is reference-quality radiometric sweep coverage. |
 | Walkaround behavioral matrix | walkaround | The broad `behavioral-gate:dzn -- --filter wh/ --require-full-tier` aggregate is host-blocked on this WSL/dzn runner, but each walkaround row now has an individual committed PASS status artifact (`wh/default`, `wh/rcEnabled`, `wh/ppgEnabled`, `wh/gtao-off`, `wh/checkerboard`, `wh/skinned-mesh`, `wh/hdri-env`, `wh/rect-area-emitter`, `wh/directional-sun`, `wh/glass-gi`, `wh/transparent-oit`) with zero GPU errors, and `npm run behavioral-gate:dzn-status-check` verifies those shards. Remaining work is A/B quality proof, not boot/render validity. |

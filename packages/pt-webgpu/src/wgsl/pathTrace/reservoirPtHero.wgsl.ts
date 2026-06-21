@@ -76,11 +76,11 @@
  *     reservoir (M = 0) for specular/transmissive xv — that pixel does not reuse.
  *   • A MODERATELY-GLOSSY xv: the geometric reconnection shift holds xs fixed and
  *     re-roots the edge; the glossy BRDF at xv is direction-sensitive. The
- *     INTEGRAND-MATCHING target (B3) now weights such candidates by the REAL BRDF
- *     in the temporal MIS (was a diffuse-cosine proxy that under-weighted them), so
- *     the prefix-1 glossy reuse is resampled correctly — unbiased by construction
- *     (W cancels p̂) and variance-reduced. (A full random-replay shift for
- *     multi-vertex glossy PREFIXES — which prefix-1 lacks — remains a later item.)
+ *     producer can still form an unbiased single-sample candidate for that
+ *     domain, but temporal/spatial reuse is only promoted for the diffuse-safe
+ *     default path. Hosts must opt into `experimentalGlossyReuse` before the
+ *     producer admits glossy/metallic visible vertices into the GRIS feedback
+ *     loop.
  *
  * ════════════════════════════════════════════════════════════════════════════
  * Live prefix-1 hybrid-shift cache (plus future rngSeed headroom)
@@ -107,8 +107,8 @@ import { RESTIR_PT_HYBRID_SHIFT_WGSL } from './restirPtHybridShift.wgsl.js';
  * parallel agent owns that file). So the reuse passes declare their OWN small
  * uniform — `RestirPtParams` — in the ReSTIR-PT bind group (@group(4)). It
  * carries the GRIS W-cap (the temporal-feedback gain bound — the GI version's
- * `restirGiWCap`) and the temporal M-clamp (the GI `restirGiMClamp`). The WIRING
- * step allocates + writes this buffer.
+ * `restirGiWCap`), the temporal M-clamp (the GI `restirGiMClamp`), and the
+ * explicit glossy-reuse opt-in bit. The WIRING step allocates + writes this buffer.
  *
  * @group(4) layout (the ReSTIR-PT-specific resources, separate from the
  * inherited @group(0..3) the shared modules own):
@@ -125,7 +125,7 @@ struct RestirPtParams {
   width:    u32,   // full-res width  (mirrors params.width; lets a reuse pass
   height:   u32,   // full-res height  run without re-reading FrameParams dims)
   mClamp:   u32,   // temporal M-clamp (GI restirGiMClamp analogue)
-  _padA:    u32,
+  allowGlossyReuse: u32, // 0 = diffuse-safe default, 1 = research glossy/metal reuse
   wCap:     f32,   // GRIS W-cap (temporal-feedback gain bound)
   _padB:    f32,
   _padC:    f32,
@@ -146,7 +146,7 @@ export const RESTIR_PT_PARAMS_FIELDS = [
   { name: 'width',  byteOffset:  0, type: 'u32' },
   { name: 'height', byteOffset:  4, type: 'u32' },
   { name: 'mClamp', byteOffset:  8, type: 'u32' },
-  { name: '_padA',  byteOffset: 12, type: 'u32' },
+  { name: 'allowGlossyReuse', byteOffset: 12, type: 'u32' },
   { name: 'wCap',   byteOffset: 16, type: 'f32' },
   { name: '_padB',  byteOffset: 20, type: 'f32' },
   { name: '_padC',  byteOffset: 24, type: 'f32' },

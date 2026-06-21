@@ -103,6 +103,13 @@ fn rptIsReusableVisibleVertex(roughness: f32, metallic: f32, transmission: f32) 
   // diffuse/glossy bounce). Near-mirror metal → never. Otherwise reusable, with
   // the documented glossy-reuse approximation for the moderate-roughness middle.
   if (transmission > 0.01) { return false; }
+  if (rptParams.allowGlossyReuse == 0u) {
+    // Default to the regime the prefix-1 reconnection shift can validate
+    // radiometrically: diffuse-ish visible vertices. Glossy/metallic visible
+    // domains can still be explored via experimentalGlossyReuse, but they are
+    // not admitted into the temporal/spatial GRIS feedback loop by default.
+    return metallic <= 0.05 && roughness >= 0.35;
+  }
   if (metallic > 0.5 && roughness < 0.08) { return false; }
   return roughness >= 0.08;
 }

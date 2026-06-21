@@ -332,6 +332,11 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
   });
 
+  it('defaults producer reuse to diffuse-safe visible vertices unless glossy reuse is explicitly enabled', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (rptParams.allowGlossyReuse == 0u) {');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('return metallic <= 0.05 && roughness >= 0.35;');
+  });
+
   it('the candidate weight is p̂ / p_src (RIS), and finalises with the GRIS W', () => {
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let wCandidate = select(0.0, pHat / pdfSrc, pdfSrc > 1e-8);');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('finaliseReservoirPTWGris(&r, rptParams.wCap, params.cameraPos.xyz);');

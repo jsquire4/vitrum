@@ -1,6 +1,6 @@
 {
   "ab": "restir-pt-reuse-on-vs-off",
-  "date": "2026-06-11T02:51:54.518Z",
+  "date": "2026-06-21T13:27:58.589Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -15,18 +15,18 @@
   "varianceRuns": 8,
   "varianceFramesPerRun": 8,
   "base": {
-    "globalLum": 0.4868965011138933,
-    "roiLum": 0.4872278986080716,
-    "variance": 0.005899578612583778
+    "globalLum": 0.08006538406917835,
+    "roiLum": 0.10937298989376618,
+    "variance": 0.0785665779745808
   },
   "rpt": {
-    "globalLum": 0.47198128832244857,
-    "roiLum": 0.47153777675673686,
-    "variance": 0.001591065928648624
+    "globalLum": 0.08640233455147601,
+    "roiLum": 0.12534924016574703,
+    "variance": 0.07387450050317383
   },
-  "globalRelErr": 0.030633230588682815,
-  "roiRelErr": 0.03220283956677927,
-  "varRatio": 0.26969145309037607,
+  "globalRelErr": 0.07914719395865753,
+  "roiRelErr": 0.14607125842951318,
+  "varRatio": 0.9402789634935477,
   "meanAgreement": true,
   "varianceNotWorse": true,
   "verdict": "PASS"

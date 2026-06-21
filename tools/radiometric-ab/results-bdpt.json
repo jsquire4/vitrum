@@ -1,6 +1,6 @@
 {
   "ab": "bdpt-vs-unidirectional",
-  "date": "2026-06-17T06:11:18.416Z",
+  "date": "2026-06-21T12:57:52.064Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -15,46 +15,46 @@
   "varianceRuns": 8,
   "varianceFramesPerRun": 8,
   "uni": {
-    "globalLum": 0.08006546401561064,
-    "roiLum": 0.1093735323935114,
-    "variance": 0.07856658106002219
+    "globalLum": 0.08006538406917835,
+    "roiLum": 0.10937298989376618,
+    "variance": 0.0785665779745808
   },
   "bdpt": {
-    "globalLum": 0.08006546401561064,
-    "roiLum": 0.1093735323935114,
-    "variance": 0.07856658106002219
+    "globalLum": 0.08006538432927812,
+    "roiLum": 0.10937299120347391,
+    "variance": 0.07856657683176843
   },
   "controls": {
     "meanFrames": 60,
     "byMaxLightBounces": [
       {
         "maxLightBounces": 1,
-        "globalLum": 0.08006546401561064,
-        "roiLum": 0.1093735323935114,
-        "globalRelErr": 0,
-        "roiRelErr": 0
+        "globalLum": 0.08006538432927812,
+        "roiLum": 0.10937299120347391,
+        "globalRelErr": 3.248592110999265e-9,
+        "roiRelErr": 1.1974690757091565e-8
       },
       {
         "maxLightBounces": 2,
-        "globalLum": 0.09064365778547873,
-        "roiLum": 0.12464137983030454,
-        "globalRelErr": 0.13211930886712425,
-        "roiRelErr": 0.13959362107700302
+        "globalLum": 0.09064359188184304,
+        "roiLum": 0.12464093288133504,
+        "globalRelErr": 0.13211961618175558,
+        "roiRelErr": 0.13959518709691118
       },
       {
         "maxLightBounces": 3,
-        "globalLum": 0.09374135884168382,
-        "roiLum": 0.1286461473422478,
-        "globalRelErr": 0.17080891235960038,
-        "roiRelErr": 0.17620912964021407
+        "globalLum": 0.09374136091263234,
+        "roiLum": 0.12864561575705558,
+        "globalRelErr": 0.17081010729477838,
+        "roiRelErr": 0.17621010344518215
       }
     ],
     "endpointOnlyMatchesUni": true,
     "multiVertexFindingStartsAt": 2
   },
-  "globalRelErr": 0,
-  "roiRelErr": 0,
-  "varRatio": 1,
+  "globalRelErr": 3.248592110999265e-9,
+  "roiRelErr": 1.1974690757091565e-8,
+  "varRatio": 0.9999999854542173,
   "meanAgreement": true,
   "varianceImproved": true,
   "verdict": "PASS"

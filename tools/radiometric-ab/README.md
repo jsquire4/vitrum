@@ -67,16 +67,16 @@ Caustic ROI: 525 pixels (cols 28–52, rows 50–70).
 
 | Frames | ROI lum | relErr vs ref | RMSE |
 |--------|---------|---------------|------|
-| ref (manifold-nee, 80) | 0.48611 | — | — |
-| SPPM, 20 | 0.48373 | **0.5%** | 0.05514 |
-| SPPM, 50 | 0.48501 | **0.2%** | 0.03985 |
-| SPPM, 80 | 0.48493 | **0.2%** | 0.03524 |
+| ref (manifold-nee, 80) | 0.88287 | — | — |
+| SPPM, 20 | 0.66015 | **25.2%** | 0.26320 |
+| SPPM, 50 | 0.67388 | **23.7%** | 0.26914 |
+| SPPM, 80 | 0.67626 | **23.4%** | 0.23915 |
 
-SPPM converges to within 0.2% of the GPU-validated MNEE reference in the caustic ROI,
-and RMSE decreases monotonically (0.055 → 0.040 → 0.035) across the 3 checkpoints.
-This is a near-perfect agreement — the photon hash-grid is sampling the same energy as
-the manifold solver, confirming the progressive Hachisuka update rule (A4-progressive)
-produces an unbiased estimate at these spp levels.
+SPPM trends toward the GPU-validated MNEE reference in the caustic ROI and
+finishes within the deliberately loose proof threshold (23.4% final ROI error,
+threshold <500%). RMSE is noisy at these low checkpoint counts but improves by
+the 80-frame checkpoint. This is convergence evidence for the progressive
+Hachisuka update rule, not a claim of final equal-energy promotion.
 
 ### A/B #2 — BDPT vs unidirectional
 
@@ -114,19 +114,31 @@ research-mode tail, guarded by the constructor warning
 
 ### A/B #3 — ReSTIR-PT reuse on vs off
 
-**PASS** (fixed 2026-06-11 — was FINDING at 46% deficit)
+**PASS** (recaptured 2026-06-21 on the repaired Cornell fixture)
 
 Scene: same Cornell box + metal sphere.
 Indirect ROI: same 1,271 pixels.
 
 | Metric | BASE (rpt:off) | RPT (rpt:on) | Notes |
 |--------|---------------|-------------|-------|
-| Global mean lum (60 frames) | 0.48690 | 0.47198 | relErr = **3.06%** |
-| ROI mean lum (60 frames) | 0.48723 | 0.47154 | relErr = **3.22%** |
-| Variance in ROI (8×8 frames) | 0.005900 | 0.001591 | ratio = **0.2697** |
+| Global mean lum (60 frames) | 0.08007 | 0.08640 | relErr = **7.91%** |
+| ROI mean lum (60 frames) | 0.10937 | 0.12535 | relErr = **14.61%** |
+| Variance in ROI (8×8 frames) | 0.078567 | 0.073875 | ratio = **0.9403** |
 
-ReSTIR-PT composite path agrees with the default megakernel within MC tolerance (3% at
-60 spp).  Variance ratio 0.27 = 3.7× variance reduction — the temporal reuse is working.
+ReSTIR-PT composite path agrees with the default megakernel within the global
+10% tolerance at 60 spp, and the independent-run ROI variance is not worse
+than the base estimator. This capture supersedes the old 2026-06-11 PASS
+numbers, which were taken before the Cornell fixture repair moved the back wall
+to the visible `z=-1` side.
+
+**2026-06-21 repaired-scene finding + fix:** the first recapture on the repaired
+fixture exposed an over-bright RPT arm (`globalRelErr=108.40%`,
+`varRatio=7.7143`). Source read showed the producer admitted the scene's rough
+metal sphere (`metallic=1`, `roughness=0.08`) into temporal/spatial reuse. The
+default producer now admits only diffuse-safe visible vertices
+(`metallic <= 0.05 && roughness >= 0.35`); glossy/metallic visible-vertex reuse
+is still available behind `restirPtReuseOptions.experimentalGlossyReuse:true`
+for research captures, but is not part of the default radiometric proof.
 
 **Root cause of the prior 46% deficit (found + fixed 2026-06-11):**
 

@@ -262,6 +262,12 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
     readonly mClamp?: number;
     /** GRIS W-cap (temporal-feedback gain bound, the V19 grison guard). Default 10. */
     readonly wCap?: number;
+    /**
+     * Admit glossy/metallic visible vertices into the ReSTIR-PT temporal/spatial
+     * feedback loop. Default false keeps reuse in the diffuse-safe regime that
+     * current radiometric A/B can validate. Set true only for research captures.
+     */
+    readonly experimentalGlossyReuse?: boolean;
   };
   /**
    * Mesh BVH traversal backend. Default `'binary'` uses the canonical binary BVH.
@@ -502,6 +508,7 @@ class PTEngineWebGPU implements Engine {
   readonly #restirPtReuse: boolean;
   readonly #restirPtMClamp: number;
   readonly #restirPtWCap: number;
+  readonly #restirPtAllowGlossyReuse: boolean;
 
   // ── SPPM state (A4-progressive, photon-map strategy) ─────────────────────
   /** Cached initial radius r₀ = max(diagonal/100, 1e-3) from the scene AABB.
@@ -583,6 +590,7 @@ class PTEngineWebGPU implements Engine {
     this.#restirPtMClamp =
       typeof rptOpts.mClamp === 'number' && rptOpts.mClamp >= 1 ? Math.floor(rptOpts.mClamp) : 20;
     this.#restirPtWCap = typeof rptOpts.wCap === 'number' && rptOpts.wCap > 0 ? rptOpts.wCap : 10;
+    this.#restirPtAllowGlossyReuse = rptOpts.experimentalGlossyReuse === true;
     this.#gpu = new GpuResources(
       opts.device,
       traceTier,
@@ -1547,7 +1555,13 @@ class PTEngineWebGPU implements Engine {
       const reservoirBuffersReady = gpu.ensureReservoirBuffers(width, height);
       if (reservoirBuffersReady) {
         gpu.ensureReservoirPipelines();
-        gpu.writeReservoirParams(width, height, this.#restirPtMClamp, this.#restirPtWCap);
+        gpu.writeReservoirParams(
+          width,
+          height,
+          this.#restirPtMClamp,
+          this.#restirPtWCap,
+          this.#restirPtAllowGlossyReuse,
+        );
         gpu.buildReservoirBindGroups(this.#sceneBuffers!);
         restirPtReady =
           gpu.rptProducerPipeline != null &&
