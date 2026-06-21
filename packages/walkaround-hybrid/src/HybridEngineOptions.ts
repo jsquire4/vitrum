@@ -263,10 +263,12 @@ export interface HybridEngineOptions extends EngineOptions {
    *     force CPU pack mode. When omitted, multi-mesh / instanced vitrum
    *     scenes default to TLAS pack (GPU traversal still merged until PR-3).
    *   - `'walkaround-hybrid'.resolveEnvironmentMap` — optional host callback
-   *     for resolving opaque HDRI handles into walkaround-hybrid's diffuse
-   *     sky scalars. The core `EnvironmentMapRef` remains opaque; this hook is
-   *     the typed escape hatch for hosts that already have a CPU-side average /
-   *     precomputed probe for that handle.
+   *     for resolving opaque HDRI handles into walkaround-hybrid sky data. The
+   *     callback may return diffuse sky scalars, or a CPU-readable `rawHdri`
+   *     equirect payload that walkaround converts into its directional IBL map
+   *     and importance CDFs. The core `EnvironmentMapRef` remains opaque; this
+   *     hook is the typed escape hatch for hosts that already have CPU-side HDRI
+   *     pixels or a precomputed average for that handle.
    */
   readonly extensions?: Readonly<Record<string, unknown>> & {
     readonly 'walkaround-hybrid'?: {

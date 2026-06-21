@@ -2057,13 +2057,11 @@ export class HybridEngine implements Engine {
    * the way `pt-webgl` does, with no engine recreation.
    *
    * **What this backend's "environment" actually is.** The walkaround-hybrid
-   * realtime stack has NO IBL baker / equirect sampler (unlike `pt-webgl`'s
-   * `IblBakerCache`). Its environment lighting is the diffuse sky-dome pair
-   * {@link _skyTint} (RGB) + {@link _skyIrradiance} (scalar) consumed by the
-   * DDGI ProbeUpdate UBO + the shade pass's sky-aperture / sky-miss paths.
-   * So a runtime env swap MAPS the `SceneEnvironment` onto those scalars
-   * (see {@link _skyScalarsFromEnvironment}); there is no real HDRI texture to
-   * re-bake, so this is intentionally cheap.
+   * realtime stack keeps a diffuse sky-dome fallback pair ({@link _skyTint} RGB
+   * + {@link _skyIrradiance} scalar) for probe/shade sky misses, and also binds a
+   * compact directional equirect/CDF texture when the environment supplies
+   * CPU-readable HDRI pixels or a procedural-sky bake. Opaque HDRI handles remain
+   * scalar-only unless the host resolver provides readable pixels.
    *
    * **What it does (the minimal correct update):**
    *  - Maps the env → sky scalars and mutates `_skyTint` / `_skyIrradiance`

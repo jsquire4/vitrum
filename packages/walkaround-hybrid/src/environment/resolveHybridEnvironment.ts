@@ -43,7 +43,7 @@ export interface HybridResolvedEnvironment {
   readonly directionalIntensity?: number;
 }
 
-interface HybridEnvironmentMapResolverResult {
+export interface HybridEnvironmentMapResolverResult {
   /**
    * Unit-intensity tint for the opaque environment map handle. The resolver
    * applies SceneEnvironment.intensity to skyIrradiance after this callback.
@@ -54,6 +54,14 @@ interface HybridEnvironmentMapResolverResult {
    * when omitted, so SceneEnvironment.intensity still has an effect.
    */
   readonly skyIrradiance?: number;
+  /**
+   * Optional CPU-readable equirect payload for the opaque HDRI handle. When this
+   * is a raw `{ width, height, data }` RGB/RGBA payload, walkaround builds the
+   * same directional IBL map + importance CDFs used for native raw HDRI handles.
+   * `skyTint` / `skyIrradiance` remain optional scalar fallback overrides; when
+   * omitted, they are derived from this payload's solid-angle-weighted average.
+   */
+  readonly rawHdri?: EnvironmentMapRef;
   readonly warnings?: readonly string[];
 }
 
@@ -215,27 +223,65 @@ function resolveHdriWithExtensionResolver(
   if (resolved.warnings !== undefined) {
     warnings.push(...resolved.warnings.map((warning) => String(warning)));
   }
-  const result: {
-    mode: 'hdri-extension-resolver';
-    skyTint?: HybridSkyVec3;
-    skyIrradiance: number;
-    warnings: readonly string[];
-  } = {
+  const rawResolved = resolveResolverRawHdri(resolved.rawHdri, intensity, env.rotationY, warnings);
+  const tint = finiteVec3(resolved.skyTint, warnings, 'HDRI resolver skyTint') ?? rawResolved?.skyTint;
+  return {
     mode: 'hdri-extension-resolver',
+    ...(tint !== undefined ? { skyTint: tint } : {}),
     skyIrradiance:
-      finiteNonNegativeScalar(
-        resolved.skyIrradiance,
-        1,
-        warnings,
-        'HDRI resolver skyIrradiance',
-      ) * intensity,
+      resolved.skyIrradiance !== undefined
+        ? finiteNonNegativeScalar(
+          resolved.skyIrradiance,
+          1,
+          warnings,
+          'HDRI resolver skyIrradiance',
+        ) * intensity
+        : rawResolved?.skyIrradiance ?? intensity,
     warnings,
+    ...(rawResolved?.directional !== undefined
+      ? {
+        directional: rawResolved.directional,
+        rotationY: rawResolved.rotationY,
+        directionalIntensity: rawResolved.directionalIntensity,
+      }
+      : {}),
   };
-  const tint = finiteVec3(resolved.skyTint, warnings, 'HDRI resolver skyTint');
-  if (tint !== undefined) {
-    result.skyTint = tint;
+}
+
+function resolveResolverRawHdri(
+  rawHdri: EnvironmentMapRef | undefined,
+  intensity: number,
+  rotationYInput: number | undefined,
+  warnings: string[],
+): Pick<
+  HybridResolvedEnvironment,
+  'skyTint' | 'skyIrradiance' | 'directional' | 'rotationY' | 'directionalIntensity'
+> | null {
+  if (rawHdri === undefined) return null;
+  const raw = readRawNumericHdriPayload(rawHdri);
+  if (raw.kind === 'raw') {
+    const rotationY = finiteRotationY(rotationYInput, warnings);
+    const resolved = resolveRawHdriAverage(raw.payload, intensity, rotationY, warnings);
+    return {
+      ...(resolved.skyTint !== undefined ? { skyTint: resolved.skyTint } : {}),
+      ...(resolved.skyIrradiance !== undefined ? { skyIrradiance: resolved.skyIrradiance } : {}),
+      ...(resolved.directional !== undefined
+        ? {
+          directional: resolved.directional,
+          rotationY: resolved.rotationY ?? 0,
+          directionalIntensity: resolved.directionalIntensity ?? intensity,
+        }
+        : {}),
+    };
   }
-  return result;
+  if (raw.kind === 'malformed') {
+    warnings.push(`HDRI resolver rawHdri was malformed: ${raw.warning}`);
+  } else {
+    warnings.push(
+      'HDRI resolver rawHdri was opaque; using scalar resolver output only.',
+    );
+  }
+  return null;
 }
 
 function resolveRawHdriAverage(

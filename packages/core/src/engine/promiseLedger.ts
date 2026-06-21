@@ -1016,10 +1016,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     methodPromises: {
       ...COMMON_METHOD_PROMISES,
       // updateEnvironment note: env-only runtime update IS implemented
-      // (HybridEngine.updateEnvironment): maps SceneEnvironment onto diffuse
-      // sky-dome scalars (skyTint/skyIrradiance), invalidates the DDGI probe
-      // cache + resets the temporal accumulator, NO BVH rebuild. HDRI is
-      // intensity-only (no equirect sampling); see the method's JSDoc. ✓ via spread.
+      // (HybridEngine.updateEnvironment): maps SceneEnvironment onto sky fallback
+      // scalars plus directional equirect/CDF data when CPU-readable HDRI or
+      // procedural-sky payloads are available, invalidates the DDGI probe cache
+      // + resets the temporal accumulator, NO BVH rebuild. ✓ via spread.
       //
       // addPrimitive/removePrimitive note: implemented via full setScene-rebuild;
       // see supportsAddRemovePrimitive above. ✓ via spread.

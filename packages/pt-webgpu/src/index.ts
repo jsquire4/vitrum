@@ -1623,11 +1623,11 @@ class PTEngineWebGPU implements Engine {
       photonPass.end();
     }
 
-    // ── ReSTIR-PT reuse sequence: producer → temporal → resolve (before the
-    //    megakernel; the result lands in the SEPARATE rpt_result debug buffer,
-    //    NOT the beauty image, this increment). The passes share the megakernel's
-    //    group-1/2/3 scene bind groups (same explicit layouts) + their own
-    //    group-0 (the reuse-extended one). ──
+    // ── ReSTIR-PT reuse sequence: producer → temporal → spatial → resolve
+    //    before the megakernel. Resolve writes both the diagnostics buffer and
+    //    the composite contribution consumed by the beauty path. The passes
+    //    share the megakernel's group-1/2/3 scene bind groups (same explicit
+    //    layouts) + their own group-0 (the reuse-extended one). ──
     if (restirPtReady) {
       this.#encodeRestirPtReusePasses(encoder, gpu, width, height);
     }

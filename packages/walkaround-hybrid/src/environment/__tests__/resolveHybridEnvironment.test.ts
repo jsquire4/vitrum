@@ -208,6 +208,70 @@ describe('resolveHybridEnvironment', () => {
     expect(resolved.warnings).toContain('host resolver used a precomputed cubemap average');
   });
 
+  it('uses resolver-provided raw HDRI payloads for directional IBL while deriving scalar fallback', () => {
+    const hdri = { texture: 'opaque-host-handle' };
+    const resolver: HybridEnvironmentMapResolver = vi.fn(() => ({
+      rawHdri: {
+        width: 2,
+        height: 1,
+        data: new Float32Array([
+          4, 1, 1,
+          0, 2, 0,
+        ]),
+      },
+    }));
+
+    const resolved = resolveHybridEnvironment(
+      { kind: 'hdri', hdri, intensity: 0.25, rotationY: 0.9 },
+      {
+        extensions: {
+          'walkaround-hybrid': {
+            resolveEnvironmentMap: resolver,
+          },
+        },
+      },
+    );
+
+    expect(resolver).toHaveBeenCalledWith(hdri, { kind: 'hdri', hdri, intensity: 0.25, rotationY: 0.9 });
+    expect(resolved.mode).toBe('hdri-extension-resolver');
+    expectVecClose(resolved.skyTint, [1, 0.75, 0.25]);
+    expect(resolved.skyIrradiance).toBeCloseTo(0.5);
+    expect(resolved.directional).toBeDefined();
+    expect(resolved.directional!.width).toBe(2);
+    expect(resolved.directional!.height).toBe(1);
+    expect(resolved.directional!.totalWeight).toBeGreaterThan(0);
+    expect(resolved.rotationY).toBeCloseTo(0.9);
+    expect(resolved.directionalIntensity).toBeCloseTo(0.25);
+    expect(resolved.warnings.join('\n')).toContain('directional IBL map');
+  });
+
+  it('lets resolver scalar overrides coexist with a raw directional HDRI payload', () => {
+    const resolved = resolveHybridEnvironment(
+      { kind: 'hdri', hdri: { texture: 'opaque-host-handle' }, intensity: 2 },
+      {
+        extensions: {
+          'walkaround-hybrid': {
+            resolveEnvironmentMap: () => ({
+              rawHdri: {
+                width: 1,
+                height: 1,
+                data: new Float32Array([1, 0, 0]),
+              },
+              skyTint: [0.1, 0.2, 0.3],
+              skyIrradiance: 0.5,
+            }),
+          },
+        },
+      },
+    );
+
+    expect(resolved.mode).toBe('hdri-extension-resolver');
+    expect(resolved.skyTint).toEqual([0.1, 0.2, 0.3]);
+    expect(resolved.skyIrradiance).toBe(1);
+    expect(resolved.directional).toBeDefined();
+    expect(resolved.directionalIntensity).toBe(2);
+  });
+
   it('falls back to intensity-only when the extension resolver declines', () => {
     const resolved = resolveHybridEnvironment(
       { kind: 'hdri', hdri: { texture: 'opaque-host-handle' }, intensity: 1.25 },

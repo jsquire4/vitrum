@@ -1687,6 +1687,37 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
+  it('updateLighting republishes DDGI sun lights with the runtime primary-light direction', () => {
+    const scene = baseScene([{
+      kind: 'directional',
+      id: 'scene-sun',
+      direction: [0, -1, 0],
+      color: [1, 0.9, 0.8],
+      intensity: 2,
+    }]);
+    const { engine, pipeline, ddgi } = seedEngine(scene, { bvhMode: 'tlas' });
+    try {
+      engine.updateLighting({ primaryLightDir: [1, 0, 0] });
+
+      expect(ddgi.setSunIntensityMultiplier).toHaveBeenCalledWith(1);
+      expect(ddgi.setLights).toHaveBeenCalledTimes(1);
+      const lights = ddgi.setLights.mock.calls[0]?.[0] ?? [];
+      expect(lights).toHaveLength(1);
+      const sun = lights[0];
+      expect(sun?.kind).toBe('sun');
+      if (sun?.kind !== 'sun') throw new Error('expected DDGI sun');
+      expect(sun.direction).toBeDefined();
+      if (sun.direction == null) throw new Error('expected oriented DDGI sun direction');
+      expect(sun.direction.x).toBeCloseTo(-1);
+      expect(sun.direction.y).toBeCloseTo(0);
+      expect(sun.direction.z).toBeCloseTo(0);
+      expect(ddgi.invalidateProbeCache).toHaveBeenCalled();
+      expect(pipeline.requestAccumReset).toHaveBeenCalledTimes(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('updateLighting after dispose is a direct-backend no-op', () => {
     const { engine, pipeline, ddgi, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
 
