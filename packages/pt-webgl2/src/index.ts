@@ -12,6 +12,8 @@ import type {
   FrameOutput,
   FrameRendered,
   FrameStats,
+  InverseSession,
+  InverseSessionOptions,
   MaterialSpec,
   ProgressStats,
   Scene,
@@ -53,6 +55,7 @@ import {
   OIDNFinalDispatcher,
   type DenoisedFrame,
 } from './denoise/oidnFinalDispatcher.js';
+import { WebGl2FiniteDifferenceInverseSession } from './inverse/finiteDifferenceSession.js';
 
 const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
@@ -351,6 +354,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #resolutionFactor = 1;
   /** Last-frame input retained for the debug click-to-pick surface (T3.G #30). */
   #lastFrameInput: FrameInput | null = null;
+  #inInverseRender = false;
 
   // ── Subscriptions ─────────────────────────────────────────────────────────
   #onFrameSubs = new Set<(s: FrameStats) => void>();
@@ -587,6 +591,30 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     return this.#scene;
   }
 
+  createInverseSession(opts: InverseSessionOptions): InverseSession {
+    this.#guardLive('createInverseSession');
+    if (this.#scene == null) {
+      throw new Error('createInverseSession: call setScene() before opening an inverse session.');
+    }
+    if (this.#lastFrameInput == null) {
+      throw new Error(
+        'createInverseSession: call renderFrame() at least once before opening an ' +
+          'inverse session - the session re-renders the most-recent camera view.',
+      );
+    }
+    return new WebGl2FiniteDifferenceInverseSession({
+      getScene: () => this.#scene!,
+      renderAndReadback: (width, height, samples) =>
+        this.#renderAndReadbackForInverse(width, height, samples),
+      patchMaterial: (primitiveId, patch) => {
+        this.updatePrimitive(primitiveId, { material: patch } as Partial<ScenePrimitive>);
+      },
+      patchEmitter: (emitterId, patch) => {
+        this.updateEmitter(emitterId, patch);
+      },
+    }, opts);
+  }
+
   // ── Debug introspection (T3.G #30) ────────────────────────────────────────
   // CPU click-to-pick using the retained scene + last-frame camera matrices.
   // Returns null before the first renderFrame (no camera) or on a miss.
@@ -800,7 +828,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     const h = Math.max(1, Math.floor(baseHeight * res));
 
     // Paused → return the current accumulation without drawing.
-    if (this.#slot.get() === 'paused') {
+    if (this.#slot.get() === 'paused' && !this.#inInverseRender) {
       const tex = this.#gpu.resultTexture();
       if (tex == null) return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
       return this.#frameRendered(tex, this.#samplesAccumulated, this.#samplesAccumulated >= targetSpp, targetSpp);
@@ -868,6 +896,46 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       height: this.#gpu.accumDims.height,
       rgba,
     };
+  }
+
+  async #renderAndReadbackForInverse(
+    width: number,
+    height: number,
+    samples: number,
+  ): Promise<{ rgba: Float32Array; channels: 4 }> {
+    const last = this.#lastFrameInput!;
+    const frozenSeedBase = 0x5eed5eed;
+    const previousRequestedSize = this.#requestedSize;
+    const previousResolutionFactor = this.#resolutionFactor;
+    this.#inInverseRender = true;
+    this.#requestedSize = { width, height };
+    this.#resolutionFactor = 1;
+    try {
+      this.reset();
+      for (let s = 0; s < samples; s += 1) {
+        this.renderFrame({
+          ...last,
+          frameIndex: 0,
+          frameSeed: (frozenSeedBase + s) >>> 0,
+          viewport: { width, height, devicePixelRatio: 1 },
+          quality: {
+            ...(last.quality ?? {}),
+            samplesTarget: samples,
+            resolutionFactor: 1,
+          },
+        });
+      }
+      const frame = await this.captureFrame({ colorSpace: 'linear' });
+      return {
+        rgba: frame?.rgba ?? new Float32Array(width * height * 4),
+        channels: 4,
+      };
+    } finally {
+      this.#inInverseRender = false;
+      this.#requestedSize = previousRequestedSize;
+      this.#resolutionFactor = previousResolutionFactor;
+      this.reset();
+    }
   }
 
   reset(): void {

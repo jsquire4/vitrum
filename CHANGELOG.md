@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added (pt-webgl2 inverse session, 2026-06-20)
+
+- **`@vitrum/pt-webgl2` now exposes `createInverseSession()` with finite-difference gradients:** the WebGL2 backend uses the retained last camera, a frozen seed sequence, normal `renderFrame()` accumulation, RGBA32F readback, and existing material/emitter mutation hooks to support the public inverse-rendering session contract. Requested `method:'path-replay'` downgrades with a structured diagnostic; analytic adjoint replay remains pt-webgpu-only.
+
+### Fixed (walkaround sampler policy scope, 2026-06-20)
+
+- **Walkaround atlas-backed material maps now honor footprint-independent nearest/linear filtering:** material-atlas metadata packs per-map filter bits alongside wrap/UV selection, and WGSL performs nearest or bilinear base-level sampling manually through `textureLoad`. Runtime and glTF compatibility warnings are narrowed to sampler policies that require mip LOD or min/mag footprint selection in compute passes.
+
 ### Added (denoiser auto-resolution truthfulness, 2026-06-20)
 
 - **`denoiser:'auto'` is now an explicit, truthful engine option:** `@vitrum/core` includes `auto` in `EngineDenoiserMode`; `@vitrum/walkaround-hybrid` resolves it to host-provided neural weights, host-provided OIDN model URL, or the preset/default denoiser and emits `walkaround-hybrid.denoiser-auto-resolved` with `packageProvidesProductionWeights:false`. pt-webgl2/pt-webgpu resolve `auto` to host `oidn.modelUrl` when present or no-denoise when absent, emit backend-scoped `*.denoiser-auto-resolved` warnings, and ledger `auto` as native resolver support.

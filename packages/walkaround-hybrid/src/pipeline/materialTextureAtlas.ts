@@ -120,6 +120,17 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'bumpMap', colorSpace: 'linear' },
 ];
 
+const FILTER_MODE_INDEX: Readonly<Record<TextureFilterMode, number>> = {
+  nearest: 0,
+  linear: 1,
+};
+
+const MIP_FILTER_INDEX: Readonly<Record<TextureMipFilterMode, number>> = {
+  none: 0,
+  nearest: 1,
+  linear: 2,
+};
+
 export interface MaterialTextureAtlasPayload {
   readonly atlasData: Float32Array;
   readonly atlasDim: number;
@@ -262,7 +273,10 @@ function textureRefSourceMetadata(ref: TextureRef): TextureRefSourceMetadata | u
 }
 
 function hasAuthoredSamplerPolicy(ref: TextureRef): boolean {
-  return ref.magFilter !== undefined || ref.minFilter !== undefined || ref.mipFilter !== undefined;
+  const magFilter = ref.magFilter ?? 'nearest';
+  const minFilter = ref.minFilter ?? 'nearest';
+  const mipFilter = ref.mipFilter ?? 'none';
+  return magFilter !== minFilter || mipFilter !== 'none';
 }
 
 function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
@@ -360,6 +374,22 @@ function wrapIndex(mode: TextureWrapMode | undefined): number {
     case 'mirrored-repeat':
       return 2;
   }
+}
+
+function samplerPolicyPacked(ref: TextureRef, texCoord: number): number {
+  const wrapS = wrapIndex(ref.wrapS);
+  const wrapT = wrapIndex(ref.wrapT);
+  const mipFilter = MIP_FILTER_INDEX[ref.mipFilter ?? 'none'];
+  const magFilter = FILTER_MODE_INDEX[ref.magFilter ?? 'nearest'];
+  const minFilter = FILTER_MODE_INDEX[ref.minFilter ?? 'nearest'];
+  return (
+    wrapS +
+    wrapT * 4 +
+    texCoord * 16 +
+    mipFilter * 64 +
+    magFilter * 256 +
+    minFilter * 512
+  );
 }
 
 function writeDisabledMeta(meta: Float32Array, texel: number): void {
@@ -491,7 +521,9 @@ export function packMaterialTextureAtlas(
           `${field} texture authors sampler filter/mip policy ` +
           `(mag=${ref.magFilter ?? 'default'}, min=${ref.minFilter ?? 'default'}, mip=${ref.mipFilter ?? 'default'})` +
           `${source?.path !== undefined ? ` at ${source.path}` : ''}; ` +
-          'walkaround material atlas uses a shared atlas sampler, so the map remains atlas-backed with approximate filtering.',
+          'walkaround material atlas honors footprint-independent nearest/linear filtering, but ' +
+          'this policy needs implicit LOD or min/mag footprint selection in compute passes; ' +
+          'the map remains atlas-backed with approximate mip/footprint filtering.',
       });
     }
     const pushInvalidTransformDiagnostic = (): void => {
@@ -640,7 +672,7 @@ export function packMaterialTextureAtlas(
     const b0 = texel * 4;
     const b1 = b0 + 4;
     baseColorMetaData[b0] = layer;
-    baseColorMetaData[b0 + 1] = wrapIndex(ref.wrapS) + wrapIndex(ref.wrapT) * 4 + texCoord * 16;
+    baseColorMetaData[b0 + 1] = samplerPolicyPacked(ref, texCoord);
     baseColorMetaData[b0 + 2] = finiteOrFallback(t?.offset?.[0], 0);
     baseColorMetaData[b0 + 3] = finiteOrFallback(t?.offset?.[1], 0);
     baseColorMetaData[b1] = finiteOrFallback(t?.scale?.[0], 1);

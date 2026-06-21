@@ -1055,7 +1055,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) emits a structured warning when an atlas-backed map uses authored sampler policy', () => {
+  it('updatePrimitive(material) emits a structured warning when an atlas-backed map uses footprint-dependent sampler policy', () => {
     const { engine, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
     const baseColorMap = {
       handle: baseColorMapHandle(192),
@@ -1095,7 +1095,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         textureIndex: 7,
         imageIndex: 8,
         samplerIndex: 9,
-        fallback: 'shared atlas sampler',
+        fallback: 'base-level atlas sampler',
       });
       expect(warning?.message).toContain('requests sampler policy');
       expect(warning?.message).toContain('map remains atlas-backed');

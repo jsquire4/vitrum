@@ -259,6 +259,32 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[1]).toBe(16);
   });
 
+  it('packs footprint-independent sampler filter policy without diagnostics', () => {
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Uint8Array([255, 255, 255, 255]),
+          __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+        },
+        magFilter: 'linear',
+        minFilter: 'linear',
+        mipFilter: 'none',
+      },
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+
+    expect(atlas.readableBaseColorLayerCount).toBe(1);
+    expect(atlas.baseColorMetaData[0]).toBe(0);
+    expect(atlas.baseColorMetaData[1]).toBe(256 + 512);
+    expect(atlas.diagnostics).toEqual([]);
+  });
+
   it('reports unsupported texCoord values and disables the atlas metadata', () => {
     const handle = {
       width: 1,
@@ -299,7 +325,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.diagnostics[0]?.message).toContain('texCoord 2');
   });
 
-  it('reports authored sampler policies as approximate while keeping the map atlas-backed', () => {
+  it('reports footprint-dependent sampler policies as approximate while keeping the map atlas-backed', () => {
     const handle = {
       width: 1,
       height: 1,
@@ -329,6 +355,7 @@ describe('walkaround materialTextureAtlas', () => {
 
     expect(atlas.readableBaseColorLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[0]).toBe(0);
+    expect(atlas.baseColorMetaData[1]).toBe(2 * 64);
     expect(atlas.diagnostics).toEqual([
       expect.objectContaining({
         code: 'material-texture-sampler-policy-approximation',
@@ -346,7 +373,7 @@ describe('walkaround materialTextureAtlas', () => {
       }),
     ]);
     expect(atlas.diagnostics[0]?.message).toContain('map remains atlas-backed');
-    expect(atlas.diagnostics[0]?.message).toContain('approximate filtering');
+    expect(atlas.diagnostics[0]?.message).toContain('approximate mip/footprint filtering');
   });
 
   it('packs roughnessMap and metallicMap as linear scalar atlas slots', () => {

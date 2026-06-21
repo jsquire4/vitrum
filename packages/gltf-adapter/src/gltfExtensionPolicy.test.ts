@@ -698,7 +698,7 @@ describe('glTF common extension policy', () => {
     expect(ptWebgpuIssues.some((issue) => issue.name.endsWith('.samplerPolicy'))).toBe(false);
   });
 
-  it('treats nearest non-mip sampler policy as exact on pt-webgl2 and pt-webgpu full', () => {
+  it('treats nearest non-mip sampler policy as exact on pt-webgl2, pt-webgpu full, and walkaround', () => {
     const { gltf } = minimalMaterialGltf({
       pbrMetallicRoughness: {
         baseColorTexture: { index: 0 },
@@ -714,6 +714,9 @@ describe('glTF common extension policy', () => {
       (issue) => issue.name === 'baseColorMap.samplerPolicy',
     )).toBe(false);
     expect(evaluateGltfBackendCompatibility(report, 'pt-webgpu').issues.some(
+      (issue) => issue.name === 'baseColorMap.samplerPolicy',
+    )).toBe(false);
+    expect(evaluateGltfBackendCompatibility(report, 'walkaround-hybrid').issues.some(
       (issue) => issue.name === 'baseColorMap.samplerPolicy',
     )).toBe(false);
   });

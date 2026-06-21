@@ -1124,8 +1124,9 @@ export class HybridEngine implements Engine {
                   `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
                   `requests sampler policy ` +
                   `mag=${diagnostic.magFilter ?? 'default'}, min=${diagnostic.minFilter ?? 'default'}, ` +
-                  `mip=${diagnostic.mipFilter ?? 'default'}; the material atlas uses a shared atlas sampler, ` +
-                  `so the map remains atlas-backed with approximate filtering.`
+                  `mip=${diagnostic.mipFilter ?? 'default'}; the material atlas honors footprint-independent ` +
+                  `nearest/linear filtering, but this policy needs implicit LOD or min/mag footprint selection ` +
+                  `in compute passes, so the map remains atlas-backed with approximate mip/footprint filtering.`
           : `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
             `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
             `has a texture handle that is not CPU-readable; ` +
@@ -1160,7 +1161,7 @@ export class HybridEngine implements Engine {
             : invalidTransform
               ? 'identity texture transform fallback'
               : samplerPolicy
-                ? 'shared atlas sampler'
+                ? 'base-level atlas sampler'
                 : 'map ignored',
         },
       });

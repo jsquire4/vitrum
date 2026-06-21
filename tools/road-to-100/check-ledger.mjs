@@ -717,11 +717,13 @@ for (const needle of [
 const walkaroundMaterialTextureAtlas = await readText("packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts");
 for (const needle of [
   "'material-texture-sampler-policy-approximation'",
+  "const FILTER_MODE_INDEX",
+  "function samplerPolicyPacked(",
   "function hasAuthoredSamplerPolicy(",
-  "map remains atlas-backed with approximate filtering",
+  "map remains atlas-backed with approximate mip/footprint filtering",
 ]) {
   if (!walkaroundMaterialTextureAtlas.includes(needle)) {
-    fail(`walkaround material texture atlas must diagnose sampler policy approximation: ${needle}`);
+    fail(`walkaround material texture atlas must retain scoped sampler policy handling: ${needle}`);
   }
 }
 

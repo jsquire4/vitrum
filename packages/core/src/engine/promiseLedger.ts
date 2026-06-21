@@ -43,7 +43,8 @@ export interface BackendMethodPromises {
   /**
    * Whether the backend implements `Engine.createInverseSession()` — the
    * differentiable ray-tracing inverse session opener. pt-webgpu only;
-   * walkaround-hybrid and pt-webgl2 omit this method.
+   * walkaround-hybrid omits this method. pt-webgl2 exposes the finite-difference
+   * session only; pt-webgpu also has the scoped path-replay adjoint fast path.
    */
   readonly createInverseSession: boolean;
   /**
@@ -1100,9 +1101,10 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       // T3.G #30 — pt-webgl2 exposes debug.pickPrimitive and advertises
       // capabilities.debugSurface=true.
       debug: true,
-      // pt-webgl2 does not implement any of the following optional methods:
-      // inverse rendering, ReSTIR-PT buffer, progressive seed, or GI persistence.
-      createInverseSession: false,
+      // pt-webgl2 implements the inverse-rendering API surface with the safe
+      // backend-agnostic finite-difference method. It intentionally does not
+      // expose pt-webgpu's scoped path-replay adjoint hook.
+      createInverseSession: true,
       getRestirPtResultBuffer: false,
       getProgressiveSeedTexture: false,
       seedAccumulator: false,

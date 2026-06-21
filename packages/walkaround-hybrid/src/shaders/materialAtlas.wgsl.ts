@@ -2,8 +2,9 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 // Phase-3D material-map atlas. The host stores readable material TextureRefs as
-// RGBA32F array layers plus per-triangle metadata. textureLoad keeps this path
-// sampler-free and preserves the scene group's storage-buffer budget.
+// RGBA32F array layers plus per-triangle metadata. The helper below implements
+// sampler policy manually with textureLoad so compute passes and fragment passes
+// consume identical material-map samples.
 @group(1) @binding(20) var materialTextureAtlas: texture_2d_array<f32>;
 @group(1) @binding(21) var baseColorMapMeta: texture_2d<f32>;
 @group(1) @binding(22) var bvh_tangent: texture_2d<f32>;
@@ -65,6 +66,72 @@ fn wrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
   return vec2f(wrapMaterialUv1(uv.x, wrapS), wrapMaterialUv1(uv.y, wrapT));
 }
 
+fn wrapMaterialTexelIndex(index: i32, size: i32, mode: u32) -> i32 {
+  if (size <= 1) {
+    return 0;
+  }
+  if (mode == 1u) {
+    return clamp(index, 0, size - 1);
+  }
+  if (mode == 2u) {
+    let period = size * 2;
+    var x = index % period;
+    if (x < 0) {
+      x = x + period;
+    }
+    if (x >= size) {
+      return period - x - 1;
+    }
+    return x;
+  }
+  var x = index % size;
+  if (x < 0) {
+    x = x + size;
+  }
+  return x;
+}
+
+fn materialAtlasFilterMode(samplerPacked: u32) -> u32 {
+  let magFilter = (samplerPacked >> 8u) & 0x1u;
+  let minFilter = (samplerPacked >> 9u) & 0x1u;
+  return select(magFilter, minFilter, magFilter != minFilter);
+}
+
+fn sampleMaterialAtlasNearestBaseLevel(wrapped: vec2f, layer: i32) -> vec4f {
+  let dims = textureDimensions(materialTextureAtlas);
+  let texel = vec2i(
+    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
+    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
+  );
+  return textureLoad(materialTextureAtlas, texel, layer, 0);
+}
+
+fn sampleMaterialAtlasLinearBaseLevel(wrapped: vec2f, layer: i32, samplerPacked: u32) -> vec4f {
+  let dims = textureDimensions(materialTextureAtlas);
+  let size = vec2i(i32(dims.x), i32(dims.y));
+  let coord = wrapped * vec2f(f32(dims.x), f32(dims.y)) - vec2f(0.5);
+  let base = vec2i(i32(floor(coord.x)), i32(floor(coord.y)));
+  let f = coord - vec2f(floor(coord.x), floor(coord.y));
+  let wrapS = samplerPacked & 0x3u;
+  let wrapT = (samplerPacked >> 2u) & 0x3u;
+  let x0 = wrapMaterialTexelIndex(base.x, size.x, wrapS);
+  let x1 = wrapMaterialTexelIndex(base.x + 1, size.x, wrapS);
+  let y0 = wrapMaterialTexelIndex(base.y, size.y, wrapT);
+  let y1 = wrapMaterialTexelIndex(base.y + 1, size.y, wrapT);
+  let c00 = textureLoad(materialTextureAtlas, vec2i(x0, y0), layer, 0);
+  let c10 = textureLoad(materialTextureAtlas, vec2i(x1, y0), layer, 0);
+  let c01 = textureLoad(materialTextureAtlas, vec2i(x0, y1), layer, 0);
+  let c11 = textureLoad(materialTextureAtlas, vec2i(x1, y1), layer, 0);
+  return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
+fn sampleMaterialAtlasBaseLevel(wrapped: vec2f, layer: i32, samplerPacked: u32) -> vec4f {
+  if (materialAtlasFilterMode(samplerPacked) == 0u) {
+    return sampleMaterialAtlasNearestBaseLevel(wrapped, layer);
+  }
+  return sampleMaterialAtlasLinearBaseLevel(wrapped, layer, samplerPacked);
+}
+
 fn interpolateUv1FromNormalW(hit: IntersectionResult, n0: vec4f, n1: vec4f, n2: vec4f) -> vec2f {
   let uvA = unpack2x16float(bitcast<u32>(n0.w));
   let uvB = unpack2x16float(bitcast<u32>(n1.w));
@@ -106,12 +173,7 @@ fn sampleMaterialAtlasRawAtOffsetDelta(
     scaled.x * meta1.w + scaled.y * meta1.z,
   ) + meta0.zw + transformedDelta;
   let wrapped = wrapMaterialUv(transformed, wrapPacked);
-  let dims = textureDimensions(materialTextureAtlas);
-  let texel = vec2i(
-    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
-    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
-  );
-  return textureLoad(materialTextureAtlas, texel, layer, 0);
+  return sampleMaterialAtlasBaseLevel(wrapped, layer, wrapPacked);
 }
 
 fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
