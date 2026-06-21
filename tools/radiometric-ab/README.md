@@ -213,10 +213,9 @@ luminance statistics are therefore linear-HDR float32 values rather than display
 8-bit swap-chain samples.
 
 **Current WSL validation status (2026-06-21):** the latest committed native-Deno
-status is `PASS-PARTIAL` from a targeted `VITRUM_WALKAROUND_AB_CASES=sun` run.
-That run exited 0 and records SUN as `PASS` with receiver ratio = 0.99948; the
-wrapper keeps the aggregate status partial because the preserved result file
-still includes GLASS `SMOKE` and GLOSSY `FINDING`. The wrapper can still record
+status is `PASS-PARTIAL` from a completed full-suite run. It records SUN as `PASS`
+with receiver ratio = 0.99948; the wrapper keeps the aggregate status
+partial because GLASS remains `SMOKE` and GLOSSY remains `FINDING`. The wrapper can still record
 `HOST-BLOCKED` if Deno/wgpu-hal panics or times out before a verdict; slow
 native-Deno hosts can raise the default 180-second wrapper budget with
 `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
