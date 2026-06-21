@@ -662,9 +662,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   sheenRoughnessMap: 'approximate',
   iridescenceMap: 'approximate',
   iridescenceThicknessMap: 'approximate',
-  // Full-tier samplers consume KHR_materials_anisotropy RG/B map data, but the
-  // anisotropic lobe still uses isotropic Kulla-Conty multiscatter compensation
-  // and lacks a full anisotropic material-furnace promotion gate.
+  // Full-tier samplers consume KHR_materials_anisotropy RG/B map data. The
+  // anisotropic lobe uses a conservative projected-roughness Kulla-Conty
+  // approximation over the isotropic E LUT; still approximate until a full
+  // anisotropic material-furnace promotion gate lands.
   anisotropyMap: 'approximate',
   specularColorMap: 'approximate',
   specularIntensityMap: 'approximate',
@@ -709,8 +710,10 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Full TMM evaluation; 8-layer cap (contract sanctions backend caps).
   thinFilmStack: 'native',
   // Anisotropic GGX sampler/eval/PDF and map rotation are live, including inverse
-  // direct-light replay, but energy compensation and specialty-integrator proof
-  // remain approximate until the anisotropic furnace/reference row is promoted.
+  // direct-light replay. Energy compensation uses the same conservative
+  // projected-roughness Kulla-Conty approximation as anisotropyMap, and specialty-
+  // integrator proof remains approximate until the anisotropic furnace/reference
+  // row is promoted.
   anisotropy: 'approximate',
   anisotropyRotation: 'approximate',
   // Contract-sanctioned escape hatch this backend deliberately does not read

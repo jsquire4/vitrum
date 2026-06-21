@@ -500,6 +500,46 @@ fn brdfAnisotropicSpecPdf(
   return (d * g1) / max(4.0 * nDotV, 1e-6);
 }
 
+fn anisotropicProjectedRoughness(
+  dir: vec3f,
+  t: vec3f,
+  b: vec3f,
+  roughness: f32,
+  anisotropy: f32,
+) -> f32 {
+  let alpha = max(roughness * roughness, 1e-3);
+  let axes = computeAnisotropicAxes(alpha, anisotropy);
+  let dT = dot(dir, t);
+  let dB = dot(dir, b);
+  let tangentLen2 = dT * dT + dB * dB;
+  let projectionBlend = clamp(0.15 * anisotropy, 0.0, 0.15);
+  if (tangentLen2 <= 1e-6) {
+    let projectedNormal = sqrt(clamp(0.5 * (axes.x + axes.y), 1e-4, 1.0));
+    return mix(roughness, projectedNormal, projectionBlend);
+  }
+  let alphaEff = sqrt(((dT * axes.x) * (dT * axes.x) + (dB * axes.y) * (dB * axes.y)) / tangentLen2);
+  let projected = sqrt(clamp(alphaEff, 1e-4, 1.0));
+  return mix(roughness, projected, projectionBlend);
+}
+
+fn anisotropicAverageRoughness(roughness: f32, anisotropy: f32) -> f32 {
+  let alpha = max(roughness * roughness, 1e-3);
+  let axes = computeAnisotropicAxes(alpha, anisotropy);
+  let alphaRms = sqrt(0.5 * (axes.x * axes.x + axes.y * axes.y));
+  let projected = sqrt(clamp(alphaRms, 1e-4, 1.0));
+  return mix(roughness, projected, clamp(0.15 * anisotropy, 0.0, 0.15));
+}
+
+fn anisotropicMultiscatterScale(anisotropy: f32, roughnessForScale: f32) -> f32 {
+  // The GGX E table is isotropic. As anisotropy grows, keep the projected lookup
+  // conservative instead of over-promising native anisotropic multiscatter closure.
+  // Medium-gloss anisotropic VNDF paths are already close to furnace closure; the
+  // empirical correction mainly belongs to rough lobes where single scatter loses
+  // obvious energy.
+  let anisoReduction = smoothstep(0.0, 0.35, clamp(anisotropy, 0.0, 1.0));
+  return mix(1.0, 0.6, anisoReduction) * smoothstep(0.35, 0.9, roughnessForScale);
+}
+
 // ── H52 extended BRDF evaluation (base + clearcoat + sheen + iridescence) ─────
 // evaluateBrdfFull: adds the three Disney extension lobes to the base Cook-Torrance
 // BRDF.  Returns the BRDF kernel (WITHOUT nDotL); callers multiply by nDotL once.
@@ -566,10 +606,18 @@ fn evaluateBrdfFullWithClearcoatNormal(
     let anisoT = c * tanT + s * tanB;
     let anisoB = -s * tanT + c * tanB;
     spec = evalBrdfSpecAnisotropic(f0, roughness, anisotropy, normal, anisoT, anisoB, wo, wi);
-    // B9 — Kulla-Conty for anisotropic path: consumed but still approximate.
-    // The anisotropic sampler/eval/PDF are native; multiscatter uses the
-    // isotropic E LUT until the anisotropic furnace/reference row is promoted.
-    ms = ggxMultiscatterLobe(f0, roughness, nDotV, nDotL);
+    // B9 — anisotropy-aware Kulla-Conty approximation. The E LUT is still the
+    // isotropic GGX table, but view/light lookups use projected roughness along
+    // the authored anisotropy axes instead of ignoring the lobe stretch.
+    let roughnessAvg = anisotropicAverageRoughness(roughness, anisotropy);
+    ms = anisotropicMultiscatterScale(anisotropy, roughnessAvg) * ggxMultiscatterLobeRoughness(
+      f0,
+      anisotropicProjectedRoughness(wo, anisoT, anisoB, roughness, anisotropy),
+      anisotropicProjectedRoughness(wi, anisoT, anisoB, roughness, anisotropy),
+      roughnessAvg,
+      nDotV,
+      nDotL,
+    );
   } else {
     let alpha = max(roughness * roughness, 1e-3);
     let d = ggxD(nDotH, alpha);
@@ -1195,7 +1243,21 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
         // 1 + F_avg·(1−E_ss)/E_ss so the sampled estimator recovers the lost
         // multi-bounce energy (1 at low roughness → unchanged smooth surfaces).
         let nDotVcc = max(dot(normal, wo), 0.0);
-        let msBoost = ggxMultiscatterBoost(fresnel, roughness, nDotVcc);
+        let projectedRoughnessV = anisotropicProjectedRoughness(wo, tanT, tanB, roughness, anisotropy);
+        let msBoostRaw = select(
+          ggxMultiscatterBoost(fresnel, roughness, nDotVcc),
+          ggxMultiscatterBoostRoughness(
+            fresnel,
+            projectedRoughnessV,
+            nDotVcc,
+          ),
+          anisotropy > 1e-4,
+        );
+        let msBoost = select(
+          msBoostRaw,
+          vec3f(1.0) + (msBoostRaw - vec3f(1.0)) * anisotropicMultiscatterScale(anisotropy, projectedRoughnessV),
+          anisotropy > 1e-4,
+        );
         result.throughputMul = fresnel * g1Wi * msBoost * lobeWeightSum / max(R, 1e-4);
       } else {
         // Fresnel-weighted refraction branch — the only branch that crosses the
@@ -1312,8 +1374,22 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
     // B9 — multiscatter energy boost on the sampled specular reflection (see the
     // dielectric-reflection branch above).
     let nDotVcc = max(dot(normal, wo), 0.0);
-    let msBoost = ggxMultiscatterBoost(fresnel, roughness, nDotVcc);
-      result.throughputMul = fresnel * g1Wi2 * msBoost * lobeWeightSum / max(specProb, 1e-4);
+    let projectedRoughnessV = anisotropicProjectedRoughness(wo, tanT, tanB, roughness, anisotropy);
+    let msBoostRaw = select(
+      ggxMultiscatterBoost(fresnel, roughness, nDotVcc),
+      ggxMultiscatterBoostRoughness(
+        fresnel,
+        projectedRoughnessV,
+        nDotVcc,
+      ),
+      anisotropy > 1e-4,
+    );
+    let msBoost = select(
+      msBoostRaw,
+      vec3f(1.0) + (msBoostRaw - vec3f(1.0)) * anisotropicMultiscatterScale(anisotropy, projectedRoughnessV),
+      anisotropy > 1e-4,
+    );
+    result.throughputMul = fresnel * g1Wi2 * msBoost * lobeWeightSum / max(specProb, 1e-4);
     } else {
       result.newRayOrigin = hitPos + normal * 1e-3;
       let bs = cosineHemisphereSample(rng, normal);

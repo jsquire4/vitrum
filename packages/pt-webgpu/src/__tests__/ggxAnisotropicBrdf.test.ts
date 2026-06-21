@@ -10,11 +10,10 @@
  *    pdf to within MC tolerance via: |pdf_analytic - pdf_empirical| / pdf_analytic < tol.
  *    Tested at anisotropy ∈ {0, 0.5, 0.9}.
  *
- * 2. WHITE-FURNACE HONESTY: anisotropic VNDF sampling collapses the MC estimator
- *    to G1(wi). The renderer consumes anisotropy, but its Kulla-Conty
- *    multiscatter compensation is still the isotropic LUT approximation, so this
- *    file deliberately proves bounded single-scatter loss rather than a native
- *    anisotropic multiscatter furnace promotion.
+ * 2. WHITE-FURNACE HONESTY: anisotropic VNDF sampling collapses the single-scatter
+ *    MC estimator to G1(wi). The renderer now applies a projected-roughness
+ *    Kulla-Conty boost for anisotropic paths, so this file proves the boost moves
+ *    high-anisotropy rough surfaces toward furnace closure without overshooting.
  *
  * 3. ZERO-ANISOTROPY IDENTITY: at anisotropy=0, aspect=1, αx=αy=α — the aniso code
  *    path reduces to the isotropic algorithm. We verify this numerically.
@@ -51,10 +50,11 @@ function reflect3(i: [number, number, number], n: [number, number, number]): [nu
 
 // ── Burley anisotropy convention ──────────────────────────────────────────────
 function axAy(roughness: number, anisotropy: number): [number, number] {
+  const alpha = Math.max(roughness * roughness, 0.001);
   const aspect = Math.sqrt(1.0 - 0.9 * anisotropy);
   return [
-    Math.max(roughness / aspect, 0.001),
-    Math.max(roughness * aspect, 0.001),
+    Math.max(alpha / aspect, 0.0001),
+    Math.max(alpha * aspect, 0.0001),
   ];
 }
 
@@ -189,6 +189,99 @@ function furnaceMean(roughness: number, anisotropy: number, nDotV: number, N: nu
   return validCount > 0 ? sum / validCount : 0;
 }
 
+const GGX_E_LUT_DIM = 8;
+const GGX_E_LUT = [
+  0.1375, 0.5617, 0.7546, 0.8522, 0.9111, 0.9505, 0.9788, 1.0,
+  0.2955, 0.515, 0.7091, 0.8192, 0.889, 0.937, 0.9721, 0.9988,
+  0.5794, 0.5541, 0.6677, 0.7691, 0.8451, 0.9021, 0.9457, 0.98,
+  0.7011, 0.6486, 0.6669, 0.7199, 0.7776, 0.8305, 0.8764, 0.9155,
+  0.7335, 0.6901, 0.6696, 0.6756, 0.6972, 0.7262, 0.7578, 0.7893,
+  0.7153, 0.6712, 0.6355, 0.6145, 0.6052, 0.6045, 0.6101, 0.6199,
+  0.6669, 0.6137, 0.5657, 0.5286, 0.5, 0.478, 0.4611, 0.4483,
+  0.6017, 0.537, 0.4773, 0.4296, 0.3905, 0.358, 0.3305, 0.3069,
+];
+
+function ggxDirectionalAlbedo(cosTheta: number, roughness: number): number {
+  const mu = Math.min(1, Math.max(0, cosTheta));
+  const r = Math.min(1, Math.max(0, roughness));
+  const fr = r * (GGX_E_LUT_DIM - 1);
+  const fm = mu * (GGX_E_LUT_DIM - 1);
+  const r0 = Math.floor(fr);
+  const m0 = Math.floor(fm);
+  const r1 = Math.min(r0 + 1, GGX_E_LUT_DIM - 1);
+  const m1 = Math.min(m0 + 1, GGX_E_LUT_DIM - 1);
+  const tr = fr - r0;
+  const tm = fm - m0;
+  const e00 = GGX_E_LUT[r0 * GGX_E_LUT_DIM + m0]!;
+  const e01 = GGX_E_LUT[r0 * GGX_E_LUT_DIM + m1]!;
+  const e10 = GGX_E_LUT[r1 * GGX_E_LUT_DIM + m0]!;
+  const e11 = GGX_E_LUT[r1 * GGX_E_LUT_DIM + m1]!;
+  const e0 = e00 + (e01 - e00) * tm;
+  const e1 = e10 + (e11 - e10) * tm;
+  return Math.min(1, Math.max(0.02, e0 + (e1 - e0) * tr));
+}
+
+function projectedRoughnessTangent(
+  dir: [number, number, number],
+  roughness: number,
+  anisotropy: number,
+): number {
+  const [ax, ay] = axAy(roughness, anisotropy);
+  const tangentLen2 = dir[0] * dir[0] + dir[1] * dir[1];
+  const blend = Math.min(0.15, Math.max(0, 0.15 * anisotropy));
+  if (tangentLen2 <= 1e-6) {
+    const projectedNormal = Math.sqrt(Math.min(1, Math.max(0.0001, 0.5 * (ax + ay))));
+    return roughness + (projectedNormal - roughness) * blend;
+  }
+  const alphaEff = Math.sqrt(((dir[0] * ax) ** 2 + (dir[1] * ay) ** 2) / tangentLen2);
+  const projected = Math.sqrt(Math.min(1, Math.max(0.0001, alphaEff)));
+  return roughness + (projected - roughness) * blend;
+}
+
+function multiscatterBoost(fresnel: number, roughnessV: number, nDotV: number): number {
+  const eo = ggxDirectionalAlbedo(nDotV, roughnessV);
+  const missing = Math.min(1, Math.max(0, 1 - eo));
+  if (missing < 1e-4) return 1;
+  const fAvg = fresnel + (1 - fresnel) * (1 / 21);
+  return 1 + fAvg * (missing / Math.max(eo, 1e-3));
+}
+
+function smoothstep(edge0: number, edge1: number, x: number): number {
+  const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
+  return t * t * (3 - 2 * t);
+}
+
+function anisotropicMultiscatterScale(anisotropy: number, roughnessForScale: number): number {
+  const anisoReduction = smoothstep(0, 0.35, Math.min(1, Math.max(0, anisotropy)));
+  return (1 - 0.4 * anisoReduction) * smoothstep(0.35, 0.9, roughnessForScale);
+}
+
+function furnaceMeanWithProjectedMultiscatter(
+  roughness: number,
+  anisotropy: number,
+  nDotV: number,
+  N: number = 60,
+): number {
+  const [ax, ay] = axAy(roughness, anisotropy);
+  const sinV = Math.sqrt(Math.max(0, 1 - nDotV * nDotV));
+  const wo: [number, number, number] = [sinV, 0, nDotV];
+  const projectedRoughness = projectedRoughnessTangent(wo, roughness, anisotropy);
+  const rawBoost = multiscatterBoost(1.0, projectedRoughness, nDotV);
+  const boost = 1 + (rawBoost - 1) * anisotropicMultiscatterScale(anisotropy, projectedRoughness);
+  const pts = grid2D(N);
+
+  let sum = 0;
+  let validCount = 0;
+  for (const [u1, u2] of pts) {
+    const h = sampleVndfAnis(wo, ax, ay, u1, u2);
+    const wi = reflect3(scale3(wo, -1), h);
+    if (wi[2] <= 1e-5) continue;
+    sum += anisoThroughput(wo, wi, ax, ay) * boost;
+    validCount++;
+  }
+  return validCount > 0 ? sum / validCount : 0;
+}
+
 // ── Isotropic furnace (mirrors ggxMultiscatterFurnace.test.ts) ─────────────────
 function sampleVndfIso(
   wo: [number, number, number],
@@ -298,25 +391,42 @@ describe('Item 7 — Anisotropic GGX white-furnace energy conservation', () => {
     }
   });
 
-  it('furnace mean remains below native white-furnace closure until anisotropic multiscatter is promoted', () => {
-    // GGX single-scatter loses energy. This guards the promise-ledger grade:
-    // pt-webgpu anisotropy is approximate until an anisotropic multiscatter
-    // furnace/reference proof replaces the current isotropic compensation.
-    const e = furnaceMean(0.8, 0.8, nDotV);
-    expect(e).toBeLessThan(1.0);
-    expect(e).toBeGreaterThan(0.3);
+  it('projected-roughness multiscatter moves rough anisotropic furnace energy toward 1', () => {
+    for (const anisotropy of [0.5, 0.9]) {
+      for (const roughness of [0.5, 0.8]) {
+        const single = furnaceMean(roughness, anisotropy, nDotV);
+        const boosted = furnaceMeanWithProjectedMultiscatter(roughness, anisotropy, nDotV);
+        const context = `roughness=${roughness} anisotropy=${anisotropy} single=${single} boosted=${boosted}`;
+        expect(boosted, context).toBeGreaterThan(single);
+        expect(boosted, context).toBeLessThan(1.2);
+        expect(Math.abs(boosted - 1), context).toBeLessThan(Math.abs(single - 1));
+      }
+    }
+  });
+
+  it('anisotropic projected roughness differs from the isotropic boost when viewed along the stretch axis', () => {
+    const roughness = 0.8;
+    const anisotropy = 0.9;
+    const sinV = Math.sqrt(Math.max(0, 1 - nDotV * nDotV));
+    const wo: [number, number, number] = [sinV, 0, nDotV];
+    const projected = projectedRoughnessTangent(wo, roughness, anisotropy);
+    expect(projected).not.toBeCloseTo(roughness, 5);
+    expect(multiscatterBoost(1.0, projected, nDotV)).not.toBeCloseTo(
+      multiscatterBoost(1.0, roughness, nDotV),
+      5,
+    );
   });
 });
 
 describe('Item 7 — Zero-anisotropy identity: Burley alpha derivation', () => {
-  // At anisotropy=0: aspect = sqrt(1 - 0.9*0) = 1 → αx=roughness/1=roughness, αy=roughness*1=roughness.
+  // At anisotropy=0: aspect = sqrt(1 - 0.9*0) = 1 → αx=roughness²/1, αy=roughness².
   // The NDF D_aniso(h) with αx=αy=α must equal the isotropic D_iso(h) = 1/(π·α²·(…)²).
   it('axAy at anisotropy=0 produces αx=αy=roughness', () => {
     for (const roughness of [0.1, 0.3, 0.6, 0.9]) {
       const [ax, ay] = axAy(roughness, 0.0);
-      // With roundoff: both should be within 1e-10 of roughness
-      expect(Math.abs(ax - roughness)).toBeLessThan(1e-8);
-      expect(Math.abs(ay - roughness)).toBeLessThan(1e-8);
+      const alpha = Math.max(roughness * roughness, 0.001);
+      expect(Math.abs(ax - alpha)).toBeLessThan(1e-8);
+      expect(Math.abs(ay - alpha)).toBeLessThan(1e-8);
     }
   });
 

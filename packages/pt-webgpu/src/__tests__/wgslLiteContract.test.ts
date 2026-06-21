@@ -119,10 +119,11 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-21: lite sampled indirect Fresnel now uses
     // iridescenceModifiedF0 before the shared bounce sampler. RENDER-CHANGING for
     // scalar iridescent materials on lite sampled indirect paths.
-    // Re-pinned 2026-06-21: anisotropy comment-only contract wording; no WGSL
-    // executable logic changed.
-    expect(digest).toBe('19350da10cbfde07efc6324500c0bfcd3f1cd7800daeef9823fa2a41e23f0a29');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(157989);
+    // Re-pinned 2026-06-21: anisotropic GGX sampled/evaluated paths now use a
+    // conservative projected-roughness Kulla-Conty multiscatter approximation.
+    // RENDER-CHANGING for rough anisotropic materials.
+    expect(digest).toBe('01d694bf8c4f50afd391733c747ea762747dd2567706b5aca8f753143c88e86c');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(161884);
   });
 });
 

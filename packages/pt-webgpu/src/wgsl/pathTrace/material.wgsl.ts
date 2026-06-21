@@ -1318,13 +1318,23 @@ fn ggxAverageAlbedo(roughness: f32) -> f32 {
 // Kulla-Conty multiple-scattering compensation BRDF kernel (WITHOUT nDotL; the
 // caller multiplies by nDotL once, matching evaluateBrdf's convention). f0 tints
 // the extra bounces by an averaged Fresnel so coloured metals stay coloured.
-// Returns 0 for smooth surfaces (E_avg≈1) → zero loss → byte-identical low-r.
-fn ggxMultiscatterLobe(f0: vec3f, roughness: f32, nDotV: f32, nDotL: f32) -> vec3f {
-  let eAvg = ggxAverageAlbedo(roughness);
+// Directional roughness inputs let the anisotropic GGX path query the same
+// isotropic E LUT with a projected per-axis roughness instead of ignoring the
+// stretched lobe. The isotropic wrapper below passes one roughness to all three
+// inputs, preserving the historical zero-anisotropy path exactly.
+fn ggxMultiscatterLobeRoughness(
+  f0: vec3f,
+  roughnessV: f32,
+  roughnessL: f32,
+  roughnessAvg: f32,
+  nDotV: f32,
+  nDotL: f32,
+) -> vec3f {
+  let eAvg = ggxAverageAlbedo(roughnessAvg);
   let oneMinusEavg = 1.0 - eAvg;
   if (oneMinusEavg < 1e-4) { return vec3f(0.0); } // smooth → no missing energy.
-  let eo = ggxDirectionalAlbedo(nDotV, roughness);
-  let ei = ggxDirectionalAlbedo(nDotL, roughness);
+  let eo = ggxDirectionalAlbedo(nDotV, roughnessV);
+  let ei = ggxDirectionalAlbedo(nDotL, roughnessL);
   // Averaged Fresnel for the multiscatter tint (Kulla-Conty): F_avg ≈ F0 + (1−F0)/21.
   let fAvg = f0 + (vec3f(1.0) - f0) * (1.0 / 21.0);
   // Multiscatter energy: the geometric series of bounces sums to F_avg·E_avg /
@@ -1332,6 +1342,11 @@ fn ggxMultiscatterLobe(f0: vec3f, roughness: f32, nDotV: f32, nDotL: f32) -> vec
   let fMs = fAvg * fAvg * eAvg / max(vec3f(1.0) - fAvg * oneMinusEavg, vec3f(1e-4));
   let shape = (1.0 - eo) * (1.0 - ei) / max(PI * oneMinusEavg, 1e-6);
   return fMs * shape;
+}
+
+// Returns 0 for smooth surfaces (E_avg≈1) → zero loss → byte-identical low-r.
+fn ggxMultiscatterLobe(f0: vec3f, roughness: f32, nDotV: f32, nDotL: f32) -> vec3f {
+  return ggxMultiscatterLobeRoughness(f0, roughness, roughness, roughness, nDotV, nDotL);
 }
 
 // B9 — multiscatter energy boost for the SAMPLED specular lobe (Kulla-Conty). The
@@ -1342,6 +1357,14 @@ fn ggxMultiscatterLobe(f0: vec3f, roughness: f32, nDotV: f32, nDotL: f32) -> vec
 // (E_ss→1 → factor→1) so smooth surfaces are unchanged.
 fn ggxMultiscatterBoost(fresnel: vec3f, roughness: f32, nDotV: f32) -> vec3f {
   let eo = ggxDirectionalAlbedo(nDotV, roughness);
+  let missing = clamp(1.0 - eo, 0.0, 1.0);
+  if (missing < 1e-4) { return vec3f(1.0); }
+  let fAvg = fresnel + (vec3f(1.0) - fresnel) * (1.0 / 21.0);
+  return vec3f(1.0) + fAvg * (missing / max(eo, 1e-3));
+}
+
+fn ggxMultiscatterBoostRoughness(fresnel: vec3f, roughnessV: f32, nDotV: f32) -> vec3f {
+  let eo = ggxDirectionalAlbedo(nDotV, roughnessV);
   let missing = clamp(1.0 - eo, 0.0, 1.0);
   if (missing < 1e-4) { return vec3f(1.0); }
   let fAvg = fresnel + (vec3f(1.0) - fresnel) * (1.0 / 21.0);
