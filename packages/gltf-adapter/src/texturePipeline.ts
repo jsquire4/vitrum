@@ -439,8 +439,16 @@ export async function decodeSceneTextures(
   const diagnostic = (entry: DecodeSceneTextureDiagnostic): void => {
     diagnostics.push(entry);
     warnings.push(entry.message);
-    options.onDiagnostic?.(entry);
-    options.onWarning?.(entry.message);
+    try {
+      options.onDiagnostic?.(entry);
+    } catch {
+      // Host diagnostic callbacks must not abort texture normalization.
+    }
+    try {
+      options.onWarning?.(entry.message);
+    } catch {
+      // Host warning callbacks must not abort texture normalization.
+    }
   };
 
   const primitives = await Promise.all(scene.primitives.map(async (primitive, primitiveIndex) => {

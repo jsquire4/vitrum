@@ -255,7 +255,11 @@ export async function createProgressiveEngine(
       // this module is in the same package, so a static import is fine — but the
       // probe is async and only needed when the host asked for it).
       const { probeAdapterProfile } = await import('./adapterProfile.js');
-      opts.onAdapterProfile(await probeAdapterProfile(device));
+      try {
+        opts.onAdapterProfile(await probeAdapterProfile(device));
+      } catch {
+        // Host telemetry callbacks must not break progressive construction.
+      }
     }
 
     // Both engines ingest the SAME vitrum scene; the handoff requires both to

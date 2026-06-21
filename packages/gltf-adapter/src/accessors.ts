@@ -524,8 +524,12 @@ function emitAccessorDiagnostic(
   diagnostic: GltfAccessorDiagnostic,
 ): void {
   if (onDiagnostic) {
-    onDiagnostic(diagnostic);
-    return;
+    try {
+      onDiagnostic(diagnostic);
+      return;
+    } catch {
+      // Host diagnostic callbacks must not abort accessor decoding.
+    }
   }
   if (warnings) warnings.push(diagnostic.message);
 }

@@ -1019,8 +1019,12 @@ function emitMaterialDiagnostic(
   diagnostic: GltfMaterialDiagnostic,
 ): void {
   if (onDiagnostic) {
-    onDiagnostic(diagnostic);
-    return;
+    try {
+      onDiagnostic(diagnostic);
+      return;
+    } catch {
+      // Host diagnostic callbacks must not abort material conversion.
+    }
   }
   warnings.push(diagnostic.message);
 }

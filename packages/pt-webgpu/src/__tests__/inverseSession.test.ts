@@ -991,6 +991,24 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('guards throwing diagnostic callbacks while preserving path-replay downgrades', () => {
+    const fake = makeFakeEngine();
+    let diagnosticCount = 0;
+    const session = new PtWebgpuInverseSession(fake.hooks, {
+      ...eligibleOpts(),
+      onDiagnostic: () => {
+        diagnosticCount += 1;
+        throw new Error('host diagnostic callback failed');
+      },
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-hook-missing',
+    }));
+    expect(diagnosticCount).toBe(session.diagnostics.length);
+    session.dispose();
+  });
+
   it('uses adjoint for eligible slots and FD only for unsupported holdouts', async () => {
     const fake = makeFakeEngine();
     let captured: AdjointGradientRequest | null = null;

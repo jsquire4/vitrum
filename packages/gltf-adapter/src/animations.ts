@@ -365,5 +365,9 @@ function emitAnimationDiagnostic(
   diagnostic: GltfAnimationImportDiagnostic,
 ): void {
   warnings.push(diagnostic.message);
-  onDiagnostic?.(diagnostic);
+  try {
+    onDiagnostic?.(diagnostic);
+  } catch {
+    // Host diagnostic callbacks must not abort animation import.
+  }
 }

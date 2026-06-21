@@ -364,6 +364,40 @@ npm run shader-gate
 npm run typecheck
 ```
 
+### Wave 6 — Public Callback Predictability
+
+Status 2026-06-21: **CLOSED.** A source scan of the remaining raw public
+callback surfaces found three bounded predictability tails:
+
+- `createProgressiveEngine()` now guards its single `onAdapterProfile` telemetry
+  callback, matching the already-guarded walkaround construction path, so a host
+  HUD/CI callback throw cannot abort progressive engine construction after the
+  shared device is allocated.
+- `decodeSceneTextures()` now guards `onDiagnostic` and `onWarning` callbacks
+  while keeping diagnostics and warnings in the returned result. Host UI/logging
+  code can no longer abort arbitrary-glTF texture normalization.
+- glTF accessor/material/animation/compression/texture-acquisition diagnostic
+  emitters now treat diagnostic sinks as advisory, preserving returned warning
+  data where applicable if a host or helper callback throws.
+- `mergeWorldSpaceFromCore()` now routes malformed-triangle warnings into both
+  `WorldSpaceMergeResult.warnings` and the optional `onWarning` callback while
+  preserving existing `console.warn` output; the callback is guarded so advisory
+  warning sinks cannot break DDGI/RC/ReSTIR ingestion.
+- pt-webgl2 and pt-webgpu inverse-session diagnostic callbacks are guarded, so
+  path-replay downgrade diagnostics cannot change session construction or method
+  selection when host diagnostic code throws.
+
+Focused gates:
+
+```bash
+npm exec -- vitest run \
+  packages/engine/__tests__/createProgressiveEngineErrors.test.ts \
+  packages/gltf-adapter/src/gltfAssetApi.test.ts \
+  packages/shared-bvh/src/__tests__/worldSpaceMergeInvalidTriangles.test.ts \
+  packages/pt-webgl2/src/__tests__/inverseSession.test.ts \
+  packages/pt-webgpu/src/__tests__/inverseSession.test.ts
+```
+
 ## Parked Long-Tail Items
 
 These are real, but they should not block contract-complete unless the user

@@ -187,7 +187,11 @@ export class WebGl2FiniteDifferenceInverseSession implements InverseSession {
           '[vitrum/pt-webgl2] InverseSession requested path-replay, but pt-webgl2 ' +
           'only exposes finite-difference gradients; using finite-difference.',
       });
-      opts.onDiagnostic?.(diagnostics[0]!);
+      try {
+        opts.onDiagnostic?.(diagnostics[0]!);
+      } catch {
+        // Host diagnostic callbacks must not abort inverse-session creation.
+      }
     }
 
     this.#hooks = hooks;

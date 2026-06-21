@@ -666,7 +666,11 @@ export function mergeWorldSpaceFromCore(
   const warnings: string[] = [];
   const warn = (warning: string): void => {
     warnings.push(warning);
-    opts.onWarning?.(warning);
+    try {
+      opts.onWarning?.(warning);
+    } catch {
+      // Warning callbacks are advisory; keep the returned warning list authoritative.
+    }
   };
 
   // Material value-dedup LUT (mirrors snapshotPreBuildMaterials).
@@ -701,10 +705,11 @@ export function mergeWorldSpaceFromCore(
   const warnFilteredTriangle = (primitiveId: SceneNodeId, tri: number, reason: string): void => {
     filteredTriangleCount += 1;
     if (filteredTriangleWarnCount < MAX_WORLD_MERGE_FILTER_WARNINGS) {
-      console.warn(
+      const message =
         `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] Primitive "${primitiveId}" triangle ${tri} ${reason}; ` +
-        'filtering it from the merged world-space BVH.',
-      );
+        'filtering it from the merged world-space BVH.';
+      console.warn(message);
+      warn(message);
       filteredTriangleWarnCount += 1;
     }
   };
@@ -869,10 +874,11 @@ export function mergeWorldSpaceFromCore(
   }
 
   if (filteredTriangleCount > MAX_WORLD_MERGE_FILTER_WARNINGS) {
-    console.warn(
+    const message =
       `[@vitrum/shared-bvh/mergeWorldSpaceFromCore] ${filteredTriangleCount} malformed triangles filtered ` +
-      `(${MAX_WORLD_MERGE_FILTER_WARNINGS} individual warnings shown above).`,
-    );
+      `(${MAX_WORLD_MERGE_FILTER_WARNINGS} individual warnings shown above).`;
+    console.warn(message);
+    warn(message);
   }
 
   const vertexCount = Math.floor(positions.length / stride);

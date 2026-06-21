@@ -279,7 +279,11 @@ function emitCompressionDiagnostic(
   diagnostic: GltfCompressionDiagnostic,
 ): void {
   warnings.push(diagnostic.message);
-  onDiagnostic?.(diagnostic);
+  try {
+    onDiagnostic?.(diagnostic);
+  } catch {
+    // Host diagnostic callbacks must not abort compression fallback analysis.
+  }
 }
 
 function getMeshoptBufferViewExtension(

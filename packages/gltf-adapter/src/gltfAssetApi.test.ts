@@ -2146,6 +2146,36 @@ describe('decodeSceneTextures', () => {
     expect(result.report.rawImageCount).toBe(1);
   });
 
+  it('guards throwing texture decode diagnostic callbacks', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const asset = await loadGltfAsset(gltf, { buffers });
+    const onDiagnostic = vi.fn(() => {
+      throw new Error('host diagnostic callback failed');
+    });
+    const onWarning = vi.fn(() => {
+      throw new Error('host warning callback failed');
+    });
+
+    const result = await decodeSceneTextures(asset.scene, {
+      target: 'cpu-linear',
+      onDiagnostic,
+      onWarning,
+    });
+
+    expect(onDiagnostic).toHaveBeenCalledTimes(1);
+    expect(onWarning).toHaveBeenCalledTimes(1);
+    expect(result.decodedCount).toBe(0);
+    expect(result.unchangedCount).toBe(1);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'raw-image-decoder-missing',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        materialField: 'baseColorMap',
+      }),
+    ]);
+  });
+
   it('reports selected compressed texture-source provenance when no pixel decoder is supplied', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const ktx = bytes([0xab, 0x4b, 0x54, 0x58, 0x20]);

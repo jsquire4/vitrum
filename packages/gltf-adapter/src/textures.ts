@@ -435,7 +435,11 @@ function emitTextureAcquisitionDiagnostic(
   diagnostic: GltfTextureAcquisitionDiagnostic,
 ): void {
   warnings.push(diagnostic.message);
-  onDiagnostic?.(diagnostic);
+  try {
+    onDiagnostic?.(diagnostic);
+  } catch {
+    // Host diagnostic callbacks must not abort texture acquisition.
+  }
 }
 
 function selectTextureImageSource(

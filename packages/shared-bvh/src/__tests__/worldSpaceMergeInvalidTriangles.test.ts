@@ -49,6 +49,42 @@ describe('mergeWorldSpaceFromCore malformed triangle filtering', () => {
     }
   });
 
+  it('keeps returned warnings authoritative when onWarning throws', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'indexed-oob-callback',
+        positions: new Float32Array([
+          0, 0, 0,
+          1, 0, 0,
+          0, 1, 0,
+          2, 0, 0,
+          0, 2, 0,
+          2, 2, 0,
+        ]),
+        normals: new Float32Array(18),
+        indices: new Uint32Array([
+          0, 1, 2,
+          3, 999, 5,
+        ]),
+        material: MATERIAL,
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const onWarning = vi.fn(() => {
+      throw new Error('host warning callback failed');
+    });
+
+    const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4, onWarning });
+
+    expect(onWarning).toHaveBeenCalled();
+    expect(merged.triangleCount).toBe(1);
+    expect(merged.warnings).toEqual(expect.arrayContaining([
+      expect.stringContaining('out-of-range vertex index'),
+    ]));
+  });
+
   it('filters non-finite triangles without poisoning the merged bounding box', () => {
     const scene: Scene = {
       primitives: [{

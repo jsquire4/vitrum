@@ -481,7 +481,11 @@ export class PtWebgpuInverseSession implements InverseSession {
       : [];
     this.#diagnostics = pathReplayDiagnostics;
     for (const diagnostic of pathReplayDiagnostics) {
-      opts.onDiagnostic?.(diagnostic);
+      try {
+        opts.onDiagnostic?.(diagnostic);
+      } catch {
+        // Host diagnostic callbacks must not abort inverse-session creation.
+      }
     }
     const allEligible = pathReplayDiagnostics.length === 0;
     this.#method =

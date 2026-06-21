@@ -88,7 +88,7 @@ function makeCanvas(configure?: () => void): HTMLCanvasElement {
   } as unknown as HTMLCanvasElement;
 }
 
-function installWebGpu(): void {
+function installWebGpu(): GPUDevice {
   const fakeDevice = { destroy: vi.fn() } as unknown as GPUDevice;
   const fakeAdapter = {
     limits: {
@@ -106,6 +106,7 @@ function installWebGpu(): void {
     },
     configurable: true,
   });
+  return fakeDevice;
 }
 
 function installSuccessfulSubEngines(): void {
@@ -163,5 +164,26 @@ describe('createProgressiveEngine error callbacks', () => {
       backend: 'walkaround-hybrid',
       recoverable: true,
     });
+  });
+
+  it('guards throwing adapter-profile callbacks during progressive construction', async () => {
+    const device = installWebGpu();
+    installSuccessfulSubEngines();
+    const onAdapterProfile = vi.fn(() => {
+      throw new Error('host profile callback failed');
+    });
+
+    const handle = await createProgressiveEngine({
+      canvas: makeCanvas(),
+      scene: SCENE,
+      onAdapterProfile,
+    });
+
+    expect(onAdapterProfile).toHaveBeenCalledTimes(1);
+    expect(constructorMocks.constructWalkaround).toHaveBeenCalledTimes(1);
+    expect(constructorMocks.constructPathTracerWebGPU).toHaveBeenCalledTimes(1);
+    expect(device.destroy).not.toHaveBeenCalled();
+    handle.dispose();
+    expect(device.destroy).toHaveBeenCalledTimes(1);
   });
 });
