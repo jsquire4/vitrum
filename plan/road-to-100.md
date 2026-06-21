@@ -1520,7 +1520,7 @@ Scalar `specularColor` / `specularIntensity`, readable `specularColorMap` / `spe
 
 #### 3F — Fields intentionally permanent `unsupported` on walkaround
 
-Document in ledger + planner: `displacement*`, `spectralAttenuation`, `dispersionAbbeNumber`, `thinFilmStack`, `scattering*`, `frontLayer`/`backLayer` (unless stained-glass scope). These fields are now pinned by walkaround unit + engine-warning tests on both `setScene()` and `updatePrimitive()`, including the `KHR_materials_dispersion` source path in glTF compatibility reporting. **Arbitrary glTF 100%** routes assets using these to pt-webgpu via `rankGltfBackends` — walkaround 100% ≠ all fields native.
+Document in ledger + planner: `spectralAttenuation`, `dispersionAbbeNumber`, `thinFilmStack`, `scattering*`, and `frontLayer`/`backLayer` (unless stained-glass scope) are permanent `unsupported` rows on walkaround. These fields are now pinned by walkaround unit + engine-warning tests on both `setScene()` and `updatePrimitive()`, including the `KHR_materials_dispersion` source path in glTF compatibility reporting. `displacementMap` / `displacementScale` / `displacementBias` are not in this unsupported bucket: they are approximate vertex-level shared-BVH displacement when CPU-readable, with no tessellation/microdisplacement. **Arbitrary glTF 100%** routes assets using unsupported specialty fields to pt-webgpu via `rankGltfBackends` — walkaround 100% ≠ all fields native.
 
 #### 3G — Structural debt (items_to_fix §H)
 

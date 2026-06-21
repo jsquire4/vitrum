@@ -232,6 +232,12 @@ const permanentlyUnsupportedWalkaroundFields = [
   "thinFilmStack",
 ];
 
+const walkaroundApproximateVertexDisplacementFields = [
+  "displacementMap",
+  "displacementScale",
+  "displacementBias",
+];
+
 for (const field of permanentlyUnsupportedWalkaroundFields) {
   if (walkaroundMaterialRows.get(field) !== "unsupported") {
     fail(`walkaround permanent unsupported field was promoted without source-check update: ${field}`);
@@ -241,6 +247,18 @@ for (const field of permanentlyUnsupportedWalkaroundFields) {
   }
   if (atlasMapFieldUnion.has(field) || atlasMapFields.has(field)) {
     fail(`walkaround permanent unsupported field is present in material texture atlas fields: ${field}`);
+  }
+}
+
+for (const field of walkaroundApproximateVertexDisplacementFields) {
+  if (walkaroundMaterialRows.get(field) !== "approximate") {
+    fail(`walkaround vertex-displacement field must remain approximate, not unsupported/native: ${field}`);
+  }
+  if (!walkaroundConsumedFields.has(field)) {
+    fail(`walkaround approximate vertex-displacement field is absent from CONSUMED_MATERIAL_FIELDS: ${field}`);
+  }
+  if (atlasMapFieldUnion.has(field) || atlasMapFields.has(field)) {
+    fail(`walkaround vertex-displacement field is incorrectly present in the material texture atlas: ${field}`);
   }
 }
 
@@ -285,6 +303,12 @@ if (!road.includes("Still OPEN for full-path parity")) {
 }
 if (!road.includes("Scoped inverse/truthfulness and validation distance remaining")) {
   fail("road-to-100.md must classify inverse residuals as scoped truthfulness/validation distance, not generic implementation distance");
+}
+if (road.includes("Document in ledger + planner: `displacement*`, `spectralAttenuation`")) {
+  fail("road-to-100.md must not classify displacement* as a permanent walkaround unsupported row");
+}
+if (!road.includes("`displacementMap` / `displacementScale` / `displacementBias` are not in this unsupported bucket")) {
+  fail("road-to-100.md must retain the walkaround displacement approximate-vs-unsupported boundary");
 }
 if (road.includes("**Implementation distance remaining:** full analytic adjoint replay")) {
   fail("road-to-100.md must not reopen full analytic adjoint replay as a generic implementation-distance blocker");
