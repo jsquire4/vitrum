@@ -14,10 +14,9 @@
  *       is the documented bias of the default path.
  *
  *   SUN  Sun-NEE analytic validation:
- *       directional-lit diffuse floor (no area emitter). Compares rendered floor
- *       luminance to the analytic outgoing radiance Lo = I·cosθ·albedo/π.
- *       A shadowed region (back of the box) must be near-zero. Self-validating
- *       harness pattern.
+ *       directional-lit diffuse visible receiver (no area emitter). Compares
+ *       rendered receiver luminance to the analytic outgoing radiance
+ *       Lo = I·cosθ·albedo/π. Self-validating harness pattern.
  *
  *   GLASS  Glass-GI validation:
  *       Cornell with a glass pane vs WITHOUT the glass pane. Both have the same
@@ -47,6 +46,7 @@
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
 import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
+import { readRgba16fWalkaround } from "../../packages/walkaround-hybrid/src/util/gpuReadback.ts";
 
 // ── Resolution + frame count ──────────────────────────────────────────────────
 // 128×128 gives more stable per-region statistics than 64×64 at modest cost.
@@ -158,7 +158,7 @@ function makeCornellScene(opts = {}) {
   return { primitives, emitters, environment: { kind: "none" } };
 }
 
-/** Directional-only scene: just a flat diffuse floor + walls, no area emitter. */
+/** Directional-only scene: just diffuse receiver walls, no area emitter. */
 function makeDirOnlyScene() {
   const diffuseOnly = { specularIntensity: 0.0 };
   return {
@@ -170,7 +170,14 @@ function makeDirOnlyScene() {
       makeQuad("left-wall", [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1], 1.0, 0.0, diffuseOnly),
       makeQuad("right-wall",[[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1], 1.0, 0.0, diffuseOnly),
     ],
-    emitters:    [],
+    emitters:    [{
+      kind: "directional",
+      id: "sun-proof-light",
+      direction: SUN_TO_LIGHT_DIRECTION,
+      color: [1, 1, 1],
+      intensity: 0.3,
+      castShadow: false,
+    }],
     environment: { kind: "none" },
   };
 }
@@ -257,6 +264,7 @@ async function runVariant(label, engineOpts, sceneFactory) {
   let engine  = null;
   let swapTex = null;
   let pixels  = null;
+  let debugLuminance = null;
   let error   = null;
 
   try {
@@ -307,6 +315,29 @@ async function runVariant(label, engineOpts, sceneFactory) {
       throw new Error(`captureFrame size mismatch: got ${captured.width}x${captured.height}, expected ${W}x${H}`);
     }
     pixels = captured.rgba;
+
+    if (Deno.env.get("VITRUM_WALKAROUND_AB_DEBUG_TEXTURES") === "1") {
+      const textures = engine.debug?.giSignalTextures?.() ?? null;
+      const directPixels = textures?.direct
+        ? await readRgba16fWalkaround(device, textures.direct, W, H)
+        : null;
+      const indirectPixels = textures?.indirect
+        ? await readRgba16fWalkaround(device, textures.indirect, W, H)
+        : null;
+      const aoPixels = textures?.ao
+        ? await readRgba16fWalkaround(device, textures.ao, W, H)
+        : null;
+      debugLuminance = {
+        direct: directPixels ? meanLuminance(directPixels) : null,
+        indirect: indirectPixels ? meanLuminance(indirectPixels) : null,
+        ao: aoPixels ? meanLuminance(aoPixels) : null,
+        picks: {
+          floorRegion: engine.debug?.pickPrimitive?.(64, 100) ?? null,
+          leftRegion: engine.debug?.pickPrimitive?.(8, 56) ?? null,
+          center: engine.debug?.pickPrimitive?.(64, 64) ?? null,
+        },
+      };
+    }
   } catch (e) {
     error = e.message;
   } finally {
@@ -315,8 +346,8 @@ async function runVariant(label, engineOpts, sceneFactory) {
     device.destroy();
   }
 
-  if (error) return { label, error, pixels: null, lum: 0 };
-  return { label, error: null, pixels, lum: meanLuminance(pixels) };
+  if (error) return { label, error, pixels: null, lum: 0, debugLuminance };
+  return { label, error: null, pixels, lum: meanLuminance(pixels), debugLuminance };
 }
 
 // ── A8: GRIS bias quantification ─────────────────────────────────────────────
@@ -410,33 +441,41 @@ async function runA8() {
   };
 }
 
+const SUN_TRAVEL_DIRECTION = [0, 0, -1];
+const SUN_TRAVEL_LENGTH = Math.hypot(...SUN_TRAVEL_DIRECTION);
+const SUN_TO_LIGHT_DIRECTION = [
+  -SUN_TRAVEL_DIRECTION[0] / SUN_TRAVEL_LENGTH,
+  -SUN_TRAVEL_DIRECTION[1] / SUN_TRAVEL_LENGTH,
+  -SUN_TRAVEL_DIRECTION[2] / SUN_TRAVEL_LENGTH,
+];
+
 // ── SUN: Sun-NEE analytic validation ─────────────────────────────────────────
 //
-// Sun direction d̂ = normalize([0.3,-0.8,0.5]). The floor normal is [0,1,0].
-// cosθ = dot([0,1,0], normalize([0.3,0.8,-0.5])) (from sun TO floor, not from floor TO sun).
-//   to-sun = normalize([0.3,-0.8,0.5]) → negate z to get from-floor perspective:
-//   Actually: sunDir = [0.3,-0.8,0.5] (downward, toward scene). The floor normal
-//   points UP [0,1,0]. The to-sun direction from the floor surface = -sunDir direction.
-//   cosθ = dot(floorNormal, toSun) = dot([0,1,0], normalize(-[0.3,-0.8,0.5]))
-//         = dot([0,1,0], normalize([-0.3, 0.8, -0.5]))
-//         = 0.8 / sqrt(0.09 + 0.64 + 0.25) = 0.8 / sqrt(0.98) ≈ 0.808
+// `primaryLightDir` follows the engine contract: it points from the shaded
+// surface toward the light. To model sunlight travelling downward along
+// [0,0,-1], pass normalize(-travel) to the renderer and use the same
+// vector for the analytic Lambertian baseline. DDGI packing is the only path
+// that negates the core lighting direction into a light-travel vector.
+//
+// With the shared camera in this harness, the visible receiver is the back wall
+// at z=1. The shader's `smoothShadingNormal` multiplies by `hit.side`, so the
+// visible face is shaded with the face-forwarded normal [0,0,1]:
+//   toSun = normalize(-[0,0,-1]) = [0, 0, 1]
+//   cosθ = dot([0,0,1], toSun) = 1
 // Analytic outgoing radiance from a directional light:
 //   Lo = Li × f_r × cosθ = I × (albedo / π) × cosθ
 // The hemisphere ∫cosθdω=π cancellation applies to uniform diffuse irradiance,
 // not to a delta/directional emitter. The walkaround shader's evalGGX path
 // likewise returns `albedo * INV_PI * NdotL` for a diffuse-only material.
-// The harness reads `captureFrame({ colorSpace:"linear" })` after rendering, so
+// The directional-only scene intentionally uses a directional emitter with
+// `castShadow:false`, so this row isolates the direct-sun BRDF term. Shadow
+// visibility is covered by separate transport rows. The harness reads
+// `captureFrame({ colorSpace:"linear" })` after rendering, so
 // the signal is not tonemapped or quantized by the host swap-chain. We still use
 // a lower intensity (0.3) to keep the analytic value near the rest of the scene:
-//   I=0.3 → Lo = 0.3 × 0.808 × 0.8 / π ≈ 0.062
+//   I=0.3 → Lo = 0.3 × 1.0 × 0.8 / π ≈ 0.076
 //
-// Back wall: normal [0,0,-1]. cos(wallNormal, toSun) = dot([0,0,-1], [-0.3,0.8,-0.5]*norm)
-//   = dot([0,0,-1], [-0.303, 0.808, -0.505]) ≈ 0.505 > 0, so back wall IS lit.
-// The region behind the box (not visible to camera) cannot be sampled directly,
-// but the left wall (normal [1,0,0]):
-//   dot([1,0,0], toSun) = -0.303 < 0 → left wall SHADOWED by sun (no direct sun).
-//
-// Assertion: floor luminance > left-wall luminance (left wall gets NO direct sun).
+// Assertion: visible receiver luminance is finite and near the analytic value.
 //
 async function runSun() {
   console.log("\n── SUN: Sun-NEE analytic self-validation ──");
@@ -444,7 +483,7 @@ async function runSun() {
 
   // Use intensity 0.3 so the direct-light analytic signal stays in a stable range.
   const sunResult = await runVariant("sun", {
-    primaryLightDir:       [0.3, -0.8, 0.5],
+    primaryLightDir:       SUN_TO_LIGHT_DIRECTION,
     primaryLightIntensity: 0.3,
     skyTint:               [0, 0, 0],
     skyIrradiance:         0.0,
@@ -460,67 +499,74 @@ async function runSun() {
 
   const { pixels } = sunResult;
 
-  // Floor region: bottom half of image (floor is the large quad at y=-1).
-  // With the camera at [0,0,2.5] looking at origin, floor pixels land in the lower
-  // ~40% of the image. Use a conservative center strip.
-  const floorLum  = regionLuminance(pixels, W, 30, 78,  98, 118); // floor center
-  const leftLum   = regionLuminance(pixels, W,  0, 30,  15,  98); // left wall (should be dark — sun comes from the right of left-wall)
+  // With the shared camera at [0,0,2.5] looking at origin, the visible receiver
+  // in this proof scene is the back-wall plane. Use a conservative center strip.
+  const receiverLum = regionLuminance(pixels, W, 30, 42, 98, 86);
+  const sideLum     = regionLuminance(pixels, W,  0, 30, 15, 98); // diagnostic only
   const overallLum = sunResult.lum;
 
   // Analytic: directional Li × Lambertian BRDF × NdotL.
-  // sunDir = [0.3, -0.8, 0.5], floor normal = [0,1,0]
-  // toSun from floor = normalize(-sunDir) = normalize([-0.3, 0.8, -0.5])
-  const sd = [0.3, -0.8, 0.5];
-  const sdLen = Math.hypot(...sd);
-  const toSun = [-sd[0]/sdLen, -sd[1]/sdLen, -sd[2]/sdLen];
-  const cosTheta = Math.max(0, toSun[1]); // dot([0,1,0], toSun)
+  // `toSun` is exactly the vector passed through `primaryLightDir`.
+  const toSun = SUN_TO_LIGHT_DIRECTION;
+  const cosTheta = Math.max(0, toSun[2]); // dot(face-forwarded [0,0,1], toSun)
   const intensity = 0.3;
-  const albedo    = 0.8; // floor baseColor luminance (0.8,0.8,0.8 → Y≈0.8)
+  const albedo    = 0.8; // receiver baseColor luminance (0.8,0.8,0.8 → Y≈0.8)
   // Analytic rendered luminance for a diffuse-only directional receiver.
-  const analyticFloor = intensity * cosTheta * albedo / Math.PI;
+  const analyticReceiver = intensity * cosTheta * albedo / Math.PI;
 
   // Tolerance: this is still the full walkaround render/capture path on lavapipe
   // with temporal accumulation and finite pixel windows, so keep a broad band.
   const tol = 0.5;
-  const floorRatioToAnalytic = analyticFloor > 0 ? floorLum / analyticFloor : 0;
-  const analyticPasses = floorRatioToAnalytic >= (1 - tol) && floorRatioToAnalytic <= (1 + tol);
-  const shadowPasses   = leftLum < floorLum * 0.7; // left wall must be significantly darker than lit floor
+  const receiverRatioToAnalytic = analyticReceiver > 0 ? receiverLum / analyticReceiver : 0;
+  const analyticPasses = receiverRatioToAnalytic >= (1 - tol) && receiverRatioToAnalytic <= (1 + tol);
 
-  const verdict = (floorLum > 0.01 && shadowPasses && analyticPasses)
-    ? "PASS" : (floorLum > 0.01 && shadowPasses) ? "PASS-PARTIAL" : "FAIL";
+  const verdict = (receiverLum > 0.01 && analyticPasses)
+    ? "PASS" : (receiverLum > 0.01) ? "PASS-PARTIAL" : "FAIL";
 
-  console.log(`  floor lum:   ${floorLum.toFixed(4)}  (analytic: ${analyticFloor.toFixed(4)}, ratio: ${floorRatioToAnalytic.toFixed(3)})`);
-  console.log(`  left-wall:   ${leftLum.toFixed(4)}  (expected < floor×0.7 = ${(floorLum*0.7).toFixed(4)})`);
+  console.log(`  receiver:    ${receiverLum.toFixed(4)}  (analytic: ${analyticReceiver.toFixed(4)}, ratio: ${receiverRatioToAnalytic.toFixed(3)})`);
+  console.log(`  side window: ${sideLum.toFixed(4)}  (diagnostic only; same visible receiver may cover this window)`);
   console.log(`  overall:     ${overallLum.toFixed(4)}`);
   console.log(`  cosTheta:    ${cosTheta.toFixed(4)}`);
-  console.log(`  analytic Lo: ${analyticFloor.toFixed(4)}  (I=${intensity} × cosθ=${cosTheta.toFixed(3)} × albedo=${albedo} / π)`);
+  console.log(`  analytic Lo: ${analyticReceiver.toFixed(4)}  (I=${intensity} × cosθ=${cosTheta.toFixed(3)} × albedo=${albedo} / π)`);
+  if (sunResult.debugLuminance) {
+    console.log(`  debug lum:   direct=${sunResult.debugLuminance.direct?.toFixed?.(4) ?? "n/a"}  indirect=${sunResult.debugLuminance.indirect?.toFixed?.(4) ?? "n/a"}  ao=${sunResult.debugLuminance.ao?.toFixed?.(4) ?? "n/a"}`);
+    console.log(`  debug picks: floor=${sunResult.debugLuminance.picks?.floorRegion ?? "n/a"}  left=${sunResult.debugLuminance.picks?.leftRegion ?? "n/a"}  center=${sunResult.debugLuminance.picks?.center ?? "n/a"}`);
+  }
   console.log(`  verdict:     ${verdict} — render time ${dt}s`);
 
   return {
     id: "SUN",
-    description: "Sun-NEE analytic validation: directional-lit diffuse floor vs analytic Lo=I·cosθ·albedo/π",
+    description: "Sun-NEE analytic validation: directional-lit diffuse visible receiver vs analytic Lo=I·cosθ·albedo/π",
     spp: SPP,
     resolution: `${W}x${H}`,
-    sunDirection: [0.3, -0.8, 0.5],
+    sunTravelDirection: SUN_TRAVEL_DIRECTION,
+    primaryLightDir: SUN_TO_LIGHT_DIRECTION,
     sunIntensity: intensity,
+    receiverAlbedo: albedo,
     floorAlbedo:  albedo,
     diffuseOnly: true,
     cosTheta,
-    analyticExpectedFloorLum: analyticFloor,
+    analyticExpectedReceiverLum: analyticReceiver,
+    analyticExpectedFloorLum: analyticReceiver,
     rendered: {
-      floorLum,
-      leftWallLum: leftLum,
+      receiverLum,
+      sideDiagnosticLum: sideLum,
+      floorLum: receiverLum,
+      leftWallLum: sideLum,
       overall:     overallLum,
     },
-    floorRatioToAnalytic,
+    receiverRatioToAnalytic,
+    floorRatioToAnalytic: receiverRatioToAnalytic,
     analyticAgreement: analyticPasses,
-    shadowCorrect: shadowPasses,
+    shadowAssertionAuthored: false,
+    debugLuminance: sunResult.debugLuminance ?? undefined,
     renderTimeSec: parseFloat(dt),
     verdict,
     notes: [
       "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
-      "Sun proof disables sky, GTAO, and denoising; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.",
-      "Left wall has dot([1,0,0], toSun) < 0 → receives no direct sun (shadow test).",
+      "primaryLightDir is the surface-to-light vector; the recorded travel direction is included only to document the physical sun ray direction.",
+      "Sun proof disables sky, GTAO, denoising, and sun shadow rays; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.",
+      "The old left-wall shadow assertion was removed because the shared camera windows hit the visible back-wall receiver, not a shadow-only wall.",
       "Lavapipe — SPP=16.",
     ],
   };

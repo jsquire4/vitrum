@@ -1,7 +1,7 @@
 #!/usr/bin/env -S deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write
 // @ts-nocheck
 // Control: sun at intensity=0 should give near-black (no area emitter, no sun).
-// Also: stronger sun (I=1.5) should be proportionally brighter than I=0.3.
+// Also: stronger sun (I=0.9) should be proportionally brighter than I=0.3.
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
 import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
@@ -21,6 +21,8 @@ function makeLookAtMatrix(eye,center,up) {
 const EYE=[0,0,2.5],CENTER=[0,0,0];
 const proj=asMat4(makePerspectiveMatrix(60,W/H,0.1,50));
 const view=asMat4(makeLookAtMatrix(EYE,CENTER,[0,1,0]));
+const SUN_TRAVEL_DIRECTION = [0, 0, -1];
+const SUN_TO_LIGHT_DIRECTION = [0, 0, 1];
 
 function patchDeviceForWh(device) {
   const orig=device.createShaderModule.bind(device);
@@ -59,13 +61,13 @@ function makeDirOnlyScene() {
     makeQuad("back-wall",[[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],[0,0,-1],[0.8,0.8,0.8]),
     makeQuad("left-wall",[[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]],[1,0,0],[0.75,0.1,0.1]),
     makeQuad("right-wall",[[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],[-1,0,0],[0.1,0.6,0.1]),
-  ],emitters:[],environment:{kind:"none"}};
+  ],emitters:[{kind:"directional",id:"sun-control-light",direction:SUN_TO_LIGHT_DIRECTION,color:[1,1,1],intensity:0.3,castShadow:false}],environment:{kind:"none"}};
 }
 
 async function run(label, sunIntensity) {
   const device=await acquireWhDevice();
   patchDeviceForWh(device);
-  const engine=await createWalkaroundEngine_Hybrid({device,width:W,height:H,primaryLightDir:[0.3,-0.8,0.5],primaryLightIntensity:sunIntensity,skyTint:[0,0,0],skyIrradiance:0.0,verbose:false,ppgEnabled:false,rcEnabled:false,denoiser:"atrous-variance"});
+  const engine=await createWalkaroundEngine_Hybrid({device,width:W,height:H,primaryLightDir:SUN_TO_LIGHT_DIRECTION,primaryLightIntensity:sunIntensity,skyTint:[0,0,0],skyIrradiance:0.0,verbose:false,ppgEnabled:false,rcEnabled:false,denoiser:"atrous-variance"});
   engine.setScene(makeDirOnlyScene());
   const deadline=Date.now()+90000;
   while(engine.state!=="ready"&&engine.state!=="error"){await new Promise(r=>setTimeout(r,50));if(Date.now()>deadline)throw new Error("timeout");}
@@ -88,15 +90,18 @@ const pCtrl  = await run("ctrl-zero-sun",  0.0);   // sun off → should be near
 const pLow   = await run("low-sun",        0.3);   // the test value
 const pHigh  = await run("high-sun",       0.9);   // 3× low → floor should be ~3× brighter
 
-const floorCtrl = regionLum(pCtrl,  W, 30, 78, 98, 118);
-const floorLow  = regionLum(pLow,   W, 30, 78, 98, 118);
-const floorHigh = regionLum(pHigh,  W, 30, 78, 98, 118);
+const receiverCtrl = regionLum(pCtrl,  W, 30, 42, 98, 86);
+const receiverLow  = regionLum(pLow,   W, 30, 42, 98, 86);
+const receiverHigh = regionLum(pHigh,  W, 30, 42, 98, 86);
 
-// Analytic for low: I=0.3 × cosθ=0.808 × albedo=0.8 = 0.1939
-const analytic = 0.3 * 0.8081 * 0.8;
+// Linear analytic for low: I=0.3 × cosθ=1 × albedo=0.8 / π = 0.0764.
+// This control reads the BGRA swap target, so use the value as a directionality
+// and intensity-linearity smoke rather than a strict linear-HDR proof.
+const analytic = 0.3 * 1.0 * 0.8 / Math.PI;
 
 console.log("Sun intensity control runs:");
-console.log("  I=0.0 (zero sun, zero sky): floor lum =", floorCtrl.toFixed(4), " (expected ≈0)");
-console.log("  I=0.3:                       floor lum =", floorLow.toFixed(4), " (analytic="+analytic.toFixed(4)+", ratio="+( floorLow/analytic).toFixed(3)+")");
-console.log("  I=0.9 (3× I=0.3):           floor lum =", floorHigh.toFixed(4), " (expected ≈3× I=0.3 floor = "+(floorLow*3).toFixed(4)+", ratio="+(floorHigh/floorLow).toFixed(3)+")");
-console.log("  Linearity check (I=0.9 / I=0.3):", (floorHigh/floorLow).toFixed(3), " (expected ≈3.0)");
+console.log("  travel direction:", SUN_TRAVEL_DIRECTION, "to-light direction:", SUN_TO_LIGHT_DIRECTION);
+console.log("  I=0.0 (zero sun, zero sky): receiver lum =", receiverCtrl.toFixed(4), " (expected ≈0)");
+console.log("  I=0.3:                       receiver lum =", receiverLow.toFixed(4), " (linear analytic="+analytic.toFixed(4)+", ratio="+( receiverLow/analytic).toFixed(3)+")");
+console.log("  I=0.9 (3× I=0.3):           receiver lum =", receiverHigh.toFixed(4), " (expected ≈3× I=0.3 receiver = "+(receiverLow*3).toFixed(4)+", ratio="+(receiverHigh/receiverLow).toFixed(3)+")");
+console.log("  Linearity check (I=0.9 / I=0.3):", (receiverHigh/receiverLow).toFixed(3), " (expected ≈3.0)");

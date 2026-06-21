@@ -35,32 +35,44 @@
   },
   "sun": {
     "id": "SUN",
-    "description": "Sun-NEE analytic validation: directional-lit diffuse floor vs analytic E=I·cosθ·albedo",
+    "description": "Sun-NEE analytic validation: directional-lit diffuse visible receiver vs analytic Lo=I·cosθ·albedo/π",
     "spp": 16,
     "resolution": "128x128",
-    "sunDirection": [
-      0.3,
-      -0.8,
-      0.5
+    "sunTravelDirection": [
+      0,
+      0,
+      -1
+    ],
+    "primaryLightDir": [
+      0,
+      0,
+      1
     ],
     "sunIntensity": 0.3,
+    "receiverAlbedo": 0.8,
     "floorAlbedo": 0.8,
-    "cosTheta": 0.8081220356417687,
-    "analyticExpectedFloorLum": 0.1939492885540245,
+    "diffuseOnly": true,
+    "cosTheta": 1,
+    "analyticExpectedReceiverLum": 0.07639437268410976,
+    "analyticExpectedFloorLum": 0.07639437268410976,
     "rendered": {
-      "floorLum": 0.07191735407838229,
-      "leftWallLum": 0.0009117223025770756,
-      "overall": 0.0456185071827562
+      "receiverLum": 0.07635498046875,
+      "sideDiagnosticLum": 0.07635498046875,
+      "floorLum": 0.07635498046875,
+      "leftWallLum": 0.07635498046875,
+      "overall": 0.07635498046875
     },
-    "floorRatioToAnalytic": 0.37080493882992377,
-    "analyticAgreement": false,
-    "shadowCorrect": true,
-    "renderTimeSec": 4.3,
-    "verdict": "PASS-PARTIAL",
+    "receiverRatioToAnalytic": 0.9994843571067382,
+    "floorRatioToAnalytic": 0.9994843571067382,
+    "analyticAgreement": true,
+    "shadowAssertionAuthored": false,
+    "renderTimeSec": 7.9,
+    "verdict": "PASS",
     "notes": [
-      "analytic = I × cosθ × albedo (Lambertian: brdf=albedo/π, hemisphere integral=π → Lo=albedo×I×cosθ).",
-      "±50% tolerance accounts for GTAO attenuation, temporal accumulation damping, denoiser.",
-      "Left wall has dot([1,0,0], toSun) < 0 → receives no direct sun (shadow test).",
+      "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
+      "primaryLightDir is the surface-to-light vector; the recorded travel direction is included only to document the physical sun ray direction.",
+      "Sun proof disables sky, GTAO, denoising, and sun shadow rays; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.",
+      "The old left-wall shadow assertion was removed because the shared camera windows hit the visible back-wall receiver, not a shadow-only wall.",
       "Lavapipe — SPP=16."
     ]
   },

@@ -278,16 +278,22 @@ function checkWalkaroundA8(proof, result) {
  */
 function checkWalkaroundSun(proof, result) {
   checkWalkaroundCaseCommon("SUN", proof, result);
-  if (result.shadowCorrect !== true) fail("walkaround-ab SUN: shadowCorrect must be true");
-  assertFiniteNumber(result.floorRatioToAnalytic, "walkaround-ab SUN: floorRatioToAnalytic");
+  const analyticRatio = result.receiverRatioToAnalytic ?? result.floorRatioToAnalytic;
+  assertFiniteNumber(analyticRatio, "walkaround-ab SUN: receiverRatioToAnalytic");
   if (result.verdict === "PASS" && result.analyticAgreement !== true) {
     fail("walkaround-ab SUN: PASS requires analyticAgreement=true");
   }
-  if (result.verdict === "PASS" && Math.abs(result.floorRatioToAnalytic - 1) > proof.maxAnalyticRatioError) {
-    fail(`walkaround-ab SUN: analytic ratio ${result.floorRatioToAnalytic} is outside ±${proof.maxAnalyticRatioError}`);
+  if (result.verdict === "PASS" && Math.abs(analyticRatio - 1) > proof.maxAnalyticRatioError) {
+    fail(`walkaround-ab SUN: analytic ratio ${analyticRatio} is outside ±${proof.maxAnalyticRatioError}`);
   }
-  assertFiniteNumber(result.rendered?.floorLum, "walkaround-ab SUN: rendered.floorLum");
-  assertFiniteNumber(result.rendered?.leftWallLum, "walkaround-ab SUN: rendered.leftWallLum");
+  const receiverLum = result.rendered?.receiverLum ?? result.rendered?.floorLum;
+  assertFiniteNumber(receiverLum, "walkaround-ab SUN: rendered.receiverLum");
+  if (result.rendered?.sideDiagnosticLum != null) {
+    assertFiniteNumber(result.rendered.sideDiagnosticLum, "walkaround-ab SUN: rendered.sideDiagnosticLum");
+  }
+  if (result.shadowAssertionAuthored === true && result.shadowCorrect !== true) {
+    fail("walkaround-ab SUN: authored shadow assertion requires shadowCorrect=true");
+  }
 }
 
 /**

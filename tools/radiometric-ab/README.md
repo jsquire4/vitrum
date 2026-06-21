@@ -223,12 +223,12 @@ budget with `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
 
 The harness now accepts `VITRUM_WALKAROUND_AB_CASES=a8,sun,glass,glossy` to
 rerun a subset of cases while preserving the other committed results. The SUN
-fixture was corrected after the preserved 2026-06-18 capture: it now compares a
-diffuse-only directional receiver against `Lo = I * cos(theta) * albedo / pi`
-and disables sky, GTAO, and denoising for that case. Rerun the SUN case on a
-browser/real-adapter or a fixed native-Deno host before promoting that row.
+fixture compares a diffuse-only visible directional receiver against
+`Lo = I * cos(theta) * albedo / pi` and disables sky, GTAO, denoising, and the
+sun shadow ray for that case. Shadow-visibility promotion remains a separate
+transport proof.
 
-### Preserved Linear-HDR Results (2026-06-18)
+### Preserved Linear-HDR Results (2026-06-21)
 
 The committed `walkaround-ab-results.json` values below are post-denoise,
 pre-tonemap linear-HDR float32 captures. They supersede the old 8-bit
@@ -260,27 +260,28 @@ Render time: 10.7 s for the A8 pair.
 
 ### SUN — Sun-NEE Analytic Self-Validation
 
-**Verdict: PASS-PARTIAL** — direct sun and shadowing are live, but the floor
-ratio is outside the full analytic promotion band at 16 spp.
+**Verdict: PASS** — direct sun on the visible diffuse receiver matches the
+analytic Lambertian value within the committed proof band.
 
-Directional-lit diffuse floor (no area emitter). Config: `sunDir=[0.3,−0.8,0.5]`, `I=0.3`,
-floor albedo 0.8. Analytic Lambertian: `Lo = I × cosθ × albedo = 0.3 × 0.808 × 0.8 = 0.1939`.
+Directional-lit diffuse visible receiver (no area emitter). Config:
+`primaryLightDir=[0,0,1]`, sun travel direction `[0,0,-1]`, `I=0.3`,
+receiver albedo 0.8. The shader face-forwards the visible back-wall receiver
+normal to `[0,0,1]`, so `cosθ=1`. Analytic Lambertian:
+`Lo = I × cosθ × albedo / π = 0.3 × 1.0 × 0.8 / π = 0.076394`.
 
 | Metric | Value |
 |--------|-------|
-| Analytic floor Lo | 0.1939 |
-| Rendered floor lum | 0.0719 |
-| Floor / analytic | **0.371** |
-| Left wall (sun-shadowed) | 0.0009 |
-| Shadow correct? | YES |
+| Analytic receiver Lo | 0.076394 |
+| Rendered receiver lum | 0.076355 |
+| Receiver / analytic | **0.99948** |
+| Side window diagnostic | 0.076355 |
+| Shadow assertion authored? | NO |
 
-The SUN case remains useful as a preserved live-path proof: the directional
-light produces finite direct signal and the sun-shadowed wall stays dark. It is
-not promotion evidence for analytic absolute radiometry yet. The current
-committed native-Deno host status is `HOST-BLOCKED` on the known wgpu-hal panic,
-so this result snapshot is preserved for continuity while browser/real-adapter
-recapture remains the promotion lane.
-Render time: 4.5 s.
+The prior SUN fixture claimed to sample a floor and left-wall shadow region, but
+CPU picking showed those screen windows hit the visible back-wall receiver with
+this harness camera. The fixture now records that truth explicitly and validates
+the direct-sun BRDF path only. Shadow correctness is not inferred from this row.
+Render time: 7.9 s.
 
 ### GLASS — Glass-GI Transmitted Light Validation
 
@@ -331,7 +332,7 @@ darker scene direction than the diffuse control. Render time: 9.1 s.
 | A/B | Verdict | Key Number |
 |-----|---------|-----------|
 | A8 GRIS bias | NEGLIGIBLE | overall delta = -0.000020 (0.03% of mean) |
-| SUN analytic | PASS-PARTIAL | floor ratio = 0.371; shadow correctness passes |
+| SUN analytic | PASS | receiver ratio = 0.99948 |
 | GLASS GI | SMOKE | centre ratio = 1.000; delta = 0 |
 | GLOSSY probe | FINDING | floor ratio = 0.005; material-effect observed |
 
