@@ -86,16 +86,13 @@ and package-gated: `npm run typecheck`,
 - Files:
   - `packages/pt-webgpu/src/sceneMutationRouter.ts`
   - `packages/pt-webgpu/src/__tests__/updatePrimitiveIncremental.test.ts`
-- Current evidence:
-  - `sceneMutationRouter.ts` still has:
-    `if (host.isLiteTier?.() === true && canFastPathMaterialPatch(...)) { host.setScene(nextScene); return; }`
-- Desired behavior:
-  - Lite material-only patches write the lite material buffer through the existing
-    material fast path, or explicitly prove the lite path cannot safely patch and
-    emit a truthful unsupported diagnostic.
-- Minimum tests:
-  - Add/confirm a lite-tier material-only patch test that observes
-    `queue.writeBuffer` to the material buffer and no `setScene()` fallback.
+- Verified closure:
+  - Lite scalar material patches write the resident material buffer through the
+    fast path; texture/descriptor/displacement fields still emit the structured
+    repack diagnostic and use a scene repack for coherence.
+  - Regression coverage observes `queue.writeBuffer` to the material buffer and no
+    `setScene()` fallback for the scalar material path.
+- Focused gate:
   - `cd packages/pt-webgpu && npx vitest run src/__tests__/updatePrimitiveIncremental.test.ts`
   - root `npm run typecheck`
 
@@ -107,15 +104,12 @@ and package-gated: `npm run typecheck`,
 - Files:
   - `packages/pt-webgl2/src/scene/mutateSceneTextures.ts`
   - `packages/pt-webgl2/src/scene/meshAreaLights.test.ts` or nearby mutation test
-- Current evidence:
-  - In `tryFastPathMaterialMutation`, one mesh-light repack path still calls
-    `packMeshAreaLights(nextScene, geoPack)` after creating `nextGeoPack`.
-- Desired behavior:
-  - Mesh-area light repack sees the updated material table.
-- Minimum tests:
-  - Regression where an emissive/material mutation changes mesh-light radiance and
-    the packed light texture observes the new material state.
-  - `cd packages/pt-webgl2 && npx vitest run src/scene/meshAreaLights.test.ts`
+- Verified closure:
+  - Mesh-area light repack calls `packMeshAreaLights(nextScene, nextGeoPack)`.
+  - Regression coverage mutates emissive material radiance and observes the packed
+    mesh-light texture using the new material state.
+- Focused gate:
+  - `cd packages/pt-webgl2 && npx vitest run src/scene/mutateSceneTextures.test.ts`
   - root `npm run typecheck`
 
 ### VQ-003 — walkaround `denoiser:'none'` option should construct
@@ -128,16 +122,11 @@ and package-gated: `npm run typecheck`,
   - `packages/walkaround-hybrid/src/HybridEngineConfig.ts`
   - `packages/walkaround-hybrid/src/pipeline/denoisers/*`
   - tests near denoiser registry/tuning
-- Current evidence:
-  - `pipeline/denoisers/none.ts` exists.
-  - `VALID_DENOISERS` omits `'none'`.
-- Desired behavior:
-  - Either `'none'` is a supported public denoiser option, or the unused denoiser
-    implementation is made internal/dead. Prefer support because the pipeline
-    already has the mode.
-- Minimum tests:
-  - Construction/config accepts `denoiser:'none'`.
-  - Denoiser registry routes to the no-op adapter.
+- Verified closure:
+  - `VALID_DENOISERS` includes `'none'`, and construction/config validation accepts
+    it as a public no-op denoiser mode.
+  - Registry/config tests cover routing to the no-op adapter.
+- Focused gate:
   - `cd packages/walkaround-hybrid && npx vitest run` focused denoiser/config tests
   - root `npm run typecheck`
 
@@ -150,25 +139,17 @@ and package-gated: `npm run typecheck`,
 - Files:
   - `packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts`
   - `packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts`
-- Current evidence:
-  - Material patch invalidates DDGI for emitter-affecting changes
-    (transmission-threshold/emissive radiance), but beer/tint fields that change
-    probe lighting are not clearly covered.
-- Desired behavior:
-  - Material-only patches refresh DDGI's material snapshot without forcing
-    geometry subsystem rebuilds.
-  - Material-only patches that affect DDGI radiance, visibility, or the glossy
-    probe BRDF invalidate the probe cache.
 - Fields covered:
   - Scalar slice path: `attenuationColor`, `attenuationDistance`, `thickness`,
     `transmission`, Beer/tint-relevant `baseColor`, `roughness`, and
     `metallic`.
   - Atlas-backed maps still route through the full rebuild path when map handles
     or atlas metadata change.
-- Tests:
+- Verified closure:
   - `attenuationDistance`-only patch calls `invalidateProbeCache()`.
   - Roughness-only scalar patch refreshes DDGI snapshot and invalidates probes
     without emitter rebuild.
+- Focused gate:
   - `cd packages/walkaround-hybrid && npx vitest run src/__tests__/mutationMatrix.test.ts`
   - root `npm run typecheck`
 
@@ -629,12 +610,16 @@ Road suggests they are already closed or narrowed.
   compatibility issue.
 - Walkaround point/spot/direct emitter cast-shadow rows: current Road marks
   native/closed.
-- RC UV1 emissive atlas fallback: recent commits indicate closure.
-- ReGIR mapped emitter target: recent commits indicate closure.
-- Soft-sun adjoint: recent commits indicate closure for scoped direct-light
-  replay.
-- Alpha shadow/transmittance in RC/walkaround: recent commits indicate closure
-  of the bounded approximation, not true layered transport.
+- RC UV1 emissive atlas fallback: closed by RC probe material sampling tests that
+  pin UV1 atlas metadata and emissive-map probe response.
+- ReGIR mapped emitter target: closed for the bounded walkaround emitter path;
+  mapped emitter sampling has direct shader/source coverage, while global
+  GI/RC/DDGI exact texel-PDF promotion stays in proof.
+- Soft-sun adjoint: closed for scoped direct-light replay by the directional-cone
+  sampling oracle; indirect/transport adjoints remain finite-difference lanes.
+- Alpha shadow/transmittance in RC/walkaround: closed for the bounded
+  approximation (transparent shadows and DDGI/visibility tint tests), not true
+  layered transparent transport.
 
 ### A6 — Backlog Promotion Rule
 

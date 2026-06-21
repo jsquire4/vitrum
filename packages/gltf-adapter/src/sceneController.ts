@@ -246,7 +246,8 @@ export class GltfSceneController {
   readonly #basePrimitiveById: Map<string, ScenePrimitive>;
   readonly #convertedMaterials: readonly MaterialSpec[];
   readonly #materialVariantBindings: readonly GltfMaterialVariantBinding[];
-  readonly #materialBindingsByMaterialIndex: ReadonlyMap<number, readonly string[]>;
+  readonly #materialBindingsByMaterialIndex: Map<number, string[]>;
+  readonly #materialIndexByPrimitiveId: Map<string, number>;
   readonly #instancingBindingsByPrimitiveId: ReadonlyMap<string, GltfInstancingBinding>;
   readonly #skinBindingsByPrimitiveId: ReadonlyMap<string, SkinBinding>;
   readonly #warnings: string[] = [];
@@ -270,7 +271,9 @@ export class GltfSceneController {
     this.#basePrimitiveById = new Map(input.scene.primitives.map((p) => [String(p.id), p]));
     this.#convertedMaterials = input.convertedMaterials ?? [];
     this.#materialVariantBindings = input.materialVariantBindings ?? [];
-    this.#materialBindingsByMaterialIndex = buildMaterialBindings(input.materialBindings ?? []);
+    const materialBindings = input.materialBindings ?? [];
+    this.#materialBindingsByMaterialIndex = buildMaterialBindings(materialBindings);
+    this.#materialIndexByPrimitiveId = buildMaterialIndexByPrimitiveId(materialBindings);
     this.#instancingBindingsByPrimitiveId = new Map(
       (input.instancingBindings ?? []).map((binding) => [binding.primitiveId, binding]),
     );
@@ -461,6 +464,7 @@ export class GltfSceneController {
     };
     const selectedVariantIndex = resolveMaterialVariantSelection(this.gltf, selector, frame);
     const patchMap = new Map<string, Partial<ScenePrimitive>>();
+    const materialBindingUpdates = new Map<string, number | undefined>();
 
     if (this.#materialVariantBindings.length === 0) {
       if ((this.gltf.extensions?.KHR_materials_variants?.variants?.length ?? 0) > 0) {
@@ -520,6 +524,7 @@ export class GltfSceneController {
           binding.meshIndex,
           binding.primitiveIndex,
         );
+        materialBindingUpdates.set(binding.primitiveId, materialIndex);
         const variantPatch = materialVariantPatchForSelection(binding, selectedVariantIndex);
         if (variantPatch) {
           const material = materialForVariantPatch(
@@ -575,6 +580,9 @@ export class GltfSceneController {
     }
 
     this.#scene = nextScene;
+    for (const [id, materialIndex] of materialBindingUpdates) {
+      this.#setCurrentMaterialBinding(id, materialIndex);
+    }
     for (const { id, patch } of primitivePatches) {
       const base = this.#basePrimitiveById.get(id);
       if (base) this.#basePrimitiveById.set(id, { ...base, ...patch } as ScenePrimitive);
@@ -610,7 +618,7 @@ export class GltfSceneController {
       this.#playing = false;
     }
     if (!target) return;
-    if (options.forceSetScene === false && target.updatePrimitive) {
+    if (options.forceSetScene !== true && target.updatePrimitive) {
       const patches = nextScene.primitives
         .map((primitive, index) => ({
           id: String(primitive.id),
@@ -631,6 +639,31 @@ export class GltfSceneController {
       }
     }
     target.setScene(this.#scene);
+  }
+
+  #setCurrentMaterialBinding(primitiveId: string, materialIndex: number | undefined): void {
+    const previousIndex = this.#materialIndexByPrimitiveId.get(primitiveId);
+    if (previousIndex === materialIndex) return;
+    if (previousIndex !== undefined) {
+      const previousIds = this.#materialBindingsByMaterialIndex.get(previousIndex);
+      if (previousIds) {
+        const filtered = previousIds.filter((id) => id !== primitiveId);
+        if (filtered.length > 0) {
+          this.#materialBindingsByMaterialIndex.set(previousIndex, filtered);
+        } else {
+          this.#materialBindingsByMaterialIndex.delete(previousIndex);
+        }
+      }
+      this.#materialIndexByPrimitiveId.delete(primitiveId);
+    }
+    if (materialIndex === undefined) return;
+    const nextIds = this.#materialBindingsByMaterialIndex.get(materialIndex);
+    if (nextIds) {
+      if (!nextIds.includes(primitiveId)) nextIds.push(primitiveId);
+    } else {
+      this.#materialBindingsByMaterialIndex.set(materialIndex, [primitiveId]);
+    }
+    this.#materialIndexByPrimitiveId.set(primitiveId, materialIndex);
   }
 
   #defaultClip(caller: 'play' | 'resume'): AnimationClip {
@@ -1079,7 +1112,7 @@ function buildSkinBindings(
 
 function buildMaterialBindings(
   bindings: readonly GltfMaterialBinding[],
-): Map<number, readonly string[]> {
+): Map<number, string[]> {
   const out = new Map<number, string[]>();
   for (const binding of bindings) {
     const existing = out.get(binding.materialIndex);
@@ -1090,6 +1123,12 @@ function buildMaterialBindings(
     }
   }
   return out;
+}
+
+function buildMaterialIndexByPrimitiveId(
+  bindings: readonly GltfMaterialBinding[],
+): Map<string, number> {
+  return new Map(bindings.map((binding) => [binding.primitiveId, binding.materialIndex]));
 }
 
 function parseAnimationNodeIndex(nodeId: string): number | undefined {

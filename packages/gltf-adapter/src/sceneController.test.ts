@@ -408,6 +408,70 @@ function materialPointerAnimationGltf(): { gltf: GltfJson; buffers: Map<number, 
   };
 }
 
+function materialVariantPointerAnimationGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const packed = packF32([
+    [0, 0, 0, 1, 0, 0, 0, 1, 0],
+    [0, 1],
+    [
+      0, 0, 1, 1,
+      0, 1, 0, 1,
+    ],
+  ]);
+  return {
+    buffers: new Map([[0, packed.buffer]]),
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_materials_variants', 'KHR_animation_pointer'],
+      extensionsRequired: ['KHR_materials_variants', 'KHR_animation_pointer'],
+      extensions: {
+        KHR_materials_variants: {
+          variants: [{ name: 'animated' }],
+        },
+      },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }],
+            },
+          },
+        }],
+      }],
+      materials: [
+        { name: 'base red', pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+        { name: 'variant blue', pbrMetallicRoughness: { baseColorFactor: [0, 0, 1, 1] } },
+      ],
+      accessors: [
+        { bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' },
+        { bufferView: 1, componentType: 5126, count: 2, type: 'SCALAR' },
+        { bufferView: 2, componentType: 5126, count: 2, type: 'VEC4' },
+      ],
+      bufferViews: packed.views,
+      buffers: [{ byteLength: packed.buffer.byteLength }],
+      animations: [{
+        name: 'variant-material-factor',
+        samplers: [{ input: 1, output: 2, interpolation: 'LINEAR' }],
+        channels: [{
+          sampler: 0,
+          target: {
+            path: 'pointer',
+            extensions: {
+              KHR_animation_pointer: {
+                pointer: '/materials/1/pbrMetallicRoughness/baseColorFactor',
+              },
+            },
+          },
+        }],
+      }],
+    },
+  };
+}
+
 function materialVariantHighUvGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const packed = packF32([
     [0, 0, 0, 1, 0, 0, 0, 1, 0],
@@ -592,7 +656,7 @@ describe('GltfSceneController', () => {
     updatePrimitive.mockClear();
     reset.mockClear();
 
-    controller.resetPose({ engine, forceSetScene: false, resetPlayback: true });
+    controller.resetPose({ engine, resetPlayback: true });
 
     expect(setScene).not.toHaveBeenCalled();
     expect(updatePrimitive).toHaveBeenCalledTimes(1);
@@ -603,6 +667,33 @@ describe('GltfSceneController', () => {
     const patch = updatePrimitive.mock.calls[0]![1] as { transform: Float32Array };
     expect(patch.transform[12]).toBeCloseTo(0);
     expect(reset).toHaveBeenCalledTimes(1);
+    expect(controller.playing).toBe(false);
+    expect(controller.currentTime).toBe(0);
+    expect(controller.activeClip).toBeUndefined();
+    expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(0);
+  });
+
+  it('resetPose uses setScene when forceSetScene is requested', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const setScene = vi.fn();
+    const updatePrimitive = vi.fn();
+    const reset = vi.fn();
+    const engine: GltfScenePatchTarget = { setScene, updatePrimitive, reset };
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    controller.play('parent-slide', { time: 0.5, engine });
+    setScene.mockClear();
+    updatePrimitive.mockClear();
+    reset.mockClear();
+
+    controller.resetPose({ engine, forceSetScene: true, resetPlayback: true });
+
+    expect(updatePrimitive).not.toHaveBeenCalled();
+    expect(reset).not.toHaveBeenCalled();
+    expect(setScene).toHaveBeenCalledTimes(1);
+    const scene = setScene.mock.calls[0]![0] as Scene;
+    expect((scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(0);
     expect(controller.playing).toBe(false);
     expect(controller.currentTime).toBe(0);
     expect(controller.activeClip).toBeUndefined();
@@ -696,6 +787,36 @@ describe('GltfSceneController', () => {
     const primitive = controller.scene.primitives[0] as MeshPrimitive;
     expect(primitive.material.baseColor).toEqual([0.5, 0.5, 0]);
     expect(primitive.material.metallic).toBeCloseTo(0.5);
+  });
+
+  it('routes material-pointer animation to the currently selected material variant', async () => {
+    const { gltf, buffers } = materialVariantPointerAnimationGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const updatePrimitive = vi.fn();
+    const reset = vi.fn();
+    const engine: GltfScenePatchTarget = { setScene: vi.fn(), updatePrimitive, reset };
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    controller.setVariant('animated', { engine });
+    updatePrimitive.mockClear();
+    reset.mockClear();
+
+    const frame = controller.applyAnimation('variant-material-factor', 1, { engine });
+
+    expect(frame.usedSetScene).toBe(false);
+    expect(frame.diagnostics.some((diagnostic) => diagnostic.code === 'animation-pointer-material-unmapped'))
+      .toBe(false);
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(updatePrimitive).toHaveBeenCalledWith(
+      'gltf-prim-0',
+      expect.objectContaining({
+        material: expect.objectContaining({ baseColor: [0, 1, 0] }),
+      }),
+    );
+    expect(reset).toHaveBeenCalledTimes(1);
+    const patch = frame.primitivePatches[0]!.patch as { material: MaterialSpec };
+    expect(patch.material.baseColor).toEqual([0, 1, 0]);
+    expect((controller.scene.primitives[0] as MeshPrimitive).material.baseColor).toEqual([0, 1, 0]);
   });
 
   it('material pointer animation falls back to setScene when primitive patching is unavailable', async () => {
