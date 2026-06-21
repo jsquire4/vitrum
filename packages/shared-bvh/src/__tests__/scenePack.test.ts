@@ -136,6 +136,76 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(merged.warnings).toEqual([]);
   });
 
+  it('treats plain Uint16Array displacement handles as normalized height pixels', () => {
+    const source = displacedTriScene();
+    const primitive = source.primitives[0]!;
+    const scene: Scene = {
+      ...source,
+      primitives: [
+        {
+          ...primitive,
+          material: {
+            ...primitive.material,
+            displacementMap: {
+              handle: {
+                width: 1,
+                height: 1,
+                data: new Uint16Array([65535]),
+                __vitrum_hint__: { channels: 1, colorSpace: 'linear' },
+              },
+            },
+            displacementScale: 0.25,
+            displacementBias: -0.1,
+          },
+        },
+      ],
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+
+    expect(Array.from(packed.positions.slice(0, 12))).toEqual([
+      0, 0, expect.closeTo(0.15), 0,
+      1, 0, expect.closeTo(0.15), 0,
+      0, 1, expect.closeTo(0.15), 0,
+    ]);
+    expect(packed.warnings).toEqual([]);
+  });
+
+  it('keeps explicit float16 displacement handles available for half-float height pixels', () => {
+    const source = displacedTriScene();
+    const primitive = source.primitives[0]!;
+    const scene: Scene = {
+      ...source,
+      primitives: [
+        {
+          ...primitive,
+          material: {
+            ...primitive.material,
+            displacementMap: {
+              handle: {
+                width: 1,
+                height: 1,
+                data: new Uint16Array([0x3c00]),
+                __vitrum_hint__: { channels: 1, dataType: 'float16', colorSpace: 'linear' },
+              },
+            },
+            displacementScale: 0.25,
+            displacementBias: -0.1,
+          },
+        },
+      ],
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+
+    expect(Array.from(packed.positions.slice(0, 12))).toEqual([
+      0, 0, expect.closeTo(0.15), 0,
+      1, 0, expect.closeTo(0.15), 0,
+      0, 1, expect.closeTo(0.15), 0,
+    ]);
+    expect(packed.warnings).toEqual([]);
+  });
+
   it('packs authored tangent.xyzw beside positions/normals/uvs and defaults missing tangents to zero', () => {
     const scene: Scene = {
       primitives: [

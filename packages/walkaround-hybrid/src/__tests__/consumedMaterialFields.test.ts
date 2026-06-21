@@ -702,6 +702,46 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
+  it('treats uint16 baseColorMap alpha as normalized coverage for blend diagnostics', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const uint16AlphaBlendScene: Scene = {
+        ...consumedOnlyScene(),
+        primitives: [
+          {
+            ...consumedOnlyScene().primitives[0]!,
+            id: 'uint16-alpha-pane',
+            material: {
+              ...consumedOnlyScene().primitives[0]!.material,
+              alphaMode: 'blend',
+              opacity: 1,
+              baseColorMap: {
+                handle: {
+                  width: 1,
+                  height: 1,
+                  data: new Uint16Array([65535, 65535, 65535, 0x3c00]),
+                  __vitrum_hint__: { channels: 4, dataType: 'uint16' },
+                },
+              },
+            },
+          },
+        ],
+      };
+      engine.setScene(uint16AlphaBlendScene);
+      const alphaWarnings = structured.filter((w) =>
+        w.code === 'walkaround-hybrid.alpha-blend-approximation'
+      );
+      expect(alphaWarnings).toHaveLength(1);
+      expect(alphaWarnings[0]?.details?.primitiveIds).toContain('uint16-alpha-pane');
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('emits a structured alpha approximation warning for vertex-color alpha blend', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({

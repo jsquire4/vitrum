@@ -72,11 +72,14 @@ function decoderFor(data: ArrayLike<number>, dataType: string | undefined): (val
   if (dataType === 'float32' || data instanceof Float32Array || data instanceof Float64Array) {
     return (value) => value;
   }
+  if (dataType === 'float16' || dataType === 'half-float') {
+    return (value) => halfToFloat(value);
+  }
   if (dataType === 'uint16') {
     return (value) => Math.min(1, Math.max(0, value / 65535));
   }
   if (data instanceof Uint16Array) {
-    return (value) => halfToFloat(value);
+    return (value) => Math.min(1, Math.max(0, value / 65535));
   }
   if (
     dataType === 'uint8' ||

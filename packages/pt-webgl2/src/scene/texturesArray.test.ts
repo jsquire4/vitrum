@@ -196,6 +196,31 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     expect(atlas!.data[3]).toBeCloseTo(1.0, 5);
   });
 
+  it('treats Uint16Array handles as normalized uint16 unless explicitly hinted as float16', () => {
+    const normalized = hintedHandle(new Uint16Array([32768, 65535, 0, 65535]), 1, 1, {
+      channels: 4,
+      colorSpace: 'linear',
+    });
+    const atlas = packTextureAtlas([mat(normalized)]);
+    expect(atlas).not.toBeNull();
+    expect(atlas!.data[0]).toBeCloseTo(32768 / 65535, 5);
+    expect(atlas!.data[1]).toBeCloseTo(1, 5);
+    expect(atlas!.data[2]).toBeCloseTo(0, 5);
+    expect(atlas!.data[3]).toBeCloseTo(1, 5);
+
+    const halfFloat = hintedHandle(new Uint16Array([0x3800, 0x3c00, 0, 0x3c00]), 1, 1, {
+      channels: 4,
+      dataType: 'float16',
+      colorSpace: 'linear',
+    });
+    const halfAtlas = packTextureAtlas([mat(halfFloat)]);
+    expect(halfAtlas).not.toBeNull();
+    expect(halfAtlas!.data[0]).toBeCloseTo(0.5, 5);
+    expect(halfAtlas!.data[1]).toBeCloseTo(1, 5);
+    expect(halfAtlas!.data[2]).toBeCloseTo(0, 5);
+    expect(halfAtlas!.data[3]).toBeCloseTo(1, 5);
+  });
+
   it('ambiguous stride (3 channels) without hint emits a console.warn', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

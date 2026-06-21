@@ -60,4 +60,32 @@ describe('readEnvironmentMapPixels', () => {
     expect(pixels!.data[2]).toBeCloseTo(0);
     expect(pixels!.data[3]).toBeCloseTo(1);
   });
+
+  it('treats Uint16Array handles as normalized uint16 unless explicitly hinted as float16', () => {
+    const normalized = readEnvironmentMapPixels({
+      width: 1,
+      height: 1,
+      data: new Uint16Array([32768, 65535, 0, 65535]),
+      __vitrum_hint__: { channels: 4, colorSpace: 'linear' },
+    });
+
+    expect(normalized).not.toBeNull();
+    expect(normalized!.data[0]).toBeCloseTo(32768 / 65535, 5);
+    expect(normalized!.data[1]).toBeCloseTo(1);
+    expect(normalized!.data[2]).toBeCloseTo(0);
+    expect(normalized!.data[3]).toBeCloseTo(1);
+
+    const halfFloat = readEnvironmentMapPixels({
+      width: 1,
+      height: 1,
+      data: new Uint16Array([0x3800, 0x3c00, 0, 0x3c00]),
+      __vitrum_hint__: { channels: 4, dataType: 'float16', colorSpace: 'linear' },
+    });
+
+    expect(halfFloat).not.toBeNull();
+    expect(halfFloat!.data[0]).toBeCloseTo(0.5, 5);
+    expect(halfFloat!.data[1]).toBeCloseTo(1);
+    expect(halfFloat!.data[2]).toBeCloseTo(0);
+    expect(halfFloat!.data[3]).toBeCloseTo(1);
+  });
 });

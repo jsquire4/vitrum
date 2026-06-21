@@ -192,7 +192,7 @@ interface ReadHandlePixelsResult {
 
 interface TextureHandleHint {
   readonly channels?: 1 | 2 | 3 | 4;
-  readonly dataType?: 'uint8' | 'uint16' | 'float32';
+  readonly dataType?: 'uint8' | 'uint16' | 'float16' | 'half-float' | 'float32';
   readonly colorSpace?: 'srgb' | 'linear';
 }
 
@@ -313,13 +313,20 @@ function readHandlePixels(handle: unknown): ReadHandlePixelsResult | null {
     ? { pixelStride: stride, valueCount: src.length, width, height }
     : undefined;
 
-  const isHalf = src instanceof Uint16Array;
   const isFloat = src instanceof Float32Array;
-  const useHalf = hint?.dataType != null ? hint.dataType === 'uint16' : isHalf;
+  const useHalf = hint?.dataType != null
+    ? hint.dataType === 'float16' || hint.dataType === 'half-float'
+    : false;
+  const useUint16 = hint?.dataType != null ? hint.dataType === 'uint16' : src instanceof Uint16Array;
   const useFloat = hint?.dataType != null ? hint.dataType === 'float32' : isFloat;
   const bpe = (src as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
-  const intMax = useHalf || useFloat ? 0 : 2 ** (8 * bpe) - 1;
-  const dec = (v: number): number => (useHalf ? halfToFloat(v) : useFloat ? v : intMax > 0 ? v / intMax : v);
+  const intMax = useHalf || useUint16 || useFloat ? 0 : 2 ** (8 * bpe) - 1;
+  const dec = (v: number): number => (
+    useHalf ? halfToFloat(v) :
+      useFloat ? v :
+      useUint16 ? Math.min(1, Math.max(0, v / 65535)) :
+      intMax > 0 ? v / intMax : v
+  );
 
   const out = new Float32Array(width * height * 4);
   for (let p = 0; p < width * height; p += 1) {

@@ -203,10 +203,12 @@ export interface GltfToSceneOptions {
    *
    * When omitted:
    *   - Browser: `createImageBitmap(new Blob([bytes], { type }))` is used.
-   *     Result is an `ImageBitmap`, accepted by pt-webgpu and pt-webgl2.
+   *     Result is an `ImageBitmap`, accepted by pt-webgpu. CPU-readable
+   *     backends such as pt-webgl2 and walkaround-hybrid still need
+   *     decodeSceneTextures() or a host-supplied pixel handle.
    *   - Non-browser: returns `{ kind: 'raw-image', mimeType, data: Uint8Array }`.
-   *     pt-webgpu and pt-webgl2 require an ImageBitmap / canvas-compatible handle;
-   *     supply this callback when running outside a browser.
+   *     Backends require decodeSceneTextures() or a host decodeImage/decodePixels
+   *     hook before those raw image bytes are backend-ready.
    *
    * sRGB ownership: the adapter passes bytes as-is. The callback and/or backend
    * are responsible for colorspace-correct upload (sRGB for baseColor/emissive;

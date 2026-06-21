@@ -4,7 +4,7 @@ export type EnvironmentMapColorSpace = 'linear' | 'srgb';
 
 export interface EnvironmentMapHandleHint {
   readonly channels?: 1 | 2 | 3 | 4;
-  readonly dataType?: 'uint8' | 'uint16' | 'float32';
+  readonly dataType?: 'uint8' | 'uint16' | 'float16' | 'half-float' | 'float32';
   readonly colorSpace?: EnvironmentMapColorSpace;
 }
 
@@ -51,7 +51,13 @@ function normalizedHint(handle: EnvironmentMapHandleLike): EnvironmentMapHandleH
   if (channels == null && dataType == null && colorSpace == null) return undefined;
   return {
     ...(channels === 1 || channels === 2 || channels === 3 || channels === 4 ? { channels } : {}),
-    ...(dataType === 'uint8' || dataType === 'uint16' || dataType === 'float32' ? { dataType } : {}),
+    ...(dataType === 'uint8' ||
+      dataType === 'uint16' ||
+      dataType === 'float16' ||
+      dataType === 'half-float' ||
+      dataType === 'float32'
+      ? { dataType }
+      : {}),
     ...(colorSpace === 'linear' || colorSpace === 'srgb' ? { colorSpace } : {}),
   };
 }
@@ -71,10 +77,11 @@ function decodeScalar(src: ArrayLike<number>, index: number, hint: EnvironmentMa
   const raw = Number(src[index] ?? 0);
   const view = src as { readonly BYTES_PER_ELEMENT?: number };
   const dataType = hint?.dataType;
-  if (dataType === 'uint16') return halfToFloat(raw);
+  if (dataType === 'uint16') return raw / 65535;
+  if (dataType === 'float16' || dataType === 'half-float') return halfToFloat(raw);
   if (dataType === 'float32') return raw;
   if (dataType === 'uint8') return raw / 255;
-  if (src instanceof Uint16Array) return halfToFloat(raw);
+  if (src instanceof Uint16Array) return raw / 65535;
   if (src instanceof Float32Array || src instanceof Float64Array) return raw;
   if (Array.isArray(src)) return raw;
   const bpe = view.BYTES_PER_ELEMENT ?? 1;

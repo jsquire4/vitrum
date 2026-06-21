@@ -47,12 +47,14 @@ const SAMPLED_MAP_KEYS = [
 //
 // channels: 1 | 2 | 3 | 4 — number of channels per pixel in `data`.
 //   If omitted, readHandlePixels falls back to the existing stride heuristic.
-// dataType: 'uint8' | 'uint16' | 'float32' — encoding of each channel value.
+// dataType: 'uint8' | 'uint16' | 'float16' | 'half-float' | 'float32' —
+//   encoding of each channel value. Uint16Array without a dataType hint is
+//   treated as normalized uint16, matching glTF decode handles.
 //   If omitted, inferred from the ArrayLike type (Uint8Array→uint8 etc.).
 
 export interface TextureHandleHint {
   readonly channels?: 1 | 2 | 3 | 4;
-  readonly dataType?: 'uint8' | 'uint16' | 'float32';
+  readonly dataType?: 'uint8' | 'uint16' | 'float16' | 'half-float' | 'float32';
   /**
    * Source encoding hint. By default, color/tint map roles are treated as sRGB
    * sources and converted into the atlas' linear RGBA32F payload; scalar/data
@@ -237,16 +239,22 @@ function readHandlePixels(
     });
   }
 
-  const isHalf = src instanceof Uint16Array;
   const isFloat = src instanceof Float32Array;
   // D10.12: respect explicit dataType hint for decoding.
-  const hintIsHalf = hint?.dataType === 'uint16';
+  const hintIsHalf = hint?.dataType === 'float16' || hint?.dataType === 'half-float';
+  const hintIsUint16 = hint?.dataType === 'uint16';
   const hintIsFloat = hint?.dataType === 'float32';
-  const useHalf = hint?.dataType != null ? hintIsHalf : isHalf;
+  const useHalf = hint?.dataType != null ? hintIsHalf : false;
+  const useUint16 = hint?.dataType != null ? hintIsUint16 : src instanceof Uint16Array;
   const useFloat = hint?.dataType != null ? hintIsFloat : isFloat;
   const bpe = (src as { BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
-  const intMax = useHalf || useFloat ? 0 : 2 ** (8 * bpe) - 1;
-  const dec = (v: number): number => (useHalf ? halfToFloat(v) : useFloat ? v : intMax > 0 ? v / intMax : v);
+  const intMax = useHalf || useUint16 || useFloat ? 0 : 2 ** (8 * bpe) - 1;
+  const dec = (v: number): number => (
+    useHalf ? halfToFloat(v) :
+      useFloat ? v :
+      useUint16 ? Math.min(1, Math.max(0, v / 65535)) :
+      intMax > 0 ? v / intMax : v
+  );
 
   const out = new Float32Array(width * height * 4);
   for (let p = 0; p < width * height; p += 1) {

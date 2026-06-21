@@ -612,13 +612,18 @@ function halfToFloat(h: number): number {
 }
 
 function decodedTextureAlpha(value: number, src: ArrayLike<number>, hintDataType: string | undefined): number {
-  const isHalf = src instanceof Uint16Array;
   const isFloat = src instanceof Float32Array;
-  const useHalf = hintDataType != null ? hintDataType === 'uint16' : isHalf;
+  const useHalf = hintDataType != null
+    ? hintDataType === 'float16' || hintDataType === 'half-float'
+    : false;
+  const useUint16 = hintDataType != null ? hintDataType === 'uint16' : src instanceof Uint16Array;
   const useFloat = hintDataType != null ? hintDataType === 'float32' : isFloat;
   const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
-  const intMax = useHalf || useFloat ? 0 : 2 ** (8 * bpe) - 1;
-  return useHalf ? halfToFloat(value) : useFloat ? value : intMax > 0 ? value / intMax : value;
+  const intMax = useHalf || useUint16 || useFloat ? 0 : 2 ** (8 * bpe) - 1;
+  return useHalf ? halfToFloat(value) :
+    useFloat ? value :
+      useUint16 ? Math.min(1, Math.max(0, value / 65535)) :
+      intMax > 0 ? value / intMax : value;
 }
 
 function baseColorMapCanReduceAlpha(value: unknown): boolean {

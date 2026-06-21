@@ -54,6 +54,47 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[0]).toBe(0);
   });
 
+  it('treats Uint16Array atlas handles as normalized uint16 unless explicitly hinted as float16', () => {
+    const normalized = {
+      width: 1,
+      height: 1,
+      data: new Uint16Array([32768, 65535, 0, 65535]),
+      __vitrum_hint__: { channels: 4, colorSpace: 'linear' },
+    };
+    const normalizedMaterial: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle: normalized },
+    };
+
+    const atlas = packMaterialTextureAtlas([normalizedMaterial], new Uint32Array([0]), 1);
+
+    expect(atlas.atlasData[0]).toBeCloseTo(32768 / 65535, 5);
+    expect(atlas.atlasData[1]).toBeCloseTo(1, 5);
+    expect(atlas.atlasData[2]).toBeCloseTo(0, 5);
+    expect(atlas.atlasData[3]).toBeCloseTo(1, 5);
+
+    const halfFloat = {
+      width: 1,
+      height: 1,
+      data: new Uint16Array([0x3800, 0x3c00, 0, 0x3c00]),
+      __vitrum_hint__: { channels: 4, dataType: 'float16', colorSpace: 'linear' },
+    };
+    const halfMaterial: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle: halfFloat },
+    };
+    const halfAtlas = packMaterialTextureAtlas([halfMaterial], new Uint32Array([0]), 1);
+
+    expect(halfAtlas.atlasData[0]).toBeCloseTo(0.5, 5);
+    expect(halfAtlas.atlasData[1]).toBeCloseTo(1, 5);
+    expect(halfAtlas.atlasData[2]).toBeCloseTo(0, 5);
+    expect(halfAtlas.atlasData[3]).toBeCloseTo(1, 5);
+  });
+
   it('reports unreadable atlas-backed map handles as diagnostics and disables metadata', () => {
     const baseColorMap = {
       handle: { id: 'gpu-only-texture' },

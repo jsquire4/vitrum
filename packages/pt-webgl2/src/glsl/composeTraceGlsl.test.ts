@@ -177,6 +177,29 @@ describe('composeTraceGlsl', () => {
     expect(bdptSrc).toContain('vec3 lightBsdfCosTheta = vec3( 1.0 );');
   });
 
+  it('pins WebGL2 BDPT reverse-PDF placeholders behind the current three-column cap', () => {
+    const engineSource = readFileSync(
+      fileURLToPath(new URL('../index.ts', import.meta.url)),
+      'utf8',
+    );
+    const bdptSrc = composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, bdpt: true });
+
+    // WebGL2 cannot patch the prior light-path column the way the WebGPU storage
+    // buffer path does, so the light-subpath writer keeps the current-column
+    // Lambertian placeholder. With the engine's three-column cap, the connection
+    // MIS only ever exposes that placeholder at L_c or L_{c-1}, and both are
+    // overwritten by material-aware straddle PDFs before the Veach sweep consumes
+    // them. If the cap rises, this guard should fail near the code that needs the
+    // broader internal-light-chain reverse-PDF implementation.
+    expect(engineSource).toContain('const BDPT_MAX_LIGHT_BOUNCES = 3;');
+    expect(bdptSrc).toContain('float pdfRev = cosRev / PI;');
+    expect(bdptSrc).toContain('if ( i == c ) mRev[ i ] = revLc;');
+    expect(bdptSrc).toContain('else if ( c >= 1 && i == c - 1 ) mRev[ i ] = revLcMinus;');
+    expect(bdptSrc.indexOf('float pdfRev = cosRev / PI;')).toBeLessThan(
+      bdptSrc.indexOf('if ( i == c ) mRev[ i ] = revLc;'),
+    );
+  });
+
   it('item 11: CMF upload-gap guard — wavelengthToRGB returns 0 when uYCmfIntegral < 1e-3', () => {
     // The guard prevents the old 1e-6 floor from turning a missing-CMF upload into
     // extreme overbright instead of an obvious black. Pin the guard text so it cannot

@@ -398,6 +398,78 @@ npm exec -- vitest run \
   packages/pt-webgpu/src/__tests__/inverseSession.test.ts
 ```
 
+### Wave 7 — CPU Texture Data-Type Semantics
+
+Status 2026-06-21: **CLOSED.** A direct source sweep of CPU-readable texture
+decoders found a small but real cross-backend predictability gap: several
+renderer readers treated plain `Uint16Array` handles, and even
+`dataType:'uint16'`, as half-float payloads. The glTF decode bridge and
+pt-webgpu inverse alpha helper already interpret `uint16` as normalized
+integer data, so the same authored CPU texture could produce different values
+depending on which backend/subsystem read it.
+
+Implementation:
+
+- `shared-bvh` vertex displacement now treats unhinted `Uint16Array` and
+  explicit `dataType:'uint16'` height maps as normalized `[0,1]` data; true
+  half-float displacement remains available via `dataType:'float16'` or
+  `'half-float'`.
+- `shared-bvh` emitter texture classification now uses the same policy for
+  average emissive/color estimates and UV texel sampling.
+- `shared-samplers` environment-map pixels now use normalized `uint16` by
+  default, with explicit `float16`/`half-float` for HDR half-float handles.
+- `pt-webgl2` material texture arrays and `walkaround-hybrid` material atlases
+  now use normalized `uint16` by default and reserve half-float for explicit
+  hints.
+- `walkaround-hybrid` alpha-blend diagnostics now classify `uint16` alpha
+  coverage consistently instead of silently treating values like `0x3c00` as
+  opaque half-float `1.0`.
+- A stale `gltfToScene` comment was reconciled with the actual decode-report
+  contract: browser `ImageBitmap` handles are ready for pt-webgpu, while
+  pt-webgl2 and walkaround still need CPU-readable decoded pixels.
+
+Focused gates:
+
+```bash
+npm test --workspace @vitrum/shared-bvh -- scenePack.test.ts emitterClassify.test.ts
+npm test --workspace @vitrum/shared-samplers -- environmentMapPixels.test.ts
+npm test --workspace @vitrum/pt-webgl2 -- texturesArray.test.ts equirectHdrInfo.test.ts
+npm test --workspace @vitrum/walkaround-hybrid -- materialTextureAtlas.test.ts consumedMaterialFields.test.ts
+npm test --workspace @vitrum/pt-webgpu -- environmentPacking.test.ts inverseSession.test.ts
+npm run typecheck
+```
+
+### Wave 8 — pt-webgl2 BDPT Reverse-PDF Recheck
+
+Status 2026-06-21: **SOURCE-VERIFIED NON-GAP / GUARDED.** A subagent flagged
+WebGL2 multi-vertex BDPT as if generated surface light vertices still exposed
+Lambertian reverse PDFs in material-rich paths. Direct code-read narrowed this:
+
+- `packages/pt-webgl2/src/index.ts` clamps WebGL2 BDPT light subpaths to
+  `BDPT_MAX_LIGHT_BOUNCES = 3`; `maxLightBounces > 1` is still explicit
+  research-mode opt-in.
+- `packages/pt-webgl2/src/glsl/render/bdpt_light_subpath.glsl.js` stores a
+  current-column `cos(theta)/pi` placeholder because WebGL2 cannot rewrite the
+  previous light-path column during that draw.
+- `packages/pt-webgl2/src/glsl/render/bdpt_connection.glsl.js` overwrites
+  `mRev[c]` and `mRev[c - 1]` with material-aware straddle PDFs before the
+  Veach MIS sweep. With the current three-column cap, every generated surface
+  vertex that can participate in the multi-vertex path is either `L_c` or
+  `L_{c-1}` for a connection and therefore receives an override.
+
+Implementation:
+
+- Added a structural GLSL composition guard that pins the three-column host cap,
+  the light-subpath placeholder, and both connection-side overrides together.
+  If the WebGL2 cap is raised later, this test is the tripwire for implementing
+  broader internal-light-chain reverse-PDF recomputation.
+
+Focused gate:
+
+```bash
+npm test --workspace @vitrum/pt-webgl2 -- composeTraceGlsl.test.ts bdptDriver.test.ts
+```
+
 ## Parked Long-Tail Items
 
 These are real, but they should not block contract-complete unless the user
@@ -436,12 +508,14 @@ renderability/API behavior:
 These are not code blockers, but they are required before a high-confidence
 "100%" signoff.
 
-WSL smoke status (2026-06-17): `npm run validate:gpu:smoke` completed on both
-lavapipe and dzn. The prior dzn hybrid-capture timeout did not reproduce in this
-run; both backend captures passed non-regression, the dzn/lavapipe cross-check
-passed, and the RC/ReSTIR/DDGI BVH brute-force oracles passed on lavapipe. Keep
-full browser/real-adapter validation in the queue; do not treat this smoke as a
-replacement for V28-B recaptures.
+WSL smoke status (2026-06-21): direct lavapipe T1 smoke passes, including the
+Cornell DDGI non-regression capture plus RC/ReSTIR-TLAS/DDGI brute-force GPU
+oracles. The full `npm run validate:gpu:smoke` wrapper still times out during
+the dzn hybrid capture after successful lavapipe work and dzn probe/render
+startup; the pre-push hook is warn-only and reproduces the same timeout. Treat
+this as a validation-infrastructure/adapter tail, not a source-code render
+regression. Keep full browser/real-adapter validation in the queue; do not treat
+lavapipe smoke as a replacement for V28-B recaptures.
 
 - V28-B render-changing recaptures for PT and walkaround changes.
 - GRIS-on unbiasedness and biased-default error quantification.
