@@ -701,6 +701,15 @@ export class GltfSceneController {
           }
           continue;
         }
+        const expandedInstanceTransform = instancingBinding
+          ? buildExpandedInstanceTransform(world, instancingBinding)
+          : undefined;
+        if (expandedInstanceTransform) {
+          if (!mat4AlmostEqual(primitiveTransform(current), expandedInstanceTransform)) {
+            mergePrimitivePatch(patchMap, id, { transform: expandedInstanceTransform } as Partial<ScenePrimitive>);
+          }
+          continue;
+        }
         if (!mat4AlmostEqual(primitiveTransform(current), world)) {
           mergePrimitivePatch(patchMap, id, { transform: world } as Partial<ScenePrimitive>);
         }
@@ -1471,6 +1480,16 @@ function buildAnimatedInstanceTransforms(
   localInstances: ReadonlyArray<Mat4>,
 ): readonly Mat4[] {
   return localInstances.map((local) => asMat4(mat4Mul(nodeWorld, local)));
+}
+
+function buildExpandedInstanceTransform(
+  nodeWorld: Mat4,
+  binding: GltfInstancingBinding,
+): Mat4 | undefined {
+  const index = binding.expandedPrimitiveInstanceIndex;
+  if (index === undefined) return undefined;
+  const local = binding.localInstanceTransforms[index];
+  return local ? asMat4(mat4Mul(nodeWorld, local)) : undefined;
 }
 
 function instanceMatricesAlmostEqual(

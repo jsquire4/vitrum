@@ -25,7 +25,7 @@ import {
   rankGltfBackends,
 } from './index.js';
 import type { DecodeGltfTexturePixelsFn, GltfAssetFetchResponse, GltfJson } from './index.js';
-import type { InstancedMeshPrimitive, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
+import type { InstancedMeshPrimitive, MeshPrimitive, Scene, SkinnedMeshPrimitive, TextureRef } from '@vitrum/core';
 
 function f32Buffer(values: number[]): ArrayBuffer {
   const buf = new ArrayBuffer(values.length * 4);
@@ -1025,6 +1025,32 @@ describe('loadGltfAsset', () => {
     const primitive = asset.scene.primitives[0] as MeshPrimitive;
     expect(primitive.positions.length).toBeGreaterThan(9);
     expect(Array.from(primitive.positions.slice(0, 3))).toEqual([0.25, -0.25, -0.25]);
+  });
+
+  it('fallback-expands EXT_mesh_gpu_instancing on morphed meshes into skinned primitives', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addMorphedGpuInstancing(gltf, buffers);
+
+    const asset = await loadGltfAsset(gltf, { buffers });
+
+    expect(asset.scene.primitives).toHaveLength(2);
+    const first = asset.scene.primitives[0] as SkinnedMeshPrimitive;
+    const second = asset.scene.primitives[1] as SkinnedMeshPrimitive;
+    expect(first.kind).toBe('skinned-mesh');
+    expect(second.kind).toBe('skinned-mesh');
+    expect(String(first.id)).toMatch(/-instance-0$/);
+    expect(String(second.id)).toMatch(/-instance-1$/);
+    expect(first.transform?.[12]).toBeCloseTo(0);
+    expect(second.transform?.[12]).toBeCloseTo(2);
+    expect(first.morphTargets).toHaveLength(1);
+    expect(second.morphTargets).toHaveLength(1);
+    expect(asset.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'fallback-expanded-gpu-instancing',
+        path: 'nodes[0].extensions.EXT_mesh_gpu_instancing',
+      }),
+    ]));
   });
 
   it('throws a deterministic error for relative external resources without a baseUri', async () => {
@@ -4493,7 +4519,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }
   });
 
-  it('reports EXT_mesh_gpu_instancing on morphed meshes as an unsupported combined primitive case', () => {
+  it('reports EXT_mesh_gpu_instancing on morphed meshes as a fallback-expanded combined primitive case', () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);
 
@@ -4513,7 +4539,7 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(compatibility.issues).toContainEqual(expect.objectContaining({
       category: 'primitive',
       name: 'EXT_mesh_gpu_instancing.skinnedOrMorphed',
-      support: 'unsupported',
+      support: 'fallback-generated-mesh',
       path: 'nodes[0].extensions.EXT_mesh_gpu_instancing',
     }));
   });
@@ -6699,7 +6725,28 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
-  it('rejects instanced morphed meshes in reject-unsupported mode before constructing an engine', async () => {
+  it('allows fallback-expanded instanced morphed meshes in reject-unsupported mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addMorphedGpuInstancing(gltf, buffers);
+    const setScene = vi.fn();
+    const createEngine = vi.fn(async () => ({ setScene }));
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    });
+
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(setScene).toHaveBeenCalledTimes(1);
+    expect(result.asset.scene.primitives).toHaveLength(2);
+    expect(result.asset.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'fallback-expanded-gpu-instancing' }),
+    ]));
+  });
+
+  it('rejects fallback-expanded instanced morphed meshes in reject-degraded mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);
     const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
@@ -6707,10 +6754,10 @@ describe('loadGltfForEngine', () => {
     await expect(loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgl2',
-      compatibilityMode: 'reject-unsupported',
+      compatibilityMode: 'reject-degraded',
       createEngine,
     })).rejects.toThrow(
-      'primitive:EXT_mesh_gpu_instancing.skinnedOrMorphed=unsupported at nodes[0].extensions.EXT_mesh_gpu_instancing',
+      'primitive:EXT_mesh_gpu_instancing.skinnedOrMorphed=fallback-generated-mesh at nodes[0].extensions.EXT_mesh_gpu_instancing',
     );
     expect(createEngine).not.toHaveBeenCalled();
   });

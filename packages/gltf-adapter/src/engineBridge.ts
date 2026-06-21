@@ -480,6 +480,7 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'double-sided-material',
   'ignored-gpu-instancing',
   'ignored-gpu-instancing-attribute',
+  'fallback-expanded-gpu-instancing',
   'fallback-generated-primitive-mode',
   'generated-flat-normals',
   'unreadable-normal',

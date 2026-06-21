@@ -394,6 +394,12 @@ export interface GltfInstancingBinding {
   readonly primitiveId: string;
   readonly nodeIndex: number;
   readonly localInstanceTransforms: ReadonlyArray<Mat4>;
+  /**
+   * Present when EXT_mesh_gpu_instancing was fallback-expanded into one
+   * ordinary primitive per authored instance because the primitive also needs
+   * skin/morph state.
+   */
+  readonly expandedPrimitiveInstanceIndex?: number;
 }
 
 export type GltfImportDiagnosticCode =
@@ -422,6 +428,7 @@ export type GltfImportDiagnosticCode =
   | 'scene-not-found'
   | 'ignored-gpu-instancing'
   | 'ignored-gpu-instancing-attribute'
+  | 'fallback-expanded-gpu-instancing'
   | 'unsupported-primitive-mode'
   | 'fallback-generated-primitive-mode'
   | 'unresolved-compression'
@@ -1131,19 +1138,23 @@ export async function gltfToScene(
       );
 
       const id = `gltf-prim-${primIdCounter++}`;
-      (animationTargets[animationNodeId(nodeIdx)] ??= []).push(id);
-      if (
-        materialIndex !== undefined &&
-        Number.isInteger(materialIndex) &&
-        materialIndex >= 0 &&
-        materialIndex < coreMaterials.length
-      ) {
-        materialBindings.push({ primitiveId: id, materialIndex });
-      }
-      if ((prim.extensions?.KHR_materials_variants?.mappings?.length ?? 0) > 0) {
+      const meshIndex = node.mesh;
+      const registerPrimitiveProvenance = (primitiveId: string): void => {
+        (animationTargets[animationNodeId(nodeIdx)] ??= []).push(primitiveId);
+        if (
+          materialIndex !== undefined &&
+          Number.isInteger(materialIndex) &&
+          materialIndex >= 0 &&
+          materialIndex < coreMaterials.length
+        ) {
+          materialBindings.push({ primitiveId, materialIndex });
+        }
+      };
+      const registerPrimitiveVariants = (primitiveId: string): void => {
+        if ((prim.extensions?.KHR_materials_variants?.mappings?.length ?? 0) === 0) return;
         materialVariantBindings.push({
-          primitiveId: id,
-          meshIndex: node.mesh,
+          primitiveId,
+          meshIndex,
           primitiveIndex,
           ...(prim.material !== undefined ? { baseMaterialIndex: prim.material } : {}),
           basePatch: _buildPrimitiveMaterialVariantPatch(
@@ -1183,7 +1194,7 @@ export async function gltfToScene(
             onAccessorDiagnostic,
           ),
         });
-      }
+      };
 
       let skinArg = (skinIndices && skinWeights && bones && boneInverses)
         ? {
@@ -1225,22 +1236,39 @@ export async function gltfToScene(
       }
 
       let primitiveInstances = instanceTransforms?.worldInstanceTransforms;
-      if (primitiveInstances && skinArg) {
+      if (primitiveInstances && skinArg && instanceTransforms) {
         if (!instanceFallbackWarned) {
           emitImportDiagnostic(warnings, diagnostics, {
             severity: 'warning',
-            code: 'ignored-gpu-instancing',
+            code: 'fallback-expanded-gpu-instancing',
             path: `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`,
             message:
               `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
-              'on a skinned or morphed mesh. @vitrum/core has no instanced skinned/morphed primitive ' +
-              'contract yet, so the mesh is imported once with its normal skin/morph representation.',
+              'on a skinned or morphed mesh. The importer expanded it to one SkinnedMeshPrimitive ' +
+              'per authored instance so every instance remains renderable under the existing core contract.',
           });
           instanceFallbackWarned = true;
         }
-        primitiveInstances = undefined;
+        for (const [instanceIndex, instanceWorld] of primitiveInstances.entries()) {
+          const instanceId = `${id}-instance-${instanceIndex}`;
+          registerPrimitiveProvenance(instanceId);
+          registerPrimitiveVariants(instanceId);
+          instancingBindings.push({
+            primitiveId: instanceId,
+            nodeIndex: nodeIdx,
+            localInstanceTransforms: instanceTransforms.localInstanceTransforms,
+            expandedPrimitiveInstanceIndex: instanceIndex,
+          });
+          primitives.push(_buildPrimitive(
+            instanceId, instanceWorld, positions, normals, indices,
+            uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, undefined,
+          ));
+        }
+        continue;
       }
       if (primitiveInstances && instanceTransforms) {
+        registerPrimitiveProvenance(id);
+        registerPrimitiveVariants(id);
         instancingBindings.push({
           primitiveId: id,
           nodeIndex: nodeIdx,
@@ -1248,6 +1276,10 @@ export async function gltfToScene(
         });
       }
 
+      if (!primitiveInstances) {
+        registerPrimitiveProvenance(id);
+        registerPrimitiveVariants(id);
+      }
       primitives.push(_buildPrimitive(
         id, worldMat, positions, normals, indices,
         uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, primitiveInstances,

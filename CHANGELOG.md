@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (glTF instanced skinned/morphed fallback expansion, 2026-06-20)
+
+- **`EXT_mesh_gpu_instancing` on skinned or morphed glTF primitives now imports as renderable expanded primitives:** when the core scene contract cannot represent a native instanced skinned/morphed primitive, `gltfToScene()` now creates one skinned/morphed primitive per authored GPU-instance transform, reports `fallback-expanded-gpu-instancing`, preserves material/variant/animation provenance for each generated primitive id, and the scene controller keeps each instance-local transform intact when the node or an ancestor animates. Compatibility reports this combined case as `fallback-generated-mesh`; `reject-unsupported` accepts it and `reject-degraded` rejects it before engine construction. Native instanced skinned/morphed primitives remain future performance-oriented core/backend work, not an arbitrary-glTF correctness blocker.
+
 ### Fixed (walkaround transparent direct-light tint, 2026-06-20)
 
 - **Walkaround direct-light shadows now carry RGB transparent transmittance:** `@vitrum/walkaround-hybrid` routes transparent-OIT sun, opaque shade sun, and ReSTIR-DI environment/emitter finalization through `traceSceneAlphaTintTransmittanceTextured()`, so readable `transmissionMap`, `thicknessMap`, Beer tint, and atlas alpha coverage affect direct-light shadow color instead of scalar alpha-only visibility. ReSTIR-DI keeps its scalar reservoir contract by storing luminance of RGB visibility and reapplying the recomputed tint during shade consumption. Transparent ReSTIR/GI transport vertices remain a separate approximation tail.
@@ -154,7 +158,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed (glTF instanced morph/skinning compatibility truthfulness, 2026-06-16)
 
-- **glTF compatibility preflight now rejects instanced skinned/morphed meshes explicitly:** `analyzeGltfAsset()` marks `EXT_mesh_gpu_instancing` on skinned or morphed meshes as `EXT_mesh_gpu_instancing.skinnedOrMorphed=unsupported`, matching the importer behavior that falls back to a single skinned/morphed primitive because the core Scene contract has no instanced skinned/morphed primitive kind yet. `loadGltfForEngine(..., compatibilityMode:'reject-unsupported')` now fails before constructing an engine for this combined case instead of relying on the later `ignored-gpu-instancing` degraded import diagnostic.
+- **glTF compatibility preflight no longer silently treats instanced skinned/morphed meshes as native instancing:** `analyzeGltfAsset()` originally marked `EXT_mesh_gpu_instancing` on skinned or morphed meshes as unsupported, matching the importer behavior at the time. This was superseded on 2026-06-20 by fallback expansion into one skinned/morphed primitive per authored instance transform, with `reject-degraded` carrying the strict failure mode for callers that require native support.
 
 ### Fixed (glTF opacity report truthfulness, 2026-06-16)
 

@@ -177,6 +177,36 @@ function animatedInstancedGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBu
   };
 }
 
+function addMorphTargetToFirstPrimitive(
+  fixture: { gltf: GltfJson; buffers: Map<number, ArrayBuffer> },
+): void {
+  const morph = new Float32Array([
+    0, 0, 0.1,
+    0, 0, 0.1,
+    0, 0, 0.1,
+  ]);
+  const bufferIndex = fixture.gltf.buffers?.length ?? 0;
+  const bufferViewIndex = fixture.gltf.bufferViews?.length ?? 0;
+  const accessorIndex = fixture.gltf.accessors?.length ?? 0;
+  fixture.gltf.buffers = [
+    ...(fixture.gltf.buffers ?? []),
+    { byteLength: morph.byteLength },
+  ];
+  fixture.gltf.bufferViews = [
+    ...(fixture.gltf.bufferViews ?? []),
+    { buffer: bufferIndex, byteOffset: 0, byteLength: morph.byteLength },
+  ];
+  fixture.gltf.accessors = [
+    ...(fixture.gltf.accessors ?? []),
+    { bufferView: bufferViewIndex, componentType: 5126, count: 3, type: 'VEC3' },
+  ];
+  fixture.gltf.meshes![0]!.primitives[0] = {
+    ...fixture.gltf.meshes![0]!.primitives[0]!,
+    targets: [{ POSITION: accessorIndex }],
+  };
+  fixture.buffers.set(bufferIndex, morph.buffer.slice(morph.byteOffset, morph.byteOffset + morph.byteLength));
+}
+
 function morphGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
   const packed = packF32([
     [0, 0, 0, 1, 0, 0, 0, 1, 0],
@@ -742,6 +772,40 @@ describe('GltfSceneController', () => {
     expect(primitive.kind).toBe('instanced-mesh');
     expect(primitive.instances[0]![12]).toBeCloseTo(14);
     expect(primitive.instances[1]![13]).toBeCloseTo(3);
+  });
+
+  it('patches fallback-expanded skinned/morphed EXT_mesh_gpu_instancing transforms when the node animates', async () => {
+    const fixture = animatedInstancedGltf();
+    addMorphTargetToFirstPrimitive(fixture);
+    const result = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
+    const updatePrimitive = vi.fn();
+    const reset = vi.fn();
+    const controller = createGltfSceneController({ gltf: fixture.gltf, ...result });
+
+    expect(controller.scene.primitives).toHaveLength(2);
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'fallback-expanded-gpu-instancing' }),
+    ]));
+
+    const frame = controller.applyAnimation('instance-slide', 0.5, {
+      engine: { setScene: vi.fn(), updatePrimitive, reset },
+    });
+
+    expect(frame.usedSetScene).toBe(false);
+    expect(updatePrimitive).toHaveBeenCalledTimes(2);
+    expect(reset).toHaveBeenCalledTimes(1);
+    const byId = new Map(frame.primitivePatches.map((record) => [record.id, record.patch]));
+    expect((byId.get('gltf-prim-0-instance-0') as { transform?: Float32Array }).transform?.[12]).toBeCloseTo(14);
+    expect((byId.get('gltf-prim-0-instance-0') as { transform?: Float32Array }).transform?.[13]).toBeCloseTo(0);
+    expect((byId.get('gltf-prim-0-instance-1') as { transform?: Float32Array }).transform?.[12]).toBeCloseTo(12);
+    expect((byId.get('gltf-prim-0-instance-1') as { transform?: Float32Array }).transform?.[13]).toBeCloseTo(3);
+    const first = controller.scene.primitives[0] as SkinnedMeshPrimitive;
+    const second = controller.scene.primitives[1] as SkinnedMeshPrimitive;
+    expect(first.kind).toBe('skinned-mesh');
+    expect(second.kind).toBe('skinned-mesh');
+    expect(first.transform?.[12]).toBeCloseTo(14);
+    expect(second.transform?.[12]).toBeCloseTo(12);
+    expect(second.transform?.[13]).toBeCloseTo(3);
   });
 
   it('switches KHR_materials_variants via primitive patches', async () => {

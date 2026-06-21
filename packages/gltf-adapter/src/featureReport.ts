@@ -794,15 +794,16 @@ export function evaluateGltfBackendProfileCompatibility(
     addIssue({
       category: 'primitive',
       name: 'EXT_mesh_gpu_instancing.skinnedOrMorphed',
-      support: 'unsupported',
+      support: 'fallback-generated-mesh',
       path: firstSourcePath(
         report.primitives.issuePaths,
         'instancedSkinnedOrMorphed',
         'nodes',
       ),
       message:
-        'glTF EXT_mesh_gpu_instancing on skinned or morphed meshes is not representable in the core Scene contract yet; ' +
-        'the importer falls back to one skinned/morphed primitive and ignores the instance transforms.',
+        'glTF EXT_mesh_gpu_instancing on skinned or morphed meshes is fallback-expanded into one SkinnedMeshPrimitive ' +
+        'per authored instance. This keeps every instance renderable under the current core Scene contract, but it is ' +
+        'not native instanced skinning and may cost more memory/BVH work than a future first-class primitive.',
     });
   }
 
