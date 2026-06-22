@@ -561,6 +561,86 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 28 — pt-webgl2 Mesh-Light MIS Prose Reconciliation
+
+Status 2026-06-22: **CLOSED.** Source revalidation of the pt-webgl2 mesh-area
+light path found the runtime and tests already use emitted-power-proportional
+triangle/texel-cell selection for mesh-light NEE, but the source header in
+`meshAreaLights.ts` still described the older area-proportional derivation. This
+was not a runtime bug, but it was a source-level contradiction in the renderer
+math documentation.
+
+Implementation:
+
+- Rewrote the `meshAreaLights.ts` double-count/MIS derivation to match the live
+  emitted-power selection and forward-hit PDF reconstruction.
+
+Focused gate:
+
+```bash
+npm test --workspace @vitrum/pt-webgl2 -- meshAreaMis.test.ts
+```
+
+### Wave 27 — RC Material-Atlas Parity Fix
+
+Status 2026-06-22: **CLOSED.** Source revalidation of the walkaround/RC
+material path found a real bounded code gap: the RC probe-ray shader consumed
+the walkaround material atlas with a stale 53-texel per-triangle metadata stride
+while the atlas producer and main walkaround material shader use 56 texels. That
+misaddressed every RC material-map metadata load after triangle 0. The same RC
+scalar-map helper also returned only the sampled map channel for roughness and
+metallic maps, while the main material shader correctly multiplies the authored
+scalar fallback by the sampled channel.
+
+Implementation:
+
+- Updated `probeRayCast.wgsl.ts` to use the 56-texel material-map metadata
+  stride and to return `fallback * mapChannel` for scalar material maps.
+- Added RC WGSL structural tests that compare the RC shader stride against the
+  atlas producer and main material shader, and pin the scalar-map multiplier.
+- Kept runtime package boundaries intact: `@vitrum/walkaround-rc` does not gain
+  a dependency on `@vitrum/walkaround-hybrid`; the test reads sibling source
+  files to pin parity.
+
+Focused gates:
+
+```bash
+npm test --workspace @vitrum/walkaround-rc -- probeRayCastWgsl.test.ts rcKernelMath.test.ts
+npm test --workspace @vitrum/walkaround-hybrid -- consumedMaterialFields.test.ts materialTextureAtlas.test.ts rcMergedRefit.test.ts giPropagationRcMerged.test.ts
+npm run shader-gate
+npm run validate:gpu:smoke
+git diff --check
+```
+
+### Wave 26 — Walkaround Texture-Map Ledger Prose Reconciliation
+
+Status 2026-06-22: **CLOSED.** Direct source read of
+`BACKEND_PROMISE_LEDGER` found a stale walkaround `baseColorMap` comment still
+claiming "the rest of the texture-map family is not sampled" even though the
+same ledger, `CONSUMED_MATERIAL_FIELDS`, and shader/material-atlas evidence now
+list normal, ORM, AO, alpha, emissive, transmission, thickness, light,
+specular, clearcoat, sheen, anisotropy, iridescence, bump, and displacement map
+families as consumed with approximate semantics. The code/test contract was
+already right; the stale prose was the contradiction.
+
+Implementation:
+
+- Reworded the `baseColorMap` ledger comment to keep the approximate boundary
+  on scalar Beer/transmission tint, mapped-emitter PDFs, and transparent
+  transport instead of incorrectly saying other texture-map families are
+  unsampled.
+- Strengthened `road-to-100-validation-status` so the stale sentence fails the
+  queue check if it returns.
+
+Focused gates:
+
+```bash
+npm test --workspace @vitrum/walkaround-hybrid -- consumedMaterialFields.test.ts
+npm test --workspace @vitrum/core -- ledgerVsCapabilities.test.ts
+npm run road-to-100-validation-status
+git diff --check
+```
+
 ### Wave 25 — Learned Systems Training-Pipeline Evidence Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of

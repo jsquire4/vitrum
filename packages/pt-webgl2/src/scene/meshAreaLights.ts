@@ -17,16 +17,19 @@
 //   (BSDF sampling) and the NEE triangle sample — with the balance/power heuristic.
 //
 // Double-count guard / MIS algebra (the crux):
-//   NEE selects an emissive triangle with probability proportional to its AREA, i.e.
-//   p_tri = area_tri / totalEmissiveArea, and samples a point uniformly on it
-//   (area density 1/area_tri). The resulting SOLID-ANGLE pdf at a surface receiving
-//   the connection is
+//   NEE selects an emissive triangle or bounded texel cell with probability
+//   proportional to its emitted power:
+//        power_tri = luminance(radiance_tri) · area_tri
+//        p_tri = power_tri / totalEmissivePower
+//   and samples a point uniformly on it (area density 1/area_tri). The resulting
+//   SOLID-ANGLE pdf at a surface receiving the connection is
 //        p_NEE(ω) = (dist² / (area_tri·|cosθ_light|)) · p_tri
-//                 = dist² / (totalEmissiveArea·|cosθ_light|)          [area_tri cancels]
-//   which is INDEPENDENT of which triangle was chosen — it needs only the GLOBAL
-//   `totalEmissiveArea`. That is what lets the forward emissive hit (which does NOT
+//                 = luminance(radiance_tri) · dist²
+//                   / (totalEmissivePower·|cosθ_light|)          [area_tri cancels]
+//   which is reconstructible from the hit surface's emitted radiance and the GLOBAL
+//   `totalEmissivePower`. That is what lets the forward emissive hit (which does NOT
 //   know which light-list index it struck) compute the very same p_NEE and form the
-//   MIS weight `misHeuristic(bsdfPdf, p_NEE)` without a triangle→light-index map.
+//   MIS weight `misHeuristic(bsdfPdf, p_NEE)` without a triangle→index map.
 //   The forward hit then adds `surf.emission · w_bsdf` and NEE adds its sample with
 //   `w_nee` — together exactly one estimate of the area light (no double-count).
 //

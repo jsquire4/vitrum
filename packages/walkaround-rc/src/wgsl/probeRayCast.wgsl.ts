@@ -337,7 +337,7 @@ struct RCLightBuffer {
 @group(0) @binding(19) var                      rc_geom_tangent:          texture_2d<f32>;
 @group(0) @binding(20) var                      rc_geom_vertex_color:     texture_2d<f32>;
 
-const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
+const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 56u;
 const RC_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const RC_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const RC_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -559,7 +559,7 @@ fn rcSampleMaterialScalarMap(
   if (texel.x < 0.0) {
     return fallback;
   }
-  return clamp(rcMaterialMapChannel(texel, channel), 0.0, 1.0);
+  return clamp(fallback * rcMaterialMapChannel(texel, channel), 0.0, 1.0);
 }
 
 fn rcSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {

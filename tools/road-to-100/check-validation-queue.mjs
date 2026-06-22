@@ -809,6 +809,12 @@ for (const snippet of [
     fail(`walkaround specialty material future-contract row is stale: missing promise ledger snippet ${snippet}`);
   }
 }
+if (promiseLedger.includes("rest of the texture-map family is not sampled")) {
+  fail(
+    "promise ledger has stale walkaround texture-map prose: sampled atlas-backed map families " +
+    "must not be described as unsampled",
+  );
+}
 for (const needle of [
   "unsupported specialty fields (spectral/dispersion/thin-film/full layered",
   "approximate walkaround scattering rows",

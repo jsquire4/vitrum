@@ -378,7 +378,8 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // Phase-3D first slice: readable raw/DataTexture-shaped uv0/uv1 baseColorMap
   // handles are sampled with wrap+transform and multiplied into visible albedo.
   // Approximate because glass Beer/transmission tint still uses the scalar
-  // packed color path and the rest of the texture-map family is not sampled.
+  // packed color path, and compact GI/reservoir paths still use bounded
+  // approximations for mapped emitters and transparent transport.
   baseColorMap: 'approximate',
   // Phase-3D map slice: normalMap perturbs the camera-visible smooth normal
   // through authored/generated tangent.xyzw when present, falling back to a
