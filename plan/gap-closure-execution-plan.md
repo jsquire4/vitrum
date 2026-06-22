@@ -690,6 +690,36 @@ npm run proof-check
 git diff --check
 ```
 
+### Wave 33 — PT Radiometric Host-Status Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of
+`VQ-RADIOMETRIC-PT` found no bounded renderer implementation gap to fix in this
+wave: the row remains partial because multi-vertex BDPT still needs a redesigned
+estimator weighted against the ordinary eye-path strategy, and tighter
+caustic/material-furnace promotion evidence remains a validation tail. The weak
+spot was Road-level proof strength: the row cited `pt-ab-host-status.json` with
+only a top-level `PASS` expectation.
+
+Implementation:
+
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so
+  `VQ-RADIOMETRIC-PT` now requires the committed PT radiometric host-status
+  artifact to remain a full four-case `PASS`.
+- The guard pins `harness:'pt-radiometric-ab'`,
+  `reason.code:'pt-radiometric-ab-complete'`, the selected case list
+  (`sppm`, `bdpt`, `restir-pt`, `sobol`), preserved result files, empty
+  host-blocked `nextSteps`, and each case's script/result path with
+  `exitStatus:0`, `signal:null`, and `reason:null`.
+
+Focused gates:
+
+```bash
+npm run road-to-100-validation-status
+npm run radiometric-ab:proof-check
+npm run proof-check
+git diff --check
+```
+
 ### Wave 28 — pt-webgl2 Mesh-Light MIS Prose Reconciliation
 
 Status 2026-06-22: **CLOSED.** Source revalidation of the pt-webgl2 mesh-area

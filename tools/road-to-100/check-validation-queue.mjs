@@ -1060,6 +1060,44 @@ for (const path of REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS) {
     fail(`VQ-RADIOMETRIC-PT proofArtifacts must cite ${path}`);
   }
 }
+const ptRadiometricHostStatus = await readJson("tools/radiometric-ab/pt-ab-host-status.json");
+if (ptRadiometricHostStatus.harness !== "pt-radiometric-ab") {
+  fail("VQ-RADIOMETRIC-PT host status must pin harness=pt-radiometric-ab");
+}
+if (ptRadiometricHostStatus.verdict !== "PASS") {
+  fail("VQ-RADIOMETRIC-PT host status must remain full PASS while the row claims committed proof");
+}
+if (ptRadiometricHostStatus.reason?.code !== "pt-radiometric-ab-complete") {
+  fail("VQ-RADIOMETRIC-PT host status PASS must carry pt-radiometric-ab-complete");
+}
+const expectedPtRadiometricCases = [
+  ["sppm", "tools/radiometric-ab/ab-sppm.mjs", "tools/radiometric-ab/results-sppm.json"],
+  ["bdpt", "tools/radiometric-ab/ab-bdpt.mjs", "tools/radiometric-ab/results-bdpt.json"],
+  ["restir-pt", "tools/radiometric-ab/ab-restir-pt.mjs", "tools/radiometric-ab/results-restir-pt.json"],
+  ["sobol", "tools/radiometric-ab/ab-sobol.mjs", "tools/radiometric-ab/results-sobol.json"],
+];
+if (JSON.stringify(ptRadiometricHostStatus.selectedCases) !== JSON.stringify(expectedPtRadiometricCases.map((row) => row[0]))) {
+  fail("VQ-RADIOMETRIC-PT host status must preserve the complete four-case selectedCases list");
+}
+if (JSON.stringify(ptRadiometricHostStatus.preservedResultFiles) !== JSON.stringify(expectedPtRadiometricCases.map((row) => row[2]))) {
+  fail("VQ-RADIOMETRIC-PT host status must preserve all four result files");
+}
+if (Array.isArray(ptRadiometricHostStatus.nextSteps) && ptRadiometricHostStatus.nextSteps.length !== 0) {
+  fail("VQ-RADIOMETRIC-PT full PASS host status must not carry host-blocked nextSteps");
+}
+if (!Array.isArray(ptRadiometricHostStatus.cases) || ptRadiometricHostStatus.cases.length !== expectedPtRadiometricCases.length) {
+  fail("VQ-RADIOMETRIC-PT host status must include exactly four case records");
+}
+for (const [id, script, resultFile] of expectedPtRadiometricCases) {
+  const entry = ptRadiometricHostStatus.cases.find((item) => item?.id === id);
+  if (entry == null) fail(`VQ-RADIOMETRIC-PT host status missing case ${id}`);
+  if (entry.status !== "PASS") fail(`VQ-RADIOMETRIC-PT host status ${id} must be PASS`);
+  if (entry.exitStatus !== 0) fail(`VQ-RADIOMETRIC-PT host status ${id} must pin exitStatus 0`);
+  if (entry.signal !== null) fail(`VQ-RADIOMETRIC-PT host status ${id} must pin signal null`);
+  if (entry.reason !== null) fail(`VQ-RADIOMETRIC-PT host status ${id} must pin reason null`);
+  if (entry.script !== script) fail(`VQ-RADIOMETRIC-PT host status ${id} script mismatch`);
+  if (entry.resultFile !== resultFile) fail(`VQ-RADIOMETRIC-PT host status ${id} resultFile mismatch`);
+}
 for (const needle of [
   "RADIOMETRIC_AB_PROOFS",
   "RESTIR_PT_SPECIALTY_PROOF",
