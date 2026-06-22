@@ -79,6 +79,21 @@ const REQUIRED_MUTATION_ARTIFACT_PATHS = [
   "packages/walkaround-hybrid/src/HybridEngineGiPropagation.ts",
 ];
 
+const REQUIRED_ADJOINT_ARTIFACT_PATHS = [
+  "packages/pt-webgpu/src/inverse/inverseSession.ts",
+  "packages/pt-webgpu/src/__tests__/inverseSession.test.ts",
+  "packages/pt-webgpu/src/inverse/brdfAdjoint.ts",
+  "packages/pt-webgpu/src/wgsl/pathTrace/pathTraceAdjoint.wgsl.ts",
+  "packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts",
+  "packages/pt-webgpu/src/adjointPass.ts",
+  "packages/pt-webgpu/src/inverse/adjointHarness.wgsl.ts",
+  "packages/pt-webgpu/src/__tests__/brdfAdjoint.test.ts",
+  "packages/pt-webgpu/src/__tests__/brdfAdjointEmissiveIor.test.ts",
+  "packages/pt-webgpu/src/__tests__/adjointHarness.test.ts",
+  "packages/pt-webgpu/src/__tests__/adjointPassPacking.test.ts",
+  "packages/pt-webgpu/src/__tests__/adjointEmitterGradientOracle.test.ts",
+];
+
 const REQUIRED_PT_WEBGPU_RUNTIME_ARTIFACT_PATHS = [
   "tools/behavioral-gate/gate.mjs",
   "tools/behavioral-gate/check-dzn-status.mjs",
@@ -442,6 +457,20 @@ const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await P
 ]);
 const inverseSessionSource = await readText("packages/pt-webgpu/src/inverse/inverseSession.ts");
 const inverseSessionTestSource = await readText("packages/pt-webgpu/src/__tests__/inverseSession.test.ts");
+const brdfAdjointSource = await readText("packages/pt-webgpu/src/inverse/brdfAdjoint.ts");
+const pathTraceAdjointWgslSource = await readText("packages/pt-webgpu/src/wgsl/pathTrace/pathTraceAdjoint.wgsl.ts");
+const adjointPassWgslSource = await readText("packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts");
+const adjointPassSource = await readText("packages/pt-webgpu/src/adjointPass.ts");
+const adjointHarnessSource = await readText("packages/pt-webgpu/src/inverse/adjointHarness.wgsl.ts");
+const brdfAdjointTestSource = await readText("packages/pt-webgpu/src/__tests__/brdfAdjoint.test.ts");
+const brdfAdjointEmissiveIorTestSource = await readText(
+  "packages/pt-webgpu/src/__tests__/brdfAdjointEmissiveIor.test.ts",
+);
+const adjointHarnessTestSource = await readText("packages/pt-webgpu/src/__tests__/adjointHarness.test.ts");
+const adjointPassPackingTestSource = await readText("packages/pt-webgpu/src/__tests__/adjointPassPacking.test.ts");
+const adjointEmitterGradientOracleTestSource = await readText(
+  "packages/pt-webgpu/src/__tests__/adjointEmitterGradientOracle.test.ts",
+);
 const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
 const behavioralGateSource = await readText("tools/behavioral-gate/gate.mjs");
 const transparentAlphaTransportContractTest = await readText(
@@ -834,6 +863,7 @@ if (productionCheckpoint === null) {
 
 const adjointRow = queue.validationQueue.find((row) => row.id === "VQ-ADJOINT-SCOPED-PATH-REPLAY");
 if (adjointRow == null) fail("validationQueue missing VQ-ADJOINT-SCOPED-PATH-REPLAY");
+assertRowCitesPaths(adjointRow, REQUIRED_ADJOINT_ARTIFACT_PATHS, "VQ-ADJOINT-SCOPED-PATH-REPLAY");
 for (const needle of [
   "path replay",
   "finite-difference",
@@ -854,6 +884,61 @@ if (!adjointRow.proofArtifacts.some((artifact) =>
   artifact?.path === "packages/pt-webgpu/src/__tests__/inverseSession.test.ts"
 )) {
   fail("VQ-ADJOINT-SCOPED-PATH-REPLAY must cite inverseSession.test.ts");
+}
+for (const needle of [
+  "evaluateBrdfWithClearcoat",
+  "evaluateBrdfWithSheen",
+  "evaluateBrdfWithIridescence",
+  "evaluateBrdfWithAnisotropy",
+  "dBrdf_dIridescenceThicknessRange",
+  "dBrdf_dAnisotropyRotation",
+]) {
+  if (!brdfAdjointSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY BRDF adjoint CPU oracle is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "fn dBrdf_dBaseColor(",
+  "fn dBrdf_dRoughness(",
+  "fn dBrdf_dClearcoat(",
+  "fn dBrdf_dSheen(",
+  "fn dBrdf_dIridescence(",
+  "fn dBrdf_dAnisotropy(",
+]) {
+  if (!pathTraceAdjointWgslSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY pathTraceAdjoint WGSL is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "ADJOINT_FROZEN_SEED_BASE",
+  "sampleAdjointEnvironmentImportance",
+  "fn adjointConcentricDiscSample",
+  "meshAreaLights",
+  "sampleAdjointBaseColorTexture",
+  "ADJOINT_FIELD_CLEARCOAT_NORMAL_SCALE",
+]) {
+  if (!adjointPassWgslSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY adjoint pass WGSL is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "export class AdjointPass",
+  "buildAdjointWorldSpaceGeometryOverride",
+  "computeGradient",
+  "AdjointGradientRequest",
+]) {
+  if (!adjointPassSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY adjoint pass host source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "ADJOINT_HARNESS_WGSL",
+  "ADJOINT_SHADING_FD_WGSL",
+  "PT_WEBGPU_PATH_TRACE_ADJOINT_WGSL",
+]) {
+  if (!adjointHarnessSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY adjoint harness source is stale: missing ${needle}`);
+  }
 }
 for (const needle of [
   "direct HDRI/procedural-sky environment NEE",
@@ -890,6 +975,53 @@ for (const needle of [
 ]) {
   if (!inverseSessionTestSource.includes(needle)) {
     fail(`inverseSession.test.ts scoped adjoint finite-difference coverage is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "matches FD to <= 1e-4",
+  "analytic KHR_materials_specular partials == finite difference",
+  "analytic KHR_materials_clearcoat partials == finite difference",
+  "map-free KHR_materials_anisotropy scalar partials == finite difference",
+]) {
+  if (!brdfAdjointTestSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY BRDF adjoint test proof is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "emissive",
+  "emissiveIntensity",
+  "iridescenceIor",
+]) {
+  if (!brdfAdjointEmissiveIorTestSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY emissive/IOR adjoint test proof is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "engine adjoint PASS bundles the real partials + re-trace + faceforward + scatter",
+  "shading-adjoint kernel bundles the forward + real partials + adjoint-vs-FD",
+  "bundles the REAL path-replay adjoint partials",
+]) {
+  if (!adjointHarnessTestSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY adjoint harness test proof is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "buildAdjointWorldSpaceGeometryOverride",
+  "AdjointGradientRequest",
+  "ADJOINT_EMITTER_TARGET_MESH",
+]) {
+  if (!adjointPassPackingTestSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY adjoint pass packing test proof is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "partials match finite differences",
+  "finite area",
+  "mapped mesh-area gradients",
+  "ADJOINT_EMITTER_TARGET_DIRECTIONAL",
+]) {
+  if (!adjointEmitterGradientOracleTestSource.includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY emitter-gradient oracle test proof is stale: missing ${needle}`);
   }
 }
 

@@ -659,6 +659,37 @@ npm run proof-check
 git diff --check
 ```
 
+### Wave 32 — Scoped Adjoint Proof-Citation Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation found no new bounded
+runtime implementation gap in the scoped inverse path: the current contract is
+still path-replay for the supported direct-light/material domain with structured
+finite-difference downgrades for transport, visibility, displacement geometry,
+unsupported regimes, and future full-path parity. The weak spot was proof
+traceability: `VQ-ADJOINT-SCOPED-PATH-REPLAY` cited the inverse-session source
+and tests but not the shader/oracle chain behind the path-replay hook.
+
+Implementation:
+
+- Expanded `VQ-ADJOINT-SCOPED-PATH-REPLAY` proof artifacts to cite the CPU BRDF
+  oracle, production WGSL partials, adjoint pass shader, host pass, harness WGSL,
+  and focused adjoint/oracle tests.
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so the row fails
+  if the CPU oracle, WGSL partials, adjoint pass, harness, emitter-gradient
+  oracle, or finite-difference downgrade tests drift out from under the Road
+  claim.
+- Kept full alpha/transport/indirect/environment-escape adjoint parity in the
+  future-contract lane; this wave only hardens the scoped-path evidence.
+
+Focused gates:
+
+```bash
+npm run road-to-100-validation-status
+npm test --workspace @vitrum/pt-webgpu -- inverseSession.test.ts adjointHarness.test.ts adjointPassPacking.test.ts brdfAdjoint.test.ts brdfAdjointEmissiveIor.test.ts adjointEmitterGradientOracle.test.ts
+npm run proof-check
+git diff --check
+```
+
 ### Wave 28 — pt-webgl2 Mesh-Light MIS Prose Reconciliation
 
 Status 2026-06-22: **CLOSED.** Source revalidation of the pt-webgl2 mesh-area

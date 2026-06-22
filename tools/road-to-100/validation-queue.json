@@ -268,7 +268,17 @@
       "command": "npm run test --workspace @vitrum/pt-webgpu -- inverseSession.test.ts",
       "proofArtifacts": [
         { "path": "packages/pt-webgpu/src/inverse/inverseSession.ts" },
-        { "path": "packages/pt-webgpu/src/__tests__/inverseSession.test.ts" }
+        { "path": "packages/pt-webgpu/src/__tests__/inverseSession.test.ts" },
+        { "path": "packages/pt-webgpu/src/inverse/brdfAdjoint.ts" },
+        { "path": "packages/pt-webgpu/src/wgsl/pathTrace/pathTraceAdjoint.wgsl.ts" },
+        { "path": "packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts" },
+        { "path": "packages/pt-webgpu/src/adjointPass.ts" },
+        { "path": "packages/pt-webgpu/src/inverse/adjointHarness.wgsl.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/brdfAdjoint.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/brdfAdjointEmissiveIor.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/adjointHarness.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/adjointPassPacking.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/adjointEmitterGradientOracle.test.ts" }
       ],
       "remaining": "Scoped direct-light path replay is source/test-pinned for supported material/emitter domains, and unsupported render regimes, transport, visibility, and displacement geometry degrade through structured finite-difference diagnostics. Full alpha/transport/indirect/environment-escape adjoint parity remains a future-contract expansion."
     },
