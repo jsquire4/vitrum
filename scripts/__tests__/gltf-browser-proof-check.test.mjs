@@ -62,6 +62,7 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.match(source, /VITRUM_ENGINE_CAPTURE_MODE/);
   assert.match(source, /String\(rawValue \?\? 'engine-first'\)/);
   assert.match(source, /isEngineReadbackHostBlock\(error\)/);
+  assert.match(source, /hostBlockHint = 'engine-readback'/);
 
   const captureFnStart = source.indexOf('async function captureCanvasPng(page)');
   assert.notEqual(captureFnStart, -1);
@@ -76,6 +77,7 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.match(captureFn, /page clipped screenshot timed out/);
   assert.match(captureFn, /canvas element screenshot timed out/);
   assert.doesNotMatch(captureFn, /isBrowserReadbackHostBlock/);
+  assert.doesNotMatch(captureFn, /if\s*\(\s*isEngineReadbackHostBlock\(error\)\s*\)\s*throw error/);
 
   const firstEngineReadback = captureFn.indexOf("captureStep = 'engine-captureFrame-output'");
   const canvasPause = captureFn.indexOf('pauseExampleRenderingForCanvasCapture(page, timeout)');

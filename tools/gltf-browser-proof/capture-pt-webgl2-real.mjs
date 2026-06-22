@@ -303,7 +303,12 @@ async function captureCanvasPng(page) {
       return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
     } catch (error) {
       engineError = error;
-      if (isEngineReadbackHostBlock(error)) throw error;
+      if (isEngineReadbackHostBlock(error)) {
+        const failedAttempt = lastCaptureAttempts.at(-1);
+        if (failedAttempt?.method === 'engine-captureFrame-output') {
+          failedAttempt.hostBlockHint = 'engine-readback';
+        }
+      }
     }
   }
 
