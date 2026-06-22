@@ -144,7 +144,7 @@
         { "path": "tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png", "type": "png" },
         { "path": "tools/reference-renders/baseline/ptwgpu-sss-mixed-panels.png", "type": "png" }
       ],
-      "remaining": "Browser/real-adapter reference A/B for pt-webgl2 specialty rows and any native-promotion claims."
+      "remaining": "Browser/real-adapter reference A/B for pt-webgl2 specialty rows and any native-promotion claims. The proof checker now pins the expected pt-webgl2 non-promotion grades while browser/WebGL2 capture is HOST-BLOCKED."
     },
     {
       "id": "VQ-LEARNED-SYSTEMS",
@@ -155,7 +155,7 @@
       "proofArtifacts": [
         { "path": "tools/neural-denoiser-training/checkpoints/manifest.json" }
       ],
-      "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence."
+      "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence. The learned-systems proof checker validates research checkpoint identity and will require production quality metrics to satisfy their declared thresholds before any production checkpoint can count."
     },
     {
       "id": "VQ-GLTF-MATERIAL-TOPOLOGY",

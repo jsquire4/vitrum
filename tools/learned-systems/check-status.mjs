@@ -362,12 +362,36 @@ function assertProductionQualityManifest(
     if (!finiteMetric(thresholdRecord[name])) {
       fail(`production neural quality manifest threshold.${name} must be finite when metrics.${name} is reported`);
     }
+    if (!qualityMetricPassesThreshold(name, metricRecord[name], thresholdRecord[name])) {
+      fail(
+        `production neural quality manifest metric ${name}=${metricRecord[name]} ` +
+        `does not satisfy threshold ${thresholdRecord[name]}`,
+      );
+    }
   }
 }
 
 /** @param {unknown} value */
 function finiteMetric(value) {
   return typeof value === "number" && Number.isFinite(value);
+}
+
+/**
+ * @param {string} name
+ * @param {number} metric
+ * @param {number} threshold
+ */
+function qualityMetricPassesThreshold(name, metric, threshold) {
+  switch (name) {
+    case "psnrDb":
+    case "ssim":
+      return metric >= threshold;
+    case "meanAbs":
+    case "rmse":
+      return metric <= threshold;
+    default:
+      fail(`unknown production neural quality metric ${name}`);
+  }
 }
 
 async function assertRuntimeTruthfulnessGuards() {

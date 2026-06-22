@@ -189,6 +189,95 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
   },
 ];
 
+const PT_WEBGL2_EXPECTED_ROWS = [
+  {
+    feature: "Hero-wavelength + CMF accumulation",
+    grade: "experimental",
+    rowNeedles: [
+      "pt-webgl2: runtime A/B capture pending",
+      "row stays `experimental` until pt-webgl2 spectral runtime A/B has a committed reference",
+    ],
+  },
+  {
+    feature: "Spectral Beer–Lambert (packed μ)",
+    grade: "experimental",
+    rowNeedles: [
+      "pt-webgl2: runtime A/B capture pending",
+      "remains unpromoted without a visual Beer-Lambert reference",
+    ],
+  },
+  {
+    feature: "Multi-layer thin film TMM",
+    grade: "experimental",
+    rowNeedles: [
+      "pt-webgl2: runtime A/B capture pending",
+      "row remains `experimental` pending angle/hue A/B",
+    ],
+  },
+  {
+    feature: "Cauchy dispersion",
+    grade: "experimental",
+    rowNeedles: [
+      "pt-webgl2: runtime A/B capture pending",
+      "needs dispersion visual promotion",
+    ],
+  },
+  {
+    feature: "Layered front/back + transmission MIS",
+    grade: "approximate",
+    rowNeedles: [
+      "pt-webgl2: runtime A/B capture pending",
+      "row remains `approximate` until runtime visual A/B promotes pt-webgl2",
+    ],
+  },
+  {
+    feature: "SSS / translucent panels",
+    grade: "approximate",
+    rowNeedles: [
+      "pt-webgl2: runtime A/B capture pending",
+      "still `approximate` until the scalar-majorant WebGL single-scatter model has visual promotion",
+    ],
+  },
+  {
+    feature: "Multi emitter direct lighting",
+    grade: "approximate",
+    rowNeedles: [
+      "Grade remains `approximate` until unequal-power/mixed-emitter visual A/B promotion",
+    ],
+  },
+  {
+    feature: "Cornell/core material fixture parity",
+    grade: "experimental",
+    rowNeedles: [
+      "pt-webgl2: browser/runtime material-fidelity A/B capture pending",
+      "row stays `experimental` until a real browser/WebGL2 runtime capture promotes it",
+    ],
+  },
+  {
+    feature: "Caustic strategies",
+    grade: "approximate",
+    rowNeedles: [
+      "grade 'approximate'",
+      "phenomenological GLSL path, NOT Newton-solve MNEE",
+    ],
+  },
+  {
+    feature: "SVGF-real denoiser",
+    grade: "unsupported",
+    rowNeedles: [
+      "Converged tracer → `oidn-final`; SVGF is real-time-only",
+      "Both converged backends warn on `'svgf-real'`",
+    ],
+  },
+  {
+    feature: "BDPT (eye↔light connections)",
+    grade: "approximate",
+    rowNeedles: [
+      "Grade remains `approximate` until pt-webgl2 BDPT has visual A/B promotion",
+    ],
+  },
+];
+
 const PLAYBOOK_FORBIDDEN_STALE_NEEDLES = [
   "Native lavapipe capture adapter not yet wired (§1.0)",
   "strict-hash re-capture on full-tier adapter is the only step",
@@ -453,6 +542,32 @@ function assertEveryPtWebgpuSupportedRowHasProof(matrix) {
 
 /**
  * @param {string} matrix
+ */
+function assertPtWebgl2ExpectedRows(matrix) {
+  /** @type {Set<string>} */
+  const expectedFeatures = new Set();
+  for (const proof of PT_WEBGL2_EXPECTED_ROWS) {
+    if (expectedFeatures.has(proof.feature)) {
+      fail(`duplicate pt-webgl2 expected-grade entry for ${proof.feature}`);
+    }
+    expectedFeatures.add(proof.feature);
+
+    const row = findMatrixRow(matrix, proof.feature);
+    const columns = row.split(" | ");
+    const ptWebgl2Grade = columns[1];
+    if (ptWebgl2Grade !== proof.grade) {
+      fail(`${proof.feature}: pt-webgl2 matrix grade must be ${proof.grade}, got ${ptWebgl2Grade ?? "<missing>"}`);
+    }
+    for (const needle of proof.rowNeedles) {
+      if (!row.includes(needle)) {
+        fail(`${proof.feature}: pt-webgl2 row missing proof/truthfulness text: ${needle}`);
+      }
+    }
+  }
+}
+
+/**
+ * @param {string} matrix
  * @returns {string[]}
  */
 function featureRows(matrix) {
@@ -624,6 +739,7 @@ if (matrix.includes("| Feature | pt-webgl2 (WebGL2) | pt-webgpu (WebGPU) |")) {
 }
 
 assertEveryPtWebgpuSupportedRowHasProof(matrix);
+assertPtWebgl2ExpectedRows(matrix);
 
 for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
   const row = findMatrixRow(matrix, proof.feature);
@@ -687,5 +803,5 @@ if (hardwareValidation.includes("WSL2 with SwiftShader only") ||
 }
 
 console.log(
-  `[renderer-fidelity-proof-check] PASS (${PT_WEBGPU_SUPPORTED_ROWS.length} pt-webgpu supported rows verified; ${PT_WEBGL2_MATERIAL_FURNACE_PROOFS.length} pt-webgl2 material-furnace source/oracle proof groups verified; pt-webgl2 browser-promotion guard checked)`,
+  `[renderer-fidelity-proof-check] PASS (${PT_WEBGPU_SUPPORTED_ROWS.length} pt-webgpu supported rows verified; ${PT_WEBGL2_EXPECTED_ROWS.length} pt-webgl2 non-promotion grades pinned; ${PT_WEBGL2_MATERIAL_FURNACE_PROOFS.length} pt-webgl2 material-furnace source/oracle proof groups verified; pt-webgl2 browser-promotion guard checked)`,
 );
