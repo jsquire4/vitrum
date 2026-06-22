@@ -290,7 +290,7 @@ describe('createMaterialTextureArray', () => {
     )).toEqual([]);
   });
 
-  it('keeps explicit mipmapped bump policies approximate because bump gradients sample base texels', () => {
+  it('accepts explicit mipmapped bump policies because bump height samples are policy-aware', () => {
     installGpuConstStubs();
     const { device } = makeDevice();
     const array = createMaterialTextureArray(
@@ -311,19 +311,9 @@ describe('createMaterialTextureArray', () => {
       }],
     );
 
-    expect(array.structuredWarnings).toEqual([
-      expect.objectContaining({
-        code: 'texture-sampler-policy-approximation',
-        layer: 0,
-        fallback: 'regular-map-policy-sampler-with-bump-base-texel-gradient',
-        requestedSamplerPolicies: [{
-          materialIndex: 4,
-          field: 'bumpMap',
-          magFilter: 'linear',
-          minFilter: 'linear',
-          mipFilter: 'linear',
-        }],
-      }),
-    ]);
+    expect(array.structuredWarnings.filter((warning) =>
+      warning.code === 'texture-sampler-policy-approximation',
+    )).toEqual([]);
+    expect(array.warnings.some((warning) => warning.includes('sampler policy'))).toBe(false);
   });
 });

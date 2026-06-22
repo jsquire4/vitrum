@@ -397,6 +397,9 @@ describe('adjoint harness (V24 GPU partials A/B)', () => {
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('textureLoad(materialTextures, coord0, layerIdx, lod0u)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('textureLoad(materialTexturesLinear, coord0, layerIdx, lod0u)');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('ADJOINT_MATERIAL_TEX_MIP_BASE_COLOR');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('fn sampleAdjointMaterialLayerLinearRawUvPolicy(');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('ADJOINT_MATERIAL_TEX_MIP_BUMP');
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('sampleAdjointMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, rawUv');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('ADJOINT_MATERIAL_TEX_MIP_SPECULAR_INTENSITY');
   });
 

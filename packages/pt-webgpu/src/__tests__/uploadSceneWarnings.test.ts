@@ -26,7 +26,7 @@ function oneMeshSceneWithBadBaseColorTexture(): Scene {
   };
 }
 
-function oneMeshSceneWithApproximateBumpSamplerPolicy(): Scene {
+function oneMeshSceneWithBumpSamplerPolicy(): Scene {
   return {
     primitives: [
       {
@@ -112,33 +112,14 @@ describe('uploadPackedScene warning propagation', () => {
     }
   });
 
-  it('routes material texture sampler-policy warnings through UploadedSceneBuffers warnings', () => {
+  it('does not warn for bump sampler policy because bump height reads consume the policy natively', () => {
     installGpuConstStubs();
     const device = makeDevice();
-    const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithApproximateBumpSamplerPolicy()));
+    const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithBumpSamplerPolicy()));
 
-    expect(uploaded.structuredWarnings).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        code: 'pt-webgpu.material-texture-sampler-policy-approximation',
-        backend: 'pt-webgpu',
-        phase: 'setScene',
-        method: 'setScene',
-        details: expect.objectContaining({
-          colorSpace: 'linear',
-          layer: 0,
-          fields: ['bumpMap'],
-          materialIndices: [0],
-          fallback: 'regular-map-policy-sampler-with-bump-base-texel-gradient',
-          requestedSamplerPolicies: [{
-            materialIndex: 0,
-            field: 'bumpMap',
-            magFilter: 'nearest',
-            minFilter: 'nearest',
-            mipFilter: 'linear',
-          }],
-        }),
-      }),
-    ]));
+    expect(uploaded.structuredWarnings.some((warning) =>
+      warning.code === 'pt-webgpu.material-texture-sampler-policy-approximation',
+    )).toBe(false);
   });
 
   it('emits upload-time material texture failures through Engine.onWarning', async () => {

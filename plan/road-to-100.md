@@ -22,6 +22,11 @@
 > the static provisioned-ledger row), `pt-webgl2.supportsAuxBuffers` is false because the core flag requires
 > both `FrameOutput.variance` and `FrameOutput.motionVectors` rather than just normal/albedo MRT products, and
 > `pt-webgpu` lite tier reports `supportsAuxBuffers:false` to match its disabled motion/variance resources.
+> **2026-06-22 texture-policy follow-up:** pt-webgpu bump-map finite-difference height reads now consume the same
+> per-map mip/filter sampler policy as regular linear material maps in both the forward full-tier shader and the
+> adjoint replay shader. The upload path no longer emits the old bump-specific
+> `texture-sampler-policy-approximation` warning; the finite-difference step still uses one uploaded source texel
+> in raw UV space.
 > For this ledger, "100%" = everything fully implemented.
 > **R7a-R7d campaign additions:** behavioral gate coverage (43 lanes today: 33
 > pt-webgpu + 10 walkaround-hybrid; permanent CI); anisotropic

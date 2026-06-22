@@ -121,9 +121,7 @@ export function samplerPolicyIsNativeForBackend(backend, policy, field = undefin
     return policy.magFilter === policy.minFilter && policy.mipFilter === "none";
   }
   if (backend === "pt-webgl2") return true;
-  if (backend === "pt-webgpu" && field === "bumpMap") {
-    return policy.magFilter === "linear" && policy.minFilter === "linear" && policy.mipFilter === "none";
-  }
+  if (backend === "pt-webgpu") return true;
   return true;
 }
 

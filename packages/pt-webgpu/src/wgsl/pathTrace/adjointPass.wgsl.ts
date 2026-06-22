@@ -577,21 +577,81 @@ fn sampleAdjointMaterialLayerLinear(layerIdx: i32, base: u32, triIndex: u32, bar
   return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod);
 }
 
-fn sampleAdjointMaterialLayerLinearRawUv(layerIdx: i32, base: u32, rawUv: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f) -> vec4f {
-  if (layerIdx < 0 || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+fn sampleAdjointMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, rawUv: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
+  if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
+      tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
+    return vec4f(1.0);
+  }
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
   let uvMeta = materialTexDescriptors[base + uvMetaOffset];
   let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
+  let texCoord = u32(uvMeta.x);
   let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
   let rot = uvMeta.w;
   let c = cos(rot);
   let s = sin(rot);
+  let sx = xform.z;
+  let sy = xform.w;
+  let rawA = select(uva.xy, uva.zw, texCoord == 1u);
+  let rawB = select(uvb.xy, uvb.zw, texCoord == 1u);
+  let rawC = select(uvc.xy, uvc.zw, texCoord == 1u);
+  let uvA = vec2f(
+    sx * c * rawA.x + sx * s * rawA.y + xform.x,
+    -sy * s * rawA.x + sy * c * rawA.y + xform.y,
+  );
+  let uvB = vec2f(
+    sx * c * rawB.x + sx * s * rawB.y + xform.x,
+    -sy * s * rawB.x + sy * c * rawB.y + xform.y,
+  );
+  let uvC = vec2f(
+    sx * c * rawC.x + sx * s * rawC.y + xform.x,
+    -sy * s * rawC.x + sy * c * rawC.y + xform.y,
+  );
   let uv = vec2f(
-    xform.z * c * rawUv.x + xform.z * s * rawUv.y + xform.x,
-    -xform.w * s * rawUv.x + xform.w * c * rawUv.y + xform.y,
+    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
+    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
   let wrappedUv = vec2f(adjointWrapTextureCoord(uv.x, wrapMode.x), adjointWrapTextureCoord(uv.y, wrapMode.y));
   let fittedUv = wrappedUv * uvFitScale;
-  return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, 0.0);
+  let texDim = vec2f(textureDimensions(materialTexturesLinear, 0));
+  let mipCount = f32(textureNumLevels(materialTexturesLinear));
+  let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
+  let pa = positions[tri.x].xyz;
+  let pb = positions[tri.y].xyz;
+  let pc = positions[tri.z].xyz;
+  let worldArea = max(0.5 * length(cross(pb - pa, pc - pa)), 1e-8);
+  let hitPos = pa * u + pb * v + pc * w;
+  let cameraDistance = max(length(hitPos - params.cameraPos.xyz), 1e-3);
+  let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
+  let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
+  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
+  let mipPolicy = adjointMaterialTextureMipPolicy(base, mipPolicySlot);
+  let policyLod = adjointMaterialTexturePolicyLod(lod, mipCount, mipPolicy);
+  let filterPolicy = adjointMaterialTextureFilterPolicy(base, mipPolicySlot);
+  let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
+  if (filterMode < 0.5) {
+    let maxLod = max(mipCount - 1.0, 0.0);
+    let lod0 = clamp(floor(policyLod), 0.0, maxLod);
+    let lod1 = clamp(lod0 + 1.0, 0.0, maxLod);
+    let lod0u = u32(lod0);
+    let lod1u = u32(lod1);
+    let dim0 = vec2f(textureDimensions(materialTexturesLinear, lod0u));
+    let dim1 = vec2f(textureDimensions(materialTexturesLinear, lod1u));
+    let coord0 = vec2i(clamp(floor(fittedUv * dim0), vec2f(0.0), max(dim0 - vec2f(1.0), vec2f(0.0))));
+    let coord1 = vec2i(clamp(floor(fittedUv * dim1), vec2f(0.0), max(dim1 - vec2f(1.0), vec2f(0.0))));
+    let c0 = textureLoad(materialTexturesLinear, coord0, layerIdx, lod0u);
+    let c1 = textureLoad(materialTexturesLinear, coord1, layerIdx, lod1u);
+    let mipMix = select(0.0, fract(policyLod), mipPolicy >= 1.5);
+    return mix(c0, c1, mipMix);
+  }
+  return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod);
 }
 
 fn sampleAdjointEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
@@ -808,9 +868,9 @@ fn sampleAdjointBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal:
   let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));
   let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
   let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
-  let hC = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv, ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
-  let hU = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(texelStep.x, 0.0), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
-  let hV = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(0.0, texelStep.y), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hC = sampleAdjointMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, rawUv, ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, ADJOINT_MATERIAL_TEX_MIP_BUMP).r;
+  let hU = sampleAdjointMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, rawUv + vec2f(texelStep.x, 0.0), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, ADJOINT_MATERIAL_TEX_MIP_BUMP).r;
+  let hV = sampleAdjointMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, rawUv + vec2f(0.0, texelStep.y), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, ADJOINT_MATERIAL_TEX_MIP_BUMP).r;
   let dhdu = (hU - hC) / texelStep.x;
   let dhdv = (hV - hC) / texelStep.y;
   let gradient = dhdu * frame.tangent + dhdv * frame.bitangent;
@@ -915,9 +975,9 @@ fn sampleAdjointBumpMapWithScale(
   let linearDims = vec2f(textureDimensions(materialTexturesLinear, 0));
   let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
   let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
-  let hC = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv, ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
-  let hU = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(texelStep.x, 0.0), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
-  let hV = sampleAdjointMaterialLayerLinearRawUv(bumpIdx, base, rawUv + vec2f(0.0, texelStep.y), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode).r;
+  let hC = sampleAdjointMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, rawUv, ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, ADJOINT_MATERIAL_TEX_MIP_BUMP).r;
+  let hU = sampleAdjointMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, rawUv + vec2f(texelStep.x, 0.0), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, ADJOINT_MATERIAL_TEX_MIP_BUMP).r;
+  let hV = sampleAdjointMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, rawUv + vec2f(0.0, texelStep.y), ADJOINT_MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, ADJOINT_MATERIAL_TEX_MIP_BUMP).r;
   let dhdu = (hU - hC) / texelStep.x;
   let dhdv = (hV - hC) / texelStep.y;
   let gradient = dhdu * frame.tangent + dhdv * frame.bitangent;

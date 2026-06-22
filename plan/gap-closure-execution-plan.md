@@ -561,12 +561,40 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 12 — pt-webgpu Bump Sampler Policy Parity
+
+Status 2026-06-22: **CLOSED.** Direct source-read found one remaining bounded
+texture-policy implementation tail in pt-webgpu: bump-map finite differences
+still sampled raw-UV height values at base LOD, and the upload path therefore
+emitted a `texture-sampler-policy-approximation` warning for authored bump
+sampler policies.
+
+Implementation:
+
+- Forward full-tier bump-map height samples now use
+  `sampleMaterialLayerLinearRawUvPolicy()`, preserving the one-source-texel raw-UV
+  finite-difference step while applying the same per-map mip/filter policy,
+  nearest `textureLoad`, and explicit-LOD linear sampling as regular linear
+  material maps.
+- The adjoint pass mirrors the same raw-UV policy-aware bump sampler, so scoped
+  inverse replay no longer diverges from forward shading for authored bump
+  sampler policy.
+- pt-webgpu upload warnings no longer classify bump sampler policy as
+  approximate, and warning-propagation tests pin that no structured sampler
+  approximation is emitted for this case.
+
+Focused gate:
+
+```bash
+npm test --workspace @vitrum/pt-webgpu -- materialTextureArray.test.ts materialTextures.test.ts adjointHarness.test.ts uploadSceneWarnings.test.ts wgslContract.test.ts
+```
+
 ## Parked Long-Tail Items
 
 These are real, but they should not block contract-complete unless the user
 explicitly widens the target.
 
-Current source-verification pass (2026-06-22, after Wave 11): the active runtime
+Current source-verification pass (2026-06-22, after Wave 12): the active runtime
 implementation queue is empty. The only source-verified "code gap" phrasing left
 in the Road is native promotion or future contract expansion, not broken
 renderability/API behavior:

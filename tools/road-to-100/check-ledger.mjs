@@ -1111,13 +1111,17 @@ for (const needle of [
 const ptWebgpuMaterialTextureArray = await readText("packages/pt-webgpu/src/scene/materialTextureArray.ts");
 for (const needle of [
   "'texture-sampler-policy-approximation'",
-  "fallback: 'regular-map-policy-sampler-with-bump-base-texel-gradient'",
-  "use.field === 'bumpMap'",
+  "function samplerPolicyIsNativeForPtWebgpu(_use: MaterialTextureLayerUse): boolean",
+  "Bump maps still finite-difference in raw UV",
+  "fallback: 'nearest-native-sampler-policy'",
   "appendSamplerPolicyWarnings(warnings, structuredWarnings, layerInfos);",
 ]) {
   if (!ptWebgpuMaterialTextureArray.includes(needle)) {
-    fail(`pt-webgpu material texture array must warn on shared-sampler approximations: ${needle}`);
+    fail(`pt-webgpu material texture array must retain native sampler-policy diagnostics: ${needle}`);
   }
+}
+if (ptWebgpuMaterialTextureArray.includes("regular-map-policy-sampler-with-bump-base-texel-gradient")) {
+  fail("pt-webgpu material texture array must not retain the old bump sampler-policy approximation fallback");
 }
 
 const ptWebgpuMaterialWgsl = await readText("packages/pt-webgpu/src/wgsl/pathTrace/material.wgsl.ts");
@@ -1129,10 +1133,38 @@ for (const needle of [
   "fn materialTextureFilterPolicy(base: u32, slot: u32) -> vec2f",
   "textureLoad(${texArray}, coord0, layerIdx, lod0u)",
   "textureSampleLevel(${texArray}, materialTexSampler, fittedUv, layerIdx, policyLod)",
+  "fn sampleMaterialLayerLinearRawUvPolicy(",
+  "MATERIAL_TEX_MIP_BUMP",
 ]) {
   if (!ptWebgpuMaterialWgsl.includes(needle)) {
     fail(`pt-webgpu WGSL material sampler must consume per-map mip policy: ${needle}`);
   }
+}
+
+const ptWebgpuAdjointWgsl = await readText("packages/pt-webgpu/src/wgsl/pathTrace/adjointPass.wgsl.ts");
+for (const needle of [
+  "fn sampleAdjointMaterialLayerLinearRawUvPolicy(",
+  "adjointMaterialTextureMipPolicy(base, mipPolicySlot)",
+  "adjointMaterialTextureFilterPolicy(base, mipPolicySlot)",
+  "ADJOINT_MATERIAL_TEX_MIP_BUMP",
+]) {
+  if (!ptWebgpuAdjointWgsl.includes(needle)) {
+    fail(`pt-webgpu adjoint material sampler must mirror bump sampler-policy replay: ${needle}`);
+  }
+}
+
+const gltfMaterialSweepFixture = await readText("tools/gltf-material-sweep/fixture.mjs");
+for (const needle of [
+  'if (backend === "walkaround-hybrid")',
+  'if (backend === "pt-webgl2") return true;',
+  'if (backend === "pt-webgpu") return true;',
+]) {
+  if (!gltfMaterialSweepFixture.includes(needle)) {
+    fail(`glTF material sweep sampler-policy fixture must classify backend-native policy consistently: ${needle}`);
+  }
+}
+if (gltfMaterialSweepFixture.includes('backend === "pt-webgpu" && field === "bumpMap"')) {
+  fail("glTF material sweep fixture must not retain the old pt-webgpu bump-only sampler-policy exception");
 }
 
 const ptWebgpuBsdfWgsl = await readText("packages/pt-webgpu/src/wgsl/pathTrace/bsdf.wgsl.ts");

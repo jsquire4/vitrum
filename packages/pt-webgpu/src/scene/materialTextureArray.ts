@@ -347,15 +347,10 @@ function layerUses(
   return layerInfos?.[layer]?.uses ?? [];
 }
 
-function samplerPolicyIsNativeForPtWebgpu(use: MaterialTextureLayerUse): boolean {
-  // The main material sampler consumes per-map mip policy in the descriptor.
-  // Bump-map finite differences intentionally sample base-level texels in raw
-  // UV space, so explicit mipmapped bump policies remain approximate.
-  if (use.field === 'bumpMap') {
-    if (use.magFilter != null && use.magFilter !== 'linear') return false;
-    if (use.minFilter != null && use.minFilter !== 'linear') return false;
-    if (use.mipFilter != null && use.mipFilter !== 'none') return false;
-  }
+function samplerPolicyIsNativeForPtWebgpu(_use: MaterialTextureLayerUse): boolean {
+  // Forward and adjoint material samplers consume per-map mip/filter policy for
+  // every packed material texture. Bump maps still finite-difference in raw UV
+  // space by one uploaded source texel, but each height read is now policy-aware.
   return true;
 }
 
@@ -381,7 +376,7 @@ function appendSamplerPolicyWarnings(
     const fields = Array.from(new Set(nonNative.map((use) => use.field))).join(', ');
     const warning =
       `[materialTextureArray] source ${info.layer} requests sampler policy outside pt-webgpu's ` +
-      `regular material-map sampler for fields ${fields}; ` +
+      `native material-map sampler support for fields ${fields}; ` +
       'the texture remains uploadable, but filtering behavior is approximate for those fields.';
     warnings.push(warning);
     structuredWarnings.push({
@@ -389,7 +384,7 @@ function appendSamplerPolicyWarnings(
       warning,
       layer: info.layer,
       uses: nonNative,
-      fallback: 'regular-map-policy-sampler-with-bump-base-texel-gradient',
+      fallback: 'nearest-native-sampler-policy',
       requestedSamplerPolicies: nonNative.map(requestedSamplerPolicy),
     });
   }

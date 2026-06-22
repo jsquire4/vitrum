@@ -302,8 +302,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-21: in-medium directional NEE and ReSTIR-PT suffix NEE
     // now sample signed soft-directional angularDiameter cones like the surface
     // direct-light branch instead of treating them as hard deltas.
-    expect(digest).toBe('b5f17c6d2673e99d7a3df6ffa10aabca4860152e9fa1e98f519a5859e0b30f44');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(399951);
+    // Re-pinned 2026-06-22: bump-map finite-difference height reads now consume
+    // the same per-map mip/filter sampler policy as regular linear material maps.
+    // RENDER-CHANGING only for authored non-default bump sampler policies.
+    expect(digest).toBe('f0f207c240899c4c7af469d779b50ff754d907e67f35676759aab2eb24e6829b');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(403082);
   });
 });
 
