@@ -38,6 +38,37 @@ const SUPPORT_MODES = new Set([
   'unsupported',
 ]);
 
+const DISPLACEMENT_FIELDS = [
+  'displacementMap',
+  'displacementScale',
+  'displacementBias',
+] as const;
+
+const WALKAROUND_PERMANENT_UNSUPPORTED_OPTICAL_FIELDS = [
+  'spectralAttenuation',
+  'dispersionAbbeNumber',
+  'thinFilmStack',
+] as const;
+
+const WALKAROUND_APPROXIMATE_VOLUME_LAYER_FIELDS = [
+  'scatteringCoefficient',
+  'scatteringAnisotropy',
+  'scatteringCoefficientRGB',
+  'frontLayer',
+  'backLayer',
+] as const;
+
+const WALKAROUND_TRANSPARENT_TRANSPORT_BOUNDARY_FIELDS = [
+  'alphaMode',
+  'alphaCutoff',
+  'opacity',
+  'alphaMap',
+  'transmission',
+  'transmissionMap',
+  'thickness',
+  'thicknessMap',
+] as const;
+
 // ── material support rows ────────────────────────────────────────────────────
 
 describe('BACKEND_PROMISE_LEDGER material support rows', () => {
@@ -54,6 +85,43 @@ describe('BACKEND_PROMISE_LEDGER material support rows', () => {
       for (const [field, mode] of Object.entries(record.supportDetails.materials ?? {})) {
         expect(SUPPORT_MODES.has(mode), `${backend}.${field}=${mode}`).toBe(true);
       }
+    }
+  });
+});
+
+// ── Road-to-100 future-contract boundaries ───────────────────────────────────
+
+describe('BACKEND_PROMISE_LEDGER Road-to-100 future-contract boundaries', () => {
+  it('displacement rows stay approximate on every backend until microdisplacement is contracted', () => {
+    for (const [backend, record] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      for (const field of DISPLACEMENT_FIELDS) {
+        expect(record.supportDetails.materials?.[field], `${backend}.${field}`).toBe('approximate');
+      }
+    }
+  });
+
+  it('walkaround specialty optical rows retain explicit unsupported/approximate boundaries', () => {
+    const materials = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.materials;
+
+    for (const field of WALKAROUND_PERMANENT_UNSUPPORTED_OPTICAL_FIELDS) {
+      expect(materials?.[field], field).toBe('unsupported');
+    }
+    for (const field of WALKAROUND_APPROXIMATE_VOLUME_LAYER_FIELDS) {
+      expect(materials?.[field], field).toBe('approximate');
+    }
+  });
+
+  it('walkaround transparent material rows do not claim true transparent GI transport', () => {
+    const materials = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.materials;
+
+    for (const field of WALKAROUND_TRANSPARENT_TRANSPORT_BOUNDARY_FIELDS) {
+      expect(materials?.[field], field).toBe('approximate');
+    }
+  });
+
+  it('receiveShadow remains unsupported on every backend until the core contract changes', () => {
+    for (const [backend, record] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      expect(record.supportDetails.shadows.receiveShadow, backend).toBe('unsupported');
     }
   });
 });
