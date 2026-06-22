@@ -23,12 +23,40 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { BACKEND_PROMISE_LEDGER } from '../engine/promiseLedger.js';
+import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '../engine/promiseLedger.js';
 import { buildCapabilities as buildPtWebgl2Capabilities, PT_WEBGL2_SUPPORT } from '@vitrum/pt-webgl2/src/capabilities.js';
 
 function sorted(values: Iterable<string>): string[] {
   return Array.from(values).sort();
 }
+
+const SUPPORT_MODES = new Set([
+  'native',
+  'approximate',
+  'fallback-generated-mesh',
+  'fallback-rebuild',
+  'unsupported',
+]);
+
+// ── material support rows ────────────────────────────────────────────────────
+
+describe('BACKEND_PROMISE_LEDGER material support rows', () => {
+  it('every backend material matrix exactly covers MATERIAL_SPEC_FIELDS', () => {
+    const expected = sorted(MATERIAL_SPEC_FIELDS);
+
+    for (const [backend, record] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      expect(sorted(Object.keys(record.supportDetails.materials ?? {})), backend).toEqual(expected);
+    }
+  });
+
+  it('every backend material matrix uses only declared BackendSupportMode values', () => {
+    for (const [backend, record] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      for (const [field, mode] of Object.entries(record.supportDetails.materials ?? {})) {
+        expect(SUPPORT_MODES.has(mode), `${backend}.${field}=${mode}`).toBe(true);
+      }
+    }
+  });
+});
 
 // ── pt-webgl2 ─────────────────────────────────────────────────────────────────
 
