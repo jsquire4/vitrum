@@ -95,15 +95,19 @@ if (result.status === 0) {
       key,
       value?.verdict ?? 'UNKNOWN',
     ]));
-  const partial = Object.values(caseVerdicts).some((verdict) =>
-    verdict === 'PASS-PARTIAL' ||
-    verdict === 'PASS-WEAK' ||
-    verdict === 'SMOKE' ||
-    verdict === 'FINDING' ||
-    verdict === 'SMALL' ||
-    verdict === 'MODERATE' ||
-    verdict === 'SIGNIFICANT'
-  );
+  const partialVerdicts = new Set([
+    'PASS-PARTIAL',
+    'PASS-WEAK',
+    'SMOKE',
+    'FINDING',
+    'SMALL',
+    'MODERATE',
+    'SIGNIFICANT',
+  ]);
+  const partialCaseIds = Object.entries(caseVerdicts)
+    .filter(([, verdict]) => partialVerdicts.has(verdict))
+    .map(([id, verdict]) => `${id}:${verdict}`);
+  const partial = partialCaseIds.length > 0;
   const status = {
     generatedAt: new Date().toISOString(),
     harness: 'walkaround-ab',
@@ -128,7 +132,7 @@ if (result.status === 0) {
       },
     nextSteps: partial
       ? [
-        'Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this partial proof alone.',
+        `Do not promote partial/weak walkaround rows from this proof alone (${partialCaseIds.join(', ')}).`,
         'Use higher-SPP, HDR, browser/real-adapter, or case-specific reference captures before promotion.',
       ]
       : [],

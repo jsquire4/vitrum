@@ -2,10 +2,14 @@
 // @ts-check
 // Verifies committed browser pt-webgl2 real-glTF proof artifacts.
 
-const statusUrl = new URL("./pt-webgl2-real-status.json", import.meta.url);
-const manifestUrl = new URL("../reference-renders/gltf-real-browser-pt-webgl2/manifest.json", import.meta.url);
+const statusUrl = resolveInputUrl(readFlagValue("--status"), "./pt-webgl2-real-status.json");
+const manifestUrl = resolveInputUrl(readFlagValue("--manifest"), "../reference-renders/gltf-real-browser-pt-webgl2/manifest.json");
 const requirePass = Deno.args.includes("--require-pass");
 
+/**
+ * @param {string} message
+ * @returns {never}
+ */
 function fail(message) {
   throw new Error(`[gltf-browser-proof-check] ${message}`);
 }
@@ -52,6 +56,9 @@ if (status.verdict === "HOST-BLOCKED") {
   for (const row of statusAssets) {
     if (row.verdict !== "HOST-BLOCKED" && row.verdict !== "PASS") fail(`${row.assetId}: unexpected verdict ${row.verdict}`);
     assertNoStaleBrowserBuildWarnings(row);
+    if (row.verdict === "PASS") {
+      await assertPassingBrowserRow(row, assetsById.get(row.assetId));
+    }
     if (row.verdict === "HOST-BLOCKED") {
       if (
         row.step !== "canvas-screenshot" &&
@@ -78,38 +85,15 @@ if (status.verdict === "HOST-BLOCKED") {
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF lanes are fail-closed HOST-BLOCKED on this WSL Playwright host)");
 } else if (status.verdict === "PASS") {
   for (const row of statusAssets) {
-    const asset = assetsById.get(row.assetId);
     if (row.verdict !== "PASS") fail(`${row.assetId}: top-level PASS requires every row to PASS`);
-    if (
-      row.captureMethod !== undefined &&
-      row.captureMethod !== "playwright-screenshot" &&
-      row.captureMethod !== "page-canvas-clip-screenshot" &&
-      row.captureMethod !== "engine-captureFrame-output" &&
-      row.captureMethod !== "canvas-data-url"
-    ) {
-      fail(`${row.assetId}: unexpected captureMethod ${row.captureMethod}`);
-    }
-    if (!(row.luminance > 0.005)) fail(`${row.assetId}: capture luminance must be non-black`);
-    assertInformativeCapture(row);
-    if (row.golden?.pass !== true) fail(`${row.assetId}: golden comparison did not pass`);
-    if (row.golden?.path !== asset.goldenPath) fail(`${row.assetId}: manifest goldenPath mismatch`);
-    if (row.golden?.thresholds?.maxRmse !== 8 || row.golden?.thresholds?.maxMeanAbs !== 4 || row.golden?.thresholds?.maxAbs !== 48) {
-      fail(`${row.assetId}: golden thresholds mismatch`);
-    }
-
-    const goldenUrl = new URL(`../../${row.golden.path}`, import.meta.url);
-    const stat = await Deno.stat(goldenUrl);
-    if (!stat.isFile || stat.size <= 8) fail(`${row.assetId}: golden PNG is missing or empty`);
-    const header = await Deno.readFile(goldenUrl);
-    if (header[0] !== 0x89 || header[1] !== 0x50 || header[2] !== 0x4e || header[3] !== 0x47) {
-      fail(`${row.assetId}: golden file is not a PNG`);
-    }
+    await assertPassingBrowserRow(row, assetsById.get(row.assetId));
   }
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF proof)");
 } else {
   fail(`status verdict must be PASS or HOST-BLOCKED, got ${status.verdict}`);
 }
 
+/** @param {Record<string, any>} row */
 function assertNoStaleBrowserBuildWarnings(row) {
   const fragments = [
     row.error,
@@ -129,6 +113,7 @@ function assertNoStaleBrowserBuildWarnings(row) {
   }
 }
 
+/** @param {Record<string, any>} row */
 function assertInformativeCapture(row) {
   const structure = row.structure;
   if (structure == null || typeof structure !== "object") {
@@ -149,6 +134,43 @@ function assertInformativeCapture(row) {
   }
 }
 
+/**
+ * @param {Record<string, any>} row
+ * @param {Record<string, any> | undefined} asset
+ */
+async function assertPassingBrowserRow(row, asset) {
+  if (asset == null) fail(`${row.assetId}: PASS row missing manifest asset`);
+  const manifestAsset = asset;
+  if (
+    row.captureMethod !== undefined &&
+    row.captureMethod !== "playwright-screenshot" &&
+    row.captureMethod !== "page-canvas-clip-screenshot" &&
+    row.captureMethod !== "engine-captureFrame-output" &&
+    row.captureMethod !== "canvas-data-url"
+  ) {
+    fail(`${row.assetId}: unexpected captureMethod ${row.captureMethod}`);
+  }
+  if (!(row.luminance > 0.005)) fail(`${row.assetId}: capture luminance must be non-black`);
+  assertInformativeCapture(row);
+  if (row.golden?.pass !== true) fail(`${row.assetId}: golden comparison did not pass`);
+  if (row.golden?.path !== manifestAsset.goldenPath) fail(`${row.assetId}: manifest goldenPath mismatch`);
+  if (row.golden?.thresholds?.maxRmse !== 8 || row.golden?.thresholds?.maxMeanAbs !== 4 || row.golden?.thresholds?.maxAbs !== 48) {
+    fail(`${row.assetId}: golden thresholds mismatch`);
+  }
+
+  const goldenUrl = new URL(`../../${row.golden.path}`, import.meta.url);
+  const stat = await Deno.stat(goldenUrl);
+  if (!stat.isFile || stat.size <= 8) fail(`${row.assetId}: golden PNG is missing or empty`);
+  const header = await Deno.readFile(goldenUrl);
+  if (header[0] !== 0x89 || header[1] !== 0x50 || header[2] !== 0x4e || header[3] !== 0x47) {
+    fail(`${row.assetId}: golden file is not a PNG`);
+  }
+}
+
+/**
+ * @param {readonly Record<string, any>[] | undefined} items
+ * @param {string} key
+ */
 function byKey(items, key) {
   const map = new Map();
   for (const item of items ?? []) {
@@ -158,4 +180,24 @@ function byKey(items, key) {
     map.set(value, item);
   }
   return map;
+}
+
+/** @param {string} name */
+function readFlagValue(name) {
+  for (let i = 0; i < Deno.args.length; i += 1) {
+    const arg = Deno.args[i];
+    if (arg === name && Deno.args[i + 1]) return Deno.args[i + 1];
+    if (arg?.startsWith(`${name}=`)) return arg.slice(name.length + 1);
+  }
+  return null;
+}
+
+/**
+ * @param {string | null} value
+ * @param {string} fallback
+ */
+function resolveInputUrl(value, fallback) {
+  if (value == null || value.length === 0) return new URL(fallback, import.meta.url);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return new URL(value);
+  return new URL(value, import.meta.url);
 }

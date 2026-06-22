@@ -123,14 +123,14 @@ function makeCornellScene(opts = {}) {
   ];
 
   if (opts.glass) {
-    // Glass pane between camera and back wall.
+    // Glass pane between camera and the visible back wall.
     primitives.push({
       kind: "mesh", id: "glass-pane",
       positions: new Float32Array([
-        -glassHalfSize,-glassHalfSize,0.5,
-         glassHalfSize,-glassHalfSize,0.5,
-         glassHalfSize, glassHalfSize,0.5,
-        -glassHalfSize, glassHalfSize,0.5,
+        -glassHalfSize,-glassHalfSize,1.5,
+         glassHalfSize,-glassHalfSize,1.5,
+         glassHalfSize, glassHalfSize,1.5,
+        -glassHalfSize, glassHalfSize,1.5,
       ]),
       normals:   new Float32Array([0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1]),
       uvs:       new Float32Array(8),
@@ -583,9 +583,10 @@ async function runSun() {
 // control was intentionally too similar to no-glass: it only proved non-black
 // pass-through, not material transport.
 //
-// We look at the centre of the image where the glass pane occlude the back wall.
-// The glass pane spans z=0.5, x∈[-0.5,0.5], y∈[-0.5,0.5]; the camera looks along
-// -z from z=2.5, so the pane projects to roughly the centre of the image.
+// We look at the centre of the image where the glass pane occludes the back wall.
+// The glass pane spans z=1.5, x∈[-0.5,0.5], y∈[-0.5,0.5]; the camera looks along
+// -z from z=2.5, so the pane is camera-side of the z=1 back wall and projects
+// to roughly the centre of the image.
 //
 async function runGlass() {
   console.log("\n── GLASS: Glass-GI validation ──");
@@ -673,6 +674,7 @@ async function runGlass() {
     notes: [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
       "Expected centreRatio ≥ 0.50 — conservative for mild Beer tint and low-Spp transport.",
+      "The glass pane is camera-side of the z=1 back wall (z=1.5), so the centre crop actually traverses it.",
       "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
       "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.",
     ],

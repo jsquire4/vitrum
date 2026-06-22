@@ -255,19 +255,36 @@ async function checkPtRadiometricHostStatus(proof) {
   /** @type {any[]} */
   const cases = status.cases ?? [];
   if (cases.length === 0) fail("pt-radiometric-ab: status must include at least one case");
-  const expectedCaseIds = proof.preservedResultFiles
-    .map((resultFile) => {
-      const entry = RADIOMETRIC_AB_PROOFS.find((candidate) => candidate.resultPath === resultFile);
-      if (!entry) fail(`pt-radiometric-ab: no proof metadata found for preserved result ${resultFile}`);
-      return entry.id;
-    })
-    .sort();
+  /** @type {any[]} */
+  const expectedEntries = [];
+  for (const resultFile of proof.preservedResultFiles) {
+    const entry = RADIOMETRIC_AB_PROOFS.find((candidate) => candidate.resultPath === resultFile);
+    if (!entry) fail(`pt-radiometric-ab: no proof metadata found for preserved result ${resultFile}`);
+    expectedEntries.push(entry);
+  }
+  const expectedById = new Map();
+  const expectedCaseIds = [];
+  for (const entry of expectedEntries) {
+    expectedById.set(entry.id, entry);
+    expectedCaseIds.push(entry.id);
+  }
+  expectedCaseIds.sort();
   const actualCaseIds = cases.map((entry) => entry.id).sort();
   if (!sameJson(actualCaseIds, expectedCaseIds)) {
     fail(
       `pt-radiometric-ab: status case ids ${JSON.stringify(actualCaseIds)} ` +
       `must match proof ids ${JSON.stringify(expectedCaseIds)}`,
-    );
+      );
+  }
+  for (const entry of cases) {
+    const expected = expectedById.get(entry.id);
+    if (!expected) fail(`pt-radiometric-ab: unexpected case id ${entry.id}`);
+    if (entry.script !== expected.scriptPath) {
+      fail(`pt-radiometric-ab: ${entry.id} script ${entry.script} differs from proofs.mjs`);
+    }
+    if (entry.resultFile !== expected.resultPath) {
+      fail(`pt-radiometric-ab: ${entry.id} resultFile ${entry.resultFile} differs from proofs.mjs`);
+    }
   }
   const blockedCases = cases.filter((entry) => entry.status === "HOST-BLOCKED");
   const failedCases = cases.filter((entry) => entry.status === "FAIL");
@@ -289,6 +306,9 @@ async function checkPtRadiometricHostStatus(proof) {
   }
   if (status.verdict === "PASS" && cases.some((entry) => entry.status !== "PASS")) {
     fail("pt-radiometric-ab: PASS status requires every case to pass");
+  }
+  if (status.verdict === "PASS" && status.reason?.code !== "pt-radiometric-ab-complete") {
+    fail(`pt-radiometric-ab: PASS status must carry pt-radiometric-ab-complete, got ${status.reason?.code}`);
   }
 }
 

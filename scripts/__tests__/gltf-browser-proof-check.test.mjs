@@ -1,0 +1,105 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import test from 'node:test';
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const checkScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'check-status.mjs');
+
+test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summaries', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
+  const statusPath = join(dir, 'mixed-host-blocked.json');
+  await writeFile(statusPath, `${JSON.stringify({
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    backend: 'pt-webgl2',
+    assets: [
+      {
+        generatedAt: '2026-06-22T00:00:00.000Z',
+        harness: 'gltf-browser-proof:pt-webgl2-real',
+        verdict: 'PASS',
+        assetId: 'box-textured-glb',
+        kind: 'textured-glb',
+        backend: 'pt-webgl2',
+        captureMethod: 'engine-captureFrame-output',
+        luminance: 1,
+        telemetry: telemetryFor('box-textured-glb', {
+          textureDecodeReport: { mapCount: 1 },
+        }),
+        golden: {
+          pass: true,
+          path: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png',
+          thresholds: { maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
+        },
+      },
+      hostBlockedRow('cesium-milk-truck-draco', 'draco', {
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+        extensionsRequired: ['KHR_draco_mesh_compression'],
+        browserDecodeHooks: { requested: ['draco'], draco: true, meshopt: false },
+      }),
+      hostBlockedRow('meshopt-cube-real', 'meshopt', {
+        extensionsUsed: ['KHR_meshopt_compression'],
+        extensionsRequired: ['KHR_meshopt_compression'],
+        browserDecodeHooks: { requested: ['meshopt'], draco: false, meshopt: true },
+      }),
+    ],
+    assetCount: 3,
+  }, null, 2)}\n`);
+
+  const result = await runChecker(['--status', pathToFileURL(statusPath).href]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /box-textured-glb: PASS status must include visual-structure metrics/);
+});
+
+function hostBlockedRow(assetId, kind, overrides = {}) {
+  return {
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    assetId,
+    kind,
+    backend: 'pt-webgl2',
+    step: 'canvas-data-url',
+    error: 'canvas PNG data URL fallback failed',
+    telemetry: telemetryFor(assetId, overrides),
+    console: [],
+    serverLog: '',
+  };
+}
+
+function telemetryFor(assetId, overrides = {}) {
+  return {
+    assetId,
+    backend: 'pt-webgl2',
+    realAssetReady: true,
+    extensionsUsed: overrides.extensionsUsed ?? [],
+    extensionsRequired: overrides.extensionsRequired ?? [],
+    browserDecodeHooks: overrides.browserDecodeHooks ?? { requested: [], draco: false, meshopt: false },
+    textureDecodeReport: {
+      mapCount: overrides.textureDecodeReport?.mapCount ?? 0,
+    },
+  };
+}
+
+function runChecker(args) {
+  return new Promise((resolveResult) => {
+    const child = spawn('deno', ['run', '--sloppy-imports', '--allow-read', checkScript, ...args], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (status, signal) => {
+      resolveResult({ status, signal, stdout, stderr });
+    });
+  });
+}

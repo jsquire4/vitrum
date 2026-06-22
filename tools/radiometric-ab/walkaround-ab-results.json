@@ -84,26 +84,27 @@
     "fresnelT_normal_incidence_n1p5": 0.92,
     "expectedMinCentreRatio": 0.5,
     "glass": {
-      "centreRegionLum": 0.15394957993030484,
-      "overall": 0.06009317751465664
+      "centreRegionLum": 2.8515613983154293,
+      "overall": 2.8515499704360963
     },
     "noGlass": {
       "centreRegionLum": 0.15394957993030484,
       "overall": 0.06009317751465664
     },
-    "centreRatio": 1,
-    "overallRatio": 1,
+    "centreRatio": 18.522696844034076,
+    "overallRatio": 47.45214163023094,
     "delta": {
-      "centreRegionLum": 0,
-      "overall": 0
+      "centreRegionLum": 2.6976118183851243,
+      "overall": 2.7914567929214398
     },
     "minSignalDelta": 0.0001,
-    "materialEffectObserved": false,
-    "renderTimeSec": 13.8,
-    "verdict": "SMOKE",
+    "materialEffectObserved": true,
+    "renderTimeSec": 16.1,
+    "verdict": "PASS",
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
       "Expected centreRatio ≥ 0.50 — conservative for mild Beer tint and low-Spp transport.",
+      "The glass pane is camera-side of the z=1 back wall (z=1.5), so the centre crop actually traverses it.",
       "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
       "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone."
     ]

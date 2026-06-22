@@ -21,6 +21,7 @@ const screenshotTimeoutMs = Number(process.env.VITRUM_SCREENSHOT_TIMEOUT_MS ?? '
 const dataUrlTimeoutMs = Number(process.env.VITRUM_DATA_URL_TIMEOUT_MS ?? '15000');
 const statusPath = resolveStatusPath(process.env.VITRUM_GLTF_BROWSER_STATUS_PATH);
 const browserExtraArgs = parseEnvArgs(process.env.VITRUM_CHROMIUM_EXTRA_ARGS);
+const pauseBeforeEngineCapture = parseBooleanEnv(process.env.VITRUM_PAUSE_BEFORE_CAPTURE);
 const thresholds = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
 // Prevent browser readback failures from becoming white/black "successful" goldens.
 const structureThresholds = {
@@ -132,6 +133,12 @@ function readMultiFlag(name) {
 function parseEnvArgs(rawValue) {
   if (rawValue == null || rawValue.trim().length === 0) return [];
   return rawValue.split(/[\s,]+/u).map((arg) => arg.trim()).filter(Boolean);
+}
+
+function parseBooleanEnv(rawValue) {
+  if (rawValue == null || rawValue.length === 0) return false;
+  const normalized = rawValue.toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes';
 }
 
 function selectedAssets() {
@@ -312,7 +319,7 @@ async function pageCanvasClipScreenshot(page, timeout) {
 }
 
 async function captureEngineFramePng(page, timeout) {
-  await pauseExampleRendering(page, timeout);
+  if (pauseBeforeEngineCapture) await pauseExampleRendering(page, timeout);
   let frame;
   try {
     frame = await withTimeout(
@@ -327,7 +334,7 @@ async function captureEngineFramePng(page, timeout) {
       'engine captureFrame fallback timed out',
     );
   } finally {
-    await resumeExampleRendering(page, 1000);
+    if (pauseBeforeEngineCapture) await resumeExampleRendering(page, 1000);
   }
   if (frame == null || typeof frame !== 'object') throw new Error('engine captureFrame returned no frame');
   const width = Number(frame.width);

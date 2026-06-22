@@ -366,7 +366,7 @@ export function rmseROI(rgbaA, rgbaB, W, x0, y0, x1, y1) {
  */
 export function varianceROI(rgbaImages, W, x0, y0, x1, y1) {
   const N = rgbaImages.length;
-  if (N < 2) return 0;
+  if (N < 2) throw new Error(`varianceROI requires at least 2 images, got ${N}`);
   let sumVar = 0, count = 0;
   for (let y = y0; y <= y1; y++) {
     for (let x = x0; x <= x1; x++) {
@@ -557,10 +557,11 @@ export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRun
         }
 
         const captured = await engine.captureFrame({ colorSpace: "linear" });
-        if (captured?.rgba) {
-          assertRadiometricSignal(captured.rgba, requireRadiometricSignal, `renderMultipleRuns run ${run}`);
-          results.push(captured.rgba);
+        if (!captured?.rgba) {
+          throw new Error(`renderMultipleRuns run ${run}: captureFrame returned null`);
         }
+        assertRadiometricSignal(captured.rgba, requireRadiometricSignal, `renderMultipleRuns run ${run}`);
+        results.push(captured.rgba);
       } finally {
         try { engine?.dispose(); } catch { /* ignore */ }
         // Wait between runs so the device settles
@@ -572,6 +573,9 @@ export async function renderMultipleRuns(engineOpts, scene, framesPerRun, numRun
     try { device.destroy(); } catch { /* ignore */ }
   }
 
+  if (results.length !== numRuns) {
+    throw new Error(`renderMultipleRuns expected ${numRuns} captures, got ${results.length}`);
+  }
   return results;
 }
 
