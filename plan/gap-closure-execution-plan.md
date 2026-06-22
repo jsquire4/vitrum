@@ -574,10 +574,14 @@ Implementation:
   active implementation rows are empty; validation/proof rows carry commands,
   artifacts, and remaining blockers; future-contract rows are segregated.
 - Added `tools/road-to-100/check-validation-queue.mjs`.
-- Wired `npm run road-to-100-source-check` to run the queue checker, so
-  `npm run proof-check` fails if a proof row loses its artifact, an npm command
-  disappears, HOST-BLOCKED/PASS/PASS-PARTIAL statuses drift, or a future-contract
-  row sneaks back into the active implementation queue.
+- Added `tools/road-to-100/check-source-gap-markers.mjs`, a production-source
+  marker guard that classifies every intentional TODO/FIXME/stub/not-implemented
+  hit and fails on any new unclassified marker.
+- Wired `npm run road-to-100-source-check` to run the queue checker and marker
+  guard, so `npm run proof-check` fails if a proof row loses its artifact, an
+  npm command disappears, HOST-BLOCKED/PASS/PASS-PARTIAL statuses drift, a
+  future-contract row sneaks back into the active implementation queue, or a new
+  production stub marker appears without source-read classification.
 
 ### Wave 12 — pt-webgpu Bump Sampler Policy Parity
 

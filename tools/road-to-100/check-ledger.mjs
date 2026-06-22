@@ -1996,9 +1996,16 @@ const scripts = packageJson.scripts ?? {};
 if (
   typeof scripts["road-to-100-source-check"] !== "string" ||
   !scripts["road-to-100-source-check"].includes("tools/road-to-100/check-ledger.mjs") ||
+  !scripts["road-to-100-source-check"].includes("road-to-100-source-gap-scan") ||
   !scripts["road-to-100-source-check"].includes("road-to-100-validation-status")
 ) {
-  fail("package.json must expose road-to-100-source-check with the ledger and validation-queue checks");
+  fail("package.json must expose road-to-100-source-check with the ledger, source-gap, and validation-queue checks");
+}
+if (
+  scripts["road-to-100-source-gap-scan"] !==
+    "deno run --sloppy-imports --allow-read tools/road-to-100/check-source-gap-markers.mjs"
+) {
+  fail("package.json must expose road-to-100-source-gap-scan");
 }
 if (
   scripts["road-to-100-validation-status"] !==

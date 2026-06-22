@@ -29,13 +29,16 @@
 > in raw UV space.
 > **2026-06-22 queue-control follow-up:** the active code queue is now guarded by
 > `tools/road-to-100/validation-queue.json` plus
-> `npm run road-to-100-validation-status`, which is wired into
-> `npm run road-to-100-source-check` and therefore `npm run proof-check`. The
-> queue makes the current state explicit: no active implementation rows, a
-> finite validation/proof/provisioning queue with commands and artifacts, and
-> separate future-contract rows for displacement, true transparent GI transport,
-> native point/line primitives, arbitrary UV arrays, and native instanced
-> skinned/morphed glTF.
+> `npm run road-to-100-validation-status`. The source check now also runs
+> `npm run road-to-100-source-gap-scan`, which classifies every production
+> TODO/FIXME/stub/not-implemented marker and fails on any new unclassified
+> marker before it can become another rediscovered ghost gap. Both gates are
+> wired into `npm run road-to-100-source-check` and therefore
+> `npm run proof-check`. The queue makes the current state explicit: no active
+> implementation rows, a finite validation/proof/provisioning queue with
+> commands and artifacts, and separate future-contract rows for displacement,
+> true transparent GI transport, native point/line primitives, arbitrary UV
+> arrays, and native instanced skinned/morphed glTF.
 > For this ledger, "100%" = everything fully implemented.
 > **R7a-R7d campaign additions:** behavioral gate coverage (43 lanes today: 33
 > pt-webgpu + 10 walkaround-hybrid; permanent CI); anisotropic
