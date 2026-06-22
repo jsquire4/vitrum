@@ -549,12 +549,18 @@ for (const row of queue.validationQueue) {
 
 const mutationRow = queue.validationQueue.find((row) => row.id === "VQ-MUTATION-MATRIX");
 if (mutationRow == null) fail("validationQueue missing VQ-MUTATION-MATRIX");
+if (mutationRow.status !== "committed-proof-green") {
+  fail("VQ-MUTATION-MATRIX must stay committed-proof-green for the explicitly proven pt/walkaround dzn mutation shard scope");
+}
 assertRowCitesPaths(mutationRow, REQUIRED_MUTATION_ARTIFACT_PATHS, "VQ-MUTATION-MATRIX");
 if (!String(mutationRow.remaining).includes("observable before/after pixel deltas")) {
   fail("VQ-MUTATION-MATRIX remaining text must keep the observable mutation delta proof explicit");
 }
 if (!String(mutationRow.remaining).includes("committed dzn-full post-mutation goldens")) {
   fail("VQ-MUTATION-MATRIX remaining text must keep committed dzn-full goldens explicit");
+}
+if (!String(mutationRow.remaining).includes("new backend-specific mutation gaps must enter the implementation queue")) {
+  fail("VQ-MUTATION-MATRIX remaining text must route new mutation expansion through source-verified implementation rows");
 }
 const mutationArtifactPaths = new Set(mutationRow.proofArtifacts.map((artifact) => artifact?.path));
 for (const mutationKind of REQUIRED_MUTATION_KINDS) {

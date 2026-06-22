@@ -68,7 +68,7 @@
       "id": "VQ-MUTATION-MATRIX",
       "title": "real-adapter mutation matrix coverage",
       "kind": "validation",
-      "status": "partial-proof-green",
+      "status": "committed-proof-green",
       "command": "npm run behavioral-gate:dzn-status-check",
       "proofArtifacts": [
         { "path": "tools/behavioral-gate/gate.mjs" },
@@ -99,7 +99,7 @@
         { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-add-primitive.dzn-full.png", "type": "png" },
         { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-remove-primitive.dzn-full.png", "type": "png" }
       ],
-      "remaining": "pt-webgpu and walkaround dzn mutation shards now require both observable before/after pixel deltas and committed dzn-full post-mutation goldens. Remaining work is browser/adapter promotion plus backend-specific rows outside those committed shards."
+      "remaining": "pt-webgpu and walkaround dzn mutation shards are committed-proof-green: all eight mutation kinds for both backends require observable before/after pixel deltas and committed dzn-full post-mutation goldens. Browser/adapter expansion beyond these shards is not part of this closed row; new backend-specific mutation gaps must enter the implementation queue only after source-verified scope is added."
     },
     {
       "id": "VQ-GLTF-REAL-WEBGPU",

@@ -1408,11 +1408,12 @@ replacement for V28-B recaptures.
   readiness, including browser Draco/meshopt decoder-hook telemetry, but WSL
   canvas readback stalls before PNGs can be captured).
 - Mutation matrix on real GPU/browser harness: pt-webgpu material/environment/
-  emitter/transform/topology/instanced-count/add-primitive/remove-primitive mutation lanes now pass on the default WSL runtime and dzn full tier
+  emitter/transform/topology/instanced-count/add-primitive/remove-primitive mutation lanes and the matching walkaround mutation lanes now pass on the default WSL runtime and dzn full tier
   (`behavioral-gate:dzn -- --filter mutation --require-full-tier`) after fixing
   the primitive-less full-tier BVH/TLAS placeholder buffers. The dzn mutation
-  status artifact is committed at
-  `tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json` and checked by
+  status artifacts are committed at
+  `tools/behavioral-gate/behavioral-gate-dzn-pt-mutation-status.json` and
+  `tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json` and checked by
   `npm run behavioral-gate:dzn-status-check`. The pt-webgpu cached-bind-group
   invalidation seam for reallocating mutation fast paths is now source/test
   pinned in `packages/pt-webgpu/src/__tests__/mutationDesyncs.test.ts`
@@ -1427,7 +1428,9 @@ replacement for V28-B recaptures.
   emitter mutation rows now have a focused dzn proof at
   `tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json`; that run
   also closed the DDGI no-TLAS placeholder-buffer bug in `rebuildProbeBvhFromRestir`.
-  Broader cross-backend/browser mutation-matrix promotion remains.
+  `VQ-MUTATION-MATRIX` is therefore closed for the explicitly proven pt/walkaround
+  dzn shard scope; broader cross-backend/browser mutation expansion belongs in a
+  new source-verified row rather than reopening this one.
 
 ## How To Use This Plan
 
@@ -1508,7 +1511,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | Rich-material GI | walkaround | A/B showing receiver-lobe material target improves or preserves correctness. |
 | Transparent OIT visual proof | walkaround | `wh/transparent-oit` now has a committed `dzn-full` PNG golden plus a dzn PASS status proving a fractional alpha-blend pane with sun, point-light, and finite-area lighting against that golden, while preserving the approximation warning. Remaining work is reference-quality A/B proof for alpha shadow transmittance and layered-transport boundaries. |
 | Real glTF golden sweep | glTF/tools | pt-webgpu WSL public-asset golden lane covered; recommended-backend/browser import/decode readiness is proven for textured GLB, Draco, and meshopt rows. The pt-webgl2 browser harness now defaults to paused public `engine.captureFrame({ colorSpace:'output' })` readback, fail-closes WSL readback timeouts quickly with an `engine-captureFrame-output` attempt in every `HOST-BLOCKED` row, keeps locator screenshot / clipped screenshot / canvas data URL fallbacks for explicit modes, and supports opt-in Chromium GL/ANGLE args via `VITRUM_CHROMIUM_EXTRA_ARGS`; this WSL Playwright host still blocks on pixel readback, so PNG goldens/tolerance remain a browser-host validation item, not a source-code import gap. |
-| Mutation matrix on real GPU | engine/backends | pt-webgpu mutation rows and walkaround material/transform/emitter rows now have committed dzn full-tier status artifacts. Remaining work is browser/adapter promotion plus any additional backend-specific mutation rows not covered by those shards. |
+| Mutation matrix on real GPU | engine/backends | `VQ-MUTATION-MATRIX` is closed for the explicit pt-webgpu + walkaround dzn shard scope: all eight mutation kinds on both backends have committed dzn full-tier status artifacts, observable before/after deltas, and dzn-full post-mutation goldens. Broader browser/adapter expansion now requires a new source-verified row. |
 | Browser/adapter coverage | tools | Browser or real-adapter validation for rows WSL lavapipe cannot prove. |
 
 ### A3 — Product Decisions
