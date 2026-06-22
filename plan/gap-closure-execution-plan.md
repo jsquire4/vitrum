@@ -561,6 +561,39 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 20 — Learned Systems Evidence-Citation Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of
+`VQ-LEARNED-SYSTEMS` found the learned-system proof checker already validates
+the two committed research checkpoints byte-for-byte, rejects unregistered model
+files, keeps `productionCheckpoint:null` fail-closed, and requires production
+quality A/B metadata before any production checkpoint can count. The weak point
+was evidence accounting: the Road queue cited only part of the source and docs
+that the checker reads to prove neural/NRC/PPG/GRIS default-off truthfulness.
+
+Implementation:
+
+- Expanded `VQ-LEARNED-SYSTEMS` proof artifacts to cite the full evidence set:
+  `HybridEngineOptions.ts`, root and package READMEs,
+  `plan/library-architecture.md`, neural-training README, and
+  `HARDWARE-VALIDATION-NEEDS.md` in addition to the existing source, checkpoint,
+  and regression-test files.
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so the learned
+  systems row fails if any of those evidence files stops being cited by the
+  machine-readable queue.
+- No production checkpoint was fabricated and no default-tier NRC/PPG promotion
+  was claimed; the row remains provisioning-needed until quality A/B evidence
+  exists.
+
+Focused gates:
+
+```bash
+npm run learned-systems-proof-check
+npm run road-to-100-validation-status
+npm run proof-check
+git diff --check
+```
+
 ### Wave 19 — Mutation Matrix Road Artifact Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of `VQ-MUTATION-MATRIX`

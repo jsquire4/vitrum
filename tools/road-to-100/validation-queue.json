@@ -179,6 +179,7 @@
         { "path": "tools/learned-systems/check-status.mjs" },
         { "path": "tools/neural-denoiser-training/checkpoints/manifest.json" },
         { "path": "packages/walkaround-hybrid/src/HybridEngineConfig.ts" },
+        { "path": "packages/walkaround-hybrid/src/HybridEngineOptions.ts" },
         { "path": "packages/walkaround-hybrid/src/HybridEngine.ts" },
         { "path": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts" },
         { "path": "packages/walkaround-hybrid/src/neural/weights.ts" },
@@ -189,7 +190,12 @@
         { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts" },
         { "path": "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts" },
         { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCoordinatorDiagnostics.test.ts" },
-        { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCompilerGate.test.ts" }
+        { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCompilerGate.test.ts" },
+        { "path": "README.md" },
+        { "path": "plan/library-architecture.md" },
+        { "path": "packages/walkaround-hybrid/README.md" },
+        { "path": "tools/neural-denoiser-training/README.md" },
+        { "path": "HARDWARE-VALIDATION-NEEDS.md" }
       ],
       "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence. The learned-systems proof checker validates research checkpoint identity and will require production quality metrics to satisfy their declared thresholds before any production checkpoint can count."
     },

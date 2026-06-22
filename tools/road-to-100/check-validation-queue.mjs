@@ -296,6 +296,7 @@ for (const path of [
   "tools/learned-systems/check-status.mjs",
   "tools/neural-denoiser-training/checkpoints/manifest.json",
   "packages/walkaround-hybrid/src/HybridEngineConfig.ts",
+  "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
   "packages/walkaround-hybrid/src/HybridEngine.ts",
   "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
   "packages/walkaround-hybrid/src/neural/weights.ts",
@@ -307,6 +308,11 @@ for (const path of [
   "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts",
   "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCoordinatorDiagnostics.test.ts",
   "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCompilerGate.test.ts",
+  "README.md",
+  "plan/library-architecture.md",
+  "packages/walkaround-hybrid/README.md",
+  "tools/neural-denoiser-training/README.md",
+  "HARDWARE-VALIDATION-NEEDS.md",
 ]) {
   if (!learnedRow.proofArtifacts.some((artifact) => artifact?.path === path)) {
     fail(`VQ-LEARNED-SYSTEMS proofArtifacts must cite ${path}`);
