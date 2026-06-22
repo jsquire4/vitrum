@@ -29,7 +29,7 @@
  * Pass criteria
  * ─────────────
  * PASS: SPPM luminance in the ROI is in the same order of magnitude as the
- *       reference (relative error < 10×) AND the relative error decreases
+ *       reference (relative error < 5× / 500%) AND the relative error decreases
  *       monotonically across the 3 checkpoints, showing convergence.
  *
  * FINDING: if either criterion fails, report the numbers and flag FINDING.

@@ -63,6 +63,7 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.match(source, /String\(rawValue \?\? 'engine-first'\)/);
   assert.match(source, /isEngineReadbackHostBlock\(error\)/);
   assert.match(source, /hostBlockHint = 'engine-readback'/);
+  assert.match(source, /snapshotPageDiagnostics\(page, 'pre-capture'\)/);
 
   const captureFnStart = source.indexOf('async function captureCanvasPng(page)');
   assert.notEqual(captureFnStart, -1);
@@ -126,6 +127,41 @@ test('gltf browser proof checker requires structured host-blocked capture attemp
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /box-textured-glb: HOST-BLOCKED status must include captureAttempts\[\]/);
+});
+
+test('gltf browser proof checker requires pre-capture page diagnostics for host blocks', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
+  const statusPath = join(dir, 'host-blocked-missing-diagnostics.json');
+  await writeFile(statusPath, `${JSON.stringify({
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    backend: 'pt-webgl2',
+    assets: [
+      {
+        ...hostBlockedRow('box-textured-glb', 'textured-glb', {
+          textureDecodeReport: { mapCount: 1 },
+        }),
+        pageDiagnostics: undefined,
+      },
+      hostBlockedRow('cesium-milk-truck-draco', 'draco', {
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+        extensionsRequired: ['KHR_draco_mesh_compression'],
+        browserDecodeHooks: { requested: ['draco'], draco: true, meshopt: false },
+      }),
+      hostBlockedRow('meshopt-cube-real', 'meshopt', {
+        extensionsUsed: ['KHR_meshopt_compression'],
+        extensionsRequired: ['KHR_meshopt_compression'],
+        browserDecodeHooks: { requested: ['meshopt'], draco: false, meshopt: true },
+      }),
+    ],
+    assetCount: 3,
+  }, null, 2)}\n`);
+
+  const result = await runChecker(['--status', pathToFileURL(statusPath).href]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /box-textured-glb: HOST-BLOCKED status must include pageDiagnostics/);
 });
 
 test('gltf browser proof checker accepts canvas-first host blocks without engine attempts', async () => {
@@ -196,6 +232,7 @@ function hostBlockedRow(assetId, kind, overrides = {}) {
         error: 'canvas PNG data URL fallback failed',
       },
     ],
+    pageDiagnostics: pageDiagnosticsFor(assetId),
     telemetry: telemetryFor(assetId, overrides),
     console: [],
     serverLog: '',
@@ -228,6 +265,26 @@ function canvasFirstHostBlockedRow(assetId, kind, overrides = {}) {
         error: 'canvas PNG data URL fallback failed',
       },
     ],
+  };
+}
+
+function pageDiagnosticsFor(assetId) {
+  return {
+    phase: 'pre-capture',
+    url: `http://127.0.0.1:5187/?vitrumGltfAsset=${assetId}&vitrumBackend=pt-webgl2&vitrumSpp=1`,
+    ready: true,
+    captureError: null,
+    captureFrameInstalled: true,
+    captureFrameType: 'function',
+    capturePaused: false,
+    canvasPresent: true,
+    canvasId: 'vitrum-canvas',
+    canvasWidth: 64,
+    canvasHeight: 64,
+    canvasClientWidth: 64,
+    canvasClientHeight: 64,
+    canvasRect: { x: 0, y: 0, width: 64, height: 64 },
+    devicePixelRatio: 1,
   };
 }
 

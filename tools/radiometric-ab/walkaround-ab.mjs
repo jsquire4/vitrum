@@ -20,7 +20,7 @@
  *
  *   GLASS  Glass-GI validation:
  *       Cornell with a glass pane vs WITHOUT the glass pane. Both have the same
- *       area emitter. Through-glass region luminance should be ≥ no-glass × 0.7
+ *       area emitter. Through-glass region luminance should be ≥ no-glass × 0.5
  *       (accounting for Fresnel attenuation and GI propagation; strict black check).
  *
  *   GLOSSY  Metallic probe check (B2):

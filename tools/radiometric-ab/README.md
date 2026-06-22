@@ -300,7 +300,7 @@ snapshot cannot silently drift into a vague "partial" claim. Scenes with large
 emitters, deep occlusion, or dramatic M-count gradients still need separate
 promotion captures before changing the default policy.
 
-Render time: 10.7 s for the A8 pair.
+Render time: 16.1 s for the A8 pair.
 
 ### SUN — Sun-NEE Analytic Self-Validation
 
@@ -325,7 +325,7 @@ The prior SUN fixture claimed to sample a floor and left-wall shadow region, but
 CPU picking showed those screen windows hit the visible back-wall receiver with
 this harness camera. The fixture now records that truth explicitly and validates
 the direct-sun BRDF path only. Shadow correctness is not inferred from this row.
-Render time: 7.9 s.
+Render time: 7.0 s.
 
 ### GLASS — Glass-GI Transmitted Light Validation
 
@@ -348,7 +348,7 @@ the visible through-glass crop now proves a material transport delta for this
 bounded scene. It is still one low-SPP validation scene, not a global promotion
 for every transparent transport case.
 
-Render time: 14.0 s for the pair.
+Render time: 15.4 s for the pair.
 
 ### GLOSSY — B2 Metallic Probe Check (Specular Indirect)
 
@@ -376,7 +376,7 @@ darker scene direction than the diffuse control. The committed result carries
 `promotion.defaultReady:false`, blocker
 `ddgi-irradiance-cache-not-ggx-filtered-radiance`, and required evidence
 `material-furnace-reference-ab-and-browser-real-adapter-recapture`.
-Render time: 14.2 s.
+Render time: 13.9 s.
 
 ### Summary
 

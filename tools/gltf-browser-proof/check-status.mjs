@@ -109,6 +109,7 @@ if (status.verdict === "HOST-BLOCKED") {
       await assertPassingBrowserRow(row, assetsById.get(row.assetId));
     }
     if (row.verdict === "HOST-BLOCKED") {
+      assertHostBlockedPageDiagnostics(row);
       assertHostBlockedCaptureAttempts(row);
       if (
         row.step !== "canvas-screenshot" &&
@@ -145,6 +146,38 @@ if (status.verdict === "HOST-BLOCKED") {
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF proof)");
 } else {
   fail(`status verdict must be PASS or HOST-BLOCKED, got ${status.verdict}`);
+}
+
+/** @param {Record<string, any>} row */
+function assertHostBlockedPageDiagnostics(row) {
+  const diagnostics = row.pageDiagnostics;
+  if (diagnostics == null || typeof diagnostics !== "object") {
+    fail(`${row.assetId}: HOST-BLOCKED status must include pageDiagnostics`);
+  }
+  if (diagnostics.phase !== "pre-capture") {
+    fail(`${row.assetId}: pageDiagnostics.phase must be pre-capture`);
+  }
+  if (diagnostics.ready !== true) {
+    fail(`${row.assetId}: pageDiagnostics must prove VITRUM_CAPTURE_READY before readback`);
+  }
+  if (diagnostics.canvasPresent !== true) {
+    fail(`${row.assetId}: pageDiagnostics must prove a canvas existed before readback`);
+  }
+  if (diagnostics.captureFrameInstalled !== true) {
+    fail(`${row.assetId}: pageDiagnostics must prove VITRUM_CAPTURE_FRAME was installed before readback`);
+  }
+  const canvasWidth = Number(diagnostics.canvasWidth ?? 0);
+  const canvasHeight = Number(diagnostics.canvasHeight ?? 0);
+  const clientWidth = Number(diagnostics.canvasClientWidth ?? 0);
+  const clientHeight = Number(diagnostics.canvasClientHeight ?? 0);
+  const rectWidth = Number(diagnostics.canvasRect?.width ?? 0);
+  const rectHeight = Number(diagnostics.canvasRect?.height ?? 0);
+  if (!(canvasWidth > 0 && canvasHeight > 0 && clientWidth > 0 && clientHeight > 0 && rectWidth > 0 && rectHeight > 0)) {
+    fail(`${row.assetId}: pageDiagnostics must include nonzero canvas dimensions before readback`);
+  }
+  if (!String(diagnostics.url ?? "").includes(row.assetId)) {
+    fail(`${row.assetId}: pageDiagnostics.url must include the captured asset id`);
+  }
 }
 
 /** @param {Record<string, any>} row */

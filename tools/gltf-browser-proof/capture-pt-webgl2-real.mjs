@@ -66,6 +66,7 @@ let captureStep = 'not-started';
 let lastTelemetry = null;
 let lastConsole = [];
 let lastCaptureAttempts = [];
+let lastPageDiagnostics = null;
 
 const server = spawn(
   process.execPath,
@@ -97,6 +98,7 @@ try {
     lastTelemetry = null;
     lastConsole = [];
     lastCaptureAttempts = [];
+    lastPageDiagnostics = null;
     captureStep = 'not-started';
     try {
       results.push(await withTimeout(capture(asset), timeoutMs, 'browser capture timed out'));
@@ -209,6 +211,9 @@ async function capture(asset) {
     const summarizedTelemetry = summarizeTelemetry(telemetry.telemetry);
     lastTelemetry = summarizedTelemetry;
     lastConsole = consoleLines.slice(-80);
+    captureStep = 'page-pre-capture-diagnostics';
+    const pageDiagnostics = await snapshotPageDiagnostics(page, 'pre-capture');
+    lastPageDiagnostics = pageDiagnostics;
     if (!ready || telemetry.error != null || telemetry.ready !== true) {
       return {
         generatedAt: new Date().toISOString(),
@@ -218,6 +223,7 @@ async function capture(asset) {
         kind: asset.kind,
         backend: 'pt-webgl2',
         error: telemetry.error ?? 'capture did not become ready',
+        pageDiagnostics,
         telemetry: summarizedTelemetry,
         console: consoleLines.slice(-80),
       };
@@ -250,6 +256,7 @@ async function capture(asset) {
         luminance,
         structure,
         error: `capture is visually uninformative: ${structureFailureReason(structure)}`,
+        pageDiagnostics,
         telemetry: summarizedTelemetry,
         console: consoleLines.slice(-80),
       };
@@ -282,6 +289,7 @@ async function capture(asset) {
       captureAttempts: capture.attempts,
       luminance,
       structure,
+      pageDiagnostics,
       telemetry: summarizedTelemetry,
       golden: compare,
       console: consoleLines.slice(-80),
@@ -355,6 +363,44 @@ async function captureCanvasPng(page) {
     }
   } finally {
     if (canvasPaused) await resumeExampleRendering(page, 1000);
+  }
+}
+
+async function snapshotPageDiagnostics(page, phase) {
+  try {
+    return await page.evaluate((label) => {
+      const canvas = document.querySelector('canvas');
+      const rect = canvas instanceof HTMLCanvasElement ? canvas.getBoundingClientRect() : null;
+      return {
+        phase: label,
+        url: location.href,
+        ready: globalThis.VITRUM_CAPTURE_READY === true,
+        captureError: globalThis.VITRUM_CAPTURE_ERROR ?? null,
+        captureFrameInstalled: typeof globalThis.VITRUM_CAPTURE_FRAME === 'function',
+        captureFrameType: typeof globalThis.VITRUM_CAPTURE_FRAME,
+        capturePaused: globalThis.VITRUM_CAPTURE_PAUSED === true,
+        canvasPresent: canvas instanceof HTMLCanvasElement,
+        canvasId: canvas instanceof HTMLCanvasElement ? canvas.id : null,
+        canvasWidth: canvas instanceof HTMLCanvasElement ? canvas.width : null,
+        canvasHeight: canvas instanceof HTMLCanvasElement ? canvas.height : null,
+        canvasClientWidth: canvas instanceof HTMLCanvasElement ? canvas.clientWidth : null,
+        canvasClientHeight: canvas instanceof HTMLCanvasElement ? canvas.clientHeight : null,
+        canvasRect: rect == null
+          ? null
+          : {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height,
+            },
+        devicePixelRatio: globalThis.devicePixelRatio ?? null,
+      };
+    }, phase);
+  } catch (error) {
+    return {
+      phase,
+      error: String(error?.message ?? error),
+    };
   }
 }
 
@@ -554,6 +600,7 @@ function hostBlockedStatus(asset, error) {
     step: captureStep,
     error: String(error?.stack ?? error),
     captureAttempts: snapshotCaptureAttempts(),
+    pageDiagnostics: lastPageDiagnostics,
     telemetry: lastTelemetry,
     console: lastConsole.slice(-80),
     serverLog: serverLog.slice(-4000),
