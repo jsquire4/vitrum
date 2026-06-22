@@ -10,11 +10,16 @@
       "status": "committed-proof-green",
       "command": "npm run behavioral-gate:dzn-status-check",
       "proofArtifacts": [
+        { "path": "tools/behavioral-gate/gate.mjs" },
+        { "path": "tools/behavioral-gate/check-dzn-status.mjs" },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-default-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-material-lobes-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-material-lobe-maps-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobes.dzn-full.png", "type": "png" },
-        { "path": "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobe-maps.dzn-full.png", "type": "png" }
+        { "path": "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobe-maps.dzn-full.png", "type": "png" },
+        { "path": "packages/pt-webgpu/src/__tests__/ggxAnisotropicBrdf.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/ggxMultiscatterFurnace.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/restirPtSpecialtyReference.test.ts" }
       ],
       "remaining": "Reference-quality or radiometric promotion A/B for rows that are intentionally still approximate."
     },
@@ -85,6 +90,11 @@
       "status": "committed-proof-green",
       "command": "npm run gltf-real-proof-check",
       "proofArtifacts": [
+        { "path": "tools/gltf-real-asset-sweep/check-proofs.mjs" },
+        { "path": "tools/gltf-real-asset-sweep/proofs.mjs" },
+        { "path": "tools/gltf-real-asset-sweep/assetManifest.mjs" },
+        { "path": "tools/gltf-real-asset-sweep/sweep.mjs" },
+        { "path": "tools/reference-renders/gltf-real-behavioral/manifest.json" },
         { "path": "tools/reference-renders/gltf-real-behavioral-dzn-full/manifest.json" },
         { "path": "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-box-textured.png", "type": "png" },
         { "path": "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-draco.png", "type": "png" },
@@ -113,10 +123,14 @@
       "command": "npm run radiometric-ab:proof-check",
       "proofArtifacts": [
         { "path": "tools/radiometric-ab/pt-ab-host-status.json", "json": { "verdict": "PASS" } },
+        { "path": "tools/radiometric-ab/ab-sppm.mjs" },
         { "path": "tools/radiometric-ab/ab-bdpt.mjs" },
+        { "path": "tools/radiometric-ab/ab-restir-pt.mjs" },
+        { "path": "tools/radiometric-ab/ab-restir-pt-glossy-research.mjs" },
+        { "path": "tools/radiometric-ab/ab-restir-pt-specialty.mjs" },
+        { "path": "tools/radiometric-ab/ab-sobol.mjs" },
         { "path": "tools/radiometric-ab/check-results.mjs" },
         { "path": "tools/radiometric-ab/proofs.mjs" },
-        { "path": "tools/radiometric-ab/ab-restir-pt-glossy-research.mjs" },
         {
           "path": "tools/radiometric-ab/results-bdpt.json",
           "json": {
@@ -135,7 +149,12 @@
         { "path": "packages/pt-webgpu/src/wgsl/bdpt/bdptConnection.wgsl.ts" },
         { "path": "packages/pt-webgpu/src/wgsl/bdpt/bdptLightSubpath.wgsl.ts" },
         { "path": "packages/pt-webgpu/src/__tests__/bdptConnectionMisFull.test.ts" },
-        { "path": "packages/pt-webgpu/src/__tests__/bdptGlossyLightSubpath.test.ts" }
+        { "path": "packages/pt-webgpu/src/__tests__/bdptGlossyLightSubpath.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/oracle.sppmPhotonFlux.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/restirPtSpecialtyReference.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/ggxAnisotropicBrdf.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/ggxMultiscatterFurnace.test.ts" },
+        { "path": "packages/shared-samplers/__tests__/bdptVeachFull.test.ts" }
       ],
       "remaining": "Committed proof now pins BDPT endpoint-only default, the opt-in multi-vertex BDPT branch as a structured non-promotable research finding, SPPM/Sobol/ReSTIR-PT snapshots, ReSTIR-PT specialty case/lobe invariants, and the opt-in glossy ReSTIR-PT research branch as a non-promotable FINDING. The main kernel source must continue to state that multi-vertex BDPT is not yet composed against the ordinary eye-path estimator. Remaining work is a redesigned multi-vertex BDPT estimator that is weighted against the regular eye-path strategy, plus tighter caustic/material-furnace quality evidence."
     },
@@ -277,11 +296,24 @@
       "status": "committed-proof-green",
       "command": "npm run gltf-material-proof-check && npm run gltf-topology-proof-check",
       "proofArtifacts": [
+        { "path": "tools/gltf-material-sweep/check-proofs.mjs" },
         { "path": "tools/gltf-material-sweep/proofs.mjs" },
+        { "path": "tools/gltf-material-sweep/fixture.mjs" },
+        { "path": "tools/gltf-material-sweep/sweep.mjs" },
+        { "path": "tools/reference-renders/gltf-material-sweep-behavioral/manifest.json" },
+        { "path": "tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json", "json": { "verdict": "PASS" } },
+        { "path": "tools/gltf-topology-proofs/check-proofs.mjs" },
         { "path": "tools/gltf-topology-proofs/proofs.mjs" },
         { "path": "tools/reference-renders/gltf-material-sweep-behavioral/pt-gltf-material-sweep.png", "type": "png" },
+        { "path": "tools/reference-renders/gltf-point-line-behavioral/manifest.json" },
         { "path": "tools/reference-renders/gltf-point-line-behavioral/pt-gltf-point-line-fallback.png", "type": "png" },
-        { "path": "tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png", "type": "png" }
+        { "path": "tools/reference-renders/gltf-triangle-topology-behavioral/manifest.json" },
+        { "path": "tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png", "type": "png" },
+        { "path": "packages/gltf-adapter/src/primitiveModeFallback.ts" },
+        { "path": "packages/gltf-adapter/src/featureReport.ts" },
+        { "path": "packages/gltf-adapter/src/gltfPointLinePrimitivePolicy.test.ts" },
+        { "path": "packages/gltf-adapter/src/gltfKhronosSweep.test.ts" },
+        { "path": "packages/gltf-adapter/src/gltfAssetApi.test.ts" }
       ],
       "remaining": "Native point/line primitives and arbitrary UV arrays remain future core/backend contracts, not current arbitrary-glTF import gaps."
     }

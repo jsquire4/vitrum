@@ -65,6 +65,52 @@ const REQUIRED_MUTATION_KINDS = [
   "remove-primitive",
 ];
 
+const REQUIRED_PT_WEBGPU_RUNTIME_ARTIFACT_PATHS = [
+  "tools/behavioral-gate/gate.mjs",
+  "tools/behavioral-gate/check-dzn-status.mjs",
+  "tools/behavioral-gate/behavioral-gate-dzn-default-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-material-lobes-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-material-lobe-maps-status.json",
+  "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobes.dzn-full.png",
+  "tools/reference-renders/pt-material-lobes-behavioral/pt-material-lobe-maps.dzn-full.png",
+  "packages/pt-webgpu/src/__tests__/ggxAnisotropicBrdf.test.ts",
+  "packages/pt-webgpu/src/__tests__/ggxMultiscatterFurnace.test.ts",
+  "packages/pt-webgpu/src/__tests__/restirPtSpecialtyReference.test.ts",
+];
+
+const REQUIRED_GLTF_REAL_ARTIFACT_PATHS = [
+  "tools/gltf-real-asset-sweep/check-proofs.mjs",
+  "tools/gltf-real-asset-sweep/proofs.mjs",
+  "tools/gltf-real-asset-sweep/assetManifest.mjs",
+  "tools/gltf-real-asset-sweep/sweep.mjs",
+  "tools/reference-renders/gltf-real-behavioral/manifest.json",
+  "tools/reference-renders/gltf-real-behavioral-dzn-full/manifest.json",
+  "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-box-textured.png",
+  "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-draco.png",
+  "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-meshopt.png",
+];
+
+const REQUIRED_GLTF_MATERIAL_TOPOLOGY_ARTIFACT_PATHS = [
+  "tools/gltf-material-sweep/check-proofs.mjs",
+  "tools/gltf-material-sweep/proofs.mjs",
+  "tools/gltf-material-sweep/fixture.mjs",
+  "tools/gltf-material-sweep/sweep.mjs",
+  "tools/reference-renders/gltf-material-sweep-behavioral/manifest.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json",
+  "tools/reference-renders/gltf-material-sweep-behavioral/pt-gltf-material-sweep.png",
+  "tools/gltf-topology-proofs/check-proofs.mjs",
+  "tools/gltf-topology-proofs/proofs.mjs",
+  "tools/reference-renders/gltf-point-line-behavioral/manifest.json",
+  "tools/reference-renders/gltf-point-line-behavioral/pt-gltf-point-line-fallback.png",
+  "tools/reference-renders/gltf-triangle-topology-behavioral/manifest.json",
+  "tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png",
+  "packages/gltf-adapter/src/primitiveModeFallback.ts",
+  "packages/gltf-adapter/src/featureReport.ts",
+  "packages/gltf-adapter/src/gltfPointLinePrimitivePolicy.test.ts",
+  "packages/gltf-adapter/src/gltfKhronosSweep.test.ts",
+  "packages/gltf-adapter/src/gltfAssetApi.test.ts",
+];
+
 const REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS = [
   "tools/renderer-fidelity-proof/check-proofs.mjs",
   "plan/renderer-fidelity-matrix.md",
@@ -120,7 +166,12 @@ const REQUIRED_WALKAROUND_AB_ARTIFACT_PATHS = [
 
 const REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS = [
   "tools/radiometric-ab/pt-ab-host-status.json",
+  "tools/radiometric-ab/ab-sppm.mjs",
   "tools/radiometric-ab/ab-bdpt.mjs",
+  "tools/radiometric-ab/ab-restir-pt.mjs",
+  "tools/radiometric-ab/ab-restir-pt-glossy-research.mjs",
+  "tools/radiometric-ab/ab-restir-pt-specialty.mjs",
+  "tools/radiometric-ab/ab-sobol.mjs",
   "tools/radiometric-ab/check-results.mjs",
   "tools/radiometric-ab/proofs.mjs",
   "tools/radiometric-ab/results-bdpt.json",
@@ -135,6 +186,11 @@ const REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS = [
   "packages/pt-webgpu/src/wgsl/bdpt/bdptLightSubpath.wgsl.ts",
   "packages/pt-webgpu/src/__tests__/bdptConnectionMisFull.test.ts",
   "packages/pt-webgpu/src/__tests__/bdptGlossyLightSubpath.test.ts",
+  "packages/pt-webgpu/src/__tests__/oracle.sppmPhotonFlux.test.ts",
+  "packages/pt-webgpu/src/__tests__/restirPtSpecialtyReference.test.ts",
+  "packages/pt-webgpu/src/__tests__/ggxAnisotropicBrdf.test.ts",
+  "packages/pt-webgpu/src/__tests__/ggxMultiscatterFurnace.test.ts",
+  "packages/shared-samplers/__tests__/bdptVeachFull.test.ts",
 ];
 
 /** @param {string} path */
@@ -183,6 +239,21 @@ function assertRequiredIds(rows, requiredIds, label) {
     if (!ids.has(id)) fail(`${label} missing ${id}`);
   }
   if (ids.size !== rows.length) fail(`${label} contains duplicate or invalid ids`);
+}
+
+/**
+ * @param {unknown} row
+ * @param {readonly string[]} paths
+ * @param {string} label
+ */
+function assertRowCitesPaths(row, paths, label) {
+  if (row == null || typeof row !== "object" || !Array.isArray(row.proofArtifacts)) {
+    fail(`${label}: proofArtifacts must be an array`);
+  }
+  const cited = new Set(row.proofArtifacts.map((artifact) => artifact?.path));
+  for (const path of paths) {
+    if (!cited.has(path)) fail(`${label} proofArtifacts must cite ${path}`);
+  }
 }
 
 /**
@@ -287,6 +358,14 @@ const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await P
 const inverseSessionSource = await readText("packages/pt-webgpu/src/inverse/inverseSession.ts");
 const inverseSessionTestSource = await readText("packages/pt-webgpu/src/__tests__/inverseSession.test.ts");
 const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
+const behavioralGateSource = await readText("tools/behavioral-gate/gate.mjs");
+const gltfMaterialProofSource = await readText("tools/gltf-material-sweep/check-proofs.mjs");
+const gltfMaterialFixtureSource = await readText("tools/gltf-material-sweep/fixture.mjs");
+const gltfTopologyProofSource = await readText("tools/gltf-topology-proofs/check-proofs.mjs");
+const gltfRealProofSource = await readText("tools/gltf-real-asset-sweep/check-proofs.mjs");
+const gltfRealAssetManifestSource = await readText("tools/gltf-real-asset-sweep/assetManifest.mjs");
+const radiometricProofSource = await readText("tools/radiometric-ab/proofs.mjs");
+const radiometricCheckerSource = await readText("tools/radiometric-ab/check-results.mjs");
 
 if (queue.schema !== "vitrum.road-to-100.validation-queue.v1") fail("queue schema mismatch");
 if (typeof queue.currentAsOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(queue.currentAsOf)) {
@@ -361,6 +440,67 @@ assertMutationStatusCoverage(
   "wh",
   "tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json",
 );
+
+const ptRuntimeRow = queue.validationQueue.find((row) => row.id === "VQ-PT-WEBGPU-RUNTIME-GOLDENS");
+if (ptRuntimeRow == null) fail("validationQueue missing VQ-PT-WEBGPU-RUNTIME-GOLDENS");
+assertRowCitesPaths(ptRuntimeRow, REQUIRED_PT_WEBGPU_RUNTIME_ARTIFACT_PATHS, "VQ-PT-WEBGPU-RUNTIME-GOLDENS");
+for (const needle of [
+  "pt/material-lobes",
+  "pt/material-lobe-maps",
+  "MATERIAL_LOBE_GOLDEN",
+  "MATERIAL_LOBE_MAP_GOLDEN",
+]) {
+  if (!behavioralGateSource.includes(needle)) {
+    fail(`VQ-PT-WEBGPU-RUNTIME-GOLDENS behavioral gate source is stale: missing ${needle}`);
+  }
+}
+for (const [path, label] of [
+  ["tools/behavioral-gate/behavioral-gate-dzn-material-lobes-status.json", "pt/material-lobes"],
+  ["tools/behavioral-gate/behavioral-gate-dzn-material-lobe-maps-status.json", "pt/material-lobe-maps"],
+]) {
+  const status = await readJson(path);
+  if (status.verdict !== "PASS" || status.exitStatus !== 0) fail(`${path} must pin PASS/exitStatus=0`);
+  if (status.goldenVariant !== "dzn-full") fail(`${path} must pin dzn-full`);
+  const config = status.configs?.[0];
+  if (config?.label !== label || config?.goldenStatus !== "ok" || config?.tier !== "full") {
+    fail(`${path} must pin full-tier golden-ok config ${label}`);
+  }
+}
+
+const gltfRealRow = queue.validationQueue.find((row) => row.id === "VQ-GLTF-REAL-WEBGPU");
+if (gltfRealRow == null) fail("validationQueue missing VQ-GLTF-REAL-WEBGPU");
+assertRowCitesPaths(gltfRealRow, REQUIRED_GLTF_REAL_ARTIFACT_PATHS, "VQ-GLTF-REAL-WEBGPU");
+for (const needle of [
+  "REQUIRED_REAL_GLTF_PROOF_ROWS",
+  "box-textured-glb",
+  "cesium-milk-truck-draco",
+  "meshopt-cube-real",
+  "KHR_draco_mesh_compression",
+  "KHR_meshopt_compression",
+]) {
+  if (!gltfRealProofSource.includes(needle) && !gltfRealAssetManifestSource.includes(needle)) {
+    fail(`VQ-GLTF-REAL-WEBGPU proof source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "pt/gltf-real-box-textured",
+  "pt/gltf-real-draco",
+  "pt/gltf-real-meshopt",
+]) {
+  if (!behavioralGateSource.includes(needle)) {
+    fail(`VQ-GLTF-REAL-WEBGPU behavioral gate source is stale: missing ${needle}`);
+  }
+}
+const realGltfDznManifest = await readJson("tools/reference-renders/gltf-real-behavioral-dzn-full/manifest.json");
+if (realGltfDznManifest.kind !== "vitrum-real-gltf-behavioral-goldens") {
+  fail("VQ-GLTF-REAL-WEBGPU dzn manifest kind mismatch");
+}
+if (realGltfDznManifest.goldenVariant !== "dzn-full") {
+  fail("VQ-GLTF-REAL-WEBGPU dzn manifest must pin goldenVariant=dzn-full");
+}
+if (!Array.isArray(realGltfDznManifest.assets) || realGltfDznManifest.assets.length !== 3) {
+  fail("VQ-GLTF-REAL-WEBGPU dzn manifest must pin the three public real-asset rows");
+}
 
 const rendererFidelityRow = queue.validationQueue.find((row) => row.id === "VQ-RENDERER-FIDELITY-PROOF");
 if (rendererFidelityRow == null) fail("validationQueue missing VQ-RENDERER-FIDELITY-PROOF");
@@ -536,6 +676,30 @@ const radiometricPtArtifactPaths = new Set(radiometricPtRow.proofArtifacts.map((
 for (const path of REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS) {
   if (!radiometricPtArtifactPaths.has(path)) {
     fail(`VQ-RADIOMETRIC-PT proofArtifacts must cite ${path}`);
+  }
+}
+for (const needle of [
+  "RADIOMETRIC_AB_PROOFS",
+  "RESTIR_PT_SPECIALTY_PROOF",
+  "RESTIR_PT_GLOSSY_RESEARCH_PROOF",
+  "ab-sppm.mjs",
+  "ab-restir-pt.mjs",
+  "ab-sobol.mjs",
+  "ab-restir-pt-specialty.mjs",
+]) {
+  if (!radiometricProofSource.includes(needle) && !radiometricCheckerSource.includes(needle)) {
+    fail(`VQ-RADIOMETRIC-PT non-BDPT proof source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "checkSppm",
+  "checkRestirPt",
+  "checkSobol",
+  "checkRestirPtSpecialty",
+  "checkRestirPtGlossyResearch",
+]) {
+  if (!radiometricCheckerSource.includes(needle)) {
+    fail(`VQ-RADIOMETRIC-PT proof checker is stale: missing ${needle}`);
   }
 }
 const glossyResearchArtifact = radiometricPtRow.proofArtifacts.find((artifact) =>
@@ -731,6 +895,69 @@ for (const [label, source, needles] of [
       fail(`walkaround A/B source citation ${label} is stale: missing ${needle}`);
     }
   }
+}
+
+const gltfMaterialTopologyRow = queue.validationQueue.find((row) => row.id === "VQ-GLTF-MATERIAL-TOPOLOGY");
+if (gltfMaterialTopologyRow == null) fail("validationQueue missing VQ-GLTF-MATERIAL-TOPOLOGY");
+assertRowCitesPaths(
+  gltfMaterialTopologyRow,
+  REQUIRED_GLTF_MATERIAL_TOPOLOGY_ARTIFACT_PATHS,
+  "VQ-GLTF-MATERIAL-TOPOLOGY",
+);
+for (const needle of [
+  "REQUIRED_SWEEP_MAPS",
+  "behavioral-gate-dzn-gltf-material-sweep-status.json",
+  "materialMapCount",
+  "SWEEP_MAPS",
+  "FIELD_TEXTURE_INDEX",
+]) {
+  if (!gltfMaterialProofSource.includes(needle) && !gltfMaterialFixtureSource.includes(needle)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material proof source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "baseColorMap",
+  "normalMap",
+  "specularColorMap",
+  "clearcoatNormalMap",
+  "iridescenceThicknessMap",
+  "anisotropyMap",
+  "thicknessMap",
+]) {
+  if (!gltfMaterialFixtureSource.includes(needle)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material fixture is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "REQUIRED_TOPOLOGY_PROOFS",
+  "fallback-generated-mesh",
+  "adapter-generated-triangle-list",
+  "POINTS",
+  "LINE_STRIP",
+  "TRIANGLE_FAN",
+]) {
+  if (!gltfTopologyProofSource.includes(needle)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY topology proof source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "pt/gltf-material-sweep",
+  "gltfReal",
+  "gltf: \"material-sweep\"",
+]) {
+  if (!behavioralGateSource.includes(needle)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY behavioral gate source is stale: missing ${needle}`);
+  }
+}
+const materialSweepStatus = await readJson("tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json");
+if (materialSweepStatus.verdict !== "PASS" || materialSweepStatus.exitStatus !== 0) {
+  fail("VQ-GLTF-MATERIAL-TOPOLOGY material sweep dzn status must pin PASS/exitStatus=0");
+}
+if (materialSweepStatus.configs?.[0]?.label !== "pt/gltf-material-sweep") {
+  fail("VQ-GLTF-MATERIAL-TOPOLOGY material sweep dzn status must pin pt/gltf-material-sweep");
+}
+if (materialSweepStatus.configs?.[0]?.goldenStatus !== "ok") {
+  fail("VQ-GLTF-MATERIAL-TOPOLOGY material sweep dzn status must pin goldenStatus=ok");
 }
 
 for (const row of queue.futureContractRows) {

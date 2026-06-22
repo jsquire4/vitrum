@@ -561,6 +561,39 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 29 — Validation Queue Proof-Citation Hardening
+
+Status 2026-06-22: **CLOSED.** Three delegated source audits plus direct lead
+verification found no bounded runtime implementation gap in orchestration,
+future-contract truthfulness, or the renderer proof rows. The one actionable
+gap was proof-ledger hardening: several validation rows were backed by real
+checkers and source/tests, but the machine-readable Road queue did not cite the
+full dependency chain, so stale evidence claims could survive as long as the
+top-level PNG/status artifacts still existed.
+
+Implementation:
+
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` with mandatory
+  proof-artifact and source-needle checks for `VQ-PT-WEBGPU-RUNTIME-GOLDENS`,
+  `VQ-GLTF-REAL-WEBGPU`, `VQ-GLTF-MATERIAL-TOPOLOGY`, and the non-BDPT parts
+  of `VQ-RADIOMETRIC-PT`.
+- Expanded `tools/road-to-100/validation-queue.json` so those rows cite the
+  actual proof scripts, behavioral-gate source, manifests, dzn status JSONs,
+  and package oracle tests they depend on.
+- Kept the active implementation queue empty: these edits do not promote any
+  validation/provisioning/future-contract tail into runtime implementation.
+
+Gates:
+
+```bash
+npm run road-to-100-source-check
+npm run proof-check
+npm run typecheck
+npm run shader-gate
+npm test
+git diff --check
+```
+
 ### Wave 28 — pt-webgl2 Mesh-Light MIS Prose Reconciliation
 
 Status 2026-06-22: **CLOSED.** Source revalidation of the pt-webgl2 mesh-area
