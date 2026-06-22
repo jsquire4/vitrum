@@ -1,0 +1,28 @@
+{
+  "generatedAt": "2026-06-22T17:23:02.793Z",
+  "harness": "walkaround-ab",
+  "verdict": "HOST-BLOCKED",
+  "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/walkaround-ab.mjs",
+  "selectedCases": "glossy",
+  "icd": "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
+  "renderConfig": {
+    "width": "128",
+    "height": "128",
+    "spp": "64",
+    "qualityProfile": "glossy-spp64"
+  },
+  "exitStatus": 1,
+  "signal": null,
+  "timeoutMs": 180000,
+  "reason": {
+    "code": "deno-wgpu-hal-gles-index-oob",
+    "location": "wgpu-hal-28.0.0/src/gles/command.rs:771:21",
+    "message": "Deno native WebGPU panicked before the walkaround radiometric A/B harness could produce a verdict."
+  },
+  "preservedResultFile": "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
+  "nextSteps": [
+    "Run the same harness in the browser/real-adapter validation lane.",
+    "Re-run this wrapper after the Deno native WebGPU panic is fixed or the host path changes.",
+    "Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this blocked native-Deno run."
+  ]
+}

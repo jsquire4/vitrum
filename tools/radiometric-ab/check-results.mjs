@@ -10,6 +10,7 @@ import {
   RESTIR_PT_SPECIALTY_PROOF,
   WALKAROUND_AB_HOST_STATUS_PROOF,
   WALKAROUND_AB_RESULT_PROOF,
+  WALKAROUND_GLOSSY_SPP64_STATUS_PROOF,
 } from "./proofs.mjs";
 
 const REQUIRED_RADIOMETRIC_AB_ROWS = [
@@ -620,6 +621,60 @@ async function checkWalkaroundHostStatus(proof) {
   }
 }
 
+/** @param {any} proof */
+async function checkWalkaroundGlossySpp64Status(proof) {
+  const statusUrl = new URL(`../../${proof.statusPath}`, import.meta.url);
+  const status = JSON.parse(await Deno.readTextFile(statusUrl));
+  if (status.harness !== proof.harness) fail("walkaround glossy-spp64: harness mismatch");
+  if (!proof.allowedVerdicts.includes(status.verdict)) {
+    fail(`walkaround glossy-spp64: verdict ${status.verdict} is outside ${proof.allowedVerdicts.join(", ")}`);
+  }
+  if (status.selectedCases !== proof.selectedCases) {
+    fail(`walkaround glossy-spp64: selectedCases ${status.selectedCases} differs from ${proof.selectedCases}`);
+  }
+  const resultFile = status.preservedResultFile ?? status.resultFile;
+  if (resultFile !== proof.preservedResultFile) {
+    fail("walkaround glossy-spp64: result file differs from proofs.mjs");
+  }
+  if (!sameJson(status.renderConfig, proof.expectedRenderConfig)) {
+    fail(
+      `walkaround glossy-spp64: renderConfig ${JSON.stringify(status.renderConfig)} ` +
+      `differs from ${JSON.stringify(proof.expectedRenderConfig)}`,
+    );
+  }
+  if (status.verdict === "HOST-BLOCKED") {
+    if (!proof.blockedReasonCodes.includes(status.reason?.code)) {
+      fail(`walkaround glossy-spp64: blocked reason code ${status.reason?.code} is not allowed`);
+    }
+    const nextSteps = status.nextSteps ?? [];
+    if (!nextSteps.some((step) => String(step).includes(proof.doNotPromoteText))) {
+      fail("walkaround glossy-spp64: HOST-BLOCKED status must preserve the do-not-promote warning");
+    }
+    return;
+  }
+  if (status.verdict === "PASS-PARTIAL" && status.reason?.code !== proof.partialReasonCode) {
+    fail(`walkaround glossy-spp64: partial reason code ${status.reason?.code} differs from proofs.mjs`);
+  }
+  const resultUrl = new URL(`../../${resultFile}`, import.meta.url);
+  const result = JSON.parse(await Deno.readTextFile(resultUrl));
+  const glossy = result.glossy;
+  if (glossy?.qualityProfile !== proof.expectedRenderConfig.qualityProfile) {
+    fail("walkaround glossy-spp64: glossy result qualityProfile mismatch");
+  }
+  if (!sameJson(glossy?.renderConfig, {
+    width: Number(proof.expectedRenderConfig.width),
+    height: Number(proof.expectedRenderConfig.height),
+    spp: Number(proof.expectedRenderConfig.spp),
+  })) {
+    fail("walkaround glossy-spp64: glossy result renderConfig mismatch");
+  }
+  checkWalkaroundGlossy({ ...WALKAROUND_AB_RESULT_PROOF.cases.glossy, expectedVerdict: null }, {
+    ...glossy,
+    resolution: WALKAROUND_AB_RESULT_PROOF.resolution,
+    spp: WALKAROUND_AB_RESULT_PROOF.spp,
+  });
+}
+
 /**
  * @param {any} status
  * @param {Record<string, any>} preservedResult
@@ -843,5 +898,6 @@ await checkRestirPtGlossyResearch(RESTIR_PT_GLOSSY_RESEARCH_PROOF);
 await checkPtRadiometricHostStatus(PT_RADIOMETRIC_AB_HOST_STATUS_PROOF);
 await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
 await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
+await checkWalkaroundGlossySpp64Status(WALKAROUND_GLOSSY_SPP64_STATUS_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases, 1 high-SPP glossy walkaround status)`);

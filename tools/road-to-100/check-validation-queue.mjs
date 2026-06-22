@@ -256,6 +256,7 @@ const REQUIRED_WALKAROUND_AB_ARTIFACT_PATHS = [
   "tools/radiometric-ab/walkaround-ab.mjs",
   "tools/radiometric-ab/walkaround-ab-host-status.json",
   "tools/radiometric-ab/walkaround-ab-results.json",
+  "tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json",
   "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
   "packages/walkaround-hybrid/src/shaders/ggxBrdf.wgsl.ts",
   "packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts",

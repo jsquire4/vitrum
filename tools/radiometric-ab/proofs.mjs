@@ -233,6 +233,23 @@ export const WALKAROUND_AB_RESULT_PROOF = {
   },
 };
 
+export const WALKAROUND_GLOSSY_SPP64_STATUS_PROOF = {
+  harness: "walkaround-ab",
+  statusPath: "tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json",
+  preservedResultFile: "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
+  selectedCases: "glossy",
+  expectedRenderConfig: {
+    width: "128",
+    height: "128",
+    spp: "64",
+    qualityProfile: "glossy-spp64",
+  },
+  allowedVerdicts: ["PASS", "PASS-PARTIAL", "HOST-BLOCKED"],
+  blockedReasonCodes: ["deno-wgpu-hal-gles-index-oob", "walkaround-ab-timeout"],
+  partialReasonCode: "walkaround-ab-partial-proof",
+  doNotPromoteText: "Do not promote",
+};
+
 /** @param {string} id */
 export function proofForRadiometricAb(id) {
   return RADIOMETRIC_AB_PROOFS.find((proof) => proof.id === id) ?? null;

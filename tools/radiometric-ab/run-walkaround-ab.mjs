@@ -9,14 +9,23 @@
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
-const statusPath = resolve(scriptDir, 'walkaround-ab-host-status.json');
-const resultPath = resolve(scriptDir, 'walkaround-ab-results.json');
+const statusPath = resolveFromRepo(process.env.VITRUM_WALKAROUND_AB_STATUS_PATH, 'tools/radiometric-ab/walkaround-ab-host-status.json');
+const resultPath = resolveFromRepo(process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH, 'tools/radiometric-ab/walkaround-ab-results.json');
 const DEFAULT_TIMEOUT_MS = 180_000;
+
+function resolveFromRepo(raw, fallbackRelative) {
+  if (raw == null || raw === '') return resolve(repoRoot, fallbackRelative);
+  return resolve(repoRoot, raw);
+}
+
+function repoRelative(path) {
+  return relative(repoRoot, path).replaceAll('\\', '/');
+}
 
 function parseTimeoutMs(raw) {
   if (raw == null || raw === '') return DEFAULT_TIMEOUT_MS;
@@ -36,6 +45,13 @@ const denoArgs = [
 ];
 const timeoutMs = parseTimeoutMs(process.env.VITRUM_WALKAROUND_AB_TIMEOUT_MS);
 const selectedCases = process.env.VITRUM_WALKAROUND_AB_CASES ?? null;
+const resultFile = repoRelative(resultPath);
+const renderConfig = {
+  width: process.env.VITRUM_WALKAROUND_AB_WIDTH ?? '128',
+  height: process.env.VITRUM_WALKAROUND_AB_HEIGHT ?? '128',
+  spp: process.env.VITRUM_WALKAROUND_AB_SPP ?? '16',
+  qualityProfile: process.env.VITRUM_WALKAROUND_AB_PROFILE ?? null,
+};
 
 const result = spawnSync('deno', denoArgs, {
   cwd: repoRoot,
@@ -59,6 +75,7 @@ if (timedOut) {
     selectedCases,
     timeoutMs,
     icd: process.env.VK_ICD_FILENAMES ?? null,
+    renderConfig,
     exitStatus: result.status,
     signal: result.signal,
     reason: {
@@ -66,7 +83,7 @@ if (timedOut) {
       message:
         'The walkaround radiometric A/B harness exceeded the host timeout before producing a verdict.',
     },
-    preservedResultFile: 'tools/radiometric-ab/walkaround-ab-results.json',
+    preservedResultFile: resultFile,
     nextSteps: [
       'Re-run with VITRUM_WALKAROUND_AB_TIMEOUT_MS set higher if the host is merely slow.',
       'Run the same harness in the browser/real-adapter validation lane if native Deno remains blocked.',
@@ -116,9 +133,10 @@ if (result.status === 0) {
     selectedCases,
     timeoutMs,
     icd: process.env.VK_ICD_FILENAMES ?? null,
+    renderConfig,
     exitStatus: result.status,
     signal: result.signal,
-    resultFile: 'tools/radiometric-ab/walkaround-ab-results.json',
+    resultFile,
     caseVerdicts,
     reason: partial
       ? {
@@ -154,6 +172,7 @@ if (knownDenoWgpuPanic) {
     command: `deno ${denoArgs.join(' ')}`,
     selectedCases,
     icd: process.env.VK_ICD_FILENAMES ?? null,
+    renderConfig,
     exitStatus: result.status,
     signal: result.signal,
     timeoutMs,
@@ -163,7 +182,7 @@ if (knownDenoWgpuPanic) {
       message:
         'Deno native WebGPU panicked before the walkaround radiometric A/B harness could produce a verdict.',
     },
-    preservedResultFile: 'tools/radiometric-ab/walkaround-ab-results.json',
+    preservedResultFile: resultFile,
     nextSteps: [
       'Run the same harness in the browser/real-adapter validation lane.',
       'Re-run this wrapper after the Deno native WebGPU panic is fixed or the host path changes.',

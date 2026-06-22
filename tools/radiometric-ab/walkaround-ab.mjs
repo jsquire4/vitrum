@@ -50,8 +50,16 @@ import { readRgba16fWalkaround } from "../../packages/walkaround-hybrid/src/util
 
 // ── Resolution + frame count ──────────────────────────────────────────────────
 // 128×128 gives more stable per-region statistics than 64×64 at modest cost.
-const W = 128, H = 128;
-const SPP = 16; // accumulation frames per variant
+function parsePositiveIntEnv(name, fallback) {
+  const value = Number(Deno.env.get(name) ?? "");
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.max(1, Math.trunc(value));
+}
+
+const W = parsePositiveIntEnv("VITRUM_WALKAROUND_AB_WIDTH", 128);
+const H = parsePositiveIntEnv("VITRUM_WALKAROUND_AB_HEIGHT", 128);
+const SPP = parsePositiveIntEnv("VITRUM_WALKAROUND_AB_SPP", 16); // accumulation frames per variant
+const QUALITY_PROFILE = Deno.env.get("VITRUM_WALKAROUND_AB_PROFILE") ?? (SPP === 16 && W === 128 && H === 128 ? "baseline" : "custom");
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 function makePerspectiveMatrix(fovDeg, aspect, near, far) {
@@ -813,11 +821,13 @@ function parseSelectedCases(raw) {
 console.log("=== walkaround radiometric A/Bs ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
 console.log(`Resolution: ${W}×${H}, SPP: ${SPP}`);
+console.log(`Quality profile: ${QUALITY_PROFILE}`);
 
 const selectedCases = parseSelectedCases(Deno.env.get("VITRUM_WALKAROUND_AB_CASES"));
 console.log(`Cases: ${selectedCases.join(", ")}`);
 
-const outPath = new URL("./walkaround-ab-results.json", import.meta.url).pathname;
+const outPath = Deno.env.get("VITRUM_WALKAROUND_AB_OUTPUT_PATH")
+  ?? new URL("./walkaround-ab-results.json", import.meta.url).pathname;
 let results = {};
 if (selectedCases.length !== Object.keys(CASE_RUNNERS).length) {
   try {
@@ -830,6 +840,12 @@ if (selectedCases.length !== Object.keys(CASE_RUNNERS).length) {
 const selectedResults = [];
 for (const caseName of selectedCases) {
   const result = await CASE_RUNNERS[caseName]();
+  result.qualityProfile = QUALITY_PROFILE;
+  result.renderConfig = {
+    width: W,
+    height: H,
+    spp: SPP,
+  };
   results[caseName] = result;
   selectedResults.push(result);
 }
