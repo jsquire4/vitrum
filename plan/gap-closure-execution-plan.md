@@ -500,12 +500,38 @@ npm test --workspace @vitrum/walkaround-hybrid -- bvhCoreMaterialResolver.test.t
 npm run typecheck --workspace @vitrum/walkaround-hybrid
 ```
 
+### Wave 10 — pt-webgpu Inverse Emitter Profile Gate
+
+Status 2026-06-21: **CLOSED.** Direct source-read of
+`packages/pt-webgpu/src/inverse/inverseSession.ts` found one bounded
+truthfulness miss in the path-replay classifier: material-target inverse fits
+passed the active runtime emitter-support table into the direct-light replay
+diagnostic, but emitter-target fits accidentally dropped that table before
+calling the same lighting check. A point-light color/intensity fit in a scene
+with a contributing mesh-area light could therefore keep path replay even when
+the active pt-webgpu profile reported `mesh-area: unsupported`.
+
+Implementation:
+
+- `diagnosePathReplaySlot()` now threads `emitterSupportDetails` into the
+  emitter-target diagnostic path, matching the material-target path.
+- `inverseSession.test.ts` pins a point-emitter fit that downgrades with
+  `path-replay-unsupported-lighting` when another contributing mesh-area emitter
+  is unsupported by the active runtime profile.
+
+Focused gate:
+
+```bash
+npm test --workspace @vitrum/pt-webgpu -- inverseSession.test.ts
+npm run typecheck --workspace @vitrum/pt-webgpu
+```
+
 ## Parked Long-Tail Items
 
 These are real, but they should not block contract-complete unless the user
 explicitly widens the target.
 
-Current source-verification pass (2026-06-21): the active runtime
+Current source-verification pass (2026-06-21, after Wave 10): the active runtime
 implementation queue is empty. The only source-verified "code gap" phrasing left
 in the Road is native promotion or future contract expansion, not broken
 renderability/API behavior:

@@ -3743,6 +3743,50 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
     session.dispose();
   });
 
+  it('degrades emitter path-replay when another contributing emitter kind is unsupported by the active profile', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [
+        ...fake.scene.emitters,
+        {
+          kind: 'mesh-area',
+          id: 'mesh-light',
+          meshId: 'panel',
+          color: [1, 1, 1],
+          intensity: 1,
+        },
+      ],
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async () => new Float32Array(1),
+      getEmitterSupportDetails: () => ({ 'mesh-area': 'unsupported' }),
+      getPathReplayRenderContext: () => ({
+        bounces: 1,
+        causticStrategy: 'none',
+        directLighting: 'summed-expectation',
+      }),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'emitters.lamp.intensity', kind: 'scalar' }],
+      method: 'path-replay',
+    });
+
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-lighting',
+      path: 'emitters.lamp.intensity',
+      details: expect.objectContaining({
+        emitterId: 'mesh-light',
+        emitterKind: 'mesh-area',
+        supportMode: 'unsupported',
+      }),
+    }));
+    session.dispose();
+  });
+
   it('keeps path-replay for rect-area direct-light scenes', () => {
     const fake = makeFakeEngine();
     fake.scene = {

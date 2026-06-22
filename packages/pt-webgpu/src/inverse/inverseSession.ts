@@ -797,7 +797,13 @@ function diagnosePathReplaySlot(
   const path = slot.param.path;
   const target = slot.target;
   if (target.domain !== 'materials') {
-    return diagnosePathReplayEmitterSlot(scene, slot, geometryCapabilities, renderContext);
+    return diagnosePathReplayEmitterSlot(
+      scene,
+      slot,
+      geometryCapabilities,
+      renderContext,
+      emitterSupportDetails,
+    );
   }
   if (isPathReplayZeroGradientSlot(scene, slot)) {
     return [];
