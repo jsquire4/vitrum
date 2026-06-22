@@ -5,6 +5,7 @@
 import {
   PT_RADIOMETRIC_AB_HOST_STATUS_PROOF,
   RADIOMETRIC_AB_PROOFS,
+  RESTIR_PT_GLOSSY_RESEARCH_PROOF,
   RESTIR_PT_SPECIALTY_PROOF,
   WALKAROUND_AB_HOST_STATUS_PROOF,
   WALKAROUND_AB_RESULT_PROOF,
@@ -381,6 +382,66 @@ async function checkRestirPtSpecialty(proof) {
 }
 
 /** @param {any} proof */
+async function checkRestirPtGlossyResearch(proof) {
+  const scriptUrl = new URL(`../../${proof.scriptPath}`, import.meta.url);
+  const scriptStat = await Deno.stat(scriptUrl);
+  if (!scriptStat.isFile) fail("restir-pt-glossy-research: script path is missing");
+
+  const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
+  const result = JSON.parse(await Deno.readTextFile(resultUrl));
+  if (result.ab !== proof.ab) fail("restir-pt-glossy-research: ab differs from proofs.mjs");
+  if (result.mode !== proof.mode) fail("restir-pt-glossy-research: mode differs from proofs.mjs");
+  if (!sameJson(result.resolution, proof.resolution)) {
+    fail("restir-pt-glossy-research: resolution differs from proofs.mjs");
+  }
+  if (result.meanFrames !== proof.meanFrames) {
+    fail("restir-pt-glossy-research: meanFrames differs from proofs.mjs");
+  }
+  if (result.varianceRuns !== proof.varianceRuns) {
+    fail("restir-pt-glossy-research: varianceRuns differs from proofs.mjs");
+  }
+  if (result.varianceFramesPerRun !== proof.varianceFramesPerRun) {
+    fail("restir-pt-glossy-research: varianceFramesPerRun differs from proofs.mjs");
+  }
+  if (!sameJson(result.thresholds, proof.thresholds)) {
+    fail("restir-pt-glossy-research: thresholds differ from proofs.mjs");
+  }
+  if (!sameJson(result.reference, proof.reference)) {
+    fail("restir-pt-glossy-research: reference options differ from proofs.mjs");
+  }
+  if (!sameJson(result.candidate, proof.candidate)) {
+    fail("restir-pt-glossy-research: candidate options differ from proofs.mjs");
+  }
+  if (!proof.allowedVerdicts.includes(result.verdict)) {
+    fail(`restir-pt-glossy-research: verdict ${result.verdict} is outside ${proof.allowedVerdicts.join(", ")}`);
+  }
+  if (result.promotion?.defaultReady !== proof.promotion.defaultReady) {
+    fail("restir-pt-glossy-research: promotion.defaultReady must remain false");
+  }
+  for (const [group, fields] of [
+    ["base", ["globalLum", "roiLum", "variance"]],
+    ["glossyResearch", ["globalLum", "roiLum", "variance"]],
+  ]) {
+    for (const field of fields) {
+      assertFiniteNumber(result[group]?.[field], `restir-pt-glossy-research: ${group}.${field}`);
+    }
+  }
+  for (const field of ["globalRelErr", "roiRelErr", "varRatio"]) {
+    assertFiniteNumber(result[field], `restir-pt-glossy-research: ${field}`);
+  }
+  if (result.meanAgreement !== (result.globalRelErr < proof.thresholds.globalRelErrMax)) {
+    fail("restir-pt-glossy-research: meanAgreement does not match committed globalRelErr");
+  }
+  if (result.varianceNotWorse !== (result.varRatio <= proof.thresholds.varRatioMax)) {
+    fail("restir-pt-glossy-research: varianceNotWorse does not match committed varRatio");
+  }
+  const expectedVerdict = result.meanAgreement && result.varianceNotWorse ? "PASS" : "FINDING";
+  if (result.verdict !== expectedVerdict) {
+    fail(`restir-pt-glossy-research: verdict ${result.verdict} should be ${expectedVerdict}`);
+  }
+}
+
+/** @param {any} proof */
 async function checkPtRadiometricHostStatus(proof) {
   const statusUrl = new URL(`../../${proof.statusPath}`, import.meta.url);
   const status = JSON.parse(await Deno.readTextFile(statusUrl));
@@ -705,8 +766,9 @@ for (const proof of RADIOMETRIC_AB_PROOFS) {
 }
 
 await checkRestirPtSpecialty(RESTIR_PT_SPECIALTY_PROOF);
+await checkRestirPtGlossyResearch(RESTIR_PT_GLOSSY_RESEARCH_PROOF);
 await checkPtRadiometricHostStatus(PT_RADIOMETRIC_AB_HOST_STATUS_PROOF);
 await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
 await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 specialty fixture, pt host status, walkaround host status, 4 walkaround A/B cases)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases)`);

@@ -18,6 +18,7 @@ map-backed-effective lobe payloads, not a GPU recapture.
 | `ab-sppm.mjs` | SPPM convergence | `causticStrategy:'manifold-nee'` (GPU-validated MNEE) | `causticStrategy:'photon-map'` at 20/50/80 frames |
 | `ab-bdpt.mjs` | BDPT unbiasedness + variance | `bdpt:false` (unidirectional) | `bdpt:true` |
 | `ab-restir-pt.mjs` | ReSTIR-PT bias + variance | `restirPtReuse:false` (default megakernel) | `restirPtReuse:true` (composite megakernel) |
+| `ab-restir-pt-glossy-research.mjs` | ReSTIR-PT glossy research finding | `restirPtReuse:false` | `restirPtReuse:true` with `experimentalGlossyReuse:true` |
 | `ab-sobol.mjs` | Sobol equal-frame RMSE proxy | higher-frame PCG | `sampling:'sobol'` at the same frame count as low-frame PCG |
 | `ab-restir-pt-specialty.mjs` | ReSTIR-PT specialty-lobe identity | base-path CPU estimator | one-sample ReSTIR-PT producer/finalize/resolve identity for scalar + map-backed-effective clearcoat/sheen/iridescence/aniso/specular payloads |
 
@@ -42,6 +43,8 @@ npm run radiometric-ab:sppm
 npm run radiometric-ab:bdpt
 
 npm run radiometric-ab:restir-pt
+
+npm run radiometric-ab:restir-pt-glossy-research
 
 npm run radiometric-ab:sobol
 
@@ -147,6 +150,13 @@ default producer now admits only diffuse-safe visible vertices
 (`metallic <= 0.05 && roughness >= 0.35`); glossy/metallic visible-vertex reuse
 is still available behind `restirPtReuseOptions.experimentalGlossyReuse:true`
 for research captures, but is not part of the default radiometric proof.
+
+**2026-06-22 glossy research artifact:** `ab-restir-pt-glossy-research.mjs`
+now captures the opt-in branch as a committed non-promotion finding:
+`results-restir-pt-glossy-research.json` records `verdict:"FINDING"`,
+`globalRelErr=108.42%`, `roiRelErr=297.66%`, and `varRatio=7.7140`.
+This proves the branch is measured and intentionally kept out of the default
+path; it does not promote glossy/metallic visible-vertex reuse.
 
 **Root cause of the prior 46% deficit (found + fixed 2026-06-11):**
 

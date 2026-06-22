@@ -113,13 +113,15 @@
       "command": "npm run radiometric-ab:proof-check",
       "proofArtifacts": [
         { "path": "tools/radiometric-ab/pt-ab-host-status.json", "json": { "verdict": "PASS" } },
+        { "path": "tools/radiometric-ab/ab-restir-pt-glossy-research.mjs" },
         { "path": "tools/radiometric-ab/results-bdpt.json" },
         { "path": "tools/radiometric-ab/results-restir-pt.json" },
+        { "path": "tools/radiometric-ab/results-restir-pt-glossy-research.json", "json": { "verdict": "FINDING", "promotion.defaultReady": false } },
         { "path": "tools/radiometric-ab/results-restir-pt-specialty.json" },
         { "path": "tools/radiometric-ab/results-sppm.json" },
         { "path": "tools/radiometric-ab/results-sobol.json" }
       ],
-      "remaining": "Committed proof now pins BDPT endpoint-only default, SPPM/Sobol/ReSTIR-PT snapshots, and ReSTIR-PT specialty case/lobe invariants. Remaining work is multi-vertex BDPT promotion, glossy ReSTIR-PT research-mode proof, and tighter caustic quality evidence."
+      "remaining": "Committed proof now pins BDPT endpoint-only default, SPPM/Sobol/ReSTIR-PT snapshots, ReSTIR-PT specialty case/lobe invariants, and the opt-in glossy ReSTIR-PT research branch as a non-promotable FINDING. Remaining work is multi-vertex BDPT promotion and tighter caustic/material-furnace quality evidence."
     },
     {
       "id": "VQ-WALKAROUND-RADIOMETRIC-AB",
@@ -204,43 +206,78 @@
       "id": "FC-DISPLACEMENT-MICROTESSELLATION",
       "title": "real displacement/microdisplacement",
       "status": "future-contract",
-      "currentContract": "CPU-readable vertex displacement is consumed approximately; no tessellation or microgeometry synthesis is promised."
+      "codeNowBounded": false,
+      "currentContract": "CPU-readable vertex displacement is consumed approximately; no tessellation or microgeometry synthesis is promised.",
+      "decisionBlockers": [
+        "Define public dicing/tessellation controls, error bounds, and displacement bounds.",
+        "Specify readable texture residency, generated-normal/tangent policy, BVH rebuild/refit semantics, and backend capability grades."
+      ]
     },
     {
       "id": "FC-TRANSPARENT-GI-TRANSPORT",
       "title": "true transparent layered GI transport",
       "status": "future-contract",
-      "currentContract": "OIT and alpha-aware direct/shadow handling are implemented; transparent surfaces are not full ReSTIR/GI transport vertices."
+      "codeNowBounded": false,
+      "currentContract": "OIT and alpha-aware direct/shadow handling are implemented; transparent surfaces are not full ReSTIR/GI transport vertices.",
+      "decisionBlockers": [
+        "Choose alpha coverage versus physical transmission semantics for reservoir/GI vertices.",
+        "Define layered throughput payloads, reuse rules, DDGI/RC participation, and denoiser expectations."
+      ]
     },
     {
       "id": "FC-WALKAROUND-SPECIALTY-MATERIAL-TRANSPORT",
       "title": "walkaround spectral, thin-film, layered, and volumetric material transport",
       "status": "future-contract",
-      "currentContract": "walkaround-hybrid consumes broad atlas-backed PBR, alpha, direct-light, GI suffix, and receiver-lobe material payloads, but spectralAttenuation, dispersionAbbeNumber, and thinFilmStack/full-layer-stack transport remain unsupported; scatteringCoefficient, scatteringCoefficientRGB, frontLayer, backLayer, and displacement are approximate/diagnostic rather than path-tracer-equivalent. Arbitrary rich glTF assets should route to PT backends unless hosts accept those walkaround approximations."
+      "codeNowBounded": false,
+      "currentContract": "walkaround-hybrid consumes broad atlas-backed PBR, alpha, direct-light, GI suffix, and receiver-lobe material payloads, but spectralAttenuation, dispersionAbbeNumber, and thinFilmStack/full-layer-stack transport remain unsupported; scatteringCoefficient, scatteringCoefficientRGB, frontLayer, backLayer, and displacement are approximate/diagnostic rather than path-tracer-equivalent. Arbitrary rich glTF assets should route to PT backends unless hosts accept those walkaround approximations.",
+      "decisionBlockers": [
+        "Define what native realtime spectral/dispersion/thin-film/layer-stack transport means for an RGB reservoir backend.",
+        "Choose promotion targets for bounded approximations versus routing rich assets to PT backends."
+      ]
     },
     {
       "id": "FC-NATIVE-POINT-LINE",
       "title": "native point and line primitive rendering",
       "status": "future-contract",
-      "currentContract": "glTF POINTS and LINES import through generated mesh fallbacks."
+      "codeNowBounded": false,
+      "currentContract": "glTF POINTS and LINES import through generated mesh fallbacks.",
+      "decisionBlockers": [
+        "Add a first-class core point/line primitive contract.",
+        "Define width, caps/joins, hit/intersection semantics, shadows, picking, and backend fidelity grades."
+      ]
     },
     {
       "id": "FC-ARBITRARY-UV-ARRAYS",
       "title": "arbitrary multi-UV arrays",
       "status": "future-contract",
-      "currentContract": "Single high TEXCOORD_N lossless remap is implemented; true arbitrary UV arrays require a new core/backend contract."
+      "codeNowBounded": false,
+      "currentContract": "Single high TEXCOORD_N lossless remap is implemented; true arbitrary UV arrays require a new core/backend contract.",
+      "decisionBlockers": [
+        "Extend core primitive geometry and TextureRef contracts beyond uv0/uv1.",
+        "Rework shared packers, mutation patches, tangent generation, and backend shader descriptor layouts for arbitrary UV indexing."
+      ]
     },
     {
       "id": "FC-NATIVE-INSTANCED-SKINNED-MORPHED",
       "title": "native instanced skinned/morphed glTF",
       "status": "future-contract",
-      "currentContract": "Renderable fallback expansion is implemented; native instanced skinned/morphed primitives are a performance/core-contract expansion."
+      "codeNowBounded": false,
+      "currentContract": "Renderable fallback expansion is implemented; native instanced skinned/morphed primitives are a performance/core-contract expansion.",
+      "decisionBlockers": [
+        "Add a combined instanced-skinned/morphed primitive contract with per-instance pose/morph semantics.",
+        "Define GPU/CPU skinning, TLAS/BLAS update, animation-controller, and mutation behavior without exploding memory."
+      ]
     },
     {
       "id": "FC-ADJOINT-FULL-PATH-PARITY",
       "title": "full-path analytic adjoint parity",
       "status": "future-contract",
-      "currentContract": "pt-webgpu supports scoped direct-light path replay for bounded material/emitter domains and finite-difference fallback diagnostics for transport, visibility, displacement geometry, unsupported render regimes, indirect paths, and full-path parity cases."
+      "codeNowBounded": false,
+      "currentContract": "pt-webgpu supports scoped direct-light path replay for bounded material/emitter domains and finite-difference fallback diagnostics for transport, visibility, displacement geometry, unsupported render regimes, indirect paths, and full-path parity cases.",
+      "decisionBlockers": [
+        "Choose a differentiable transport strategy for visibility, stochastic sampling, multi-bounce, caustics, BDPT/ReSTIR regimes, and environment escape.",
+        "Define promotion tests and fallback semantics for full material/path parity beyond the scoped direct-light replay contract."
+      ]
     }
   ]
 }

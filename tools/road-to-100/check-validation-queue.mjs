@@ -44,6 +44,16 @@ const REQUIRED_FUTURE_IDS = [
   "FC-ADJOINT-FULL-PATH-PARITY",
 ];
 
+const REQUIRED_FUTURE_BLOCKER_NEEDLES = new Map([
+  ["FC-DISPLACEMENT-MICROTESSELLATION", ["tessellation", "BVH"]],
+  ["FC-TRANSPARENT-GI-TRANSPORT", ["reservoir", "DDGI/RC"]],
+  ["FC-WALKAROUND-SPECIALTY-MATERIAL-TRANSPORT", ["spectral", "PT backends"]],
+  ["FC-NATIVE-POINT-LINE", ["core point/line", "backend fidelity"]],
+  ["FC-ARBITRARY-UV-ARRAYS", ["TextureRef", "shader descriptor"]],
+  ["FC-NATIVE-INSTANCED-SKINNED-MORPHED", ["instanced-skinned", "TLAS/BLAS"]],
+  ["FC-ADJOINT-FULL-PATH-PARITY", ["differentiable transport", "scoped direct-light replay"]],
+]);
+
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -326,12 +336,44 @@ if (gltfBrowserStatusArtifact.json?.captureMode !== "engine-first") {
   fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin engine-first capture mode");
 }
 
+const radiometricPtRow = queue.validationQueue.find((row) => row.id === "VQ-RADIOMETRIC-PT");
+if (radiometricPtRow == null) fail("validationQueue missing VQ-RADIOMETRIC-PT");
+const glossyResearchArtifact = radiometricPtRow.proofArtifacts.find((artifact) =>
+  artifact?.path === "tools/radiometric-ab/results-restir-pt-glossy-research.json"
+);
+if (glossyResearchArtifact == null) {
+  fail("VQ-RADIOMETRIC-PT must cite results-restir-pt-glossy-research.json");
+}
+if (glossyResearchArtifact.json?.verdict !== "FINDING") {
+  fail("VQ-RADIOMETRIC-PT glossy research artifact must pin the FINDING verdict");
+}
+if (glossyResearchArtifact.json?.["promotion.defaultReady"] !== false) {
+  fail("VQ-RADIOMETRIC-PT glossy research artifact must pin promotion.defaultReady=false");
+}
+if (String(radiometricPtRow.remaining).includes("glossy ReSTIR-PT research-mode proof")) {
+  fail("VQ-RADIOMETRIC-PT remaining text is stale; glossy research proof is now committed");
+}
+
 for (const row of queue.futureContractRows) {
   if (row == null || typeof row !== "object") fail("future-contract row must be an object");
   assertNonEmptyString(row.id, "future-contract row id");
   assertNonEmptyString(row.title, `${row.id}: title`);
   assertNonEmptyString(row.currentContract, `${row.id}: currentContract`);
   if (row.status !== "future-contract") fail(`${row.id}: status must be future-contract`);
+  if (row.codeNowBounded !== false) {
+    fail(`${row.id}: codeNowBounded must be false until promoted with source-verified implementation scope`);
+  }
+  if (!Array.isArray(row.decisionBlockers) || row.decisionBlockers.length < 2) {
+    fail(`${row.id}: decisionBlockers must list at least two concrete blockers`);
+  }
+  for (const [idx, blocker] of row.decisionBlockers.entries()) {
+    assertNonEmptyString(blocker, `${row.id}: decisionBlockers[${idx}]`);
+  }
+  for (const needle of REQUIRED_FUTURE_BLOCKER_NEEDLES.get(row.id) ?? []) {
+    if (!row.decisionBlockers.some((blocker) => String(blocker).includes(needle))) {
+      fail(`${row.id}: decisionBlockers must include ${needle}`);
+    }
+  }
 }
 
 const adjointFutureRow = queue.futureContractRows.find((row) => row.id === "FC-ADJOINT-FULL-PATH-PARITY");

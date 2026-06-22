@@ -120,6 +120,30 @@ export const RESTIR_PT_SPECIALTY_PROOF = {
   ],
 };
 
+export const RESTIR_PT_GLOSSY_RESEARCH_PROOF = {
+  ab: "restir-pt-glossy-research-vs-base",
+  mode: "research",
+  scriptPath: "tools/radiometric-ab/ab-restir-pt-glossy-research.mjs",
+  resultPath: "tools/radiometric-ab/results-restir-pt-glossy-research.json",
+  resolution: { W: 80, H: 80 },
+  meanFrames: 60,
+  varianceRuns: 8,
+  varianceFramesPerRun: 8,
+  thresholds: {
+    globalRelErrMax: 0.10,
+    varRatioMax: 3.0,
+  },
+  candidate: {
+    restirPtReuse: true,
+    restirPtReuseOptions: { experimentalGlossyReuse: true },
+  },
+  reference: { restirPtReuse: false },
+  allowedVerdicts: ["PASS", "FINDING"],
+  promotion: {
+    defaultReady: false,
+  },
+};
+
 export const PT_RADIOMETRIC_AB_HOST_STATUS_PROOF = {
   harness: "pt-radiometric-ab",
   statusPath: "tools/radiometric-ab/pt-ab-host-status.json",

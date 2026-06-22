@@ -561,6 +561,64 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 15 — Future-Contract Code Queue Guard
+
+Status 2026-06-22: **CLOSED.** A fresh source pass plus three delegated
+source-only classifications found no bounded implementation row hiding in the
+seven future-contract tails. Each row would require either a new public core
+contract, a new transport/physics program, or both:
+
+- real displacement/microdisplacement,
+- true transparent layered GI transport,
+- walkaround spectral/thin-film/layered/volumetric transport,
+- native point/line primitives,
+- arbitrary UV arrays,
+- native instanced skinned/morphed primitives,
+- full-path analytic adjoint parity.
+
+Implementation:
+
+- Added `codeNowBounded:false` and concrete `decisionBlockers` to every
+  `futureContractRows[]` entry in `tools/road-to-100/validation-queue.json`.
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so
+  `npm run road-to-100-validation-status` fails if a future-contract row lacks
+  blocker metadata or silently becomes an implied active implementation task.
+- Updated `plan/road-to-100.md` to make the queue-control rule explicit.
+
+Focused gate:
+
+```bash
+npm run road-to-100-validation-status
+```
+
+### Wave 14 — ReSTIR-PT Glossy Research Finding
+
+Status 2026-06-22: **CLOSED.** The active implementation queue stayed empty, but
+`VQ-RADIOMETRIC-PT` still named glossy ReSTIR-PT research-mode proof as a vague
+remaining tail. Source read showed the opt-in branch is real and intentionally
+gated by `restirPtReuseOptions.experimentalGlossyReuse:true`; the missing piece
+was committed radiometric evidence for that branch.
+
+Implementation:
+
+- Added `tools/radiometric-ab/ab-restir-pt-glossy-research.mjs`, a full-tier
+  repaired-Cornell A/B for `restirPtReuse:true` plus
+  `experimentalGlossyReuse:true` against the base path.
+- Captured `tools/radiometric-ab/results-restir-pt-glossy-research.json`.
+  Verdict is `FINDING`: `globalRelErr=108.42%`, `roiRelErr=297.66%`,
+  `varRatio=7.7140`, and `promotion.defaultReady=false`.
+- Wired the artifact into `tools/radiometric-ab/proofs.mjs`,
+  `tools/radiometric-ab/check-results.mjs`, and
+  `tools/road-to-100/validation-queue.json`.
+
+Focused gate:
+
+```bash
+npm run radiometric-ab:restir-pt-glossy-research
+npm run radiometric-ab:proof-check
+npm run road-to-100-validation-status
+```
+
 ### Wave 13 — Machine-Readable Validation Queue
 
 Status 2026-06-22: **CLOSED.** After Wave 12, the active runtime implementation
