@@ -11,6 +11,15 @@ const HARDWARE_VALIDATION_PATH = "HARDWARE-VALIDATION-NEEDS.md";
 const GAP_EXECUTION_PLAN_PATH = "plan/gap-closure-execution-plan.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
 
+/**
+ * @typedef {{
+ *   path: string,
+ *   sha256: string,
+ *   width: number,
+ *   height: number,
+ * }} GoldenPngProof
+ */
+
 const PT_WEBGPU_SUPPORTED_ROWS = [
   {
     feature: "Hero-wavelength + CMF accumulation",
@@ -18,7 +27,14 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
       "pt-webgpu dzn (RTX 4090) spectral ON/OFF A/B",
       "tools/reference-renders/baseline/ptwgpu-spectral-hero.png",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/ptwgpu-spectral-hero.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/ptwgpu-spectral-hero.png",
+        "db9854d670168a4528d08a532acda03b07b6368389cd106227ea45237f137655",
+        512,
+        512,
+      ),
+    ],
     dznStatus: {
       path: "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
       labels: ["pt/spectral"],
@@ -41,7 +57,14 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
       "pt-webgpu dzn (RTX 4090) hue-vs-angle A/B",
       "tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png",
+        "5a33d8322c677830b5698fb6fa41b602a2764ca94babd74a782d3d034d3e46f7",
+        640,
+        640,
+      ),
+    ],
   },
   {
     feature: "Cauchy dispersion",
@@ -49,7 +72,14 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
       "pt-webgpu dzn (RTX 4090) Abbe-set-vs-absent A/B",
       "tools/reference-renders/baseline/ptwgpu-cauchy-dispersion.png",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/ptwgpu-cauchy-dispersion.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/ptwgpu-cauchy-dispersion.png",
+        "8f1c1e99503d76797ce3cbe32da825bb8f110df416c9311ab568f5669f71f0a7",
+        512,
+        512,
+      ),
+    ],
     dznStatus: {
       path: "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
       labels: ["pt/spectral"],
@@ -61,7 +91,14 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
       "pt-webgpu dzn (RTX 4090) front/back A/B",
       "tools/reference-renders/baseline/ptwgpu-layered-front.png",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/ptwgpu-layered-front.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/ptwgpu-layered-front.png",
+        "e14e99ef16fe1ca4f4c18793be0c454434542a941c2bfec74f867752bc1d4f1c",
+        512,
+        512,
+      ),
+    ],
   },
   {
     feature: "SSS / translucent panels",
@@ -69,14 +106,28 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
       "pt-webgpu dzn (RTX 4090) mixed-panel toggle A/B",
       "tools/reference-renders/baseline/ptwgpu-sss-mixed-panels.png",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/ptwgpu-sss-mixed-panels.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/ptwgpu-sss-mixed-panels.png",
+        "8bebc9a1c83e922a1b1c811f4e175db35b8a5d1e980b70df71706483227003c2",
+        512,
+        512,
+      ),
+    ],
   },
   {
     feature: "Multi emitter direct lighting",
     matrixNeedles: [
       "dzn (RTX 4090) baseline `tools/reference-renders/baseline/cornell-manylights.png`",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/cornell-manylights.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/cornell-manylights.png",
+        "c857ba59494da9db08601e1e1faac764a8c9f4c37203e9d513aabed03baa9bf1",
+        512,
+        512,
+      ),
+    ],
     dznStatus: {
       path: "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
       labels: ["pt/point-light", "pt/disc-light", "pt/spot-light"],
@@ -88,7 +139,14 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
       "strict-hash re-capture == committed `tools/reference-renders/baseline/ptwgpu-parity-material-fields.png`",
       "PSNR 999 dB",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/ptwgpu-parity-material-fields.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/ptwgpu-parity-material-fields.png",
+        "df76229af4aab72dddc00567d21a05a50203292b0a16922085d97bdc8c2cf721",
+        1280,
+        720,
+      ),
+    ],
   },
   {
     feature: "Caustic strategies",
@@ -96,7 +154,14 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
       "MNEE GPU-validated vs DETERMINISTIC references",
       "tools/reference-renders/baseline/mnee-glass-slab.png",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/mnee-glass-slab.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/mnee-glass-slab.png",
+        "60117577855fc849b9c2c4be276012990c90a58d59a156770747f69df13f95a1",
+        1280,
+        720,
+      ),
+    ],
     dznStatus: {
       path: "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
       labels: ["pt/caustic-manifold", "pt/caustic-photon"],
@@ -108,7 +173,14 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
       "pt-webgpu GPU-validated (V18/V25)",
       "tools/reference-renders/baseline/cornell-bdpt-on.png",
     ],
-    goldenPaths: ["tools/reference-renders/baseline/cornell-bdpt-on.png"],
+    goldenPaths: [
+      goldenPng(
+        "tools/reference-renders/baseline/cornell-bdpt-on.png",
+        "229cc7ebb31ec1dfe9f9d5d6564147406941ba8fc51ab1b30069f772bf1c6a19",
+        512,
+        512,
+      ),
+    ],
     dznStatus: {
       path: "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
       labels: ["pt/bdpt", "pt/spectral+bdpt"],
@@ -267,7 +339,21 @@ function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
 }
 
-/** @param {string} message */
+/**
+ * @param {string} path
+ * @param {string} sha256
+ * @param {number} width
+ * @param {number} height
+ * @returns {GoldenPngProof}
+ */
+function goldenPng(path, sha256, width, height) {
+  return { path, sha256, width, height };
+}
+
+/**
+ * @param {string} message
+ * @returns {never}
+ */
 function fail(message) {
   throw new Error(`[renderer-fidelity-proof-check] ${message}`);
 }
@@ -277,20 +363,48 @@ async function readText(path) {
   return await Deno.readTextFile(repoUrl(path));
 }
 
-/** @param {string} path */
-async function assertPng(path) {
-  const url = repoUrl(path);
+/** @param {Uint8Array} bytes */
+async function sha256Hex(bytes) {
+  const owned = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(owned).set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", owned);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** @param {GoldenPngProof} proof */
+async function assertPng(proof) {
+  const url = repoUrl(proof.path);
   const stat = await Deno.stat(url);
-  if (!stat.isFile || stat.size <= 8) fail(`${path} is missing or empty`);
-  const header = await Deno.readFile(url);
-  if (header[0] !== 0x89 || header[1] !== 0x50 || header[2] !== 0x4e || header[3] !== 0x47) {
-    fail(`${path} is not a PNG`);
+  if (!stat.isFile || stat.size <= 24) fail(`${proof.path} is missing or empty`);
+  const bytes = await Deno.readFile(url);
+  if (bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+    fail(`${proof.path} is not a PNG`);
+  }
+  const width =
+    bytes[16] * 0x1000000 +
+    bytes[17] * 0x10000 +
+    bytes[18] * 0x100 +
+    bytes[19];
+  const height =
+    bytes[20] * 0x1000000 +
+    bytes[21] * 0x10000 +
+    bytes[22] * 0x100 +
+    bytes[23];
+  if (width !== proof.width || height !== proof.height) {
+    fail(`${proof.path} size ${width}x${height} differs from expected ${proof.width}x${proof.height}`);
+  }
+  const hash = await sha256Hex(bytes);
+  if (hash !== proof.sha256) {
+    fail(`${proof.path} sha256 ${hash} differs from expected ${proof.sha256}`);
   }
 }
 
 /**
  * @param {string} matrix
  * @param {string} feature
+ * @returns {string}
  */
 function findMatrixRow(matrix, feature) {
   const row = matrix.split("\n").find((line) => line.startsWith(`| ${feature} |`));
@@ -310,7 +424,10 @@ function assertPtWebgpuSupported(row, feature) {
   }
 }
 
-/** @param {string} matrix */
+/**
+ * @param {string} matrix
+ * @returns {string[]}
+ */
 function featureRows(matrix) {
   return matrix
     .split("\n")
@@ -331,7 +448,12 @@ async function assertDznStatus(status, feature) {
   if (payload.harness !== "behavioral-gate:dzn") fail(`${feature}: ${status.path} harness mismatch`);
   if (payload.verdict !== "PASS") fail(`${feature}: ${status.path} verdict must be PASS`);
   if (payload.summary?.failures !== 0) fail(`${feature}: ${status.path} must have zero failures`);
-  const configs = new Map((payload.configs ?? []).map((config) => [config.label, config]));
+  if (!Array.isArray(payload.configs)) fail(`${feature}: ${status.path} configs must be an array`);
+  /** @type {Map<string, Record<string, any>>} */
+  const configs = new Map();
+  for (const config of /** @type {Record<string, any>[]} */ (payload.configs)) {
+    configs.set(String(config.label), config);
+  }
   for (const label of status.labels) {
     const config = configs.get(label);
     if (!config) fail(`${feature}: ${status.path} missing config ${label}`);

@@ -148,7 +148,12 @@ const EXPECTATION_TABLE = {
   "wh/hdri-env":          { expected: "ok" },
   "wh/rect-area-emitter": { expected: "ok" },
   "wh/mutation-material": { expected: "ok" },
+  "wh/mutation-environment": { expected: "ok" },
   "wh/mutation-transform": { expected: "ok" },
+  "wh/mutation-topology": { expected: "ok" },
+  "wh/mutation-instanced-count": { expected: "ok" },
+  "wh/mutation-add-primitive": { expected: "ok" },
+  "wh/mutation-remove-primitive": { expected: "ok" },
   "wh/mutation-emitter": { expected: "ok" },
   // item 4 (2026-06-10) — direct sun NEE default-on. Strong directional emitter,
   // no rect-area emitter; asserts non-black + higher luminance than the no-sun default.
@@ -259,7 +264,12 @@ const WH_CONFIGS = [
       primaryLightIntensity: 1.4,
     },                                                                          scene: { transparentOit: true } },
   { label: "wh/mutation-material",  eng: {},                                    scene: { mutation: "material" } },
+  { label: "wh/mutation-environment", eng: {},                                  scene: { mutation: "environment" } },
   { label: "wh/mutation-transform", eng: {},                                    scene: { mutation: "transform" } },
+  { label: "wh/mutation-topology",  eng: {},                                    scene: { mutation: "topology" } },
+  { label: "wh/mutation-instanced-count", eng: {},                              scene: { mutation: "instanced-count" } },
+  { label: "wh/mutation-add-primitive", eng: {},                                scene: { mutation: "add-primitive" } },
+  { label: "wh/mutation-remove-primitive", eng: {},                             scene: { mutation: "remove-primitive" } },
   { label: "wh/mutation-emitter",   eng: {},                                    scene: { mutation: "emitter" } },
 ];
 
@@ -2557,6 +2567,13 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
           metallic: 0.0,
         },
       });
+    } else if (sceneOpts.mutation === "environment") {
+      engine.updateEnvironment({
+        kind: "hdri",
+        hdri: makeMutationHdri(1.0),
+        intensity: 2.0,
+        rotationY: 0.25,
+      });
     } else if (sceneOpts.mutation === "emitter") {
       engine.updateEmitter("mutation-lamp", {
         color: [0.08, 0.18, 1.0],
@@ -2573,6 +2590,26 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
           0.95, 0, 0, 1,
         ])),
       });
+    } else if (sceneOpts.mutation === "topology") {
+      engine.updatePrimitive("mutation-topology-primitive", {
+        positions: GLTF_QUAD.positions,
+        normals: GLTF_QUAD.normals,
+        indices: new Uint32Array(GLTF_QUAD.indices),
+      });
+    } else if (sceneOpts.mutation === "instanced-count") {
+      engine.updatePrimitive("mutation-instanced-count-primitive", {
+        instances: [
+          instanceMatrix(-0.45),
+        ],
+      });
+    } else if (sceneOpts.mutation === "add-primitive") {
+      engine.addPrimitive(makeMutationQuadPrimitive(
+        "mutation-added-primitive",
+        0.42,
+        [0.05, 0.08, 1.0],
+      ));
+    } else if (sceneOpts.mutation === "remove-primitive") {
+      engine.removePrimitive("mutation-remove-target");
     } else {
       throw new Error(`unknown walkaround mutation gate kind: ${sceneOpts.mutation}`);
     }
@@ -2610,6 +2647,7 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
     if (sceneOpts.mutation) {
       beforeMutationPixels = pixels;
       applyWhMutation();
+      await waitForEngineReady(engine, `${label}: mutation`);
       pixels = await renderFramesAndReadback();
       if (beforeMutationPixels != null && pixels != null) {
         mutation = { kind: sceneOpts.mutation, ...comparePixels(pixels, beforeMutationPixels) };

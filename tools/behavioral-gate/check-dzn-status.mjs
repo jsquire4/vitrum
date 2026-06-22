@@ -2,7 +2,30 @@
 // @ts-check
 // Verifies committed WSL dzn behavioral-gate status artifacts.
 
-const EXPECTED = [
+/** @typedef {Record<string, any>} JsonRecord */
+/**
+ * @typedef {JsonRecord & {
+ *   label: string,
+ *   verdict: string,
+ *   rawStatus: string,
+ *   tier?: string | null,
+ * }} ExpectedConfig
+ */
+/**
+ * @typedef {{
+ *   path: string,
+ *   command: string,
+ *   filter: string,
+ *   goldenVariant?: string,
+ *   verdict: string,
+ *   exitStatus: number,
+ *   totalConfigs: number,
+ *   failures: number,
+ *   configs: ExpectedConfig[],
+ * }} ExpectedStatus
+ */
+
+const EXPECTED = /** @type {ExpectedStatus[]} */ ([
   {
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json",
     command: "npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier",
@@ -28,6 +51,7 @@ const EXPECTED = [
     path: "tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json",
     command: "npm run behavioral-gate:dzn -- --filter mutation --require-full-tier",
     filter: "mutation",
+    goldenVariant: "dzn-full",
     verdict: "PASS",
     exitStatus: 0,
     totalConfigs: 8,
@@ -50,12 +74,17 @@ const EXPECTED = [
     goldenVariant: "dzn-full",
     verdict: "PASS",
     exitStatus: 0,
-    totalConfigs: 3,
+    totalConfigs: 8,
     failures: 0,
     configs: [
       { label: "wh/mutation-material", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "material", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "wh/mutation-transform", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "transform", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-environment", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "environment", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
       { label: "wh/mutation-emitter", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "emitter", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-transform", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "transform", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-topology", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "topology", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-instanced-count", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "instanced-count", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-add-primitive", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "add-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-remove-primitive", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "remove-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
     ],
   },
   {
@@ -411,8 +440,9 @@ const EXPECTED = [
       { label: "pt/gltf-real-meshopt", verdict: "PASS", rawStatus: "OK", tier: "full", goldenStatus: "ok", goldenVariant: "dzn-full", maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
     ],
   },
-];
+]);
 
+/** @returns {ExpectedStatus[]} */
 function walkaroundShardStatuses() {
   const labels = [
     "wh/default",
@@ -442,6 +472,10 @@ function walkaroundShardStatuses() {
   }));
 }
 
+/**
+ * @param {string} label
+ * @returns {ExpectedConfig}
+ */
 function walkaroundExpectedConfig(label) {
   const base = { label, verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 };
   if (label !== "wh/transparent-oit") return base;
@@ -455,27 +489,33 @@ function walkaroundExpectedConfig(label) {
   };
 }
 
+/** @param {string} value */
 function slug(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "filtered";
 }
 
+/**
+ * @param {string} message
+ * @returns {never}
+ */
 function fail(message) {
   throw new Error(`[behavioral-gate-dzn-status-check] ${message}`);
 }
 
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ */
 function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+/** @type {Set<string>} */
 const coveredLabels = new Set();
 
 for (const expected of EXPECTED) {
   const url = new URL(`../../${expected.path}`, import.meta.url);
   const status = JSON.parse(await Deno.readTextFile(url));
-
-  for (const config of status.configs ?? []) {
-    coveredLabels.add(config.label);
-  }
 
   if (status.harness !== "behavioral-gate:dzn") fail(`${expected.path}: harness mismatch`);
   if (status.verdict !== expected.verdict) fail(`${expected.path}: verdict must be ${expected.verdict}, got ${status.verdict}`);
@@ -490,7 +530,26 @@ for (const expected of EXPECTED) {
   if (status.summary?.failures !== expected.failures) fail(`${expected.path}: failures mismatch`);
   if (status.summary?.knownResiduals !== 0) fail(`${expected.path}: knownResiduals must be 0`);
 
-  const byLabel = new Map((status.configs ?? []).map((config) => [config.label, config]));
+  if (!Array.isArray(status.configs)) fail(`${expected.path}: configs must be an array`);
+  const statusConfigs = /** @type {JsonRecord[]} */ (status.configs);
+  if (statusConfigs.length !== expected.configs.length) {
+    fail(`${expected.path}: configs length mismatch`);
+  }
+  const actualLabels = statusConfigs.map((config) => String(config.label)).sort();
+  if (new Set(actualLabels).size !== actualLabels.length) {
+    fail(`${expected.path}: duplicate config labels are not allowed`);
+  }
+  const expectedLabels = expected.configs.map((config) => config.label).sort();
+  if (!sameJson(actualLabels, expectedLabels)) {
+    fail(`${expected.path}: exact config labels mismatch`);
+  }
+
+  /** @type {Map<string, JsonRecord>} */
+  const byLabel = new Map();
+  for (const config of statusConfigs) {
+    coveredLabels.add(String(config.label));
+    byLabel.set(String(config.label), config);
+  }
   for (const expectedConfig of expected.configs) {
     const config = byLabel.get(expectedConfig.label);
     if (config == null) fail(`${expected.path}: missing ${expectedConfig.label}`);
@@ -598,6 +657,7 @@ for (const expected of EXPECTED) {
 }
 
 const gateSource = await Deno.readTextFile(new URL("./gate.mjs", import.meta.url));
+/** @type {Set<string>} */
 const labelsCoveredByFocusedProofs = new Set([]);
 const gateLabels = [...gateSource.matchAll(/label:\s*"([^"]+)"/g)]
   .map((match) => match[1])

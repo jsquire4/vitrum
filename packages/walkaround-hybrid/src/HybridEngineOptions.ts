@@ -949,13 +949,13 @@ export interface HybridEngineOptions extends EngineOptions {
    * *perceptual closeness to the no-NRC reference within tolerance, with faster
    * convergence / lower noise*. See `HARDWARE-VALIDATION-NEEDS.md` V20.
    *
-   * Default: `false` — NRC is opt-in. **OFF is BIT-IDENTICAL** to the current GI
-   * (the gate is a UBO flag in the former `_ppgPad2` slot; when 0 the gi-ris
-   * suffix path runs the verbatim DDGI-atlas estimate and the UBO bytes are
-   * unchanged). FORBIDDEN on `tier:'lite'` (the hash-grid feature tables + MLP
-   * weight/Adam buffers exceed the lite resource budget) — the constructor
-   * throws if `nrcEnabled` is set with `tier:'lite'`, mirroring rcEnabled /
-   * ppgEnabled / denoiser:'neural'.
+   * Default: `false` — NRC is opt-in. **OFF is BIT-IDENTICAL** to the current GI:
+   * the pipeline compiles/runs the non-NRC `gi-ris` variant, while the UBO bit in
+   * the former `_ppgPad2` slot remains an informational mirror for diagnostics.
+   * FORBIDDEN on `tier:'lite'` (the hash-grid feature tables + MLP weight/Adam
+   * buffers exceed the lite resource budget) — the constructor throws if
+   * `nrcEnabled` is set with `tier:'lite'`, mirroring rcEnabled / ppgEnabled /
+   * denoiser:'neural'.
    *
    * When ON, the gi-ris pass compiles in its NRC variant (`risGiNrc`): once
    * Müller's spread heuristic fires at the reconnection/suffix vertex, the MLP

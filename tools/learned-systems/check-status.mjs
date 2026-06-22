@@ -12,6 +12,24 @@ import {
 } from "../../packages/walkaround-hybrid/src/neural/weights.ts";
 
 /** @typedef {import("../../packages/walkaround-hybrid/src/neural/weights.ts").ModelWeights} ModelWeights */
+/**
+ * @typedef {{
+ *   name: string,
+ *   role: "research" | "production",
+ *   productionDefaultEligible?: boolean,
+ *   qualityPosture?: string,
+ *   sizeBytes: number,
+ *   sha256: string,
+ *   paramCount?: number,
+ * }} CheckpointManifestEntry
+ */
+/**
+ * @typedef {{
+ *   schema: string,
+ *   productionCheckpoint: string | null,
+ *   checkpoints: CheckpointManifestEntry[],
+ * }} CheckpointManifest
+ */
 
 const EXPECTED_PARAM_COUNT = 535107;
 const CHECKPOINT_MANIFEST_PATH = "tools/neural-denoiser-training/checkpoints/manifest.json";
@@ -21,7 +39,10 @@ function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
 }
 
-/** @param {string} message */
+/**
+ * @param {string} message
+ * @returns {never}
+ */
 function fail(message) {
   throw new Error(`[learned-systems-proof-check] ${message}`);
 }
@@ -33,7 +54,9 @@ async function readText(path) {
 
 /** @param {Uint8Array} bytes */
 async function sha256Hex(bytes) {
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const owned = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(owned).set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", owned);
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
@@ -62,10 +85,12 @@ async function readCheckpointBytes(path) {
 
 /** @param {Uint8Array} bytes */
 function loadCheckpointFromBytes(bytes) {
-  const owned = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const owned = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(owned).set(bytes);
   return loadWeightsFromArrayBuffer(owned);
 }
 
+/** @returns {Promise<CheckpointManifest>} */
 async function loadCheckpointManifest() {
   let manifest;
   try {
@@ -74,22 +99,35 @@ async function loadCheckpointManifest() {
     const message = err instanceof Error ? err.message : String(err);
     fail(`checkpoint manifest is missing or invalid JSON: ${message}`);
   }
-  if (manifest.schema !== "vitrum.neural-denoiser.checkpoints.v1") {
-    fail(`checkpoint manifest schema is ${String(manifest.schema)}`);
+  if (manifest == null || typeof manifest !== "object") {
+    fail("checkpoint manifest must be an object");
   }
-  if (!Array.isArray(manifest.checkpoints)) {
+  const candidate = /** @type {Record<string, any>} */ (manifest);
+  if (candidate.schema !== "vitrum.neural-denoiser.checkpoints.v1") {
+    fail(`checkpoint manifest schema is ${String(candidate.schema)}`);
+  }
+  if (!Array.isArray(candidate.checkpoints)) {
     fail("checkpoint manifest must contain a checkpoints array");
   }
-  if (manifest.productionCheckpoint !== null) {
-    const names = new Set(manifest.checkpoints.map((entry) => entry?.name));
-    if (!names.has(manifest.productionCheckpoint)) {
-      fail(`productionCheckpoint ${manifest.productionCheckpoint} is not listed in checkpoints`);
+  if (candidate.productionCheckpoint !== null && typeof candidate.productionCheckpoint !== "string") {
+    fail("productionCheckpoint must be null or a checkpoint name string");
+  }
+  if (typeof candidate.productionCheckpoint === "string") {
+    const productionEntry = candidate.checkpoints.find((entry) => entry?.name === candidate.productionCheckpoint);
+    if (productionEntry == null) {
+      fail(`productionCheckpoint ${candidate.productionCheckpoint} is not listed in checkpoints`);
+    }
+    if (productionEntry.role !== "production") {
+      fail(`productionCheckpoint ${candidate.productionCheckpoint} must point at a role:"production" entry`);
+    }
+    if (productionEntry.productionDefaultEligible !== true) {
+      fail(`productionCheckpoint ${candidate.productionCheckpoint} must be productionDefaultEligible:true`);
     }
   }
-  return manifest;
+  return /** @type {CheckpointManifest} */ (candidate);
 }
 
-/** @param {Awaited<ReturnType<typeof loadCheckpointManifest>>} manifest */
+/** @param {CheckpointManifest} manifest */
 async function assertTrackedResearchCheckpoints(manifest) {
   if (deriveParamCount(WALKAROUND_DENOISER_UNET_SPEC.layers) !== EXPECTED_PARAM_COUNT) {
     fail(`canonical U-Net param count changed from ${EXPECTED_PARAM_COUNT}`);
@@ -135,7 +173,7 @@ async function assertTrackedResearchCheckpoints(manifest) {
   }
 }
 
-/** @param {Awaited<ReturnType<typeof loadCheckpointManifest>>} manifest */
+/** @param {CheckpointManifest} manifest */
 async function assertNoSilentProductionCheckpoint(manifest) {
   const dirUrl = repoUrl("tools/neural-denoiser-training/checkpoints/");
   /** @type {string[]} */
@@ -181,6 +219,81 @@ async function assertNoSilentProductionCheckpoint(manifest) {
   if (qualityManifest.verdict !== "PASS" || qualityManifest.mode !== "production-neural-denoiser") {
     fail("production neural checkpoint manifest must have mode='production-neural-denoiser' and verdict='PASS'");
   }
+
+  if (productionEntries.length > 0) {
+    assertProductionQualityManifest(
+      qualityManifest,
+      productionEntries,
+      manifest.productionCheckpoint,
+      productionLike,
+    );
+  }
+}
+
+/**
+ * @param {Record<string, any>} qualityManifest
+ * @param {CheckpointManifestEntry[]} productionEntries
+ * @param {string | null} productionCheckpoint
+ * @param {string[]} productionLike
+ */
+function assertProductionQualityManifest(
+  qualityManifest,
+  productionEntries,
+  productionCheckpoint,
+  productionLike,
+) {
+  if (productionCheckpoint == null) {
+    fail(
+      `production-like checkpoint(s) ${productionLike.join(", ")} require manifest.productionCheckpoint ` +
+      "to identify the production default",
+    );
+  }
+  const productionEntry = productionEntries.find((entry) => entry.name === productionCheckpoint);
+  if (productionEntry == null) {
+    fail(`quality manifest productionCheckpoint ${productionCheckpoint} is not a production checkpoint entry`);
+  }
+
+  const checkpointProof = qualityManifest.checkpoint;
+  if (checkpointProof == null || typeof checkpointProof !== "object") {
+    fail("production neural quality manifest must include a checkpoint identity object");
+  }
+  const proof = /** @type {Record<string, any>} */ (checkpointProof);
+  const expectedIdentity = {
+    name: productionEntry.name,
+    sha256: productionEntry.sha256,
+    sizeBytes: productionEntry.sizeBytes,
+    paramCount: productionEntry.paramCount ?? EXPECTED_PARAM_COUNT,
+  };
+  for (const [key, expectedValue] of Object.entries(expectedIdentity)) {
+    if (proof[key] !== expectedValue) {
+      fail(`production neural quality manifest checkpoint.${key} must be ${String(expectedValue)}`);
+    }
+  }
+
+  const metrics = qualityManifest.metrics;
+  if (metrics == null || typeof metrics !== "object") {
+    fail("production neural quality manifest must include bounded quality metrics");
+  }
+  const metricRecord = /** @type {Record<string, any>} */ (metrics);
+  const hasBoundedMetric =
+    finiteMetric(metricRecord.psnrDb) ||
+    finiteMetric(metricRecord.ssim) ||
+    finiteMetric(metricRecord.meanAbs) ||
+    finiteMetric(metricRecord.rmse);
+  if (!hasBoundedMetric) {
+    fail("production neural quality manifest metrics must include at least one finite numeric quality bound");
+  }
+  if (typeof qualityManifest.hardware !== "string" || qualityManifest.hardware.length === 0) {
+    fail("production neural quality manifest must name the validation hardware/backend");
+  }
+  if (typeof qualityManifest.generatedAt !== "string" || qualityManifest.generatedAt.length === 0) {
+    fail("production neural quality manifest must include generatedAt");
+  }
+}
+
+/** @param {unknown} value */
+function finiteMetric(value) {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 async function assertRuntimeTruthfulnessGuards() {

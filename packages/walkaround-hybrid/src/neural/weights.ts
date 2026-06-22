@@ -312,6 +312,13 @@ export function loadWeightsFromArrayBuffer(bytes: ArrayBuffer): ModelWeights {
     layers.push({ name, weights, biases });
   }
 
+  if (offset !== bytes.byteLength) {
+    throw new Error(
+      `[loadWeightsFromArrayBuffer] trailing ${bytes.byteLength - offset} byte(s) after ` +
+      `${layerCount} layer record(s) at offset ${offset}`,
+    );
+  }
+
   return { layers };
 }
 
