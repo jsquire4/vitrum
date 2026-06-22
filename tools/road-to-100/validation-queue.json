@@ -174,7 +174,7 @@
         { "path": "packages/pt-webgpu/src/__tests__/ggxMultiscatterFurnace.test.ts" },
         { "path": "packages/shared-samplers/__tests__/bdptVeachFull.test.ts" }
       ],
-      "remaining": "Committed proof now pins BDPT endpoint-only default, the opt-in multi-vertex BDPT branch as a structured non-promotable research finding, SPPM/Sobol/ReSTIR-PT snapshots, ReSTIR-PT specialty case/lobe invariants, and the opt-in glossy ReSTIR-PT research branch as a non-promotable FINDING. The main kernel source must continue to state that multi-vertex BDPT is not yet composed against the ordinary eye-path estimator. Remaining work is a redesigned multi-vertex BDPT estimator that is weighted against the regular eye-path strategy, plus tighter caustic/material-furnace quality evidence."
+      "remaining": "Committed proof now pins BDPT endpoint-only default, the opt-in multi-vertex BDPT branch as a structured non-promotable research finding, SPPM/Sobol/ReSTIR-PT snapshots, ReSTIR-PT specialty case/lobe invariants, and the opt-in glossy ReSTIR-PT research branch as a non-promotable FINDING with a structured research-mode warning. The main kernel source must continue to state that multi-vertex BDPT is not yet composed against the ordinary eye-path estimator. Remaining work is a redesigned multi-vertex BDPT estimator that is weighted against the regular eye-path strategy, plus tighter caustic/material-furnace quality evidence."
     },
     {
       "id": "VQ-WALKAROUND-RADIOMETRIC-AB",

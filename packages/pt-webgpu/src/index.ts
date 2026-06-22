@@ -2527,6 +2527,25 @@ export const createPTEngine_WebGPU: EngineFactory<
 
   if (opts.restirPtReuse === true) {
     assertRestirPtReuseSupported(opts.device, traceTier);
+    if (opts.restirPtReuseOptions?.experimentalGlossyReuse === true) {
+      emitPteWarning(opts, {
+        code: 'pt-webgpu.restir-pt-glossy-reuse-research-mode',
+        backend: 'pt-webgpu',
+        phase: 'construction',
+        method: 'createPTEngine_WebGPU',
+        message:
+          '[vitrum/pt-webgpu] restirPtReuseOptions.experimentalGlossyReuse=true admits glossy/metallic visible vertices into the ' +
+          'ReSTIR-PT temporal/spatial feedback loop. Current radiometric evidence marks this branch as a non-promotable research finding; ' +
+          'omit experimentalGlossyReuse for the diffuse-safe validated default.',
+        details: {
+          restirPtReuse: true,
+          experimentalGlossyReuse: true,
+          promotionReady: false,
+          blocker: 'glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope',
+          evidencePath: 'tools/radiometric-ab/results-restir-pt-glossy-research.json',
+        },
+      });
+    }
   }
   if (cwbvhClosestRequested) {
     assertCwbvhClosestSupported(opts.device, traceTier, opts.restirPtReuse === true);

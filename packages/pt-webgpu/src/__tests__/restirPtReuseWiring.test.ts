@@ -269,6 +269,7 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
 
   it('ON: non-finite ReSTIR-PT tuning falls back to safe params defaults', async () => {
     const rec = emptyRecorder();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({
       device: makeFullTierDevice(rec),
       restirPtReuse: true,
@@ -289,6 +290,39 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     expect(u[3]).toBe(1);
     expect(f[4]).toBe(10);
 
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it('ON: warns when glossy reuse enters the research-only feedback loop', async () => {
+    const rec = emptyRecorder();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onWarning = vi.fn();
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(rec),
+      restirPtReuse: true,
+      restirPtReuseOptions: {
+        experimentalGlossyReuse: true,
+      },
+      onWarning,
+    });
+
+    expect(warn.mock.calls.flat().map(String).some((m) =>
+      m.includes('restirPtReuseOptions.experimentalGlossyReuse=true') &&
+      m.includes('non-promotable research finding'),
+    )).toBe(true);
+    expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
+      code: 'pt-webgpu.restir-pt-glossy-reuse-research-mode',
+      details: expect.objectContaining({
+        restirPtReuse: true,
+        experimentalGlossyReuse: true,
+        promotionReady: false,
+        blocker: 'glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope',
+        evidencePath: 'tools/radiometric-ab/results-restir-pt-glossy-research.json',
+      }),
+    }));
+
+    warn.mockRestore();
     engine.dispose();
   });
 

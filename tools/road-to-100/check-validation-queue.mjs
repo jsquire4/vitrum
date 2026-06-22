@@ -1159,6 +1159,7 @@ if (!radiometricPtRow.proofArtifacts.some((artifact) =>
 }
 for (const needle of [
   "multi-vertex BDPT branch as a structured non-promotable research finding",
+  "structured research-mode warning",
   "weighted against the regular eye-path strategy",
   "not yet composed against the ordinary eye-path estimator",
 ]) {
@@ -1173,9 +1174,13 @@ for (const needle of [
   "not-weighted-against-regular-eye-path-strategy",
   "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
   "tools/radiometric-ab/results-bdpt.json",
+  "pt-webgpu.restir-pt-glossy-reuse-research-mode",
+  "restirPtReuseOptions.experimentalGlossyReuse=true",
+  "glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope",
+  "tools/radiometric-ab/results-restir-pt-glossy-research.json",
 ]) {
   if (!ptWebgpuIndexSource.includes(needle)) {
-    fail(`VQ-RADIOMETRIC-PT structured BDPT warning source is stale: missing ${needle}`);
+    fail(`VQ-RADIOMETRIC-PT structured research warning source is stale: missing ${needle}`);
   }
 }
 const ptWebgpuBdptKernelSource = await readText("packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts");
