@@ -1243,6 +1243,12 @@ if (walkaroundAbRow.status !== "partial-proof-green") {
 if (walkaroundAbRow.command !== "npm run radiometric-ab:walkaround") {
   fail("VQ-WALKAROUND-RADIOMETRIC-AB command must stay on the native walkaround A/B harness");
 }
+if (walkaroundAbRow.promotionCommand !== "npm run radiometric-ab:walkaround-glossy-spp64") {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB promotionCommand must name the high-quality glossy recapture lane");
+}
+if (packageJson.scripts?.["radiometric-ab:walkaround-glossy-spp64"] !== "node tools/radiometric-ab/run-walkaround-ab.mjs --glossy-spp64") {
+  fail("package.json must expose the high-quality walkaround glossy recapture command");
+}
 const walkaroundAbArtifactPaths = new Set(walkaroundAbRow.proofArtifacts.map((artifact) => artifact?.path));
 for (const path of REQUIRED_WALKAROUND_AB_ARTIFACT_PATHS) {
   if (!walkaroundAbArtifactPaths.has(path)) {

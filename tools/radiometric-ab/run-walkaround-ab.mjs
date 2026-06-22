@@ -14,9 +14,21 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
-const statusPath = resolveFromRepo(process.env.VITRUM_WALKAROUND_AB_STATUS_PATH, 'tools/radiometric-ab/walkaround-ab-host-status.json');
-const resultPath = resolveFromRepo(process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH, 'tools/radiometric-ab/walkaround-ab-results.json');
 const DEFAULT_TIMEOUT_MS = 180_000;
+const args = new Set(process.argv.slice(2));
+const glossySpp64 = args.has('--glossy-spp64');
+const statusPath = resolveFromRepo(
+  process.env.VITRUM_WALKAROUND_AB_STATUS_PATH,
+  glossySpp64
+    ? 'tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json'
+    : 'tools/radiometric-ab/walkaround-ab-host-status.json',
+);
+const resultPath = resolveFromRepo(
+  process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH,
+  glossySpp64
+    ? 'tools/radiometric-ab/walkaround-ab-glossy-spp64.json'
+    : 'tools/radiometric-ab/walkaround-ab-results.json',
+);
 
 function resolveFromRepo(raw, fallbackRelative) {
   if (raw == null || raw === '') return resolve(repoRoot, fallbackRelative);
@@ -44,18 +56,27 @@ const denoArgs = [
   'tools/radiometric-ab/walkaround-ab.mjs',
 ];
 const timeoutMs = parseTimeoutMs(process.env.VITRUM_WALKAROUND_AB_TIMEOUT_MS);
-const selectedCases = process.env.VITRUM_WALKAROUND_AB_CASES ?? null;
+const selectedCases = process.env.VITRUM_WALKAROUND_AB_CASES ?? (glossySpp64 ? 'glossy' : null);
 const resultFile = repoRelative(resultPath);
 const renderConfig = {
   width: process.env.VITRUM_WALKAROUND_AB_WIDTH ?? '128',
   height: process.env.VITRUM_WALKAROUND_AB_HEIGHT ?? '128',
-  spp: process.env.VITRUM_WALKAROUND_AB_SPP ?? '16',
-  qualityProfile: process.env.VITRUM_WALKAROUND_AB_PROFILE ?? null,
+  spp: process.env.VITRUM_WALKAROUND_AB_SPP ?? (glossySpp64 ? '64' : '16'),
+  qualityProfile: process.env.VITRUM_WALKAROUND_AB_PROFILE ?? (glossySpp64 ? 'glossy-spp64' : null),
 };
+const denoEnv = {
+  ...process.env,
+  VITRUM_WALKAROUND_AB_OUTPUT_PATH: resultPath,
+  VITRUM_WALKAROUND_AB_WIDTH: renderConfig.width,
+  VITRUM_WALKAROUND_AB_HEIGHT: renderConfig.height,
+  VITRUM_WALKAROUND_AB_SPP: renderConfig.spp,
+};
+if (selectedCases != null) denoEnv.VITRUM_WALKAROUND_AB_CASES = selectedCases;
+if (renderConfig.qualityProfile != null) denoEnv.VITRUM_WALKAROUND_AB_PROFILE = renderConfig.qualityProfile;
 
 const result = spawnSync('deno', denoArgs, {
   cwd: repoRoot,
-  env: process.env,
+  env: denoEnv,
   encoding: 'utf8',
   maxBuffer: 64 * 1024 * 1024,
   timeout: timeoutMs,

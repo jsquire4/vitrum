@@ -40,6 +40,16 @@ test('walkaround A/B wrapper preserves custom output/status paths', async () => 
   assert.match(runner, /resultFile/);
 });
 
+test('walkaround A/B wrapper exposes the glossy 64-SPP promotion lane', async () => {
+  const runner = await readFile(walkaroundRunnerPath, 'utf8');
+  assert.match(runner, /--glossy-spp64/);
+  assert.match(runner, /walkaround-ab-glossy-spp64-status\.json/);
+  assert.match(runner, /walkaround-ab-glossy-spp64\.json/);
+  assert.match(runner, /glossy-spp64/);
+  assert.match(runner, /VITRUM_WALKAROUND_AB_CASES = selectedCases/);
+  assert.match(runner, /VITRUM_WALKAROUND_AB_SPP: renderConfig\.spp/);
+});
+
 async function loadVarianceROI() {
   const source = await readFile(helpersPath, 'utf8');
   const match = source.match(/export function varianceROI\(([^)]*)\) \{([\s\S]*?)\n\}/);

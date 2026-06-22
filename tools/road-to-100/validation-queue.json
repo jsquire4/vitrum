@@ -183,6 +183,7 @@
       "kind": "validation",
       "status": "partial-proof-green",
       "command": "npm run radiometric-ab:walkaround",
+      "promotionCommand": "npm run radiometric-ab:walkaround-glossy-spp64",
       "proofArtifacts": [
         { "path": "tools/radiometric-ab/check-results.mjs" },
         { "path": "tools/radiometric-ab/proofs.mjs" },
