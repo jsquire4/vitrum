@@ -188,6 +188,8 @@ if (ledger.includes("historical audit provenance plus\n  any explicitly marked o
 }
 
 const road = await readText("plan/road-to-100.md");
+const roadmap = await readText("plan/roadmap.md");
+const gapExecutionPlan = await readText("plan/gap-closure-execution-plan.md");
 const packageJson = JSON.parse(await readText(PACKAGE_PATH));
 const items = await readText("items_to_fix.md");
 const shaderGateReadme = await readText("tools/shader-gate/README.md");
@@ -197,6 +199,8 @@ const walkaroundAbResults = JSON.parse(await readText("tools/radiometric-ab/walk
 
 for (const [docName, docText] of [
   ["plan/road-to-100.md", road],
+  ["plan/roadmap.md", roadmap],
+  ["plan/gap-closure-execution-plan.md", gapExecutionPlan],
   ["items_to_fix.md", items],
   ["tools/shader-gate/README.md", shaderGateReadme],
 ]) {
@@ -211,11 +215,23 @@ for (const [docName, docText] of [
     "6 feature combinations",
     "The 6 combinations above",
     "RANDOM_TYPE=1/2",
+    "all 9 rendering rows",
+    "All 9 pt-webgpu rows",
+    "all 9 pt-webgpu rows",
+    "vertex-count / index changes still force full `setScene()` on PT backends",
+    "GLASS remains smoke-only",
+    "GLASS is smoke-only",
   ]) {
     if (docText.includes(stalePhrase)) {
-      fail(`${docName} contains stale hard-coded shader-gate count: ${stalePhrase}`);
+      fail(`${docName} contains stale hard-coded count claim: ${stalePhrase}`);
     }
   }
+}
+if (!roadmap.includes("renderer-fidelity-proof-check")) {
+  fail("roadmap must point pt-webgpu fidelity-promotion claims at renderer-fidelity-proof-check");
+}
+if (!roadmap.includes("plan/renderer-fidelity-matrix.md")) {
+  fail("roadmap must name plan/renderer-fidelity-matrix.md as the row source of truth");
 }
 if (!road.includes("shader compile gate discovers the live WGSL inventory")) {
   fail("road-to-100.md must describe shader-gate coverage without stale exact counts");
@@ -310,6 +326,17 @@ if (walkaroundAbResults?.glossy?.verdict === "FINDING") {
   }
   if (!radiometricReadme.includes("**Verdict: FINDING**")) {
     fail("radiometric README must mirror walkaround-ab-results.json glossy FINDING verdict");
+  }
+}
+
+if (walkaroundAbResults?.glass?.verdict === "PASS") {
+  for (const [docName, docText] of [
+    ["plan/gap-closure-execution-plan.md", gapExecutionPlan],
+    ["tools/road-to-100/validation-queue.json", await readText("tools/road-to-100/validation-queue.json")],
+  ]) {
+    if (!docText.includes("GLASS is `PASS`") && !docText.includes("glass pass")) {
+      fail(`${docName} must mirror walkaround-ab-results.json glass PASS verdict`);
+    }
   }
 }
 

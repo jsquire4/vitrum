@@ -69,7 +69,7 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 **Maturity labels (accurate as of 2026-05-26 signoffs):**
 
 - **Release-candidate track:** `@vitrum/engine`, `@vitrum/walkaround-hybrid`, `@vitrum/pt-webgl2` — pipeline shipped, mechanical tests green, backend maturity matrix “strong” on deep integration.
-- **Peer hero backend, fidelity-PROMOTED:** `@vitrum/pt-webgpu` — contract-strong, deep audit closed; **all 9 rendering rows promoted to `supported` 2026-06-04** (commit `3c58f39`, dzn RTX 4090 A/Bs). Remaining WebGL2 fidelity tails now belong to `@vitrum/pt-webgl2`; the old fork-backed `@vitrum/pt-webgl` row was removed with `e14000c`.
+- **Peer hero backend, fidelity-PROMOTED:** `@vitrum/pt-webgpu` — contract-strong, deep audit closed; the current pt-webgpu renderer-fidelity rows marked `supported` in `plan/renderer-fidelity-matrix.md` are proof-guarded by `npm run renderer-fidelity-proof-check`. Remaining WebGL2 fidelity tails belong to `@vitrum/pt-webgl2`; SVGF-real remains `unsupported` on converged backends by regime decision; the old fork-backed `@vitrum/pt-webgl` row was removed with `e14000c`.
 - **Not “alpha” / “pre-alpha prototype”** for the primary surface — those terms are stale in scattered docs; prefer **RC track**, **experimental feature tier**, or **pre-1.0 API**.
 
 ---
@@ -107,10 +107,10 @@ vitrum is **not** one renderer. It is one **contract** (`@vitrum/core` `Engine`)
 
 | Gap | Impact |
 |-----|--------|
-| ~~**Fidelity matrix mostly `experimental`**~~ **PROMOTED (2026-06-04, `3c58f39`)** | All 9 pt-webgpu rows (spectral, thin-film, SSS, caustic, multi-emitter, layered, material-fields, BDPT, …) now `supported` via dzn RTX 4090 A/Bs. Remaining WebGL2 promotion evidence belongs to `@vitrum/pt-webgl2`, not the removed fork-backed package. |
+| ~~**Fidelity matrix mostly `experimental`**~~ **PROMOTED (2026-06-04 onward, proof-guarded in-tree)** | Current pt-webgpu supported rows are the rows marked `supported` in `plan/renderer-fidelity-matrix.md` and verified by `npm run renderer-fidelity-proof-check` against committed proof text/artifacts. Remaining WebGL2 promotion evidence belongs to `@vitrum/pt-webgl2`, not the removed fork-backed package. |
 | ~~**pt-webgpu GPU BDPT light-subpath**~~ **SHIPPED (see §0.5)** | `bdptExtendLightSubpath` @compute pass dispatched; CPU fill is test-oracle only. |
 | **SVGF-real on pt-webgl2** | Row: `unsupported` on WebGL2 path. |
-| **Topology-changing animation** | Incremental patches strong; vertex-count / index changes still force full `setScene()` on PT backends. |
+| **Topology-changing animation** | PT backends now accept `updatePrimitive` topology patches: pt-webgpu full tier uses targeted BLAS/TLAS realloc/refit, pt-webgpu lite uses structured fallback repack, and pt-webgl2 respecifies resident scene textures with fallback diagnostics. Remaining work is browser/adapter promotion and perf tuning for the fallback/native split, not a blanket `setScene()` requirement. |
 | **Not in `auto` for small scenes** | `auto` picks walkaround &lt;500k tris; large scenes → pt-webgpu. Hero PT is explicit `quality` / `quality-webgpu`. |
 
 ### 2.5 What is *not* a gap (clarification)
@@ -305,7 +305,7 @@ Organized as **implementation themes**. Each theme should land with mechanical t
 
 ### 6.1 P0 — Fidelity promotion program
 
-**Problem (RESOLVED 2026-06-04, commit `3c58f39`):** all 9 pt-webgpu rows promoted `experimental`→`supported` via dzn (RTX 4090) A/Bs — the process below was followed (harnesses live in wsl-gpu, not `tools/benchmark-runner`, since wsl-gpu reaches the full-tier adapter). Remaining WebGL2 promotion evidence now belongs to `@vitrum/pt-webgl2` after the fork-backed package removal; SVGF-real stays `unsupported` (regime mismatch). The per-row process (kept as the record):
+**Problem (RESOLVED 2026-06-04 onward, proof-guarded in-tree):** pt-webgpu renderer-fidelity rows promoted `experimental`→`supported` only when the current `plan/renderer-fidelity-matrix.md` row has proof text/artifacts guarded by `npm run renderer-fidelity-proof-check`. Remaining WebGL2 promotion evidence belongs to `@vitrum/pt-webgl2` after the fork-backed package removal; SVGF-real stays `unsupported` (regime mismatch). The per-row process (kept as the record):
 
 **Process per row:**
 

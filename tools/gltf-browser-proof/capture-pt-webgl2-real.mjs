@@ -23,7 +23,7 @@ const statusPath = resolveStatusPath(process.env.VITRUM_GLTF_BROWSER_STATUS_PATH
 const browserExtraArgs = parseEnvArgs(process.env.VITRUM_CHROMIUM_EXTRA_ARGS);
 const pauseBeforeEngineCapture = parseBooleanEnv(process.env.VITRUM_PAUSE_BEFORE_CAPTURE);
 const engineCaptureMode = parseEngineCaptureMode(process.env.VITRUM_ENGINE_CAPTURE_MODE);
-const thresholds = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
+const DEFAULT_GOLDEN_THRESHOLDS = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
 // Prevent browser readback failures from becoming white/black "successful" goldens.
 const structureThresholds = {
   minLumaRange: 12,
@@ -38,6 +38,7 @@ const REAL_BROWSER_ASSETS = [
     minTextures: 1,
     requiredExtensions: [],
     requiredHooks: [],
+    thresholds: DEFAULT_GOLDEN_THRESHOLDS,
   },
   {
     assetId: 'cesium-milk-truck-draco',
@@ -46,6 +47,7 @@ const REAL_BROWSER_ASSETS = [
     minTextures: 0,
     requiredExtensions: ['KHR_draco_mesh_compression'],
     requiredHooks: ['draco'],
+    thresholds: DEFAULT_GOLDEN_THRESHOLDS,
   },
   {
     assetId: 'meshopt-cube-real',
@@ -54,6 +56,7 @@ const REAL_BROWSER_ASSETS = [
     minTextures: 0,
     requiredExtensions: ['KHR_meshopt_compression'],
     requiredHooks: ['meshopt'],
+    thresholds: DEFAULT_GOLDEN_THRESHOLDS,
   },
 ];
 let activeBrowser = null;
@@ -245,7 +248,7 @@ async function capture(asset) {
         console: consoleLines.slice(-80),
       };
     }
-    const compare = await compareOrUpdate(pngBytes, png, goldenPath);
+    const compare = await compareOrUpdate(pngBytes, png, goldenPath, asset.thresholds);
     captureStep = 'classify-result';
     const pass =
       summarizedTelemetry?.backend === 'pt-webgl2' &&
@@ -505,7 +508,7 @@ function statusExitCode(verdict) {
   return 1;
 }
 
-async function compareOrUpdate(pngBytes, png, goldenPath) {
+async function compareOrUpdate(pngBytes, png, goldenPath, thresholds) {
   if (updateGolden) {
     await writeFile(goldenPath, pngBytes);
     return { pass: true, updated: true, path: relative(goldenPath), rmse: 0, meanAbs: 0, maxAbs: 0, thresholds };

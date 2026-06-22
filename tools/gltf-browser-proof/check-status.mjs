@@ -14,6 +14,7 @@ const REQUIRED_BROWSER_ASSETS = [
     requiredExtensions: [],
     requiredHooks: [],
     goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png",
+    thresholds: { maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
   },
   {
     assetId: "cesium-milk-truck-draco",
@@ -22,6 +23,7 @@ const REQUIRED_BROWSER_ASSETS = [
     requiredExtensions: ["KHR_draco_mesh_compression"],
     requiredHooks: ["draco"],
     goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png",
+    thresholds: { maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
   },
   {
     assetId: "meshopt-cube-real",
@@ -30,6 +32,7 @@ const REQUIRED_BROWSER_ASSETS = [
     requiredExtensions: ["KHR_meshopt_compression"],
     requiredHooks: ["meshopt"],
     goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png",
+    thresholds: { maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 },
   },
 ];
 
@@ -70,6 +73,7 @@ for (const required of REQUIRED_BROWSER_ASSETS) {
   if (asset.goldenPath !== required.goldenPath) {
     fail(`${required.assetId}: manifest goldenPath differs from required browser proof contract`);
   }
+  assertGoldenThresholds(asset.thresholds, required.thresholds, `${required.assetId}: manifest`);
   if (!statusById.has(required.assetId)) fail(`status is missing required browser asset ${required.assetId}`);
 }
 
@@ -199,9 +203,7 @@ async function assertPassingBrowserRow(row, asset) {
   assertInformativeCapture(row);
   if (row.golden?.pass !== true) fail(`${row.assetId}: golden comparison did not pass`);
   if (row.golden?.path !== manifestAsset.goldenPath) fail(`${row.assetId}: manifest goldenPath mismatch`);
-  if (row.golden?.thresholds?.maxRmse !== 8 || row.golden?.thresholds?.maxMeanAbs !== 4 || row.golden?.thresholds?.maxAbs !== 48) {
-    fail(`${row.assetId}: golden thresholds mismatch`);
-  }
+  assertGoldenThresholds(row.golden?.thresholds, manifestAsset.thresholds, `${row.assetId}: golden`);
 
   const goldenUrl = new URL(`../../${row.golden.path}`, import.meta.url);
   const stat = await Deno.stat(goldenUrl);
@@ -225,6 +227,21 @@ function byKey(items, key) {
     map.set(value, item);
   }
   return map;
+}
+
+/**
+ * @param {Record<string, any> | undefined} actual
+ * @param {Record<string, any> | undefined} expected
+ * @param {string} label
+ */
+function assertGoldenThresholds(actual, expected, label) {
+  if (actual == null || typeof actual !== "object") fail(`${label} thresholds missing`);
+  if (expected == null || typeof expected !== "object") fail(`${label} expected thresholds missing`);
+  for (const key of ["maxRmse", "maxMeanAbs", "maxAbs"]) {
+    if (actual[key] !== expected[key]) {
+      fail(`${label} threshold ${key} must be ${expected[key]}, got ${actual[key]}`);
+    }
+  }
 }
 
 /**
