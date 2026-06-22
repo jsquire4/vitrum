@@ -10,6 +10,39 @@ import {
   WALKAROUND_AB_RESULT_PROOF,
 } from "./proofs.mjs";
 
+const REQUIRED_RADIOMETRIC_AB_ROWS = [
+  {
+    id: "sppm",
+    scriptPath: "tools/radiometric-ab/ab-sppm.mjs",
+    resultPath: "tools/radiometric-ab/results-sppm.json",
+  },
+  {
+    id: "bdpt",
+    scriptPath: "tools/radiometric-ab/ab-bdpt.mjs",
+    resultPath: "tools/radiometric-ab/results-bdpt.json",
+  },
+  {
+    id: "restir-pt",
+    scriptPath: "tools/radiometric-ab/ab-restir-pt.mjs",
+    resultPath: "tools/radiometric-ab/results-restir-pt.json",
+  },
+  {
+    id: "sobol",
+    scriptPath: "tools/radiometric-ab/ab-sobol.mjs",
+    resultPath: "tools/radiometric-ab/results-sobol.json",
+  },
+];
+
+const REQUIRED_RESTIR_PT_SPECIALTY = {
+  schema: "vitrum.restir-pt.specialty-reference.v1",
+  mode: "cpu-static",
+  scriptPath: "tools/radiometric-ab/ab-restir-pt-specialty.mjs",
+  resultPath: "tools/radiometric-ab/results-restir-pt-specialty.json",
+  specialtyLobes: ["anisotropy", "clearcoat", "iridescence", "sheen", "specular"],
+  materialSources: ["map-backed-effective-values", "scalar"],
+  caseCount: 4,
+};
+
 /** @param {string} message */
 function fail(message) {
   throw new Error(`[radiometric-ab-proof-check] ${message}`);
@@ -29,6 +62,24 @@ function sameJson(a, b) {
  */
 function assertFiniteNumber(value, label) {
   if (typeof value !== "number" || !Number.isFinite(value)) fail(`${label} must be a finite number`);
+}
+
+function assertRequiredRadiometricRows() {
+  const byId = new Map();
+  for (const proof of RADIOMETRIC_AB_PROOFS) {
+    if (byId.has(proof.id)) fail(`duplicate radiometric proof id ${proof.id}`);
+    byId.set(proof.id, proof);
+  }
+  for (const required of REQUIRED_RADIOMETRIC_AB_ROWS) {
+    const proof = byId.get(required.id);
+    if (!proof) fail(`missing required radiometric proof row ${required.id}`);
+    if (proof.scriptPath !== required.scriptPath) {
+      fail(`${required.id}: scriptPath differs from required radiometric proof contract`);
+    }
+    if (proof.resultPath !== required.resultPath) {
+      fail(`${required.id}: resultPath differs from required radiometric proof contract`);
+    }
+  }
 }
 
 /**
@@ -207,6 +258,20 @@ function checkSobol(proof, result) {
 
 /** @param {any} proof */
 async function checkRestirPtSpecialty(proof) {
+  if (proof.schema !== REQUIRED_RESTIR_PT_SPECIALTY.schema) fail("restir-pt-specialty: proof schema drifted");
+  if (proof.mode !== REQUIRED_RESTIR_PT_SPECIALTY.mode) fail("restir-pt-specialty: proof mode drifted");
+  if (proof.scriptPath !== REQUIRED_RESTIR_PT_SPECIALTY.scriptPath) fail("restir-pt-specialty: proof scriptPath drifted");
+  if (proof.resultPath !== REQUIRED_RESTIR_PT_SPECIALTY.resultPath) fail("restir-pt-specialty: proof resultPath drifted");
+  if (!sameJson(proof.coverage?.specialtyLobes, REQUIRED_RESTIR_PT_SPECIALTY.specialtyLobes)) {
+    fail("restir-pt-specialty: proof specialtyLobes drifted");
+  }
+  if (!sameJson(proof.coverage?.materialSources, REQUIRED_RESTIR_PT_SPECIALTY.materialSources)) {
+    fail("restir-pt-specialty: proof materialSources drifted");
+  }
+  if (proof.summary?.caseCount !== REQUIRED_RESTIR_PT_SPECIALTY.caseCount) {
+    fail("restir-pt-specialty: proof caseCount drifted");
+  }
+
   const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
   const result = JSON.parse(await Deno.readTextFile(resultUrl));
   const scriptUrl = new URL(`../../${proof.scriptPath}`, import.meta.url);
@@ -511,6 +576,7 @@ async function checkWalkaroundResults(proof) {
   checkWalkaroundGlossy(proof.cases.glossy, result.glossy);
 }
 
+assertRequiredRadiometricRows();
 for (const proof of RADIOMETRIC_AB_PROOFS) {
   const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
   const result = JSON.parse(await Deno.readTextFile(resultUrl));
