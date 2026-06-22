@@ -10,6 +10,15 @@
 # Activated by `core.hooksPath = scripts/githooks` (set by scripts/install-git-hooks.mjs
 # on npm install). To bypass entirely: `git push --no-verify`.
 NODE_BIN="${NODE:-}"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [ -z "$NODE_BIN" ] && [ -s "$REPO_ROOT/.nvmrc" ] && [ -s "$HOME/.nvm/nvm.sh" ]; then
+  # Keep the hook on the same Node major/minor that normal vitrum commands use.
+  # This avoids silently validating under whichever node happens to lead PATH.
+  . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1 || true
+  if command -v nvm >/dev/null 2>&1; then
+    nvm use --silent "$(cat "$REPO_ROOT/.nvmrc")" >/dev/null 2>&1 || true
+  fi
+fi
 if [ -z "$NODE_BIN" ] || ! command -v "$NODE_BIN" >/dev/null 2>&1; then
   NODE_BIN="$(command -v node 2>/dev/null || true)"
 fi
