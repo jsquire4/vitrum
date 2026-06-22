@@ -57,6 +57,10 @@ Stop implementation work and switch to validation/signoff when all are true:
   candidate queue and finish the assigned task first.
 - **No validation-as-implementation theater.** Render captures/A-B proof are
   important, but they do not replace fixing a confirmed code bug.
+- **Use the queue reporter before starting another wave.** `npm run
+  road-to-100-next-actions` is the compact work-order view: active code rows,
+  proof/adapter rows, provisioning rows, and future-contract rows are listed
+  separately so closed implementation work does not get reopened.
 
 ## Triage Labels
 
