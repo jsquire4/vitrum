@@ -1995,7 +1995,8 @@ the real MeshoptCubeTest browser telemetry now proves
 instead of falsely reporting an empty extension set. On this WSL Playwright host
 all three pages reach capture readiness, but the public
 `engine.captureFrame({ colorSpace: 'output' })` browser readback times out; the
-status records each row as `HOST-BLOCKED` at `engine-captureFrame-output`.
+status first records the `engine-captureFrame-output` timeout and then the
+screenshot/data-url fallbacks as structured attempts.
 Browser PNG proof remains queued for a host that can capture WebGL2 canvases.
 The default `npm run proof-check` lane intentionally keeps this fail-closed WSL
 status green, while
@@ -2011,9 +2012,11 @@ proof artifact.
 default `engine-first` mode. All three real-asset pages reach ready telemetry
 with texture/decode proof intact, but browser `captureFrame({ colorSpace:
 'output' })` readback times out at `engine-captureFrame-output` on this WSL
-Playwright host. The proof checker still rejects vague `HOST-BLOCKED` rows that
-lack structured capture attempts, and the required promotion gate still fails
-until real PNG/golden `PASS` rows are captured for all three assets.
+Playwright host, then the browser screenshot/data-url fallbacks also time out
+before the row's final `canvas-data-url` host-block verdict. The proof checker
+still rejects vague `HOST-BLOCKED` rows that lack structured capture attempts,
+and the required promotion gate still fails until real PNG/golden `PASS` rows
+are captured for all three assets.
 pt-webgl2 now dedupes repeated sampler-policy approximation warnings at the
 engine warning surface, keeping this browser proof lane focused on one stable
 structured diagnostic per material-map slot instead of repeating it on capture

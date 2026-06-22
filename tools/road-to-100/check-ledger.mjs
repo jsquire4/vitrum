@@ -593,6 +593,18 @@ if (!road.includes("attachVitrum.auto-recreate-scene-snapshot-unavailable")) {
 if (!road.includes("`npm run gltf-browser-proof-check:required` is the promotion gate and fails on")) {
   fail("road-to-100.md must retain strict browser glTF promotion-gate wording");
 }
+if (road.includes("status records each row as `HOST-BLOCKED` at `engine-captureFrame-output`")) {
+  fail("road-to-100.md contains stale pt-webgl2 browser proof final-step wording");
+}
+if (!road.includes("status first records the `engine-captureFrame-output` timeout and then the")) {
+  fail("road-to-100.md must retain the current engine-first plus browser-fallback proof summary");
+}
+if (gapExecutionPlan.includes("now uses `canvas-first` mode")) {
+  fail("gap-closure-execution-plan.md contains stale pt-webgl2 browser artifact capture mode wording");
+}
+if (!gapExecutionPlan.includes("now uses the default `engine-first`")) {
+  fail("gap-closure-execution-plan.md must retain the committed engine-first browser proof artifact wording");
+}
 if (packageJson.scripts?.["gltf-browser-proof-check:required"] !== "deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs --require-pass") {
   fail("package.json must retain the strict browser glTF required proof script");
 }

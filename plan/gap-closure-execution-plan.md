@@ -745,11 +745,12 @@ Implementation:
 - Screenshot promises are wrapped in explicit bounded timeouts, so WSL
   host-blocked runs return a structured `HOST-BLOCKED` row around the
   screenshot timeout instead of burning the full asset capture timeout.
-- The committed `pt-webgl2-real-status.json` now uses `canvas-first` mode so the
-  fail-closed artifact records clipped page screenshot, locator screenshot, and
-  canvas data URL attempts before the host-block verdict. Engine-first remains
-  the default harness mode, but this committed proof row intentionally captures
-  the browser readback blocker directly.
+- The committed `pt-webgl2-real-status.json` now uses the default `engine-first`
+  mode so the fail-closed artifact records the engine `captureFrame` readback
+  timeout first, then clipped page screenshot, locator screenshot, and canvas
+  data URL fallback attempts before the host-block verdict. Explicit
+  `canvas-first` and `canvas-only` modes remain available for one-off browser
+  readback probes through `VITRUM_ENGINE_CAPTURE_MODE`.
 
 Focused gates:
 
