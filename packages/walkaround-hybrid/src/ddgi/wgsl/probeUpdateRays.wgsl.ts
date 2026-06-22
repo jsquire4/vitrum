@@ -291,7 +291,7 @@ struct DdgiTraceParams {
 // never updated). Sampler removed on both sides.
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
 
-const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 55u;
+const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 56u;
 const DDGI_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const DDGI_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const DDGI_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -322,6 +322,7 @@ const DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
 const DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 const DDGI_MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: u32 = 53u;
 const DDGI_MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: u32 = 54u;
+const DDGI_MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET: u32 = 55u;
 
 fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(ddgiMaterialMapMeta);
@@ -831,6 +832,45 @@ fn ddgiFaceLayerRoughness(roughness: f32, layer: vec4f) -> f32 {
   return select(roughness, clamp(layer.a, 0.0, 1.0), layer.a >= 0.0);
 }
 
+fn ddgiSampleVolumeScatteringControls(triIndex: u32) -> vec4f {
+  let scatter = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET);
+  return vec4f(max(scatter.rgb, vec3f(0.0)), clamp(scatter.a, -0.99, 0.99));
+}
+
+fn ddgiVolumeScatteringStrength(scatter: vec4f) -> f32 {
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  return clamp(max(sigmaS.r, max(sigmaS.g, sigmaS.b)) * 0.25, 0.0, 0.75);
+}
+
+fn ddgiVolumeScatteringTint(scatter: vec4f) -> vec3f {
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  let majorant = max(sigmaS.r, max(sigmaS.g, sigmaS.b));
+  if (majorant <= 1e-6) {
+    return vec3f(1.0);
+  }
+  return clamp(sigmaS / majorant, vec3f(0.0), vec3f(1.0));
+}
+
+fn ddgiApplyVolumeScatteringApproximation(
+  radiance: vec3f,
+  albedo: vec3f,
+  scatter: vec4f,
+  normal: vec3f,
+  wo: vec3f,
+) -> vec3f {
+  let strength = ddgiVolumeScatteringStrength(scatter);
+  if (strength <= 1e-6) {
+    return radiance;
+  }
+  let tint = ddgiVolumeScatteringTint(scatter);
+  let viewEdge = 1.0 - abs(clamp(dot(safe_normalize(normal), safe_normalize(wo)), -1.0, 1.0));
+  let anisotropyBoost = clamp(1.0 + scatter.a * (0.25 + 0.75 * viewEdge), 0.35, 1.75);
+  let amount = clamp(strength * anisotropyBoost, 0.0, 0.85);
+  let lum = dot(radiance, vec3f(0.2126, 0.7152, 0.0722));
+  let scattered = radiance * tint + lum * albedo * tint * (1.0 / PI);
+  return mix(radiance, scattered, amount);
+}
+
 struct DdgiProbeHitMaterial {
   albedo: vec3f,
   roughness: f32,
@@ -843,6 +883,7 @@ struct DdgiProbeHitMaterial {
   anisotropy: vec2f,
   iridescence: vec4f,
   layerTransmission: vec3f,
+  volumeScattering: vec4f,
   transmission: f32,
   beerTint: vec3f,
 }
@@ -869,6 +910,7 @@ fn ddgiSampleProbeHitMaterial(
   out.anisotropy = vec2f(0.0);
   out.iridescence = vec4f(0.0, 1.0, 0.0, 0.0);
   out.layerTransmission = vec3f(1.0);
+  out.volumeScattering = vec4f(0.0);
   out.transmission = scalarTransmission;
   out.beerTint = scalarBeerTint;
   out.clearcoatNormal = ddgiApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
@@ -912,6 +954,7 @@ fn ddgiSampleProbeHitMaterial(
   let layerControls = ddgiSampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);
   out.roughness = ddgiFaceLayerRoughness(out.roughness, layerControls);
   out.layerTransmission = ddgiFaceLayerTransmission(layerControls);
+  out.volumeScattering = ddgiSampleVolumeScatteringControls(hit.indices.w);
   out.transmission = ddgiSampleTransmissionMapForHit(hit, scalarTransmission);
   out.beerTint = ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint);
   return out;
@@ -2100,6 +2143,13 @@ fn probeUpdateRays(
         let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);
         radiance = radiance + surfaceEmission;
         radiance = radiance * probeMat.layerTransmission;
+        radiance = ddgiApplyVolumeScatteringApproximation(
+          radiance,
+          probeMat.albedo,
+          probeMat.volumeScattering,
+          probeNormal,
+          -dir,
+        );
 
         out.hitRadiance  = radiance;
         out.hitDistance  = hit.dist;

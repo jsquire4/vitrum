@@ -139,6 +139,9 @@ describe('backend promise ledger', () => {
     expect(wa.bumpMap).toBe('approximate');
     expect(wa.bumpScale).toBe('approximate');
     expect(wa.sheen).toBe('approximate');
+    expect(wa.scatteringCoefficient).toBe('approximate');
+    expect(wa.scatteringAnisotropy).toBe('approximate');
+    expect(wa.scatteringCoefficientRGB).toBe('approximate');
     expect(wa.frontLayer).toBe('approximate');
     expect(wa.backLayer).toBe('approximate');
     expect(wa.extensions).toBe('native');

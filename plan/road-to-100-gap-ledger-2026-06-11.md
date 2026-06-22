@@ -36,7 +36,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens; npm run gltf-browser-proof-check:required fails on HOST-BLOCKED until real browser PNG/golden PASS exists",
     "GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT quality and radiometric A/B evidence",
     "browser and real-adapter validation outside WSL GPU smoke coverage",
-    "production neural checkpoint and NRC/neural default-tier decisions; displacement/microdisplacement limits, walkaround spectral/scattering/thin-film/full-layer-stack fields, pt-webgl2 unpromoted specialty rows, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
+    "production neural checkpoint and NRC/neural default-tier decisions; displacement/microdisplacement limits, walkaround spectral/dispersion/thin-film/full-layer-stack fields, approximate walkaround scattering rows, pt-webgl2 unpromoted specialty rows, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
   ],
   "requiredGreenGates": [
     "npm run typecheck",
@@ -63,7 +63,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
 
 The contract/API implementation campaign is in the tail. The remaining Road work
 is mostly proof and promotion breadth, plus learned-system default/checkpoint
-decisions. Displacement, walkaround spectral/scattering, thin-film/full-layer
-stacks, front/back face absorption layers, and full transparent transport are
-explicit unsupported/approximate contract rows, not silent implementation
-promises. This ledger is not a GA completion claim.
+decisions. Displacement, walkaround spectral/dispersion, thin-film/full-layer
+stacks, approximate scattering/front/back face absorption layers, and full
+transparent transport are explicit unsupported/approximate contract rows, not
+silent implementation promises. This ledger is not a GA completion claim.

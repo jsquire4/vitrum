@@ -320,6 +320,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let anisotropyFrame = materialTangentFrameForHit(primaryHit, normal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);
   let iridescence = sampleIridescenceControls(primaryHit.indices.w, primaryHit.uv, uv1);
   let envMapIntensity = sampleEnvMapIntensity(primaryHit.indices.w);
+  let volumeScattering = sampleVolumeScatteringControls(primaryHit.indices.w);
   let authoredAo = sampleAoMapFactor(primaryHit.indices.w, materialWord, primaryHit.uv, uv1);
 
   // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:
@@ -439,8 +440,20 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Lo_transmittedGI joins the direct channel (un-demodulated; bypasses AO —
   // the diffuse wall behind the glass is not in contact-shadow from the glass
   // pane, and GI through glass is a transmission term, not an occlusion term).
-  let directRadiance = (Lo_emit + Lo_emitterGlow + Lo_lightMap + Lo_indirectSpec + Lo_transmittedGI + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao) * layerTransmission;
-  let indirectRadiance = Lo_indirect * ao * layerTransmission;
+  let directRadiance = applyVolumeScatteringApproximation(
+    (Lo_emit + Lo_emitterGlow + Lo_lightMap + Lo_indirectSpec + Lo_transmittedGI + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao) * layerTransmission,
+    albedo,
+    volumeScattering,
+    normal,
+    wo,
+  );
+  let indirectRadiance = applyVolumeScatteringApproximation(
+    Lo_indirect * ao * layerTransmission,
+    albedo,
+    volumeScattering,
+    normal,
+    wo,
+  );
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally
   // produce singular radiance values (cos(θ_v) → 0 at the grazing edge of

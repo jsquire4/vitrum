@@ -41,7 +41,7 @@ export const RESTIR_PHAT_WGSL = /* wgsl */ `
 // ============================================================
 
 fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
-  return surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
+  let brdf = surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
     surf.albedo,
     surf.rough,
     surf.metal,
@@ -62,6 +62,7 @@ fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
     surf.wo,
     wi,
   );
+  return applyVolumeScatteringApproximation(brdf, surf.albedo, surf.volumeScattering, surf.normal, surf.wo);
 }
 
 // ENV branch: p̂ = luminance(envRadiance(dir) * full material BRDF(... dir)) — no geometry

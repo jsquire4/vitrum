@@ -274,6 +274,39 @@ const WALKAROUND_FACE_LAYERS = evidence(
   ],
 );
 
+const WALKAROUND_VOLUME_SCATTERING = evidence(
+  'volume-approximation',
+  'sigma_s and anisotropy are scalar-atlas metadata consumed by bounded single-scatter tinting, not full volumetric path tracing',
+  [
+    'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+    'packages/walkaround-hybrid/src/__tests__/restirDiMaterialParity.test.ts',
+    'packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts',
+    'packages/walkaround-hybrid/src/ddgi/__tests__/ddgiGlossyProbeBounce.test.ts',
+  ],
+  [
+    'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
+    'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+    'packages/walkaround-hybrid/src/shaders/shade.wgsl.ts',
+    'packages/walkaround-hybrid/src/shaders/restirPHat.wgsl.ts',
+    'packages/walkaround-hybrid/src/shaders/restirGiMaterial.wgsl.ts',
+    'packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts',
+  ],
+  [
+    {
+      path: 'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+      includes: [
+        'packs volume scattering sigmaS and anisotropy metadata',
+      ],
+    },
+    {
+      path: 'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+      includes: [
+        'fn applyVolumeScatteringApproximation(',
+      ],
+    },
+  ],
+);
+
 const SHARED_VERTEX_DISPLACEMENT = evidence(
   'shared-vertex-displacement',
   'CPU-readable displacement maps become vertex-level geometry before BVH build; no tessellation/microdisplacement',
@@ -490,6 +523,11 @@ const MATERIAL_APPROXIMATE_EVIDENCE: Record<BackendWithApproximateEvidence, Reco
       'anisotropy', 'anisotropyRotation',
     ], WALKAROUND_RICH_LOBES),
     ...group(['frontLayer', 'backLayer'], WALKAROUND_FACE_LAYERS),
+    ...group([
+      'scatteringCoefficient',
+      'scatteringAnisotropy',
+      'scatteringCoefficientRGB',
+    ], WALKAROUND_VOLUME_SCATTERING),
     ...group(['displacementMap', 'displacementScale', 'displacementBias'], SHARED_VERTEX_DISPLACEMENT),
   },
   'pt-webgl2': {

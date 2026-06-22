@@ -349,10 +349,13 @@ for (const field of walkaroundConsumedFields) {
 const permanentlyUnsupportedWalkaroundFields = [
   "spectralAttenuation",
   "dispersionAbbeNumber",
+  "thinFilmStack",
+];
+
+const walkaroundApproximateVolumeScatteringFields = [
   "scatteringCoefficient",
   "scatteringAnisotropy",
   "scatteringCoefficientRGB",
-  "thinFilmStack",
 ];
 
 const walkaroundApproximateFaceLayerFields = [
@@ -390,6 +393,18 @@ for (const field of walkaroundApproximateVertexDisplacementFields) {
   }
 }
 
+for (const field of walkaroundApproximateVolumeScatteringFields) {
+  if (walkaroundMaterialRows.get(field) !== "approximate") {
+    fail(`walkaround volume-scattering field must stay approximate unless volumetric transport proof lands: ${field}`);
+  }
+  if (!walkaroundConsumedFields.has(field)) {
+    fail(`walkaround approximate volume-scattering field is absent from CONSUMED_MATERIAL_FIELDS: ${field}`);
+  }
+  if (atlasMapFieldUnion.has(field) || atlasMapFields.has(field)) {
+    fail(`walkaround volume-scattering field should use scalar metadata, not AtlasMapField map packing: ${field}`);
+  }
+}
+
 for (const field of walkaroundApproximateFaceLayerFields) {
   if (walkaroundMaterialRows.get(field) !== "approximate") {
     fail(`walkaround face-layer field must stay approximate unless native layered-BSDF proof lands: ${field}`);
@@ -420,7 +435,6 @@ for (const forbiddenOffsetNeedle of [
   "DISPLACEMENT",
   "SPECTRAL",
   "DISPERSION",
-  "SCATTERING",
   "THIN_FILM",
 ]) {
   for (const offsetName of atlasOffsetNames) {
@@ -441,14 +455,30 @@ for (const offsetName of ["FRONT_LAYER", "BACK_LAYER"]) {
     fail(`materialAtlas.wgsl is missing face-layer metadata offset: ${offsetName}`);
   }
 }
+if (!atlasOffsetNames.has("VOLUME_SCATTERING")) {
+  fail("walkaround volume-scattering metadata offset is missing from host atlas");
+}
+if (!materialAtlasWgsl.includes("MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET")) {
+  fail("materialAtlas.wgsl is missing volume-scattering metadata offset");
+}
 for (const [sourceName, source, needle] of [
   ["materialAtlas.wgsl.ts", materialAtlasWgsl, "fn sampleFaceLayerControls("],
   ["materialAtlas.wgsl.ts", materialAtlasWgsl, "payload.layerTransmission = faceLayerTransmission(layerControls);"],
-  ["restirPHat.wgsl.ts", restirPhatWgsl, "return surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame("],
+  ["restirPHat.wgsl.ts", restirPhatWgsl, "let brdf = surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame("],
   ["probeUpdateRays.wgsl.ts", ddgiProbeUpdateWgsl, "radiance = radiance * probeMat.layerTransmission;"],
 ]) {
   if (!source.includes(needle)) {
     fail(`walkaround face-layer implementation proof is missing from ${sourceName}: ${needle}`);
+  }
+}
+for (const [sourceName, source, needle] of [
+  ["materialAtlas.wgsl.ts", materialAtlasWgsl, "fn sampleVolumeScatteringControls("],
+  ["materialAtlas.wgsl.ts", materialAtlasWgsl, "payload.volumeScattering = sampleVolumeScatteringControls(hit.indices.w);"],
+  ["restirPHat.wgsl.ts", restirPhatWgsl, "return applyVolumeScatteringApproximation(brdf, surf.albedo, surf.volumeScattering, surf.normal, surf.wo);"],
+  ["probeUpdateRays.wgsl.ts", ddgiProbeUpdateWgsl, "radiance = ddgiApplyVolumeScatteringApproximation("],
+]) {
+  if (!source.includes(needle)) {
+    fail(`walkaround volume-scattering implementation proof is missing from ${sourceName}: ${needle}`);
   }
 }
 
@@ -467,8 +497,8 @@ if (road.includes("Document in ledger + planner: `displacement*`, `spectralAtten
 if (road.includes("spectral/displacement/thin-film/layers")) {
   fail("road-to-100.md must not include displacement in the permanent walkaround unsupported shorthand");
 }
-if (!road.includes("displacement is handled separately as\n> approximate vertex-level shared-BVH geometry")) {
-  fail("road-to-100.md must keep the Phase 3 scope note aligned with the displacement approximate row");
+if (!road.includes("scattering and displacement are handled\n> separately as approximate realtime/vertex-level shared-BVH rows")) {
+  fail("road-to-100.md must keep the Phase 3 scope note aligned with the scattering/displacement approximate rows");
 }
 if (!road.includes("`displacementMap` / `displacementScale` / `displacementBias` are not in this unsupported bucket")) {
   fail("road-to-100.md must retain the walkaround displacement approximate-vs-unsupported boundary");

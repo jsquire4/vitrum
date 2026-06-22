@@ -115,6 +115,7 @@ struct PrimarySurface {
   sheen: vec4f,
   sheenRoughness: f32,
   layerTransmission: vec3f,
+  volumeScattering: vec4f,
   envMapIntensity: f32,
   depth:  f32,
 };

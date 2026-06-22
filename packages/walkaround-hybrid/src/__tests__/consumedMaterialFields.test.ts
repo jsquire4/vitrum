@@ -78,17 +78,11 @@ const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
     values: new Float32Array([0.1, 0.2, 0.3]),
   },
   dispersionAbbeNumber: 42,
-  scatteringCoefficient: 0.15,
-  scatteringAnisotropy: 0.25,
-  scatteringCoefficientRGB: [0.1, 0.2, 0.3],
   thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
 };
 
 const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
   'dispersionAbbeNumber',
-  'scatteringAnisotropy',
-  'scatteringCoefficient',
-  'scatteringCoefficientRGB',
   'spectralAttenuation',
   'thinFilmStack',
 ];
@@ -228,13 +222,23 @@ describe('collectUnconsumedMaterialFields', () => {
     })).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
   });
 
+  it('does not warn for approximate walkaround volume scattering fields', () => {
+    expect(collectUnconsumedMaterialFieldsForMaterial({
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      scatteringCoefficient: 0.15,
+      scatteringAnisotropy: 0.25,
+      scatteringCoefficientRGB: [0.1, 0.2, 0.3],
+    })).toEqual([]);
+  });
+
   it('categorizes unconsumed fields for structured warning consumers', () => {
     expect(categorizeUnconsumedMaterialFields([
       'unknownFutureField',
       ...WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS,
     ])).toEqual({
       spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
-      volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
       layered: ['thinFilmStack'],
       unknown: ['unknownFutureField'],
     });
@@ -574,7 +578,6 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
         JSON.stringify(w.details?.fields) === JSON.stringify(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS) &&
         JSON.stringify(w.details?.categories) === JSON.stringify({
           spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
-          volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
           layered: ['thinFilmStack'],
         }) &&
         JSON.stringify(w.details?.primitiveFields) === JSON.stringify([{

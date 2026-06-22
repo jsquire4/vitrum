@@ -7,7 +7,7 @@ import type {
 } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-export const MATERIAL_MAP_META_TEXELS_PER_TRI = 55;
+export const MATERIAL_MAP_META_TEXELS_PER_TRI = 56;
 export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   BASE_COLOR: 0,
   ROUGHNESS: 2,
@@ -43,6 +43,7 @@ export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   ENV_INTENSITY: 52,
   FRONT_LAYER: 53,
   BACK_LAYER: 54,
+  VOLUME_SCATTERING: 55,
 } as const;
 
 export type AtlasMapField =
@@ -432,6 +433,19 @@ function clampedNonNegative(value: number | undefined, fallback: number): number
   return Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
 }
 
+function clampedSignedUnit(value: number | undefined, fallback: number): number {
+  return Number.isFinite(value) ? Math.min(0.99, Math.max(-0.99, value ?? fallback)) : fallback;
+}
+
+function nonNegativeVec3Component(
+  color: readonly [number, number, number] | undefined,
+  index: 0 | 1 | 2,
+  fallback: number,
+): number {
+  const value = color?.[index];
+  return Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
+}
+
 function clampedColorComponent(
   color: readonly [number, number, number] | undefined,
   index: 0 | 1 | 2,
@@ -813,6 +827,15 @@ export function packMaterialTextureAtlas(
       : -1;
   };
 
+  const writeVolumeScatteringMeta = (mat: MaterialSpec | undefined, texel: number): void => {
+    const b = texel * 4;
+    const scalar = clampedNonNegative(mat?.scatteringCoefficient, 0);
+    baseColorMetaData[b] = nonNegativeVec3Component(mat?.scatteringCoefficientRGB, 0, scalar);
+    baseColorMetaData[b + 1] = nonNegativeVec3Component(mat?.scatteringCoefficientRGB, 1, scalar);
+    baseColorMetaData[b + 2] = nonNegativeVec3Component(mat?.scatteringCoefficientRGB, 2, scalar);
+    baseColorMetaData[b + 3] = clampedSignedUnit(mat?.scatteringAnisotropy, 0);
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -851,6 +874,7 @@ export function packMaterialTextureAtlas(
     writeEnvMapIntensityMeta(mat, baseTexel + offsets.ENV_INTENSITY);
     writeFaceLayerMeta(mat?.frontLayer, baseTexel + offsets.FRONT_LAYER);
     writeFaceLayerMeta(mat?.backLayer, baseTexel + offsets.BACK_LAYER);
+    writeVolumeScatteringMeta(mat, baseTexel + offsets.VOLUME_SCATTERING);
   }
 
   return {

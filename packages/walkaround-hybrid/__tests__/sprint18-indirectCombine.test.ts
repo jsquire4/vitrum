@@ -27,9 +27,9 @@ describe('Sprint 18 — shade.wgsl split output', () => {
   it('splits the final radiance into directRadiance + indirectRadiance', () => {
     expect(SHADE_WGSL).toContain('let directRadiance');
     expect(SHADE_WGSL).toContain('let indirectRadiance');
-    // directRadiance = (Lo_emit + ... + (Lo_direct + Lo_sunCaustic + Lo_skyAperture) * ao) * layerTransmission
-    expect(SHADE_WGSL).toMatch(/let directRadiance\s*=\s*\(Lo_emit/);
-    expect(SHADE_WGSL).toMatch(/let indirectRadiance\s*=\s*Lo_indirect\s*\*\s*ao\s*\*\s*layerTransmission/);
+    // directRadiance = applyVolumeScatteringApproximation((Lo_emit + ... + (Lo_direct + Lo_sunCaustic + Lo_skyAperture) * ao) * layerTransmission, ...)
+    expect(SHADE_WGSL).toMatch(/let directRadiance\s*=\s*applyVolumeScatteringApproximation\(\s*\(Lo_emit/);
+    expect(SHADE_WGSL).toMatch(/let indirectRadiance\s*=\s*applyVolumeScatteringApproximation\(\s*Lo_indirect\s*\*\s*ao\s*\*\s*layerTransmission/);
   });
 
   it('writes split outputs at the end of shadeMain', () => {
@@ -65,7 +65,7 @@ describe('T5 — stained-glass terms extracted to lo_sg_* opt-in module', () => 
     // Phase-3D lightMap slice — Lo_lightMap is baked outgoing radiance and also
     // joins the non-AO direct group.
     expect(SHADE_WGSL).toMatch(
-      /directRadiance\s*=\s*\(Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_lightMap\s*\+\s*Lo_indirectSpec\s*\+\s*Lo_transmittedGI\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao\)\s*\*\s*layerTransmission/,
+      /directRadiance\s*=\s*applyVolumeScatteringApproximation\(\s*\(Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_lightMap\s*\+\s*Lo_indirectSpec\s*\+\s*Lo_transmittedGI\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\s*\+\s*Lo_sunCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao\)\s*\*\s*layerTransmission/,
     );
   });
 

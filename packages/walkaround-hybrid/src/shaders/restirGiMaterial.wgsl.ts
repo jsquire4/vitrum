@@ -112,7 +112,13 @@ fn restir_gi_receiver_contribution_from_payload(
     );
     contribution = contribution + Lo * specBrdf;
   }
-  return contribution * payload.layerTransmission;
+  return applyVolumeScatteringApproximation(
+    contribution * payload.layerTransmission,
+    payload.albedo,
+    payload.volumeScattering,
+    receiverNormal,
+    receiverWo,
+  );
 }
 
 fn restir_gi_receiver_phat_from_payload(
@@ -173,6 +179,7 @@ fn restir_gi_receiver_phat_from_surface(
   payload.sheen = surf.sheen;
   payload.sheenRoughness = surf.sheenRoughness;
   payload.layerTransmission = surf.layerTransmission;
+  payload.volumeScattering = surf.volumeScattering;
   return restir_gi_receiver_phat_from_payload(
     surf.pos,
     surf.normal,
@@ -263,9 +270,21 @@ fn sampleRestirGIHitMaterialForHit(
       woToVisible,
       proxyWi,
     );
-    out.Lo = (surfaceEmission + incomingIrradiance * brdf) * payload.layerTransmission;
+    out.Lo = applyVolumeScatteringApproximation(
+      (surfaceEmission + incomingIrradiance * brdf) * payload.layerTransmission,
+      payload.albedo,
+      payload.volumeScattering,
+      shadingNormal,
+      woToVisible,
+    );
   } else {
-    out.Lo = (surfaceEmission + diffuseLo) * payload.layerTransmission;
+    out.Lo = applyVolumeScatteringApproximation(
+      (surfaceEmission + diffuseLo) * payload.layerTransmission,
+      payload.albedo,
+      payload.volumeScattering,
+      shadingNormal,
+      safe_normalize(-wiVisibleToHit),
+    );
   }
 
   return out;

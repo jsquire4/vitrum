@@ -12,7 +12,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 55u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 56u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -47,6 +47,7 @@ const MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 const MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: u32 = 52u;
 const MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: u32 = 53u;
 const MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: u32 = 54u;
+const MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET: u32 = 55u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -288,6 +289,48 @@ fn faceLayerTransmission(layer: vec4f) -> vec3f {
 
 fn faceLayerRoughness(roughness: f32, layer: vec4f) -> f32 {
   return select(roughness, clamp(layer.a, 0.0, 1.0), layer.a >= 0.0);
+}
+
+fn sampleVolumeScatteringControls(triIndex: u32) -> vec4f {
+  let scatter = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET),
+    0,
+  );
+  return vec4f(max(scatter.rgb, vec3f(0.0)), clamp(scatter.a, -0.99, 0.99));
+}
+
+fn volumeScatteringStrength(scatter: vec4f) -> f32 {
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  return clamp(max(sigmaS.r, max(sigmaS.g, sigmaS.b)) * 0.25, 0.0, 0.75);
+}
+
+fn volumeScatteringTint(scatter: vec4f) -> vec3f {
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  let majorant = max(sigmaS.r, max(sigmaS.g, sigmaS.b));
+  if (majorant <= 1e-6) {
+    return vec3f(1.0);
+  }
+  return clamp(sigmaS / majorant, vec3f(0.0), vec3f(1.0));
+}
+
+fn applyVolumeScatteringApproximation(
+  radiance: vec3f,
+  albedo: vec3f,
+  scatter: vec4f,
+  normal: vec3f,
+  wo: vec3f,
+) -> vec3f {
+  let strength = volumeScatteringStrength(scatter);
+  if (strength <= 1e-6) {
+    return radiance;
+  }
+  let tint = volumeScatteringTint(scatter);
+  let viewEdge = 1.0 - abs(clamp(dot(safe_normalize(normal), safe_normalize(wo)), -1.0, 1.0));
+  let anisotropyBoost = clamp(1.0 + scatter.a * (0.25 + 0.75 * viewEdge), 0.35, 1.75);
+  let amount = clamp(strength * anisotropyBoost, 0.0, 0.85);
+  let scattered = radiance * tint + luminance(radiance) * albedo * tint * INV_PI;
+  return mix(radiance, scattered, amount);
 }
 
 fn sampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
@@ -762,6 +805,7 @@ struct RestirDIMaterialPayload {
   sheen: vec4f,
   sheenRoughness: f32,
   layerTransmission: vec3f,
+  volumeScattering: vec4f,
 };
 
 fn sampleRestirDIMaterialPayloadForHit(
@@ -793,6 +837,7 @@ fn sampleRestirDIMaterialPayloadForHit(
   payload.sheen = sampleSheenControls(hit.indices.w, hit.uv, uv1);
   payload.sheenRoughness = sampleSheenRoughness(hit.indices.w, hit.uv, uv1);
   payload.layerTransmission = faceLayerTransmission(layerControls);
+  payload.volumeScattering = sampleVolumeScatteringControls(hit.indices.w);
   return payload;
 }
 

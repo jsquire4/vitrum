@@ -1052,6 +1052,37 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[back + 3]).toBe(-1);
   });
 
+  it('packs volume scattering sigmaS and anisotropy metadata', () => {
+    const scalar: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.8,
+      metallic: 0,
+      scatteringCoefficient: 0.4,
+      scatteringAnisotropy: 1.5,
+    };
+    const rgb: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.8,
+      metallic: 0,
+      scatteringCoefficient: 0.4,
+      scatteringCoefficientRGB: [0.1, -1, 2],
+      scatteringAnisotropy: -2,
+    };
+
+    const scalarAtlas = packMaterialTextureAtlas([scalar], new Uint32Array([0]), 1);
+    const rgbAtlas = packMaterialTextureAtlas([rgb], new Uint32Array([0]), 1);
+    const offset = MATERIAL_MAP_META_TEXEL_OFFSETS.VOLUME_SCATTERING * 4;
+
+    expect(scalarAtlas.baseColorMetaData[offset]).toBeCloseTo(0.4, 6);
+    expect(scalarAtlas.baseColorMetaData[offset + 1]).toBeCloseTo(0.4, 6);
+    expect(scalarAtlas.baseColorMetaData[offset + 2]).toBeCloseTo(0.4, 6);
+    expect(scalarAtlas.baseColorMetaData[offset + 3]).toBeCloseTo(0.99, 6);
+    expect(rgbAtlas.baseColorMetaData[offset]).toBeCloseTo(0.1, 6);
+    expect(rgbAtlas.baseColorMetaData[offset + 1]).toBe(0);
+    expect(rgbAtlas.baseColorMetaData[offset + 2]).toBe(2);
+    expect(rgbAtlas.baseColorMetaData[offset + 3]).toBeCloseTo(-0.99, 6);
+  });
+
   it('packs bump-map source dimensions next to bumpScale metadata', () => {
     const handle = {
       width: 3,
@@ -1116,6 +1147,7 @@ describe('walkaround materialTextureAtlas', () => {
       MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: offsets.ENV_INTENSITY,
       MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: offsets.FRONT_LAYER,
       MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: offsets.BACK_LAYER,
+      MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET: offsets.VOLUME_SCATTERING,
     };
 
     for (const [name, expectedValue] of Object.entries(expected)) {
@@ -1138,6 +1170,8 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleFaceLayerControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn faceLayerTransmission(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn faceLayerRoughness(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleVolumeScatteringControls(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn applyVolumeScatteringApproximation(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyThicknessMapToBeerTint(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyBumpMapForHit(');
@@ -1171,6 +1205,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain('let vertexColor = sampleVertexColorForHit(primaryHit);');
     expect(SHADE_WGSL).toContain('let layerControls = sampleFaceLayerControls(primaryHit.indices.w, primaryHit.side >= 0.0);');
     expect(SHADE_WGSL).toContain('let layerTransmission = faceLayerTransmission(layerControls);');
+    expect(SHADE_WGSL).toContain('let volumeScattering = sampleVolumeScatteringControls(primaryHit.indices.w);');
     expect(SHADE_WGSL).toContain(
       'let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, uv1, matColor.rgb * vertexColor.rgb);',
     );

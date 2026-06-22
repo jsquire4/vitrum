@@ -59,9 +59,6 @@ describe('createEngine backend selection', () => {
       },
     }],
     ['dispersionAbbeNumber', { dispersionAbbeNumber: 55 }],
-    ['scatteringCoefficient', { scatteringCoefficient: 0.12 }],
-    ['scatteringAnisotropy', { scatteringAnisotropy: 0.35 }],
-    ['scatteringCoefficientRGB', { scatteringCoefficientRGB: [0.1, 0.2, 0.3] }],
     ['thinFilmStack', {
       thinFilmStack: {
         layers: [{ ior: 1.45, thicknessNm: 120 }],
@@ -126,6 +123,9 @@ describe('createEngine backend selection', () => {
       roughness: 1,
       metallic: 0,
       displacementScale: 0.1,
+      scatteringCoefficient: 0.12,
+      scatteringAnisotropy: 0.35,
+      scatteringCoefficientRGB: [0.1, 0.2, 0.3],
       frontLayer: { transmission: [0.85, 0.9, 1], roughness: 0.25 },
       backLayer: { transmission: [1, 0.9, 0.85] },
     }), true);

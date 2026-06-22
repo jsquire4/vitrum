@@ -23,6 +23,7 @@ describe('ReSTIR-DI material parity', () => {
       'sheen: vec4f,',
       'sheenRoughness: f32,',
       'layerTransmission: vec3f,',
+      'volumeScattering: vec4f,',
     ]) {
       expect(reservoirGi).toContain(field);
     }
@@ -51,6 +52,7 @@ describe('ReSTIR-DI material parity', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheen = sampleSheenControls(hit.indices.w, hit.uv, uv1);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheenRoughness = sampleSheenRoughness(hit.indices.w, hit.uv, uv1);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.layerTransmission = faceLayerTransmission(layerControls);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.volumeScattering = sampleVolumeScatteringControls(hit.indices.w);');
   });
 
   it('threads atlas material payloads through RIS and temporal/spatial primary casts', () => {
@@ -68,12 +70,14 @@ describe('ReSTIR-DI material parity', () => {
       expect(shader).toContain('sheen = payload.sheen');
       expect(shader).toContain('sheenRoughness = payload.sheenRoughness');
       expect(shader).toContain('layerTransmission = payload.layerTransmission');
+      expect(shader).toContain('volumeScattering = payload.volumeScattering');
     }
   });
 
   it('uses the extension-aware BRDF for canonical pHat and RIS candidate scoring', () => {
     expect(RESTIR_PHAT_WGSL).toContain('fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f');
-    expect(RESTIR_PHAT_WGSL).toContain('return surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(RESTIR_PHAT_WGSL).toContain('let brdf = surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(RESTIR_PHAT_WGSL).toContain('return applyVolumeScatteringApproximation(brdf, surf.albedo, surf.volumeScattering, surf.normal, surf.wo);');
     expect(RESTIR_PHAT_WGSL).toContain('surf.specular.rgb,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyTangent,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyBitangent,');

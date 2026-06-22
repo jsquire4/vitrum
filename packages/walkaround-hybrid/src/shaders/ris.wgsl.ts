@@ -215,6 +215,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   surf.sheen = payload.sheen;
   surf.sheenRoughness = payload.sheenRoughness;
   surf.layerTransmission = payload.layerTransmission;
+  surf.volumeScattering = payload.volumeScattering;
   surf.envMapIntensity = envMapIntensity;
   surf.depth  = hit.dist;
 

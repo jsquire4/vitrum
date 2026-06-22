@@ -483,9 +483,12 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   envMapIntensity: 'native',
   spectralAttenuation: 'unsupported',
   dispersionAbbeNumber: 'unsupported',
-  scatteringCoefficient: 'unsupported',
-  scatteringAnisotropy: 'unsupported',
-  scatteringCoefficientRGB: 'unsupported',
+  // Realtime volume approximation: material-atlas metadata stores scalar/RGB
+  // sigmaS plus HG anisotropy and applies a bounded single-scatter tint/softening
+  // in shade/OIT/ReSTIR/DDGI. This is not delta-tracked volumetric transport.
+  scatteringCoefficient: 'approximate',
+  scatteringAnisotropy: 'approximate',
+  scatteringCoefficientRGB: 'approximate',
   // Per-face absorption layers ride the walkaround material atlas. Transmission
   // attenuates final bulk radiance and roughness overrides the selected face in
   // shade/OIT/ReSTIR/DDGI material payloads; layer-local normal maps and full

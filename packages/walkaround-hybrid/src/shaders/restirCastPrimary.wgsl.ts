@@ -98,6 +98,7 @@ fn castPrimary(px: vec2u, dims: vec2u, camPos: vec3f, invVP: mat4x4f) -> Primary
   s.sheen = payload.sheen;
   s.sheenRoughness = payload.sheenRoughness;
   s.layerTransmission = payload.layerTransmission;
+  s.volumeScattering = payload.volumeScattering;
   s.envMapIntensity = payload.envMapIntensity;
   s.depth  = hit.dist;
   return s;
