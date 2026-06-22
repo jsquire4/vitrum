@@ -247,6 +247,9 @@ describe('Volumetric in-medium directional NEE WGSL guard', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('for (var medDi = 0u; medDi < params.directionalLightCount; medDi = medDi + 1u)');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let dDirAD = directionalLights[dBase];');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let dIrrMean = directionalLights[dBase + 1u];');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let angDiamRaw = dDirAD.w;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let lightDir = sampleDirectionalCone(&rng, dDirAD.xyz, angDiam);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('radiance = radiance + throughputInMedium * dIrrMean.rgb * phaseVal;');
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('radiance = radiance + throughputInMedium * vec3f(params.lightDir.w) * phaseVal;');
   });

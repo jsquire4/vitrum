@@ -62,8 +62,8 @@ export interface LoadGltfForEngineOptions<
    * This promotes raw-image `TextureRef` handles into backend-ready CPU-linear
    * handles and surfaces `textureDecodeDiagnostics` / `textureDecodeWarnings` on
    * the returned bridge result. It defaults to false unless a decode-specific
-   * option such as `decodePixels`, `textureTarget`, `maxTextureSize`, or
-   * `warnOnNpotRepeatWrap` is supplied.
+   * option such as `decodePixels`, `textureTarget`, `maxTextureSize`,
+   * `warnOnNpotRepeatWrap`, or `npotRepeatWrapPolicy` is supplied.
    */
   readonly decodeTextures?: boolean;
 
@@ -239,6 +239,7 @@ function shouldDecodeTextures<
     options.decodePixels !== undefined ||
     options.maxTextureSize !== undefined ||
     options.warnOnNpotRepeatWrap !== undefined ||
+    options.npotRepeatWrapPolicy !== undefined ||
     options.onTextureDiagnostic !== undefined ||
     options.onTextureWarning !== undefined;
 }

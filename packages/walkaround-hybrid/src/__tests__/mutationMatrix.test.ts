@@ -554,6 +554,10 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
         layered: ['backLayer', 'frontLayer', 'thinFilmStack'],
       });
+      expect(materialWarning?.details?.primitiveFields).toEqual([{
+        primitiveId: 'mesh-a',
+        fields: WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS,
+      }]);
     } finally {
       engine.dispose();
     }

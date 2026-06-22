@@ -50,6 +50,7 @@ export type GltfTextureHandleKind =
 export type GltfTextureColorSpace = 'srgb' | 'linear';
 
 export type GltfBackendTextureStatus = 'ready' | 'opaque' | 'ignored';
+export type GltfNpotRepeatWrapPolicy = 'warn' | 'resize-to-pot' | 'clamp-sampler';
 
 export interface GltfTextureDecodeReportEntry {
   readonly primitiveId: string;
@@ -171,6 +172,8 @@ export type DecodeSceneTextureDiagnosticCode =
   | 'platform-image-readback-failed'
   | 'decoded-texture-exceeds-max-size'
   | 'decoded-texture-npot-repeat-wrap'
+  | 'decoded-texture-npot-repeat-wrap-resized'
+  | 'decoded-texture-npot-repeat-wrap-clamped'
   | 'spec-gloss-alpha-bake-unavailable';
 
 export interface DecodeSceneTextureDiagnostic {
@@ -189,6 +192,7 @@ export interface DecodeSceneTextureDiagnostic {
   readonly resizedHeight?: number;
   readonly wrapS?: TextureWrapMode;
   readonly wrapT?: TextureWrapMode;
+  readonly npotRepeatWrapPolicy?: GltfNpotRepeatWrapPolicy;
   readonly textureIndex?: number;
   readonly imageIndex?: number;
   readonly samplerIndex?: number;
@@ -202,6 +206,7 @@ export interface DecodeSceneTexturesOptions {
   readonly target: 'cpu-linear' | 'webgpu';
   readonly decodePixels?: DecodeGltfTexturePixelsFn;
   readonly maxTextureSize?: number;
+  readonly npotRepeatWrapPolicy?: GltfNpotRepeatWrapPolicy;
   readonly warnOnNpotRepeatWrap?: boolean;
   readonly onDiagnostic?: (diagnostic: DecodeSceneTextureDiagnostic) => void;
   readonly onWarning?: (message: string) => void;
@@ -601,7 +606,7 @@ async function decodeTextureRef(
       perSpace.set(colorSpace, entry);
     }
     emitDecodedTextureDiagnostics(entry, ref, context);
-    return { ...ref, handle: entry.handle };
+    return applyNpotRepeatWrapPolicy(ref, entry, context);
   }
   if (handleKind !== 'raw-image') {
     context.diagnostic({
@@ -723,7 +728,7 @@ async function decodeTextureRef(
     perSpace.set(colorSpace, entry);
   }
   emitDecodedTextureDiagnostics(entry, ref, context);
-  return { ...ref, handle: entry.handle };
+  return applyNpotRepeatWrapPolicy(ref, entry, context);
 }
 
 function validateDecodedTexturePixels(pixels: GltfDecodedTexturePixels): string | null {
@@ -1288,8 +1293,8 @@ function emitDecodedTextureDiagnostics(
     });
   }
 
-  if (context.options.warnOnNpotRepeatWrap === true && !isPowerOfTwo(handle.width, handle.height) &&
-      usesRepeatWrap(ref)) {
+  const npotPolicy = effectiveNpotRepeatWrapPolicy(context.options);
+  if (npotPolicy === 'warn' && !isPowerOfTwo(handle.width, handle.height) && usesRepeatWrap(ref)) {
     const wrapS = ref.wrapS ?? 'repeat';
     const wrapT = ref.wrapT ?? 'repeat';
     context.diagnostic({
@@ -1303,12 +1308,90 @@ function emitDecodedTextureDiagnostics(
       height: handle.height,
       wrapS,
       wrapT,
+      npotRepeatWrapPolicy: npotPolicy,
       ...textureSourceDiagnosticFields(context.source),
       message: `[vitrum/gltf-adapter] ${context.path} decoded to NPOT ${handle.width}x${handle.height} ` +
         `with wrapS=${wrapS} wrapT=${wrapT}. WebGL2/WebGPU can sample NPOT textures, but exact mip/border ` +
         'parity depends on backend upload policy; pre-resize to power-of-two if this asset needs strict parity.',
     });
   }
+}
+
+function effectiveNpotRepeatWrapPolicy(
+  options: DecodeSceneTexturesOptions,
+): GltfNpotRepeatWrapPolicy | 'none' {
+  if (options.npotRepeatWrapPolicy !== undefined) return options.npotRepeatWrapPolicy;
+  return options.warnOnNpotRepeatWrap === true ? 'warn' : 'none';
+}
+
+function applyNpotRepeatWrapPolicy(
+  ref: TextureRef,
+  entry: DecodedTextureCacheEntry,
+  context: {
+    readonly field: GltfMaterialTextureField;
+    readonly path: string;
+    readonly source?: GltfTextureRefSource;
+    readonly primitiveId: string;
+    readonly primitiveIndex: number;
+    readonly options: DecodeSceneTexturesOptions;
+    readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
+  },
+): TextureRef {
+  const policy = effectiveNpotRepeatWrapPolicy(context.options);
+  const handle = entry.handle;
+  if (policy === 'none' || policy === 'warn' || isPowerOfTwo(handle.width, handle.height) || !usesRepeatWrap(ref)) {
+    return { ...ref, handle };
+  }
+
+  const wrapS = ref.wrapS ?? 'repeat';
+  const wrapT = ref.wrapT ?? 'repeat';
+  if (policy === 'clamp-sampler') {
+    context.diagnostic({
+      severity: 'warning',
+      code: 'decoded-texture-npot-repeat-wrap-clamped',
+      path: context.path,
+      materialField: context.field,
+      primitiveId: context.primitiveId,
+      primitiveIndex: context.primitiveIndex,
+      width: handle.width,
+      height: handle.height,
+      wrapS,
+      wrapT,
+      npotRepeatWrapPolicy: policy,
+      ...textureSourceDiagnosticFields(context.source),
+      message: `[vitrum/gltf-adapter] ${context.path} decoded to NPOT ${handle.width}x${handle.height} ` +
+        `with wrapS=${wrapS} wrapT=${wrapT}. Sampler wrap was clamped to clamp-to-edge by ` +
+        `npotRepeatWrapPolicy:"${policy}".`,
+    });
+    return {
+      ...ref,
+      handle,
+      wrapS: 'clamp-to-edge',
+      wrapT: 'clamp-to-edge',
+    };
+  }
+
+  const resized = resizeDecodedTextureToPowerOfTwo(handle, context.options.maxTextureSize);
+  context.diagnostic({
+    severity: 'warning',
+    code: 'decoded-texture-npot-repeat-wrap-resized',
+    path: context.path,
+    materialField: context.field,
+    primitiveId: context.primitiveId,
+    primitiveIndex: context.primitiveIndex,
+    width: handle.width,
+    height: handle.height,
+    resizedWidth: resized.width,
+    resizedHeight: resized.height,
+    wrapS,
+    wrapT,
+    npotRepeatWrapPolicy: policy,
+    ...textureSourceDiagnosticFields(context.source),
+    message: `[vitrum/gltf-adapter] ${context.path} decoded to NPOT ${handle.width}x${handle.height} ` +
+      `with wrapS=${wrapS} wrapT=${wrapT}. Texture was resized to ${resized.width}x${resized.height} ` +
+      `by npotRepeatWrapPolicy:"${policy}" for deterministic repeat-wrap sampling.`,
+  });
+  return { ...ref, handle: resized };
 }
 
 function normalizeDecodedPixels(
@@ -1373,6 +1456,40 @@ function resizeDecodedTextureToMaxSize(
   const scale = maxTextureSize / Math.max(handle.width, handle.height);
   const width = Math.max(1, Math.round(handle.width * scale));
   const height = Math.max(1, Math.round(handle.height * scale));
+  return resizeDecodedTextureNearest(handle, width, height);
+}
+
+function resizeDecodedTextureToPowerOfTwo(
+  handle: GltfCpuTextureHandle,
+  maxTextureSize: number | undefined,
+): GltfCpuTextureHandle {
+  const width = powerOfTwoTarget(handle.width, maxTextureSize);
+  const height = powerOfTwoTarget(handle.height, maxTextureSize);
+  if (width === handle.width && height === handle.height) return handle;
+  const resized = resizeDecodedTextureNearest(handle, width, height);
+  return withDecodedTextureMetadata(
+    resized,
+    textureDecodeHint(handle)?.originalWidth ?? handle.width,
+    textureDecodeHint(handle)?.originalHeight ?? handle.height,
+    maxTextureSize,
+  );
+}
+
+function powerOfTwoTarget(value: number, maxTextureSize: number | undefined): number {
+  if (isSinglePowerOfTwo(value)) return value;
+  const ceil = 2 ** Math.ceil(Math.log2(Math.max(1, value)));
+  if (typeof maxTextureSize !== 'number' || maxTextureSize <= 0 || ceil <= maxTextureSize) {
+    return Math.max(1, ceil);
+  }
+  return Math.max(1, 2 ** Math.floor(Math.log2(maxTextureSize)));
+}
+
+function resizeDecodedTextureNearest(
+  handle: GltfCpuTextureHandle,
+  width: number,
+  height: number,
+): GltfCpuTextureHandle {
+  if (width === handle.width && height === handle.height) return handle;
   const data = new Float32Array(width * height * 4);
 
   for (let y = 0; y < height; y += 1) {

@@ -47,6 +47,7 @@ export type {
   GltfForEngineResult,
   GltfImportDiagnostic,
   GltfMaterialTextureField,
+  GltfNpotRepeatWrapPolicy,
   GltfTextureColorSpace,
   GltfTextureDecodeReport,
   GltfTextureDecodeReportEntry,

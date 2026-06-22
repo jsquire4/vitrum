@@ -299,8 +299,11 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // RENDER-CHANGING for rough anisotropic materials.
     // Re-pinned 2026-06-21: ptRngFrameKey preserves PCG's old frameSeed^frameIndex
     // expression while letting Sobol use a monotonic sample key in the opt-in module.
-    expect(digest).toBe('3c1009ff490eda39f0423bb447af94d4f3200d359d6c7c370dcfe75623ed188f');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(399709);
+    // Re-pinned 2026-06-21: in-medium directional NEE and ReSTIR-PT suffix NEE
+    // now sample signed soft-directional angularDiameter cones like the surface
+    // direct-light branch instead of treating them as hard deltas.
+    expect(digest).toBe('b5f17c6d2673e99d7a3df6ffa10aabca4860152e9fa1e98f519a5859e0b30f44');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(399951);
   });
 });
 

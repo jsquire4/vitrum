@@ -27,6 +27,7 @@ import {
   collectApproximateRichMaterialPrimitiveFields,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
+  collectUnconsumedMaterialPrimitiveFields,
   EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
   LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
   RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
@@ -242,10 +243,14 @@ describe('collectUnconsumedMaterialFields', () => {
 
   it('unions across multiple primitives and deduplicates', () => {
     const prims: ReadonlyArray<PrimLike> = [
-      { kind: 'mesh', material: { baseColor: [1, 0, 0], frontLayer: { transmission: [1, 1, 1] } } },
-      { kind: 'mesh', material: { baseColor: [0, 1, 0], thinFilmStack: { layers: [] }, anisotropy: 0.5 } },
+      { id: 'pane-a', kind: 'mesh', material: { baseColor: [1, 0, 0], frontLayer: { transmission: [1, 1, 1] } } },
+      { id: 'pane-b', kind: 'mesh', material: { baseColor: [0, 1, 0], thinFilmStack: { layers: [] }, anisotropy: 0.5 } },
     ];
     expect(collectUnconsumedMaterialFields(prims)).toEqual(['frontLayer', 'thinFilmStack']);
+    expect(collectUnconsumedMaterialPrimitiveFields(prims)).toEqual([
+      { primitiveId: 'pane-a', fields: ['frontLayer'] },
+      { primitiveId: 'pane-b', fields: ['thinFilmStack'] },
+    ]);
   });
 
   it('surfaces representative layered and thin-film drops while iridescence is consumed', () => {
@@ -574,7 +579,11 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
           spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
           volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
           layered: ['backLayer', 'frontLayer', 'thinFilmStack'],
-        }),
+        }) &&
+        JSON.stringify(w.details?.primitiveFields) === JSON.stringify([{
+          primitiveId: 'unsupported-material-fields',
+          fields: WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS,
+        }]),
       )).toBe(true);
     } finally {
       engine.dispose();

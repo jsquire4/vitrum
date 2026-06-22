@@ -107,6 +107,7 @@ import {
   collectApproximateRichMaterialPrimitiveFields,
   collectUnconsumedMaterialFieldsForMaterial,
   type ApproximateRichMaterialPrimitiveFields,
+  type UnconsumedMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 import type { BvhUpdateSink } from './pipeline/BvhUpdateSink.js';
 import type { DDGI } from './ddgi/DDGI.js';
@@ -429,7 +430,10 @@ export interface PrimitiveUpdateContext {
   readonly coreSceneSuppliesMeshes?: boolean;
   /** Emits backend-honesty warnings for material-only patches that carry fields
    *  the walkaround material packer does not consume. */
-  readonly warnUnconsumedMaterialFields?: (fields: readonly string[]) => void;
+  readonly warnUnconsumedMaterialFields?: (
+    fields: readonly string[],
+    primitiveFields?: readonly UnconsumedMaterialPrimitiveFields[],
+  ) => void;
   /** Emits backend-honesty warnings for fractional alpha-blend material patches. */
   readonly warnApproximateAlphaBlendPrimitiveIds?: (primitiveIds: readonly string[]) => void;
   /** Emits backend-honesty warnings for emissive-map texel-PDF approximations. */
@@ -1416,8 +1420,12 @@ export function materialPatch(
     prevMaterial != null
       ? mergeMaterialPatch(prevMaterial, materialPatchValue)
       : materialPatchValue;
+  const unconsumedMaterialFields = collectUnconsumedMaterialFieldsForMaterial(
+    nextMaterial as unknown as Record<string, unknown>,
+  );
   ctx.warnUnconsumedMaterialFields?.(
-    collectUnconsumedMaterialFieldsForMaterial(nextMaterial as unknown as Record<string, unknown>),
+    unconsumedMaterialFields,
+    unconsumedMaterialFields.length > 0 ? [{ primitiveId: id, fields: unconsumedMaterialFields }] : [],
   );
   ctx.warnApproximateAlphaBlendPrimitiveIds?.(
     collectApproximateAlphaBlendPrimitiveIds([{

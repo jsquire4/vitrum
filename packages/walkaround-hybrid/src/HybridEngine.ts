@@ -121,12 +121,13 @@ import {
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectApproximateLightMapPrimitiveIds,
   collectApproximateRichMaterialPrimitiveFields,
-  collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
+  collectUnconsumedMaterialPrimitiveFields,
   EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
   LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
   RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
   type ApproximateRichMaterialPrimitiveFields,
+  type UnconsumedMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
@@ -929,6 +930,7 @@ export class HybridEngine implements Engine {
   private _warnUnconsumedMaterialFields(
     fields: readonly string[],
     method: 'setScene' | 'updatePrimitive',
+    primitiveFields: readonly UnconsumedMaterialPrimitiveFields[] = [],
   ): void {
     if (fields.length === 0) return;
     const sortedFields = Array.from(fields).sort();
@@ -945,7 +947,11 @@ export class HybridEngine implements Engine {
         `[vitrum/walkaround-hybrid] ${method}: the following material fields are ` +
         `supplied but not consumed by this backend: ${sortedFields.join(', ')}. ` +
         `See consumedMaterialFields.ts for the full allowlist.`,
-      details: { fields: sortedFields, categories },
+      details: {
+        fields: sortedFields,
+        categories,
+        primitiveFields,
+      },
     });
   }
 
@@ -1211,11 +1217,17 @@ export class HybridEngine implements Engine {
     // which Material properties this backend silently ignores. The warn-once
     // key is the sorted field list so incremental scene/material changes with
     // the same ignored set don't spam.
+    const unconsumedMaterialPrimitiveFields = collectUnconsumedMaterialPrimitiveFields(
+      scene.primitives as unknown as ReadonlyArray<{
+        readonly id?: string;
+        readonly kind: string;
+        readonly material?: Record<string, unknown>;
+      }>,
+    );
     this._warnUnconsumedMaterialFields(
-      collectUnconsumedMaterialFields(
-        scene.primitives as unknown as ReadonlyArray<{ readonly kind: string; readonly material?: Record<string, unknown> }>,
-      ),
+      Array.from(new Set(unconsumedMaterialPrimitiveFields.flatMap((entry) => entry.fields))).sort(),
       'setScene',
+      unconsumedMaterialPrimitiveFields,
     );
 
     const alphaBlendApproxIds = collectApproximateAlphaBlendPrimitiveIds(
@@ -1490,9 +1502,11 @@ export class HybridEngine implements Engine {
     const material = previousMaterial != null
       ? { ...previousMaterial, ...materialPatch }
       : materialPatch;
+    const unconsumedMaterialFields = collectUnconsumedMaterialFieldsForMaterial(material);
     this._warnUnconsumedMaterialFields(
-      collectUnconsumedMaterialFieldsForMaterial(material),
+      unconsumedMaterialFields,
       'updatePrimitive',
+      unconsumedMaterialFields.length > 0 ? [{ primitiveId: id, fields: unconsumedMaterialFields }] : [],
     );
     this._warnApproximateAlphaBlendPrimitiveIds(
       collectApproximateAlphaBlendPrimitiveIds([{
@@ -1692,8 +1706,8 @@ export class HybridEngine implements Engine {
       lastScene:             this._lastScene,
       renderScene:           this._renderScene,
       coreSceneSuppliesMeshes: this._coreSceneSuppliesMeshes(),
-      warnUnconsumedMaterialFields: (fields) => {
-        this._warnUnconsumedMaterialFields(fields, 'updatePrimitive');
+      warnUnconsumedMaterialFields: (fields, primitiveFields) => {
+        this._warnUnconsumedMaterialFields(fields, 'updatePrimitive', primitiveFields);
       },
       warnApproximateAlphaBlendPrimitiveIds: (primitiveIds) => {
         this._warnApproximateAlphaBlendPrimitiveIds(primitiveIds, 'updatePrimitive');

@@ -259,6 +259,23 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
   return out;
 }
 
+fn rptSampleDirectionalCone(rng: ptr<function, u32>, axisIn: vec3f, angularDiameter: f32) -> vec3f {
+  var sampleDir = safe_normalize(axisIn);
+  if (angularDiameter > 0.0) {
+    let cosHalfAngle = cos(angularDiameter * 0.5);
+    let xi1 = rand_f32(rng);
+    let xi2 = rand_f32(rng);
+    let cosTheta = mix(cosHalfAngle, 1.0, xi1);
+    let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    let phi = 6.28318530718 * xi2;
+    let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sampleDir.x) > 0.9);
+    let basisY = normalize(cross(sampleDir, tangentX));
+    let basisX = cross(basisY, sampleDir);
+    sampleDir = normalize(sinTheta * cos(phi) * basisX + sinTheta * sin(phi) * basisY + cosTheta * sampleDir);
+  }
+  return sampleDir;
+}
+
 // Direct-lighting NEE at the RECONNECTION vertex xs (visible-vertex independent).
 // Adds the rect-/disc-/mesh-area + directional + point + spot + environment
 // connections with the SAME analytic estimators the megakernel uses, at the suffix throughput
@@ -296,18 +313,21 @@ fn rptDirectAtVertex(
   envMapIntensity: f32,
 ) -> vec3f {
   var contrib = vec3f(0.0);
-  // Directional lights (delta): full weight, no MIS. Use the packed
-  // N-directional RGB records instead of the legacy scalar lightDir mirror so
-  // ReSTIR-PT suffix Lo keeps chroma and multiple directional emitters.
+  // Directional lights: full-weight light-sampled estimator, mirroring the
+  // megakernel's delta/soft-cone branch. Use the packed N-directional RGB
+  // records instead of the legacy scalar lightDir mirror so ReSTIR-PT suffix Lo
+  // keeps chroma and multiple directional emitters.
   for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
     let dBase = di * 2u;
     let dDirAD = directionalLights[dBase];
     let dIrrMean = directionalLights[dBase + 1u];
     if (dIrrMean.w > 1e-6) {
-      let lightDir = safe_normalize(dDirAD.xyz);
+      let angDiamRaw = dDirAD.w;
+      let dirShadowDisabled = angDiamRaw < 0.0;
+      let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);
+      let lightDir = rptSampleDirectionalCone(rng, dDirAD.xyz, angDiam);
       let nDotL = max(0.0, dot(normal, lightDir));
       if (nDotL > 0.0) {
-        let dirShadowDisabled = dDirAD.w < 0.0;
         let shadowRay = Ray(pos + normal * 1e-3, lightDir);
         if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
           let brdf = evaluateBrdfFullWithClearcoatNormal(

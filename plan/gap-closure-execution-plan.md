@@ -526,12 +526,47 @@ npm test --workspace @vitrum/pt-webgpu -- inverseSession.test.ts
 npm run typecheck --workspace @vitrum/pt-webgpu
 ```
 
+### Wave 11 — Runtime Truthfulness And Texture Policy Tails
+
+Status 2026-06-22: **CLOSED.** A source-verified pass over the latest external
+feedback left three bounded implementation tails, all smaller than the remaining
+validation/proof queue:
+
+- Walkaround unsupported-material diagnostics now retain per-primitive authorship
+  on both `setScene()` and `updatePrimitive()` paths. The aggregate `fields`
+  list remains compact, while `details.primitiveFields[]` identifies the exact
+  primitive id and unsupported field list that triggered permanent unsupported
+  material families.
+- pt-webgpu full-tier directional-light parity now uses the authored
+  `DirectionalEmitter.angularDiameter` in the in-medium NEE path and ReSTIR-PT
+  suffix direct-light replay, matching the existing surface direct-light
+  soft-cone sampling instead of silently treating those paths as hard delta
+  directionals.
+- The glTF decode bridge now has an explicit `npotRepeatWrapPolicy`:
+  `warn` preserves the old diagnostic-only posture, `resize-to-pot` resamples
+  decoded CPU handles to deterministic power-of-two dimensions, and
+  `clamp-sampler` rewrites the returned sampler wrap to `clamp-to-edge`. The
+  option threads through `decodeSceneTextures()`, `loadGltfAndDecodeTextures()`,
+  `loadGltfForEngine()`, and `@vitrum/engine/gltf` type exports.
+
+Focused gates run in WSL Node 20:
+
+```bash
+npm test --workspace @vitrum/walkaround-hybrid -- consumedMaterialFields.test.ts mutationMatrix.test.ts
+npm test --workspace @vitrum/pt-webgpu -- oracle.directionalConeSample.test.ts restirPtReuseContract.test.ts volumetricSss.test.ts restirPtReuseWiring.test.ts wgslContract.test.ts
+npm test --workspace @vitrum/gltf-adapter -- gltfAssetApi.test.ts
+npm test --workspace @vitrum/engine -- gltfStrictPtWebgpuTier.test.ts
+npm run typecheck --workspace @vitrum/walkaround-hybrid
+npm run typecheck --workspace @vitrum/gltf-adapter
+npm run typecheck --workspace @vitrum/engine
+```
+
 ## Parked Long-Tail Items
 
 These are real, but they should not block contract-complete unless the user
 explicitly widens the target.
 
-Current source-verification pass (2026-06-21, after Wave 10): the active runtime
+Current source-verification pass (2026-06-22, after Wave 11): the active runtime
 implementation queue is empty. The only source-verified "code gap" phrasing left
 in the Road is native promotion or future contract expansion, not broken
 renderability/API behavior:

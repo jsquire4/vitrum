@@ -636,6 +636,7 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
         decodePixels,
         maxTextureSize: 256,
         warnOnNpotRepeatWrap: true,
+        npotRepeatWrapPolicy: 'resize-to-pot',
       }),
     ).resolves.toMatchObject({ backend: 'pt-webgpu', attached: true });
 
@@ -646,6 +647,7 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
         decodePixels,
         maxTextureSize: 256,
         warnOnNpotRepeatWrap: true,
+        npotRepeatWrapPolicy: 'resize-to-pot',
       }),
     );
   });

@@ -100,6 +100,7 @@ export interface LoadGltfAndDecodeTexturesOptions extends LoadGltfAssetOptions {
   readonly decodePixels?: DecodeGltfTexturePixelsFn;
   readonly maxTextureSize?: number;
   readonly warnOnNpotRepeatWrap?: boolean;
+  readonly npotRepeatWrapPolicy?: DecodeSceneTexturesOptions['npotRepeatWrapPolicy'];
   readonly onTextureDiagnostic?: (diagnostic: DecodeSceneTextureDiagnostic) => void;
   readonly onTextureWarning?: (message: string) => void;
 }
@@ -205,6 +206,7 @@ export async function loadGltfAndDecodeTextures(
     ...(options.decodePixels ? { decodePixels: options.decodePixels } : {}),
     ...(options.maxTextureSize !== undefined ? { maxTextureSize: options.maxTextureSize } : {}),
     ...(options.warnOnNpotRepeatWrap !== undefined ? { warnOnNpotRepeatWrap: options.warnOnNpotRepeatWrap } : {}),
+    ...(options.npotRepeatWrapPolicy !== undefined ? { npotRepeatWrapPolicy: options.npotRepeatWrapPolicy } : {}),
     ...(options.onTextureDiagnostic ? { onDiagnostic: options.onTextureDiagnostic } : {}),
     ...(options.onTextureWarning ? { onWarning: options.onTextureWarning } : {}),
   };

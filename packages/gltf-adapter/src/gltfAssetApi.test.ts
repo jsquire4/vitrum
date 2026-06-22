@@ -2449,6 +2449,67 @@ describe('decodeSceneTextures', () => {
     ]));
   });
 
+  it('can resize decoded NPOT repeat-wrap textures to power-of-two handles', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+
+    const result = await loadGltfAndDecodeTextures(gltf, {
+      buffers,
+      npotRepeatWrapPolicy: 'resize-to-pot',
+      decodePixels: () => ({
+        width: 3,
+        height: 5,
+        data: new Float32Array(3 * 5 * 4).fill(1),
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      }),
+    });
+
+    expect(result.textureDecodeDiagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'decoded-texture-npot-repeat-wrap-resized',
+        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+        materialField: 'baseColorMap',
+        primitiveId: 'gltf-prim-0',
+        primitiveIndex: 0,
+        width: 3,
+        height: 5,
+        resizedWidth: 4,
+        resizedHeight: 8,
+        wrapS: 'repeat',
+        wrapT: 'repeat',
+        npotRepeatWrapPolicy: 'resize-to-pot',
+      }),
+    ]);
+    expect(result.textureDecodeDiagnostics).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'decoded-texture-npot-repeat-wrap' }),
+    ]));
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    const ref = material.baseColorMap as TextureRef;
+    const handle = ref.handle as {
+      width: number;
+      height: number;
+      __vitrum_hint__: {
+        originalWidth?: number;
+        originalHeight?: number;
+      };
+    };
+    expect(handle.width).toBe(4);
+    expect(handle.height).toBe(8);
+    expect(handle.__vitrum_hint__).toMatchObject({
+      originalWidth: 3,
+      originalHeight: 5,
+    });
+    for (const backend of result.backendCompatibility) {
+      expect(backend.issues).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'texture-decode:decoded-texture-npot-repeat-wrap:baseColorMap',
+        }),
+      ]));
+    }
+  });
+
   it('emits NPOT-repeat diagnostics for already CPU-readable handles', async () => {
     const scene: Scene = {
       primitives: [
@@ -2501,6 +2562,65 @@ describe('decodeSceneTextures', () => {
         wrapT: 'mirrored-repeat',
       }),
     ]);
+  });
+
+  it('can clamp samplers for already CPU-readable NPOT repeat-wrap textures', async () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'cpu-readable-npot-mesh',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 1,
+            metallic: 0,
+            metallicMap: {
+              handle: {
+                width: 3,
+                height: 5,
+                data: new Float32Array(3 * 5 * 4).fill(1),
+                channels: 4,
+                dataType: 'float32',
+                colorSpace: 'linear',
+              },
+              wrapS: 'repeat',
+              wrapT: 'mirrored-repeat',
+            },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await decodeSceneTextures(scene, {
+      target: 'cpu-linear',
+      npotRepeatWrapPolicy: 'clamp-sampler',
+    });
+
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'decoded-texture-npot-repeat-wrap-clamped',
+        path: 'scene.primitives[0].material.metallicMap',
+        materialField: 'metallicMap',
+        primitiveId: 'cpu-readable-npot-mesh',
+        primitiveIndex: 0,
+        width: 3,
+        height: 5,
+        wrapS: 'repeat',
+        wrapT: 'mirrored-repeat',
+        npotRepeatWrapPolicy: 'clamp-sampler',
+      }),
+    ]);
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    const ref = material.metallicMap as TextureRef;
+    expect(ref.wrapS).toBe('clamp-to-edge');
+    expect(ref.wrapT).toBe('clamp-to-edge');
+    expect((ref.handle as { width: number; height: number }).width).toBe(3);
+    expect((ref.handle as { width: number; height: number }).height).toBe(5);
   });
 
   it('decodes raw-image handles for the webgpu target while preserving backend color space', async () => {

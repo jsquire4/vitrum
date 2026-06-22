@@ -103,21 +103,23 @@ export function composePathTraceKernelWgsl(opts: {
           let throughputInMedium = throughput;
 
           // In-medium NEE: connect to every packed directional light through the
-          // medium. Directional lights are DELTA emitters — phase sampling (the
-          // medium's analogue of BSDF sampling) has zero probability of ever
-          // hitting them, so light sampling is the only strategy that can reach
-          // them and takes FULL weight 1.0 (no MIS down-weighting). The estimator
-          // is throughput · L_i · phase(ω_scatter→ω_light); the single-scatter
-          // albedo σ_s/σ_t is already folded into throughputInMedium. This uses
-          // the N-directional storage buffer instead of the legacy scalar
-          // params.lightDir.w mirror, preserving RGB irradiance and >1 sun.
+          // medium. Delta directionals and finite soft-sun cones use the same
+          // light-sampled estimator as the surface NEE branch; phase sampling is
+          // not paired with a directional-light MIS term in this kernel. The
+          // estimator is throughput · L_i · phase(ω_scatter→ω_light); the
+          // single-scatter albedo σ_s/σ_t is already folded into
+          // throughputInMedium. This uses the N-directional storage buffer
+          // instead of the legacy scalar params.lightDir.w mirror, preserving RGB
+          // irradiance and >1 sun.
           for (var medDi = 0u; medDi < params.directionalLightCount; medDi = medDi + 1u) {
             let dBase = medDi * 2u;
             let dDirAD = directionalLights[dBase];
             let dIrrMean = directionalLights[dBase + 1u];
             if (dIrrMean.w > 1e-6) {
-              let lightDir = safe_normalize(dDirAD.xyz);
-              let dirShadowDisabled = dDirAD.w < 0.0;
+              let angDiamRaw = dDirAD.w;
+              let dirShadowDisabled = angDiamRaw < 0.0;
+              let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);
+              let lightDir = sampleDirectionalCone(&rng, dDirAD.xyz, angDiam);
               let shadowRay = Ray(scatterPos, lightDir);
               if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
                 let cosScatter = dot(ray.direction, lightDir);
@@ -364,6 +366,23 @@ export function composePathTraceKernelWgsl(opts: {
 ${hgHelpers}
 ${PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL}
 
+fn sampleDirectionalCone(rng: ptr<function, u32>, axisIn: vec3f, angularDiameter: f32) -> vec3f {
+  var sampleDir = safe_normalize(axisIn);
+  if (angularDiameter > 0.0) {
+    let cosHalfAngle = cos(angularDiameter * 0.5);
+    let xi1 = rand_f32(rng);
+    let xi2 = rand_f32(rng);
+    let cosTheta = mix(cosHalfAngle, 1.0, xi1);
+    let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    let phi = 6.28318530718 * xi2;
+    let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sampleDir.x) > 0.9);
+    let basisY = normalize(cross(sampleDir, tangentX));
+    let basisX = cross(basisY, sampleDir);
+    sampleDir = normalize(sinTheta * cos(phi) * basisX + sinTheta * sin(phi) * basisY + cosTheta * sampleDir);
+  }
+  return sampleDir;
+}
+
 fn accumulateFrame(
   gid: vec3u,
   radiance: vec3f,
@@ -604,18 +623,7 @@ ${transmissiveBlock}
           // original single-directional path (angularDiameter > 0 ⟹ sample a
           // uniformly-random direction within the solid-angle cone).
           let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);
-          if (angDiam > 0.0) {
-            let cosHalfAngle = cos(angDiam * 0.5);
-            let xi1 = rand_f32(&rng);
-            let xi2 = rand_f32(&rng);
-            let cosTheta = mix(cosHalfAngle, 1.0, xi1);
-            let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
-            let phi = 6.28318530718 * xi2;
-            let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sampleDir.x) > 0.9);
-            let basisY = normalize(cross(sampleDir, tangentX));
-            let basisX = cross(basisY, sampleDir);
-            sampleDir = normalize(sinTheta * cos(phi) * basisX + sinTheta * sin(phi) * basisY + cosTheta * sampleDir);
-          }
+          sampleDir = sampleDirectionalCone(&rng, sampleDir, angDiam);
           let shadowRay = Ray(hitPos + normal * 1e-3, sampleDir);
           if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
             let nDotL = max(0.0, dot(normal, sampleDir));

@@ -268,6 +268,11 @@ export interface ApproximateRichMaterialPrimitiveFields {
   readonly fields: readonly string[];
 }
 
+export interface UnconsumedMaterialPrimitiveFields {
+  readonly primitiveId: string;
+  readonly fields: readonly string[];
+}
+
 function materialBearingPrimitiveKind(kind: string): boolean {
   return (
     kind === 'mesh' ||
@@ -350,20 +355,44 @@ export function categorizeUnconsumedMaterialFields(
  */
 export function collectUnconsumedMaterialFields(
   primitives: ReadonlyArray<{
+    readonly id?: string;
     readonly kind: string;
     readonly material?: Record<string, unknown>;
   }>,
 ): string[] {
   const supplied = new Set<string>();
+  for (const entry of collectUnconsumedMaterialPrimitiveFields(primitives)) {
+    for (const key of entry.fields) supplied.add(key);
+  }
+  return Array.from(supplied).sort();
+}
+
+/**
+ * Return per-primitive authorship for unconsumed material fields. This keeps the
+ * aggregate warning compact while still giving hosts a stable pointer to the
+ * exact scene primitive that triggered a parked unsupported material family.
+ */
+export function collectUnconsumedMaterialPrimitiveFields(
+  primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+): UnconsumedMaterialPrimitiveFields[] {
+  const out: UnconsumedMaterialPrimitiveFields[] = [];
   for (const prim of primitives) {
     if (!materialBearingPrimitiveKind(prim.kind)) {
       continue;
     }
-    for (const key of collectUnconsumedMaterialFieldsForMaterial(prim.material)) {
-      supplied.add(key);
+    const fields = collectUnconsumedMaterialFieldsForMaterial(prim.material);
+    if (fields.length > 0) {
+      out.push({
+        primitiveId: prim.id ?? '(unnamed)',
+        fields,
+      });
     }
   }
-  return Array.from(supplied).sort();
+  return out.sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
 }
 
 /**

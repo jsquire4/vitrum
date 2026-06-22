@@ -70,6 +70,7 @@ export type {
   GltfCpuTextureHandle,
   GltfCpuLinearTextureHandle,
   GltfDecodedTexturePixels,
+  GltfNpotRepeatWrapPolicy,
   GltfBackendTextureStatus,
   GltfMaterialTextureField,
   GltfTextureColorSpace,
