@@ -1,14 +1,15 @@
 {
-  "generatedAt": "2026-06-21T20:53:33.323Z",
+  "generatedAt": "2026-06-22T03:22:38.368Z",
   "harness": "pt-radiometric-ab",
   "verdict": "PASS",
   "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-*.mjs",
   "selectedCases": [
     "sppm",
     "bdpt",
-    "restir-pt"
+    "restir-pt",
+    "sobol"
   ],
-  "timeoutMs": 300000,
+  "timeoutMs": 900000,
   "icd": null,
   "cases": [
     {
@@ -37,12 +38,22 @@
       "exitStatus": 0,
       "signal": null,
       "reason": null
+    },
+    {
+      "id": "sobol",
+      "status": "PASS",
+      "script": "tools/radiometric-ab/ab-sobol.mjs",
+      "resultFile": "tools/radiometric-ab/results-sobol.json",
+      "exitStatus": 0,
+      "signal": null,
+      "reason": null
     }
   ],
   "preservedResultFiles": [
     "tools/radiometric-ab/results-sppm.json",
     "tools/radiometric-ab/results-bdpt.json",
-    "tools/radiometric-ab/results-restir-pt.json"
+    "tools/radiometric-ab/results-restir-pt.json",
+    "tools/radiometric-ab/results-sobol.json"
   ],
   "reason": {
     "code": "pt-radiometric-ab-complete",

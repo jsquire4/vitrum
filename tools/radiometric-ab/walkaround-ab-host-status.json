@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-21T20:36:31.791Z",
+  "generatedAt": "2026-06-22T03:26:18.420Z",
   "harness": "walkaround-ab",
   "verdict": "PASS-PARTIAL",
   "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/walkaround-ab.mjs",

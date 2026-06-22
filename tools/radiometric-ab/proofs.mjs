@@ -145,6 +145,11 @@ export const WALKAROUND_AB_RESULT_PROOF = {
     glossy: {
       id: "GLOSSY",
       allowedVerdicts: ["PASS", "PASS-WEAK", "FINDING"],
+      sampleRegion: "visible-back-wall-center-crop",
+      minSampleRatio: 0.8,
+      // Legacy field retained while committed result snapshots still expose
+      // floorRatio for older readers. The sampled region is the visible
+      // back-wall center crop, not the geometric floor.
       minFloorRatio: 0.8,
       minSignalDeltaForPass: 1e-4,
     },

@@ -249,9 +249,26 @@ async function checkPtRadiometricHostStatus(proof) {
       fail(`pt-radiometric-ab: preserved result ${resultFile} is missing or empty`);
     }
   }
+  if (!sameJson(status.preservedResultFiles, proof.preservedResultFiles)) {
+    fail("pt-radiometric-ab: preservedResultFiles must match proofs.mjs exactly");
+  }
   /** @type {any[]} */
   const cases = status.cases ?? [];
   if (cases.length === 0) fail("pt-radiometric-ab: status must include at least one case");
+  const expectedCaseIds = proof.preservedResultFiles
+    .map((resultFile) => {
+      const entry = RADIOMETRIC_AB_PROOFS.find((candidate) => candidate.resultPath === resultFile);
+      if (!entry) fail(`pt-radiometric-ab: no proof metadata found for preserved result ${resultFile}`);
+      return entry.id;
+    })
+    .sort();
+  const actualCaseIds = cases.map((entry) => entry.id).sort();
+  if (!sameJson(actualCaseIds, expectedCaseIds)) {
+    fail(
+      `pt-radiometric-ab: status case ids ${JSON.stringify(actualCaseIds)} ` +
+      `must match proof ids ${JSON.stringify(expectedCaseIds)}`,
+    );
+  }
   const blockedCases = cases.filter((entry) => entry.status === "HOST-BLOCKED");
   const failedCases = cases.filter((entry) => entry.status === "FAIL");
   if (failedCases.length > 0) {
@@ -430,13 +447,18 @@ function checkWalkaroundGlass(proof, result) {
  */
 function checkWalkaroundGlossy(proof, result) {
   checkWalkaroundCaseCommon("GLOSSY", proof, result);
-  assertFiniteNumber(result.floorRatio, "walkaround-ab GLOSSY: floorRatio");
-  if (result.verdict !== "FINDING" && result.floorRatio < proof.minFloorRatio) {
-    fail(`walkaround-ab GLOSSY: floorRatio ${result.floorRatio} is below ${proof.minFloorRatio}`);
+  if (result.sampleRegion !== proof.sampleRegion) {
+    fail(`walkaround-ab GLOSSY: sampleRegion ${result.sampleRegion} differs from ${proof.sampleRegion}`);
   }
-  assertFiniteNumber(result.delta?.floorLum, "walkaround-ab GLOSSY: delta.floorLum");
+  const sampleRatio = result.sampleRatio ?? result.floorRatio;
+  assertFiniteNumber(sampleRatio, "walkaround-ab GLOSSY: sampleRatio");
+  if (result.verdict !== "FINDING" && sampleRatio < proof.minSampleRatio) {
+    fail(`walkaround-ab GLOSSY: sampleRatio ${sampleRatio} is below ${proof.minSampleRatio}`);
+  }
+  const sampleDelta = result.delta?.sampleRegionLum ?? result.delta?.floorLum;
+  assertFiniteNumber(sampleDelta, "walkaround-ab GLOSSY: delta.sampleRegionLum");
   assertFiniteNumber(result.delta?.overall, "walkaround-ab GLOSSY: delta.overall");
-  const signal = Math.max(Math.abs(result.delta.floorLum), Math.abs(result.delta.overall));
+  const signal = Math.max(Math.abs(sampleDelta), Math.abs(result.delta.overall));
   if (result.materialEffectObserved !== (signal >= proof.minSignalDeltaForPass)) {
     fail("walkaround-ab GLOSSY: materialEffectObserved does not match committed deltas");
   }

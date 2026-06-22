@@ -1,7 +1,7 @@
 {
   "ab": "sobol-equal-frame-rmse",
   "verdict": "PASS",
-  "generatedAt": "2026-06-21T23:14:54.297Z",
+  "generatedAt": "2026-06-22T03:22:38.340Z",
   "resolution": {
     "width": 80,
     "height": 80
@@ -37,27 +37,27 @@
       "referenceFrames": 40,
       "candidateFrames": 12,
       "pcg": {
-        "elapsedMs": 243.147,
-        "globalRmse": 0.16505210144891194,
-        "roiRmse": 0.1868436839403521,
-        "roiSpatialVariance": 0.08715452022264168
+        "elapsedMs": 570.904,
+        "globalRmse": 0.165052190473949,
+        "roiRmse": 0.1868439776609491,
+        "roiSpatialVariance": 0.08715450941835301
       },
       "sobol": {
-        "elapsedMs": 269.143,
-        "globalRmse": 0.2255655900430353,
-        "roiRmse": 0.25824795375720655,
-        "roiSpatialVariance": 0.10351736489447134
+        "elapsedMs": 4900.988,
+        "globalRmse": 0.22556566272227685,
+        "roiRmse": 0.25824816489834673,
+        "roiSpatialVariance": 0.10351733141667087
       },
       "ratios": {
-        "globalRmse": 1.366632645467128,
-        "roiRmse": 1.3821604686388516,
-        "roiSpatialVariance": 1.1877452211317296,
-        "elapsedMs": 1.1069160531365312
+        "globalRmse": 1.366632348680516,
+        "roiRmse": 1.3821594259086538,
+        "roiSpatialVariance": 1.1877449842528993,
+        "elapsedMs": 8.584607934973532
       },
       "relativeErrors": {
-        "globalRmse": 0.3666326454671279,
-        "roiRmse": 0.3821604686388516,
-        "roiSpatialVariance": 0.18774522113172962
+        "globalRmse": 0.3666323486805162,
+        "roiRmse": 0.38215942590865376,
+        "roiSpatialVariance": 0.1877449842528994
       },
       "pass": true
     },
@@ -73,27 +73,27 @@
       "referenceFrames": 40,
       "candidateFrames": 12,
       "pcg": {
-        "elapsedMs": 235.958,
-        "globalRmse": 0.102152466786741,
-        "roiRmse": 0.10838683436319543,
-        "roiSpatialVariance": 0.05704836354670967
+        "elapsedMs": 572.469,
+        "globalRmse": 0.10214406982361526,
+        "roiRmse": 0.10838852817149666,
+        "roiSpatialVariance": 0.057049093747272184
       },
       "sobol": {
-        "elapsedMs": 255.107,
-        "globalRmse": 0.15177721037463837,
-        "roiRmse": 0.13927672277901698,
-        "roiSpatialVariance": 0.05275532693701063
+        "elapsedMs": 1042.753,
+        "globalRmse": 0.15177557773857167,
+        "roiRmse": 0.13927698556820095,
+        "roiSpatialVariance": 0.052755535393591346
       },
       "ratios": {
-        "globalRmse": 1.4857909470898696,
-        "roiRmse": 1.2849966843049596,
-        "roiSpatialVariance": 0.9247474188074822,
-        "elapsedMs": 1.0811566345311436
+        "globalRmse": 1.4858971059275516,
+        "roiRmse": 1.2849790279265656,
+        "roiSpatialVariance": 0.9247392364775973,
+        "elapsedMs": 1.8215008068730196
       },
       "relativeErrors": {
-        "globalRmse": 0.4857909470898697,
-        "roiRmse": 0.2849966843049595,
-        "roiSpatialVariance": 0.07525258119251779
+        "globalRmse": 0.48589710592755153,
+        "roiRmse": 0.2849790279265656,
+        "roiSpatialVariance": 0.07526076352240275
       },
       "pass": true
     }

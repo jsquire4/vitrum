@@ -25,7 +25,7 @@
       "leftWall": 0.000004769051508474523,
       "rightWall": -6.802122701279889e-7
     },
-    "renderTimeSec": 70.2,
+    "renderTimeSec": 71,
     "verdict": "NEGLIGIBLE",
     "notes": [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
@@ -66,7 +66,7 @@
     "floorRatioToAnalytic": 0.9994843571067382,
     "analyticAgreement": true,
     "shadowAssertionAuthored": false,
-    "renderTimeSec": 6.4,
+    "renderTimeSec": 9.4,
     "verdict": "PASS",
     "notes": [
       "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
@@ -99,7 +99,7 @@
     },
     "minSignalDelta": 0.0001,
     "materialEffectObserved": false,
-    "renderTimeSec": 13.5,
+    "renderTimeSec": 13.8,
     "verdict": "SMOKE",
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
@@ -113,23 +113,29 @@
     "description": "B2 metallic probe: metalness=1,rough=0.05 vs metalness=0,rough=1 visible wall",
     "spp": 16,
     "resolution": "128x128",
+    "sampleRegion": "visible-back-wall-center-crop",
     "metal": {
+      "sampleRegionLum": 0.0008761803136643735,
       "floorLum": 0.0008761803136643735,
       "overall": 0.0018337182051363983
     },
     "diffuse": {
+      "sampleRegionLum": 0.1714599900471924,
       "floorLum": 0.1714599900471924,
       "overall": 0.0636298630966403
     },
+    "sampleRatio": 0.0051101152719256245,
     "floorRatio": 0.0051101152719256245,
     "delta": {
+      "sampleRegionLum": -0.17058380973352802,
       "floorLum": -0.17058380973352802,
       "overall": -0.0617961448915039
     },
+    "expectedMinSampleRatio": 0.8,
     "expectedMinFloorRatio": 0.8,
     "minSignalDelta": 0.0001,
     "materialEffectObserved": true,
-    "renderTimeSec": 13.9,
+    "renderTimeSec": 14.1,
     "verdict": "FINDING",
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",

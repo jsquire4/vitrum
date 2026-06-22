@@ -335,15 +335,17 @@ Render time: 8.5 s for the pair.
 **Verdict: FINDING** — the material path is live and visibly changes the render,
 but this low-SPP capture is a do-not-promote rich-material GI result.
 
-Metal floor (metalness=1.0, rough=0.05) vs diffuse floor (metalness=0.0, rough=1.0), Cornell,
-ceiling emitter, SPP=16.
+Metal visible back-wall center crop (metalness=1.0, rough=0.05) vs diffuse
+visible back-wall center crop (metalness=0.0, rough=1.0), Cornell, ceiling
+emitter, SPP=16. Older result snapshots expose this metric as `floorLum` /
+`floorRatio`; the sampled region is not the geometric floor.
 
 | Metric | Value |
 |--------|-------|
-| Metal floor lum | 0.0009 |
-| Diffuse floor lum | 0.1715 |
-| Floor ratio | 0.005 |
-| Floor delta | -0.1706 |
+| Metal sample-region lum | 0.0009 |
+| Diffuse sample-region lum | 0.1715 |
+| Sample ratio | 0.005 |
+| Sample delta | -0.1706 |
 
 The metallic-probe check proves the authored roughness/metalness path is not a
 dead branch: the diffuse control keeps the same base color and the measured
@@ -359,7 +361,7 @@ darker scene direction than the diffuse control. Render time: 9.1 s.
 | A8 GRIS bias | NEGLIGIBLE | overall delta = -0.000020 (0.03% of mean) |
 | SUN analytic | PASS | receiver ratio = 0.99948 |
 | GLASS GI | SMOKE | centre ratio = 1.000; delta = 0 |
-| GLOSSY probe | FINDING | floor ratio = 0.005; material-effect observed |
+| GLOSSY probe | FINDING | sample ratio = 0.005; material-effect observed |
 
 ### Legacy 8-bit Baseline (2026-06-10)
 

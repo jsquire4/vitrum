@@ -712,9 +712,10 @@ async function runGlossy() {
   const overallDiffuse = diffuseResult.lum;
 
   // Back-wall region — broad center crop, visible behind the glass-control pane.
-  const floorMetal   = regionLuminance(metalResult.pixels,   W, 32, 32, 96, 96);
-  const floorDiffuse = regionLuminance(diffuseResult.pixels, W, 32, 32, 96, 96);
-  const floorDelta = floorMetal - floorDiffuse;
+  const sampleRegion = "visible-back-wall-center-crop";
+  const sampleMetal   = regionLuminance(metalResult.pixels,   W, 32, 32, 96, 96);
+  const sampleDiffuse = regionLuminance(diffuseResult.pixels, W, 32, 32, 96, 96);
+  const sampleDelta = sampleMetal - sampleDiffuse;
   const overallDelta = overallMetal - overallDiffuse;
 
   // Check: the glossy/metal material must be observable and nonzero. Earlier
@@ -722,23 +723,23 @@ async function runGlossy() {
   // mirror wall can physically reflect a dark direction while the diffuse wall
   // integrates the ceiling emitter. Such a result is still a promotion finding,
   // not a harness failure.
-  const floorRatio = floorDiffuse > 0.01 ? floorMetal / floorDiffuse : 0;
-  const notBlack   = floorMetal > 1e-4 || overallMetal > 1e-3;
+  const sampleRatio = sampleDiffuse > 0.01 ? sampleMetal / sampleDiffuse : 0;
+  const notBlack   = sampleMetal > 1e-4 || overallMetal > 1e-3;
   const MIN_SIGNAL_DELTA = 1e-4;
   const materialEffectObserved =
-    Math.max(absDelta(floorMetal, floorDiffuse), absDelta(overallMetal, overallDiffuse)) >= MIN_SIGNAL_DELTA;
+    Math.max(absDelta(sampleMetal, sampleDiffuse), absDelta(overallMetal, overallDiffuse)) >= MIN_SIGNAL_DELTA;
   // Structural assertion: a bright/equal metal arm is a strong pass; a dark but
   // nonzero, materially different arm is a recorded finding that blocks promotion.
-  const plausible  = floorRatio >= 0.8;
+  const plausible  = sampleRatio >= 0.8;
 
   const verdict = notBlack && plausible && materialEffectObserved ? "PASS"
                 : notBlack && materialEffectObserved ? "FINDING"
                 : notBlack ? "PASS-WEAK"
                 : "FAIL";
 
-  console.log(`  metallic  sample: ${floorMetal.toFixed(4)}  overall=${overallMetal.toFixed(4)}`);
-  console.log(`  diffuse   sample: ${floorDiffuse.toFixed(4)}  overall=${overallDiffuse.toFixed(4)}`);
-  console.log(`  sample ratio (metal/diffuse): ${floorRatio.toFixed(3)}  (expected ≥ 0.80); delta=${floorDelta.toExponential(3)}`);
+  console.log(`  metallic  sample: ${sampleMetal.toFixed(4)}  overall=${overallMetal.toFixed(4)}`);
+  console.log(`  diffuse   sample: ${sampleDiffuse.toFixed(4)}  overall=${overallDiffuse.toFixed(4)}`);
+  console.log(`  sample ratio (metal/diffuse): ${sampleRatio.toFixed(3)}  (expected ≥ 0.80); delta=${sampleDelta.toExponential(3)}`);
   console.log(`  effect observed:${materialEffectObserved ? "YES" : "NO"}  (min |delta|=${MIN_SIGNAL_DELTA})`);
   console.log(`  verdict:  ${verdict} — render time ${dt}s`);
 
@@ -747,19 +748,27 @@ async function runGlossy() {
     description: "B2 metallic probe: metalness=1,rough=0.05 vs metalness=0,rough=1 visible wall",
     spp: SPP,
     resolution: `${W}x${H}`,
+    sampleRegion,
     metal: {
-      floorLum: floorMetal,
+      sampleRegionLum: sampleMetal,
+      // Legacy key retained for older proof readers; this is the visible
+      // back-wall center crop, not the geometric floor.
+      floorLum: sampleMetal,
       overall:  overallMetal,
     },
     diffuse: {
-      floorLum: floorDiffuse,
+      sampleRegionLum: sampleDiffuse,
+      floorLum: sampleDiffuse,
       overall:  overallDiffuse,
     },
-    floorRatio,
+    sampleRatio,
+    floorRatio: sampleRatio,
     delta: {
-      floorLum: floorDelta,
+      sampleRegionLum: sampleDelta,
+      floorLum: sampleDelta,
       overall: overallDelta,
     },
+    expectedMinSampleRatio: 0.8,
     expectedMinFloorRatio: 0.8,
     minSignalDelta: MIN_SIGNAL_DELTA,
     materialEffectObserved,
