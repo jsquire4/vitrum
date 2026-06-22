@@ -2,8 +2,9 @@
  * Tests for the material-field consumption warning (Wave 2, §3 item 1).
  *
  * Pins:
- *   (a) A scene supplying baseColorMap + normalMap + frontLayer warns only for
- *       frontLayer because normalMap and iridescence now have walkaround paths.
+ *   (a) A scene supplying baseColorMap + normalMap + frontLayer.normalMap warns
+ *       only for the layer-local normal map because frontLayer transmission and
+ *       roughness now have walkaround paths.
  *   (b) A scene using only consumed fields (baseColor, roughness, metallic,
  *       emissive, emissiveIntensity, shadingModel, transmission, attenuationColor,
  *       attenuationDistance, thickness, ior, extensions) produces no warning.
@@ -96,7 +97,7 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).not.toContain('iridescence');
   });
 
-  it('(pin a) names frontLayer while baseColorMap + normalMap + iridescence are consumed', () => {
+  it('(pin a) names frontLayer.normalMap while baseColorMap + normalMap + iridescence are consumed', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
@@ -104,21 +105,19 @@ describe('collectUnconsumedMaterialFields', () => {
       baseColorMap: { handle: stubTextureRef() },
       normalMap: stubTextureRef(),
       iridescence: 1.0,
-      frontLayer: { transmission: [1, 0.5, 0.25] },
+      frontLayer: { transmission: [1, 0.5, 0.25], normalMap: { handle: stubTextureRef() } },
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
     // Result is sorted alphabetically.
-    expect(result).toEqual(['frontLayer']);
+    expect(result).toEqual(['frontLayer.normalMap']);
   });
 
-  it('dedupes unconsumed fields across multiple primitives', () => {
+  it('does not warn for consumed frontLayer/backLayer transmission and roughness', () => {
     const prims: PrimLike[] = [
       { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, frontLayer: { transmission: [1, 1, 1] } } },
-      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, frontLayer: { transmission: [0.5, 0.5, 0.5] } } },
+      { kind: 'mesh', material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, backLayer: { transmission: [0.5, 0.5, 0.5], roughness: 0.25 } } },
     ];
-    const result = collectUnconsumedMaterialFields(prims);
-    // frontLayer should appear exactly once.
-    expect(result.filter((f) => f === 'frontLayer')).toHaveLength(1);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual([]);
   });
 
   it('reports material drops on analytic primitives', () => {
@@ -168,6 +167,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap', 'clearcoatNormalScale',
       'sheenColorMap', 'sheenRoughnessMap',
       'anisotropy', 'anisotropyRotation', 'anisotropyMap',
+      'frontLayer', 'backLayer',
       'iridescence', 'iridescenceIor', 'iridescenceThicknessRange',
       'iridescenceMap', 'iridescenceThicknessMap',
       'baseColorMap', 'roughnessMap', 'metallicMap',

@@ -7,7 +7,7 @@ import type {
 } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-export const MATERIAL_MAP_META_TEXELS_PER_TRI = 53;
+export const MATERIAL_MAP_META_TEXELS_PER_TRI = 55;
 export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   BASE_COLOR: 0,
   ROUGHNESS: 2,
@@ -41,6 +41,8 @@ export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   BUMP: 49,
   BUMP_SCALE: 51,
   ENV_INTENSITY: 52,
+  FRONT_LAYER: 53,
+  BACK_LAYER: 54,
 } as const;
 
 export type AtlasMapField =
@@ -798,6 +800,19 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b + 3] = 0;
   };
 
+  const writeFaceLayerMeta = (
+    layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
+    texel: number,
+  ): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = clampedColorComponent(layer?.transmission, 0);
+    baseColorMetaData[b + 1] = clampedColorComponent(layer?.transmission, 1);
+    baseColorMetaData[b + 2] = clampedColorComponent(layer?.transmission, 2);
+    baseColorMetaData[b + 3] = Number.isFinite(layer?.roughness)
+      ? clampedUnit(layer?.roughness, 0)
+      : -1;
+  };
+
   for (let tri = 0; tri < triCount; tri += 1) {
     const baseTexel = tri * MATERIAL_MAP_META_TEXELS_PER_TRI;
     const mat = materials[triMaterialIds[tri] ?? 0];
@@ -834,6 +849,8 @@ export function packMaterialTextureAtlas(
     writeMapMeta(mat, 'bumpMap', 'linear', baseTexel + offsets.BUMP);
     writeBumpScaleMeta(mat, baseTexel + offsets.BUMP_SCALE);
     writeEnvMapIntensityMeta(mat, baseTexel + offsets.ENV_INTENSITY);
+    writeFaceLayerMeta(mat?.frontLayer, baseTexel + offsets.FRONT_LAYER);
+    writeFaceLayerMeta(mat?.backLayer, baseTexel + offsets.BACK_LAYER);
   }
 
   return {

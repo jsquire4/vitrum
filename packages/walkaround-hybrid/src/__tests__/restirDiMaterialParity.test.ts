@@ -22,6 +22,7 @@ describe('ReSTIR-DI material parity', () => {
       'clearcoat: vec2f,',
       'sheen: vec4f,',
       'sheenRoughness: f32,',
+      'layerTransmission: vec3f,',
     ]) {
       expect(reservoirGi).toContain(field);
     }
@@ -30,12 +31,11 @@ describe('ReSTIR-DI material parity', () => {
   it('loads ReSTIR-DI receiver material payloads from the texture atlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('struct RestirDIMaterialPayload');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleRestirDIMaterialPayloadForHit(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let layerControls = sampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);');
     expect(MATERIAL_ATLAS_WGSL).toContain(
       'payload.albedo = sampleBaseColorMap(hit.indices.w, hit.uv, uv1, scalarBaseColor * vertexColor.rgb);',
     );
-    expect(MATERIAL_ATLAS_WGSL).toContain(
-      'payload.rough = sampleMaterialScalarMap(hit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, hit.uv, uv1, decodeRoughMetal(materialWord).x);',
-    );
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.rough = faceLayerRoughness(');
     expect(MATERIAL_ATLAS_WGSL).toContain(
       'payload.metal = sampleMaterialScalarMap(hit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, hit.uv, uv1, decodeRoughMetal(materialWord).y);',
     );
@@ -50,6 +50,7 @@ describe('ReSTIR-DI material parity', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.clearcoat = sampleClearcoatControls(hit.indices.w, hit.uv, uv1);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheen = sampleSheenControls(hit.indices.w, hit.uv, uv1);');
     expect(MATERIAL_ATLAS_WGSL).toContain('payload.sheenRoughness = sampleSheenRoughness(hit.indices.w, hit.uv, uv1);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('payload.layerTransmission = faceLayerTransmission(layerControls);');
   });
 
   it('threads atlas material payloads through RIS and temporal/spatial primary casts', () => {
@@ -66,12 +67,13 @@ describe('ReSTIR-DI material parity', () => {
       expect(shader).toContain('clearcoat = payload.clearcoat');
       expect(shader).toContain('sheen = payload.sheen');
       expect(shader).toContain('sheenRoughness = payload.sheenRoughness');
+      expect(shader).toContain('layerTransmission = payload.layerTransmission');
     }
   });
 
   it('uses the extension-aware BRDF for canonical pHat and RIS candidate scoring', () => {
     expect(RESTIR_PHAT_WGSL).toContain('fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f');
-    expect(RESTIR_PHAT_WGSL).toContain('return evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(RESTIR_PHAT_WGSL).toContain('return surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_PHAT_WGSL).toContain('surf.specular.rgb,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyTangent,');
     expect(RESTIR_PHAT_WGSL).toContain('surf.anisotropyBitangent,');

@@ -419,7 +419,7 @@ fn oitLayerRadiance(hit: IntersectionResult, hitPos: vec3f, rayDir: vec3f, mater
   }
   let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;
   let viewFacing = 0.35 + 0.65 * abs(dot(normal, -rayDir));
-  return (skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked;
+  return ((skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked) * payload.layerTransmission;
 }
 
 @compute @workgroup_size(8, 8, 1)

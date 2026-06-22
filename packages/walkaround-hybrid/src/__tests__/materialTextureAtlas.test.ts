@@ -1029,6 +1029,29 @@ describe('walkaround materialTextureAtlas', () => {
       .toBe(0);
   });
 
+  it('packs frontLayer/backLayer transmission and roughness metadata', () => {
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.8,
+      metallic: 0,
+      frontLayer: { transmission: [1, 0.5, -2], roughness: 0.25 },
+      backLayer: { transmission: [0.25, 2, 0.75] },
+    };
+
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const front = MATERIAL_MAP_META_TEXEL_OFFSETS.FRONT_LAYER * 4;
+    const back = MATERIAL_MAP_META_TEXEL_OFFSETS.BACK_LAYER * 4;
+
+    expect(atlas.baseColorMetaData[front]).toBe(1);
+    expect(atlas.baseColorMetaData[front + 1]).toBe(0.5);
+    expect(atlas.baseColorMetaData[front + 2]).toBe(0);
+    expect(atlas.baseColorMetaData[front + 3]).toBe(0.25);
+    expect(atlas.baseColorMetaData[back]).toBe(0.25);
+    expect(atlas.baseColorMetaData[back + 1]).toBe(1);
+    expect(atlas.baseColorMetaData[back + 2]).toBe(0.75);
+    expect(atlas.baseColorMetaData[back + 3]).toBe(-1);
+  });
+
   it('packs bump-map source dimensions next to bumpScale metadata', () => {
     const handle = {
       width: 3,
@@ -1091,6 +1114,8 @@ describe('walkaround materialTextureAtlas', () => {
       MATERIAL_MAP_BUMP_TEXEL_OFFSET: offsets.BUMP,
       MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: offsets.BUMP_SCALE,
       MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: offsets.ENV_INTENSITY,
+      MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: offsets.FRONT_LAYER,
+      MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: offsets.BACK_LAYER,
     };
 
     for (const [name, expectedValue] of Object.entries(expected)) {
@@ -1110,6 +1135,9 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleAnisotropyControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleIridescenceControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEnvMapIntensity(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleFaceLayerControls(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn faceLayerTransmission(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn faceLayerRoughness(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyThicknessMapToBeerTint(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyBumpMapForHit(');
@@ -1141,12 +1169,13 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('return clamp(1.0 - alpha.coverage, 0.0, 1.0);');
     expect(MATERIAL_ATLAS_WGSL).toContain('return materialShadowTransmittanceForHit(hit, materialWord, skipGlass) <= 0.001;');
     expect(SHADE_WGSL).toContain('let vertexColor = sampleVertexColorForHit(primaryHit);');
+    expect(SHADE_WGSL).toContain('let layerControls = sampleFaceLayerControls(primaryHit.indices.w, primaryHit.side >= 0.0);');
+    expect(SHADE_WGSL).toContain('let layerTransmission = faceLayerTransmission(layerControls);');
     expect(SHADE_WGSL).toContain(
       'let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, uv1, matColor.rgb * vertexColor.rgb);',
     );
-    expect(SHADE_WGSL).toContain(
-      'let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);',
-    );
+    expect(SHADE_WGSL).toContain('let rough    = faceLayerRoughness(');
+    expect(SHADE_WGSL).toContain('layerControls,');
     expect(SHADE_WGSL).toContain(
       'let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);',
     );

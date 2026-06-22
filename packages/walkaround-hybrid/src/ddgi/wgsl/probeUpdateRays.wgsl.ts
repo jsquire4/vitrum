@@ -291,7 +291,7 @@ struct DdgiTraceParams {
 // never updated). Sampler removed on both sides.
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
 
-const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
+const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 55u;
 const DDGI_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const DDGI_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const DDGI_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -320,6 +320,8 @@ const DDGI_MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
 const DDGI_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;
 const DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
 const DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
+const DDGI_MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: u32 = 53u;
+const DDGI_MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: u32 = 54u;
 
 fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(ddgiMaterialMapMeta);
@@ -815,6 +817,20 @@ fn ddgiSampleIridescenceControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f
   return vec4f(factor, ior, thicknessMin, thicknessMax);
 }
 
+fn ddgiSampleFaceLayerControls(triIndex: u32, isFrontFace: bool) -> vec4f {
+  let front = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET);
+  let back = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET);
+  return select(back, front, isFrontFace);
+}
+
+fn ddgiFaceLayerTransmission(layer: vec4f) -> vec3f {
+  return clamp(layer.rgb, vec3f(0.0), vec3f(1.0));
+}
+
+fn ddgiFaceLayerRoughness(roughness: f32, layer: vec4f) -> f32 {
+  return select(roughness, clamp(layer.a, 0.0, 1.0), layer.a >= 0.0);
+}
+
 struct DdgiProbeHitMaterial {
   albedo: vec3f,
   roughness: f32,
@@ -826,6 +842,7 @@ struct DdgiProbeHitMaterial {
   sheenRoughness: f32,
   anisotropy: vec2f,
   iridescence: vec4f,
+  layerTransmission: vec3f,
   transmission: f32,
   beerTint: vec3f,
 }
@@ -851,6 +868,7 @@ fn ddgiSampleProbeHitMaterial(
   out.sheenRoughness = 0.0;
   out.anisotropy = vec2f(0.0);
   out.iridescence = vec4f(0.0, 1.0, 0.0, 0.0);
+  out.layerTransmission = vec3f(1.0);
   out.transmission = scalarTransmission;
   out.beerTint = scalarBeerTint;
   out.clearcoatNormal = ddgiApplyClearcoatNormalMapForHit(hit, frameNormal, shadingNormal);
@@ -891,6 +909,9 @@ fn ddgiSampleProbeHitMaterial(
   out.sheenRoughness = ddgiSampleSheenRoughness(hit.indices.w, uvs.uv0, uvs.uv1);
   out.anisotropy = ddgiSampleAnisotropyControls(hit.indices.w, uvs.uv0, uvs.uv1);
   out.iridescence = ddgiSampleIridescenceControls(hit.indices.w, uvs.uv0, uvs.uv1);
+  let layerControls = ddgiSampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);
+  out.roughness = ddgiFaceLayerRoughness(out.roughness, layerControls);
+  out.layerTransmission = ddgiFaceLayerTransmission(layerControls);
   out.transmission = ddgiSampleTransmissionMapForHit(hit, scalarTransmission);
   out.beerTint = ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint);
   return out;
@@ -2078,6 +2099,7 @@ fn probeUpdateRays(
         );
         let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);
         radiance = radiance + surfaceEmission;
+        radiance = radiance * probeMat.layerTransmission;
 
         out.hitRadiance  = radiance;
         out.hitDistance  = hit.dist;

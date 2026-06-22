@@ -107,6 +107,11 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('out.albedo = scalarBaseColor * baseColorTexel.rgb;');
     expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_ROUGHNESS');
     expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_METALLIC');
+    expect(src).toContain('const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 55u;');
+    expect(src).toContain('fn ddgiSampleFaceLayerControls(');
+    expect(src).toContain('out.roughness = ddgiFaceLayerRoughness(out.roughness, layerControls);');
+    expect(src).toContain('out.layerTransmission = ddgiFaceLayerTransmission(layerControls);');
+    expect(src).toContain('radiance = radiance * probeMat.layerTransmission;');
     expect(src).toContain('hitWorldPos, probeNormal, probeMat.albedo,');
     expect(src).toContain('let directRadiance = direct * probeMat.albedo * (1.0 / PI);');
   });

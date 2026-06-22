@@ -38,8 +38,8 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.anisotropyTangent,');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.anisotropyBitangent,');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = surfaceEmission + incomingIrradiance * brdf;');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = surfaceEmission + diffuseLo;');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = (surfaceEmission + incomingIrradiance * brdf) * payload.layerTransmission;');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = (surfaceEmission + diffuseLo) * payload.layerTransmission;');
   });
 
   it('adds readable emissive-map surface emission to GI suffix hits', () => {
@@ -57,6 +57,7 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('fn restir_gi_receiver_phat_from_surface_or_geometry(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution = contribution + Lo * specBrdf;');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('return contribution * payload.layerTransmission;');
   });
 
   it('wires default risGi bounce hits through mapped material payloads', () => {

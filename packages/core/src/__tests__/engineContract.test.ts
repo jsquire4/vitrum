@@ -139,6 +139,8 @@ describe('backend promise ledger', () => {
     expect(wa.bumpMap).toBe('approximate');
     expect(wa.bumpScale).toBe('approximate');
     expect(wa.sheen).toBe('approximate');
+    expect(wa.frontLayer).toBe('approximate');
+    expect(wa.backLayer).toBe('approximate');
     expect(wa.extensions).toBe('native');
 
     // pt-webgl2: scalar anisotropy plus KHR_materials_anisotropy map are packed/sampled.

@@ -122,15 +122,11 @@ const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
   scatteringCoefficient: 0.15,
   scatteringAnisotropy: 0.25,
   scatteringCoefficientRGB: [0.1, 0.2, 0.3],
-  frontLayer: { transmission: [1, 0.5, 0.25] },
-  backLayer: { transmission: [0.25, 0.5, 1] },
   thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
 };
 
 const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
-  'backLayer',
   'dispersionAbbeNumber',
-  'frontLayer',
   'scatteringAnisotropy',
   'scatteringCoefficient',
   'scatteringCoefficientRGB',
@@ -552,7 +548,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(materialWarning?.details?.categories).toEqual({
         spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
         volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
-        layered: ['backLayer', 'frontLayer', 'thinFilmStack'],
+        layered: ['thinFilmStack'],
       });
       expect(materialWarning?.details?.primitiveFields).toEqual([{
         primitiveId: 'mesh-a',

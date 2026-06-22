@@ -239,6 +239,41 @@ const WALKAROUND_RICH_LOBES = evidence(
   ],
 );
 
+const WALKAROUND_FACE_LAYERS = evidence(
+  'atlas+truthfulness-surface',
+  'per-face absorption layers are scalar-atlas metadata with explicit layer-normal residual warnings',
+  [
+    'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+    'packages/walkaround-hybrid/src/__tests__/restirDiMaterialParity.test.ts',
+    'packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts',
+    'packages/walkaround-hybrid/src/__tests__/transparentOitMaterialParity.test.ts',
+    'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
+  ],
+  [
+    'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
+    'packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts',
+    'packages/walkaround-hybrid/src/shaders/shade.wgsl.ts',
+    'packages/walkaround-hybrid/src/shaders/restirGiMaterial.wgsl.ts',
+    'packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts',
+    'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
+  ],
+  [
+    {
+      path: 'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
+      includes: [
+        'packs frontLayer/backLayer transmission and roughness metadata',
+      ],
+    },
+    {
+      path: 'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
+      includes: [
+        'frontLayer.normalMap',
+        'backLayer.normalScale',
+      ],
+    },
+  ],
+);
+
 const SHARED_VERTEX_DISPLACEMENT = evidence(
   'shared-vertex-displacement',
   'CPU-readable displacement maps become vertex-level geometry before BVH build; no tessellation/microdisplacement',
@@ -454,6 +489,7 @@ const MATERIAL_APPROXIMATE_EVIDENCE: Record<BackendWithApproximateEvidence, Reco
       'iridescenceThicknessRange', 'specularIntensity', 'specularColor',
       'anisotropy', 'anisotropyRotation',
     ], WALKAROUND_RICH_LOBES),
+    ...group(['frontLayer', 'backLayer'], WALKAROUND_FACE_LAYERS),
     ...group(['displacementMap', 'displacementScale', 'displacementBias'], SHARED_VERTEX_DISPLACEMENT),
   },
   'pt-webgl2': {

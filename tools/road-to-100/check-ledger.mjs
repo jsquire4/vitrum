@@ -326,6 +326,8 @@ const atlasMapFieldUnion = parseAtlasMapFieldUnion(walkaroundMaterialAtlas);
 const atlasMapFields = parseAtlasMapFields(walkaroundMaterialAtlas);
 const atlasOffsetNames = parseMaterialAtlasOffsetNames(walkaroundMaterialAtlas);
 const materialAtlasWgsl = await readText("packages/walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts");
+const restirPhatWgsl = await readText("packages/walkaround-hybrid/src/shaders/restirPHat.wgsl.ts");
+const ddgiProbeUpdateWgsl = await readText("packages/walkaround-hybrid/src/ddgi/wgsl/probeUpdateRays.wgsl.ts");
 
 for (const [field, support] of walkaroundMaterialRows) {
   const consumed = walkaroundConsumedFields.has(field);
@@ -350,9 +352,12 @@ const permanentlyUnsupportedWalkaroundFields = [
   "scatteringCoefficient",
   "scatteringAnisotropy",
   "scatteringCoefficientRGB",
+  "thinFilmStack",
+];
+
+const walkaroundApproximateFaceLayerFields = [
   "frontLayer",
   "backLayer",
-  "thinFilmStack",
 ];
 
 const walkaroundApproximateVertexDisplacementFields = [
@@ -385,6 +390,18 @@ for (const field of walkaroundApproximateVertexDisplacementFields) {
   }
 }
 
+for (const field of walkaroundApproximateFaceLayerFields) {
+  if (walkaroundMaterialRows.get(field) !== "approximate") {
+    fail(`walkaround face-layer field must stay approximate unless native layered-BSDF proof lands: ${field}`);
+  }
+  if (!walkaroundConsumedFields.has(field)) {
+    fail(`walkaround approximate face-layer field is absent from CONSUMED_MATERIAL_FIELDS: ${field}`);
+  }
+  if (atlasMapFieldUnion.has(field) || atlasMapFields.has(field)) {
+    fail(`walkaround face-layer field should use scalar metadata, not AtlasMapField map packing: ${field}`);
+  }
+}
+
 for (const atlasField of atlasMapFieldUnion) {
   if (!atlasMapFields.has(atlasField)) {
     fail(`AtlasMapField union includes ${atlasField}, but ATLAS_MAP_FIELDS does not pack it`);
@@ -404,8 +421,6 @@ for (const forbiddenOffsetNeedle of [
   "SPECTRAL",
   "DISPERSION",
   "SCATTERING",
-  "FRONT_LAYER",
-  "BACK_LAYER",
   "THIN_FILM",
 ]) {
   for (const offsetName of atlasOffsetNames) {
@@ -415,6 +430,25 @@ for (const forbiddenOffsetNeedle of [
   }
   if (materialAtlasWgsl.includes(`MATERIAL_MAP_${forbiddenOffsetNeedle}`)) {
     fail(`materialAtlas.wgsl declares an unsupported walkaround atlas offset: ${forbiddenOffsetNeedle}`);
+  }
+}
+
+for (const offsetName of ["FRONT_LAYER", "BACK_LAYER"]) {
+  if (!atlasOffsetNames.has(offsetName)) {
+    fail(`walkaround face-layer metadata offset is missing from host atlas: ${offsetName}`);
+  }
+  if (!materialAtlasWgsl.includes(`MATERIAL_MAP_${offsetName}_TEXEL_OFFSET`)) {
+    fail(`materialAtlas.wgsl is missing face-layer metadata offset: ${offsetName}`);
+  }
+}
+for (const [sourceName, source, needle] of [
+  ["materialAtlas.wgsl.ts", materialAtlasWgsl, "fn sampleFaceLayerControls("],
+  ["materialAtlas.wgsl.ts", materialAtlasWgsl, "payload.layerTransmission = faceLayerTransmission(layerControls);"],
+  ["restirPHat.wgsl.ts", restirPhatWgsl, "return surf.layerTransmission * evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame("],
+  ["probeUpdateRays.wgsl.ts", ddgiProbeUpdateWgsl, "radiance = radiance * probeMat.layerTransmission;"],
+]) {
+  if (!source.includes(needle)) {
+    fail(`walkaround face-layer implementation proof is missing from ${sourceName}: ${needle}`);
   }
 }
 

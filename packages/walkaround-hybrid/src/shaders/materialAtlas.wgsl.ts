@@ -12,7 +12,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 53u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 55u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -45,6 +45,8 @@ const MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;
 const MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
 const MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 const MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: u32 = 52u;
+const MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: u32 = 53u;
+const MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: u32 = 54u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -264,6 +266,28 @@ fn sampleEnvMapIntensity(triIndex: u32) -> f32 {
     0,
   );
   return max(intensityMeta.x, 0.0);
+}
+
+fn sampleFaceLayerControls(triIndex: u32, isFrontFace: bool) -> vec4f {
+  let front = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET),
+    0,
+  );
+  let back = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET),
+    0,
+  );
+  return select(back, front, isFrontFace);
+}
+
+fn faceLayerTransmission(layer: vec4f) -> vec3f {
+  return clamp(layer.rgb, vec3f(0.0), vec3f(1.0));
+}
+
+fn faceLayerRoughness(roughness: f32, layer: vec4f) -> f32 {
+  return select(roughness, clamp(layer.a, 0.0, 1.0), layer.a >= 0.0);
 }
 
 fn sampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
@@ -737,6 +761,7 @@ struct RestirDIMaterialPayload {
   clearcoat: vec2f,
   sheen: vec4f,
   sheenRoughness: f32,
+  layerTransmission: vec3f,
 };
 
 fn sampleRestirDIMaterialPayloadForHit(
@@ -748,9 +773,13 @@ fn sampleRestirDIMaterialPayloadForHit(
 ) -> RestirDIMaterialPayload {
   let uv1 = materialAtlasUv1ForHit(hit);
   let vertexColor = sampleVertexColorForHit(hit);
+  let layerControls = sampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);
   var payload: RestirDIMaterialPayload;
   payload.albedo = sampleBaseColorMap(hit.indices.w, hit.uv, uv1, scalarBaseColor * vertexColor.rgb);
-  payload.rough = sampleMaterialScalarMap(hit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, hit.uv, uv1, decodeRoughMetal(materialWord).x);
+  payload.rough = faceLayerRoughness(
+    sampleMaterialScalarMap(hit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, hit.uv, uv1, decodeRoughMetal(materialWord).x),
+    layerControls,
+  );
   payload.metal = sampleMaterialScalarMap(hit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, hit.uv, uv1, decodeRoughMetal(materialWord).y);
   payload.envMapIntensity = sampleEnvMapIntensity(hit.indices.w);
   payload.clearcoatNormal = applyClearcoatNormalMapForHit(hit, smoothNormal, shadingNormal);
@@ -763,6 +792,7 @@ fn sampleRestirDIMaterialPayloadForHit(
   payload.clearcoat = sampleClearcoatControls(hit.indices.w, hit.uv, uv1);
   payload.sheen = sampleSheenControls(hit.indices.w, hit.uv, uv1);
   payload.sheenRoughness = sampleSheenRoughness(hit.indices.w, hit.uv, uv1);
+  payload.layerTransmission = faceLayerTransmission(layerControls);
   return payload;
 }
 

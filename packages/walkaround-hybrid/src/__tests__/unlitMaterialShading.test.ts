@@ -12,8 +12,9 @@ describe('walkaround unlit material shader contract', () => {
   it('emits unlit base color directly and bypasses GI lighting terms', () => {
     expect(SHADE_WGSL).toContain('let materialWord = textureLoad(bvh_material, vec2i(rmCoord), 0).r;');
     expect(SHADE_WGSL).toContain('if (decodeIsUnlitMaterial(materialWord))');
-    expect(SHADE_WGSL).toContain('textureStore(hdrColorOut,    pix, vec4f(albedo,      1.0));');
+    expect(SHADE_WGSL).toContain('let layeredAlbedo = albedo * layerTransmission;');
+    expect(SHADE_WGSL).toContain('textureStore(hdrColorOut,    pix, vec4f(layeredAlbedo,      1.0));');
     expect(SHADE_WGSL).toContain('textureStore(hdrIndirectOut, pix, vec4f(vec3f(0.0), 1.0));');
-    expect(SHADE_WGSL).toContain('textureStore(hdrTotalOut,    pix, vec4f(albedo,      1.0));');
+    expect(SHADE_WGSL).toContain('textureStore(hdrTotalOut,    pix, vec4f(layeredAlbedo,      1.0));');
   });
 });

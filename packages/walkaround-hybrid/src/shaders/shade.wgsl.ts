@@ -296,6 +296,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Use the BVH-baked material color for ALL surfaces (glass AND room surfaces).
   let uv1 = interpolateUv1FromNormalW(primaryHit, n0, n1, n2);
   let vertexColor = sampleVertexColorForHit(primaryHit);
+  let layerControls = sampleFaceLayerControls(primaryHit.indices.w, primaryHit.side >= 0.0);
+  let layerTransmission = faceLayerTransmission(layerControls);
   let albedo   = sampleBaseColorMap(primaryHit.indices.w, primaryHit.uv, uv1, matColor.rgb * vertexColor.rgb);
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded rough=select(0.85,0.05,isGlass)/metal=0). The diffuse-default
@@ -305,7 +307,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let rmCoord  = vec2u(primaryHit.indices.w % BVH_MATERIAL_TEX_WIDTH, primaryHit.indices.w / BVH_MATERIAL_TEX_WIDTH);
   let materialWord = textureLoad(bvh_material, vec2i(rmCoord), 0).r;
   let rm       = decodeRoughMetal(materialWord);
-  let rough    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x);
+  let rough    = faceLayerRoughness(
+    sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, primaryHit.uv, uv1, rm.x),
+    layerControls,
+  );
   let metal    = sampleMaterialScalarMap(primaryHit.indices.w, MATERIAL_MAP_SLOT_METALLIC, 2u, primaryHit.uv, uv1, rm.y);
   let specular = sampleSpecularControls(primaryHit.indices.w, primaryHit.uv, uv1);
   let clearcoat = sampleClearcoatControls(primaryHit.indices.w, primaryHit.uv, uv1);
@@ -323,10 +328,11 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // backend remains an approximate material renderer rather than a full glTF
   // rasterization pipeline.
   if (decodeIsUnlitMaterial(materialWord)) {
-    textureStore(hdrColorOut,    pix, vec4f(albedo,      1.0));
+    let layeredAlbedo = albedo * layerTransmission;
+    textureStore(hdrColorOut,    pix, vec4f(layeredAlbedo,      1.0));
     textureStore(hdrIndirectOut, pix, vec4f(vec3f(0.0), 1.0));
-    textureStore(hdrAlbedoOut,   pix, vec4f(albedo,      1.0));
-    textureStore(hdrTotalOut,    pix, vec4f(albedo,      1.0));
+    textureStore(hdrAlbedoOut,   pix, vec4f(layeredAlbedo,      1.0));
+    textureStore(hdrTotalOut,    pix, vec4f(layeredAlbedo,      1.0));
     return;
   }
 
@@ -433,8 +439,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Lo_transmittedGI joins the direct channel (un-demodulated; bypasses AO —
   // the diffuse wall behind the glass is not in contact-shadow from the glass
   // pane, and GI through glass is a transmission term, not an occlusion term).
-  let directRadiance = Lo_emit + Lo_emitterGlow + Lo_lightMap + Lo_indirectSpec + Lo_transmittedGI + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao;
-  let indirectRadiance = Lo_indirect * ao;
+  let directRadiance = (Lo_emit + Lo_emitterGlow + Lo_lightMap + Lo_indirectSpec + Lo_transmittedGI + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_sunCaustic + Lo_skyAperture) * ao) * layerTransmission;
+  let indirectRadiance = Lo_indirect * ao * layerTransmission;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally
   // produce singular radiance values (cos(θ_v) → 0 at the grazing edge of

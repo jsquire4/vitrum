@@ -58,7 +58,7 @@ describe('transparent OIT material parity', () => {
     expect(TRANSPARENT_OIT_WGSL).toContain('let Le = sampleEmitterLeAtXi(e, xi);');
     expect(TRANSPARENT_OIT_WGSL).toContain('Lo += Le * shadowT * brdf * G * ls.area * sampleWeight;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let areaDirect = oitLayerAreaEmitterNEE(hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo);');
-    expect(TRANSPARENT_OIT_WGSL).toContain('return (skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked;');
+    expect(TRANSPARENT_OIT_WGSL).toContain('return ((skyAmbient + sunDirect + analyticDirect + areaDirect) * viewFacing + emissive + baked) * payload.layerTransmission;');
     expect(TRANSPARENT_OIT_WGSL).toContain('let hitPos = walkRay.origin + walkRay.direction * hit.dist;');
     expect(TRANSPARENT_OIT_WGSL).toContain('oitLayerRadiance(hit, hitPos, primaryRay.direction, word);');
     expect(TRANSPARENT_OIT_WGSL).not.toContain('sunDiffuse');

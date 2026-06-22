@@ -486,8 +486,12 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   scatteringCoefficient: 'unsupported',
   scatteringAnisotropy: 'unsupported',
   scatteringCoefficientRGB: 'unsupported',
-  frontLayer: 'unsupported',
-  backLayer: 'unsupported',
+  // Per-face absorption layers ride the walkaround material atlas. Transmission
+  // attenuates final bulk radiance and roughness overrides the selected face in
+  // shade/OIT/ReSTIR/DDGI material payloads; layer-local normal maps and full
+  // layered-BSDF multiple scattering remain out of model.
+  frontLayer: 'approximate',
+  backLayer: 'approximate',
   thinFilmStack: 'unsupported',
   // Scalar anisotropy rides material atlas metadata and swaps shade-owned GGX
   // evals to an anisotropic branch. Sampling/PDF reservoirs remain isotropic.

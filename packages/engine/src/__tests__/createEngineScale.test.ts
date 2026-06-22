@@ -62,8 +62,6 @@ describe('createEngine backend selection', () => {
     ['scatteringCoefficient', { scatteringCoefficient: 0.12 }],
     ['scatteringAnisotropy', { scatteringAnisotropy: 0.35 }],
     ['scatteringCoefficientRGB', { scatteringCoefficientRGB: [0.1, 0.2, 0.3] }],
-    ['frontLayer', { frontLayer: { transmission: [0.85, 0.9, 1] } }],
-    ['backLayer', { backLayer: { transmission: [1, 0.9, 0.85] } }],
     ['thinFilmStack', {
       thinFilmStack: {
         layers: [{ ior: 1.45, thicknessNm: 120 }],
@@ -106,7 +104,6 @@ describe('createEngine backend selection', () => {
       baseColor: [1, 1, 1],
       roughness: 0.4,
       metallic: 0,
-      frontLayer: { transmission: [0.85, 0.9, 1] },
       spectralAttenuation: {
         wavelengthStart: 380,
         wavelengthEnd: 700,
@@ -119,7 +116,7 @@ describe('createEngine backend selection', () => {
 
     expect(recommendation).toEqual({
       backend: 'pt-webgpu',
-      fields: ['frontLayer', 'spectralAttenuation', 'thinFilmStack'],
+      fields: ['spectralAttenuation', 'thinFilmStack'],
     });
   });
 
@@ -129,6 +126,8 @@ describe('createEngine backend selection', () => {
       roughness: 1,
       metallic: 0,
       displacementScale: 0.1,
+      frontLayer: { transmission: [0.85, 0.9, 1], roughness: 0.25 },
+      backLayer: { transmission: [1, 0.9, 0.85] },
     }), true);
 
     expect(recommendation).toBeNull();

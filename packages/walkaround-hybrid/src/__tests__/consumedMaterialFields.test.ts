@@ -81,15 +81,11 @@ const WALKAROUND_PERMANENT_UNSUPPORTED_MATERIAL: Record<string, unknown> = {
   scatteringCoefficient: 0.15,
   scatteringAnisotropy: 0.25,
   scatteringCoefficientRGB: [0.1, 0.2, 0.3],
-  frontLayer: { transmission: [1, 0.5, 0.25] },
-  backLayer: { transmission: [0.25, 0.5, 1] },
   thinFilmStack: { layers: [{ ior: 1.4, thicknessNm: 300 }] },
 };
 
 const WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS = [
-  'backLayer',
   'dispersionAbbeNumber',
-  'frontLayer',
   'scatteringAnisotropy',
   'scatteringCoefficient',
   'scatteringCoefficientRGB',
@@ -114,7 +110,7 @@ function consumedOnlyScene(): Scene {
   };
 }
 
-/** A scene whose material has `baseColorMap` (consumed) + `frontLayer` (unconsumed). */
+/** A scene whose material has `baseColorMap` (consumed) + layer-local normalMap (unconsumed). */
 function unconsumedFieldsScene(): Scene {
   return {
     primitives: [
@@ -128,7 +124,10 @@ function unconsumedFieldsScene(): Scene {
           roughness: 0.3,
           metallic: 0,
           baseColorMap: { handle: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } },
-          frontLayer: { transmission: [1, 0.5, 0.25] }, // unconsumed
+          frontLayer: {
+            transmission: [1, 0.5, 0.25],
+            normalMap: { handle: 'front-layer-normal' },
+          },
         },
       } as unknown as ScenePrimitive,
     ],
@@ -198,7 +197,7 @@ describe('collectUnconsumedMaterialFields', () => {
       scene.primitives as unknown as ReadonlyArray<PrimLike>,
     );
     // both fields are present, result is alphabetically sorted
-    expect(result).toEqual(['frontLayer']);
+    expect(result).toEqual(['frontLayer.normalMap']);
   });
 
   it('reports material drops on analytic primitives', () => {
@@ -236,19 +235,19 @@ describe('collectUnconsumedMaterialFields', () => {
     ])).toEqual({
       spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
       volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
-      layered: ['backLayer', 'frontLayer', 'thinFilmStack'],
+      layered: ['thinFilmStack'],
       unknown: ['unknownFutureField'],
     });
   });
 
   it('unions across multiple primitives and deduplicates', () => {
     const prims: ReadonlyArray<PrimLike> = [
-      { id: 'pane-a', kind: 'mesh', material: { baseColor: [1, 0, 0], frontLayer: { transmission: [1, 1, 1] } } },
+      { id: 'pane-a', kind: 'mesh', material: { baseColor: [1, 0, 0], frontLayer: { transmission: [1, 1, 1], normalMap: { handle: 'normal' } } } },
       { id: 'pane-b', kind: 'mesh', material: { baseColor: [0, 1, 0], thinFilmStack: { layers: [] }, anisotropy: 0.5 } },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual(['frontLayer', 'thinFilmStack']);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual(['frontLayer.normalMap', 'thinFilmStack']);
     expect(collectUnconsumedMaterialPrimitiveFields(prims)).toEqual([
-      { primitiveId: 'pane-a', fields: ['frontLayer'] },
+      { primitiveId: 'pane-a', fields: ['frontLayer.normalMap'] },
       { primitiveId: 'pane-b', fields: ['thinFilmStack'] },
     ]);
   });
@@ -291,8 +290,6 @@ describe('collectUnconsumedMaterialFields', () => {
       },
     ];
     expect(collectUnconsumedMaterialFields(prims)).toEqual([
-      'backLayer',
-      'frontLayer',
       'thinFilmStack',
     ]);
   });
@@ -517,7 +514,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('warns only for frontLayer when baseColorMap is also supplied', () => {
+  it('warns only for frontLayer.normalMap when baseColorMap is also supplied', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
@@ -529,12 +526,12 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
       const materialWarn = warnMessages.find((m) => m.includes('not consumed'));
       expect(materialWarn).toBeDefined();
       expect(materialWarn).not.toContain('baseColorMap');
-      expect(materialWarn).toContain('frontLayer');
+      expect(materialWarn).toContain('frontLayer.normalMap');
       expect(structured.some((w) =>
         w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
         Array.isArray(w.details?.fields) &&
         !w.details.fields.includes('baseColorMap') &&
-        w.details.fields.includes('frontLayer'),
+        w.details.fields.includes('frontLayer.normalMap'),
       )).toBe(true);
     } finally {
       engine.dispose();
@@ -578,7 +575,7 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
         JSON.stringify(w.details?.categories) === JSON.stringify({
           spectral: ['dispersionAbbeNumber', 'spectralAttenuation'],
           volume: ['scatteringAnisotropy', 'scatteringCoefficient', 'scatteringCoefficientRGB'],
-          layered: ['backLayer', 'frontLayer', 'thinFilmStack'],
+          layered: ['thinFilmStack'],
         }) &&
         JSON.stringify(w.details?.primitiveFields) === JSON.stringify([{
           primitiveId: 'unsupported-material-fields',

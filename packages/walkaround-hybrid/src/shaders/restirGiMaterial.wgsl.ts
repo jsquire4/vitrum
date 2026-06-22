@@ -112,7 +112,7 @@ fn restir_gi_receiver_contribution_from_payload(
     );
     contribution = contribution + Lo * specBrdf;
   }
-  return contribution;
+  return contribution * payload.layerTransmission;
 }
 
 fn restir_gi_receiver_phat_from_payload(
@@ -172,6 +172,7 @@ fn restir_gi_receiver_phat_from_surface(
   payload.clearcoat = surf.clearcoat;
   payload.sheen = surf.sheen;
   payload.sheenRoughness = surf.sheenRoughness;
+  payload.layerTransmission = surf.layerTransmission;
   return restir_gi_receiver_phat_from_payload(
     surf.pos,
     surf.normal,
@@ -262,9 +263,9 @@ fn sampleRestirGIHitMaterialForHit(
       woToVisible,
       proxyWi,
     );
-    out.Lo = surfaceEmission + incomingIrradiance * brdf;
+    out.Lo = (surfaceEmission + incomingIrradiance * brdf) * payload.layerTransmission;
   } else {
-    out.Lo = surfaceEmission + diffuseLo;
+    out.Lo = (surfaceEmission + diffuseLo) * payload.layerTransmission;
   }
 
   return out;
