@@ -561,6 +561,38 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 23 — Walkaround A/B Evidence-Citation Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of
+`VQ-WALKAROUND-RADIOMETRIC-AB` found no bounded implementation row hiding behind
+the partial status. The current walkaround A/B harness and checker already pin a
+full four-case proof set: A8/GRIS is `NEGLIGIBLE`, SUN is analytic `PASS`, GLASS
+is `PASS`, and GLOSSY is a material-effect `FINDING` with
+`promotion.defaultReady:false` because the DDGI cache is not GGX-filtered
+radiance.
+
+Implementation:
+
+- Expanded `VQ-WALKAROUND-RADIOMETRIC-AB` proof artifacts to cite the harness,
+  proof metadata, proof checker, radiometric README, host-status/result JSONs,
+  `restirPtReuse` option source, GGX/specular GI shader sources, and the glossy
+  material GI regression test.
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so the row fails
+  if it loses the required source/proof citations, drifts off `PASS-PARTIAL`, or
+  drops the do-not-promote glossy `FINDING` boundary.
+- Kept the row partial-proof-green: browser/real-adapter or higher-quality
+  case-specific references are still needed before promoting GRIS/ReSTIR-GI,
+  PPG, NRC, or rich-material GI quality claims.
+
+Focused gates:
+
+```bash
+npm run radiometric-ab:proof-check
+npm run road-to-100-validation-status
+npm run proof-check
+git diff --check
+```
+
 ### Wave 22 — Renderer Fidelity Evidence-Citation Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of

@@ -103,6 +103,21 @@ const REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS = [
   "packages/pt-webgl2/src/glsl/shader/sampling/light_sampling_functions.glsl.js",
 ];
 
+const REQUIRED_WALKAROUND_AB_ARTIFACT_PATHS = [
+  "tools/radiometric-ab/check-results.mjs",
+  "tools/radiometric-ab/proofs.mjs",
+  "tools/radiometric-ab/README.md",
+  "tools/radiometric-ab/walkaround-ab.mjs",
+  "tools/radiometric-ab/walkaround-ab-host-status.json",
+  "tools/radiometric-ab/walkaround-ab-results.json",
+  "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
+  "packages/walkaround-hybrid/src/shaders/ggxBrdf.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/shade.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/risGi.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/__tests__/b1GlossyMetalGi.test.ts",
+];
+
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -531,6 +546,111 @@ for (const needle of [
 ]) {
   if (!ptWebgpuIndexSource.includes(needle)) {
     fail(`VQ-RADIOMETRIC-PT structured BDPT warning source is stale: missing ${needle}`);
+  }
+}
+
+const walkaroundAbRow = queue.validationQueue.find((row) => row.id === "VQ-WALKAROUND-RADIOMETRIC-AB");
+if (walkaroundAbRow == null) fail("validationQueue missing VQ-WALKAROUND-RADIOMETRIC-AB");
+if (walkaroundAbRow.status !== "partial-proof-green") {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB must remain partial-proof-green until promotion evidence exists");
+}
+if (walkaroundAbRow.command !== "npm run radiometric-ab:walkaround") {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB command must stay on the native walkaround A/B harness");
+}
+const walkaroundAbArtifactPaths = new Set(walkaroundAbRow.proofArtifacts.map((artifact) => artifact?.path));
+for (const path of REQUIRED_WALKAROUND_AB_ARTIFACT_PATHS) {
+  if (!walkaroundAbArtifactPaths.has(path)) {
+    fail(`VQ-WALKAROUND-RADIOMETRIC-AB proofArtifacts must cite ${path}`);
+  }
+}
+for (const needle of [
+  "full case set",
+  "PASS-PARTIAL",
+  "do-not-promote",
+  "glossy is a non-promotable FINDING",
+  "browser/real-adapter",
+  "case-specific references",
+  "GRIS/ReSTIR-GI/PPG/NRC",
+]) {
+  if (!String(walkaroundAbRow.remaining).includes(needle)) {
+    fail(`VQ-WALKAROUND-RADIOMETRIC-AB remaining text must include ${needle}`);
+  }
+}
+const walkaroundAbHostStatus = await readJson("tools/radiometric-ab/walkaround-ab-host-status.json");
+const walkaroundAbResults = await readJson("tools/radiometric-ab/walkaround-ab-results.json");
+if (walkaroundAbHostStatus.verdict !== "PASS-PARTIAL") {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB host status must pin PASS-PARTIAL");
+}
+if (walkaroundAbHostStatus.reason?.code !== "walkaround-ab-partial-proof") {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB host status must pin walkaround-ab-partial-proof");
+}
+if (walkaroundAbResults.a8?.verdict !== "NEGLIGIBLE") fail("walkaround A/B A8 verdict must stay NEGLIGIBLE");
+if (walkaroundAbResults.sun?.verdict !== "PASS") fail("walkaround A/B SUN verdict must stay PASS");
+if (walkaroundAbResults.glass?.verdict !== "PASS") fail("walkaround A/B GLASS verdict must stay PASS");
+if (walkaroundAbResults.glossy?.verdict !== "FINDING") fail("walkaround A/B GLOSSY verdict must stay FINDING");
+if (walkaroundAbResults.glossy?.promotion?.defaultReady !== false) {
+  fail("walkaround A/B GLOSSY finding must pin promotion.defaultReady=false");
+}
+if (walkaroundAbResults.glossy?.promotion?.blocker !== "ddgi-irradiance-cache-not-ggx-filtered-radiance") {
+  fail("walkaround A/B GLOSSY finding must pin the GGX-filtered radiance blocker");
+}
+const walkaroundAbHarness = await readText("tools/radiometric-ab/walkaround-ab.mjs");
+const walkaroundAbProofs = await readText("tools/radiometric-ab/proofs.mjs");
+const walkaroundAbChecker = await readText("tools/radiometric-ab/check-results.mjs");
+const walkaroundAbReadme = await readText("tools/radiometric-ab/README.md");
+const walkaroundHybridOptions = await readText("packages/walkaround-hybrid/src/HybridEngineOptions.ts");
+const walkaroundGgxSource = await readText("packages/walkaround-hybrid/src/shaders/ggxBrdf.wgsl.ts");
+const walkaroundShadingTerms = await readText("packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts");
+const walkaroundShade = await readText("packages/walkaround-hybrid/src/shaders/shade.wgsl.ts");
+const walkaroundRisGi = await readText("packages/walkaround-hybrid/src/shaders/risGi.wgsl.ts");
+const walkaroundGlossyTest = await readText("packages/walkaround-hybrid/src/shaders/__tests__/b1GlossyMetalGi.test.ts");
+for (const needle of ["VITRUM_WALKAROUND_AB_CASES", "ddgi-irradiance-cache-not-ggx-filtered-radiance"]) {
+  if (!walkaroundAbHarness.includes(needle)) {
+    fail(`walkaround A/B harness source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "WALKAROUND_AB_CASE_IDS",
+  "assertWalkaroundFullFreshStatus",
+  "checkWalkaroundGlossy",
+  "Do not promote",
+]) {
+  if (!walkaroundAbChecker.includes(needle)) {
+    fail(`walkaround A/B checker source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "WALKAROUND_AB_RESULT_PROOF",
+  "expectedVerdict: \"FINDING\"",
+  "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+  "material-furnace-reference-ab-and-browser-real-adapter-recapture",
+]) {
+  if (!walkaroundAbProofs.includes(needle)) {
+    fail(`walkaround A/B proof metadata is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "PASS-PARTIAL",
+  "GLOSSY remains",
+  "VITRUM_WALKAROUND_AB_CASES",
+  "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+]) {
+  if (!walkaroundAbReadme.includes(needle)) {
+    fail(`walkaround A/B README evidence note is stale: missing ${needle}`);
+  }
+}
+for (const [label, source, needles] of [
+  ["HybridEngineOptions.ts", walkaroundHybridOptions, ["restirPtReuse", "B1"]],
+  ["ggxBrdf.wgsl.ts", walkaroundGgxSource, ["SPEC_GI_ROUGH_MAX"]],
+  ["shadingTerms.wgsl.ts", walkaroundShadingTerms, ["SPEC_GI_ROUGH_MAX", "lo_indirectSpecular"]],
+  ["shade.wgsl.ts", walkaroundShade, ["lo_indirectSpecular"]],
+  ["risGi.wgsl.ts", walkaroundRisGi, ["lo_indirectSpecular"]],
+  ["b1GlossyMetalGi.test.ts", walkaroundGlossyTest, ["SPEC_GI_ROUGH_MAX", "lo_indirectSpecular"]],
+]) {
+  for (const needle of needles) {
+    if (!source.includes(needle)) {
+      fail(`walkaround A/B source citation ${label} is stale: missing ${needle}`);
+    }
   }
 }
 

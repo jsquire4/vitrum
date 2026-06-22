@@ -138,17 +138,37 @@
       "status": "partial-proof-green",
       "command": "npm run radiometric-ab:walkaround",
       "proofArtifacts": [
-        { "path": "tools/radiometric-ab/walkaround-ab-host-status.json", "json": { "verdict": "PASS-PARTIAL" } },
+        { "path": "tools/radiometric-ab/check-results.mjs" },
+        { "path": "tools/radiometric-ab/proofs.mjs" },
+        { "path": "tools/radiometric-ab/README.md" },
+        { "path": "tools/radiometric-ab/walkaround-ab.mjs" },
+        { "path": "packages/walkaround-hybrid/src/HybridEngineOptions.ts" },
+        { "path": "packages/walkaround-hybrid/src/shaders/ggxBrdf.wgsl.ts" },
+        { "path": "packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts" },
+        { "path": "packages/walkaround-hybrid/src/shaders/shade.wgsl.ts" },
+        { "path": "packages/walkaround-hybrid/src/shaders/risGi.wgsl.ts" },
+        { "path": "packages/walkaround-hybrid/src/shaders/__tests__/b1GlossyMetalGi.test.ts" },
+        {
+          "path": "tools/radiometric-ab/walkaround-ab-host-status.json",
+          "json": {
+            "verdict": "PASS-PARTIAL",
+            "reason.code": "walkaround-ab-partial-proof"
+          }
+        },
         {
           "path": "tools/radiometric-ab/walkaround-ab-results.json",
           "json": {
+            "a8.verdict": "NEGLIGIBLE",
+            "sun.verdict": "PASS",
+            "glass.verdict": "PASS",
             "glossy.verdict": "FINDING",
+            "glossy.materialEffectObserved": true,
             "glossy.promotion.defaultReady": false,
             "glossy.promotion.blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance"
           }
         }
       ],
-      "remaining": "Committed walkaround A/B proof now pins the full case set and current verdicts (a8 negligible, sun pass, glass pass, glossy finding). Remaining work is browser/real-adapter or higher-quality case-specific references before promoting GRIS/ReSTIR-GI/PPG/NRC quality claims."
+      "remaining": "Committed walkaround A/B proof now pins the full case set and current verdicts (a8 negligible, sun pass, glass pass, glossy finding), plus the source/proof files that define the GRIS, sun, glass, and glossy boundaries. The row must remain PASS-PARTIAL/do-not-promote while glossy is a non-promotable FINDING. Remaining work is browser/real-adapter or higher-quality case-specific references before promoting GRIS/ReSTIR-GI/PPG/NRC quality claims."
     },
     {
       "id": "VQ-RENDERER-FIDELITY-PROOF",
