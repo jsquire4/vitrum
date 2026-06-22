@@ -359,14 +359,113 @@ async function assertRuntimeTruthfulnessGuards() {
   }
 }
 
+async function assertBehavioralProofCoverage() {
+  const proofFiles = [
+    {
+      path: "packages/walkaround-hybrid/src/__tests__/learnedSystemConfig.test.ts",
+      needles: [
+        "keeps denoiser:'auto' on the non-learned default when no host model assets exist",
+        "resolves denoiser:'auto' to neural only when full-tier host weights exist",
+        "does not auto-select neural on tier:'lite', even when host weights exist",
+        "resolves denoiser:'auto' to OIDN when a host model URL is supplied",
+        "clamps learned-system cadence and mixture knobs into the effective config",
+        "packageProvidesProductionWeights: false",
+        "defaultEnabled: false",
+        "expect(cfg.ppgEnabled).toBe(1)",
+        "expect(cfg.nrcEnabled).toBe(1)",
+      ],
+    },
+    {
+      path: "packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts",
+      needles: [
+        "keeps learned/research paths out of experimentalFeatures until explicitly enabled",
+        "resolves denoiser:'auto' to the default when no host model assets exist",
+        "resolves denoiser:'auto' to neural only when full-tier host weights are supplied",
+        "resolves denoiser:'auto' away from neural on lite even if weights are present",
+        "declares opt-in learned/research paths as experimental features",
+        "walkaround-hybrid.nrc-experimental-biased",
+        "walkaround-hybrid.neural-host-weights-required",
+        "packageProvidesProductionWeights: false",
+      ],
+    },
+    {
+      path: "packages/walkaround-hybrid/src/__tests__/hybridLiteTier.test.ts",
+      needles: [
+        "throws on tier:lite + ppgEnabled",
+        "throws on tier:lite + nrcEnabled",
+        "reports neural support details from the runtime provisioning state",
+        "default (no nrcEnabled) stores the gate as 0 (OFF)",
+        "nrcEnabled:true on the full tier stores the gate as 1",
+      ],
+    },
+    {
+      path: "packages/walkaround-hybrid/src/pipeline/__tests__/nrcStructuralGate.test.ts",
+      needles: [
+        "keeps the default gi-ris pass on the 4-group non-NRC module",
+        "adds the 5th NRC bind group and NRC shader symbols only when nrcConfig is provided",
+        "expect(risGiGroupCount(stub.computePipelines)).toBe(4)",
+        "expect(risGiGroupCount(stub.computePipelines)).toBe(5)",
+      ],
+    },
+    {
+      path: "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts",
+      needles: [
+        "exact required NRC limits pass",
+        "default WebGPU limits fail with an actionable nrcEnabled error",
+        "maxBindGroups",
+        "maxStorageBuffersPerShaderStage",
+        "maxComputeWorkgroupStorageSize",
+        "NRC_REQUIRED_WORKGROUP_STORAGE_BYTES",
+      ],
+    },
+    {
+      path: "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts",
+      needles: [
+        "omitting nrcEnabled is byte-identical to nrcEnabled: 0",
+        "turning NRC on flips ONLY u32[91]",
+        "const NRC_GATE_U32_INDEX = 91",
+      ],
+    },
+    {
+      path: "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCoordinatorDiagnostics.test.ts",
+      needles: [
+        "routes maxSpatialCells import mismatch through structured warnings",
+        "routes scene-bounds import mismatch through structured warnings",
+        "reports training readback failures as deduped non-fatal EngineErrors",
+      ],
+    },
+    {
+      path: "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCompilerGate.test.ts",
+      needles: [
+        "omits the PPG update pipeline by default",
+        "compiles the PPG update pipeline only when ppgEnabled is true",
+        "threads the GRIS reservoir stride into the PPG update shader when ReSTIR-PT reuse is enabled",
+        "PPGUpdatePass gates training on ppgEnabled and ppgTrainThisFrame",
+        "MAX_DTREE_NODES_PER_CELL",
+        "RESERVOIR_GI_STRIDE_LOCAL",
+      ],
+    },
+  ];
+
+  for (const proof of proofFiles) {
+    const text = await readText(proof.path);
+    for (const needle of proof.needles) {
+      if (!text.includes(needle)) {
+        fail(`${proof.path} missing behavioral proof needle: ${needle}`);
+      }
+    }
+  }
+}
+
 const checkpointManifest = await loadCheckpointManifest();
 await assertTrackedResearchCheckpoints(checkpointManifest);
 await assertNoSilentProductionCheckpoint(checkpointManifest);
 await assertRuntimeTruthfulnessGuards();
+await assertBehavioralProofCoverage();
 
 const researchCount = checkpointManifest.checkpoints.filter((entry) => entry.role === "research").length;
 const productionCount = checkpointManifest.checkpoints.filter((entry) => entry.role === "production").length;
 console.log(
   `[learned-systems-proof-check] PASS ` +
-  `(${researchCount} research checkpoints, ${productionCount} production checkpoints validate; neural/NRC remain opt-in and non-default)`,
+  `(${researchCount} research checkpoints, ${productionCount} production checkpoints validate; neural/NRC remain opt-in and non-default; behavioral proof coverage pinned)`,
 );
