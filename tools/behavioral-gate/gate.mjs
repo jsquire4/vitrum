@@ -350,6 +350,23 @@ function walkaroundGolden(slug) {
   };
 }
 
+function mutationGolden(slug) {
+  return {
+    path: `tools/reference-renders/mutation-behavioral/${slug}.png`,
+    maxRmse: 8,
+    maxMeanAbs: 4,
+    maxAbs: 48,
+    variants: {
+      "dzn-full": {
+        path: `tools/reference-renders/mutation-behavioral/${slug}.dzn-full.png`,
+        maxRmse: 8,
+        maxMeanAbs: 4,
+        maxAbs: 48,
+      },
+    },
+  };
+}
+
 function goldenForProof(proof) {
   const variant = goldenVariant ? proof.variants?.[goldenVariant] : null;
   const selected = variant ?? proof;
@@ -2102,6 +2119,14 @@ function hasNaN(pixels) {
 const BEHAVIORAL_GOLDENS = {
   "pt/material-lobes": selectGolden(MATERIAL_LOBE_GOLDEN),
   "pt/material-lobe-maps": selectGolden(MATERIAL_LOBE_MAP_GOLDEN),
+  "pt/mutation-material": selectGolden(mutationGolden("pt-mutation-material")),
+  "pt/mutation-environment": selectGolden(mutationGolden("pt-mutation-environment")),
+  "pt/mutation-emitter": selectGolden(mutationGolden("pt-mutation-emitter")),
+  "pt/mutation-transform": selectGolden(mutationGolden("pt-mutation-transform")),
+  "pt/mutation-topology": selectGolden(mutationGolden("pt-mutation-topology")),
+  "pt/mutation-instanced-count": selectGolden(mutationGolden("pt-mutation-instanced-count")),
+  "pt/mutation-add-primitive": selectGolden(mutationGolden("pt-mutation-add-primitive")),
+  "pt/mutation-remove-primitive": selectGolden(mutationGolden("pt-mutation-remove-primitive")),
   "wh/default": selectGolden(walkaroundGolden("wh-default")),
   "wh/rcEnabled": selectGolden(walkaroundGolden("wh-rcenabled")),
   "wh/ppgEnabled": selectGolden(walkaroundGolden("wh-ppgenabled")),
@@ -2112,6 +2137,14 @@ const BEHAVIORAL_GOLDENS = {
   "wh/rect-area-emitter": selectGolden(walkaroundGolden("wh-rect-area-emitter")),
   "wh/directional-sun": selectGolden(walkaroundGolden("wh-directional-sun")),
   "wh/glass-gi": selectGolden(walkaroundGolden("wh-glass-gi")),
+  "wh/mutation-material": selectGolden(mutationGolden("wh-mutation-material")),
+  "wh/mutation-environment": selectGolden(mutationGolden("wh-mutation-environment")),
+  "wh/mutation-emitter": selectGolden(mutationGolden("wh-mutation-emitter")),
+  "wh/mutation-transform": selectGolden(mutationGolden("wh-mutation-transform")),
+  "wh/mutation-topology": selectGolden(mutationGolden("wh-mutation-topology")),
+  "wh/mutation-instanced-count": selectGolden(mutationGolden("wh-mutation-instanced-count")),
+  "wh/mutation-add-primitive": selectGolden(mutationGolden("wh-mutation-add-primitive")),
+  "wh/mutation-remove-primitive": selectGolden(mutationGolden("wh-mutation-remove-primitive")),
   "wh/transparent-oit": selectGolden(TRANSPARENT_OIT_GOLDEN),
   [GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label]: {
     path: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath,

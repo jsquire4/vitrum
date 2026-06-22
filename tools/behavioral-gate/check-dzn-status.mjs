@@ -25,6 +25,14 @@
  * }} ExpectedStatus
  */
 
+const DZN_GOLDEN_EXPECTATION = {
+  goldenStatus: "ok",
+  goldenVariant: "dzn-full",
+  maxRmse: 8,
+  maxMeanAbs: 4,
+  maxAbs: 48,
+};
+
 const EXPECTED = /** @type {ExpectedStatus[]} */ ([
   {
     path: "tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json",
@@ -48,23 +56,23 @@ const EXPECTED = /** @type {ExpectedStatus[]} */ ([
     ],
   },
   {
-    path: "tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json",
-    command: "npm run behavioral-gate:dzn -- --filter mutation --require-full-tier",
-    filter: "mutation",
+    path: "tools/behavioral-gate/behavioral-gate-dzn-pt-mutation-status.json",
+    command: "npm run behavioral-gate:dzn -- --filter pt/mutation --require-full-tier",
+    filter: "pt/mutation",
     goldenVariant: "dzn-full",
     verdict: "PASS",
     exitStatus: 0,
     totalConfigs: 8,
     failures: 0,
     configs: [
-      { label: "pt/mutation-material", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "material", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "pt/mutation-environment", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "environment", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "pt/mutation-emitter", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "emitter", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "pt/mutation-transform", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "transform", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "pt/mutation-topology", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "topology", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "pt/mutation-instanced-count", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "instanced-count", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "pt/mutation-add-primitive", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "add-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "pt/mutation-remove-primitive", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "remove-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "pt/mutation-material", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "material", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "pt/mutation-environment", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "environment", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "pt/mutation-emitter", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "emitter", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "pt/mutation-transform", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "transform", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "pt/mutation-topology", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "topology", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "pt/mutation-instanced-count", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "instanced-count", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "pt/mutation-add-primitive", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "add-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "pt/mutation-remove-primitive", verdict: "PASS", rawStatus: "OK", tier: "full", mutationKind: "remove-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
     ],
   },
   {
@@ -77,14 +85,14 @@ const EXPECTED = /** @type {ExpectedStatus[]} */ ([
     totalConfigs: 8,
     failures: 0,
     configs: [
-      { label: "wh/mutation-material", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "material", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "wh/mutation-environment", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "environment", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "wh/mutation-emitter", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "emitter", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "wh/mutation-transform", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "transform", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "wh/mutation-topology", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "topology", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "wh/mutation-instanced-count", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "instanced-count", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "wh/mutation-add-primitive", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "add-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
-      { label: "wh/mutation-remove-primitive", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "remove-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8 },
+      { label: "wh/mutation-material", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "material", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "wh/mutation-environment", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "environment", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "wh/mutation-emitter", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "emitter", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "wh/mutation-transform", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "transform", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "wh/mutation-topology", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "topology", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "wh/mutation-instanced-count", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "instanced-count", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "wh/mutation-add-primitive", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "add-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
+      { label: "wh/mutation-remove-primitive", verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005, mutationKind: "remove-primitive", minMutationMeanAbs: 2, minMutationMaxAbs: 8, ...DZN_GOLDEN_EXPECTATION },
     ],
   },
   {

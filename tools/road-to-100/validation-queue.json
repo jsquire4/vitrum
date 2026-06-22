@@ -57,10 +57,26 @@
       "status": "partial-proof-green",
       "command": "npm run behavioral-gate:dzn-status-check",
       "proofArtifacts": [
-        { "path": "tools/behavioral-gate/behavioral-gate-dzn-mutation-status.json", "json": { "verdict": "PASS" } },
-        { "path": "tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json", "json": { "verdict": "PASS" } }
+        { "path": "tools/behavioral-gate/behavioral-gate-dzn-pt-mutation-status.json", "json": { "verdict": "PASS" } },
+        { "path": "tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json", "json": { "verdict": "PASS" } },
+        { "path": "tools/reference-renders/mutation-behavioral/pt-mutation-material.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/pt-mutation-environment.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/pt-mutation-emitter.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/pt-mutation-transform.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/pt-mutation-topology.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/pt-mutation-instanced-count.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/pt-mutation-add-primitive.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/pt-mutation-remove-primitive.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-material.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-environment.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-emitter.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-transform.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-topology.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-instanced-count.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-add-primitive.dzn-full.png", "type": "png" },
+        { "path": "tools/reference-renders/mutation-behavioral/wh-mutation-remove-primitive.dzn-full.png", "type": "png" }
       ],
-      "remaining": "Browser/adapter promotion plus backend-specific rows outside the committed pt-webgpu and walkaround shards."
+      "remaining": "pt-webgpu and walkaround dzn mutation shards now require both observable before/after pixel deltas and committed dzn-full post-mutation goldens. Remaining work is browser/adapter promotion plus backend-specific rows outside those committed shards."
     },
     {
       "id": "VQ-GLTF-REAL-WEBGPU",
