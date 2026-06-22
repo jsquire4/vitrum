@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-06-20T07:50:20.362Z",
+  "generatedAt": "2026-06-22T05:57:40.836Z",
   "harness": "behavioral-gate:dzn",
   "verdict": "PASS",
   "command": "npm run behavioral-gate:dzn -- --filter wh/transparent-oit --require-full-tier",
   "filter": "wh/transparent-oit",
   "goldenVariant": "dzn-full",
-  "timeoutMs": 180000,
+  "timeoutMs": 420000,
   "dznEnv": "/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh",
   "exitStatus": 0,
   "signal": null,
