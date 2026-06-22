@@ -5,6 +5,33 @@
 import { REAL_GLTF_ASSETS } from "./assetManifest.mjs";
 import { REAL_GLTF_BEHAVIORAL_PROOFS } from "./proofs.mjs";
 
+const REQUIRED_REAL_GLTF_PROOF_ROWS = [
+  {
+    assetId: "box-textured-glb",
+    kind: "textured-glb",
+    label: "pt/gltf-real-box-textured",
+    requiredExtensions: [],
+    goldenPath: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-box-textured.png",
+    dznFullGoldenPath: "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-box-textured.png",
+  },
+  {
+    assetId: "cesium-milk-truck-draco",
+    kind: "draco",
+    label: "pt/gltf-real-draco",
+    requiredExtensions: ["KHR_draco_mesh_compression"],
+    goldenPath: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-draco.png",
+    dznFullGoldenPath: "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-draco.png",
+  },
+  {
+    assetId: "meshopt-cube-real",
+    kind: "meshopt",
+    label: "pt/gltf-real-meshopt",
+    requiredExtensions: ["KHR_meshopt_compression"],
+    goldenPath: "tools/reference-renders/gltf-real-behavioral/pt-gltf-real-meshopt.png",
+    dznFullGoldenPath: "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-meshopt.png",
+  },
+];
+
 /** @param {string} message */
 function fail(message) {
   throw new Error(`[gltf-real-proof-check] ${message}`);
@@ -35,6 +62,23 @@ function byKey(items, key) {
 const assetsById = byKey(REAL_GLTF_ASSETS, "id");
 const proofsByAssetId = byKey(REAL_GLTF_BEHAVIORAL_PROOFS, "assetId");
 
+for (const required of REQUIRED_REAL_GLTF_PROOF_ROWS) {
+  const asset = assetsById.get(required.assetId);
+  if (!asset) fail(`missing required real glTF asset row: ${required.assetId}`);
+  if (asset.kind !== required.kind) fail(`${required.assetId}: asset kind differs from required proof contract`);
+  if (!sameJson(asset.expect?.requiredExtensions ?? [], required.requiredExtensions)) {
+    fail(`${required.assetId}: asset requiredExtensions differ from required proof contract`);
+  }
+
+  const proof = proofsByAssetId.get(required.assetId);
+  if (!proof) fail(`missing required real glTF proof row: ${required.assetId}`);
+  if (proof.label !== required.label) fail(`${required.assetId}: proof label differs from required proof contract`);
+  if (proof.goldenPath !== required.goldenPath) fail(`${required.assetId}: base goldenPath differs from required proof contract`);
+  if (proof.variants?.["dzn-full"]?.goldenPath !== required.dznFullGoldenPath) {
+    fail(`${required.assetId}: dzn-full goldenPath differs from required proof contract`);
+  }
+}
+
 await checkManifest({
   label: "base",
   manifestPath: "../reference-renders/gltf-real-behavioral/manifest.json",
@@ -48,6 +92,9 @@ await checkManifest({
 
 for (const proof of REAL_GLTF_BEHAVIORAL_PROOFS) {
   if (!assetsById.has(proof.assetId)) fail(`proof assetId ${proof.assetId} is missing from REAL_GLTF_ASSETS`);
+}
+for (const asset of REAL_GLTF_ASSETS) {
+  if (!proofsByAssetId.has(asset.id)) fail(`asset ${asset.id} is missing from REAL_GLTF_BEHAVIORAL_PROOFS`);
 }
 
 console.log(`[gltf-real-proof-check] PASS (${REAL_GLTF_BEHAVIORAL_PROOFS.length} real glTF behavioral proofs, base + dzn-full goldens)`);
