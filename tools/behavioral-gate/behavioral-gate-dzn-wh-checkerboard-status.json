@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-06-20T06:19:11.800Z",
+  "generatedAt": "2026-06-22T08:50:52.509Z",
   "harness": "behavioral-gate:dzn",
   "verdict": "PASS",
   "command": "npm run behavioral-gate:dzn -- --filter wh/checkerboard --require-full-tier",
   "filter": "wh/checkerboard",
   "goldenVariant": "dzn-full",
-  "timeoutMs": 240000,
+  "timeoutMs": 420000,
   "dznEnv": "/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh",
   "exitStatus": 0,
   "signal": null,
@@ -44,14 +44,18 @@
       "cwbvhBinarySceneBytes": null,
       "cwbvhSceneBytes": null,
       "cwbvhSceneBytesDelta": null,
-      "golden": null,
-      "goldenStatus": null,
-      "goldenVariant": null,
-      "rmse": null,
-      "meanAbs": null,
-      "maxAbs": null,
-      "thresholds": null,
-      "rawLine": "PASS | wh/checkerboard              | OK | lum=0.3178 gpuErrs=0 nan=false"
+      "golden": "golden=ok variant=dzn-full rmse=0.000 meanAbs=0.000 maxAbs=0 <=(8.0,4.0,48)",
+      "goldenStatus": "ok",
+      "goldenVariant": "dzn-full",
+      "rmse": 0,
+      "meanAbs": 0,
+      "maxAbs": 0,
+      "thresholds": {
+        "maxRmse": 8,
+        "maxMeanAbs": 4,
+        "maxAbs": 48
+      },
+      "rawLine": "PASS | wh/checkerboard              | OK | lum=0.3178 gpuErrs=0 nan=false | golden=ok variant=dzn-full rmse=0.000 meanAbs=0.000 maxAbs=0 <=(8.0,4.0,48)"
     }
   ]
 }

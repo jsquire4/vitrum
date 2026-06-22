@@ -333,6 +333,23 @@ const TRANSPARENT_OIT_GOLDEN = {
   },
 };
 
+function walkaroundGolden(slug) {
+  return {
+    path: `tools/reference-renders/wh-behavioral/${slug}.png`,
+    maxRmse: 8,
+    maxMeanAbs: 4,
+    maxAbs: 48,
+    variants: {
+      "dzn-full": {
+        path: `tools/reference-renders/wh-behavioral/${slug}.dzn-full.png`,
+        maxRmse: 8,
+        maxMeanAbs: 4,
+        maxAbs: 48,
+      },
+    },
+  };
+}
+
 function goldenForProof(proof) {
   const variant = goldenVariant ? proof.variants?.[goldenVariant] : null;
   const selected = variant ?? proof;
@@ -2085,6 +2102,16 @@ function hasNaN(pixels) {
 const BEHAVIORAL_GOLDENS = {
   "pt/material-lobes": selectGolden(MATERIAL_LOBE_GOLDEN),
   "pt/material-lobe-maps": selectGolden(MATERIAL_LOBE_MAP_GOLDEN),
+  "wh/default": selectGolden(walkaroundGolden("wh-default")),
+  "wh/rcEnabled": selectGolden(walkaroundGolden("wh-rcenabled")),
+  "wh/ppgEnabled": selectGolden(walkaroundGolden("wh-ppgenabled")),
+  "wh/gtao-off": selectGolden(walkaroundGolden("wh-gtao-off")),
+  "wh/checkerboard": selectGolden(walkaroundGolden("wh-checkerboard")),
+  "wh/skinned-mesh": selectGolden(walkaroundGolden("wh-skinned-mesh")),
+  "wh/hdri-env": selectGolden(walkaroundGolden("wh-hdri-env")),
+  "wh/rect-area-emitter": selectGolden(walkaroundGolden("wh-rect-area-emitter")),
+  "wh/directional-sun": selectGolden(walkaroundGolden("wh-directional-sun")),
+  "wh/glass-gi": selectGolden(walkaroundGolden("wh-glass-gi")),
   "wh/transparent-oit": selectGolden(TRANSPARENT_OIT_GOLDEN),
   [GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.label]: {
     path: GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath,

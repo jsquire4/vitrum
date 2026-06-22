@@ -477,10 +477,12 @@ function walkaroundShardStatuses() {
  * @returns {ExpectedConfig}
  */
 function walkaroundExpectedConfig(label) {
-  const base = { label, verdict: "PASS", rawStatus: "OK", tier: null, minLuminance: 0.005 };
-  if (label !== "wh/transparent-oit") return base;
   return {
-    ...base,
+    label,
+    verdict: "PASS",
+    rawStatus: "OK",
+    tier: null,
+    minLuminance: 0.005,
     goldenStatus: "ok",
     goldenVariant: "dzn-full",
     maxRmse: 8,

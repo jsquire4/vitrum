@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-06-20T06:28:51.667Z",
+  "generatedAt": "2026-06-22T09:04:53.714Z",
   "harness": "behavioral-gate:dzn",
   "verdict": "PASS",
   "command": "npm run behavioral-gate:dzn -- --filter wh/directional-sun --require-full-tier",
   "filter": "wh/directional-sun",
   "goldenVariant": "dzn-full",
-  "timeoutMs": 240000,
+  "timeoutMs": 420000,
   "dznEnv": "/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh",
   "exitStatus": 0,
   "signal": null,
@@ -44,14 +44,18 @@
       "cwbvhBinarySceneBytes": null,
       "cwbvhSceneBytes": null,
       "cwbvhSceneBytesDelta": null,
-      "golden": null,
-      "goldenStatus": null,
-      "goldenVariant": null,
-      "rmse": null,
-      "meanAbs": null,
-      "maxAbs": null,
-      "thresholds": null,
-      "rawLine": "PASS | wh/directional-sun           | OK | lum=0.2577 gpuErrs=0 nan=false"
+      "golden": "golden=ok variant=dzn-full rmse=0.000 meanAbs=0.000 maxAbs=0 <=(8.0,4.0,48)",
+      "goldenStatus": "ok",
+      "goldenVariant": "dzn-full",
+      "rmse": 0,
+      "meanAbs": 0,
+      "maxAbs": 0,
+      "thresholds": {
+        "maxRmse": 8,
+        "maxMeanAbs": 4,
+        "maxAbs": 48
+      },
+      "rawLine": "PASS | wh/directional-sun           | OK | lum=0.2577 gpuErrs=0 nan=false | golden=ok variant=dzn-full rmse=0.000 meanAbs=0.000 maxAbs=0 <=(8.0,4.0,48)"
     }
   ]
 }
