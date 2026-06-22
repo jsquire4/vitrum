@@ -124,8 +124,10 @@ non-promotion finding: `createPTEngine_WebGPU()` requires
 `bdptOptions.experimentalMultiVertex:true`, emits
 `pt-webgpu.bdpt-multivertex-research-mode`, and includes
 `promotionReady:false`, blocker
-`not-weighted-against-regular-eye-path-strategy`, and evidence path
-`tools/radiometric-ab/results-bdpt.json` in the structured warning details.
+`not-weighted-against-regular-eye-path-strategy`,
+`multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy`,
+and evidence path `tools/radiometric-ab/results-bdpt.json` in the structured
+warning details and committed result snapshot.
 Full multi-vertex BDPT promotion requires a redesigned estimator that weights
 those strategies against the regular eye-path strategy instead of adding them
 as an unweighted research sidecar.

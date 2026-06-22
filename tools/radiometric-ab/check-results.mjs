@@ -242,10 +242,28 @@ async function checkBdptMultiVertexResearch(proof) {
   if (result.controls?.multiVertexFindingStartsAt !== proof.controls.findingStartsAt) {
     fail("bdpt multi-vertex: multiVertexFindingStartsAt differs from proof metadata");
   }
+  const promotion = result.controls?.multiVertexPromotion ?? null;
+  if (promotion == null || typeof promotion !== "object") {
+    fail("bdpt multi-vertex: result must carry controls.multiVertexPromotion metadata");
+  }
+  if (promotion.defaultReady !== proof.promotion.defaultReady) {
+    fail("bdpt multi-vertex: result promotion.defaultReady differs from proof metadata");
+  }
+  for (const [key, expected] of Object.entries({
+    warningCode: proof.warningCode,
+    blocker: proof.blocker,
+    requiredEstimator: proof.requiredEstimator,
+    evidencePath: proof.evidencePath,
+  })) {
+    if (promotion[key] !== expected) {
+      fail(`bdpt multi-vertex: result promotion.${key} must be ${expected}`);
+    }
+  }
   const source = await Deno.readTextFile(new URL(`../../${proof.sourcePath}`, import.meta.url));
   for (const needle of [
     proof.warningCode,
     proof.blocker,
+    proof.requiredEstimator,
     proof.evidencePath,
     "promotionReady: false",
   ]) {

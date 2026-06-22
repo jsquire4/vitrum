@@ -114,7 +114,14 @@
       "proofArtifacts": [
         { "path": "tools/radiometric-ab/pt-ab-host-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/radiometric-ab/ab-restir-pt-glossy-research.mjs" },
-        { "path": "tools/radiometric-ab/results-bdpt.json" },
+        {
+          "path": "tools/radiometric-ab/results-bdpt.json",
+          "json": {
+            "controls.multiVertexPromotion.defaultReady": false,
+            "controls.multiVertexPromotion.blocker": "not-weighted-against-regular-eye-path-strategy",
+            "controls.multiVertexPromotion.requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy"
+          }
+        },
         { "path": "tools/radiometric-ab/results-restir-pt.json" },
         { "path": "tools/radiometric-ab/results-restir-pt-glossy-research.json", "json": { "verdict": "FINDING", "promotion.defaultReady": false } },
         { "path": "tools/radiometric-ab/results-restir-pt-specialty.json" },

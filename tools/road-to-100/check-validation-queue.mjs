@@ -473,6 +473,7 @@ for (const needle of [
   "pt-webgpu.bdpt-multivertex-research-mode",
   "promotionReady: false",
   "not-weighted-against-regular-eye-path-strategy",
+  "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
   "tools/radiometric-ab/results-bdpt.json",
 ]) {
   if (!ptWebgpuIndexSource.includes(needle)) {

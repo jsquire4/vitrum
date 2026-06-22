@@ -149,6 +149,7 @@ export const BDPT_MULTIVERTEX_RESEARCH_PROOF = {
   sourcePath: "packages/pt-webgpu/src/index.ts",
   warningCode: "pt-webgpu.bdpt-multivertex-research-mode",
   blocker: "not-weighted-against-regular-eye-path-strategy",
+  requiredEstimator: "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
   evidencePath: "tools/radiometric-ab/results-bdpt.json",
   promotion: {
     defaultReady: false,

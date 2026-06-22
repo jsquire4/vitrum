@@ -210,6 +210,13 @@ const results = {
     byMaxLightBounces: controlRuns,
     endpointOnlyMatchesUni,
     multiVertexFindingStartsAt,
+    multiVertexPromotion: {
+      defaultReady: false,
+      warningCode: "pt-webgpu.bdpt-multivertex-research-mode",
+      blocker: "not-weighted-against-regular-eye-path-strategy",
+      requiredEstimator: "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+      evidencePath: "tools/radiometric-ab/results-bdpt.json",
+    },
   },
   globalRelErr,
   roiRelErr,

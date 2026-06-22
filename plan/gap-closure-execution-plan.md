@@ -561,6 +561,39 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 21 — BDPT Multi-Vertex Non-Promotion Artifact Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of
+`VQ-RADIOMETRIC-PT` found the default `bdpt:true` path remains endpoint-only and
+radiometrically neutral against `bdpt:false`, while `maxLightBounces > 1` still
+requires `bdptOptions.experimentalMultiVertex:true` and is intentionally
+research-only. The remaining multi-vertex estimator work is not a small shader
+patch: the current research branch is not yet weighted against the regular
+eye-path strategy, and the committed A/B snapshot records +13% to +17% mean
+drift when those extra light-subpath connections are enabled.
+
+Implementation:
+
+- Added explicit `controls.multiVertexPromotion` metadata to
+  `tools/radiometric-ab/ab-bdpt.mjs` and the committed
+  `results-bdpt.json`: `defaultReady:false`, warning code, blocker,
+  required estimator, and evidence path.
+- Strengthened `radiometric-ab:proof-check` to require that metadata in the
+  result snapshot and to require the matching structured warning source.
+- Strengthened the Road validation queue JSON expectations for
+  `VQ-RADIOMETRIC-PT`, and updated the radiometric README so the human-facing
+  proof note matches the machine artifact.
+
+Focused gates:
+
+```bash
+npm test --workspace @vitrum/pt-webgpu -- h51WarnCoercions.test.ts
+npm run radiometric-ab:proof-check
+npm run road-to-100-validation-status
+npm run proof-check
+git diff --check
+```
+
 ### Wave 20 — Learned Systems Evidence-Citation Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of
