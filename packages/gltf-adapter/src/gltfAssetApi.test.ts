@@ -5718,7 +5718,7 @@ describe('loadGltfForEngine', () => {
 
   it('rechecks strict compatibility against the actual factory backend before attaching', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
-    const engine = { backendId: 'walkaround-hybrid' as const, setScene: vi.fn() };
+    const engine = { backendId: 'walkaround-hybrid' as const, setScene: vi.fn(), dispose: vi.fn() };
     const createEngine = vi.fn(async () => engine);
 
     await expect(loadGltfForEngine(gltf, {
@@ -5732,6 +5732,24 @@ describe('loadGltfForEngine', () => {
 
     expect(createEngine).toHaveBeenCalledTimes(1);
     expect(engine.setScene).not.toHaveBeenCalled();
+    expect(engine.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not dispose a caller-owned engine after actual backend rejection', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    const engine = { backendId: 'walkaround-hybrid' as const, setScene: vi.fn(), dispose: vi.fn() };
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      decodeImage: async () => ({ kind: 'decoded-texture' }),
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      opaqueTextureHandlesReady: ['pt-webgl2'],
+      engine,
+    })).rejects.toThrow('Actual engine backend "walkaround-hybrid" does not satisfy reject-degraded');
+
+    expect(engine.setScene).not.toHaveBeenCalled();
+    expect(engine.dispose).not.toHaveBeenCalled();
   });
 
   it('rejects structural import diagnostics in strict mode before constructing an engine', async () => {

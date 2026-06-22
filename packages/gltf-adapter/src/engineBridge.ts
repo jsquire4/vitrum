@@ -187,6 +187,7 @@ export async function loadGltfForEngine<
   });
 
   let engine = options.engine;
+  let createdEngine = false;
   if (!engine && options.createEngine) {
     engine = await options.createEngine({
       scene: asset.scene,
@@ -194,40 +195,55 @@ export async function loadGltfForEngine<
       asset,
       options: options.engineOptions ?? ({} as TFactoryOptions),
     });
+    createdEngine = true;
   }
 
-  const backend = backendIdFromEngine(engine) ?? selectedBackend;
-  const engineProfileId = backendProfileIdFromEngine(engine);
-  if (backend !== selectedBackend) {
-    selectedProfileId = engineProfileId ?? backend;
-    enforceCompatibility(asset, backend, selectedProfileId, compatibilityMode, options, 'Actual engine backend');
-  } else if (engineProfileId !== undefined && engineProfileId !== selectedProfileId) {
-    selectedProfileId = resolveRuntimeProfile(backend, selectedProfileId, engineProfileId);
-    enforceCompatibility(asset, backend, selectedProfileId, compatibilityMode, options, 'Actual engine profile');
-  }
+  try {
+    const backend = backendIdFromEngine(engine) ?? selectedBackend;
+    const engineProfileId = backendProfileIdFromEngine(engine);
+    if (backend !== selectedBackend) {
+      selectedProfileId = engineProfileId ?? backend;
+      enforceCompatibility(asset, backend, selectedProfileId, compatibilityMode, options, 'Actual engine backend');
+    } else if (engineProfileId !== undefined && engineProfileId !== selectedProfileId) {
+      selectedProfileId = resolveRuntimeProfile(backend, selectedProfileId, engineProfileId);
+      enforceCompatibility(asset, backend, selectedProfileId, compatibilityMode, options, 'Actual engine profile');
+    }
 
-  const attachScene = options.attachScene ?? true;
-  let attached = false;
-  if (engine) {
-    controller.attachEngine(engine, { setScene: attachScene });
-    attached = true;
-  }
+    const attachScene = options.attachScene ?? true;
+    let attached = false;
+    if (engine) {
+      controller.attachEngine(engine, { setScene: attachScene });
+      attached = true;
+    }
 
-  return {
-    asset,
-    backend,
-    profileId: selectedProfileId,
-    ...(engine ? { engine } : {}),
-    controller,
-    attached,
-    textureDecodeReport: asset.textureDecodeReport,
-    decodedTextureCount: decodedTextureCount(asset),
-    unchangedTextureCount: unchangedTextureCount(asset),
-    textureDecodeDiagnostics: textureDecodeDiagnostics(asset),
-    textureDecodeWarnings: textureDecodeWarnings(asset),
-    warnings: [...asset.warnings, ...textureDecodeWarnings(asset), ...controller.warnings],
-    diagnostics: asset.diagnostics,
-  };
+    return {
+      asset,
+      backend,
+      profileId: selectedProfileId,
+      ...(engine ? { engine } : {}),
+      controller,
+      attached,
+      textureDecodeReport: asset.textureDecodeReport,
+      decodedTextureCount: decodedTextureCount(asset),
+      unchangedTextureCount: unchangedTextureCount(asset),
+      textureDecodeDiagnostics: textureDecodeDiagnostics(asset),
+      textureDecodeWarnings: textureDecodeWarnings(asset),
+      warnings: [...asset.warnings, ...textureDecodeWarnings(asset), ...controller.warnings],
+      diagnostics: asset.diagnostics,
+    };
+  } catch (err) {
+    if (createdEngine) disposeCreatedEngineAfterRejectedGltfLoad(engine);
+    throw err;
+  }
+}
+
+function disposeCreatedEngineAfterRejectedGltfLoad(engine: unknown): void {
+  try {
+    const dispose = (engine as { readonly dispose?: unknown } | undefined)?.dispose;
+    if (typeof dispose === 'function') dispose.call(engine);
+  } catch {
+    // The glTF load is already rejecting; factory-engine cleanup is best effort.
+  }
 }
 
 function shouldDecodeTextures<
