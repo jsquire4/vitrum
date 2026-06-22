@@ -90,6 +90,7 @@ if (status.verdict === "HOST-BLOCKED") {
       fail(`${row.assetId}: unexpected captureMethod ${row.captureMethod}`);
     }
     if (!(row.luminance > 0.005)) fail(`${row.assetId}: capture luminance must be non-black`);
+    assertInformativeCapture(row);
     if (row.golden?.pass !== true) fail(`${row.assetId}: golden comparison did not pass`);
     if (row.golden?.path !== asset.goldenPath) fail(`${row.assetId}: manifest goldenPath mismatch`);
     if (row.golden?.thresholds?.maxRmse !== 8 || row.golden?.thresholds?.maxMeanAbs !== 4 || row.golden?.thresholds?.maxAbs !== 48) {
@@ -125,6 +126,26 @@ function assertNoStaleBrowserBuildWarnings(row) {
     joined.includes("texturePipeline.ts")
   ) {
     fail(`${row.assetId}: stale browser build warning present in committed status`);
+  }
+}
+
+function assertInformativeCapture(row) {
+  const structure = row.structure;
+  if (structure == null || typeof structure !== "object") {
+    fail(`${row.assetId}: PASS status must include visual-structure metrics`);
+  }
+  const thresholds = structure.thresholds;
+  const minLumaRange = thresholds?.minLumaRange ?? 12;
+  const minUniqueColorCount = thresholds?.minUniqueColorCount ?? 16;
+  const minNonDominantFraction = thresholds?.minNonDominantFraction ?? 0.05;
+  if (!(structure.lumaRange >= minLumaRange)) {
+    fail(`${row.assetId}: lumaRange ${structure.lumaRange} is below ${minLumaRange}`);
+  }
+  if (!(structure.uniqueColorCount >= minUniqueColorCount)) {
+    fail(`${row.assetId}: uniqueColorCount ${structure.uniqueColorCount} is below ${minUniqueColorCount}`);
+  }
+  if (!(structure.nonDominantFraction >= minNonDominantFraction)) {
+    fail(`${row.assetId}: nonDominantFraction ${structure.nonDominantFraction} is below ${minNonDominantFraction}`);
   }
 }
 

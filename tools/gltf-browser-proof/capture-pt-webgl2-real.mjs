@@ -22,6 +22,12 @@ const dataUrlTimeoutMs = Number(process.env.VITRUM_DATA_URL_TIMEOUT_MS ?? '15000
 const statusPath = resolveStatusPath(process.env.VITRUM_GLTF_BROWSER_STATUS_PATH);
 const browserExtraArgs = parseEnvArgs(process.env.VITRUM_CHROMIUM_EXTRA_ARGS);
 const thresholds = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
+// Prevent browser readback failures from becoming white/black "successful" goldens.
+const structureThresholds = {
+  minLumaRange: 12,
+  minUniqueColorCount: 16,
+  minNonDominantFraction: 0.05,
+};
 const REAL_BROWSER_ASSETS = [
   {
     assetId: 'box-textured-glb',
@@ -200,6 +206,29 @@ async function capture(asset) {
     const pngBytes = capture.bytes;
     const png = PNG.sync.read(pngBytes);
     const luminance = meanLuminance(png.data);
+    const structure = imageStructureMetrics(png.data);
+    if (!captureLooksInformative(structure)) {
+      captureStep = 'classify-result';
+      return {
+        generatedAt: new Date().toISOString(),
+        harness: 'gltf-browser-proof:pt-webgl2-real',
+        verdict: 'FAIL',
+        command: `node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs --asset ${asset.assetId}`,
+        updateGolden,
+        assetId: asset.assetId,
+        kind: asset.kind,
+        backend: 'pt-webgl2',
+        width: png.width,
+        height: png.height,
+        samplesPerPixel: spp,
+        captureMethod: capture.method,
+        luminance,
+        structure,
+        error: `capture is visually uninformative: ${structureFailureReason(structure)}`,
+        telemetry: summarizedTelemetry,
+        console: consoleLines.slice(-80),
+      };
+    }
     const compare = await compareOrUpdate(pngBytes, png, goldenPath);
     captureStep = 'classify-result';
     const pass =
@@ -209,6 +238,7 @@ async function capture(asset) {
       requiredExtensionsPresent(asset, summarizedTelemetry) &&
       requiredHooksPresent(asset, summarizedTelemetry) &&
       luminance > 0.005 &&
+      captureLooksInformative(structure) &&
       compare.pass === true;
     return {
       generatedAt: new Date().toISOString(),
@@ -224,6 +254,7 @@ async function capture(asset) {
       samplesPerPixel: spp,
       captureMethod: capture.method,
       luminance,
+      structure,
       telemetry: summarizedTelemetry,
       golden: compare,
       console: consoleLines.slice(-80),
@@ -518,6 +549,59 @@ function meanLuminance(pixels) {
     sum += 0.2126 * (pixels[i] / 255) + 0.7152 * (pixels[i + 1] / 255) + 0.0722 * (pixels[i + 2] / 255);
   }
   return sum / (pixels.length / 4);
+}
+
+function imageStructureMetrics(pixels) {
+  let minLuma = 255;
+  let maxLuma = 0;
+  let dominantColorCount = 0;
+  const colorCounts = new Map();
+  for (let i = 0; i < pixels.length; i += 4) {
+    const r = pixels[i];
+    const g = pixels[i + 1];
+    const b = pixels[i + 2];
+    const a = pixels[i + 3];
+    const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    minLuma = Math.min(minLuma, luma);
+    maxLuma = Math.max(maxLuma, luma);
+    const key = `${r},${g},${b},${a}`;
+    const count = (colorCounts.get(key) ?? 0) + 1;
+    colorCounts.set(key, count);
+    dominantColorCount = Math.max(dominantColorCount, count);
+  }
+  const pixelCount = pixels.length / 4;
+  const dominantColorFraction = pixelCount > 0 ? dominantColorCount / pixelCount : 1;
+  return {
+    thresholds: structureThresholds,
+    minLuma,
+    maxLuma,
+    lumaRange: maxLuma - minLuma,
+    uniqueColorCount: colorCounts.size,
+    dominantColorFraction,
+    nonDominantFraction: 1 - dominantColorFraction,
+  };
+}
+
+function captureLooksInformative(structure) {
+  return (
+    structure.lumaRange >= structureThresholds.minLumaRange &&
+    structure.uniqueColorCount >= structureThresholds.minUniqueColorCount &&
+    structure.nonDominantFraction >= structureThresholds.minNonDominantFraction
+  );
+}
+
+function structureFailureReason(structure) {
+  const reasons = [];
+  if (structure.lumaRange < structureThresholds.minLumaRange) {
+    reasons.push(`lumaRange ${structure.lumaRange.toFixed(3)} < ${structureThresholds.minLumaRange}`);
+  }
+  if (structure.uniqueColorCount < structureThresholds.minUniqueColorCount) {
+    reasons.push(`uniqueColorCount ${structure.uniqueColorCount} < ${structureThresholds.minUniqueColorCount}`);
+  }
+  if (structure.nonDominantFraction < structureThresholds.minNonDominantFraction) {
+    reasons.push(`nonDominantFraction ${structure.nonDominantFraction.toFixed(4)} < ${structureThresholds.minNonDominantFraction}`);
+  }
+  return reasons.join('; ');
 }
 
 function relative(path) {
