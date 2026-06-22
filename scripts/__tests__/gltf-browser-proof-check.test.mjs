@@ -80,7 +80,7 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.match(captureFn, /page clipped screenshot timed out/);
   assert.match(captureFn, /canvas element screenshot timed out/);
   assert.doesNotMatch(captureFn, /isBrowserReadbackHostBlock/);
-  assert.doesNotMatch(captureFn, /if\s*\(\s*isEngineReadbackHostBlock\(error\)\s*\)\s*throw error/);
+  assert.match(captureFn, /isEngineReadbackHostBlock\(error\)[\s\S]*throw error/);
 
   const firstEngineReadback = captureFn.indexOf("captureStep = 'engine-captureFrame-output'");
   const canvasPause = captureFn.indexOf('pauseExampleRenderingForCanvasCapture(page, timeout)');

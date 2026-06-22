@@ -318,6 +318,10 @@ async function captureCanvasPng(page) {
         if (failedAttempt?.method === 'engine-captureFrame-output') {
           failedAttempt.hostBlockHint = 'engine-readback';
         }
+        // A timed-out WebGL readback can leave the page main thread wedged in
+        // ReadPixels. Browser screenshot/data-URL fallbacks on the same page then
+        // only add misleading locator timeouts, so preserve the precise blocker.
+        throw error;
       }
     }
   }
