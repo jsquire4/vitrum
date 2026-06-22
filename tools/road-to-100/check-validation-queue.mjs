@@ -65,6 +65,20 @@ const REQUIRED_MUTATION_KINDS = [
   "remove-primitive",
 ];
 
+const REQUIRED_MUTATION_ARTIFACT_PATHS = [
+  "tools/behavioral-gate/gate.mjs",
+  "tools/behavioral-gate/check-dzn-status.mjs",
+  "tools/behavioral-gate/behavioral-gate-dzn-pt-mutation-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json",
+  "packages/pt-webgpu/src/__tests__/mutationDesyncs.test.ts",
+  "packages/pt-webgpu/src/sceneMutationRouter.ts",
+  "packages/pt-webgpu/src/scene/incrementalPatch.ts",
+  "packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts",
+  "packages/walkaround-hybrid/src/HybridEngine.ts",
+  "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+  "packages/walkaround-hybrid/src/HybridEngineGiPropagation.ts",
+];
+
 const REQUIRED_PT_WEBGPU_RUNTIME_ARTIFACT_PATHS = [
   "tools/behavioral-gate/gate.mjs",
   "tools/behavioral-gate/check-dzn-status.mjs",
@@ -441,6 +455,19 @@ const gltfRealProofSource = await readText("tools/gltf-real-asset-sweep/check-pr
 const gltfRealAssetManifestSource = await readText("tools/gltf-real-asset-sweep/assetManifest.mjs");
 const radiometricProofSource = await readText("tools/radiometric-ab/proofs.mjs");
 const radiometricCheckerSource = await readText("tools/radiometric-ab/check-results.mjs");
+const ptMutationTestSource = await readText("packages/pt-webgpu/src/__tests__/mutationDesyncs.test.ts");
+const ptMutationRouterSource = await readText("packages/pt-webgpu/src/sceneMutationRouter.ts");
+const ptMutationPatchSource = await readText("packages/pt-webgpu/src/scene/incrementalPatch.ts");
+const walkaroundMutationTestSource = await readText(
+  "packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts",
+);
+const walkaroundEngineSource = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
+const walkaroundPrimitiveUpdatesSource = await readText(
+  "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
+);
+const walkaroundGiPropagationSource = await readText(
+  "packages/walkaround-hybrid/src/HybridEngineGiPropagation.ts",
+);
 
 if (queue.schema !== "vitrum.road-to-100.validation-queue.v1") fail("queue schema mismatch");
 if (typeof queue.currentAsOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(queue.currentAsOf)) {
@@ -492,6 +519,7 @@ for (const row of queue.validationQueue) {
 
 const mutationRow = queue.validationQueue.find((row) => row.id === "VQ-MUTATION-MATRIX");
 if (mutationRow == null) fail("validationQueue missing VQ-MUTATION-MATRIX");
+assertRowCitesPaths(mutationRow, REQUIRED_MUTATION_ARTIFACT_PATHS, "VQ-MUTATION-MATRIX");
 if (!String(mutationRow.remaining).includes("observable before/after pixel deltas")) {
   fail("VQ-MUTATION-MATRIX remaining text must keep the observable mutation delta proof explicit");
 }
@@ -504,6 +532,16 @@ for (const mutationKind of REQUIRED_MUTATION_KINDS) {
     const path = `tools/reference-renders/mutation-behavioral/${prefix}-mutation-${mutationKind}.dzn-full.png`;
     if (!mutationArtifactPaths.has(path)) fail(`VQ-MUTATION-MATRIX must cite ${path}`);
   }
+  for (const prefix of ["pt", "wh"]) {
+    const label = `${prefix}/mutation-${mutationKind}`;
+    const goldenKey = `${prefix}-mutation-${mutationKind}`;
+    if (!behavioralGateSource.includes(label)) {
+      fail(`VQ-MUTATION-MATRIX behavioral gate source is stale: missing ${label}`);
+    }
+    if (!behavioralGateSource.includes(`mutationGolden("${goldenKey}")`)) {
+      fail(`VQ-MUTATION-MATRIX behavioral gate source is stale: missing mutation golden ${goldenKey}`);
+    }
+  }
 }
 assertMutationStatusCoverage(
   await readJson("tools/behavioral-gate/behavioral-gate-dzn-pt-mutation-status.json"),
@@ -515,6 +553,91 @@ assertMutationStatusCoverage(
   "wh",
   "tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json",
 );
+for (const needle of [
+  "canFastPathMaterialPatch",
+  "materialPatchRepackFields",
+  "updateEmitter writes the emitter buffer",
+  "updateEnvironment writes same-sized HDRI buffers",
+  "vertex/index-count topology patches invalidate cached bind groups before committing",
+  "instanced-mesh count changes invalidate cached bind groups before committing",
+  "pt-webgpu.primitive-material-repack",
+]) {
+  if (!ptMutationTestSource.includes(needle)) {
+    fail(`VQ-MUTATION-MATRIX pt-webgpu mutation test proof is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "addPrimitive(primitive",
+  "removePrimitive(id",
+  "updatePrimitive(id",
+  "updateEmitter(id",
+  "updateEnvironment(env",
+  "host.invalidateBindGroups",
+  "host.syncLiteTextures",
+  "host.reset",
+]) {
+  if (!ptMutationRouterSource.includes(needle)) {
+    fail(`VQ-MUTATION-MATRIX pt-webgpu mutation router source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "TEXTURE_MAP_FIELDS",
+  "MATERIAL_TEXTURE_DESCRIPTOR_SCALAR_FIELDS",
+  "GEOMETRY_MATERIAL_FIELDS",
+  "canFastPathGeometryPatch",
+  "canFastPathInstancedTopologyPatch",
+  "canFastPathTopologyResizePatch",
+  "canFastPathTransformPatch",
+]) {
+  if (!ptMutationPatchSource.includes(needle)) {
+    fail(`VQ-MUTATION-MATRIX pt-webgpu incremental patch source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "updatePrimitive(transform) refits TLAS",
+  "updatePrimitive(material) refreshes DDGI material snapshots",
+  "updateEmitter repacks emitters",
+  "updateEnvironment bakes procedural-sky",
+  "updateLighting republishes DDGI sun lights",
+]) {
+  if (!walkaroundMutationTestSource.includes(needle)) {
+    fail(`VQ-MUTATION-MATRIX walkaround mutation test proof is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "addPrimitive(primitive",
+  "removePrimitive(id",
+  "updateEmitter(id",
+  "updateLighting(opts",
+  "updateEnvironment(env",
+]) {
+  if (!walkaroundEngineSource.includes(needle)) {
+    fail(`VQ-MUTATION-MATRIX walkaround engine source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "refreshTlasRefit",
+  "refreshBvhFullRebuild",
+  "refreshBvhMaterialSlice",
+  "requestAccumReset",
+  "markInstancesDirty",
+  "invalidateProbeCache",
+  "refreshDdgiMaterialSnapshot",
+]) {
+  if (!walkaroundPrimitiveUpdatesSource.includes(needle)) {
+    fail(`VQ-MUTATION-MATRIX walkaround primitive update source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "syncRestirBvhBuffers",
+  "propagateBvhToGiSubsystems",
+  "rebuildRcMergedSceneCoreFirst",
+  "refitMergedInstance",
+]) {
+  if (!walkaroundGiPropagationSource.includes(needle)) {
+    fail(`VQ-MUTATION-MATRIX walkaround GI propagation source is stale: missing ${needle}`);
+  }
+}
 
 const ptRuntimeRow = queue.validationQueue.find((row) => row.id === "VQ-PT-WEBGPU-RUNTIME-GOLDENS");
 if (ptRuntimeRow == null) fail("validationQueue missing VQ-PT-WEBGPU-RUNTIME-GOLDENS");

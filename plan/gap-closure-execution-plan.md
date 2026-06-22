@@ -625,6 +625,40 @@ npm run proof-check
 git diff --check
 ```
 
+### Wave 31 — Mutation Matrix Proof-Citation Guard
+
+Status 2026-06-22: **CLOSED.** The active implementation queue remained empty:
+source revalidation showed the pt-webgpu mutation router and walkaround mutation
+paths already implement the current contract. The remaining weak spot was that
+`VQ-MUTATION-MATRIX` cited only status JSONs and PNGs, so a stale Road row could
+miss loss of the gate labels, routing tests, or backend mutation source that
+make those captures meaningful.
+
+Implementation:
+
+- Added required mutation proof artifacts to
+  `tools/road-to-100/check-validation-queue.mjs`, including the behavioral gate,
+  dzn status checker, pt-webgpu mutation router/patch tests, and walkaround
+  mutation/GI propagation sources.
+- The checker now verifies every pt-webgpu and walkaround mutation gate label
+  plus the matching `mutationGolden(...)` binding for material, environment,
+  emitter, transform, topology, instanced-count, add-primitive, and
+  remove-primitive.
+- The checker also pins source-level mutation routing needles: pt-webgpu
+  add/remove/updatePrimitive/updateEmitter/updateEnvironment, bind-group/lite
+  texture invalidation, and walkaround TLAS/material/DDGI/RC propagation hooks.
+
+Focused gates:
+
+```bash
+npm run road-to-100-validation-status
+npm run behavioral-gate:dzn-status-check
+npm test --workspace @vitrum/pt-webgpu -- mutationDesyncs.test.ts
+npm test --workspace @vitrum/walkaround-hybrid -- mutationMatrix.test.ts
+npm run proof-check
+git diff --check
+```
+
 ### Wave 28 — pt-webgl2 Mesh-Light MIS Prose Reconciliation
 
 Status 2026-06-22: **CLOSED.** Source revalidation of the pt-webgl2 mesh-area
