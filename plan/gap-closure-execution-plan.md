@@ -720,6 +720,38 @@ npm run proof-check
 git diff --check
 ```
 
+### Wave 34 — pt-webgl2 Browser glTF Proof Harness Tightening
+
+Status 2026-06-22: **CLOSED / STILL HOST-BLOCKED.** Source revalidation of
+`VQ-GLTF-BROWSER-PTWEBGL2` found no pt-webgl2 or glTF import code gap. The
+remaining blocker is still browser pixel readback on this WSL Playwright host:
+engine `captureFrame` and browser canvas readback both stall on WebGL2
+ReadPixels. The bounded local fix was proof-harness reliability, not renderer
+behavior.
+
+Implementation:
+
+- `capture-pt-webgl2-real.mjs` now pauses the example RAF loop before browser
+  canvas readback attempts, just as it already did for engine `captureFrame`.
+- Browser readback now tries clipped page screenshot before locator screenshot
+  to avoid Playwright's element-stability wait where possible.
+- Screenshot promises are wrapped in explicit bounded timeouts, so WSL
+  host-blocked runs return a structured `HOST-BLOCKED` row around the
+  screenshot timeout instead of burning the full asset capture timeout.
+- `gltf-browser-proof-check` now accepts `canvas-first` host-blocked statuses
+  without requiring an engine attempt, while engine-first committed status rows
+  still preserve engine-capture attempts.
+
+Focused gates:
+
+```bash
+node --test scripts/__tests__/*.test.mjs
+npm run gltf-browser-proof-check
+npm run road-to-100-validation-status
+npm run proof-check
+git diff --check
+```
+
 ### Wave 28 — pt-webgl2 Mesh-Light MIS Prose Reconciliation
 
 Status 2026-06-22: **CLOSED.** Source revalidation of the pt-webgl2 mesh-area

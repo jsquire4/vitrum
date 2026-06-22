@@ -123,7 +123,11 @@ if (status.verdict === "HOST-BLOCKED") {
         !error.includes("browser capture timed out") &&
         !error.includes("canvas PNG data URL fallback failed") &&
         !error.includes("engine captureFrame fallback timed out") &&
-        !error.includes("page clipped screenshot failed")
+        !error.includes("page clipped screenshot failed") &&
+        !error.includes("page.screenshot: Timeout") &&
+        !error.includes("locator.screenshot: Timeout") &&
+        !error.includes("page clipped screenshot timed out") &&
+        !error.includes("canvas element screenshot timed out")
       ) {
         fail(`${row.assetId}: HOST-BLOCKED status must preserve the timeout/readback reason`);
       }
@@ -172,7 +176,11 @@ function assertHostBlockedCaptureAttempts(row) {
   }
   if (!hasBlockedAttempt) fail(`${row.assetId}: HOST-BLOCKED status must preserve the blocked capture attempt`);
   if (!hasStepAttempt) fail(`${row.assetId}: captureAttempts[] must include the host-blocked step ${row.step}`);
-  if (row.captureMode !== "canvas-only" && !hasEngineAttempt) {
+  if (
+    row.captureMode !== "canvas-only" &&
+    row.captureMode !== "canvas-first" &&
+    !hasEngineAttempt
+  ) {
     fail(`${row.assetId}: HOST-BLOCKED status must include an engine-captureFrame-output attempt`);
   }
 }

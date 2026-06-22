@@ -307,29 +307,44 @@ async function captureCanvasPng(page) {
     }
   }
 
+  const canvasPaused = pauseBeforeEngineCapture
+    ? await pauseExampleRenderingForCanvasCapture(page, timeout)
+    : false;
   try {
-    captureStep = 'canvas-screenshot';
-    return await captureAttempt('playwright-screenshot', () => canvas.screenshot({ type: 'png', timeout }));
-  } catch (screenshotError) {
     try {
       captureStep = 'page-canvas-clip-screenshot';
-      return await captureAttempt('page-canvas-clip-screenshot', () => pageCanvasClipScreenshot(page, timeout));
+      return await captureAttempt(
+        'page-canvas-clip-screenshot',
+        () => withTimeout(pageCanvasClipScreenshot(page, timeout), timeout + 1000, 'page clipped screenshot timed out'),
+      );
     } catch (clipError) {
-      if (engineCaptureMode === 'engine-fallback') {
+      if (isBrowserReadbackHostBlock(clipError)) throw clipError;
+      try {
+        captureStep = 'canvas-screenshot';
+        return await captureAttempt(
+          'playwright-screenshot',
+          () => withTimeout(canvas.screenshot({ type: 'png', timeout }), timeout + 1000, 'canvas element screenshot timed out'),
+        );
+      } catch (screenshotError) {
+        if (isBrowserReadbackHostBlock(screenshotError)) throw screenshotError;
+        if (engineCaptureMode === 'engine-fallback') {
+          try {
+            captureStep = 'engine-captureFrame-output';
+            return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
+          } catch (fallbackEngineError) {
+            engineError = fallbackEngineError;
+          }
+        }
         try {
-          captureStep = 'engine-captureFrame-output';
-          return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
-        } catch (fallbackEngineError) {
-          engineError = fallbackEngineError;
+          captureStep = 'canvas-data-url';
+          return await captureAttempt('canvas-data-url', () => captureCanvasDataUrlPng(page, engineError, screenshotError, clipError));
+        } catch (dataUrlError) {
+          throw dataUrlError;
         }
       }
-      try {
-        captureStep = 'canvas-data-url';
-        return await captureAttempt('canvas-data-url', () => captureCanvasDataUrlPng(page, engineError, screenshotError, clipError));
-      } catch (dataUrlError) {
-        throw dataUrlError;
-      }
     }
+  } finally {
+    if (canvasPaused) await resumeExampleRendering(page, 1000);
   }
 }
 
@@ -338,6 +353,16 @@ function isEngineReadbackHostBlock(error) {
   return (
     message.includes('engine captureFrame fallback timed out') ||
     message.includes('pausing example render loop before capture timed out')
+  );
+}
+
+function isBrowserReadbackHostBlock(error) {
+  const message = String(error?.message ?? error);
+  return (
+    message.includes('page.screenshot: Timeout') ||
+    message.includes('locator.screenshot: Timeout') ||
+    message.includes('page clipped screenshot timed out') ||
+    message.includes('canvas element screenshot timed out')
   );
 }
 
@@ -437,6 +462,15 @@ async function resumeExampleRendering(page, timeout) {
     timeout,
     'resuming example render loop after capture timed out',
   ).catch(() => undefined);
+}
+
+async function pauseExampleRenderingForCanvasCapture(page, timeout) {
+  try {
+    await pauseExampleRendering(page, timeout);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function captureCanvasDataUrlPng(page, engineError, screenshotError, clipError) {

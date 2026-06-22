@@ -68,14 +68,22 @@ test('gltf browser capture harness defaults to engine readback before browser re
   const captureFn = source.slice(captureFnStart, source.indexOf('\nasync function pageCanvasClipScreenshot', captureFnStart));
   assert.match(captureFn, /engineCaptureMode === 'engine-first'/);
   assert.match(captureFn, /engineCaptureMode === 'engine-fallback'/);
+  assert.match(captureFn, /pauseExampleRenderingForCanvasCapture\(page, timeout\)/);
   assert.match(captureFn, /captureStep = 'canvas-screenshot'/);
+  assert.match(captureFn, /captureStep = 'page-canvas-clip-screenshot'/);
+  assert.match(captureFn, /page clipped screenshot timed out/);
+  assert.match(captureFn, /canvas element screenshot timed out/);
 
   const firstEngineReadback = captureFn.indexOf("captureStep = 'engine-captureFrame-output'");
+  const canvasPause = captureFn.indexOf('pauseExampleRenderingForCanvasCapture(page, timeout)');
+  const firstClipScreenshot = captureFn.indexOf("captureStep = 'page-canvas-clip-screenshot'");
   const firstScreenshot = captureFn.indexOf("captureStep = 'canvas-screenshot'");
   const fallbackReadback = captureFn.indexOf("engineCaptureMode === 'engine-fallback'");
   const dataUrlReadback = captureFn.indexOf("captureStep = 'canvas-data-url'");
   assert.ok(firstEngineReadback > 0);
-  assert.ok(firstScreenshot > firstEngineReadback);
+  assert.ok(canvasPause > firstEngineReadback);
+  assert.ok(firstClipScreenshot > canvasPause);
+  assert.ok(firstScreenshot > firstClipScreenshot);
   assert.ok(fallbackReadback > firstScreenshot);
   assert.ok(dataUrlReadback > fallbackReadback);
 });
@@ -113,6 +121,37 @@ test('gltf browser proof checker requires structured host-blocked capture attemp
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /box-textured-glb: HOST-BLOCKED status must include captureAttempts\[\]/);
+});
+
+test('gltf browser proof checker accepts canvas-first host blocks without engine attempts', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
+  const statusPath = join(dir, 'host-blocked-canvas-first.json');
+  await writeFile(statusPath, `${JSON.stringify({
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    backend: 'pt-webgl2',
+    assets: [
+      canvasFirstHostBlockedRow('box-textured-glb', 'textured-glb', {
+        textureDecodeReport: { mapCount: 1 },
+      }),
+      canvasFirstHostBlockedRow('cesium-milk-truck-draco', 'draco', {
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+        extensionsRequired: ['KHR_draco_mesh_compression'],
+        browserDecodeHooks: { requested: ['draco'], draco: true, meshopt: false },
+      }),
+      canvasFirstHostBlockedRow('meshopt-cube-real', 'meshopt', {
+        extensionsUsed: ['KHR_meshopt_compression'],
+        extensionsRequired: ['KHR_meshopt_compression'],
+        browserDecodeHooks: { requested: ['meshopt'], draco: false, meshopt: true },
+      }),
+    ],
+    assetCount: 3,
+  }, null, 2)}\n`);
+
+  const result = await runChecker(['--status', pathToFileURL(statusPath).href]);
+
+  assert.equal(result.status, 0);
 });
 
 function hostBlockedRow(assetId, kind, overrides = {}) {
@@ -155,6 +194,23 @@ function hostBlockedRow(assetId, kind, overrides = {}) {
     telemetry: telemetryFor(assetId, overrides),
     console: [],
     serverLog: '',
+  };
+}
+
+function canvasFirstHostBlockedRow(assetId, kind, overrides = {}) {
+  return {
+    ...hostBlockedRow(assetId, kind, overrides),
+    captureMode: 'canvas-first',
+    step: 'page-canvas-clip-screenshot',
+    error: 'page.screenshot: Timeout 15000ms exceeded',
+    captureAttempts: [
+      {
+        method: 'page-canvas-clip-screenshot',
+        status: 'failed',
+        step: 'page-canvas-clip-screenshot',
+        error: 'page.screenshot: Timeout 15000ms exceeded',
+      },
+    ],
   };
 }
 
