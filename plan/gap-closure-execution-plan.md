@@ -561,6 +561,42 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 24 — BDPT Estimator Boundary Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of
+`VQ-RADIOMETRIC-PT` found the remaining BDPT promotion blocker is not a narrow
+shader typo. The explicit connection kernel already carries a full Veach 10.3
+MIS sweep, the light-subpath builder uses real material sampling at light
+vertices, and both have oracle tests. The measured multi-vertex drift remains
+because the path-tracing megakernel still accumulates the ordinary eye-path
+estimator at full weight while adding extra light-subpath connections. That is a
+larger estimator-composition redesign, so the opt-in multi-vertex branch must
+stay a research diagnostic rather than a production-promoted default.
+
+Implementation:
+
+- Updated the pt-webgpu path-tracing kernel comment at the BDPT accumulation
+  site to state the exact non-promotion boundary: explicit eye-light connection
+  MIS exists, but the ordinary eye-path estimator is not yet composed into the
+  same strategy family.
+- Expanded `VQ-RADIOMETRIC-PT` proof artifacts to cite the BDPT harness/checker,
+  host-status/result JSONs, pt-webgpu warning source, BDPT connection/light
+  subpath WGSL, and the oracle tests that pin the current implementation.
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so the row fails
+  if it loses those proof/source citations or stops documenting the ordinary
+  eye-path estimator boundary.
+
+Focused gates:
+
+```bash
+npm test --workspace @vitrum/pt-webgpu -- bdptConnectionMisFull.test.ts bdptGlossyLightSubpath.test.ts h51WarnCoercions.test.ts
+npm run shader-gate
+npm run radiometric-ab:proof-check
+npm run road-to-100-validation-status
+npm run proof-check
+git diff --check
+```
+
 ### Wave 23 — Walkaround A/B Evidence-Citation Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of

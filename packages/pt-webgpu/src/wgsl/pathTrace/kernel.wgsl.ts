@@ -59,6 +59,13 @@ export function composePathTraceKernelWgsl(opts: {
 }): string {
   const sss = opts.volumetricSss;
   const composite = opts.restirPtComposite === true;
+  // BDPT estimator boundary: bdptOptions.experimentalMultiVertex remains a
+  // research diagnostic. The connection kernel owns real Veach 10.3 MIS for an
+  // explicit eye-light connection, but this megakernel still accumulates the
+  // ordinary eye-path estimator at full weight (radiance += directLi,
+  // emissive/env hits, and BSDF continuation). Until those regular eye-path
+  // strategies are composed into the same strategy family, the extra
+  // multi-vertex connections are not a promotable production estimator.
   // Henyey-Greenstein phase helpers are top-level WGSL functions used only by
   // the volumetric walk; include them only when the walk is compiled in so the
   // BDPT-on shader carries no SSS symbols (structural gate, no dead code).

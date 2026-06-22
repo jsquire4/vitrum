@@ -118,6 +118,25 @@ const REQUIRED_WALKAROUND_AB_ARTIFACT_PATHS = [
   "packages/walkaround-hybrid/src/shaders/__tests__/b1GlossyMetalGi.test.ts",
 ];
 
+const REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS = [
+  "tools/radiometric-ab/pt-ab-host-status.json",
+  "tools/radiometric-ab/ab-bdpt.mjs",
+  "tools/radiometric-ab/check-results.mjs",
+  "tools/radiometric-ab/proofs.mjs",
+  "tools/radiometric-ab/results-bdpt.json",
+  "tools/radiometric-ab/results-restir-pt.json",
+  "tools/radiometric-ab/results-restir-pt-glossy-research.json",
+  "tools/radiometric-ab/results-restir-pt-specialty.json",
+  "tools/radiometric-ab/results-sppm.json",
+  "tools/radiometric-ab/results-sobol.json",
+  "packages/pt-webgpu/src/index.ts",
+  "packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts",
+  "packages/pt-webgpu/src/wgsl/bdpt/bdptConnection.wgsl.ts",
+  "packages/pt-webgpu/src/wgsl/bdpt/bdptLightSubpath.wgsl.ts",
+  "packages/pt-webgpu/src/__tests__/bdptConnectionMisFull.test.ts",
+  "packages/pt-webgpu/src/__tests__/bdptGlossyLightSubpath.test.ts",
+];
+
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -508,6 +527,12 @@ if (gltfBrowserStatusArtifact.json?.captureMode !== "engine-first") {
 
 const radiometricPtRow = queue.validationQueue.find((row) => row.id === "VQ-RADIOMETRIC-PT");
 if (radiometricPtRow == null) fail("validationQueue missing VQ-RADIOMETRIC-PT");
+const radiometricPtArtifactPaths = new Set(radiometricPtRow.proofArtifacts.map((artifact) => artifact?.path));
+for (const path of REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS) {
+  if (!radiometricPtArtifactPaths.has(path)) {
+    fail(`VQ-RADIOMETRIC-PT proofArtifacts must cite ${path}`);
+  }
+}
 const glossyResearchArtifact = radiometricPtRow.proofArtifacts.find((artifact) =>
   artifact?.path === "tools/radiometric-ab/results-restir-pt-glossy-research.json"
 );
@@ -531,6 +556,7 @@ if (!radiometricPtRow.proofArtifacts.some((artifact) =>
 for (const needle of [
   "multi-vertex BDPT branch as a structured non-promotable research finding",
   "weighted against the regular eye-path strategy",
+  "not yet composed against the ordinary eye-path estimator",
 ]) {
   if (!String(radiometricPtRow.remaining).includes(needle)) {
     fail(`VQ-RADIOMETRIC-PT remaining text must include ${needle}`);
@@ -546,6 +572,54 @@ for (const needle of [
 ]) {
   if (!ptWebgpuIndexSource.includes(needle)) {
     fail(`VQ-RADIOMETRIC-PT structured BDPT warning source is stale: missing ${needle}`);
+  }
+}
+const ptWebgpuBdptKernelSource = await readText("packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts");
+for (const needle of [
+  "radiance = radiance + directLi",
+  "radiance = radiance + evaluateBdptConnection",
+  "bdptOptions.experimentalMultiVertex",
+  "ordinary eye-path estimator at",
+  "not a promotable production estimator",
+]) {
+  if (!ptWebgpuBdptKernelSource.includes(needle)) {
+    fail(`VQ-RADIOMETRIC-PT BDPT kernel non-promotion boundary is stale: missing ${needle}`);
+  }
+}
+const ptWebgpuBdptConnectionSource = await readText("packages/pt-webgpu/src/wgsl/bdpt/bdptConnection.wgsl.ts");
+for (const needle of [
+  "Full Veach",
+  "bdptMISWeightFull",
+  "buildBDPTStrategyPDFs_full",
+  "REAL light-vertex BSDF",
+]) {
+  if (!ptWebgpuBdptConnectionSource.includes(needle)) {
+    fail(`VQ-RADIOMETRIC-PT BDPT connection proof source is stale: missing ${needle}`);
+  }
+}
+const ptWebgpuBdptLightSubpathSource = await readText("packages/pt-webgpu/src/wgsl/bdpt/bdptLightSubpath.wgsl.ts");
+for (const needle of [
+  "bdptExtendLightSubpath",
+  "sampleNextBounceDirectionWithClearcoatNormal",
+  "pdfRevAtPrev",
+  "ONE invocation",
+]) {
+  if (!ptWebgpuBdptLightSubpathSource.includes(needle)) {
+    fail(`VQ-RADIOMETRIC-PT BDPT light-subpath proof source is stale: missing ${needle}`);
+  }
+}
+const ptWebgpuBdptConnectionTest = await readText("packages/pt-webgpu/src/__tests__/bdptConnectionMisFull.test.ts");
+if (!ptWebgpuBdptConnectionTest.includes("MIS weight matches the oracle")) {
+  fail("VQ-RADIOMETRIC-PT BDPT connection MIS oracle test citation is stale");
+}
+const ptWebgpuBdptLightSubpathTest = await readText("packages/pt-webgpu/src/__tests__/bdptGlossyLightSubpath.test.ts");
+for (const needle of [
+  "samples the REAL BSDF",
+  "pdfRevAtPrev",
+  "BdptLightPathBufferWebGPU",
+]) {
+  if (!ptWebgpuBdptLightSubpathTest.includes(needle)) {
+    fail(`VQ-RADIOMETRIC-PT BDPT light-subpath test citation is stale: missing ${needle}`);
   }
 }
 
