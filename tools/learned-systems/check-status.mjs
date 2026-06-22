@@ -33,6 +33,24 @@ import {
 
 const EXPECTED_PARAM_COUNT = 535107;
 const CHECKPOINT_MANIFEST_PATH = "tools/neural-denoiser-training/checkpoints/manifest.json";
+const REQUIRED_RESEARCH_CHECKPOINTS = [
+  {
+    name: "starter-v1.vitrum-model",
+    role: "research",
+    productionDefaultEligible: false,
+    paramCount: EXPECTED_PARAM_COUNT,
+    sizeBytes: 2140724,
+    sha256: "9fbf951ac6d0960436243f9326339108b96410afc4b5d9efcd39c8784161f13f",
+  },
+  {
+    name: "v2-random.vitrum-model",
+    role: "research",
+    productionDefaultEligible: false,
+    paramCount: EXPECTED_PARAM_COUNT,
+    sizeBytes: 2140724,
+    sha256: "6f59e32b8f84f05e90f4afdfa025a98ef97ae60f163a1a4a9f7703ac4fa3d9cb",
+  },
+];
 
 /** @param {string} path */
 function repoUrl(path) {
@@ -131,6 +149,18 @@ async function loadCheckpointManifest() {
 async function assertTrackedResearchCheckpoints(manifest) {
   if (deriveParamCount(WALKAROUND_DENOISER_UNET_SPEC.layers) !== EXPECTED_PARAM_COUNT) {
     fail(`canonical U-Net param count changed from ${EXPECTED_PARAM_COUNT}`);
+  }
+
+  for (const required of REQUIRED_RESEARCH_CHECKPOINTS) {
+    const entry = manifest.checkpoints.find((checkpoint) => checkpoint?.name === required.name);
+    if (entry == null) fail(`missing required research checkpoint ${required.name}`);
+    if (entry.role !== required.role) fail(`${required.name} role differs from required research checkpoint contract`);
+    if (entry.productionDefaultEligible !== required.productionDefaultEligible) {
+      fail(`${required.name} productionDefaultEligible differs from required research checkpoint contract`);
+    }
+    if (entry.paramCount !== required.paramCount) fail(`${required.name} paramCount differs from required research checkpoint contract`);
+    if (entry.sizeBytes !== required.sizeBytes) fail(`${required.name} sizeBytes differs from required research checkpoint contract`);
+    if (entry.sha256 !== required.sha256) fail(`${required.name} sha256 differs from required research checkpoint contract`);
   }
 
   const seen = new Set();
