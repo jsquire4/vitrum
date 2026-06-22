@@ -65,6 +65,44 @@ const REQUIRED_MUTATION_KINDS = [
   "remove-primitive",
 ];
 
+const REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS = [
+  "tools/renderer-fidelity-proof/check-proofs.mjs",
+  "plan/renderer-fidelity-matrix.md",
+  "plan/fidelity-promotion-playbook.md",
+  "README.md",
+  "plan/library-architecture.md",
+  "HARDWARE-VALIDATION-NEEDS.md",
+  "plan/gap-closure-execution-plan.md",
+  "tools/gltf-browser-proof/pt-webgl2-real-status.json",
+  "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
+  "tools/reference-renders/baseline/ptwgpu-spectral-hero.png",
+  "tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png",
+  "tools/reference-renders/baseline/ptwgpu-cauchy-dispersion.png",
+  "tools/reference-renders/baseline/ptwgpu-layered-front.png",
+  "tools/reference-renders/baseline/ptwgpu-sss-mixed-panels.png",
+  "tools/reference-renders/baseline/cornell-manylights.png",
+  "tools/reference-renders/baseline/ptwgpu-parity-material-fields.png",
+  "tools/reference-renders/baseline/mnee-glass-slab.png",
+  "tools/reference-renders/baseline/cornell-bdpt-on.png",
+  "packages/pt-webgl2/src/glsl/shader/bsdf/__tests__/b9Multiscatter.test.ts",
+  "packages/pt-webgl2/src/glsl/shader/bsdf/ggx_functions.glsl.js",
+  "packages/pt-webgl2/src/glsl/shader/bsdf/bsdf_functions.glsl.js",
+  "packages/pt-webgl2/src/glsl/composeTraceGlsl.test.ts",
+  "packages/pt-webgl2/src/scene/materialsTexture.test.ts",
+  "packages/pt-webgl2/src/glsl/render/get_surface_record_function.glsl.js",
+  "packages/pt-webgl2/src/glsl/render/attenuate_hit_function.glsl.js",
+  "packages/pt-webgl2/src/capabilities.ts",
+  "packages/pt-webgl2/src/scene/equirectHdrInfo.ts",
+  "packages/pt-webgl2/src/scene/equirectHdrInfo.test.ts",
+  "packages/pt-webgl2/src/scene/meshAreaLights.test.ts",
+  "packages/pt-webgl2/src/scene/meshAreaMis.test.ts",
+  "packages/pt-webgl2/src/glsl/shader/sampling/light_sampling_functions.glsl.js",
+];
+
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -289,6 +327,21 @@ assertMutationStatusCoverage(
   "wh",
   "tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json",
 );
+
+const rendererFidelityRow = queue.validationQueue.find((row) => row.id === "VQ-RENDERER-FIDELITY-PROOF");
+if (rendererFidelityRow == null) fail("validationQueue missing VQ-RENDERER-FIDELITY-PROOF");
+if (!String(rendererFidelityRow.remaining).includes("pt-webgl2 non-promotion grades")) {
+  fail("VQ-RENDERER-FIDELITY-PROOF remaining text must keep pt-webgl2 non-promotion explicit");
+}
+if (!String(rendererFidelityRow.remaining).includes("browser/WebGL2 capture is HOST-BLOCKED")) {
+  fail("VQ-RENDERER-FIDELITY-PROOF remaining text must keep the browser/WebGL2 blocker explicit");
+}
+const rendererFidelityArtifactPaths = new Set(rendererFidelityRow.proofArtifacts.map((artifact) => artifact?.path));
+for (const path of REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS) {
+  if (!rendererFidelityArtifactPaths.has(path)) {
+    fail(`VQ-RENDERER-FIDELITY-PROOF proofArtifacts must cite ${path}`);
+  }
+}
 
 const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SYSTEMS");
 if (learnedRow == null) fail("validationQueue missing VQ-LEARNED-SYSTEMS");

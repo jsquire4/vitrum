@@ -561,6 +561,41 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 22 — Renderer Fidelity Evidence-Citation Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of
+`VQ-RENDERER-FIDELITY-PROOF` found `renderer-fidelity-proof-check` already
+fail-closes the substantive claims: all pt-webgpu `supported` rows need runtime
+proof artifacts, pt-webgl2 specialty rows remain explicitly unpromoted while
+browser/WebGL2 capture is `HOST-BLOCKED`, material-furnace rows are source/oracle
+guarded, and stale package-level pt-webgpu/pt-webgl2 prose is rejected. The weak
+point was the Road queue: it cited the matrix and only three PNGs, not the full
+set of source files, dzn status files, browser-blocked artifacts, and baseline
+goldens the checker actually reads.
+
+Implementation:
+
+- Expanded `VQ-RENDERER-FIDELITY-PROOF` proof artifacts to cite the renderer
+  proof checker, fidelity playbook, architecture/README/hardware docs, browser
+  pt-webgl2 status and manifest, four dzn status files, all pt-webgpu baseline
+  golden PNGs used by the checker, and the pt-webgl2 material-furnace source and
+  oracle test files.
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so the renderer
+  fidelity row fails if any of those evidence files stops being cited by the
+  machine-readable queue.
+- Kept the row partial-proof-green: the remaining work is still browser/real
+  adapter reference A/B for pt-webgl2 specialty promotion, not a hidden current
+  implementation row.
+
+Focused gates:
+
+```bash
+npm run renderer-fidelity-proof-check
+npm run road-to-100-validation-status
+npm run proof-check
+git diff --check
+```
+
 ### Wave 21 — BDPT Multi-Vertex Non-Promotion Artifact Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of
