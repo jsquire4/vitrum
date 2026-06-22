@@ -261,6 +261,11 @@
         { "path": "plan/library-architecture.md" },
         { "path": "packages/walkaround-hybrid/README.md" },
         { "path": "tools/neural-denoiser-training/README.md" },
+        { "path": "tools/neural-denoiser-training/train.py" },
+        { "path": "tools/neural-denoiser-training/export_weights.py" },
+        { "path": "tools/neural-denoiser-training/capture-dataset.mjs" },
+        { "path": "tools/neural-denoiser-training/dataset_spec.md" },
+        { "path": "packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts" },
         { "path": "HARDWARE-VALIDATION-NEEDS.md" }
       ],
       "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence. The learned-systems proof checker validates research checkpoint identity and will require production quality metrics to satisfy their declared thresholds before any production checkpoint can count."

@@ -399,6 +399,11 @@ for (const path of [
   "plan/library-architecture.md",
   "packages/walkaround-hybrid/README.md",
   "tools/neural-denoiser-training/README.md",
+  "tools/neural-denoiser-training/train.py",
+  "tools/neural-denoiser-training/export_weights.py",
+  "tools/neural-denoiser-training/capture-dataset.mjs",
+  "tools/neural-denoiser-training/dataset_spec.md",
+  "packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts",
   "HARDWARE-VALIDATION-NEEDS.md",
 ]) {
   if (!learnedRow.proofArtifacts.some((artifact) => artifact?.path === path)) {

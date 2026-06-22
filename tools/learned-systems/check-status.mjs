@@ -458,6 +458,52 @@ async function assertRuntimeTruthfulnessGuards() {
   }
 }
 
+async function assertTrainingPipelineEvidence() {
+  const trainScript = await readText("tools/neural-denoiser-training/train.py");
+  const exportScript = await readText("tools/neural-denoiser-training/export_weights.py");
+  const captureDataset = await readText("tools/neural-denoiser-training/capture-dataset.mjs");
+  const datasetSpec = await readText("tools/neural-denoiser-training/dataset_spec.md");
+  const roundTripTest = await readText("packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts");
+
+  const requiredFragments = [
+    [trainScript, "NOTE: torch is imported lazily inside train()", "train.py lazy torch import guard"],
+    [trainScript, "Do NOT add a top-level `import torch`", "train.py dry-run import boundary"],
+    [trainScript, "class UNetDenoiser", "train.py canonical U-Net class"],
+    [trainScript, "CANONICAL_PARAM_COUNT = 535107", "train.py canonical param count"],
+    [trainScript, "def write_vitrum_binary", "train.py vitrum binary writer"],
+    [trainScript, "def export_vitrum_weights", "train.py export path"],
+    [trainScript, "def dry_run", "train.py numpy-only dry-run"],
+    [trainScript, "def combined_loss", "train.py training loss"],
+    [exportScript, "VITRUM_MODEL_MAGIC", "export_weights.py model magic"],
+    [exportScript, "VITRUM_MODEL_VERSION = 1", "export_weights.py model version"],
+    [exportScript, "LAYER_NAMES = [", "export_weights.py canonical layer list"],
+    [exportScript, "torch.load(pth_path, map_location='cpu', weights_only=True)", "export_weights.py safe checkpoint load"],
+    [exportScript, "state_dict", "export_weights.py state_dict handling"],
+    [exportScript, "Total parameters", "export_weights.py param-count reporting"],
+    [captureDataset, "It is NOT a real training", "capture-dataset smoke caveat"],
+    [captureDataset, "Output layout matches dataset_spec.md exactly", "capture-dataset output-layout contract"],
+    [captureDataset, "frame_NNNN_albedo.png", "capture-dataset albedo output"],
+    [captureDataset, "frame_NNNN_normal.png", "capture-dataset normal output"],
+    [captureDataset, "--scene random", "capture-dataset diversity mode"],
+    [datasetSpec, "frame_0001.png           # 1 spp noisy color", "dataset spec noisy image layout"],
+    [datasetSpec, "frame_0001_albedo.png", "dataset spec albedo layout"],
+    [datasetSpec, "frame_0001_normal.png", "dataset spec normal layout"],
+    [datasetSpec, "frame_0001.png           # 4096 spp reference", "dataset spec clean image layout"],
+    [datasetSpec, "This repo does NOT currently ship a batched G-buffer capture script", "dataset spec production capture gap"],
+    [datasetSpec, "5000 pairs recommended for production quality", "dataset spec production dataset sizing"],
+    [roundTripTest, "neuralWeightsRoundTrip.test.ts — capture → train → export → load round-trip", "round-trip proof header"],
+    [roundTripTest, "CANONICAL_PARAM_COUNT = 535107", "round-trip canonical param count"],
+    [roundTripTest, "loadWeightsFromArrayBuffer", "round-trip runtime loader"],
+    [roundTripTest, "validateWeightsForSpec", "round-trip runtime shape validator"],
+    [roundTripTest, "InferenceGraph", "round-trip inference graph allocation"],
+    [roundTripTest, "TRACKED_CHECKPOINTS", "round-trip tracked checkpoint coverage"],
+  ];
+
+  for (const [text, fragment, label] of requiredFragments) {
+    if (!text.includes(fragment)) fail(`missing ${label}: ${fragment}`);
+  }
+}
+
 async function assertBehavioralProofCoverage() {
   const proofFiles = [
     {
@@ -565,6 +611,7 @@ const checkpointManifest = await loadCheckpointManifest();
 await assertTrackedResearchCheckpoints(checkpointManifest);
 await assertNoSilentProductionCheckpoint(checkpointManifest);
 await assertRuntimeTruthfulnessGuards();
+await assertTrainingPipelineEvidence();
 await assertBehavioralProofCoverage();
 
 const researchCount = checkpointManifest.checkpoints.filter((entry) => entry.role === "research").length;

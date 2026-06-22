@@ -561,6 +561,42 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 25 — Learned Systems Training-Pipeline Evidence Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of
+`VQ-LEARNED-SYSTEMS` found the production posture is intentionally still
+provisioning-gated: the repo has tracked research checkpoints, runtime shape
+validation, opt-in neural/NRC/PPG/GRIS guards, and no bundled production
+checkpoint. The weak point was evidence drift: the learned-systems proof checker
+validated checkpoint bytes and runtime truthfulness, but the Road queue did not
+require the training script, exporter, smoke capture tool, dataset contract, or
+runtime round-trip test as cited proof artifacts.
+
+Implementation:
+
+- Added a learned-systems training-pipeline assertion that reads
+  `train.py`, `export_weights.py`, `capture-dataset.mjs`, `dataset_spec.md`,
+  and `neuralWeightsRoundTrip.test.ts`, then fails closed if the lazy PyTorch
+  dry-run path, canonical parameter count, vitrum-model binary writer/exporter,
+  smoke-capture caveat, production dataset sizing/capture gap, or runtime
+  load/validate/InferenceGraph round-trip evidence drifts.
+- Expanded `VQ-LEARNED-SYSTEMS` proof artifacts to cite the training/export/
+  capture/dataset/round-trip evidence directly.
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so the learned
+  row cannot silently drop those citations while still honestly remaining
+  `provisioning-needed` until a production checkpoint and quality A/B manifest
+  exist.
+
+Focused gates:
+
+```bash
+npm run learned-systems-proof-check
+npm run road-to-100-validation-status
+npm test --workspace @vitrum/walkaround-hybrid -- learnedSystemConfig.test.ts capabilitiesPartition.test.ts hybridLiteTier.test.ts neuralWeightsRoundTrip.test.ts
+npm run proof-check
+git diff --check
+```
+
 ### Wave 24 — BDPT Estimator Boundary Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of
