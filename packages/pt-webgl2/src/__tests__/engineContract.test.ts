@@ -760,6 +760,16 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(f2.samplesAccumulated).toBe(2);
   });
 
+  it('setScene invalidates accumulated samples for the next render', async () => {
+    const e = await createPTEngine_WebGL2(opts());
+    e.setScene(triScene());
+    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(1);
+    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(2);
+
+    e.setScene(triListScene(1));
+    expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(1);
+  });
+
   it('setSize controls render-target dimensions and resets accumulation only on size changes', async () => {
     const e = await createPTEngine_WebGL2(opts());
     expect(typeof e.setSize).toBe('function');

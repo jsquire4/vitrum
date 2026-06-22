@@ -7056,6 +7056,26 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it.each([0, 2, 3])(
+    'rejects point/line fallback mode %i in reject-degraded mode before constructing an engine',
+    async (mode) => {
+      const { gltf, buffers } = makeInlineTriangleGltf();
+      gltf.meshes![0]!.primitives[0] = {
+        ...gltf.meshes![0]!.primitives[0]!,
+        mode,
+      };
+      const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+      await expect(loadGltfForEngine(gltf, {
+        buffers,
+        backend: 'pt-webgl2',
+        compatibilityMode: 'reject-degraded',
+        createEngine,
+      })).rejects.toThrow(`primitive:mode:${mode}=fallback-generated-mesh at meshes[0].primitives[0].mode`);
+      expect(createEngine).not.toHaveBeenCalled();
+    },
+  );
+
   it('allows fallback-expanded instanced morphed meshes in reject-unsupported mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     addMorphedGpuInstancing(gltf, buffers);

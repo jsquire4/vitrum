@@ -106,7 +106,10 @@ export interface Engine {
 
   // ── Scene management ────────────────────────────────────────────────────
 
-  /** Replace the entire scene. Triggers a full BVH/light-tree rebuild. Cheap
+  /** Replace the entire scene. Triggers a full BVH/light-tree rebuild and
+   *  invalidates temporal / accumulation history: PT-style engines restart
+   *  sample accumulation from zero, while real-time engines clear temporal
+   *  GI / denoiser history as they would for a structural scene rebuild. Cheap
    *  if the scene hasn't changed (engines may compare structural hashes). */
   setScene(scene: Scene): void;
 
