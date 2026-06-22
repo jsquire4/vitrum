@@ -19,14 +19,15 @@
  * chain rule + fixed-point accumulation match an on-device finite-difference.
  * The session requests 'path-replay' only when the engine provides the hook,
  * every parameter is in the adjoint-differentiable set, and every target
- * material stays within the direct-light base/specular/extension-lobe domain this pass mirrors
- * (delta directional, point, spot, and stochastic area-measure rect/disc/mesh
- * area lights), or
+ * material stays within the scoped direct-light domain this pass mirrors
+ * (delta/soft directional, point, spot, stochastic area-measure rect/disc/mesh
+ * area lights, and direct HDRI/procedural-sky environment NEE), or
  * is a baseColorMap / COLOR_0-aware `shadingModel:'unlit'` baseColor primary-hit fit;
  * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
- * AO intensity / emissive / specularColor / specularIntensity / clearcoat / sheen /
- * iridescence / iridescenceThicknessRange / anisotropy controls with their
- * readable local map factors); any
+ * AO intensity / light-map intensity / emissive / env-map intensity /
+ * specularColor / specularIntensity / clearcoat / sheen / iridescence /
+ * iridescenceThicknessRange / anisotropy controls plus normalScale, bumpScale,
+ * and clearcoatNormalScale with their readable local map factors); any
  * shortfall (no hook, an unsupported emitter/material target, an `ior` param, etc.) resolves the
  * effective method to 'finite-difference', reported via `session.method` — no
  * silent wrong-gradient path. Mixed sessions may still route individually
@@ -130,12 +131,15 @@ export interface InverseEngineHooks {
    * and returns the flat gradient. Replaces the N-render FD probe loop with one
    * baseline render + one adjoint pass. The session only requests this when the
    * hook exists, every parameter is adjoint-eligible, and every target material
-   * stays inside the adjoint-compatible direct-light domain (delta directional,
-   * point, spot, and stochastic area-measure rect/disc/mesh area lights;
+   * stays inside the adjoint-compatible direct-light domain (delta/soft
+   * directional, point, spot, stochastic area-measure rect/disc/mesh area
+   * lights, and direct HDRI/procedural-sky environment NEE;
    * `ADJOINT_ELIGIBLE_FIELDS`: material baseColor / roughness / metallic /
-   * AO intensity / emissive / specularColor / specularIntensity / clearcoat / sheen /
-   * iridescence / iridescenceThicknessRange / anisotropy controls with their
-   * readable local map factors); otherwise it reports + uses
+   * AO intensity / light-map intensity / emissive / env-map intensity /
+   * specularColor / specularIntensity / clearcoat / sheen / iridescence /
+   * iridescenceThicknessRange / anisotropy controls plus normalScale,
+   * bumpScale, and clearcoatNormalScale with their readable local map factors);
+   * otherwise it reports + uses
    * 'finite-difference' (no silently-wrong gradient). An engine that provides
    * this hook is vouching that its adjoint pass is hardware-validated — a field
    * only graduates to path-replay once its end-to-end inverse fit converges.
@@ -242,11 +246,13 @@ export interface AdjointGradientRequest {
    *    clearcoat-normal maps for the clearcoat lobe, and light maps are replayed
    *    as local chain-rule factors for the lit BRDF / primary-hit emission domains
    *    above. Additive primary-hit
- *    emissiveMap/lightMap terms are allowed on BRDF/unlit targets because they
+   *    emissiveMap/lightMap terms are allowed on BRDF/unlit targets because they
    *    do not change the derivative of those optimized fields; dLossDRendered
-   *    already contains their forward contribution. Alpha, transmission, and
-   *    displacement maps remain finite-difference fallbacks until their
-   *    visibility/transport/geometry terms are mirrored.
+   *    already contains their forward contribution. Dormant alpha/transmission
+   *    maps may stay on path replay when the readable coverage/transport factor
+   *    is provably opaque or zero-effective; active alpha visibility,
+   *    transmission/thickness transport, and displacement geometry remain
+   *    finite-difference fallbacks until those terms are mirrored.
  *  - `anisotropy` / `anisotropyRotation` — map-free scalar anisotropic-GGX
  *    controls through a local symmetric derivative of the direct-light specular
  *    lobe. Anisotropy maps replay the B-channel strength multiplier and RG

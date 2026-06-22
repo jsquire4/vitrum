@@ -97,12 +97,13 @@
       "title": "pt-webgl2 browser real-glTF proof",
       "kind": "validation",
       "status": "host-blocked",
-      "command": "npm run gltf-browser-proof-check:required",
+      "command": "npm run gltf-browser-proof-check",
+      "promotionCommand": "npm run gltf-browser-proof-check:required",
       "proofArtifacts": [
-        { "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json", "json": { "verdict": "HOST-BLOCKED" } },
+        { "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json", "json": { "verdict": "HOST-BLOCKED", "captureMode": "engine-first" } },
         { "path": "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json" }
       ],
-      "remaining": "Needs a browser host that can return canvas pixels for textured, Draco, and meshopt real assets."
+      "remaining": "Needs a browser host that can return engine/canvas pixels for textured, Draco, and meshopt real assets."
     },
     {
       "id": "VQ-RADIOMETRIC-PT",
@@ -165,7 +166,20 @@
       "status": "provisioning-needed",
       "command": "npm run learned-systems-proof-check",
       "proofArtifacts": [
-        { "path": "tools/neural-denoiser-training/checkpoints/manifest.json" }
+        { "path": "tools/learned-systems/check-status.mjs" },
+        { "path": "tools/neural-denoiser-training/checkpoints/manifest.json" },
+        { "path": "packages/walkaround-hybrid/src/HybridEngineConfig.ts" },
+        { "path": "packages/walkaround-hybrid/src/HybridEngine.ts" },
+        { "path": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts" },
+        { "path": "packages/walkaround-hybrid/src/neural/weights.ts" },
+        { "path": "packages/walkaround-hybrid/src/__tests__/learnedSystemConfig.test.ts" },
+        { "path": "packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts" },
+        { "path": "packages/walkaround-hybrid/src/__tests__/hybridLiteTier.test.ts" },
+        { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcStructuralGate.test.ts" },
+        { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts" },
+        { "path": "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts" },
+        { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCoordinatorDiagnostics.test.ts" },
+        { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCompilerGate.test.ts" }
       ],
       "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence. The learned-systems proof checker validates research checkpoint identity and will require production quality metrics to satisfy their declared thresholds before any production checkpoint can count."
     },

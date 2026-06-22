@@ -157,6 +157,7 @@ const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await P
   readText(PROMISE_LEDGER_PATH),
   readText("plan/road-to-100.md"),
 ]);
+const inverseSessionSource = await readText("packages/pt-webgpu/src/inverse/inverseSession.ts");
 const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
 
 if (queue.schema !== "vitrum.road-to-100.validation-queue.v1") fail("queue schema mismatch");
@@ -199,12 +200,36 @@ for (const row of queue.validationQueue) {
   } else if (row.status !== "evidence-needed" && row.status !== "decision-needed") {
     fail(`${row.id}: non-decision validation rows need a command`);
   }
+  if (row.promotionCommand != null) {
+    assertNonEmptyString(row.promotionCommand, `${row.id}: promotionCommand`);
+    assertCommandScriptsExist(row.promotionCommand, scripts);
+  }
   if (!Array.isArray(row.proofArtifacts)) fail(`${row.id}: proofArtifacts must be an array`);
   for (const artifact of row.proofArtifacts) await assertArtifact(artifact, row.id);
 }
 
 const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SYSTEMS");
 if (learnedRow == null) fail("validationQueue missing VQ-LEARNED-SYSTEMS");
+for (const path of [
+  "tools/learned-systems/check-status.mjs",
+  "tools/neural-denoiser-training/checkpoints/manifest.json",
+  "packages/walkaround-hybrid/src/HybridEngineConfig.ts",
+  "packages/walkaround-hybrid/src/HybridEngine.ts",
+  "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
+  "packages/walkaround-hybrid/src/neural/weights.ts",
+  "packages/walkaround-hybrid/src/__tests__/learnedSystemConfig.test.ts",
+  "packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts",
+  "packages/walkaround-hybrid/src/__tests__/hybridLiteTier.test.ts",
+  "packages/walkaround-hybrid/src/pipeline/__tests__/nrcStructuralGate.test.ts",
+  "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts",
+  "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts",
+  "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCoordinatorDiagnostics.test.ts",
+  "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCompilerGate.test.ts",
+]) {
+  if (!learnedRow.proofArtifacts.some((artifact) => artifact?.path === path)) {
+    fail(`VQ-LEARNED-SYSTEMS proofArtifacts must cite ${path}`);
+  }
+}
 if (learnedCheckpointManifest.schema !== "vitrum.neural-denoiser.checkpoints.v1") {
   fail("learned checkpoint manifest schema mismatch");
 }
@@ -259,6 +284,46 @@ if (!adjointRow.proofArtifacts.some((artifact) =>
   artifact?.path === "packages/pt-webgpu/src/__tests__/inverseSession.test.ts"
 )) {
   fail("VQ-ADJOINT-SCOPED-PATH-REPLAY must cite inverseSession.test.ts");
+}
+for (const needle of [
+  "direct HDRI/procedural-sky environment NEE",
+  "env-map intensity",
+  "normalScale",
+  "bumpScale",
+  "clearcoatNormalScale",
+  "Dormant alpha/transmission",
+  "active alpha visibility",
+]) {
+  if (!inverseSessionSource.includes(needle)) {
+    fail(`inverseSession.ts scoped adjoint contract prose is stale: missing ${needle}`);
+  }
+}
+
+const gltfBrowserRow = queue.validationQueue.find((row) => row.id === "VQ-GLTF-BROWSER-PTWEBGL2");
+if (gltfBrowserRow == null) fail("validationQueue missing VQ-GLTF-BROWSER-PTWEBGL2");
+if (gltfBrowserRow.status !== "host-blocked") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 must stay host-blocked until browser PNG/golden proof passes");
+}
+if (gltfBrowserRow.command !== "npm run gltf-browser-proof-check") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 command must be the current fail-closed browser proof check");
+}
+if (gltfBrowserRow.promotionCommand !== "npm run gltf-browser-proof-check:required") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 promotionCommand must keep the required browser proof gate");
+}
+if (!String(gltfBrowserRow.remaining).includes("engine/canvas pixels")) {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 remaining text must name the engine/canvas pixel-readback blocker");
+}
+const gltfBrowserStatusArtifact = gltfBrowserRow.proofArtifacts.find((artifact) =>
+  artifact?.path === "tools/gltf-browser-proof/pt-webgl2-real-status.json"
+);
+if (gltfBrowserStatusArtifact == null) {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 must cite pt-webgl2-real-status.json");
+}
+if (gltfBrowserStatusArtifact.json?.verdict !== "HOST-BLOCKED") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin HOST-BLOCKED");
+}
+if (gltfBrowserStatusArtifact.json?.captureMode !== "engine-first") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin engine-first capture mode");
 }
 
 for (const row of queue.futureContractRows) {
