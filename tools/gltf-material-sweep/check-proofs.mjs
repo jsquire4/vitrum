@@ -2,8 +2,29 @@
 // @ts-check
 // Verifies that the material-sweep behavioral-proof metadata, manifest, and PNG agree.
 
-import { SWEEP_MAPS } from "./fixture.mjs";
+import { FIELD_TEXTURE_INDEX, SWEEP_MAPS } from "./fixture.mjs";
 import { GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF } from "./proofs.mjs";
+
+const REQUIRED_SWEEP_MAPS = [
+  "baseColorMap",
+  "roughnessMap",
+  "metallicMap",
+  "normalMap",
+  "aoMap",
+  "emissiveMap",
+  "transmissionMap",
+  "specularIntensityMap",
+  "specularColorMap",
+  "sheenColorMap",
+  "sheenRoughnessMap",
+  "clearcoatMap",
+  "clearcoatRoughnessMap",
+  "clearcoatNormalMap",
+  "iridescenceMap",
+  "iridescenceThicknessMap",
+  "anisotropyMap",
+  "thicknessMap",
+];
 
 const manifestUrl = new URL("../reference-renders/gltf-material-sweep-behavioral/manifest.json", import.meta.url);
 const manifest = JSON.parse(await Deno.readTextFile(manifestUrl));
@@ -38,6 +59,12 @@ if (!sameJson(manifest.thresholds, GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.threshol
 }
 if (manifest.materialMapCount !== SWEEP_MAPS.length) {
   fail(`manifest materialMapCount ${manifest.materialMapCount} differs from SWEEP_MAPS ${SWEEP_MAPS.length}`);
+}
+const sweepMapSet = new Set(SWEEP_MAPS);
+if (sweepMapSet.size !== SWEEP_MAPS.length) fail("SWEEP_MAPS contains duplicate fields");
+for (const field of REQUIRED_SWEEP_MAPS) {
+  if (!sweepMapSet.has(field)) fail(`SWEEP_MAPS is missing required material field ${field}`);
+  if (!FIELD_TEXTURE_INDEX.has(field)) fail(`FIELD_TEXTURE_INDEX is missing required material field ${field}`);
 }
 
 const goldenUrl = new URL(`../../${GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath}`, import.meta.url);
