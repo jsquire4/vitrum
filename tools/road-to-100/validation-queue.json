@@ -300,6 +300,17 @@
       "command": "npm run learned-systems-proof-check",
       "proofArtifacts": [
         { "path": "tools/learned-systems/check-status.mjs" },
+        {
+          "path": "tools/learned-systems/learned-systems-status.json",
+          "json": {
+            "verdict": "PASS",
+            "productionPosture": "provisioning-needed",
+            "neuralDenoiser.productionCheckpoint": null,
+            "neuralDenoiser.productionDefaultEligible": false,
+            "nrc.defaultEnabled": false,
+            "nrc.productionDefaultEligible": false
+          }
+        },
         { "path": "tools/neural-denoiser-training/checkpoints/manifest.json" },
         { "path": "packages/walkaround-hybrid/src/HybridEngineConfig.ts" },
         { "path": "packages/walkaround-hybrid/src/HybridEngineOptions.ts" },

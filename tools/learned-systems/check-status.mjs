@@ -33,6 +33,8 @@ import {
 
 const EXPECTED_PARAM_COUNT = 535107;
 const CHECKPOINT_MANIFEST_PATH = "tools/neural-denoiser-training/checkpoints/manifest.json";
+const STATUS_PATH = "tools/learned-systems/learned-systems-status.json";
+const WRITE_STATUS = Deno.args.includes("--write-status");
 const REQUIRED_RESEARCH_CHECKPOINTS = [
   {
     name: "starter-v1.vitrum-model",
@@ -394,6 +396,54 @@ function qualityMetricPassesThreshold(name, metric, threshold) {
   }
 }
 
+/**
+ * @param {CheckpointManifest} checkpointManifest
+ * @param {number} researchCount
+ * @param {number} productionCount
+ */
+async function maybeWriteStatus(checkpointManifest, researchCount, productionCount) {
+  if (!WRITE_STATUS) return;
+  const productionCheckpoint = checkpointManifest.productionCheckpoint ?? null;
+  const hasProductionCheckpoint = productionCheckpoint !== null && productionCount > 0;
+  const status = {
+    schema: "vitrum.learned-systems.status.v1",
+    generatedAt: new Date().toISOString(),
+    verdict: "PASS",
+    productionPosture: hasProductionCheckpoint ? "quality-gated" : "provisioning-needed",
+    neuralDenoiser: {
+      productionCheckpoint,
+      researchCheckpointCount: researchCount,
+      productionCheckpointCount: productionCount,
+      productionDefaultEligible: hasProductionCheckpoint,
+      packageProvidesProductionWeights: false,
+      qualityManifest: hasProductionCheckpoint
+        ? "tools/neural-denoiser-training/quality-ab-production.json"
+        : null,
+      remaining: hasProductionCheckpoint
+        ? "Keep production default eligibility tied to the validated quality manifest."
+        : "Provision a production neural checkpoint and passing quality A/B manifest before default or production claims.",
+    },
+    nrc: {
+      defaultEnabled: false,
+      estimator: "biased",
+      productionDefaultEligible: false,
+      remaining:
+        "Run quality/convergence A/B and make a default-tier decision before promoting NRC beyond opt-in.",
+    },
+    ppg: {
+      defaultEnabled: false,
+      remaining:
+        "Run favorable-scene A/B and convergence/instability checks before production promotion.",
+    },
+    guardrails: [
+      "Research checkpoints are loader/runtime validation assets only.",
+      "Neural, NRC, PPG, and GRIS learned/reuse paths remain opt-in unless future quality evidence promotes them.",
+      "Do not treat this PASS as production model quality.",
+    ],
+  };
+  await Deno.writeTextFile(STATUS_PATH, `${JSON.stringify(status, null, 2)}\n`);
+}
+
 async function assertRuntimeTruthfulnessGuards() {
   const config = await readText("packages/walkaround-hybrid/src/HybridEngineConfig.ts");
   const engine = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
@@ -616,6 +666,7 @@ await assertBehavioralProofCoverage();
 
 const researchCount = checkpointManifest.checkpoints.filter((entry) => entry.role === "research").length;
 const productionCount = checkpointManifest.checkpoints.filter((entry) => entry.role === "production").length;
+await maybeWriteStatus(checkpointManifest, researchCount, productionCount);
 console.log(
   `[learned-systems-proof-check] PASS ` +
   `(${researchCount} research checkpoints, ${productionCount} production checkpoints validate; neural/NRC remain opt-in and non-default; behavioral proof coverage pinned)`,

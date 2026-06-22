@@ -1,0 +1,30 @@
+{
+  "schema": "vitrum.learned-systems.status.v1",
+  "generatedAt": "2026-06-22T18:00:26.025Z",
+  "verdict": "PASS",
+  "productionPosture": "provisioning-needed",
+  "neuralDenoiser": {
+    "productionCheckpoint": null,
+    "researchCheckpointCount": 2,
+    "productionCheckpointCount": 0,
+    "productionDefaultEligible": false,
+    "packageProvidesProductionWeights": false,
+    "qualityManifest": null,
+    "remaining": "Provision a production neural checkpoint and passing quality A/B manifest before default or production claims."
+  },
+  "nrc": {
+    "defaultEnabled": false,
+    "estimator": "biased",
+    "productionDefaultEligible": false,
+    "remaining": "Run quality/convergence A/B and make a default-tier decision before promoting NRC beyond opt-in."
+  },
+  "ppg": {
+    "defaultEnabled": false,
+    "remaining": "Run favorable-scene A/B and convergence/instability checks before production promotion."
+  },
+  "guardrails": [
+    "Research checkpoints are loader/runtime validation assets only.",
+    "Neural, NRC, PPG, and GRIS learned/reuse paths remain opt-in unless future quality evidence promotes them.",
+    "Do not treat this PASS as production model quality."
+  ]
+}

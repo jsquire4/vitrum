@@ -53,6 +53,7 @@
     "behavioral-gate:dzn-status-check": "deno run --sloppy-imports --allow-read tools/behavioral-gate/check-dzn-status.mjs",
     "cwbvh-gpu-proof-check": "deno run --sloppy-imports --allow-read tools/behavioral-gate/check-cwbvh-parity-status.mjs && deno run --sloppy-imports --allow-read tools/behavioral-gate/check-cwbvh-renderer-parity-status.mjs",
     "learned-systems-proof-check": "deno run --sloppy-imports --allow-read tools/learned-systems/check-status.mjs",
+    "learned-systems-status": "deno run --sloppy-imports --allow-read --allow-write=tools/learned-systems/learned-systems-status.json tools/learned-systems/check-status.mjs --write-status",
     "renderer-fidelity-proof-check": "deno run --sloppy-imports --allow-read tools/renderer-fidelity-proof/check-proofs.mjs",
     "radiometric-ab:walkaround": "node tools/radiometric-ab/run-walkaround-ab.mjs",
     "gltf-material-sweep": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/sweep.mjs",

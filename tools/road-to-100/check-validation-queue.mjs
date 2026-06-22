@@ -801,6 +801,7 @@ const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SY
 if (learnedRow == null) fail("validationQueue missing VQ-LEARNED-SYSTEMS");
 for (const path of [
   "tools/learned-systems/check-status.mjs",
+  "tools/learned-systems/learned-systems-status.json",
   "tools/neural-denoiser-training/checkpoints/manifest.json",
   "packages/walkaround-hybrid/src/HybridEngineConfig.ts",
   "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
