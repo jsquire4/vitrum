@@ -49,7 +49,7 @@ function makeAttributeRemapBuffers(): Map<number, ArrayBuffer> {
   ]);
 }
 
-function makePointAttributeRemapGltf(): GltfJson {
+function makePointAttributeRemapGltf(mode = 0): GltfJson {
   const buffers = makeAttributeRemapBuffers();
   return {
     asset: { version: '2.0' },
@@ -65,7 +65,7 @@ function makePointAttributeRemapGltf(): GltfJson {
           TEXCOORD_0: 2,
           COLOR_0: 3,
         },
-        mode: 0,
+        mode,
         targets: [{ POSITION: 4 }],
       }],
     }],
@@ -192,5 +192,42 @@ describe('POINTS / line primitive policy', () => {
     expect(primitive.morphTargets![0]![secondPointGeneratedVertex * 3 + 0]).toBeCloseTo(0);
     expect(primitive.morphTargets![0]![secondPointGeneratedVertex * 3 + 1]).toBeCloseTo(0.2);
     expect(primitive.morphTargets![0]![secondPointGeneratedVertex * 3 + 2]).toBeCloseTo(0);
+  });
+
+  it('replicates endpoint UVs, vertex colors, identity skin, and morph deltas onto generated line meshes', async () => {
+    const { scene, diagnostics } = await gltfToScene(makePointAttributeRemapGltf(1), {
+      buffers: makeAttributeRemapBuffers(),
+      pointLineFallbackRadius: 0.05,
+    });
+
+    expect(scene.primitives).toHaveLength(1);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'fallback-generated-primitive-mode',
+      path: 'meshes[0].primitives[0].mode',
+    }));
+    const primitive = scene.primitives[0] as SkinnedMeshPrimitive;
+    expect(primitive.kind).toBe('skinned-mesh');
+    expect(primitive.positions.length).toBe(24 * 3);
+    expect(primitive.uvs?.length).toBe(24 * 2);
+    expect(primitive.colors?.length).toBe(24 * 4);
+    expect(primitive.skinWeights.length).toBe(24 * 4);
+    expect(primitive.morphTargets?.[0]?.length).toBe(primitive.positions.length);
+
+    const firstEndpointVertices = [0, 3, 4, 7, 8, 11, 12, 15, 16, 17, 18, 19];
+    const secondEndpointVertices = [1, 2, 5, 6, 9, 10, 13, 14, 20, 21, 22, 23];
+    for (const vertex of firstEndpointVertices) {
+      expect(Array.from(primitive.uvs!.slice(vertex * 2, vertex * 2 + 2))).toEqual([0.25, 0.5]);
+      expect(Array.from(primitive.colors!.slice(vertex * 4, vertex * 4 + 4))).toEqual([1, 0, 0, 1]);
+      expect(primitive.morphTargets![0]![vertex * 3 + 0]).toBeCloseTo(0.1);
+      expect(primitive.morphTargets![0]![vertex * 3 + 1]).toBeCloseTo(0);
+      expect(primitive.morphTargets![0]![vertex * 3 + 2]).toBeCloseTo(0);
+    }
+    for (const vertex of secondEndpointVertices) {
+      expect(Array.from(primitive.uvs!.slice(vertex * 2, vertex * 2 + 2))).toEqual([0.75, 1]);
+      expect(Array.from(primitive.colors!.slice(vertex * 4, vertex * 4 + 4))).toEqual([0, 1, 0, 1]);
+      expect(primitive.morphTargets![0]![vertex * 3 + 0]).toBeCloseTo(0);
+      expect(primitive.morphTargets![0]![vertex * 3 + 1]).toBeCloseTo(0.2);
+      expect(primitive.morphTargets![0]![vertex * 3 + 2]).toBeCloseTo(0);
+    }
   });
 });
