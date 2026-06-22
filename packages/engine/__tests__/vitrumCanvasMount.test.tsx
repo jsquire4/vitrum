@@ -14,7 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Window } from 'happy-dom';
-import type { Scene } from '@vitrum/core';
+import type { Scene, ScenePrimitive } from '@vitrum/core';
 import type { GltfAssetResult, GltfForEngineResult, GltfJson } from '@vitrum/gltf-adapter';
 import type { EngineWithBackendId } from '../src/createEngine.js';
 import type { GltfProgressiveEngineResult } from '../src/gltf.js';
@@ -510,6 +510,7 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     const asset = makeMockGltfAsset(gltf, importedScene);
     const frameOutput = { kind: 'skipped', samplesAccumulated: 0, isConverged: false } as const;
     const coordinator = {
+      getScene: vi.fn(() => importedScene),
       setScene: vi.fn(),
       updatePrimitive: vi.fn(),
       addPrimitive: vi.fn(),
@@ -566,7 +567,45 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     expect(opts.sceneController).toBeUndefined();
     expect(opts.sceneControllerPlayback).toBeUndefined();
 
-    const output = opts.engine?.renderFrame({} as Parameters<NonNullable<typeof opts.engine>['renderFrame']>[0]);
+    const engine = opts.engine!;
+    expect(engine.getScene?.()).toBe(importedScene);
+    expect(coordinator.getScene).toHaveBeenCalledTimes(1);
+
+    const replacementScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    engine.setScene(replacementScene);
+    expect(coordinator.setScene).toHaveBeenCalledWith(replacementScene);
+
+    const primitivePatch: Partial<ScenePrimitive> = {
+      material: { baseColor: [0.25, 0.5, 0.75], roughness: 1, metallic: 0 },
+    };
+    engine.updatePrimitive?.('gltf-prim-0', primitivePatch);
+    expect(coordinator.updatePrimitive).toHaveBeenCalledWith('gltf-prim-0', primitivePatch);
+
+    const addedPrimitive: ScenePrimitive = {
+      kind: 'mesh',
+      id: 'added',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+    };
+    engine.addPrimitive?.(addedPrimitive);
+    expect(coordinator.addPrimitive).toHaveBeenCalledWith(addedPrimitive);
+
+    engine.removePrimitive?.('added');
+    expect(coordinator.removePrimitive).toHaveBeenCalledWith('added');
+
+    const realtimeReset = progressiveResult.engine.realtime.reset as unknown as ReturnType<typeof vi.fn>;
+    const convergedReset = progressiveResult.engine.converged.reset as unknown as ReturnType<typeof vi.fn>;
+    engine.reset();
+    expect(realtimeReset).toHaveBeenCalledTimes(1);
+    expect(convergedReset).toHaveBeenCalledTimes(1);
+    expect(coordinator.reset).toHaveBeenCalledTimes(1);
+
+    const output = engine.renderFrame({} as Parameters<typeof engine.renderFrame>[0]);
     expect(output).toBe(frameOutput);
     expect(coordinator.frame).toHaveBeenCalledTimes(1);
 

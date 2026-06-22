@@ -91,6 +91,53 @@ function makeInlineVariantTriangleGltf(): { gltf: GltfJson; buffers: Map<number,
   };
 }
 
+function makeInlineTexturedVariantTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayBuffer> } {
+  const positions = f32Buffer([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+  const total = new Uint8Array(positions.byteLength + imageBytes.byteLength);
+  total.set(new Uint8Array(positions), 0);
+  total.set(imageBytes, positions.byteLength);
+  return {
+    gltf: {
+      asset: { version: '2.0' },
+      scene: 0,
+      scenes: [{ nodes: [0] }],
+      nodes: [{ mesh: 0 }],
+      extensionsUsed: ['KHR_materials_variants'],
+      extensionsRequired: ['KHR_materials_variants'],
+      extensions: {
+        KHR_materials_variants: {
+          variants: [{ name: 'textured' }],
+        },
+      },
+      meshes: [{
+        primitives: [{
+          attributes: { POSITION: 0 },
+          material: 0,
+          extensions: {
+            KHR_materials_variants: {
+              mappings: [{ material: 1, variants: [0] }],
+            },
+          },
+        }],
+      }],
+      materials: [
+        { name: 'base red', pbrMetallicRoughness: { baseColorFactor: [1, 0, 0, 1] } },
+        { name: 'variant textured', pbrMetallicRoughness: { baseColorTexture: { index: 0 } } },
+      ],
+      textures: [{ source: 0 }],
+      images: [{ bufferView: 1, mimeType: 'image/png' }],
+      accessors: [{ bufferView: 0, componentType: 5126, count: 3, type: 'VEC3' }],
+      bufferViews: [
+        { buffer: 0, byteOffset: 0, byteLength: positions.byteLength },
+        { buffer: 0, byteOffset: positions.byteLength, byteLength: imageBytes.byteLength },
+      ],
+      buffers: [{ byteLength: total.byteLength }],
+    },
+    buffers: new Map([[0, total.buffer]]),
+  };
+}
+
 describe('@vitrum/engine/gltf progressive helper', () => {
   beforeEach(() => {
     createProgressiveEngineMock.mockReset();
@@ -261,6 +308,55 @@ describe('@vitrum/engine/gltf progressive helper', () => {
         material: expect.objectContaining({ baseColor: [0, 0, 1] }),
       }),
     );
+    expect(coordinator.reset).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes texture-valued variant material patches through the progressive coordinator', async () => {
+    const { gltf, buffers } = makeInlineTexturedVariantTriangleGltf();
+    const coordinator = {
+      setScene: vi.fn(),
+      updatePrimitive: vi.fn(),
+      reset: vi.fn(),
+    };
+    const handle = {
+      coordinator,
+      realtime: {},
+      converged: {},
+      dispose: vi.fn(),
+    };
+    createProgressiveEngineMock.mockResolvedValueOnce(handle);
+
+    const result = await loadGltfWithProgressiveEngine(gltf, {
+      buffers,
+      decodeTextures: true,
+      decodeImage: async (data: Uint8Array, mimeType: string) => ({ kind: 'raw-image', mimeType, data }),
+      decodePixels: (_handle, context) => ({
+        width: 2,
+        height: 1,
+        channels: 4,
+        dataType: 'uint8',
+        colorSpace: context.colorSpace,
+        data: new Uint8Array([
+          255, 0, 0, 255,
+          0, 255, 0, 255,
+        ]),
+      }),
+      engineOptions: {
+        canvas: {} as HTMLCanvasElement,
+        seedFromRealtime: false,
+      },
+    });
+
+    result.controller.setVariant('textured');
+    expect(coordinator.updatePrimitive).toHaveBeenCalledTimes(1);
+    const patch = coordinator.updatePrimitive.mock.calls[0]![1] as Partial<MeshPrimitive>;
+    const map = patch.material?.baseColorMap as TextureRef | undefined;
+    expect(map).toBeDefined();
+    expect(map?.handle).toEqual(expect.objectContaining({
+      width: 2,
+      height: 1,
+      data: expect.any(Float32Array),
+    }));
     expect(coordinator.reset).toHaveBeenCalledTimes(1);
   });
 
