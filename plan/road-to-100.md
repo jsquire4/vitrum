@@ -1982,17 +1982,21 @@ reachable `KHR_mesh_quantization` accessors in the scoped extension report, so
 the real MeshoptCubeTest browser telemetry now proves
 `KHR_mesh_quantization` + `KHR_meshopt_compression` + the `meshopt` decode hook
 instead of falsely reporting an empty extension set. On this WSL Playwright host
-all three pages reach capture readiness, but Playwright canvas screenshot
-capture still times out; the status records each row as `HOST-BLOCKED` at
-`canvas-screenshot`. Browser PNG proof remains queued for a host that can
-capture WebGL2 canvases. The default `npm run proof-check` lane intentionally
-keeps this fail-closed WSL status green, while
+all three pages reach capture readiness, but the public
+`engine.captureFrame({ colorSpace: 'output' })` browser readback times out; the
+status records each row as `HOST-BLOCKED` at `engine-captureFrame-output`.
+Browser PNG proof remains queued for a host that can capture WebGL2 canvases.
+The default `npm run proof-check` lane intentionally keeps this fail-closed WSL
+status green, while
 `npm run gltf-browser-proof-check:required` is the promotion gate and fails on
 `HOST-BLOCKED` until the same rows record real PNG/golden `PASS` results.
-2026-06-20 follow-up: the capture harness now tries Playwright canvas screenshot
-first, then falls back to an in-page `canvas.toDataURL('image/png')` readback
-and supports `VITRUM_GLTF_BROWSER_STATUS_PATH` so single-asset probe runs can
-write temporary status files without disturbing the committed proof artifact.
+2026-06-22 follow-up: the capture harness defaults to engine-first readback,
+pauses the example render loop before calling `captureFrame()`, fail-closes
+readback timeouts immediately, retains browser screenshot/data-url fallbacks for
+explicit modes, and supports `VITRUM_GLTF_BROWSER_STATUS_PATH` so single-asset
+probe runs can write temporary status files without disturbing the committed
+proof artifact. The proof checker now rejects vague `HOST-BLOCKED` rows that do
+not include an `engine-captureFrame-output` attempt.
 pt-webgl2 now dedupes repeated sampler-policy approximation warnings at the
 engine warning surface, keeping this browser proof lane focused on one stable
 structured diagnostic per material-map slot instead of repeating it on capture

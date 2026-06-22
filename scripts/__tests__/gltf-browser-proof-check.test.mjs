@@ -57,10 +57,11 @@ test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summari
   assert.match(result.stderr, /box-textured-glb: PASS status must include visual-structure metrics/);
 });
 
-test('gltf browser capture harness defaults to browser capture before engine readback', async () => {
+test('gltf browser capture harness defaults to engine readback before browser readback', async () => {
   const source = await readFile(captureScript, 'utf8');
   assert.match(source, /VITRUM_ENGINE_CAPTURE_MODE/);
-  assert.match(source, /String\(rawValue \?\? 'canvas-first'\)/);
+  assert.match(source, /String\(rawValue \?\? 'engine-first'\)/);
+  assert.match(source, /isEngineReadbackHostBlock\(error\)/);
 
   const captureFnStart = source.indexOf('async function captureCanvasPng(page)');
   assert.notEqual(captureFnStart, -1);
@@ -69,10 +70,14 @@ test('gltf browser capture harness defaults to browser capture before engine rea
   assert.match(captureFn, /engineCaptureMode === 'engine-fallback'/);
   assert.match(captureFn, /captureStep = 'canvas-screenshot'/);
 
+  const firstEngineReadback = captureFn.indexOf("captureStep = 'engine-captureFrame-output'");
   const firstScreenshot = captureFn.indexOf("captureStep = 'canvas-screenshot'");
   const fallbackReadback = captureFn.indexOf("engineCaptureMode === 'engine-fallback'");
-  assert.ok(firstScreenshot > 0);
+  const dataUrlReadback = captureFn.indexOf("captureStep = 'canvas-data-url'");
+  assert.ok(firstEngineReadback > 0);
+  assert.ok(firstScreenshot > firstEngineReadback);
   assert.ok(fallbackReadback > firstScreenshot);
+  assert.ok(dataUrlReadback > fallbackReadback);
 });
 
 test('gltf browser proof checker requires structured host-blocked capture attempts', async () => {
@@ -118,6 +123,7 @@ function hostBlockedRow(assetId, kind, overrides = {}) {
     assetId,
     kind,
     backend: 'pt-webgl2',
+    captureMode: 'engine-first',
     step: 'canvas-data-url',
     error: 'canvas PNG data URL fallback failed',
     captureAttempts: [
@@ -132,6 +138,12 @@ function hostBlockedRow(assetId, kind, overrides = {}) {
         status: 'failed',
         step: 'page-canvas-clip-screenshot',
         error: 'page clipped screenshot failed',
+      },
+      {
+        method: 'engine-captureFrame-output',
+        status: 'failed',
+        step: 'engine-captureFrame-output',
+        error: 'engine captureFrame fallback timed out',
       },
       {
         method: 'canvas-data-url',

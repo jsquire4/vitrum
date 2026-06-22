@@ -158,18 +158,23 @@ function assertHostBlockedCaptureAttempts(row) {
   const allowedStatuses = new Set(["started", "failed", "succeeded"]);
   let hasBlockedAttempt = false;
   let hasStepAttempt = false;
+  let hasEngineAttempt = false;
   for (const attempt of attempts) {
     if (attempt == null || typeof attempt !== "object") fail(`${row.assetId}: invalid capture attempt`);
     if (!allowedMethods.has(attempt.method)) fail(`${row.assetId}: unexpected capture attempt method ${attempt.method}`);
     if (!allowedStatuses.has(attempt.status)) fail(`${row.assetId}: unexpected capture attempt status ${attempt.status}`);
     if (attempt.status === "started" || attempt.status === "failed") hasBlockedAttempt = true;
     if (attempt.method === row.step || attempt.step === row.step) hasStepAttempt = true;
+    if (attempt.method === "engine-captureFrame-output") hasEngineAttempt = true;
     if (attempt.status === "failed" && String(attempt.error ?? "").length === 0) {
       fail(`${row.assetId}: failed capture attempt ${attempt.method} must include an error`);
     }
   }
   if (!hasBlockedAttempt) fail(`${row.assetId}: HOST-BLOCKED status must preserve the blocked capture attempt`);
   if (!hasStepAttempt) fail(`${row.assetId}: captureAttempts[] must include the host-blocked step ${row.step}`);
+  if (row.captureMode !== "canvas-only" && !hasEngineAttempt) {
+    fail(`${row.assetId}: HOST-BLOCKED status must include an engine-captureFrame-output attempt`);
+  }
 }
 
 /** @param {Record<string, any>} row */

@@ -21,7 +21,9 @@ const screenshotTimeoutMs = Number(process.env.VITRUM_SCREENSHOT_TIMEOUT_MS ?? '
 const dataUrlTimeoutMs = Number(process.env.VITRUM_DATA_URL_TIMEOUT_MS ?? '15000');
 const statusPath = resolveStatusPath(process.env.VITRUM_GLTF_BROWSER_STATUS_PATH);
 const browserExtraArgs = parseEnvArgs(process.env.VITRUM_CHROMIUM_EXTRA_ARGS);
-const pauseBeforeEngineCapture = parseBooleanEnv(process.env.VITRUM_PAUSE_BEFORE_CAPTURE);
+const pauseBeforeEngineCapture = process.env.VITRUM_PAUSE_BEFORE_CAPTURE == null
+  ? true
+  : parseBooleanEnv(process.env.VITRUM_PAUSE_BEFORE_CAPTURE);
 const engineCaptureMode = parseEngineCaptureMode(process.env.VITRUM_ENGINE_CAPTURE_MODE);
 const DEFAULT_GOLDEN_THRESHOLDS = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
 // Prevent browser readback failures from becoming white/black "successful" goldens.
@@ -148,7 +150,7 @@ function parseBooleanEnv(rawValue) {
 }
 
 function parseEngineCaptureMode(rawValue) {
-  const normalized = String(rawValue ?? 'canvas-first').trim().toLowerCase();
+  const normalized = String(rawValue ?? 'engine-first').trim().toLowerCase();
   if (normalized === 'first' || normalized === 'engine-first') return 'engine-first';
   if (normalized === 'fallback' || normalized === 'engine-fallback') return 'engine-fallback';
   if (normalized === 'off' || normalized === 'disabled' || normalized === 'none') return 'canvas-only';
@@ -239,6 +241,7 @@ async function capture(asset) {
         assetId: asset.assetId,
         kind: asset.kind,
         backend: 'pt-webgl2',
+        captureMode: engineCaptureMode,
         width: png.width,
         height: png.height,
         samplesPerPixel: spp,
@@ -271,6 +274,7 @@ async function capture(asset) {
       assetId: asset.assetId,
       kind: asset.kind,
       backend: 'pt-webgl2',
+      captureMode: engineCaptureMode,
       width: png.width,
       height: png.height,
       samplesPerPixel: spp,
@@ -299,6 +303,7 @@ async function captureCanvasPng(page) {
       return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
     } catch (error) {
       engineError = error;
+      if (isEngineReadbackHostBlock(error)) throw error;
     }
   }
 
@@ -310,25 +315,30 @@ async function captureCanvasPng(page) {
       captureStep = 'page-canvas-clip-screenshot';
       return await captureAttempt('page-canvas-clip-screenshot', () => pageCanvasClipScreenshot(page, timeout));
     } catch (clipError) {
+      if (engineCaptureMode === 'engine-fallback') {
+        try {
+          captureStep = 'engine-captureFrame-output';
+          return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
+        } catch (fallbackEngineError) {
+          engineError = fallbackEngineError;
+        }
+      }
       try {
         captureStep = 'canvas-data-url';
         return await captureAttempt('canvas-data-url', () => captureCanvasDataUrlPng(page, engineError, screenshotError, clipError));
       } catch (dataUrlError) {
-        if (engineCaptureMode === 'engine-fallback') {
-          try {
-            captureStep = 'engine-captureFrame-output';
-            return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
-          } catch (fallbackEngineError) {
-            throw new Error(
-              `${dataUrlError instanceof Error ? dataUrlError.message : String(dataUrlError)}; ` +
-                `engine captureFrame fallback failed (${fallbackEngineError instanceof Error ? fallbackEngineError.message : String(fallbackEngineError)})`,
-            );
-          }
-        }
         throw dataUrlError;
       }
     }
   }
+}
+
+function isEngineReadbackHostBlock(error) {
+  const message = String(error?.message ?? error);
+  return (
+    message.includes('engine captureFrame fallback timed out') ||
+    message.includes('pausing example render loop before capture timed out')
+  );
 }
 
 async function captureAttempt(method, run) {
@@ -500,6 +510,7 @@ function hostBlockedStatus(asset, error) {
     assetId: asset.assetId,
     kind: asset.kind,
     backend: 'pt-webgl2',
+    captureMode: engineCaptureMode,
     step: captureStep,
     error: String(error?.stack ?? error),
     captureAttempts: snapshotCaptureAttempts(),
@@ -521,6 +532,7 @@ function summarize(results) {
     harness: 'gltf-browser-proof:pt-webgl2-real',
     verdict: pass ? 'PASS' : hostBlocked ? 'HOST-BLOCKED' : 'FAIL',
     backend: 'pt-webgl2',
+    captureMode: engineCaptureMode,
     assets: results,
     assetCount: results.length,
   };
