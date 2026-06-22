@@ -144,6 +144,21 @@ export const RESTIR_PT_GLOSSY_RESEARCH_PROOF = {
   },
 };
 
+export const BDPT_MULTIVERTEX_RESEARCH_PROOF = {
+  resultPath: "tools/radiometric-ab/results-bdpt.json",
+  sourcePath: "packages/pt-webgpu/src/index.ts",
+  warningCode: "pt-webgpu.bdpt-multivertex-research-mode",
+  blocker: "not-weighted-against-regular-eye-path-strategy",
+  evidencePath: "tools/radiometric-ab/results-bdpt.json",
+  promotion: {
+    defaultReady: false,
+  },
+  controls: {
+    findingStartsAt: 2,
+    minFindingGlobalRelErr: 0.10,
+  },
+};
+
 export const PT_RADIOMETRIC_AB_HOST_STATUS_PROOF = {
   harness: "pt-radiometric-ab",
   statusPath: "tools/radiometric-ab/pt-ab-host-status.json",

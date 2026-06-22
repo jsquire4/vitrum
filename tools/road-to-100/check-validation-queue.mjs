@@ -353,6 +353,30 @@ if (glossyResearchArtifact.json?.["promotion.defaultReady"] !== false) {
 if (String(radiometricPtRow.remaining).includes("glossy ReSTIR-PT research-mode proof")) {
   fail("VQ-RADIOMETRIC-PT remaining text is stale; glossy research proof is now committed");
 }
+if (!radiometricPtRow.proofArtifacts.some((artifact) =>
+  artifact?.path === "packages/pt-webgpu/src/index.ts"
+)) {
+  fail("VQ-RADIOMETRIC-PT must cite pt-webgpu index.ts for the multi-vertex BDPT structured warning");
+}
+for (const needle of [
+  "multi-vertex BDPT branch as a structured non-promotable research finding",
+  "weighted against the regular eye-path strategy",
+]) {
+  if (!String(radiometricPtRow.remaining).includes(needle)) {
+    fail(`VQ-RADIOMETRIC-PT remaining text must include ${needle}`);
+  }
+}
+const ptWebgpuIndexSource = await readText("packages/pt-webgpu/src/index.ts");
+for (const needle of [
+  "pt-webgpu.bdpt-multivertex-research-mode",
+  "promotionReady: false",
+  "not-weighted-against-regular-eye-path-strategy",
+  "tools/radiometric-ab/results-bdpt.json",
+]) {
+  if (!ptWebgpuIndexSource.includes(needle)) {
+    fail(`VQ-RADIOMETRIC-PT structured BDPT warning source is stale: missing ${needle}`);
+  }
+}
 
 for (const row of queue.futureContractRows) {
   if (row == null || typeof row !== "object") fail("future-contract row must be an object");

@@ -561,6 +561,46 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 16 — BDPT Multi-Vertex Research Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of the opt-in
+`bdptOptions.maxLightBounces > 1` path found no small shader patch that would
+honestly promote multi-vertex BDPT: the extra light-subpath strategies are
+currently added beside the regular eye-path estimator instead of being weighted
+against that strategy set. The safe default remains endpoint-only and
+radiometrically neutral; the multi-vertex branch remains reproducible research
+evidence, not a promotable default.
+
+Implementation:
+
+- Added structured runtime warning fields to
+  `pt-webgpu.bdpt-multivertex-research-mode`: `promotionReady:false`, blocker
+  `not-weighted-against-regular-eye-path-strategy`, and evidence path
+  `tools/radiometric-ab/results-bdpt.json`.
+- Added `BDPT_MULTIVERTEX_RESEARCH_PROOF` and checker coverage so
+  `npm run radiometric-ab:proof-check` fails if the committed A/B finding,
+  source warning, blocker, or evidence path drift.
+- Updated the Road-to-100 validation queue and queue checker so
+  VQ-RADIOMETRIC-PT distinguishes closed safe-default BDPT from the remaining
+  estimator-redesign tail.
+
+Focused gates:
+
+```bash
+npm test --workspace @vitrum/pt-webgpu -- h51WarnCoercions.test.ts
+npm run radiometric-ab:proof-check
+npm run road-to-100-validation-status
+```
+
+Broad gates:
+
+```bash
+npm run proof-check
+npm run typecheck
+npm run shader-gate
+npm test --workspace @vitrum/pt-webgpu
+```
+
 ### Wave 15 — Future-Contract Code Queue Guard
 
 Status 2026-06-22: **CLOSED.** A fresh source pass plus three delegated
@@ -879,7 +919,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | PPG quality | walkaround PPG | Favorable-scene A/B showing convergence or variance win. |
 | NRC quality/default tier | walkaround NRC | Quality/convergence A/B after warm-up gate; decide default/off/experimental. |
 | Neural denoiser quality | shared/walkaround | **Checkpoint classification guard added 2026-06-21:** every committed `.vitrum-model` is now manifest-pinned by role/size/SHA/param count and `learned-systems-proof-check` fails on unregistered or production-like weights without a passing production A/B manifest. Remaining work is still the actual production checkpoint plus quality A/B; otherwise keep opt-in. |
-| BDPT / ReSTIR-PT material and radiometric proof | pt-webgpu/pt-webgl2 | Safe-default BDPT, SPPM, and ReSTIR-PT committed snapshots are checked by `npm run radiometric-ab:proof-check`; `npm run radiometric-ab:pt-host-status` now recaptures all three native-Deno full-tier A/B cases and records a committed `PASS` host-status artifact. Focused dzn full-tier behavioral status separately proves `pt/bdpt`, `pt/spectral+bdpt`, and off-default `pt/restirPtReuse` boot/render finite non-black with zero GPU errors. The repaired-Cornell ReSTIR-PT equal-spp default A/B passes (`globalRelErr=7.91%`, `varRatio=0.9403`) after moving glossy/metal visible-vertex reuse behind `experimentalGlossyReuse`. The ReSTIR-PT specialty fixture pins scalar plus map-backed-effective clearcoat/sheen/iridescence/aniso/specular one-sample producer/finalize/resolve identity. Remaining work is GPU/radiometric material-furnace promotion, glossy-ReSTIR-PT research-mode evidence, and multi-vertex BDPT promotion evidence. |
+| BDPT / ReSTIR-PT material and radiometric proof | pt-webgpu/pt-webgl2 | Safe-default BDPT, SPPM, and ReSTIR-PT committed snapshots are checked by `npm run radiometric-ab:proof-check`; `npm run radiometric-ab:pt-host-status` now recaptures all three native-Deno full-tier A/B cases and records a committed `PASS` host-status artifact. Focused dzn full-tier behavioral status separately proves `pt/bdpt`, `pt/spectral+bdpt`, and off-default `pt/restirPtReuse` boot/render finite non-black with zero GPU errors. The repaired-Cornell ReSTIR-PT equal-spp default A/B passes (`globalRelErr=7.91%`, `varRatio=0.9403`) after moving glossy/metal visible-vertex reuse behind `experimentalGlossyReuse`. The ReSTIR-PT specialty fixture pins scalar plus map-backed-effective clearcoat/sheen/iridescence/aniso/specular one-sample producer/finalize/resolve identity. The opt-in multi-vertex BDPT branch is now a structured non-promotable research finding (`promotionReady:false`, blocker `not-weighted-against-regular-eye-path-strategy`) tied to `results-bdpt.json`. Remaining work is GPU/radiometric material-furnace promotion and a redesigned multi-vertex BDPT estimator weighted against the regular eye-path strategy. |
 | SPPM / MNEE caustic radiometric proof | pt-webgpu | Focused dzn full-tier behavioral status proves `pt/caustic-manifold`, `pt/caustic-photon`, and `pt/spectral+photon` boot/render finite non-black with zero GPU errors. The committed SPPM-vs-MNEE radiometric A/B is freshly recaptured and passes the loose convergence proof (`finalRelErr=23.4%`, trend improving by 80 frames). Remaining work is tighter/equal-quality caustic promotion evidence, not baseline proof existence. |
 | Baseline/lite/spectral/skinned/analytic execution | pt-webgpu/walkaround | Focused dzn status now proves default pt/walkaround, explicit pt-webgpu lite fallback, spectral combos, skinned/glTF-skinned animation, and full-tier analytic sphere lanes boot/render finite non-black with zero GPU errors. The dzn status checker now fails if any real behavioral-gate label lacks committed coverage. Remaining work is reference-quality or radiometric promotion where applicable. |
 | Analytic emitter/environment proof | pt-webgpu/walkaround | Focused dzn status now proves point/disc/spot/directional, HDRI, and procedural-sky lanes boot/render finite non-black with zero GPU errors on their selected full/lite/walkaround rows. Remaining work is reference-quality radiometric sweep coverage. |

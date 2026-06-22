@@ -119,9 +119,10 @@
         { "path": "tools/radiometric-ab/results-restir-pt-glossy-research.json", "json": { "verdict": "FINDING", "promotion.defaultReady": false } },
         { "path": "tools/radiometric-ab/results-restir-pt-specialty.json" },
         { "path": "tools/radiometric-ab/results-sppm.json" },
-        { "path": "tools/radiometric-ab/results-sobol.json" }
+        { "path": "tools/radiometric-ab/results-sobol.json" },
+        { "path": "packages/pt-webgpu/src/index.ts" }
       ],
-      "remaining": "Committed proof now pins BDPT endpoint-only default, SPPM/Sobol/ReSTIR-PT snapshots, ReSTIR-PT specialty case/lobe invariants, and the opt-in glossy ReSTIR-PT research branch as a non-promotable FINDING. Remaining work is multi-vertex BDPT promotion and tighter caustic/material-furnace quality evidence."
+      "remaining": "Committed proof now pins BDPT endpoint-only default, the opt-in multi-vertex BDPT branch as a structured non-promotable research finding, SPPM/Sobol/ReSTIR-PT snapshots, ReSTIR-PT specialty case/lobe invariants, and the opt-in glossy ReSTIR-PT research branch as a non-promotable FINDING. Remaining work is a redesigned multi-vertex BDPT estimator that is weighted against the regular eye-path strategy, plus tighter caustic/material-furnace quality evidence."
     },
     {
       "id": "VQ-WALKAROUND-RADIOMETRIC-AB",

@@ -3,6 +3,7 @@
 // Verifies that committed radiometric A/B result JSONs still satisfy their proof metadata.
 
 import {
+  BDPT_MULTIVERTEX_RESEARCH_PROOF,
   PT_RADIOMETRIC_AB_HOST_STATUS_PROOF,
   RADIOMETRIC_AB_PROOFS,
   RESTIR_PT_GLOSSY_RESEARCH_PROOF,
@@ -212,6 +213,44 @@ function checkBdpt(proof, result) {
         `bdpt: maxLightBounces=${entry.maxLightBounces} no longer records the expected ` +
         `multi-vertex finding (${entry.globalRelErr} < ${proof.controls.multiVertexMinGlobalRelErr})`,
       );
+    }
+  }
+}
+
+/** @param {any} proof */
+async function checkBdptMultiVertexResearch(proof) {
+  const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
+  const result = JSON.parse(await Deno.readTextFile(resultUrl));
+  if (result.ab !== "bdpt-vs-unidirectional") fail("bdpt multi-vertex: result ab mismatch");
+  if (proof.promotion?.defaultReady !== false) {
+    fail("bdpt multi-vertex: promotion.defaultReady must be false");
+  }
+  const controls = result.controls?.byMaxLightBounces ?? [];
+  const firstFinding = controls.find((entry) =>
+    entry.maxLightBounces === proof.controls.findingStartsAt
+  );
+  if (firstFinding == null) {
+    fail(`bdpt multi-vertex: missing maxLightBounces=${proof.controls.findingStartsAt} control`);
+  }
+  assertFiniteNumber(firstFinding.globalRelErr, "bdpt multi-vertex: first finding globalRelErr");
+  if (firstFinding.globalRelErr < proof.controls.minFindingGlobalRelErr) {
+    fail(
+      `bdpt multi-vertex: first finding globalRelErr ${firstFinding.globalRelErr} ` +
+      `< ${proof.controls.minFindingGlobalRelErr}`,
+    );
+  }
+  if (result.controls?.multiVertexFindingStartsAt !== proof.controls.findingStartsAt) {
+    fail("bdpt multi-vertex: multiVertexFindingStartsAt differs from proof metadata");
+  }
+  const source = await Deno.readTextFile(new URL(`../../${proof.sourcePath}`, import.meta.url));
+  for (const needle of [
+    proof.warningCode,
+    proof.blocker,
+    proof.evidencePath,
+    "promotionReady: false",
+  ]) {
+    if (!source.includes(needle)) {
+      fail(`bdpt multi-vertex: source warning missing ${needle}`);
     }
   }
 }
@@ -765,10 +804,11 @@ for (const proof of RADIOMETRIC_AB_PROOFS) {
   else fail(`unknown proof id ${proof.id}`);
 }
 
+await checkBdptMultiVertexResearch(BDPT_MULTIVERTEX_RESEARCH_PROOF);
 await checkRestirPtSpecialty(RESTIR_PT_SPECIALTY_PROOF);
 await checkRestirPtGlossyResearch(RESTIR_PT_GLOSSY_RESEARCH_PROOF);
 await checkPtRadiometricHostStatus(PT_RADIOMETRIC_AB_HOST_STATUS_PROOF);
 await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
 await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases)`);

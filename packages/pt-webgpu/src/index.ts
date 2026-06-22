@@ -2393,6 +2393,9 @@ export const createPTEngine_WebGPU: EngineFactory<
         resolved: resolvedBdptMaxLightBounces,
         safeDefault: BDPT_SAFE_DEFAULT_LIGHT_BOUNCES,
         experimentalMultiVertex: true,
+        promotionReady: false,
+        blocker: 'not-weighted-against-regular-eye-path-strategy',
+        evidencePath: 'tools/radiometric-ab/results-bdpt.json',
       },
     });
   }

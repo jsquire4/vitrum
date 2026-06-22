@@ -119,9 +119,16 @@ light-subpath connections (`maxLightBounces:2` is +13.21% global luminance and
 `maxLightBounces:3` is +17.08% at the 60-frame mean checkpoint).
 
 Conclusion: default BDPT is now radiometrically neutral and the A/B lane records
-`"verdict":"PASS"`. Full multi-vertex BDPT promotion remains open as an explicit
-research-mode tail, guarded by the constructor warning
-`pt-webgpu.bdpt-multivertex-research-mode`.
+`"verdict":"PASS"`. The opt-in multi-vertex branch is a structured
+non-promotion finding: `createPTEngine_WebGPU()` requires
+`bdptOptions.experimentalMultiVertex:true`, emits
+`pt-webgpu.bdpt-multivertex-research-mode`, and includes
+`promotionReady:false`, blocker
+`not-weighted-against-regular-eye-path-strategy`, and evidence path
+`tools/radiometric-ab/results-bdpt.json` in the structured warning details.
+Full multi-vertex BDPT promotion requires a redesigned estimator that weights
+those strategies against the regular eye-path strategy instead of adding them
+as an unweighted research sidecar.
 
 ### A/B #3 — ReSTIR-PT reuse on vs off
 

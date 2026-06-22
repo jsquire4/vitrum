@@ -141,7 +141,15 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
     ).toBe(true);
     expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
       code: 'pt-webgpu.bdpt-multivertex-research-mode',
-      details: { requested: 2, resolved: 2, safeDefault: 1, experimentalMultiVertex: true },
+      details: expect.objectContaining({
+        requested: 2,
+        resolved: 2,
+        safeDefault: 1,
+        experimentalMultiVertex: true,
+        promotionReady: false,
+        blocker: 'not-weighted-against-regular-eye-path-strategy',
+        evidencePath: 'tools/radiometric-ab/results-bdpt.json',
+      }),
     }));
 
     engine.dispose();
