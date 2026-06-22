@@ -41,6 +41,34 @@ const REQUIRED_RESTIR_PT_SPECIALTY = {
   specialtyLobes: ["anisotropy", "clearcoat", "iridescence", "sheen", "specular"],
   materialSources: ["map-backed-effective-values", "scalar"],
   caseCount: 4,
+  luminanceChecksum: 10.258282571792,
+  pdfChecksum: 4.024098414883,
+  cases: [
+    {
+      id: "clearcoat-sheen",
+      materialSource: "scalar",
+      activeLobes: ["clearcoat", "sheen"],
+      minAbsLobeDeltaFromNeutral: 0.1,
+    },
+    {
+      id: "iridescent-anisotropic",
+      materialSource: "scalar",
+      activeLobes: ["iridescence", "anisotropy"],
+      minAbsLobeDeltaFromNeutral: 0.1,
+    },
+    {
+      id: "all-specialty-lobes",
+      materialSource: "scalar",
+      activeLobes: ["clearcoat", "sheen", "iridescence", "anisotropy"],
+      minAbsLobeDeltaFromNeutral: 0.1,
+    },
+    {
+      id: "map-backed-effective-lobes",
+      materialSource: "map-backed-effective-values",
+      activeLobes: ["clearcoat", "sheen", "iridescence", "anisotropy", "specular"],
+      minAbsLobeDeltaFromNeutral: 0.1,
+    },
+  ],
 };
 
 const WALKAROUND_AB_CASE_IDS = ["a8", "sun", "glass", "glossy"];
@@ -273,6 +301,15 @@ async function checkRestirPtSpecialty(proof) {
   if (proof.summary?.caseCount !== REQUIRED_RESTIR_PT_SPECIALTY.caseCount) {
     fail("restir-pt-specialty: proof caseCount drifted");
   }
+  if (proof.summary?.luminanceChecksum !== REQUIRED_RESTIR_PT_SPECIALTY.luminanceChecksum) {
+    fail("restir-pt-specialty: proof luminanceChecksum drifted");
+  }
+  if (proof.summary?.pdfChecksum !== REQUIRED_RESTIR_PT_SPECIALTY.pdfChecksum) {
+    fail("restir-pt-specialty: proof pdfChecksum drifted");
+  }
+  if (!sameJson(proof.cases, REQUIRED_RESTIR_PT_SPECIALTY.cases)) {
+    fail("restir-pt-specialty: proof cases drifted");
+  }
 
   const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
   const result = JSON.parse(await Deno.readTextFile(resultUrl));
@@ -298,6 +335,48 @@ async function checkRestirPtSpecialty(proof) {
   }
   if (result.summary?.maxRelativeError !== proof.summary.maxRelativeError) {
     fail("restir-pt-specialty: maxRelativeError differs from proofs.mjs");
+  }
+  if (result.summary?.luminanceChecksum !== proof.summary.luminanceChecksum) {
+    fail("restir-pt-specialty: luminanceChecksum differs from proofs.mjs");
+  }
+  if (result.summary?.pdfChecksum !== proof.summary.pdfChecksum) {
+    fail("restir-pt-specialty: pdfChecksum differs from proofs.mjs");
+  }
+  /** @type {any[]} */
+  const cases = result.cases ?? [];
+  if (cases.length !== proof.cases.length) {
+    fail(`restir-pt-specialty: expected ${proof.cases.length} cases, got ${cases.length}`);
+  }
+  const byId = new Map(cases.map((entry) => [String(entry.id), entry]));
+  const actualCaseIds = [...byId.keys()].sort();
+  const expectedCaseIds = proof.cases.map((entry) => entry.id).sort();
+  if (!sameJson(actualCaseIds, expectedCaseIds)) {
+    fail(`restir-pt-specialty: case ids ${JSON.stringify(actualCaseIds)} differ from proofs.mjs`);
+  }
+  for (const expected of proof.cases) {
+    const entry = byId.get(expected.id);
+    if (entry == null) fail(`restir-pt-specialty: missing case ${expected.id}`);
+    if (entry.materialSource !== expected.materialSource) {
+      fail(`restir-pt-specialty ${expected.id}: materialSource differs from proofs.mjs`);
+    }
+    if (!sameJson(entry.activeLobes, expected.activeLobes)) {
+      fail(`restir-pt-specialty ${expected.id}: activeLobes differ from proofs.mjs`);
+    }
+    assertFiniteNumber(entry.reference?.pdfSrc, `restir-pt-specialty ${expected.id}: reference.pdfSrc`);
+    assertFiniteNumber(entry.restirPt?.luminance, `restir-pt-specialty ${expected.id}: restirPt.luminance`);
+    assertFiniteNumber(entry.ab?.absDiff, `restir-pt-specialty ${expected.id}: ab.absDiff`);
+    assertFiniteNumber(entry.ab?.relativeError, `restir-pt-specialty ${expected.id}: ab.relativeError`);
+    assertFiniteNumber(entry.ab?.lobeDeltaFromNeutral, `restir-pt-specialty ${expected.id}: ab.lobeDeltaFromNeutral`);
+    if (entry.reference.pdfSrc <= 0) fail(`restir-pt-specialty ${expected.id}: reference.pdfSrc must be positive`);
+    if (entry.restirPt.luminance <= 0) fail(`restir-pt-specialty ${expected.id}: restirPt.luminance must be positive`);
+    if (entry.ab.absDiff !== 0) fail(`restir-pt-specialty ${expected.id}: absDiff must stay zero`);
+    if (entry.ab.relativeError !== 0) fail(`restir-pt-specialty ${expected.id}: relativeError must stay zero`);
+    if (Math.abs(entry.ab.lobeDeltaFromNeutral) < expected.minAbsLobeDeltaFromNeutral) {
+      fail(
+        `restir-pt-specialty ${expected.id}: lobeDeltaFromNeutral ${entry.ab.lobeDeltaFromNeutral} ` +
+        `is below ${expected.minAbsLobeDeltaFromNeutral}`,
+      );
+    }
   }
 }
 

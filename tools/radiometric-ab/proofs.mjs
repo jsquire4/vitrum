@@ -89,7 +89,35 @@ export const RESTIR_PT_SPECIALTY_PROOF = {
     caseCount: 4,
     maxAbsoluteError: 0,
     maxRelativeError: 0,
+    luminanceChecksum: 10.258282571792,
+    pdfChecksum: 4.024098414883,
   },
+  cases: [
+    {
+      id: "clearcoat-sheen",
+      materialSource: "scalar",
+      activeLobes: ["clearcoat", "sheen"],
+      minAbsLobeDeltaFromNeutral: 0.1,
+    },
+    {
+      id: "iridescent-anisotropic",
+      materialSource: "scalar",
+      activeLobes: ["iridescence", "anisotropy"],
+      minAbsLobeDeltaFromNeutral: 0.1,
+    },
+    {
+      id: "all-specialty-lobes",
+      materialSource: "scalar",
+      activeLobes: ["clearcoat", "sheen", "iridescence", "anisotropy"],
+      minAbsLobeDeltaFromNeutral: 0.1,
+    },
+    {
+      id: "map-backed-effective-lobes",
+      materialSource: "map-backed-effective-values",
+      activeLobes: ["clearcoat", "sheen", "iridescence", "anisotropy", "specular"],
+      minAbsLobeDeltaFromNeutral: 0.1,
+    },
+  ],
 };
 
 export const PT_RADIOMETRIC_AB_HOST_STATUS_PROOF = {

@@ -114,10 +114,11 @@
         { "path": "tools/radiometric-ab/pt-ab-host-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/radiometric-ab/results-bdpt.json" },
         { "path": "tools/radiometric-ab/results-restir-pt.json" },
+        { "path": "tools/radiometric-ab/results-restir-pt-specialty.json" },
         { "path": "tools/radiometric-ab/results-sppm.json" },
         { "path": "tools/radiometric-ab/results-sobol.json" }
       ],
-      "remaining": "Multi-vertex BDPT promotion, glossy ReSTIR-PT research-mode proof, and tighter caustic quality evidence."
+      "remaining": "Committed proof now pins BDPT endpoint-only default, SPPM/Sobol/ReSTIR-PT snapshots, and ReSTIR-PT specialty case/lobe invariants. Remaining work is multi-vertex BDPT promotion, glossy ReSTIR-PT research-mode proof, and tighter caustic quality evidence."
     },
     {
       "id": "VQ-WALKAROUND-RADIOMETRIC-AB",
