@@ -426,6 +426,32 @@ function assertPtWebgpuSupported(row, feature) {
 
 /**
  * @param {string} matrix
+ */
+function assertEveryPtWebgpuSupportedRowHasProof(matrix) {
+  /** @type {Set<string>} */
+  const proofFeatures = new Set();
+  for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
+    if (proofFeatures.has(proof.feature)) {
+      fail(`duplicate pt-webgpu supported proof entry for ${proof.feature}`);
+    }
+    proofFeatures.add(proof.feature);
+  }
+
+  for (const row of featureRows(matrix)) {
+    const columns = row.split(" | ");
+    const feature = columns[0].slice(2);
+    const ptWebgpuGrade = columns[2];
+    if (ptWebgpuGrade === "supported" && !proofFeatures.has(feature)) {
+      fail(
+        `${feature}: pt-webgpu is marked supported in ${MATRIX_PATH} but has no ` +
+        "runtime proof entry in PT_WEBGPU_SUPPORTED_ROWS",
+      );
+    }
+  }
+}
+
+/**
+ * @param {string} matrix
  * @returns {string[]}
  */
 function featureRows(matrix) {
@@ -496,6 +522,8 @@ if (!matrix.includes("| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebG
 if (matrix.includes("| Feature | pt-webgl2 (WebGL2) | pt-webgpu (WebGPU) |")) {
   fail("renderer fidelity matrix must not use the stale unqualified pt-webgpu column heading");
 }
+
+assertEveryPtWebgpuSupportedRowHasProof(matrix);
 
 for (const proof of PT_WEBGPU_SUPPORTED_ROWS) {
   const row = findMatrixRow(matrix, proof.feature);
