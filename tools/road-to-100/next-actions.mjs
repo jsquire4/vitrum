@@ -24,7 +24,9 @@ const DECISION_STATUSES = new Set(["decision-needed"]);
  *   kind?: string,
  *   remaining?: string,
  *   command?: string,
- *   promotionCommand?: string
+ *   promotionCommand?: string,
+ *   currentContract?: string,
+ *   decisionBlockers?: string[]
  * }} QueueRow
  */
 
@@ -168,6 +170,58 @@ export function formatSummary(summary) {
   return lines.join("\n");
 }
 
+/**
+ * @param {QueueRow} row
+ * @returns {string[]}
+ */
+function formatRowDetails(row) {
+  const lines = [`  - ${row.id}: ${row.title ?? "(untitled)"} [${row.status}]`];
+  if (row.kind) lines.push(`    kind: ${row.kind}`);
+  if (row.command) lines.push(`    command: ${row.command}`);
+  if (row.promotionCommand) lines.push(`    promotionCommand: ${row.promotionCommand}`);
+  if (row.remaining) lines.push(`    remaining: ${row.remaining}`);
+  if (row.currentContract) lines.push(`    currentContract: ${row.currentContract}`);
+  if (Array.isArray(row.decisionBlockers) && row.decisionBlockers.length > 0) {
+    lines.push("    decisionBlockers:");
+    for (const blocker of row.decisionBlockers) lines.push(`      * ${blocker}`);
+  }
+  return lines;
+}
+
+/**
+ * @param {string[]} lines
+ * @param {string} title
+ * @param {QueueRow[]} rows
+ */
+function appendDetailedSection(lines, title, rows) {
+  lines.push(`${title}: ${rows.length}`);
+  if (rows.length === 0) {
+    lines.push("  - none");
+    return;
+  }
+  for (const row of rows) lines.push(...formatRowDetails(row));
+}
+
+/**
+ * @param {QueueSummary} summary
+ * @returns {string}
+ */
+export function formatDetailedSummary(summary) {
+  const lines = [
+    formatSummary(summary),
+    "",
+    "[road-to-100-next-actions:details]",
+  ];
+
+  appendDetailedSection(lines, "implementationQueue", summary.implementation);
+  appendDetailedSection(lines, "proofOrAdapterWork", summary.proofRows);
+  appendDetailedSection(lines, "provisioningWork", summary.provisioningRows);
+  appendDetailedSection(lines, "decisionWork", summary.decisionRows);
+  appendDetailedSection(lines, "futureContract", summary.futureRows);
+
+  return lines.join("\n");
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const raw = JSON.parse(readFileSync(queuePath, "utf8"));
   const summary = summarizeQueue(parseQueue(raw));
@@ -183,6 +237,8 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       decisionWork: summary.decisionRows.map((row) => row.id),
       futureContract: summary.futureRows.map((row) => row.id),
     }, null, 2));
+  } else if (process.argv.includes("--details")) {
+    console.log(formatDetailedSummary(summary));
   } else {
     console.log(formatSummary(summary));
   }

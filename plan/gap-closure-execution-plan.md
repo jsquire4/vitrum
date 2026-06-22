@@ -60,7 +60,10 @@ Stop implementation work and switch to validation/signoff when all are true:
 - **Use the queue reporter before starting another wave.** `npm run
   road-to-100-next-actions` is the compact work-order view: active code rows,
   proof/adapter rows, provisioning rows, and future-contract rows are listed
-  separately so closed implementation work does not get reopened.
+  separately so closed implementation work does not get reopened. Use
+  `npm run road-to-100-next-actions -- --details` when handing off or choosing
+  a validation target; it prints each row's command, promotion command, remaining
+  work, and future-contract decision blockers from the machine-readable queue.
 
 ## Triage Labels
 

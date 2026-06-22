@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  formatDetailedSummary,
   formatSummary,
   parseQueue,
   summarizeQueue,
@@ -54,4 +55,54 @@ test('road-to-100 next-actions reports code freeze when implementation queue is 
     formatSummary(summary),
     /code-now: none \(do not reopen source work unless implementationQueue gains a source-verified row\)/,
   );
+});
+
+test('road-to-100 next-actions details include commands, remaining work, and future blockers', () => {
+  const summary = summarizeQueue(parseQueue({
+    currentAsOf: '2026-06-22',
+    implementationQueue: [],
+    validationQueue: [
+      {
+        id: 'VQ-HOST',
+        status: 'host-blocked',
+        kind: 'validation',
+        title: 'browser proof',
+        command: 'npm run proof',
+        promotionCommand: 'npm run proof:required',
+        remaining: 'needs browser host',
+      },
+      {
+        id: 'VQ-LEARNED',
+        status: 'provisioning-needed',
+        kind: 'provisioning',
+        title: 'learned systems',
+        command: 'npm run learned',
+        remaining: 'needs production checkpoint',
+      },
+    ],
+    futureContractRows: [
+      {
+        id: 'FC-ONE',
+        status: 'future-contract',
+        title: 'future API',
+        currentContract: 'fallback is explicit',
+        decisionBlockers: ['define contract', 'add backend grades'],
+      },
+    ],
+  }));
+
+  const text = formatDetailedSummary(summary);
+  assert.match(text, /\[road-to-100-next-actions:details\]/);
+  assert.match(text, /proofOrAdapterWork: 1/);
+  assert.match(text, /VQ-HOST: browser proof \[host-blocked\]/);
+  assert.match(text, /command: npm run proof/);
+  assert.match(text, /promotionCommand: npm run proof:required/);
+  assert.match(text, /remaining: needs browser host/);
+  assert.match(text, /provisioningWork: 1/);
+  assert.match(text, /VQ-LEARNED: learned systems \[provisioning-needed\]/);
+  assert.match(text, /futureContract: 1/);
+  assert.match(text, /currentContract: fallback is explicit/);
+  assert.match(text, /decisionBlockers:/);
+  assert.match(text, /\* define contract/);
+  assert.match(text, /\* add backend grades/);
 });
