@@ -177,6 +177,11 @@ async function main(): Promise<void> {
   });
 
   function tick(now: number): void {
+    if ((globalThis as Record<string, unknown>).VITRUM_CAPTURE_PAUSED === true) {
+      requestAnimationFrame(tick);
+      return;
+    }
+
     if (result.asset.animations.length > 0) {
       if (lastAnimationNowMs != null) {
         const deltaSeconds = Math.max(0, (now - lastAnimationNowMs) / 1000);

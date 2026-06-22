@@ -312,17 +312,23 @@ async function pageCanvasClipScreenshot(page, timeout) {
 }
 
 async function captureEngineFramePng(page, timeout) {
-  const frame = await withTimeout(
-    page.evaluate(async () => {
-      const capture = globalThis.VITRUM_CAPTURE_FRAME;
-      if (typeof capture !== 'function') {
-        throw new Error('VITRUM_CAPTURE_FRAME is not installed by the example page');
-      }
-      return capture('output');
-    }),
-    timeout,
-    'engine captureFrame fallback timed out',
-  );
+  await pauseExampleRendering(page, timeout);
+  let frame;
+  try {
+    frame = await withTimeout(
+      page.evaluate(async () => {
+        const capture = globalThis.VITRUM_CAPTURE_FRAME;
+        if (typeof capture !== 'function') {
+          throw new Error('VITRUM_CAPTURE_FRAME is not installed by the example page');
+        }
+        return capture('output');
+      }),
+      timeout,
+      'engine captureFrame fallback timed out',
+    );
+  } finally {
+    await resumeExampleRendering(page, 1000);
+  }
   if (frame == null || typeof frame !== 'object') throw new Error('engine captureFrame returned no frame');
   const width = Number(frame.width);
   const height = Number(frame.height);
@@ -339,6 +345,27 @@ async function captureEngineFramePng(page, timeout) {
     png.data[i] = floatToByte(value);
   }
   return PNG.sync.write(png);
+}
+
+async function pauseExampleRendering(page, timeout) {
+  await withTimeout(
+    page.evaluate(async () => {
+      globalThis.VITRUM_CAPTURE_PAUSED = true;
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }),
+    timeout,
+    'pausing example render loop before capture timed out',
+  );
+}
+
+async function resumeExampleRendering(page, timeout) {
+  await withTimeout(
+    page.evaluate(() => {
+      globalThis.VITRUM_CAPTURE_PAUSED = false;
+    }),
+    timeout,
+    'resuming example render loop after capture timed out',
+  ).catch(() => undefined);
 }
 
 async function captureCanvasDataUrlPng(page, engineError, screenshotError, clipError) {
