@@ -745,9 +745,11 @@ Implementation:
 - Screenshot promises are wrapped in explicit bounded timeouts, so WSL
   host-blocked runs return a structured `HOST-BLOCKED` row around the
   screenshot timeout instead of burning the full asset capture timeout.
-- `gltf-browser-proof-check` now accepts `canvas-first` host-blocked statuses
-  without requiring an engine attempt, while engine-first committed status rows
-  still preserve engine-capture attempts.
+- The committed `pt-webgl2-real-status.json` now uses `canvas-first` mode so the
+  fail-closed artifact records clipped page screenshot, locator screenshot, and
+  canvas data URL attempts before the host-block verdict. Engine-first remains
+  the default harness mode, but this committed proof row intentionally captures
+  the browser readback blocker directly.
 
 Focused gates:
 

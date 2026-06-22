@@ -1050,8 +1050,8 @@ if (gltfBrowserStatusArtifact == null) {
 if (gltfBrowserStatusArtifact.json?.verdict !== "HOST-BLOCKED") {
   fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin HOST-BLOCKED");
 }
-if (gltfBrowserStatusArtifact.json?.captureMode !== "engine-first") {
-  fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin engine-first capture mode");
+if (!["engine-first", "canvas-first", "canvas-only"].includes(gltfBrowserStatusArtifact.json?.captureMode)) {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin a bounded browser proof capture mode");
 }
 
 const radiometricPtRow = queue.validationQueue.find((row) => row.id === "VQ-RADIOMETRIC-PT");

@@ -69,10 +69,13 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.match(captureFn, /engineCaptureMode === 'engine-first'/);
   assert.match(captureFn, /engineCaptureMode === 'engine-fallback'/);
   assert.match(captureFn, /pauseExampleRenderingForCanvasCapture\(page, timeout\)/);
+  assert.match(captureFn, /let clipError = null/);
+  assert.match(captureFn, /let screenshotError = null/);
   assert.match(captureFn, /captureStep = 'canvas-screenshot'/);
   assert.match(captureFn, /captureStep = 'page-canvas-clip-screenshot'/);
   assert.match(captureFn, /page clipped screenshot timed out/);
   assert.match(captureFn, /canvas element screenshot timed out/);
+  assert.doesNotMatch(captureFn, /isBrowserReadbackHostBlock/);
 
   const firstEngineReadback = captureFn.indexOf("captureStep = 'engine-captureFrame-output'");
   const canvasPause = captureFn.indexOf('pauseExampleRenderingForCanvasCapture(page, timeout)');
@@ -201,14 +204,26 @@ function canvasFirstHostBlockedRow(assetId, kind, overrides = {}) {
   return {
     ...hostBlockedRow(assetId, kind, overrides),
     captureMode: 'canvas-first',
-    step: 'page-canvas-clip-screenshot',
-    error: 'page.screenshot: Timeout 15000ms exceeded',
+    step: 'canvas-data-url',
+    error: 'canvas PNG data URL fallback failed',
     captureAttempts: [
       {
         method: 'page-canvas-clip-screenshot',
         status: 'failed',
         step: 'page-canvas-clip-screenshot',
         error: 'page.screenshot: Timeout 15000ms exceeded',
+      },
+      {
+        method: 'playwright-screenshot',
+        status: 'failed',
+        step: 'canvas-screenshot',
+        error: 'locator.screenshot: Timeout 15000ms exceeded',
+      },
+      {
+        method: 'canvas-data-url',
+        status: 'failed',
+        step: 'canvas-data-url',
+        error: 'canvas PNG data URL fallback failed',
       },
     ],
   };
