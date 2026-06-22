@@ -589,8 +589,13 @@ class PTEngineWebGPU implements Engine {
     this.#restirPtReuse = opts.restirPtReuse === true && traceTier === 'full';
     const rptOpts = opts.restirPtReuseOptions ?? {};
     this.#restirPtMClamp =
-      typeof rptOpts.mClamp === 'number' && rptOpts.mClamp >= 1 ? Math.floor(rptOpts.mClamp) : 20;
-    this.#restirPtWCap = typeof rptOpts.wCap === 'number' && rptOpts.wCap > 0 ? rptOpts.wCap : 10;
+      typeof rptOpts.mClamp === 'number' && Number.isFinite(rptOpts.mClamp) && rptOpts.mClamp >= 1
+        ? Math.floor(rptOpts.mClamp)
+        : 20;
+    this.#restirPtWCap =
+      typeof rptOpts.wCap === 'number' && Number.isFinite(rptOpts.wCap) && rptOpts.wCap > 0
+        ? rptOpts.wCap
+        : 10;
     this.#restirPtAllowGlossyReuse = rptOpts.experimentalGlossyReuse === true;
     this.#gpu = new GpuResources(
       opts.device,

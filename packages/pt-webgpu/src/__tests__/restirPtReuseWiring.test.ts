@@ -41,6 +41,7 @@ interface Recorder {
   bufferLabels: string[];
   bindGroupLabels: string[];
   computePassLabels: string[];
+  bufferWrites: Array<{ label: string; bytes: Uint8Array }>;
 }
 
 function makeFullTierDevice(rec: Recorder): GPUDevice {
@@ -61,7 +62,19 @@ function makeFullTierDevice(rec: Recorder): GPUDevice {
     finish: vi.fn(() => ({})),
   };
   return {
-    queue: { writeBuffer: vi.fn(), writeTexture: vi.fn(), submit: vi.fn() },
+    queue: {
+      writeBuffer: vi.fn((buffer?: { label?: string }, _offset?: number, data?: BufferSource) => {
+        let bytes = new Uint8Array();
+        if (data instanceof ArrayBuffer) {
+          bytes = new Uint8Array(data.slice(0));
+        } else if (ArrayBuffer.isView(data)) {
+          bytes = new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+        }
+        rec.bufferWrites.push({ label: buffer?.label ?? '', bytes });
+      }),
+      writeTexture: vi.fn(),
+      submit: vi.fn(),
+    },
     createBuffer: vi.fn((desc?: { label?: string }) => {
       rec.bufferLabels.push(desc?.label ?? '');
       return { label: desc?.label ?? '', destroy: vi.fn() };
@@ -90,7 +103,14 @@ function makeFullTierDevice(rec: Recorder): GPUDevice {
 }
 
 function emptyRecorder(): Recorder {
-  return { shaderCodes: [], pipelineEntryPoints: [], bufferLabels: [], bindGroupLabels: [], computePassLabels: [] };
+  return {
+    shaderCodes: [],
+    pipelineEntryPoints: [],
+    bufferLabels: [],
+    bindGroupLabels: [],
+    computePassLabels: [],
+    bufferWrites: [],
+  };
 }
 
 function makeScene(): Scene {
@@ -130,6 +150,15 @@ function frameInput(size: number) {
     frameSeed: 1,
     quality: { samplesTarget: 4, bounces: 2, resolutionFactor: 1 },
   };
+}
+
+function latestRestirPtParamsWrite(rec: Recorder): ArrayBuffer {
+  const write = rec.bufferWrites.filter((w) => w.label === 'vitrum.pt-webgpu.restirPt.params').at(-1);
+  expect(write, 'ReSTIR-PT params UBO write').toBeDefined();
+  return write!.bytes.buffer.slice(
+    write!.bytes.byteOffset,
+    write!.bytes.byteOffset + write!.bytes.byteLength,
+  ) as ArrayBuffer;
 }
 
 describe('ReSTIR-PT reuse wiring — OFF by default (byte-identity)', () => {
@@ -235,6 +264,31 @@ describe('ReSTIR-PT reuse wiring — ON (full tier)', () => {
     expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.temporal').length).toBe(2);
     expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.spatial').length).toBe(2);
     expect(rec.computePassLabels.filter((l) => l === 'vitrum.pt-webgpu.restirPt.resolve').length).toBe(2);
+    engine.dispose();
+  });
+
+  it('ON: non-finite ReSTIR-PT tuning falls back to safe params defaults', async () => {
+    const rec = emptyRecorder();
+    const engine = await createPTEngine_WebGPU({
+      device: makeFullTierDevice(rec),
+      restirPtReuse: true,
+      restirPtReuseOptions: {
+        mClamp: Infinity,
+        wCap: Infinity,
+        experimentalGlossyReuse: true,
+      },
+    });
+    engine.setScene(makeScene());
+    engine.renderFrame(frameInput(16));
+
+    const u = new Uint32Array(latestRestirPtParamsWrite(rec));
+    const f = new Float32Array(u.buffer);
+    expect(u[0]).toBe(16);
+    expect(u[1]).toBe(16);
+    expect(u[2]).toBe(20);
+    expect(u[3]).toBe(1);
+    expect(f[4]).toBe(10);
+
     engine.dispose();
   });
 

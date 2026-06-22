@@ -451,6 +451,78 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
     expect(mocks.attachEngine).toHaveBeenCalledWith(existingEngine, { setScene: true });
   });
 
+  it('honors existing pt-webgpu engines that report a lite runtime profile', async () => {
+    mocks.probeAdapterProfile.mockResolvedValueOnce({
+      hasWebGPU: true,
+      hybridCapable: true,
+      hybridLiteCapable: true,
+      ptWebgpuTier: 'full',
+      maxStorageBuffersPerStage: 28,
+      maxStorageTexturesPerStage: 8,
+      isSoftwareAdapter: false,
+      adapterKind: 'hardware',
+      hasWebGL2: true,
+      recommendedRealtimeTier: 'ultra',
+      recommendedHeroBackend: 'pt-webgpu-full',
+      limits: Object.freeze({}),
+    });
+    const existingEngine = {
+      ...makeExistingPtWebgpuEngine(),
+      backendProfileId: 'pt-webgpu-lite' as const,
+    } as EngineWithBackendId & { readonly backendProfileId: 'pt-webgpu-lite' };
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engine: existingEngine,
+        compatibilityMode: 'reject-unsupported',
+      }),
+    ).rejects.toMatchObject({
+      code: 'GLTF_COMPATIBILITY_REJECTED',
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu-lite',
+      runtimeProfile: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      failures: [
+        'material:baseColorMap=unsupported at materials[0].pbrMetallicRoughness.baseColorTexture',
+      ],
+    });
+
+    expect(mocks.probeAdapterProfile).not.toHaveBeenCalled();
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+    expect(mocks.attachEngine).not.toHaveBeenCalled();
+    expect(mocks.loadGltfForEngine).toHaveBeenCalledWith(
+      'asset.glb',
+      expect.objectContaining({
+        backend: 'pt-webgpu',
+        runtimeProfile: 'pt-webgpu-lite',
+        attachScene: false,
+      }),
+    );
+  });
+
+  it('keeps existing pt-webgpu engines on a reported full runtime profile without probing', async () => {
+    const existingEngine = {
+      ...makeExistingPtWebgpuEngine(),
+      backendProfileId: 'pt-webgpu' as const,
+    } as EngineWithBackendId & { readonly backendProfileId: 'pt-webgpu' };
+
+    await expect(
+      loadGltfWithEngine('asset.glb', {
+        engine: existingEngine,
+        compatibilityMode: 'reject-unsupported',
+      }),
+    ).resolves.toMatchObject({
+      backend: 'pt-webgpu',
+      profileId: 'pt-webgpu',
+      engine: existingEngine,
+      attached: true,
+    });
+
+    expect(mocks.probeAdapterProfile).not.toHaveBeenCalled();
+    expect(mocks.createEngine).not.toHaveBeenCalled();
+    expect(mocks.attachEngine).toHaveBeenCalledWith(existingEngine, { setScene: true });
+  });
+
   it('allows reject-unsupported pt-webgpu glTF loads on lite tier when rows are degraded but supported', async () => {
     mocks.state.liteIssues = [mocks.approximateLiteIssue];
 

@@ -199,6 +199,12 @@
       "currentContract": "OIT and alpha-aware direct/shadow handling are implemented; transparent surfaces are not full ReSTIR/GI transport vertices."
     },
     {
+      "id": "FC-WALKAROUND-SPECIALTY-MATERIAL-TRANSPORT",
+      "title": "walkaround spectral, thin-film, layered, and volumetric material transport",
+      "status": "future-contract",
+      "currentContract": "walkaround-hybrid consumes broad atlas-backed PBR, alpha, direct-light, GI suffix, and receiver-lobe material payloads, but spectralAttenuation, dispersionAbbeNumber, and thinFilmStack/full-layer-stack transport remain unsupported; scatteringCoefficient, scatteringCoefficientRGB, frontLayer, backLayer, and displacement are approximate/diagnostic rather than path-tracer-equivalent. Arbitrary rich glTF assets should route to PT backends unless hosts accept those walkaround approximations."
+    },
+    {
       "id": "FC-NATIVE-POINT-LINE",
       "title": "native point and line primitive rendering",
       "status": "future-contract",

@@ -748,9 +748,11 @@ fn lo_transmittedGI(
 // (no bilinear blend) — the specular lobe is higher-frequency, so the half-res
 // blur of the diffuse path is undesirable here.
 //
-// Gate: fires only when metal > 0 OR roughness < SPEC_GI_ROUGH_MAX, so a
-// default-diffuse scene (rough 0.85, metal 0) gets EXACTLY zero specular
-// indirect — preserving the diffuse-default invariant byte-for-byte.
+// Gate: mirrors restir_gi_receiver_has_specular_lobes so the GI producer's
+// receiver-lobe p-hat and the shade-side consumer stay in lock-step. A
+// default-diffuse scene (rough 0.85, metal 0, default specular controls) gets
+// EXACTLY zero specular indirect — preserving the diffuse-default invariant
+// byte-for-byte.
 const SPEC_GI_ROUGH_MAX: f32 = 0.6;
 fn lo_indirectSpecular(
   gid:    vec2u,
@@ -773,7 +775,11 @@ fn lo_indirectSpecular(
   isGlass: bool,
 ) -> vec3f {
   if (isGlass) { return vec3f(0.0); }
-  if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat.x < 1e-4 && sheen.a < 1e-4 && iridescence.x < 1e-4) { return vec3f(0.0); }
+  let specularDelta = max(
+    max(abs(specular.r - 1.0), abs(specular.g - 1.0)),
+    max(abs(specular.b - 1.0), abs(specular.a - 1.0)),
+  );
+  if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 1e-4 && abs(anisotropy.x) <= 1e-4 && clearcoat.x < 1e-4 && sheen.a < 1e-4 && iridescence.x < 1e-4) { return vec3f(0.0); }
   let halfDims = dims / 2u;
   let hx = min(gid.x / 2u, halfDims.x - 1u);
   let hy = min(gid.y / 2u, halfDims.y - 1u);

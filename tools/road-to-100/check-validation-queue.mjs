@@ -7,6 +7,7 @@ const QUEUE_PATH = "tools/road-to-100/validation-queue.json";
 const PACKAGE_PATH = "package.json";
 const EXECUTION_PLAN_PATH = "plan/gap-closure-execution-plan.md";
 const LEDGER_PATH = "plan/road-to-100-gap-ledger-2026-06-11.md";
+const PROMISE_LEDGER_PATH = "packages/core/src/engine/promiseLedger.ts";
 const LEARNED_CHECKPOINT_MANIFEST_PATH = "tools/neural-denoiser-training/checkpoints/manifest.json";
 
 const ALLOWED_STATUSES = new Set([
@@ -36,6 +37,7 @@ const REQUIRED_VALIDATION_IDS = [
 const REQUIRED_FUTURE_IDS = [
   "FC-DISPLACEMENT-MICROTESSELLATION",
   "FC-TRANSPARENT-GI-TRANSPORT",
+  "FC-WALKAROUND-SPECIALTY-MATERIAL-TRANSPORT",
   "FC-NATIVE-POINT-LINE",
   "FC-ARBITRARY-UV-ARRAYS",
   "FC-NATIVE-INSTANCED-SKINNED-MORPHED",
@@ -147,11 +149,12 @@ async function assertArtifact(artifact, ownerId) {
   }
 }
 
-const [queue, packageJson, executionPlan, ledger, road] = await Promise.all([
+const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await Promise.all([
   readJson(QUEUE_PATH),
   readJson(PACKAGE_PATH),
   readText(EXECUTION_PLAN_PATH),
   readText(LEDGER_PATH),
+  readText(PROMISE_LEDGER_PATH),
   readText("plan/road-to-100.md"),
 ]);
 const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
@@ -279,6 +282,56 @@ for (const needle of [
 ]) {
   if (!String(adjointFutureRow.currentContract).includes(needle)) {
     fail(`FC-ADJOINT-FULL-PATH-PARITY currentContract must include ${needle}`);
+  }
+}
+
+const walkaroundSpecialtyFutureRow = queue.futureContractRows.find((row) =>
+  row.id === "FC-WALKAROUND-SPECIALTY-MATERIAL-TRANSPORT"
+);
+if (walkaroundSpecialtyFutureRow == null) {
+  fail("futureContractRows missing FC-WALKAROUND-SPECIALTY-MATERIAL-TRANSPORT");
+}
+for (const needle of [
+  "walkaround-hybrid",
+  "spectralAttenuation",
+  "dispersionAbbeNumber",
+  "thinFilmStack",
+  "scatteringCoefficient",
+  "scatteringCoefficientRGB",
+  "frontLayer",
+  "backLayer",
+  "displacement",
+  "PT backends",
+]) {
+  if (!String(walkaroundSpecialtyFutureRow.currentContract).includes(needle)) {
+    fail(`FC-WALKAROUND-SPECIALTY-MATERIAL-TRANSPORT currentContract must include ${needle}`);
+  }
+}
+for (const snippet of [
+  "spectralAttenuation: 'unsupported'",
+  "dispersionAbbeNumber: 'unsupported'",
+  "thinFilmStack: 'unsupported'",
+  "scatteringCoefficient: 'approximate'",
+  "scatteringCoefficientRGB: 'approximate'",
+  "frontLayer: 'approximate'",
+  "backLayer: 'approximate'",
+  "displacementMap: 'approximate'",
+  "displacementScale: 'approximate'",
+  "displacementBias: 'approximate'",
+]) {
+  if (!promiseLedger.includes(snippet)) {
+    fail(`walkaround specialty material future-contract row is stale: missing promise ledger snippet ${snippet}`);
+  }
+}
+for (const needle of [
+  "unsupported specialty fields (spectral/dispersion/thin-film/full layered",
+  "approximate walkaround scattering rows",
+  "walkaround spectral/dispersion",
+  "thin-film/full-layer",
+  "approximate scattering/front/back face absorption layers",
+]) {
+  if (!ledger.includes(needle) && !road.includes(needle)) {
+    fail(`Road/ledger specialty material boundary disappeared without queue reconciliation: ${needle}`);
   }
 }
 

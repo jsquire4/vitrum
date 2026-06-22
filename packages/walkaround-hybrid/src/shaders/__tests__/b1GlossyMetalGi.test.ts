@@ -133,8 +133,12 @@ describe('B1 — glossy/metal specular indirect term', () => {
   });
 
   it('specular indirect is gated off for default-diffuse surfaces (invariant)', () => {
-    // metal <= 0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat == 0 && sheen == 0 && iridescence == 0 -> zero.
-    expect(SHADE_WGSL).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && clearcoat.x < 1e-4 && sheen.a < 1e-4 && iridescence.x < 1e-4)');
+    // metal <= 0 && rough >= SPEC_GI_ROUGH_MAX && default rich controls -> zero.
+    const body = fnBody(SHADE_WGSL, 'lo_indirectSpecular');
+    expect(body).toContain('let specularDelta = max(');
+    expect(body).toContain('specularDelta <= 1e-4');
+    expect(body).toContain('abs(anisotropy.x) <= 1e-4');
+    expect(body).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 1e-4 && abs(anisotropy.x) <= 1e-4 && clearcoat.x < 1e-4 && sheen.a < 1e-4 && iridescence.x < 1e-4)');
   });
 });
 

@@ -102,21 +102,38 @@ export async function loadGltfWithEngine(
     adapterOptions.backend ?? backendSelectionForExplicitPrefer(engineOptions?.prefer);
   if (adapterOptions.engine != null) {
     const { engine, attachScene, ...baseLoadOptions } = adapterOptions;
-    const runtimeProfile = await maybeProbePtWebgpuRuntimeProfile(engine.backendId, baseLoadOptions);
-    const loadOptions = withRuntimeTextureCap(baseLoadOptions, runtimeProfile);
+    const engineRuntimeProfile = ptWebgpuRuntimeProfileFromEngine(engine);
+    const profileAwareLoadOptions =
+      engineRuntimeProfile !== undefined && baseLoadOptions.runtimeProfile === undefined
+        ? { ...baseLoadOptions, runtimeProfile: engineRuntimeProfile }
+        : baseLoadOptions;
+    const runtimeProfile = engineRuntimeProfile === undefined
+      ? await maybeProbePtWebgpuRuntimeProfile(engine.backendId, profileAwareLoadOptions)
+      : null;
+    const loadOptions = withRuntimeTextureCap(profileAwareLoadOptions, runtimeProfile);
     const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
       ...loadOptions,
       backend: engine.backendId,
       attachScene: false,
       engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     });
-    const runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
+    let runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
       engine.backendId,
       adapterOptions.compatibilityMode ?? 'best-effort',
       loaded.asset,
       loadOptions,
       runtimeProfile,
     );
+    if (engineRuntimeProfile !== undefined && engineRuntimeProfile !== runtimeProfileId) {
+      validatePtWebgpuRuntimeProfile(
+        engineRuntimeProfile,
+        traceTierForPtWebgpuProfile(engineRuntimeProfile),
+        adapterOptions.compatibilityMode ?? 'best-effort',
+        loaded.asset,
+        loadOptions,
+      );
+      runtimeProfileId = engineRuntimeProfile;
+    }
     loaded.controller.attachEngine(engine, { setScene: attachScene ?? true });
     return {
       ...loaded,
@@ -454,6 +471,32 @@ function decodedAssetView(
         textureDecodeReport: asset.textureDecodeReport,
       }
     : null;
+}
+
+function ptWebgpuRuntimeProfileFromEngine(
+  engine: EngineWithBackendId,
+): GltfBackendProfileId | undefined {
+  if (engine.backendId !== 'pt-webgpu') return undefined;
+  const profileId = (engine as {
+    readonly backendProfileId?: unknown;
+    readonly profileId?: unknown;
+  }).backendProfileId ?? (engine as { readonly profileId?: unknown }).profileId;
+  if (profileId === 'pt-webgpu' || profileId === 'pt-webgpu-lite') return profileId;
+  if (engineHasExperimentalFeature(engine, 'pt-webgpu-lite-tier')) return 'pt-webgpu-lite';
+  return undefined;
+}
+
+function traceTierForPtWebgpuProfile(profileId: GltfBackendProfileId): string {
+  return profileId === 'pt-webgpu-lite' ? 'lite' : 'full';
+}
+
+function engineHasExperimentalFeature(engine: EngineWithBackendId, feature: string): boolean {
+  const features = (engine as {
+    readonly capabilities?: { readonly experimentalFeatures?: unknown };
+  }).capabilities?.experimentalFeatures;
+  if (features == null || typeof features !== 'object') return false;
+  const has = (features as { readonly has?: unknown }).has;
+  return typeof has === 'function' && has.call(features, feature) === true;
 }
 
 function preferForSelectedBackend(
