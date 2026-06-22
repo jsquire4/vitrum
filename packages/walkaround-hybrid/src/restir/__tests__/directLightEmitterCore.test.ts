@@ -240,6 +240,27 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(buffers.totalEmissivePower).toBeCloseTo(luminance(0.25, 0.5, 1) * 1.0, 5);
   });
 
+  it('preserves castShadow:false on mesh-material ReSTIR emitters', () => {
+    const panel: MeshPrimitive = {
+      ...supportTriangle('shadowless-emissive-panel'),
+      castShadow: false,
+      material: emissiveMaterial([1.5, 0.75, 0.25], 2),
+    };
+    const scene: Scene = {
+      primitives: [panel, supportTriangle('force-tlas')],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    for (const bvhMode of ['merged', 'tlas'] as const) {
+      const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode });
+      const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
+      expect(emitters).toHaveLength(1);
+      expect(emitters[0]!.color).toEqual([1.5, 0.75, 0.25]);
+      expect(emitters[0]!.castShadowDisabled).toBe(1);
+    }
+  });
+
   it('packs scalar radiance plus UV-local micro-emitter power for merged emissiveMap emitters', () => {
     const panel: MeshPrimitive = {
       ...supportTriangle('emissive-map-panel'),
@@ -339,6 +360,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     const instanced: InstancedMeshPrimitive = {
       kind: 'instanced-mesh',
       id: 'instanced-emissive-map',
+      castShadow: false,
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
       normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
       uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
@@ -375,6 +397,7 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
       expect(e.sourceTriIndex).toBe(-1);
       expect(e.sourceSubdivLevel).toBe(1);
       expect(e.sourceSubdivOrdinal).toBe(0);
+      expect(e.castShadowDisabled).toBe(1);
     }
     expect(emitters.reduce((sum, e) => sum + e.area, 0)).toBeCloseTo(1.0, 6);
     expect(hasColor(emitters, [2, 1, 1])).toBe(true);
@@ -546,6 +569,14 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
     expect(ddgiPacked.data[7]).toBe(1);
     expect(ddgiPacked.data[11]).toBe(0);
     expect(ddgiPacked.data[19]).toBe(1);
+
+    for (const bvhMode of ['merged', 'tlas'] as const) {
+      const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode });
+      const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
+      expect(emitters).toHaveLength(1);
+      expect(emitters[0]!.color).toEqual([4, 2, 1]);
+      expect(emitters[0]!.castShadowDisabled).toBe(1);
+    }
   });
 
   it('routes missing mesh-area DDGI emitter references through structured warnings', () => {

@@ -199,9 +199,13 @@ export function buildEmitterListFromCore(
       const mat = materials[triMatIdMap[t]!];
       if (!mat) return null;
       const classified = classifyTriangleEmitterCore(mat, normal, lightDir, primaryIntensity);
-      if (classified == null || options.packSourceTriIndex !== true) return classified;
+      const castShadowDisabled = (mat as MaterialSpec & { readonly castShadow?: boolean }).castShadow === false;
+      if (classified == null) return null;
+      if (options.packSourceTriIndex !== true) {
+        return { ...classified, castShadowDisabled };
+      }
       const scalarLe = scalarMaterialEmissiveLe(mat);
-      if (scalarLe == null) return classified;
+      if (scalarLe == null) return { ...classified, castShadowDisabled };
       const selectionColor = estimateTriangleEmissiveLe(
         mat,
         indices,
@@ -240,6 +244,7 @@ export function buildEmitterListFromCore(
       if (exactTexelHandled) {
         return {
           ...classified,
+          castShadowDisabled,
           color: scalarLe,
           selectionColor,
           texelSubTriangles: exactTexelSubTriangles,
@@ -254,6 +259,7 @@ export function buildEmitterListFromCore(
       }
       return {
         ...classified,
+        castShadowDisabled,
         color: scalarLe,
         selectionColor,
         sourceTriIndex: Math.trunc(sourceTriIndex),
@@ -313,6 +319,8 @@ type TriangleEmitterClassifier = (
     c: BarycentricWeights;
     radiance: [number, number, number];
   }[];
+  /** Source primitive explicitly opted out of shadow casting. */
+  castShadowDisabled?: boolean;
 } | null;
 
 function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, number] | null {
@@ -513,6 +521,7 @@ function buildEmitterListCore(
     if (!classified) continue;
     const [cr, cg, cb] = classified.color;
     const intensity = classified.intensity;
+    const castShadowDisabled = classified.castShadowDisabled === true;
 
     const parentA: [number, number, number] = [ax, ay, az];
     const parentB: [number, number, number] = [bx, by, bz];
@@ -541,7 +550,7 @@ function buildEmitterListCore(
           area: subArea,
           color: patch.radiance,
           intensity: 1,
-          castShadowDisabled: false,
+          castShadowDisabled,
           selectionColor: patch.radiance,
         });
       }
@@ -570,7 +579,7 @@ function buildEmitterListCore(
           area: area / (subdivisionLevel * subdivisionLevel),
           color: [cr, cg, cb],
           intensity,
-          castShadowDisabled: false,
+          castShadowDisabled,
           selectionColor: subSelectionColor,
         });
         ordinal += 1;
@@ -588,7 +597,7 @@ function buildEmitterListCore(
       area,
       color: [cr, cg, cb],
       intensity,
-      castShadowDisabled: false,
+      castShadowDisabled,
       ...(classified.selectionColor != null ? { selectionColor: classified.selectionColor } : {}),
     });
   }

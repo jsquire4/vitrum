@@ -470,6 +470,36 @@ Focused gate:
 npm test --workspace @vitrum/pt-webgl2 -- composeTraceGlsl.test.ts bdptDriver.test.ts
 ```
 
+### Wave 9 — Walkaround ReSTIR Emitter Shadow Lane
+
+Status 2026-06-21: **CLOSED.** Direct source-read of the walkaround emitter path
+found a bounded implementation miss in an otherwise-closed promise row:
+material-backed ReSTIR-DI mesh emitters hardcoded `castShadowDisabled:false`.
+That meant a source primitive or explicit `mesh-area` emitter with
+`castShadow:false` could still cast the ReSTIR direct-light shadow ray, even
+though analytic emitters, DDGI, RC, pt-webgpu, and pt-webgl2 already carried the
+shadow-disabled lane.
+
+Implementation:
+
+- `coreEmitterBuffers()` now builds its ReSTIR emitter-only merged stream with
+  `splitMaterialsByCastShadow:true`, matching the render-BVH material flag lane.
+- `buildMeshAreaLeOverrides()` carries both the Le override and the explicit
+  mesh-area emitter shadow flag into the production material slice.
+- `buildEmitterListFromCore()` propagates the material shadow flag through
+  ordinary mesh-material emitters, bounded barycentric subdivision, and exact
+  emissive-map texel-cell subemitters.
+- `directLightEmitterCore.test.ts` pins merged and TLAS scalar emitters,
+  exact texel-cell emissive-map subemitters, and explicit mesh-area emitters.
+
+Focused gate:
+
+```bash
+npm test --workspace @vitrum/walkaround-hybrid -- directLightEmitterCore.test.ts
+npm test --workspace @vitrum/walkaround-hybrid -- bvhCoreMaterialResolver.test.ts directLightEmitterCore.test.ts roughMetalPacking.test.ts
+npm run typecheck --workspace @vitrum/walkaround-hybrid
+```
+
 ## Parked Long-Tail Items
 
 These are real, but they should not block contract-complete unless the user
