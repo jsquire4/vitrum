@@ -7,6 +7,7 @@ const QUEUE_PATH = "tools/road-to-100/validation-queue.json";
 const PACKAGE_PATH = "package.json";
 const EXECUTION_PLAN_PATH = "plan/gap-closure-execution-plan.md";
 const LEDGER_PATH = "plan/road-to-100-gap-ledger-2026-06-11.md";
+const LEARNED_CHECKPOINT_MANIFEST_PATH = "tools/neural-denoiser-training/checkpoints/manifest.json";
 
 const ALLOWED_STATUSES = new Set([
   "committed-proof-green",
@@ -150,6 +151,7 @@ const [queue, packageJson, executionPlan, ledger] = await Promise.all([
   readText(EXECUTION_PLAN_PATH),
   readText(LEDGER_PATH),
 ]);
+const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
 
 if (queue.schema !== "vitrum.road-to-100.validation-queue.v1") fail("queue schema mismatch");
 if (typeof queue.currentAsOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(queue.currentAsOf)) {
@@ -193,6 +195,40 @@ for (const row of queue.validationQueue) {
   }
   if (!Array.isArray(row.proofArtifacts)) fail(`${row.id}: proofArtifacts must be an array`);
   for (const artifact of row.proofArtifacts) await assertArtifact(artifact, row.id);
+}
+
+const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SYSTEMS");
+if (learnedRow == null) fail("validationQueue missing VQ-LEARNED-SYSTEMS");
+if (learnedCheckpointManifest.schema !== "vitrum.neural-denoiser.checkpoints.v1") {
+  fail("learned checkpoint manifest schema mismatch");
+}
+const productionCheckpoint = learnedCheckpointManifest.productionCheckpoint ?? null;
+if (productionCheckpoint === null) {
+  if (learnedRow.status !== "provisioning-needed") {
+    fail("VQ-LEARNED-SYSTEMS must remain provisioning-needed while productionCheckpoint is null");
+  }
+  if (!String(learnedRow.remaining).includes("Production neural checkpoint")) {
+    fail("VQ-LEARNED-SYSTEMS remaining text must keep the production-checkpoint tail explicit");
+  }
+} else {
+  if (typeof productionCheckpoint !== "string") {
+    fail("learned checkpoint manifest productionCheckpoint must be null or a string");
+  }
+  const checkpoints = Array.isArray(learnedCheckpointManifest.checkpoints)
+    ? learnedCheckpointManifest.checkpoints
+    : [];
+  const productionEntry = checkpoints.find((checkpoint) => checkpoint?.name === productionCheckpoint);
+  if (productionEntry == null || productionEntry.role !== "production" || productionEntry.productionDefaultEligible !== true) {
+    fail(`productionCheckpoint ${productionCheckpoint} must name a productionDefaultEligible production entry`);
+  }
+  if (learnedRow.status === "provisioning-needed") {
+    fail("VQ-LEARNED-SYSTEMS must move off provisioning-needed once productionCheckpoint is populated");
+  }
+  if (!learnedRow.proofArtifacts.some((artifact) =>
+    artifact?.path === "tools/neural-denoiser-training/quality-ab-production.json"
+  )) {
+    fail("VQ-LEARNED-SYSTEMS must cite quality-ab-production.json when a production checkpoint exists");
+  }
 }
 
 for (const row of queue.futureContractRows) {

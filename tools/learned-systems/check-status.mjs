@@ -235,6 +235,12 @@ async function assertNoSilentProductionCheckpoint(manifest) {
   const productionLike = names.filter((name) => /(^|[-_.])(prod|production|release|ga|default|blessed)([-_.]|$)/i.test(name));
   const needsQualityManifest = productionEntries.length > 0 || productionLike.length > 0;
   if (!needsQualityManifest) return;
+  if (productionLike.length > 0 && productionEntries.length === 0) {
+    fail(
+      `production-like checkpoint filename(s) ${productionLike.join(", ")} must be registered ` +
+      `as role:"production" with productionDefaultEligible:true before quality evidence can count`,
+    );
+  }
 
   let qualityManifest;
   try {
@@ -318,6 +324,44 @@ function assertProductionQualityManifest(
   }
   if (typeof qualityManifest.generatedAt !== "string" || qualityManifest.generatedAt.length === 0) {
     fail("production neural quality manifest must include generatedAt");
+  }
+  const dataset = qualityManifest.dataset;
+  if (dataset == null || typeof dataset !== "object") {
+    fail("production neural quality manifest must identify the validation dataset");
+  }
+  const datasetRecord = /** @type {Record<string, any>} */ (dataset);
+  if (typeof datasetRecord.id !== "string" || datasetRecord.id.length === 0) {
+    fail("production neural quality manifest dataset.id must be a non-empty string");
+  }
+  if (!Number.isInteger(datasetRecord.sceneCount) || datasetRecord.sceneCount <= 0) {
+    fail("production neural quality manifest dataset.sceneCount must be positive");
+  }
+  if (!Number.isInteger(datasetRecord.sampleCount) || datasetRecord.sampleCount <= 0) {
+    fail("production neural quality manifest dataset.sampleCount must be positive");
+  }
+  const comparison = qualityManifest.comparison;
+  if (comparison == null || typeof comparison !== "object") {
+    fail("production neural quality manifest must include an A/B comparison descriptor");
+  }
+  const comparisonRecord = /** @type {Record<string, any>} */ (comparison);
+  if (typeof comparisonRecord.baseline !== "string" || comparisonRecord.baseline.length === 0) {
+    fail("production neural quality manifest comparison.baseline must be a non-empty string");
+  }
+  if (typeof comparisonRecord.candidate !== "string" || comparisonRecord.candidate.length === 0) {
+    fail("production neural quality manifest comparison.candidate must be a non-empty string");
+  }
+  const thresholds = qualityManifest.thresholds;
+  if (thresholds == null || typeof thresholds !== "object") {
+    fail("production neural quality manifest must include metric thresholds");
+  }
+  const thresholdRecord = /** @type {Record<string, any>} */ (thresholds);
+  const boundedMetricNames = ["psnrDb", "ssim", "meanAbs", "rmse"].filter((name) =>
+    finiteMetric(metricRecord[name])
+  );
+  for (const name of boundedMetricNames) {
+    if (!finiteMetric(thresholdRecord[name])) {
+      fail(`production neural quality manifest threshold.${name} must be finite when metrics.${name} is reported`);
+    }
   }
 }
 
@@ -479,6 +523,9 @@ async function assertBehavioralProofCoverage() {
 
   for (const proof of proofFiles) {
     const text = await readText(proof.path);
+    if (/\b(?:describe|it|test)\.(?:skip|todo|only)\s*\(/.test(text)) {
+      fail(`${proof.path} must not contain skipped, todo, or only-marked tests while used as learned-system proof`);
+    }
     for (const needle of proof.needles) {
       if (!text.includes(needle)) {
         fail(`${proof.path} missing behavioral proof needle: ${needle}`);

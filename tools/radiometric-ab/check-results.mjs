@@ -43,6 +43,8 @@ const REQUIRED_RESTIR_PT_SPECIALTY = {
   caseCount: 4,
 };
 
+const WALKAROUND_AB_CASE_IDS = ["a8", "sun", "glass", "glossy"];
+
 /** @param {string} message */
 function fail(message) {
   throw new Error(`[radiometric-ab-proof-check] ${message}`);
@@ -392,6 +394,7 @@ async function checkWalkaroundHostStatus(proof) {
   const preservedUrl = new URL(`../../${resultFile}`, import.meta.url);
   const preservedStat = await Deno.stat(preservedUrl);
   if (!preservedStat.isFile || preservedStat.size <= 2) fail("walkaround-ab: preserved result file is missing or empty");
+  const preservedResult = JSON.parse(await Deno.readTextFile(preservedUrl));
   if (status.verdict === "HOST-BLOCKED") {
     if (!proof.blockedReasonCodes.includes(status.reason?.code)) {
       fail(`walkaround-ab: blocked reason code ${status.reason?.code} is not allowed`);
@@ -403,6 +406,7 @@ async function checkWalkaroundHostStatus(proof) {
     }
     return;
   }
+  assertWalkaroundFullFreshStatus(status, preservedResult);
   if (status.verdict === "PASS-PARTIAL") {
     if (status.reason?.code !== proof.partialReasonCode) {
       fail(`walkaround-ab: partial reason code ${status.reason?.code} differs from proofs.mjs`);
@@ -416,6 +420,36 @@ async function checkWalkaroundHostStatus(proof) {
   }
   if (status.verdict === "PASS" && status.reason?.code !== "walkaround-ab-complete") {
     fail(`walkaround-ab: PASS status must carry walkaround-ab-complete, got ${status.reason?.code}`);
+  }
+}
+
+/**
+ * @param {any} status
+ * @param {Record<string, any>} preservedResult
+ */
+function assertWalkaroundFullFreshStatus(status, preservedResult) {
+  const selected = status.selectedCases;
+  if (selected != null && selected !== "") {
+    const selectedCases = String(selected).split(",").map((part) => part.trim().toLowerCase()).filter(Boolean).sort();
+    if (!sameJson(selectedCases, [...WALKAROUND_AB_CASE_IDS].sort())) {
+      fail(
+        `walkaround-ab: status selectedCases=${JSON.stringify(selected)} was a subset run; ` +
+        "full proof status must refresh a8,sun,glass,glossy together",
+      );
+    }
+  }
+  const resultCaseIds = Object.keys(preservedResult).sort();
+  if (!sameJson(resultCaseIds, [...WALKAROUND_AB_CASE_IDS].sort())) {
+    fail(`walkaround-ab: preserved result cases ${JSON.stringify(resultCaseIds)} differ from required full case set`);
+  }
+  const expectedVerdicts = Object.fromEntries(
+    WALKAROUND_AB_CASE_IDS.map((id) => [id, preservedResult[id]?.verdict ?? "UNKNOWN"]),
+  );
+  if (!sameJson(status.caseVerdicts, expectedVerdicts)) {
+    fail(
+      `walkaround-ab: status caseVerdicts ${JSON.stringify(status.caseVerdicts)} ` +
+      `must match preserved results ${JSON.stringify(expectedVerdicts)}`,
+    );
   }
 }
 

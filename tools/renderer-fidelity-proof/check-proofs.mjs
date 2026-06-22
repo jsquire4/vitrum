@@ -10,6 +10,7 @@ const ARCHITECTURE_PATH = "plan/library-architecture.md";
 const HARDWARE_VALIDATION_PATH = "HARDWARE-VALIDATION-NEEDS.md";
 const GAP_EXECUTION_PLAN_PATH = "plan/gap-closure-execution-plan.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
+const PT_WEBGL2_BROWSER_MANIFEST_PATH = "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json";
 
 /**
  * @typedef {{
@@ -492,6 +493,104 @@ async function assertDznStatus(status, feature) {
 }
 
 /**
+ * @param {readonly Record<string, any>[] | undefined} items
+ * @param {string} key
+ * @param {string} owner
+ */
+function byKey(items, key, owner) {
+  /** @type {Map<string, Record<string, any>>} */
+  const map = new Map();
+  for (const item of items ?? []) {
+    const value = item[key];
+    if (typeof value !== "string" || value.length === 0) fail(`${owner}: invalid ${key}`);
+    if (map.has(value)) fail(`${owner}: duplicate ${key}: ${value}`);
+    map.set(value, item);
+  }
+  return map;
+}
+
+/**
+ * @param {Record<string, any>} row
+ * @param {Record<string, any>} manifestAsset
+ */
+async function assertPtWebgl2BrowserPassRow(row, manifestAsset) {
+  if (row.verdict !== "PASS") fail(`${row.assetId}: browser row must be PASS when top-level browser status is PASS`);
+  if (row.harness !== "gltf-browser-proof:pt-webgl2-real") fail(`${row.assetId}: browser row harness mismatch`);
+  if (row.backend !== "pt-webgl2") fail(`${row.assetId}: browser row backend mismatch`);
+  if (row.kind !== manifestAsset.kind) fail(`${row.assetId}: browser row kind mismatch`);
+  if (row.telemetry?.backend !== "pt-webgl2") fail(`${row.assetId}: browser telemetry backend mismatch`);
+  if (row.telemetry?.assetId !== manifestAsset.assetId) fail(`${row.assetId}: browser telemetry assetId mismatch`);
+  if (row.telemetry?.realAssetReady !== true) fail(`${row.assetId}: browser telemetry must prove realAssetReady=true`);
+  if ((row.telemetry?.textureDecodeReport?.mapCount ?? 0) < (manifestAsset.minTextures ?? 0)) {
+    fail(`${row.assetId}: browser textureDecodeReport.mapCount below manifest expectation`);
+  }
+  for (const ext of manifestAsset.requiredExtensions ?? []) {
+    if (!(row.telemetry?.extensionsUsed ?? []).includes(ext)) {
+      fail(`${row.assetId}: browser telemetry missing required extension ${ext}`);
+    }
+  }
+  for (const hook of manifestAsset.requiredHooks ?? []) {
+    if (row.telemetry?.browserDecodeHooks?.[hook] !== true) {
+      fail(`${row.assetId}: browser telemetry missing decode hook ${hook}`);
+    }
+  }
+  if (!(row.luminance > 0.005)) fail(`${row.assetId}: browser PASS row must be non-black`);
+  const structure = row.structure;
+  if (structure == null || typeof structure !== "object") fail(`${row.assetId}: browser PASS row must include visual structure`);
+  const thresholds = structure.thresholds ?? {};
+  if (!(structure.lumaRange >= (thresholds.minLumaRange ?? 12))) fail(`${row.assetId}: browser lumaRange below bound`);
+  if (!(structure.uniqueColorCount >= (thresholds.minUniqueColorCount ?? 16))) fail(`${row.assetId}: browser uniqueColorCount below bound`);
+  if (!(structure.nonDominantFraction >= (thresholds.minNonDominantFraction ?? 0.05))) {
+    fail(`${row.assetId}: browser nonDominantFraction below bound`);
+  }
+  if (row.golden?.pass !== true) fail(`${row.assetId}: browser golden comparison must pass`);
+  if (row.golden?.path !== manifestAsset.goldenPath) fail(`${row.assetId}: browser golden path mismatch`);
+  if (row.golden?.thresholds?.maxRmse !== 8 || row.golden?.thresholds?.maxMeanAbs !== 4 || row.golden?.thresholds?.maxAbs !== 48) {
+    fail(`${row.assetId}: browser golden thresholds mismatch`);
+  }
+  await assertPngHeader(row.golden.path, `${row.assetId}: browser golden`);
+}
+
+/** @param {string} path @param {string} label */
+async function assertPngHeader(path, label) {
+  const url = repoUrl(path);
+  const stat = await Deno.stat(url);
+  if (!stat.isFile || stat.size <= 8) fail(`${label}: PNG is missing or empty`);
+  const bytes = await Deno.readFile(url);
+  if (bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+    fail(`${label}: file is not a PNG`);
+  }
+}
+
+/**
+ * @param {Record<string, any>} status
+ * @param {Record<string, any>} manifest
+ */
+async function assertPtWebgl2BrowserPassStatus(status, manifest) {
+  if (status.harness !== "gltf-browser-proof:pt-webgl2-real") fail("pt-webgl2 browser status harness mismatch");
+  if (status.backend !== "pt-webgl2") fail("pt-webgl2 browser status backend mismatch");
+  if (manifest.kind !== "vitrum-browser-gltf-pt-webgl2-goldens") fail("pt-webgl2 browser manifest kind mismatch");
+  if (manifest.backend !== "pt-webgl2") fail("pt-webgl2 browser manifest backend mismatch");
+  if (!Array.isArray(manifest.assets) || manifest.assets.length !== 3) {
+    fail("pt-webgl2 browser manifest must contain textured, Draco, and meshopt rows");
+  }
+  if (status.assetCount != null && status.assetCount !== manifest.assets.length) {
+    fail("pt-webgl2 browser status assetCount differs from manifest assets");
+  }
+  const assetsById = byKey(manifest.assets, "assetId", "pt-webgl2 browser manifest");
+  const statusAssets = Array.isArray(status.assets) ? status.assets : [status];
+  const statusById = byKey(statusAssets, "assetId", "pt-webgl2 browser status");
+  for (const [assetId, asset] of assetsById) {
+    const row = statusById.get(assetId);
+    if (!row) fail(`pt-webgl2 browser status missing ${assetId}`);
+    await assertPtWebgl2BrowserPassRow(row, asset);
+  }
+  for (const assetId of statusById.keys()) {
+    if (!assetsById.has(assetId)) fail(`pt-webgl2 browser status has unexpected asset ${assetId}`);
+  }
+}
+
+/**
  * @param {{
  *   feature: string,
  *   files: Array<{ path: string, needles: string[] }>,
@@ -515,6 +614,7 @@ const architecture = await readText(ARCHITECTURE_PATH);
 const hardwareValidation = await readText(HARDWARE_VALIDATION_PATH);
 const gapExecutionPlan = await readText(GAP_EXECUTION_PLAN_PATH);
 const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
+const ptWebgl2BrowserManifest = JSON.parse(await readText(PT_WEBGL2_BROWSER_MANIFEST_PATH));
 
 if (!matrix.includes("| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebGPU) |")) {
   fail("renderer fidelity matrix must label the pt-webgpu column as full-tier proof");
@@ -559,6 +659,8 @@ if (ptWebgl2BrowserStatus.verdict === "HOST-BLOCKED") {
   }
 } else if (ptWebgl2BrowserStatus.verdict !== "PASS") {
   fail(`${PT_WEBGL2_BROWSER_STATUS_PATH} verdict must be PASS or HOST-BLOCKED`);
+} else {
+  await assertPtWebgl2BrowserPassStatus(ptWebgl2BrowserStatus, ptWebgl2BrowserManifest);
 }
 
 for (const staleNeedle of PLAYBOOK_FORBIDDEN_STALE_NEEDLES) {

@@ -22,7 +22,7 @@
       "id": "VQ-WALKAROUND-BEHAVIORAL-MATRIX",
       "title": "walkaround dzn behavioral matrix and transparent OIT visual proof",
       "kind": "validation",
-      "status": "committed-proof-green",
+      "status": "partial-proof-green",
       "command": "npm run behavioral-gate:dzn-status-check",
       "proofArtifacts": [
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-wh-default-status.json", "json": { "verdict": "PASS" } },
@@ -31,7 +31,7 @@
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-wh-transparent-oit-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/reference-renders/wh-transparent-oit-behavioral/wh-transparent-oit.dzn-full.png", "type": "png" }
       ],
-      "remaining": "Alpha-shadow and layered-transparent-transport quality A/B; true transparent GI participation remains an explicit future-contract decision."
+      "remaining": "Transparent OIT has committed golden proof; remaining walkaround option shards need row-specific semantic effect deltas or goldens beyond non-black smoke. Alpha-shadow and layered-transparent-transport quality A/B remain; true transparent GI participation remains an explicit future-contract decision."
     },
     {
       "id": "VQ-MUTATION-MATRIX",
