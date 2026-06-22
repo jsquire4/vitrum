@@ -179,6 +179,37 @@ const MIP_FILTER_INDEX: Readonly<Record<TextureMipFilterMode, number>> = {
   linear: 2,
 };
 
+function isUnsupportedTexCoord(ref: TextureRef | undefined): boolean {
+  if (ref?.handle == null) return false;
+  const texCoord = ref.texCoord ?? 0;
+  return texCoord !== 0 && texCoord !== 1;
+}
+
+function safeTexCoord(ref: TextureRef | undefined): number {
+  return isUnsupportedTexCoord(ref) ? 0 : (ref?.texCoord ?? 0);
+}
+
+function createUnsupportedTexCoordWarner(): (
+  materialIndex: number,
+  field: string,
+  ref: TextureRef | undefined,
+) => boolean {
+  const warned = new Set<string>();
+  return (materialIndex, field, ref): boolean => {
+    if (!isUnsupportedTexCoord(ref)) return false;
+    const texCoord = ref?.texCoord ?? 0;
+    const key = `${materialIndex}:${field}:${texCoord}`;
+    if (!warned.has(key)) {
+      warned.add(key);
+      console.warn(
+        `[pt-webgpu] ignoring material ${materialIndex} ${field}: texCoord ${texCoord} ` +
+          `is unsupported; only texCoord 0 and 1 are renderable by this backend.`,
+      );
+    }
+    return true;
+  };
+}
+
 export interface CollectedTextures {
   /** Unique sRGB-decoded texture sources (baseColor + emissive), upload order. */
   readonly sources: unknown[];
@@ -302,7 +333,7 @@ function writeUvMeta(
 ): void {
   const vecBase = b + (metaVec4Offset + mapSlot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP) * 4;
   const t = ref?.transform;
-  descriptors[vecBase] = ref?.texCoord ?? 0;
+  descriptors[vecBase] = safeTexCoord(ref);
   descriptors[vecBase + 1] = t?.offset?.[0] ?? 0;
   descriptors[vecBase + 2] = t?.offset?.[1] ?? 0;
   descriptors[vecBase + 3] = t?.rotation ?? 0;
@@ -382,12 +413,14 @@ export function applyMaterialTextureUvFitScales(
 export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>): CollectedTextures {
   const sources: unknown[] = [];
   const linearSources: unknown[] = [];
+  const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner();
   const makeIndexer = (list: unknown[], colorSpace: MaterialTextureColorSpace) => {
     const handleToIdx = new Map<unknown, number>();
     const usesByLayer: MaterialTextureLayerUse[][] = [];
     const index = (ref: TextureRef | undefined, materialIndex: number, field: string): number => {
       const handle = ref?.handle;
       if (handle == null) return -1;
+      if (warnUnsupportedTexCoord(materialIndex, field, ref)) return -1;
       let i = handleToIdx.get(handle);
       if (i === undefined) {
         i = list.length;
@@ -398,7 +431,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
         materialIndex,
         field,
         colorSpace,
-        texCoord: ref?.texCoord ?? 0,
+        texCoord: safeTexCoord(ref),
         ...(ref?.magFilter != null ? { magFilter: ref.magFilter } : {}),
         ...(ref?.minFilter != null ? { minFilter: ref.minFilter } : {}),
         ...(ref?.mipFilter != null ? { mipFilter: ref.mipFilter } : {}),
@@ -430,7 +463,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
     descriptors[b + 6] = m.opacity ?? 1;
-    descriptors[b + 7] = bc?.texCoord ?? 0;
+    descriptors[b + 7] = safeTexCoord(bc);
     const t = bc?.transform;
     descriptors[b + 8] = t?.offset?.[0] ?? 0;
     descriptors[b + 9] = t?.offset?.[1] ?? 0;

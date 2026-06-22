@@ -216,12 +216,50 @@ function layerMapFor(
   return (layerOf as TextureAtlasLayerMap)[colorSpace];
 }
 
+type TextureRefLike = { handle?: unknown; texCoord?: number };
+type UnsupportedTexCoordWarner = (
+  materialIndex: number,
+  field: string,
+  ref: TextureRefLike | undefined,
+) => boolean;
+
+function isUnsupportedTexCoord(ref: TextureRefLike | undefined): boolean {
+  if (ref?.handle == null) return false;
+  const texCoord = ref.texCoord ?? 0;
+  return texCoord !== 0 && texCoord !== 1;
+}
+
+function safeTexCoord(ref: TextureRefLike | undefined): number {
+  return isUnsupportedTexCoord(ref) ? 0 : (ref?.texCoord ?? 0);
+}
+
+function createUnsupportedTexCoordWarner(): UnsupportedTexCoordWarner {
+  const warned = new Set<string>();
+  return (materialIndex, field, ref): boolean => {
+    if (!isUnsupportedTexCoord(ref)) return false;
+    const texCoord = ref?.texCoord ?? 0;
+    const key = `${materialIndex}:${field}:${texCoord}`;
+    if (!warned.has(key)) {
+      warned.add(key);
+      console.warn(
+        `[pt-webgl2] ignoring material ${materialIndex} ${field}: texCoord ${texCoord} ` +
+          `is unsupported; only texCoord 0 and 1 are renderable by this backend.`,
+      );
+    }
+    return true;
+  };
+}
+
 function mapLayer(
-  ref: { handle?: unknown } | undefined,
+  ref: TextureRefLike | undefined,
   layerOf: TextureLayerLookup | undefined,
   colorSpace: TextureSampleColorSpace,
+  materialIndex: number,
+  field: string,
+  warnUnsupportedTexCoord: UnsupportedTexCoordWarner,
 ): number {
   if (ref?.handle == null || layerOf == null) return -1;
+  if (warnUnsupportedTexCoord(materialIndex, field, ref)) return -1;
   return layerMapFor(layerOf, colorSpace)?.get(ref.handle) ?? -1;
 }
 
@@ -303,31 +341,85 @@ interface LayerIds {
 }
 
 /** D10.8: Resolve all atlas layer ids for a material in one pass (avoids re-calling mapLayer). */
-function packLayerIds(m: MaterialSpec, layerOf: TextureLayerLookup | undefined): LayerIds {
+function packLayerIds(
+  m: MaterialSpec,
+  layerOf: TextureLayerLookup | undefined,
+  materialIndex: number,
+  warnUnsupportedTexCoord: UnsupportedTexCoordWarner,
+): LayerIds {
   return {
-    baseColor: mapLayer(m.baseColorMap, layerOf, 'srgb'),
-    metal: mapLayer(m.metallicMap, layerOf, 'linear'),
-    rough: mapLayer(m.roughnessMap, layerOf, 'linear'),
-    transmission: mapLayer(m.transmissionMap, layerOf, 'linear'),
-    emissive: mapLayer(m.emissiveMap, layerOf, 'srgb'),
-    normal: mapLayer(m.normalMap, layerOf, 'linear'),
-    alpha: mapLayer(m.alphaMap, layerOf, 'linear'),
-    clearcoat: mapLayer(m.clearcoatMap, layerOf, 'linear'),
-    clearcoatRoughness: mapLayer(m.clearcoatRoughnessMap, layerOf, 'linear'),
-    clearcoatNormal: mapLayer(m.clearcoatNormalMap, layerOf, 'linear'),
-    sheenColor: mapLayer(m.sheenColorMap, layerOf, 'srgb'),
-    sheenRoughness: mapLayer(m.sheenRoughnessMap, layerOf, 'linear'),
-    iridescence: mapLayer(m.iridescenceMap, layerOf, 'linear'),
-    iridescenceThickness: mapLayer(m.iridescenceThicknessMap, layerOf, 'linear'),
-    specularColor: mapLayer(m.specularColorMap, layerOf, 'srgb'),
-    specularIntensity: mapLayer(m.specularIntensityMap, layerOf, 'linear'),
-    ao: mapLayer(m.aoMap, layerOf, 'linear'),
-    lightMap: mapLayer(m.lightMap, layerOf, 'linear'),
-    bump: mapLayer(m.bumpMap, layerOf, 'linear'),
-    anisotropy: mapLayer(m.anisotropyMap, layerOf, 'linear'),
-    thickness: mapLayer(m.thicknessMap, layerOf, 'linear'),
-    frontLayerNormal: mapLayer(m.frontLayer?.normalMap, layerOf, 'linear'),
-    backLayerNormal: mapLayer(m.backLayer?.normalMap, layerOf, 'linear'),
+    baseColor: mapLayer(m.baseColorMap, layerOf, 'srgb', materialIndex, 'baseColorMap', warnUnsupportedTexCoord),
+    metal: mapLayer(m.metallicMap, layerOf, 'linear', materialIndex, 'metallicMap', warnUnsupportedTexCoord),
+    rough: mapLayer(m.roughnessMap, layerOf, 'linear', materialIndex, 'roughnessMap', warnUnsupportedTexCoord),
+    transmission: mapLayer(m.transmissionMap, layerOf, 'linear', materialIndex, 'transmissionMap', warnUnsupportedTexCoord),
+    emissive: mapLayer(m.emissiveMap, layerOf, 'srgb', materialIndex, 'emissiveMap', warnUnsupportedTexCoord),
+    normal: mapLayer(m.normalMap, layerOf, 'linear', materialIndex, 'normalMap', warnUnsupportedTexCoord),
+    alpha: mapLayer(m.alphaMap, layerOf, 'linear', materialIndex, 'alphaMap', warnUnsupportedTexCoord),
+    clearcoat: mapLayer(m.clearcoatMap, layerOf, 'linear', materialIndex, 'clearcoatMap', warnUnsupportedTexCoord),
+    clearcoatRoughness: mapLayer(
+      m.clearcoatRoughnessMap,
+      layerOf,
+      'linear',
+      materialIndex,
+      'clearcoatRoughnessMap',
+      warnUnsupportedTexCoord,
+    ),
+    clearcoatNormal: mapLayer(
+      m.clearcoatNormalMap,
+      layerOf,
+      'linear',
+      materialIndex,
+      'clearcoatNormalMap',
+      warnUnsupportedTexCoord,
+    ),
+    sheenColor: mapLayer(m.sheenColorMap, layerOf, 'srgb', materialIndex, 'sheenColorMap', warnUnsupportedTexCoord),
+    sheenRoughness: mapLayer(
+      m.sheenRoughnessMap,
+      layerOf,
+      'linear',
+      materialIndex,
+      'sheenRoughnessMap',
+      warnUnsupportedTexCoord,
+    ),
+    iridescence: mapLayer(m.iridescenceMap, layerOf, 'linear', materialIndex, 'iridescenceMap', warnUnsupportedTexCoord),
+    iridescenceThickness: mapLayer(
+      m.iridescenceThicknessMap,
+      layerOf,
+      'linear',
+      materialIndex,
+      'iridescenceThicknessMap',
+      warnUnsupportedTexCoord,
+    ),
+    specularColor: mapLayer(m.specularColorMap, layerOf, 'srgb', materialIndex, 'specularColorMap', warnUnsupportedTexCoord),
+    specularIntensity: mapLayer(
+      m.specularIntensityMap,
+      layerOf,
+      'linear',
+      materialIndex,
+      'specularIntensityMap',
+      warnUnsupportedTexCoord,
+    ),
+    ao: mapLayer(m.aoMap, layerOf, 'linear', materialIndex, 'aoMap', warnUnsupportedTexCoord),
+    lightMap: mapLayer(m.lightMap, layerOf, 'linear', materialIndex, 'lightMap', warnUnsupportedTexCoord),
+    bump: mapLayer(m.bumpMap, layerOf, 'linear', materialIndex, 'bumpMap', warnUnsupportedTexCoord),
+    anisotropy: mapLayer(m.anisotropyMap, layerOf, 'linear', materialIndex, 'anisotropyMap', warnUnsupportedTexCoord),
+    thickness: mapLayer(m.thicknessMap, layerOf, 'linear', materialIndex, 'thicknessMap', warnUnsupportedTexCoord),
+    frontLayerNormal: mapLayer(
+      m.frontLayer?.normalMap,
+      layerOf,
+      'linear',
+      materialIndex,
+      'frontLayer.normalMap',
+      warnUnsupportedTexCoord,
+    ),
+    backLayerNormal: mapLayer(
+      m.backLayer?.normalMap,
+      layerOf,
+      'linear',
+      materialIndex,
+      'backLayer.normalMap',
+      warnUnsupportedTexCoord,
+    ),
   };
 }
 
@@ -694,8 +786,8 @@ function packTextureTransforms(
   const backLayerSampler = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 6) * 4;
   writeSamplerPolicy(data, backLayerSampler, m.backLayer?.normalMap);
   const layerUv = base + (MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 7) * 4;
-  data[layerUv] = m.frontLayer?.normalMap?.texCoord ?? 0;
-  data[layerUv + 1] = m.backLayer?.normalMap?.texCoord ?? 0;
+  data[layerUv] = ids.frontLayerNormal >= 0 ? safeTexCoord(m.frontLayer?.normalMap) : 0;
+  data[layerUv + 1] = ids.backLayerNormal >= 0 ? safeTexCoord(m.backLayer?.normalMap) : 0;
   data[layerUv + 2] = 0;
   data[layerUv + 3] = 0;
 }
@@ -727,6 +819,7 @@ export function packMaterialsTexture(
   const pixelCount = materialCount * MATERIAL_PIXELS;
   const dim = squareDim(pixelCount);
   const data = new Float32Array(dim * dim * 4);
+  const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner();
 
   let index = 0;
   for (let i = 0; i < materialCount; i += 1) {
@@ -736,7 +829,7 @@ export function packMaterialsTexture(
       : source) as PackedMaterialSpec;
     const base = index; // first float of this material's block
 
-    const ids = packLayerIds(m, layerOf);
+    const ids = packLayerIds(m, layerOf, i, warnUnsupportedTexCoord);
 
     // samples 0..19: scalar fields, layer ids, SSS, thin-film metadata
     index = packScalarSlots(data, index, m, ids);

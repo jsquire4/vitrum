@@ -4,7 +4,7 @@
 // `material_struct` decoder reads (verified against `MaterialsTexture.js` +
 // `material_struct.glsl.js`). Any divergence here is a real render bug.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import { evaluateSpectrum } from '@vitrum/shared-samplers';
 import {
@@ -30,6 +30,27 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     // Single-sourced with every GLSL fetch site via glsl/shader/structs/materialStride.js
     // — see materialStrideParity.test.ts for the packer↔shader guard.
     expect(MATERIAL_PIXELS).toBe(130);
+  });
+
+  it('drops direct-core maps that request unsupported high UV sets', () => {
+    const handle = {};
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      baseColorMap: { handle, texCoord: 2 },
+      normalMap: { handle, texCoord: 3 },
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const data = packMaterialsTexture([material], new Map<unknown, number>([[handle, 7]])).data;
+      expect(data[texel(0, 0, 3)]).toBe(-1);
+      expect(data[texel(0, 4, 0)]).toBe(-1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('baseColorMap: texCoord 2 is unsupported'));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('normalMap: texCoord 3 is unsupported'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('packs a known MaterialSpec to the exact load-bearing texels', () => {

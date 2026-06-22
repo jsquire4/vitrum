@@ -300,6 +300,7 @@
       "command": "npm run learned-systems-proof-check",
       "proofArtifacts": [
         { "path": "tools/learned-systems/check-status.mjs" },
+        { "path": "tools/learned-systems/qualityManifestValidator.mjs" },
         {
           "path": "tools/learned-systems/learned-systems-status.json",
           "json": {
@@ -308,10 +309,14 @@
             "neuralDenoiser.productionCheckpoint": null,
             "neuralDenoiser.productionDefaultEligible": false,
             "nrc.defaultEnabled": false,
-            "nrc.productionDefaultEligible": false
+            "nrc.productionDefaultEligible": false,
+            "gris.defaultEnabled": false,
+            "gris.productionDefaultEligible": false
           }
         },
         { "path": "tools/neural-denoiser-training/checkpoints/manifest.json" },
+        { "path": "scripts/__tests__/learned-systems-status.test.mjs" },
+        { "path": "scripts/__tests__/learned-systems-quality-manifest.test.mjs" },
         { "path": "packages/walkaround-hybrid/src/HybridEngineConfig.ts" },
         { "path": "packages/walkaround-hybrid/src/HybridEngineOptions.ts" },
         { "path": "packages/walkaround-hybrid/src/HybridEngine.ts" },
@@ -320,6 +325,7 @@
         { "path": "packages/walkaround-hybrid/src/__tests__/learnedSystemConfig.test.ts" },
         { "path": "packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts" },
         { "path": "packages/walkaround-hybrid/src/__tests__/hybridLiteTier.test.ts" },
+        { "path": "packages/walkaround-hybrid/src/__tests__/grisVariantPin.test.ts" },
         { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcStructuralGate.test.ts" },
         { "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts" },
         { "path": "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts" },
@@ -417,7 +423,7 @@
       "title": "arbitrary multi-UV arrays",
       "status": "future-contract",
       "codeNowBounded": false,
-      "currentContract": "Single high TEXCOORD_N lossless remap is implemented; true arbitrary UV arrays require a new core/backend contract.",
+      "currentContract": "Single high TEXCOORD_N lossless remap is implemented; direct core PT backend packers warn/drop texCoord > 1 maps; true arbitrary UV arrays require a new core/backend contract.",
       "decisionBlockers": [
         "Extend core primitive geometry and TextureRef contracts beyond uv0/uv1.",
         "Rework shared packers, mutation patches, tangent generation, and backend shader descriptor layouts for arbitrary UV indexing."

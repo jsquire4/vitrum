@@ -10,6 +10,7 @@ import {
   loadWeightsFromArrayBuffer,
   validateWeightsForSpec,
 } from "../../packages/walkaround-hybrid/src/neural/weights.ts";
+import { validateProductionQualityManifest } from "./qualityManifestValidator.mjs";
 
 /** @typedef {import("../../packages/walkaround-hybrid/src/neural/weights.ts").ModelWeights} ModelWeights */
 /**
@@ -259,140 +260,14 @@ async function assertNoSilentProductionCheckpoint(manifest) {
   }
 
   if (productionEntries.length > 0) {
-    assertProductionQualityManifest(
+    validateProductionQualityManifest({
       qualityManifest,
       productionEntries,
-      manifest.productionCheckpoint,
+      productionCheckpoint: manifest.productionCheckpoint,
       productionLike,
-    );
-  }
-}
-
-/**
- * @param {Record<string, any>} qualityManifest
- * @param {CheckpointManifestEntry[]} productionEntries
- * @param {string | null} productionCheckpoint
- * @param {string[]} productionLike
- */
-function assertProductionQualityManifest(
-  qualityManifest,
-  productionEntries,
-  productionCheckpoint,
-  productionLike,
-) {
-  if (productionCheckpoint == null) {
-    fail(
-      `production-like checkpoint(s) ${productionLike.join(", ")} require manifest.productionCheckpoint ` +
-      "to identify the production default",
-    );
-  }
-  const productionEntry = productionEntries.find((entry) => entry.name === productionCheckpoint);
-  if (productionEntry == null) {
-    fail(`quality manifest productionCheckpoint ${productionCheckpoint} is not a production checkpoint entry`);
-  }
-
-  const checkpointProof = qualityManifest.checkpoint;
-  if (checkpointProof == null || typeof checkpointProof !== "object") {
-    fail("production neural quality manifest must include a checkpoint identity object");
-  }
-  const proof = /** @type {Record<string, any>} */ (checkpointProof);
-  const expectedIdentity = {
-    name: productionEntry.name,
-    sha256: productionEntry.sha256,
-    sizeBytes: productionEntry.sizeBytes,
-    paramCount: productionEntry.paramCount ?? EXPECTED_PARAM_COUNT,
-  };
-  for (const [key, expectedValue] of Object.entries(expectedIdentity)) {
-    if (proof[key] !== expectedValue) {
-      fail(`production neural quality manifest checkpoint.${key} must be ${String(expectedValue)}`);
-    }
-  }
-
-  const metrics = qualityManifest.metrics;
-  if (metrics == null || typeof metrics !== "object") {
-    fail("production neural quality manifest must include bounded quality metrics");
-  }
-  const metricRecord = /** @type {Record<string, any>} */ (metrics);
-  const hasBoundedMetric =
-    finiteMetric(metricRecord.psnrDb) ||
-    finiteMetric(metricRecord.ssim) ||
-    finiteMetric(metricRecord.meanAbs) ||
-    finiteMetric(metricRecord.rmse);
-  if (!hasBoundedMetric) {
-    fail("production neural quality manifest metrics must include at least one finite numeric quality bound");
-  }
-  if (typeof qualityManifest.hardware !== "string" || qualityManifest.hardware.length === 0) {
-    fail("production neural quality manifest must name the validation hardware/backend");
-  }
-  if (typeof qualityManifest.generatedAt !== "string" || qualityManifest.generatedAt.length === 0) {
-    fail("production neural quality manifest must include generatedAt");
-  }
-  const dataset = qualityManifest.dataset;
-  if (dataset == null || typeof dataset !== "object") {
-    fail("production neural quality manifest must identify the validation dataset");
-  }
-  const datasetRecord = /** @type {Record<string, any>} */ (dataset);
-  if (typeof datasetRecord.id !== "string" || datasetRecord.id.length === 0) {
-    fail("production neural quality manifest dataset.id must be a non-empty string");
-  }
-  if (!Number.isInteger(datasetRecord.sceneCount) || datasetRecord.sceneCount <= 0) {
-    fail("production neural quality manifest dataset.sceneCount must be positive");
-  }
-  if (!Number.isInteger(datasetRecord.sampleCount) || datasetRecord.sampleCount <= 0) {
-    fail("production neural quality manifest dataset.sampleCount must be positive");
-  }
-  const comparison = qualityManifest.comparison;
-  if (comparison == null || typeof comparison !== "object") {
-    fail("production neural quality manifest must include an A/B comparison descriptor");
-  }
-  const comparisonRecord = /** @type {Record<string, any>} */ (comparison);
-  if (typeof comparisonRecord.baseline !== "string" || comparisonRecord.baseline.length === 0) {
-    fail("production neural quality manifest comparison.baseline must be a non-empty string");
-  }
-  if (typeof comparisonRecord.candidate !== "string" || comparisonRecord.candidate.length === 0) {
-    fail("production neural quality manifest comparison.candidate must be a non-empty string");
-  }
-  const thresholds = qualityManifest.thresholds;
-  if (thresholds == null || typeof thresholds !== "object") {
-    fail("production neural quality manifest must include metric thresholds");
-  }
-  const thresholdRecord = /** @type {Record<string, any>} */ (thresholds);
-  const boundedMetricNames = ["psnrDb", "ssim", "meanAbs", "rmse"].filter((name) =>
-    finiteMetric(metricRecord[name])
-  );
-  for (const name of boundedMetricNames) {
-    if (!finiteMetric(thresholdRecord[name])) {
-      fail(`production neural quality manifest threshold.${name} must be finite when metrics.${name} is reported`);
-    }
-    if (!qualityMetricPassesThreshold(name, metricRecord[name], thresholdRecord[name])) {
-      fail(
-        `production neural quality manifest metric ${name}=${metricRecord[name]} ` +
-        `does not satisfy threshold ${thresholdRecord[name]}`,
-      );
-    }
-  }
-}
-
-/** @param {unknown} value */
-function finiteMetric(value) {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-/**
- * @param {string} name
- * @param {number} metric
- * @param {number} threshold
- */
-function qualityMetricPassesThreshold(name, metric, threshold) {
-  switch (name) {
-    case "psnrDb":
-    case "ssim":
-      return metric >= threshold;
-    case "meanAbs":
-    case "rmse":
-      return metric <= threshold;
-    default:
-      fail(`unknown production neural quality metric ${name}`);
+      expectedParamCount: EXPECTED_PARAM_COUNT,
+      fail,
+    });
   }
 }
 
@@ -430,6 +305,14 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
       remaining:
         "Run quality/convergence A/B and make a default-tier decision before promoting NRC beyond opt-in.",
     },
+    gris: {
+      defaultEnabled: false,
+      optInFlag: "restirPtReuse",
+      estimator: "unbiased-when-enabled",
+      productionDefaultEligible: false,
+      remaining:
+        "Run GRIS-on unbiasedness A/B and biased-default error quantification before any default-tier promotion.",
+    },
     ppg: {
       defaultEnabled: false,
       remaining:
@@ -465,6 +348,7 @@ async function assertRuntimeTruthfulnessGuards() {
     [config, "let reason: DenoiserAutoResolutionReason = 'no-host-model-assets'", "auto denoiser fallback disclosure"],
     [config, "validateWeightsForSpec(WALKAROUND_DENOISER_UNET_SPEC", "neural checkpoint shape validation before construction"],
     [config, "opts.nrcEnabled === true ? 1 : 0", "NRC opt-in config bit"],
+    [config, "restirPtReuse: opts.restirPtReuse === true ? 1 : 0", "GRIS opt-in config bit"],
     [engine, "walkaround-hybrid.nrc-experimental-biased", "NRC experimental warning code"],
     [engine, "defaultEnabled: false", "NRC warning defaultEnabled=false"],
     [engine, "estimator: 'biased'", "NRC warning estimator=biased"],
@@ -476,6 +360,8 @@ async function assertRuntimeTruthfulnessGuards() {
     [engine, "walkaround-hybrid-nrc-biased-cache", "NRC opt-in experimental feature"],
     [engine, "walkaround-hybrid-neural-denoiser-host-weights", "neural opt-in experimental feature"],
     [options, "NRC is a BIASED estimator", "NRC option bias disclosure"],
+    [options, "readonly restirPtReuse?: boolean", "GRIS restirPtReuse public option"],
+    [options, "V19 GPU unbiasedness validation", "GRIS validation caveat"],
     [pipeline, "export function assertNrcDeviceCapable", "NRC device capability gate"],
     [pipeline, "maxBindGroups < NRC_REQUIRED_MAX_BIND_GROUPS", "NRC maxBindGroups guard"],
     [pipeline, "maxWgStorage < NRC_REQUIRED_WORKGROUP_STORAGE_BYTES", "NRC workgroup-storage guard"],
@@ -624,6 +510,16 @@ async function assertBehavioralProofCoverage() {
       ],
     },
     {
+      path: "packages/walkaround-hybrid/src/__tests__/grisVariantPin.test.ts",
+      needles: [
+        "default (no restirPtReuse) stores 0 (OFF",
+        "restirPtReuse: true stores 1 (ON",
+        "restirPtReuse: true is compatible with the full tier",
+        "restirPtReuse: true is compatible with the lite tier",
+        "default OFF is stable across qualityTier values",
+      ],
+    },
+    {
       path: "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCoordinatorDiagnostics.test.ts",
       needles: [
         "routes maxSpatialCells import mismatch through structured warnings",
@@ -640,6 +536,18 @@ async function assertBehavioralProofCoverage() {
         "PPGUpdatePass gates training on ppgEnabled and ppgTrainThisFrame",
         "MAX_DTREE_NODES_PER_CELL",
         "RESERVOIR_GI_STRIDE_LOCAL",
+      ],
+    },
+    {
+      path: "scripts/__tests__/learned-systems-quality-manifest.test.mjs",
+      needles: [
+        "passes when identity, dataset, hardware, and thresholds are complete",
+        "rejects mismatched checkpoint identity",
+        "rejects missing hardware metadata",
+        "rejects missing finite metrics",
+        "rejects incomplete dataset metadata",
+        "rejects failed higher-is-better thresholds",
+        "rejects failed lower-is-better thresholds",
       ],
     },
   ];
@@ -669,5 +577,5 @@ const productionCount = checkpointManifest.checkpoints.filter((entry) => entry.r
 await maybeWriteStatus(checkpointManifest, researchCount, productionCount);
 console.log(
   `[learned-systems-proof-check] PASS ` +
-  `(${researchCount} research checkpoints, ${productionCount} production checkpoints validate; neural/NRC remain opt-in and non-default; behavioral proof coverage pinned)`,
+  `(${researchCount} research checkpoints, ${productionCount} production checkpoints validate; neural/GRIS/NRC/PPG remain opt-in and non-default; behavioral proof coverage pinned)`,
 );

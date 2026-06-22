@@ -801,8 +801,11 @@ const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SY
 if (learnedRow == null) fail("validationQueue missing VQ-LEARNED-SYSTEMS");
 for (const path of [
   "tools/learned-systems/check-status.mjs",
+  "tools/learned-systems/qualityManifestValidator.mjs",
   "tools/learned-systems/learned-systems-status.json",
   "tools/neural-denoiser-training/checkpoints/manifest.json",
+  "scripts/__tests__/learned-systems-status.test.mjs",
+  "scripts/__tests__/learned-systems-quality-manifest.test.mjs",
   "packages/walkaround-hybrid/src/HybridEngineConfig.ts",
   "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
   "packages/walkaround-hybrid/src/HybridEngine.ts",
@@ -811,6 +814,7 @@ for (const path of [
   "packages/walkaround-hybrid/src/__tests__/learnedSystemConfig.test.ts",
   "packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts",
   "packages/walkaround-hybrid/src/__tests__/hybridLiteTier.test.ts",
+  "packages/walkaround-hybrid/src/__tests__/grisVariantPin.test.ts",
   "packages/walkaround-hybrid/src/pipeline/__tests__/nrcStructuralGate.test.ts",
   "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts",
   "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts",
