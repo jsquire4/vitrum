@@ -128,7 +128,7 @@
       "command": "npm run gltf-browser-proof-check",
       "promotionCommand": "npm run gltf-browser-proof-check:required",
       "proofArtifacts": [
-        { "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json", "json": { "verdict": "HOST-BLOCKED", "captureMode": "canvas-first" } },
+        { "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json", "json": { "verdict": "HOST-BLOCKED", "captureMode": "engine-first" } },
         { "path": "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json" }
       ],
       "remaining": "Needs a browser host that can return engine/canvas pixels for textured, Draco, and meshopt real assets."

@@ -2007,12 +2007,13 @@ readback timeouts immediately, retains browser screenshot/data-url fallbacks for
 explicit modes, and supports `VITRUM_GLTF_BROWSER_STATUS_PATH` so single-asset
 probe runs can write temporary status files without disturbing the committed
 proof artifact.
-2026-06-22 follow-up 2: the committed artifact now uses `canvas-first` mode so
-the fail-closed status records all browser pixel-readback attempts before the
-host-block verdict: clipped page screenshot, locator screenshot, then canvas
-data URL. The proof checker still rejects vague `HOST-BLOCKED` rows that lack
-structured capture attempts, and the required promotion gate still fails until
-real PNG/golden `PASS` rows are captured for all three assets.
+2026-06-22 follow-up 2: the committed artifact was refreshed through the
+default `engine-first` mode. All three real-asset pages reach ready telemetry
+with texture/decode proof intact, but browser `captureFrame({ colorSpace:
+'output' })` readback times out at `engine-captureFrame-output` on this WSL
+Playwright host. The proof checker still rejects vague `HOST-BLOCKED` rows that
+lack structured capture attempts, and the required promotion gate still fails
+until real PNG/golden `PASS` rows are captured for all three assets.
 pt-webgl2 now dedupes repeated sampler-policy approximation warnings at the
 engine warning surface, keeping this browser proof lane focused on one stable
 structured diagnostic per material-map slot instead of repeating it on capture
