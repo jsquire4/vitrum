@@ -255,10 +255,10 @@ pre-tonemap `resolvedTexture` through `engine.captureFrame({ colorSpace:"linear"
 luminance statistics are therefore linear-HDR float32 values rather than display-encoded
 8-bit swap-chain samples.
 
-**Current WSL validation status (2026-06-21):** the latest committed native-Deno
+**Current WSL validation status (2026-06-22):** the latest committed native-Deno
 status is `PASS-PARTIAL` from a completed full-suite run. It records SUN as `PASS`
 with receiver ratio = 0.99948; the wrapper keeps the aggregate status
-partial because GLASS remains `SMOKE` and GLOSSY remains `FINDING`. The wrapper can still record
+partial because GLOSSY remains `FINDING`. The wrapper can still record
 `HOST-BLOCKED` if Deno/wgpu-hal panics or times out before a verdict; slow
 native-Deno hosts can raise the default 180-second wrapper budget with
 `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
@@ -270,7 +270,7 @@ fixture compares a diffuse-only visible directional receiver against
 sun shadow ray for that case. Shadow-visibility promotion remains a separate
 transport proof.
 
-### Preserved Linear-HDR Results (2026-06-21)
+### Preserved Linear-HDR Results (2026-06-22)
 
 The committed `walkaround-ab-results.json` values below are post-denoise,
 pre-tonemap linear-HDR float32 captures. They supersede the old 8-bit
@@ -327,25 +327,26 @@ Render time: 7.9 s.
 
 ### GLASS — Glass-GI Transmitted Light Validation
 
-**Verdict: SMOKE** — the through-glass region is non-black, but the
-glass/no-glass captures are indistinguishable at this SPP (`delta=0`), so this
-is not material-transport promotion evidence.
+**Verdict: PASS** — the through-glass region is non-black, above the conservative
+ratio threshold, and materially different from the no-glass control in the
+committed linear-HDR capture.
 
-Cornell+glass pane (transmission=1.0, z=0.5) vs Cornell-no-glass, ceiling emitter, SPP=16.
+Cornell+glass pane (transmission=1.0, z=1.5, Beer-tinted) vs Cornell-no-glass,
+ceiling emitter, SPP=16.
 
 | Metric | Value |
 |--------|-------|
-| Glass centre lum | 0.1541 |
-| No-glass centre lum | 0.1541 |
-| Centre ratio | 1.000 |
-| Centre delta | 0.0000 |
+| Glass centre lum | 2.8516 |
+| No-glass centre lum | 0.1539 |
+| Centre ratio | 18.523 |
+| Centre delta | 2.6976 |
 
-The current linear-HDR harness no longer has the old 8-bit readback caveat, but
-this scene is only a conservative non-black/through-glass smoke. Because the two
-arms are identical within the committed measurement, it cannot prove that glass
-transport changed the render.
+The current linear-HDR harness no longer has the old 8-bit readback caveat, and
+the visible through-glass crop now proves a material transport delta for this
+bounded scene. It is still one low-SPP validation scene, not a global promotion
+for every transparent transport case.
 
-Render time: 8.5 s for the pair.
+Render time: 14.0 s for the pair.
 
 ### GLOSSY — B2 Metallic Probe Check (Specular Indirect)
 
@@ -369,7 +370,11 @@ dead branch: the diffuse control keeps the same base color and the measured
 delta isolates material behavior. It is still not a glossy-reference material
 furnace. The walkaround DDGI atlas stores cosine-weighted irradiance, not
 GGX-filtered radiance, and the low-SPP mirror arm can legitimately reflect a
-darker scene direction than the diffuse control. Render time: 9.1 s.
+darker scene direction than the diffuse control. The committed result carries
+`promotion.defaultReady:false`, blocker
+`ddgi-irradiance-cache-not-ggx-filtered-radiance`, and required evidence
+`material-furnace-reference-ab-and-browser-real-adapter-recapture`.
+Render time: 14.2 s.
 
 ### Summary
 
@@ -377,7 +382,7 @@ darker scene direction than the diffuse control. Render time: 9.1 s.
 |-----|---------|-----------|
 | A8 GRIS bias | NEGLIGIBLE | overall delta = -0.000020 (0.03% of mean) |
 | SUN analytic | PASS | receiver ratio = 0.99948 |
-| GLASS GI | SMOKE | centre ratio = 1.000; delta = 0 |
+| GLASS GI | PASS | centre ratio = 18.523; delta = 2.6976 |
 | GLOSSY probe | FINDING | sample ratio = 0.005; material-effect observed |
 
 ### Legacy 8-bit Baseline (2026-06-10)

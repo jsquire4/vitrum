@@ -774,6 +774,11 @@ async function runGlossy() {
     expectedMinFloorRatio: 0.8,
     minSignalDelta: MIN_SIGNAL_DELTA,
     materialEffectObserved,
+    promotion: {
+      defaultReady: false,
+      blocker: "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+      requiredEvidence: "material-furnace-reference-ab-and-browser-real-adapter-recapture",
+    },
     renderTimeSec: parseFloat(dt),
     verdict,
     notes: [

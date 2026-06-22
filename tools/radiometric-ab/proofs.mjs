@@ -223,6 +223,11 @@ export const WALKAROUND_AB_RESULT_PROOF = {
       // back-wall center crop, not the geometric floor.
       minFloorRatio: 0.8,
       minSignalDeltaForPass: 1e-4,
+      promotion: {
+        defaultReady: false,
+        blocker: "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+        requiredEvidence: "material-furnace-reference-ab-and-browser-real-adapter-recapture",
+      },
     },
   },
 };

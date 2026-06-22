@@ -561,6 +561,37 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 17 — Walkaround Glossy Finding Proof Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of the walkaround `GLOSSY`
+radiometric A/B row found the rich-material GI code path is present but
+intentionally approximate: shade owns a GGX specular-indirect term, DDGI owns a
+reflected-direction SH complement, and the committed A/B result is a
+non-promotable `FINDING` because DDGI stores cosine-weighted irradiance rather
+than GGX-filtered radiance.
+
+Implementation:
+
+- Added structured promotion metadata to the walkaround glossy result and
+  harness output: `promotion.defaultReady:false`, blocker
+  `ddgi-irradiance-cache-not-ggx-filtered-radiance`, and required evidence
+  `material-furnace-reference-ab-and-browser-real-adapter-recapture`.
+- Strengthened `radiometric-ab:proof-check` so a glossy `FINDING` must carry
+  that exact non-promotion metadata.
+- Strengthened the Road validation queue JSON expectations for
+  `VQ-WALKAROUND-RADIOMETRIC-AB`.
+- Reconciled stale `tools/radiometric-ab/README.md` text: GLASS is now the
+  committed `PASS`; the aggregate remains `PASS-PARTIAL` only because GLOSSY is
+  still a finding.
+
+Focused gates:
+
+```bash
+npm run radiometric-ab:proof-check
+npm run road-to-100-validation-status
+git diff --check
+```
+
 ### Wave 16 — BDPT Multi-Vertex Research Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of the opt-in

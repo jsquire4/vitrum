@@ -779,6 +779,21 @@ function checkWalkaroundGlossy(proof, result) {
     if (result.materialEffectObserved !== true) {
       fail("walkaround-ab GLOSSY: FINDING requires materialEffectObserved=true");
     }
+    if (result.promotion?.defaultReady !== proof.promotion?.defaultReady) {
+      fail("walkaround-ab GLOSSY: FINDING must carry promotion.defaultReady=false");
+    }
+    if (result.promotion?.blocker !== proof.promotion?.blocker) {
+      fail(
+        `walkaround-ab GLOSSY: blocker ${result.promotion?.blocker} ` +
+        `differs from ${proof.promotion?.blocker}`,
+      );
+    }
+    if (result.promotion?.requiredEvidence !== proof.promotion?.requiredEvidence) {
+      fail(
+        `walkaround-ab GLOSSY: requiredEvidence ${result.promotion?.requiredEvidence} ` +
+        `differs from ${proof.promotion?.requiredEvidence}`,
+      );
+    }
   }
 }
 
