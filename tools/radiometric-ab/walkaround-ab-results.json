@@ -25,13 +25,19 @@
       "leftWall": 0.000004769051508474523,
       "rightWall": -6.802122701279889e-7
     },
-    "renderTimeSec": 16.4,
+    "renderTimeSec": 16.1,
     "verdict": "NEGLIGIBLE",
     "notes": [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
       "Delta is (unbiased - biased). Positive = biased underestimates; negative = biased overestimates.",
       "Lavapipe (software Vulkan) — MC variance at SPP=16 is ~1-3% of mean."
-    ]
+    ],
+    "qualityProfile": "baseline",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 16
+    }
   },
   "sun": {
     "id": "SUN",
@@ -66,7 +72,7 @@
     "floorRatioToAnalytic": 0.9994843571067382,
     "analyticAgreement": true,
     "shadowAssertionAuthored": false,
-    "renderTimeSec": 7.9,
+    "renderTimeSec": 7,
     "verdict": "PASS",
     "notes": [
       "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
@@ -74,7 +80,13 @@
       "Sun proof disables sky, GTAO, denoising, and sun shadow rays; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.",
       "The old left-wall shadow assertion was removed because the shared camera windows hit the visible back-wall receiver, not a shadow-only wall.",
       "Lavapipe — SPP=16."
-    ]
+    ],
+    "qualityProfile": "baseline",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 16
+    }
   },
   "glass": {
     "id": "GLASS",
@@ -99,7 +111,7 @@
     },
     "minSignalDelta": 0.0001,
     "materialEffectObserved": true,
-    "renderTimeSec": 14,
+    "renderTimeSec": 15.4,
     "verdict": "PASS",
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
@@ -107,7 +119,13 @@
       "The glass pane is camera-side of the z=1 back wall (z=1.5), so the centre crop actually traverses it.",
       "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
       "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone."
-    ]
+    ],
+    "qualityProfile": "baseline",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 16
+    }
   },
   "glossy": {
     "id": "GLOSSY",
@@ -141,7 +159,7 @@
       "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
       "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
     },
-    "renderTimeSec": 14.2,
+    "renderTimeSec": 13.9,
     "verdict": "FINDING",
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
@@ -150,6 +168,12 @@
       "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
       "Lavapipe SPP=16; metallic-mirror at low SPP has high variance and can legitimately reflect a darker direction than the diffuse control.",
       "FINDING means the material path is live and visibly changes the render, but this capture is a do-not-promote rich-material GI result."
-    ]
+    ],
+    "qualityProfile": "baseline",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 16
+    }
   }
 }

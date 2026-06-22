@@ -1,7 +1,7 @@
 {
   "ab": "sobol-equal-frame-rmse",
   "verdict": "PASS",
-  "generatedAt": "2026-06-22T03:22:38.340Z",
+  "generatedAt": "2026-06-22T17:51:57.947Z",
   "resolution": {
     "width": 80,
     "height": 80
@@ -37,13 +37,13 @@
       "referenceFrames": 40,
       "candidateFrames": 12,
       "pcg": {
-        "elapsedMs": 570.904,
+        "elapsedMs": 558.728,
         "globalRmse": 0.165052190473949,
         "roiRmse": 0.1868439776609491,
         "roiSpatialVariance": 0.08715450941835301
       },
       "sobol": {
-        "elapsedMs": 4900.988,
+        "elapsedMs": 976.883,
         "globalRmse": 0.22556566272227685,
         "roiRmse": 0.25824816489834673,
         "roiSpatialVariance": 0.10351733141667087
@@ -52,7 +52,7 @@
         "globalRmse": 1.366632348680516,
         "roiRmse": 1.3821594259086538,
         "roiSpatialVariance": 1.1877449842528993,
-        "elapsedMs": 8.584607934973532
+        "elapsedMs": 1.7484056944469348
       },
       "relativeErrors": {
         "globalRmse": 0.3666323486805162,
@@ -73,13 +73,13 @@
       "referenceFrames": 40,
       "candidateFrames": 12,
       "pcg": {
-        "elapsedMs": 572.469,
+        "elapsedMs": 561.163,
         "globalRmse": 0.10214406982361526,
         "roiRmse": 0.10838852817149666,
         "roiSpatialVariance": 0.057049093747272184
       },
       "sobol": {
-        "elapsedMs": 1042.753,
+        "elapsedMs": 1000.36,
         "globalRmse": 0.15177557773857167,
         "roiRmse": 0.13927698556820095,
         "roiSpatialVariance": 0.052755535393591346
@@ -88,7 +88,7 @@
         "globalRmse": 1.4858971059275516,
         "roiRmse": 1.2849790279265656,
         "roiSpatialVariance": 0.9247392364775973,
-        "elapsedMs": 1.8215008068730196
+        "elapsedMs": 1.782653056831285
       },
       "relativeErrors": {
         "globalRmse": 0.48589710592755153,
