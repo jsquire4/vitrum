@@ -219,6 +219,20 @@ function makeMockHandle(disposeSpy = vi.fn()): AttachVitrumHandle {
   } as unknown as AttachVitrumHandle;
 }
 
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('VitrumCanvas — mount / attach / dispose', () => {
@@ -555,6 +569,98 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     const output = opts.engine?.renderFrame({} as Parameters<NonNullable<typeof opts.engine>['renderFrame']>[0]);
     expect(output).toBe(frameOutput);
     expect(coordinator.frame).toHaveBeenCalledTimes(1);
+
+    root.unmount();
+  });
+
+  it('disposes a loaded glTF engine when unmounted before attachVitrum takes ownership', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    const attachSpy = vi.spyOn(vanillaModule, 'attachVitrum').mockResolvedValue(makeMockHandle());
+    const gltfModule = await import('../src/gltf.js');
+
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const importedScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const dispose = vi.fn();
+    const engine = { ...makeMockEngine(), dispose } as EngineWithBackendId;
+    const controller = { attachEngine: vi.fn(), advance: vi.fn(), warnings: [] };
+    const asset = makeMockGltfAsset(gltf, importedScene);
+    const bridgeResult = makeMockGltfForEngineResult(asset, engine, controller);
+    const loadDeferred = deferred<GltfForEngineResult<EngineWithBackendId>>();
+    const loadSpy = vi.spyOn(gltfModule, 'loadGltfWithEngine')
+      .mockReturnValue(loadDeferred.promise);
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
+
+    const root = createRoot(container);
+    root.render(React.createElement(VitrumCanvas, {
+      gltf,
+      gltfOptions: { buffers },
+      camera: CAMERA,
+    }));
+
+    await vi.waitFor(() => expect(loadSpy).toHaveBeenCalledTimes(1));
+    root.unmount();
+    loadDeferred.resolve(bridgeResult);
+
+    await vi.waitFor(() => expect(dispose).toHaveBeenCalledTimes(1));
+    expect(attachSpy).not.toHaveBeenCalled();
+  });
+
+  it('disposes a progressive glTF handle when attachVitrum rejects before ownership is established', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+
+    const attachError = new Error('attach failed after progressive load');
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    vi.spyOn(vanillaModule, 'attachVitrum').mockRejectedValue(attachError);
+    const gltfModule = await import('../src/gltf.js');
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const onAttachError = vi.fn();
+
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const importedScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const asset = makeMockGltfAsset(gltf, importedScene);
+    const coordinator = {
+      setScene: vi.fn(),
+      updatePrimitive: vi.fn(),
+      addPrimitive: vi.fn(),
+      removePrimitive: vi.fn(),
+      reset: vi.fn(),
+      frame: vi.fn(),
+    };
+    const progressiveResult = makeMockProgressiveGltfResult(asset, coordinator);
+    const progressiveDispose = progressiveResult.engine.dispose as unknown as ReturnType<typeof vi.fn>;
+    vi.spyOn(gltfModule, 'loadGltfWithProgressiveEngine').mockResolvedValue(progressiveResult);
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
+
+    const root = createRoot(container);
+    root.render(React.createElement(VitrumCanvas, {
+      gltf,
+      gltfOptions: { buffers },
+      gltfProgressive: true,
+      camera: CAMERA,
+      onAttachError,
+    }));
+
+    await vi.waitFor(() => expect(onAttachError).toHaveBeenCalledWith(attachError));
+    expect(progressiveDispose).toHaveBeenCalledTimes(1);
+    expect(consoleError).toHaveBeenCalledWith('[VitrumCanvas] attachVitrum failed:', attachError);
 
     root.unmount();
   });

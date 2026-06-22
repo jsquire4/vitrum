@@ -22,7 +22,8 @@ import { readTunables, readInitTunables, type Tunables, type InitTunables } from
 import { resolveQualityPreset } from './HybridEngineQualityPreset.js';
 import { fingerprintHybridPipelineRebuildKey } from './HybridEngineFrameOrchestrator.js';
 import type { ReSTIRBvhMode } from './restir/bvhCore.js';
-import type { ModelWeights } from './neural/weights.js';
+import { validateWeightsForSpec, type ModelWeights } from './neural/weights.js';
+import { WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';
 import { PPG_MIS_ALPHA } from './ppg/ppgConstants.js';
 
 /** Default per-frame target interval (~60 FPS soft-cap). */
@@ -201,6 +202,20 @@ function hasOidnModelUrl(oidnModelUrl: string | undefined): oidnModelUrl is stri
   return typeof oidnModelUrl === 'string' && oidnModelUrl.length > 0;
 }
 
+function validateSuppliedNeuralWeights(opts: HybridEngineOptions): void {
+  if (opts.tier === 'lite' || opts.neuralWeights == null) return;
+  try {
+    validateWeightsForSpec(WALKAROUND_DENOISER_UNET_SPEC, opts.neuralWeights);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new TypeError(
+      `[HybridEngine] neuralWeights must match the canonical walkaround U-Net ` +
+      `checkpoint contract before they can enable denoiser:'neural' or advertise ` +
+      `neural support: ${reason}`,
+    );
+  }
+}
+
 function resolvePresetDenoiser(
   preset: ReturnType<typeof resolveQualityPreset>,
 ): ResolvedHybridDenoiser {
@@ -258,6 +273,7 @@ function resolveHybridDenoiser(
  *   2. unsupported denoiser enum;
  *   3. denoiser:'neural' without neuralWeights;
  *   4. denoiser:'oidn-final' without extensions['walkaround-hybrid'].oidnModelUrl.
+ *   5. supplied full-tier neuralWeights must match the canonical U-Net spec.
  */
 export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
   // Phase-0 productization — hybrid LITE tier (Deliverable 3). Lite runs the
@@ -334,6 +350,11 @@ export function validateHybridEngineOptions(opts: HybridEngineOptions): void {
       `packages/shared-denoisers/src/oidnBridge.ts for the model-URL convention.`,
     );
   }
+  // Any full-tier `neuralWeights` value is semantically meaningful: denoiser:'auto'
+  // selects neural from it, and capabilities report neural support from its
+  // presence. Validate the checkpoint contract here so a non-null malformed object
+  // cannot leak into construction diagnostics and fail only later in async init.
+  validateSuppliedNeuralWeights(opts);
 }
 
 /**

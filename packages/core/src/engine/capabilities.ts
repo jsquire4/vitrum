@@ -32,15 +32,21 @@ export const ENGINE_DENOISER_MODES = Object.freeze([
 ] as const satisfies readonly EngineDenoiserMode[]);
 
 export interface IncrementalPatchSupport {
-  /** Primitive transform-only patch path (no full scene rebuild). */
+  /** Primitive transform patch accepted through the incremental API. */
   readonly transform: boolean;
-  /** Primitive positions-only patch path (same topology). */
+  /** Primitive positions/attribute patch accepted through the incremental API. */
   readonly positions: boolean;
-  /** Material-only patch path without full scene replacement. */
+  /** Material patch accepted through the incremental API. */
   readonly material: boolean;
-  /** Emitter patch path without full scene replacement. */
+  /** Emitter patch accepted through the incremental API. */
   readonly emitter: boolean;
-  /** Topology-changing patch path without full scene replacement. */
+  /**
+   * Topology/count-changing patch accepted through the incremental API.
+   *
+   * This boolean is an API-surface promise, not a native in-place performance
+   * promise. Use `EngineCapabilities.supportDetails.mutations` to distinguish
+   * `native` paths from `fallback-rebuild` paths for each backend/profile.
+   */
   readonly topology: boolean;
 }
 
@@ -109,9 +115,10 @@ export type FramePresentationMode =
   | 'swapchain-optional';
 
 export interface EngineCapabilities {
-  /** Engine supports `updatePrimitive` / `updateEmitter` patches, falling
-   *  back to full `setScene` for unsupported diffs. When false, hosts must
-   *  always call `setScene` for any change. */
+  /** Engine supports `updatePrimitive` / `updateEmitter` patch APIs. Some
+   *  accepted patch classes may rebuild internal scene state; hosts should read
+   *  `supportDetails.mutations` when they need native-vs-fallback routing. When
+   *  false, hosts must always call `setScene` for any change. */
   readonly supportsIncrementalScene: boolean;
   /** Granular patch matrix. When omitted, callers should assume the
    *  conservative behavior implied by `supportsIncrementalScene`. */

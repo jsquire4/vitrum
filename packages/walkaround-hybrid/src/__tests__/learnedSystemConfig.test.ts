@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { parseHybridEngineOptions } from '../HybridEngineConfig.js';
 import type { HybridEngineOptions } from '../HybridEngineOptions.js';
-import type { ModelWeights } from '../neural/weights.js';
+import { WALKAROUND_DENOISER_UNET_SPEC } from '../neural/unetArchitecture.js';
+import type { LayerWeights, ModelWeights } from '../neural/weights.js';
 
 function fakeDevice(): GPUDevice {
   return {
@@ -32,6 +33,21 @@ function baseOpts(overrides: Partial<HybridEngineOptions> = {}): HybridEngineOpt
 }
 
 function hostWeights(): ModelWeights {
+  const layers: LayerWeights[] = [];
+  for (const layer of WALKAROUND_DENOISER_UNET_SPEC.layers) {
+    if (layer.kind !== 'conv2d' && layer.kind !== 'transposedConv2d') continue;
+    const kH = layer.params.kH ?? 1;
+    const kW = layer.params.kW ?? 1;
+    layers.push({
+      name: layer.name,
+      weights: new Float32Array(layer.params.outC * layer.params.inC * kH * kW),
+      biases: new Float32Array(layer.params.outC),
+    });
+  }
+  return { layers };
+}
+
+function malformedHostWeights(): ModelWeights {
   return { layers: [] };
 }
 
@@ -67,6 +83,20 @@ describe('learned-system option parsing', () => {
       packageProvidesProductionWeights: false,
       defaultEnabled: false,
     });
+  });
+
+  it("rejects denoiser:'auto' host weights that do not match the U-Net checkpoint contract", () => {
+    expect(() => parseHybridEngineOptions(baseOpts({
+      denoiser: 'auto',
+      neuralWeights: malformedHostWeights(),
+    }))).toThrow(/neuralWeights must match.*missing weights for layer 'enc1_conv'/);
+  });
+
+  it("rejects denoiser:'neural' host weights that do not match the U-Net checkpoint contract", () => {
+    expect(() => parseHybridEngineOptions(baseOpts({
+      denoiser: 'neural',
+      neuralWeights: malformedHostWeights(),
+    }))).toThrow(/neuralWeights must match.*missing weights for layer 'enc1_conv'/);
   });
 
   it("does not auto-select neural on tier:'lite', even when host weights exist", () => {

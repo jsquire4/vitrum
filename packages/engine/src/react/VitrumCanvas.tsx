@@ -73,6 +73,14 @@ function isProgressiveGltfResult(
   return result?.engine != null && 'coordinator' in result.engine;
 }
 
+function disposePendingGltfEngine(result: VitrumCanvasGltfResult | undefined): void {
+  try {
+    result?.engine?.dispose();
+  } catch {
+    // The attach path is already being abandoned; cleanup stays best-effort.
+  }
+}
+
 function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): EngineWithBackendId {
   const coordinator = handle.coordinator;
   const engine = {
@@ -256,77 +264,83 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
       if (!canvas) return;
       let cancelled = false;
       let attached: AttachVitrumHandle | null = null;
+      let pendingGltfResult: VitrumCanvasGltfResult | undefined;
       const abortController = typeof AbortController !== 'undefined'
         ? new AbortController()
         : null;
 
-	      const attach = async (): Promise<void> => {
-	        const gltfSignal = composeAbortSignal(props.gltfOptions?.signal, abortController?.signal);
-	        let gltfResult: VitrumCanvasGltfResult | undefined;
-	        if (props.gltf !== undefined) {
-	          if (props.gltfProgressive === true) {
-	            const progressiveOptions = props.gltfProgressiveOptions ?? {};
-	            const playbackEnabled = vitrumCanvasPlaybackEnabled(props.gltfPlayback);
-	            const playbackLoop = vitrumCanvasPlaybackLoop(props.gltfPlayback);
-	            gltfResult = await loadGltfWithProgressiveEngine(props.gltf, {
-	              ...(props.gltfOptions ?? {}),
-	              ...(gltfSignal != null ? { signal: gltfSignal } : {}),
-	              engineOptions: {
-	                canvas,
-	                ...(playbackEnabled ? {} : { controllerDeltaSeconds: 0 }),
-	                ...(playbackLoop !== undefined ? { controllerLoop: playbackLoop } : {}),
-	                ...progressiveOptions,
-	                ...(props.debug != null ? { debug: props.debug } : {}),
-	                onAdapterProfile: (profile) => { try { onAdapterProfileRef.current?.(profile); } catch { /* host callback must not propagate — ignore */ } },
-	                onError: (error, event) => { onErrorRef.current?.(error, event); },
-	              },
-	            });
-	          } else {
-	            gltfResult = await loadGltfWithEngine(props.gltf, {
-	              ...(props.gltfOptions ?? {}),
-	              ...(gltfSignal != null ? { signal: gltfSignal } : {}),
-	              attachScene: false,
-	              engineOptions: {
-	                canvas,
-	                ...(props.prefer ? { prefer: props.prefer } : {}),
-	                ...(props.advanced != null ? { advanced: props.advanced } : {}),
-	                ...(props.advancedBackend != null ? { advancedBackend: props.advancedBackend } : {}),
-	                ...(props.advancedByBackend != null ? { advancedByBackend: props.advancedByBackend } : {}),
-	                ...(props.debug != null ? { debug: props.debug } : {}),
-	                onWarning: (warning) => { try { onWarningRef.current?.(warning); } catch { /* host callback must not propagate — ignore */ } },
-	                onAdapterProfile: (profile) => { try { onAdapterProfileRef.current?.(profile); } catch { /* host callback must not propagate — ignore */ } },
-	                onError: (error, event) => { onErrorRef.current?.(error, event); },
-	              },
-	            });
-	          }
-	        }
-	        if (cancelled) return;
-	        if (gltfResult !== undefined) {
-	          if (gltfResult.engine == null) {
-	            throw new Error('[VitrumCanvas] glTF loader did not return an engine.');
-	          }
-	          try {
-	            onGltfLoadedRef.current?.(gltfResult.asset, gltfResult);
-	          } catch { /* host callback must not propagate — ignore */ }
-	        }
-	        const scene = gltfResult?.asset.scene ?? props.scene;
-	        const gltfEngine = isProgressiveGltfResult(gltfResult)
-	          ? progressiveHandleAsEngine(gltfResult.engine)
-	          : gltfResult?.engine;
-	        if (scene == null) {
-	          throw new TypeError('[VitrumCanvas] either `scene` or `gltf` must be supplied.');
-	        }
-	        const h = await attachVitrum({
-	          canvas,
-	          scene,
-	          ...(gltfResult !== undefined ? { gltfAsset: gltfResult.asset } : {}),
-	          ...(gltfEngine !== undefined ? { engine: gltfEngine } : {}),
-	          ...(gltfResult?.controller !== undefined && !isProgressiveGltfResult(gltfResult)
-	            ? { sceneController: gltfResult.controller }
-	            : {}),
-	          ...(gltfResult?.controller !== undefined && !isProgressiveGltfResult(gltfResult) && props.gltfPlayback !== undefined
-	            ? { sceneControllerPlayback: props.gltfPlayback }
-	            : {}),
+      const attach = async (): Promise<void> => {
+        const gltfSignal = composeAbortSignal(props.gltfOptions?.signal, abortController?.signal);
+        let gltfResult: VitrumCanvasGltfResult | undefined;
+        if (props.gltf !== undefined) {
+          if (props.gltfProgressive === true) {
+            const progressiveOptions = props.gltfProgressiveOptions ?? {};
+            const playbackEnabled = vitrumCanvasPlaybackEnabled(props.gltfPlayback);
+            const playbackLoop = vitrumCanvasPlaybackLoop(props.gltfPlayback);
+            gltfResult = await loadGltfWithProgressiveEngine(props.gltf, {
+              ...(props.gltfOptions ?? {}),
+              ...(gltfSignal != null ? { signal: gltfSignal } : {}),
+              engineOptions: {
+                canvas,
+                ...(playbackEnabled ? {} : { controllerDeltaSeconds: 0 }),
+                ...(playbackLoop !== undefined ? { controllerLoop: playbackLoop } : {}),
+                ...progressiveOptions,
+                ...(props.debug != null ? { debug: props.debug } : {}),
+                onAdapterProfile: (profile) => { try { onAdapterProfileRef.current?.(profile); } catch { /* host callback must not propagate — ignore */ } },
+                onError: (error, event) => { onErrorRef.current?.(error, event); },
+              },
+            });
+          } else {
+            gltfResult = await loadGltfWithEngine(props.gltf, {
+              ...(props.gltfOptions ?? {}),
+              ...(gltfSignal != null ? { signal: gltfSignal } : {}),
+              attachScene: false,
+              engineOptions: {
+                canvas,
+                ...(props.prefer ? { prefer: props.prefer } : {}),
+                ...(props.advanced != null ? { advanced: props.advanced } : {}),
+                ...(props.advancedBackend != null ? { advancedBackend: props.advancedBackend } : {}),
+                ...(props.advancedByBackend != null ? { advancedByBackend: props.advancedByBackend } : {}),
+                ...(props.debug != null ? { debug: props.debug } : {}),
+                onWarning: (warning) => { try { onWarningRef.current?.(warning); } catch { /* host callback must not propagate — ignore */ } },
+                onAdapterProfile: (profile) => { try { onAdapterProfileRef.current?.(profile); } catch { /* host callback must not propagate — ignore */ } },
+                onError: (error, event) => { onErrorRef.current?.(error, event); },
+              },
+            });
+          }
+        }
+        pendingGltfResult = gltfResult;
+        if (cancelled) {
+          disposePendingGltfEngine(pendingGltfResult);
+          pendingGltfResult = undefined;
+          return;
+        }
+        if (gltfResult !== undefined) {
+          if (gltfResult.engine == null) {
+            throw new Error('[VitrumCanvas] glTF loader did not return an engine.');
+          }
+          try {
+            onGltfLoadedRef.current?.(gltfResult.asset, gltfResult);
+          } catch { /* host callback must not propagate — ignore */ }
+        }
+        const scene = gltfResult?.asset.scene ?? props.scene;
+        const gltfEngine = isProgressiveGltfResult(gltfResult)
+          ? progressiveHandleAsEngine(gltfResult.engine)
+          : gltfResult?.engine;
+        if (scene == null) {
+          throw new TypeError('[VitrumCanvas] either `scene` or `gltf` must be supplied.');
+        }
+        const h = await attachVitrum({
+          canvas,
+          scene,
+          ...(gltfResult !== undefined ? { gltfAsset: gltfResult.asset } : {}),
+          ...(gltfEngine !== undefined ? { engine: gltfEngine } : {}),
+          ...(gltfResult?.controller !== undefined && !isProgressiveGltfResult(gltfResult)
+            ? { sceneController: gltfResult.controller }
+            : {}),
+          ...(gltfResult?.controller !== undefined && !isProgressiveGltfResult(gltfResult) && props.gltfPlayback !== undefined
+            ? { sceneControllerPlayback: props.gltfPlayback }
+            : {}),
           camera: props.camera,
           ...(props.prefer ? { prefer: props.prefer } : {}),
           ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
@@ -348,6 +362,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           onError: (error, event) => { onErrorRef.current?.(error, event); },
           onEngineError: (err) => { try { onEngineErrorRef.current?.(err); } catch { /* host callback must not propagate — ignore */ } },
         });
+        pendingGltfResult = undefined;
         if (cancelled) {
           h.dispose();
           return;
@@ -358,6 +373,8 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
 
       void attach()
         .catch((err) => {
+          disposePendingGltfEngine(pendingGltfResult);
+          pendingGltfResult = undefined;
           if (cancelled) return;
           // H31 — call via ref so inline onAttachError props don't appear in
           // the effect dep array (which would cause teardown per parent render).

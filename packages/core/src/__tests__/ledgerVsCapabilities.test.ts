@@ -89,6 +89,22 @@ describe('BACKEND_PROMISE_LEDGER material support rows', () => {
   });
 });
 
+describe('BACKEND_PROMISE_LEDGER incremental patch semantics', () => {
+  it('uses supportDetails.mutations, not IncrementalPatchSupport booleans, for native-vs-rebuild grades', () => {
+    const walkaround = BACKEND_PROMISE_LEDGER['walkaround-hybrid'];
+    expect(walkaround.incrementalPatchSupport.topology).toBe(true);
+    expect(walkaround.supportDetails.mutations.topology).toBe('fallback-rebuild');
+
+    const webgl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'];
+    expect(webgl2.incrementalPatchSupport.topology).toBe(true);
+    expect(webgl2.supportDetails.mutations.topology).toBe('fallback-rebuild');
+
+    const webgpu = BACKEND_PROMISE_LEDGER['pt-webgpu'];
+    expect(webgpu.incrementalPatchSupport.material).toBe(true);
+    expect(webgpu.supportDetails.mutations.material).toBe('fallback-rebuild');
+  });
+});
+
 // ── Road-to-100 future-contract boundaries ───────────────────────────────────
 
 describe('BACKEND_PROMISE_LEDGER Road-to-100 future-contract boundaries', () => {
