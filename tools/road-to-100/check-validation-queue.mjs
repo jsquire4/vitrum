@@ -111,6 +111,77 @@ const REQUIRED_GLTF_MATERIAL_TOPOLOGY_ARTIFACT_PATHS = [
   "packages/gltf-adapter/src/gltfAssetApi.test.ts",
 ];
 
+const REQUIRED_WALKAROUND_BEHAVIORAL_ROWS = [
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-default-status.json",
+    label: "wh/default",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-default.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-rcenabled-status.json",
+    label: "wh/rcEnabled",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-rcenabled.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-ppgenabled-status.json",
+    label: "wh/ppgEnabled",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-ppgenabled.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-gtao-off-status.json",
+    label: "wh/gtao-off",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-gtao-off.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-checkerboard-status.json",
+    label: "wh/checkerboard",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-checkerboard.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-skinned-mesh-status.json",
+    label: "wh/skinned-mesh",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-skinned-mesh.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-hdri-env-status.json",
+    label: "wh/hdri-env",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-hdri-env.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-rect-area-emitter-status.json",
+    label: "wh/rect-area-emitter",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-rect-area-emitter.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-directional-sun-status.json",
+    label: "wh/directional-sun",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-directional-sun.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-glass-gi-status.json",
+    label: "wh/glass-gi",
+    goldenPath: "tools/reference-renders/wh-behavioral/wh-glass-gi.dzn-full.png",
+  },
+  {
+    statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-transparent-oit-status.json",
+    label: "wh/transparent-oit",
+    goldenPath: "tools/reference-renders/wh-transparent-oit-behavioral/wh-transparent-oit.dzn-full.png",
+  },
+];
+
+const REQUIRED_WALKAROUND_BEHAVIORAL_ARTIFACT_PATHS = [
+  "tools/behavioral-gate/gate.mjs",
+  "tools/behavioral-gate/check-dzn-status.mjs",
+  "packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts",
+  "packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/restirCastPrimary.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/ris.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/risGi.wgsl.ts",
+  "packages/walkaround-hybrid/src/shaders/shade.wgsl.ts",
+  ...REQUIRED_WALKAROUND_BEHAVIORAL_ROWS.flatMap((row) => [row.statusPath, row.goldenPath]),
+];
+
 const REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS = [
   "tools/renderer-fidelity-proof/check-proofs.mjs",
   "plan/renderer-fidelity-matrix.md",
@@ -359,6 +430,10 @@ const inverseSessionSource = await readText("packages/pt-webgpu/src/inverse/inve
 const inverseSessionTestSource = await readText("packages/pt-webgpu/src/__tests__/inverseSession.test.ts");
 const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
 const behavioralGateSource = await readText("tools/behavioral-gate/gate.mjs");
+const transparentAlphaTransportContractTest = await readText(
+  "packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts",
+);
+const transparentOitSource = await readText("packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts");
 const gltfMaterialProofSource = await readText("tools/gltf-material-sweep/check-proofs.mjs");
 const gltfMaterialFixtureSource = await readText("tools/gltf-material-sweep/fixture.mjs");
 const gltfTopologyProofSource = await readText("tools/gltf-topology-proofs/check-proofs.mjs");
@@ -464,6 +539,58 @@ for (const [path, label] of [
   const config = status.configs?.[0];
   if (config?.label !== label || config?.goldenStatus !== "ok" || config?.tier !== "full") {
     fail(`${path} must pin full-tier golden-ok config ${label}`);
+  }
+}
+
+const walkaroundBehavioralRow = queue.validationQueue.find((row) => row.id === "VQ-WALKAROUND-BEHAVIORAL-MATRIX");
+if (walkaroundBehavioralRow == null) fail("validationQueue missing VQ-WALKAROUND-BEHAVIORAL-MATRIX");
+assertRowCitesPaths(
+  walkaroundBehavioralRow,
+  REQUIRED_WALKAROUND_BEHAVIORAL_ARTIFACT_PATHS,
+  "VQ-WALKAROUND-BEHAVIORAL-MATRIX",
+);
+for (const row of REQUIRED_WALKAROUND_BEHAVIORAL_ROWS) {
+  if (!behavioralGateSource.includes(`"${row.label}"`)) {
+    fail(`VQ-WALKAROUND-BEHAVIORAL-MATRIX behavioral gate source is stale: missing ${row.label}`);
+  }
+  const status = await readJson(row.statusPath);
+  if (status.verdict !== "PASS" || status.exitStatus !== 0) {
+    fail(`${row.statusPath} must pin PASS/exitStatus=0`);
+  }
+  if (status.goldenVariant !== "dzn-full") fail(`${row.statusPath} must pin dzn-full`);
+  if (status.summary?.totalConfigs !== 1) fail(`${row.statusPath} must contain exactly one focused config`);
+  if (status.summary?.failures !== 0) fail(`${row.statusPath} must pin zero failures`);
+  if (status.summary?.knownResiduals !== 0) fail(`${row.statusPath} must pin zero known residuals`);
+  const config = status.configs?.[0];
+  if (config?.label !== row.label) fail(`${row.statusPath} must pin config label ${row.label}`);
+  if (config?.verdict !== "PASS" || config?.rawStatus !== "OK") {
+    fail(`${row.statusPath} ${row.label} must pin PASS/OK`);
+  }
+  if (config?.gpuErrors !== 0 || config?.nan !== false) {
+    fail(`${row.statusPath} ${row.label} must pin gpuErrors=0 and nan=false`);
+  }
+  if (config?.goldenStatus !== "ok" || config?.goldenVariant !== "dzn-full") {
+    fail(`${row.statusPath} ${row.label} must pin goldenStatus=ok and dzn-full`);
+  }
+}
+for (const needle of [
+  "traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(",
+  "traceSceneAlphaTintTransmittanceTextured(",
+  "fn oitLayerAreaEmitterNEE(",
+  "sampleEmitterLeAtXi(e, xi)",
+]) {
+  if (!transparentAlphaTransportContractTest.includes(needle) && !transparentOitSource.includes(needle)) {
+    fail(`VQ-WALKAROUND-BEHAVIORAL-MATRIX transparent-OIT proof is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "not.toMatch(/var<storage,\\s*(read|read_write)>[^;]*reservoir/i)",
+  "not.toMatch(/\\b(load|store|update|resolve)\\w*Reservoir\\b/)",
+  "not.toContain('selectedEmitter')",
+  "not.toContain('risFinal')",
+]) {
+  if (!transparentAlphaTransportContractTest.includes(needle)) {
+    fail(`VQ-WALKAROUND-BEHAVIORAL-MATRIX transparent-OIT reservoir exclusion test is stale: missing ${needle}`);
   }
 }
 

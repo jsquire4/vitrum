@@ -594,6 +594,37 @@ npm test
 git diff --check
 ```
 
+### Wave 30 — Walkaround Behavioral Matrix Proof-Citation Guard
+
+Status 2026-06-22: **CLOSED.** After Wave 29, the remaining weakest
+committed-proof row was `VQ-WALKAROUND-BEHAVIORAL-MATRIX`: the focused dzn
+status JSONs and PNGs were real, but the Road queue/checker did not force the
+gate source labels or the transparent-OIT approximation contract files that
+keep the row honest.
+
+Implementation:
+
+- Added required walkaround behavioral proof rows to
+  `tools/road-to-100/check-validation-queue.mjs`, covering every focused
+  `wh/*` dzn status artifact and corresponding `dzn-full` PNG golden.
+- The checker now fails if a focused shard loses `PASS`, `exitStatus:0`,
+  `gpuErrors:0`, `nan:false`, `goldenStatus:'ok'`, `goldenVariant:'dzn-full'`,
+  or its expected gate label.
+- Expanded `VQ-WALKAROUND-BEHAVIORAL-MATRIX` proof artifacts to cite the
+  behavioral gate scripts plus the transparent-OIT shader and contract test
+  sources that pin camera-visible local lighting without ReSTIR/GI reservoir
+  participation.
+
+Focused gates:
+
+```bash
+npm run road-to-100-validation-status
+npm run behavioral-gate:dzn-status-check
+npm test --workspace @vitrum/walkaround-hybrid -- transparentAlphaTransportContract.test.ts
+npm run proof-check
+git diff --check
+```
+
 ### Wave 28 — pt-webgl2 Mesh-Light MIS Prose Reconciliation
 
 Status 2026-06-22: **CLOSED.** Source revalidation of the pt-webgl2 mesh-area
