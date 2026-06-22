@@ -147,6 +147,18 @@
       "remaining": "Browser/real-adapter reference A/B for pt-webgl2 specialty rows and any native-promotion claims. The proof checker now pins the expected pt-webgl2 non-promotion grades while browser/WebGL2 capture is HOST-BLOCKED."
     },
     {
+      "id": "VQ-ADJOINT-SCOPED-PATH-REPLAY",
+      "title": "pt-webgpu scoped adjoint path-replay and finite-difference downgrade taxonomy",
+      "kind": "validation",
+      "status": "partial-proof-green",
+      "command": "npm run test --workspace @vitrum/pt-webgpu -- inverseSession.test.ts",
+      "proofArtifacts": [
+        { "path": "packages/pt-webgpu/src/inverse/inverseSession.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/inverseSession.test.ts" }
+      ],
+      "remaining": "Scoped direct-light path replay is source/test-pinned for supported material/emitter domains, and unsupported render regimes, transport, visibility, and displacement geometry degrade through structured finite-difference diagnostics. Full alpha/transport/indirect/environment-escape adjoint parity remains a future-contract expansion."
+    },
+    {
       "id": "VQ-LEARNED-SYSTEMS",
       "title": "PPG, NRC, GRIS, and neural production posture",
       "kind": "provisioning",
@@ -203,6 +215,12 @@
       "title": "native instanced skinned/morphed glTF",
       "status": "future-contract",
       "currentContract": "Renderable fallback expansion is implemented; native instanced skinned/morphed primitives are a performance/core-contract expansion."
+    },
+    {
+      "id": "FC-ADJOINT-FULL-PATH-PARITY",
+      "title": "full-path analytic adjoint parity",
+      "status": "future-contract",
+      "currentContract": "pt-webgpu supports scoped direct-light path replay for bounded material/emitter domains and finite-difference fallback diagnostics for transport, visibility, displacement geometry, unsupported render regimes, indirect paths, and full-path parity cases."
     }
   ]
 }

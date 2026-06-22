@@ -28,6 +28,7 @@ const REQUIRED_VALIDATION_IDS = [
   "VQ-RADIOMETRIC-PT",
   "VQ-WALKAROUND-RADIOMETRIC-AB",
   "VQ-RENDERER-FIDELITY-PROOF",
+  "VQ-ADJOINT-SCOPED-PATH-REPLAY",
   "VQ-LEARNED-SYSTEMS",
   "VQ-GLTF-MATERIAL-TOPOLOGY",
 ];
@@ -38,6 +39,7 @@ const REQUIRED_FUTURE_IDS = [
   "FC-NATIVE-POINT-LINE",
   "FC-ARBITRARY-UV-ARRAYS",
   "FC-NATIVE-INSTANCED-SKINNED-MORPHED",
+  "FC-ADJOINT-FULL-PATH-PARITY",
 ];
 
 /** @param {string} path */
@@ -145,11 +147,12 @@ async function assertArtifact(artifact, ownerId) {
   }
 }
 
-const [queue, packageJson, executionPlan, ledger] = await Promise.all([
+const [queue, packageJson, executionPlan, ledger, road] = await Promise.all([
   readJson(QUEUE_PATH),
   readJson(PACKAGE_PATH),
   readText(EXECUTION_PLAN_PATH),
   readText(LEDGER_PATH),
+  readText("plan/road-to-100.md"),
 ]);
 const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
 
@@ -231,12 +234,52 @@ if (productionCheckpoint === null) {
   }
 }
 
+const adjointRow = queue.validationQueue.find((row) => row.id === "VQ-ADJOINT-SCOPED-PATH-REPLAY");
+if (adjointRow == null) fail("validationQueue missing VQ-ADJOINT-SCOPED-PATH-REPLAY");
+for (const needle of [
+  "path replay",
+  "finite-difference",
+  "transport",
+  "visibility",
+  "displacement geometry",
+]) {
+  if (!String(adjointRow.remaining).includes(needle)) {
+    fail(`VQ-ADJOINT-SCOPED-PATH-REPLAY remaining text must include ${needle}`);
+  }
+}
+if (!adjointRow.proofArtifacts.some((artifact) =>
+  artifact?.path === "packages/pt-webgpu/src/inverse/inverseSession.ts"
+)) {
+  fail("VQ-ADJOINT-SCOPED-PATH-REPLAY must cite inverseSession.ts");
+}
+if (!adjointRow.proofArtifacts.some((artifact) =>
+  artifact?.path === "packages/pt-webgpu/src/__tests__/inverseSession.test.ts"
+)) {
+  fail("VQ-ADJOINT-SCOPED-PATH-REPLAY must cite inverseSession.test.ts");
+}
+
 for (const row of queue.futureContractRows) {
   if (row == null || typeof row !== "object") fail("future-contract row must be an object");
   assertNonEmptyString(row.id, "future-contract row id");
   assertNonEmptyString(row.title, `${row.id}: title`);
   assertNonEmptyString(row.currentContract, `${row.id}: currentContract`);
   if (row.status !== "future-contract") fail(`${row.id}: status must be future-contract`);
+}
+
+const adjointFutureRow = queue.futureContractRows.find((row) => row.id === "FC-ADJOINT-FULL-PATH-PARITY");
+if (adjointFutureRow == null) fail("futureContractRows missing FC-ADJOINT-FULL-PATH-PARITY");
+if (!road.includes("Still OPEN for full-path parity")) {
+  fail("Road adjoint full-path parity boundary disappeared without queue reconciliation");
+}
+for (const needle of [
+  "scoped direct-light path replay",
+  "finite-difference fallback diagnostics",
+  "unsupported render regimes",
+  "indirect paths",
+]) {
+  if (!String(adjointFutureRow.currentContract).includes(needle)) {
+    fail(`FC-ADJOINT-FULL-PATH-PARITY currentContract must include ${needle}`);
+  }
 }
 
 const counts = queue.validationQueue.reduce((acc, row) => {
