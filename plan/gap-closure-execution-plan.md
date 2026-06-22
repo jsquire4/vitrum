@@ -561,6 +561,24 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 13 — Machine-Readable Validation Queue
+
+Status 2026-06-22: **CLOSED.** After Wave 12, the active runtime implementation
+queue was source-verified empty. The remaining risk was process drift: validation,
+provisioning, and future-contract rows kept being rediscovered as if they were
+fresh code gaps.
+
+Implementation:
+
+- Added `tools/road-to-100/validation-queue.json` as the machine-readable queue:
+  active implementation rows are empty; validation/proof rows carry commands,
+  artifacts, and remaining blockers; future-contract rows are segregated.
+- Added `tools/road-to-100/check-validation-queue.mjs`.
+- Wired `npm run road-to-100-source-check` to run the queue checker, so
+  `npm run proof-check` fails if a proof row loses its artifact, an npm command
+  disappears, HOST-BLOCKED/PASS/PASS-PARTIAL statuses drift, or a future-contract
+  row sneaks back into the active implementation queue.
+
 ### Wave 12 — pt-webgpu Bump Sampler Policy Parity
 
 Status 2026-06-22: **CLOSED.** Direct source-read found one remaining bounded

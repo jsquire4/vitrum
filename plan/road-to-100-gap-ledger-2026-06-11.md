@@ -15,6 +15,8 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
   "historicalBugLedger": "items_to_fix.md",
   "sourceCheck": "npm run road-to-100-source-check",
   "proofUmbrella": "npm run proof-check",
+  "validationQueue": "tools/road-to-100/validation-queue.json",
+  "validationQueueCheck": "npm run road-to-100-validation-status",
   "closedContractCampaigns": [
     "glTF predictable API plumbing, selected-scene compatibility scoping, and texture readiness diagnostics",
     "backend structured warning/error surfaces for known degradation paths",
@@ -26,7 +28,8 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "glTF planner routing for walkaround-unsupported rich material fields, including source-pathed strict rejection",
     "inverse active-profile material support truthfulness, walkaround TLAS material-frame parity, and anisotropy-map tangent generation",
     "historical items_to_fix open-heading reconciliation guarded by road-to-100-source-check",
-    "pt-webgpu bump-map sampler-policy parity across forward full-tier shading, adjoint replay, and upload diagnostics"
+    "pt-webgpu bump-map sampler-policy parity across forward full-tier shading, adjoint replay, and upload diagnostics",
+    "machine-readable Road-to-100 validation queue and status checker so proof/provisioning/future-contract tails do not re-enter the code queue"
   ],
   "openPromotionBuckets": [
     "GPU material-furnace and reference-render sweeps",

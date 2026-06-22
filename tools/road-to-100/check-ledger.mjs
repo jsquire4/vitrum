@@ -1902,8 +1902,18 @@ for (const needle of [
 }
 
 const scripts = packageJson.scripts ?? {};
-if (scripts["road-to-100-source-check"] !== "deno run --sloppy-imports --allow-read tools/road-to-100/check-ledger.mjs") {
-  fail("package.json must expose road-to-100-source-check");
+if (
+  typeof scripts["road-to-100-source-check"] !== "string" ||
+  !scripts["road-to-100-source-check"].includes("tools/road-to-100/check-ledger.mjs") ||
+  !scripts["road-to-100-source-check"].includes("road-to-100-validation-status")
+) {
+  fail("package.json must expose road-to-100-source-check with the ledger and validation-queue checks");
+}
+if (
+  scripts["road-to-100-validation-status"] !==
+    "deno run --sloppy-imports --allow-read tools/road-to-100/check-validation-queue.mjs"
+) {
+  fail("package.json must expose road-to-100-validation-status");
 }
 if (typeof scripts["proof-check"] !== "string" || !scripts["proof-check"].includes("road-to-100-source-check")) {
   fail("proof-check must include road-to-100-source-check");
