@@ -109,6 +109,7 @@ if (status.verdict === "HOST-BLOCKED") {
       await assertPassingBrowserRow(row, assetsById.get(row.assetId));
     }
     if (row.verdict === "HOST-BLOCKED") {
+      assertHostBlockedCaptureAttempts(row);
       if (
         row.step !== "canvas-screenshot" &&
         row.step !== "page-canvas-clip-screenshot" &&
@@ -140,6 +141,35 @@ if (status.verdict === "HOST-BLOCKED") {
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF proof)");
 } else {
   fail(`status verdict must be PASS or HOST-BLOCKED, got ${status.verdict}`);
+}
+
+/** @param {Record<string, any>} row */
+function assertHostBlockedCaptureAttempts(row) {
+  const attempts = row.captureAttempts;
+  if (!Array.isArray(attempts) || attempts.length === 0) {
+    fail(`${row.assetId}: HOST-BLOCKED status must include captureAttempts[]`);
+  }
+  const allowedMethods = new Set([
+    "playwright-screenshot",
+    "page-canvas-clip-screenshot",
+    "canvas-data-url",
+    "engine-captureFrame-output",
+  ]);
+  const allowedStatuses = new Set(["started", "failed", "succeeded"]);
+  let hasBlockedAttempt = false;
+  let hasStepAttempt = false;
+  for (const attempt of attempts) {
+    if (attempt == null || typeof attempt !== "object") fail(`${row.assetId}: invalid capture attempt`);
+    if (!allowedMethods.has(attempt.method)) fail(`${row.assetId}: unexpected capture attempt method ${attempt.method}`);
+    if (!allowedStatuses.has(attempt.status)) fail(`${row.assetId}: unexpected capture attempt status ${attempt.status}`);
+    if (attempt.status === "started" || attempt.status === "failed") hasBlockedAttempt = true;
+    if (attempt.method === row.step || attempt.step === row.step) hasStepAttempt = true;
+    if (attempt.status === "failed" && String(attempt.error ?? "").length === 0) {
+      fail(`${row.assetId}: failed capture attempt ${attempt.method} must include an error`);
+    }
+  }
+  if (!hasBlockedAttempt) fail(`${row.assetId}: HOST-BLOCKED status must preserve the blocked capture attempt`);
+  if (!hasStepAttempt) fail(`${row.assetId}: captureAttempts[] must include the host-blocked step ${row.step}`);
 }
 
 /** @param {Record<string, any>} row */

@@ -75,6 +75,41 @@ test('gltf browser capture harness defaults to browser capture before engine rea
   assert.ok(fallbackReadback > firstScreenshot);
 });
 
+test('gltf browser proof checker requires structured host-blocked capture attempts', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
+  const statusPath = join(dir, 'host-blocked-missing-attempts.json');
+  await writeFile(statusPath, `${JSON.stringify({
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    backend: 'pt-webgl2',
+    assets: [
+      {
+        ...hostBlockedRow('box-textured-glb', 'textured-glb', {
+          textureDecodeReport: { mapCount: 1 },
+        }),
+        captureAttempts: undefined,
+      },
+      hostBlockedRow('cesium-milk-truck-draco', 'draco', {
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+        extensionsRequired: ['KHR_draco_mesh_compression'],
+        browserDecodeHooks: { requested: ['draco'], draco: true, meshopt: false },
+      }),
+      hostBlockedRow('meshopt-cube-real', 'meshopt', {
+        extensionsUsed: ['KHR_meshopt_compression'],
+        extensionsRequired: ['KHR_meshopt_compression'],
+        browserDecodeHooks: { requested: ['meshopt'], draco: false, meshopt: true },
+      }),
+    ],
+    assetCount: 3,
+  }, null, 2)}\n`);
+
+  const result = await runChecker(['--status', pathToFileURL(statusPath).href]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /box-textured-glb: HOST-BLOCKED status must include captureAttempts\[\]/);
+});
+
 function hostBlockedRow(assetId, kind, overrides = {}) {
   return {
     generatedAt: '2026-06-22T00:00:00.000Z',
@@ -85,6 +120,26 @@ function hostBlockedRow(assetId, kind, overrides = {}) {
     backend: 'pt-webgl2',
     step: 'canvas-data-url',
     error: 'canvas PNG data URL fallback failed',
+    captureAttempts: [
+      {
+        method: 'playwright-screenshot',
+        status: 'failed',
+        step: 'canvas-screenshot',
+        error: 'canvas screenshot failed',
+      },
+      {
+        method: 'page-canvas-clip-screenshot',
+        status: 'failed',
+        step: 'page-canvas-clip-screenshot',
+        error: 'page clipped screenshot failed',
+      },
+      {
+        method: 'canvas-data-url',
+        status: 'failed',
+        step: 'canvas-data-url',
+        error: 'canvas PNG data URL fallback failed',
+      },
+    ],
     telemetry: telemetryFor(assetId, overrides),
     console: [],
     serverLog: '',

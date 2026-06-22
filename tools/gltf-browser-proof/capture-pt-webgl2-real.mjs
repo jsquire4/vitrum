@@ -63,6 +63,7 @@ let activeBrowser = null;
 let captureStep = 'not-started';
 let lastTelemetry = null;
 let lastConsole = [];
+let lastCaptureAttempts = [];
 
 const server = spawn(
   process.execPath,
@@ -93,6 +94,7 @@ try {
   for (const asset of assets) {
     lastTelemetry = null;
     lastConsole = [];
+    lastCaptureAttempts = [];
     captureStep = 'not-started';
     try {
       results.push(await withTimeout(capture(asset), timeoutMs, 'browser capture timed out'));
@@ -241,6 +243,7 @@ async function capture(asset) {
         height: png.height,
         samplesPerPixel: spp,
         captureMethod: capture.method,
+        captureAttempts: capture.attempts,
         luminance,
         structure,
         error: `capture is visually uninformative: ${structureFailureReason(structure)}`,
@@ -272,6 +275,7 @@ async function capture(asset) {
       height: png.height,
       samplesPerPixel: spp,
       captureMethod: capture.method,
+      captureAttempts: capture.attempts,
       luminance,
       structure,
       telemetry: summarizedTelemetry,
@@ -288,13 +292,11 @@ async function captureCanvasPng(page) {
   const canvas = page.locator('canvas').first();
   const timeout = Math.max(1000, Math.min(timeoutMs, screenshotTimeoutMs));
   let engineError = null;
+  lastCaptureAttempts = [];
   if (engineCaptureMode === 'engine-first') {
     try {
       captureStep = 'engine-captureFrame-output';
-      return {
-        method: 'engine-captureFrame-output',
-        bytes: await captureEngineFramePng(page, timeout),
-      };
+      return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
     } catch (error) {
       engineError = error;
     }
@@ -302,29 +304,20 @@ async function captureCanvasPng(page) {
 
   try {
     captureStep = 'canvas-screenshot';
-    return {
-      method: 'playwright-screenshot',
-      bytes: await canvas.screenshot({ type: 'png', timeout }),
-    };
+    return await captureAttempt('playwright-screenshot', () => canvas.screenshot({ type: 'png', timeout }));
   } catch (screenshotError) {
     try {
       captureStep = 'page-canvas-clip-screenshot';
-      return {
-        method: 'page-canvas-clip-screenshot',
-        bytes: await pageCanvasClipScreenshot(page, timeout),
-      };
+      return await captureAttempt('page-canvas-clip-screenshot', () => pageCanvasClipScreenshot(page, timeout));
     } catch (clipError) {
       try {
         captureStep = 'canvas-data-url';
-        return await captureCanvasDataUrlPng(page, engineError, screenshotError, clipError);
+        return await captureAttempt('canvas-data-url', () => captureCanvasDataUrlPng(page, engineError, screenshotError, clipError));
       } catch (dataUrlError) {
         if (engineCaptureMode === 'engine-fallback') {
           try {
             captureStep = 'engine-captureFrame-output';
-            return {
-              method: 'engine-captureFrame-output',
-              bytes: await captureEngineFramePng(page, timeout),
-            };
+            return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
           } catch (fallbackEngineError) {
             throw new Error(
               `${dataUrlError instanceof Error ? dataUrlError.message : String(dataUrlError)}; ` +
@@ -335,6 +328,32 @@ async function captureCanvasPng(page) {
         throw dataUrlError;
       }
     }
+  }
+}
+
+async function captureAttempt(method, run) {
+  const attempt = {
+    method,
+    status: 'started',
+    step: captureStep,
+    startedAt: new Date().toISOString(),
+  };
+  lastCaptureAttempts.push(attempt);
+  try {
+    const result = await run();
+    const bytes = result?.bytes ?? result;
+    attempt.status = 'succeeded';
+    attempt.finishedAt = new Date().toISOString();
+    return {
+      method: result?.method ?? method,
+      bytes,
+      attempts: snapshotCaptureAttempts(),
+    };
+  } catch (error) {
+    attempt.status = 'failed';
+    attempt.error = String(error?.message ?? error);
+    attempt.finishedAt = new Date().toISOString();
+    throw error;
   }
 }
 
@@ -483,10 +502,15 @@ function hostBlockedStatus(asset, error) {
     backend: 'pt-webgl2',
     step: captureStep,
     error: String(error?.stack ?? error),
+    captureAttempts: snapshotCaptureAttempts(),
     telemetry: lastTelemetry,
     console: lastConsole.slice(-80),
     serverLog: serverLog.slice(-4000),
   };
+}
+
+function snapshotCaptureAttempts() {
+  return lastCaptureAttempts.map((attempt) => ({ ...attempt }));
 }
 
 function summarize(results) {
