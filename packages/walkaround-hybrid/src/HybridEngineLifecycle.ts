@@ -104,6 +104,8 @@ export interface PipelineInitHost {
   readonly nrcEnabled: boolean;
   /** NRC trainer windows required before cache substitution may replace DDGI. */
   readonly nrcWarmupSteps: number;
+  /** NRC spread-termination constant `c`. */
+  readonly nrcSpreadC: number;
   /** PPG (Müller 2017) guided sampling — when true the pipeline builds the
    *  ppg-update pipeline and enables the UBO gate; false = bit-identical
    *  cosine kernel. */
@@ -194,6 +196,7 @@ export type HybridInitStaticConfig = Pick<
   | 'restirPtReuse'
   | 'nrcEnabled'
   | 'nrcWarmupSteps'
+  | 'nrcSpreadC'
   | 'ppgEnabled'
   | 'ppgMaxSpatialCells'
   | 'ppgMaxDTreeNodesPerCell'
@@ -457,6 +460,7 @@ export class PipelineInitCoordinator {
           // reset). Only consulted when checkerboard is on.
           checkerboardMotionThresholdSq: host.checkerboardMotionThresholdSq,
           nrcWarmupSteps: host.nrcWarmupSteps,
+          nrcSpreadC: host.nrcSpreadC,
           // Phase-0 — PPG train-pass cadence (ppg-update gates on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.

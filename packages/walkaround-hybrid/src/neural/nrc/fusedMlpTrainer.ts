@@ -97,6 +97,22 @@ function planLayers(spec: FusedNetSpec): LayerPlan {
   return { wOff, bOff, inW: li, outW: lo, totalW: tw, totalB: tb, wlayers };
 }
 
+function resolveActiveSampleWindow(
+  maxSamples: number,
+  tileB: number,
+  activeSamples?: number,
+): { samples: number; tiles: number } {
+  const capacity = Math.max(0, Math.floor(maxSamples));
+  const requested = activeSamples === undefined
+    ? capacity
+    : Number.isFinite(activeSamples)
+      ? Math.floor(activeSamples)
+      : capacity;
+  const samples = Math.min(capacity, Math.max(0, requested));
+  const tileSize = Math.max(1, Math.floor(tileB));
+  return { samples, tiles: samples === 0 ? 0 : Math.ceil(samples / tileSize) };
+}
+
 // Pad a Uint16Array to an even length so its byte length is a multiple of 4
 // (WebGPU writeBuffer/copy alignment for f16 storage buffers). The trailing
 // padding element is never read by the kernel (buffers are sized to match).
@@ -169,8 +185,9 @@ export class FusedMlpTrainer {
   // GPUBuffers per trainStep). Mirrors the identical fix in HashGridTableTrainer.
   // _paramsUbo: layer-plan + numSamples header (constant after build — written once).
   _paramsUbo: GPUBuffer | undefined;
-  // _gradFinUbo{W,B,X}: grad-finalize count UBOs for weights / biases / dL/dX
-  // (counts are constant after build — written once).
+  // _gradFinUbo{W,B,X}: grad-finalize count UBOs for weights / biases / dL/dX.
+  // Weight/bias counts are stable; dL/dX is rewritten for sparse active NRC
+  // record windows so the partial final tile does not finalize padded tail rows.
   _gradFinUboW: GPUBuffer | undefined; _gradFinUboB: GPUBuffer | undefined; _gradFinUboX: GPUBuffer | undefined;
   // _adamUbo{W,B}: Adam params UBOs for the weight and bias Adam passes (per-step
   // bc1/bc2 + lr rewritten into the same buffer each step; count is constant).
@@ -275,7 +292,8 @@ export class FusedMlpTrainer {
     {
       const wl = this.plan.wlayers;
       const u = new Uint32Array(4 + wl * 4);
-      u[0] = numSamples; u[1] = this.spec.inW; u[2] = 0; u[3] = this.numTiles();
+      const win = this.activeWindow(numSamples);
+      u[0] = win.samples; u[1] = this.spec.inW; u[2] = 0; u[3] = win.tiles;
       for (let l = 0; l < wl; l++) {
         const base = 4 + l * 4;
         u[base + 0] = this.plan.wOff[l]! >>> 0;
@@ -287,8 +305,8 @@ export class FusedMlpTrainer {
       d.queue.writeBuffer(this._paramsUbo, 0, u);
     }
 
-    // Grad-finalize count UBOs: constant counts (totalW / totalB / numSamples*inW).
-    // Written once; reused each step.
+    // Grad-finalize count UBOs. Seed them with full-capacity counts; recordGradFinalize()
+    // rewrites the same buffers per call so dL/dX can use sparse active batches.
     const writeCount = (ub: GPUBuffer, count: number) => {
       const u = new Uint32Array(4); u[0] = count;
       d.queue.writeBuffer(ub, 0, u);
@@ -390,17 +408,32 @@ export class FusedMlpTrainer {
     q.writeBuffer(this.targets!, 0, y as unknown as BufferSource);
   }
 
-  private numTiles(): number { return Math.ceil(this.numSamples / this.cfg.tileB); }
+  private activeWindow(activeSamples?: number): { samples: number; tiles: number } {
+    return resolveActiveSampleWindow(this.numSamples, this.cfg.tileB, activeSamples);
+  }
+
+  private writeParamsHeader(activeSamples?: number): { samples: number; tiles: number } {
+    const win = this.activeWindow(activeSamples);
+    const u = new Uint32Array(4);
+    u[0] = win.samples;
+    u[1] = this.spec.inW;
+    u[2] = 0;
+    u[3] = win.tiles;
+    this.device.queue.writeBuffer(this._paramsUbo!, 0, u);
+    return win;
+  }
 
   // Returns the persistent params uniform buffer (allocated once in build).
-  // Content is constant after build: layer-plan offsets + numSamples header.
+  // Layer-plan offsets are constant after build; trainStep rewrites the first
+  // 16-byte header so sparse NRC record batches train only on filled samples.
   private paramsUniform(): GPUBuffer { return this._paramsUbo!; }
 
   /** Record the fused forward pass (one workgroup per tile).
    *  @internal — used by {@link FusedMlpTrainerProbe} (the FD/loss debug surface). */
-  recordForward(enc: GPUCommandEncoder) {
+  recordForward(enc: GPUCommandEncoder, activeSamples?: number) {
     this.#assertUsable('recordForward');
     const d = this.device;
+    const win = this.writeParamsHeader(activeSamples);
     const ub = this.paramsUniform();
     const bg = d.createBindGroup({
       layout: this.pFwd.getBindGroupLayout(0),
@@ -415,15 +448,16 @@ export class FusedMlpTrainer {
     });
     const pass = enc.beginComputePass();
     pass.setPipeline(this.pFwd); pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(this.numTiles());
+    if (win.tiles > 0) pass.dispatchWorkgroups(win.tiles);
     pass.end();
   }
 
   /** Record the fused backward pass (accumulates fixed-point grads).
    *  @internal — used by {@link FusedMlpTrainerProbe}. */
-  recordBackward(enc: GPUCommandEncoder) {
+  recordBackward(enc: GPUCommandEncoder, activeSamples?: number) {
     this.#assertUsable('recordBackward');
     const d = this.device;
+    const win = this.writeParamsHeader(activeSamples);
     const ub = this.paramsUniform();
     const bg = d.createBindGroup({
       layout: this.pBwd.getBindGroupLayout(0),
@@ -440,16 +474,17 @@ export class FusedMlpTrainer {
     });
     const pass = enc.beginComputePass();
     pass.setPipeline(this.pBwd); pass.setBindGroup(0, bg);
-    pass.dispatchWorkgroups(this.numTiles());
+    if (win.tiles > 0) pass.dispatchWorkgroups(win.tiles);
     pass.end();
   }
 
-  /** @internal — used by {@link FusedMlpTrainerProbe} + trainStep.
-   *  `ubo` is a UNIFORM buffer pre-loaded with the count as a u32 at offset 0
-   *  (the persistent _gradFinUboW / _gradFinUboB / _gradFinUboX fields). */
+  /** @internal — used by {@link FusedMlpTrainerProbe} + trainStep. */
   recordGradFinalize(enc: GPUCommandEncoder, fx: GPUBuffer, f: GPUBuffer, count: number, ubo: GPUBuffer) {
     this.#assertUsable('recordGradFinalize');
     const d = this.device;
+    const u = new Uint32Array(4);
+    u[0] = count >>> 0;
+    d.queue.writeBuffer(ubo, 0, u);
     const bg = d.createBindGroup({
       layout: this.pGradFin.getBindGroupLayout(0),
       entries: [
@@ -468,8 +503,10 @@ export class FusedMlpTrainer {
    *  Also finalizes dL/dX into {@link gradInputF} so the NRC encode-backward can
    *  scatter it into the trainable hash-grid tables. The MLP-weight Adam runs
    *  here; the host runs the TABLE Adam separately after the encode-backward. */
-  trainStep(lr: number) {
+  trainStep(lr: number, activeSamples?: number) {
     this.#assertUsable('trainStep');
+    const win = this.activeWindow(activeSamples);
+    if (win.samples === 0) return;
     const d = this.device;
     const enc0 = d.createCommandEncoder();
     enc0.clearBuffer(this.gradWfx!); enc0.clearBuffer(this.gradBfx!);
@@ -477,11 +514,11 @@ export class FusedMlpTrainer {
     d.queue.submit([enc0.finish()]);
 
     const enc = d.createCommandEncoder();
-    this.recordForward(enc);
-    this.recordBackward(enc);
+    this.recordForward(enc, win.samples);
+    this.recordBackward(enc, win.samples);
     this.recordGradFinalize(enc, this.gradWfx!, this.gradWf!, this.plan.totalW, this._gradFinUboW!);
     this.recordGradFinalize(enc, this.gradBfx!, this.gradBf!, this.plan.totalB, this._gradFinUboB!);
-    this.recordGradFinalize(enc, this.gradInputFx!, this.gradInputF!, this.numSamples * this.spec.inW, this._gradFinUboX!);
+    this.recordGradFinalize(enc, this.gradInputFx!, this.gradInputF!, win.samples * this.spec.inW, this._gradFinUboX!);
     d.queue.submit([enc.finish()]);
 
     // Adam ALWAYS runs on the f32 MASTER weight/bias buffers (mixed precision);
@@ -597,5 +634,5 @@ function heInit(trainer: FusedMlpTrainer): { w: Float32Array; b: Float32Array } 
 // The Adam optimizer WGSL is exported so the NRC subsystem can run a SEPARATE
 // Adam on the hash-grid feature tables with its own (higher) learning rate +
 // moment buffers (Instant-NGP §4: lr_embed ≈ 0.1 vs lr_mlp ≈ 0.01).
-export { planLayers, f32ToF16Bits, f16BitsToF32, heInit, ADAM_WGSL };
+export { planLayers, resolveActiveSampleWindow, f32ToF16Bits, f16BitsToF32, heInit, ADAM_WGSL };
 export type { LayerPlan };

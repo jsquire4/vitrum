@@ -1022,6 +1022,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       nrcEnabled?: boolean;
       /** NRC trainer windows required before cache substitution may replace DDGI. */
       nrcWarmupSteps?: number;
+      /** NRC spread-termination constant `c`. */
+      nrcSpreadC?: number;
       /** Phase-0 — PPG train-pass dispatch cadence. The update pass dispatches
        *  only on frames where `frameCount % N === 0`. `1`
        *  (default) trains every frame; `N > 1` skips off-interval frames. The
@@ -1144,7 +1146,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this._nrc = new NrcSubsystem(
         d,
         this._bglCache,
-        options?.nrcWarmupSteps !== undefined ? { warmupSteps: options.nrcWarmupSteps } : undefined,
+        {
+          ...(options?.nrcWarmupSteps !== undefined ? { warmupSteps: options.nrcWarmupSteps } : {}),
+          ...(options?.nrcSpreadC !== undefined ? { spreadC: options.nrcSpreadC } : {}),
+        },
       );
       const aabb = deriveSceneAABBFromBvhPositions(bvhBuffers);
       await this._nrc.initialize(aabb.min, aabb.max);

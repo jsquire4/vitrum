@@ -11,7 +11,12 @@
 // always-on guard against layout/codegen regressions.
 
 import { describe, it, expect } from 'vitest';
-import { planLayers, f32ToF16Bits, f16BitsToF32 } from '../fusedMlpTrainer.ts';
+import {
+  planLayers,
+  resolveActiveSampleWindow,
+  f32ToF16Bits,
+  f16BitsToF32,
+} from '../fusedMlpTrainer.ts';
 import {
   fusedForwardWgsl, fusedBackwardWgsl, gradFinalizeWgsl, downcastF16Wgsl,
   type FusedMlpWgslOptions,
@@ -46,6 +51,21 @@ describe('fused NRC MLP — layer plan', () => {
     expect(plan.outW).toEqual([8, 8, 3]);
     expect(plan.totalW).toBe(8 * 8 + 8 * 8 + 8 * 3);
     expect(plan.totalB).toBe(8 + 8 + 3); // 19 — an ODD count (alignment edge case)
+  });
+});
+
+describe('fused NRC MLP — active train window', () => {
+  it('dispatches only filled dense records while preserving full-batch default', () => {
+    expect(resolveActiveSampleWindow(4096, 32)).toEqual({ samples: 4096, tiles: 128 });
+    expect(resolveActiveSampleWindow(4096, 32, 33)).toEqual({ samples: 33, tiles: 2 });
+    expect(resolveActiveSampleWindow(4096, 32, 32)).toEqual({ samples: 32, tiles: 1 });
+    expect(resolveActiveSampleWindow(4096, 32, 0)).toEqual({ samples: 0, tiles: 0 });
+  });
+
+  it('clamps invalid active counts to the allocated record capacity', () => {
+    expect(resolveActiveSampleWindow(128, 32, 999)).toEqual({ samples: 128, tiles: 4 });
+    expect(resolveActiveSampleWindow(128, 32, -5)).toEqual({ samples: 0, tiles: 0 });
+    expect(resolveActiveSampleWindow(128, 32, Number.NaN)).toEqual({ samples: 128, tiles: 4 });
   });
 });
 

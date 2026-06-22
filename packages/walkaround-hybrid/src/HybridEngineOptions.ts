@@ -984,4 +984,17 @@ export interface HybridEngineOptions extends EngineOptions {
    * Only meaningful when `nrcEnabled: true`.
    */
   readonly nrcWarmupSteps?: number;
+
+  /**
+   * Müller et al. spread-termination constant `c` for the NRC suffix cache.
+   *
+   * Smaller values let the biased cache replace the DDGI suffix earlier along a
+   * path; larger values keep more of the explicit DDGI suffix before querying the
+   * cache. Values are clamped to finite `>= 0`.
+   *
+   * Default: 0.01.
+   *
+   * Only meaningful when `nrcEnabled: true`.
+   */
+  readonly nrcSpreadC?: number;
 }

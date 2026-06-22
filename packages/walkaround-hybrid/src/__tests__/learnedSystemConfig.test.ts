@@ -142,6 +142,7 @@ describe('learned-system option parsing', () => {
       ppgDispatchInterval: 0.25,
       ppgMixAlpha: 5,
       nrcWarmupSteps: -3.5,
+      nrcSpreadC: -0.25,
     }));
 
     expect(cfg.ppgEnabled).toBe(1);
@@ -149,5 +150,6 @@ describe('learned-system option parsing', () => {
     expect(cfg.ppgDispatchInterval).toBe(1);
     expect(cfg.ppgMixAlpha).toBe(1);
     expect(cfg.nrcWarmupSteps).toBe(0);
+    expect(cfg.nrcSpreadC).toBe(0);
   });
 });

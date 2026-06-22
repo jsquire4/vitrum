@@ -426,18 +426,13 @@ export class NrcSubsystem implements PipelineSubsystem {
       );
       this._recordReadback.unmap();
       if (filled === 0) return; // nothing to learn this frame
-      // The trainer dispatch is fixed-size (recordCap samples); the zero-padded
-      // tail (unfilled slots that were skipped in the loop above) contributes
-      // zero-input / zero-target samples which gradient toward zero prediction
-      // for zero inputs — benign since no real NRC query is ever called with an
-      // all-zero input (the hash-grid features are never zero for a valid world
-      // position inside the scene AABB). The numSamples masking enhancement is
-      // deferred as a later optimisation.
       this._trainer.setBatch(this._batchX, this._batchY);
-      // MLP step — also finalizes dL/dX into trainer.gradInputF (the encode-
-      // backward upstream signal). Then scatter dL/dfeature into the trainable
-      // hash-grid tables + run the TABLE Adam step (Müller 2022 Instant-NGP §4).
-      this._trainer.trainStep(this.cfg.learningRate);
+      // MLP step over only the dense filled prefix — also finalizes dL/dX into
+      // trainer.gradInputF (the encode-backward upstream signal). Then scatter
+      // dL/dfeature into the trainable hash-grid tables + run the TABLE Adam step
+      // (Müller 2022 Instant-NGP §4). Unfilled zero-padded tail rows no longer
+      // participate in either the loss normalization or dispatch extent.
+      this._trainer.trainStep(this.cfg.learningRate, filled);
       // TABLE training step (encode-backward scatter → grad finalize → table
       // Adam). Owned by the peer HashGridTableTrainer; it reads the trainer's
       // finalized dL/dX + the dense query positions and Adam-updates _tablesBuf.

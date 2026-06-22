@@ -115,6 +115,8 @@ export interface ParsedHybridEngineConfig {
   readonly nrcEnabled: number;
   /** NRC trainer windows required before cache substitution may replace DDGI. */
   readonly nrcWarmupSteps: number;
+  /** NRC spread-termination constant `c` packed into the NRC query config UBO. */
+  readonly nrcSpreadC: number;
   /** PPG (Müller 2017) guided-sampling flag (0 = off, 1 = on). COMPILE-TIME
    *  at the pipeline level: `ppgEnabled` builds the ppg-update pipeline and
    *  drives the UBO gate; OFF is bit-identical to the cosine kernel.
@@ -184,6 +186,11 @@ function resolvePpgMixAlpha(value: number | undefined): number {
 function resolveNrcWarmupSteps(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return 8;
   return Math.max(0, Math.floor(value));
+}
+
+function resolveNrcSpreadC(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0.01;
+  return Math.max(0, value);
 }
 
 function resolveMaxBounces(value: number | undefined): number {
@@ -446,6 +453,9 @@ export function deriveHybridEngineConfig(
     // NRC substitution warmup. The default matches NrcSubsystem's historical
     // DEFAULT_NRC_CONFIG; hosts can make the bias/latency decision explicit.
     nrcWarmupSteps: resolveNrcWarmupSteps(opts.nrcWarmupSteps),
+    // NRC spread heuristic. The default matches NrcSubsystem's historical
+    // DEFAULT_NRC_CONFIG; hosts can tune the biased-cache termination threshold.
+    nrcSpreadC: resolveNrcSpreadC(opts.nrcSpreadC),
     // PPG guided sampling. Default 0 (OFF) — bit-identical cosine kernel.
     // Forwarded to pipeline.initialize so the ppg-update pipeline is actually
     // built when a host opts in (tier:'lite' forbids it — validated above).

@@ -2907,6 +2907,7 @@ export class HybridEngine implements Engine {
       ppgEnabled: this._cfg.ppgEnabled === 1,
       // NRC substitution warmup gate.
       nrcWarmupSteps: this._cfg.nrcWarmupSteps,
+      nrcSpreadC: this._cfg.nrcSpreadC,
       ppgDispatchInterval: this._cfg.ppgDispatchInterval,
       // H47 — PPG max spatial cells. undefined ⇒ allocatePPGResources default (1 024).
       ppgMaxSpatialCells: this._cfg.ppgMaxSpatialCells,
