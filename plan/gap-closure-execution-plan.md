@@ -561,6 +561,38 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 19 — Mutation Matrix Road Artifact Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of `VQ-MUTATION-MATRIX`
+found the dedicated dzn status checker already enforced eight pt-webgpu and
+eight walkaround mutation lanes, observable before/after pixel deltas, zero
+failures, and committed `dzn-full` goldens. The Road checker only required the
+two status artifacts to say `PASS` plus the PNGs to exist, which left room for a
+future edit to weaken coverage without failing the umbrella Road gate.
+
+Implementation:
+
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so
+  `VQ-MUTATION-MATRIX` requires all eight mutation kinds for both `pt` and
+  `wh`: material, environment, emitter, transform, topology, instanced-count,
+  add-primitive, and remove-primitive.
+- The checker now reads both committed dzn status JSON artifacts and requires
+  `verdict: PASS`, `exitStatus: 0`, zero failures, `goldenVariant: dzn-full`,
+  per-lane `rawStatus: OK`, matching `mutationKind`, committed golden status,
+  and observable mutation deltas.
+- The checker also requires every per-lane `dzn-full` PNG artifact to be cited
+  by the Road queue and keeps the Road text honest about pixel-delta and
+  post-mutation-golden proof.
+
+Focused gates:
+
+```bash
+npm run road-to-100-validation-status
+npm run behavioral-gate:dzn-status-check
+npm run proof-check
+git diff --check
+```
+
 ### Wave 18 — Scoped Adjoint Downgrade Taxonomy Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of

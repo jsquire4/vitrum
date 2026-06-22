@@ -54,6 +54,17 @@ const REQUIRED_FUTURE_BLOCKER_NEEDLES = new Map([
   ["FC-ADJOINT-FULL-PATH-PARITY", ["differentiable transport", "scoped direct-light replay"]],
 ]);
 
+const REQUIRED_MUTATION_KINDS = [
+  "material",
+  "environment",
+  "emitter",
+  "transform",
+  "topology",
+  "instanced-count",
+  "add-primitive",
+  "remove-primitive",
+];
+
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -159,6 +170,40 @@ async function assertArtifact(artifact, ownerId) {
   }
 }
 
+/**
+ * @param {unknown} status
+ * @param {"pt" | "wh"} prefix
+ * @param {string} path
+ */
+function assertMutationStatusCoverage(status, prefix, path) {
+  if (status == null || typeof status !== "object") fail(`${path} must be a status object`);
+  if (status.verdict !== "PASS") fail(`${path} must pin verdict PASS`);
+  if (status.exitStatus !== 0) fail(`${path} must pin exitStatus 0`);
+  if (status.goldenVariant !== "dzn-full") fail(`${path} must pin dzn-full goldenVariant`);
+  if (status.summary?.totalConfigs !== REQUIRED_MUTATION_KINDS.length) {
+    fail(`${path} must contain ${REQUIRED_MUTATION_KINDS.length} mutation configs`);
+  }
+  if (status.summary?.failures !== 0) fail(`${path} must pin zero failures`);
+  if (!Array.isArray(status.configs)) fail(`${path} configs must be an array`);
+
+  for (const mutationKind of REQUIRED_MUTATION_KINDS) {
+    const label = `${prefix}/mutation-${mutationKind}`;
+    const config = status.configs.find((item) => item?.label === label);
+    if (config == null) fail(`${path} missing mutation config ${label}`);
+    if (config.verdict !== "PASS") fail(`${path} ${label} must pin verdict PASS`);
+    if (config.rawStatus !== "OK") fail(`${path} ${label} must pin rawStatus OK`);
+    if (config.mutationKind !== mutationKind) fail(`${path} ${label} must pin mutationKind ${mutationKind}`);
+    if (config.goldenStatus !== "ok") fail(`${path} ${label} must pin goldenStatus ok`);
+    if (config.goldenVariant !== "dzn-full") fail(`${path} ${label} must pin goldenVariant dzn-full`);
+    if (typeof config.mutationMeanAbs !== "number" || config.mutationMeanAbs < 2) {
+      fail(`${path} ${label} must retain an observable mutationMeanAbs >= 2`);
+    }
+    if (typeof config.mutationMaxAbs !== "number" || config.mutationMaxAbs < 8) {
+      fail(`${path} ${label} must retain an observable mutationMaxAbs >= 8`);
+    }
+  }
+}
+
 const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await Promise.all([
   readJson(QUEUE_PATH),
   readJson(PACKAGE_PATH),
@@ -218,6 +263,32 @@ for (const row of queue.validationQueue) {
   if (!Array.isArray(row.proofArtifacts)) fail(`${row.id}: proofArtifacts must be an array`);
   for (const artifact of row.proofArtifacts) await assertArtifact(artifact, row.id);
 }
+
+const mutationRow = queue.validationQueue.find((row) => row.id === "VQ-MUTATION-MATRIX");
+if (mutationRow == null) fail("validationQueue missing VQ-MUTATION-MATRIX");
+if (!String(mutationRow.remaining).includes("observable before/after pixel deltas")) {
+  fail("VQ-MUTATION-MATRIX remaining text must keep the observable mutation delta proof explicit");
+}
+if (!String(mutationRow.remaining).includes("committed dzn-full post-mutation goldens")) {
+  fail("VQ-MUTATION-MATRIX remaining text must keep committed dzn-full goldens explicit");
+}
+const mutationArtifactPaths = new Set(mutationRow.proofArtifacts.map((artifact) => artifact?.path));
+for (const mutationKind of REQUIRED_MUTATION_KINDS) {
+  for (const prefix of ["pt", "wh"]) {
+    const path = `tools/reference-renders/mutation-behavioral/${prefix}-mutation-${mutationKind}.dzn-full.png`;
+    if (!mutationArtifactPaths.has(path)) fail(`VQ-MUTATION-MATRIX must cite ${path}`);
+  }
+}
+assertMutationStatusCoverage(
+  await readJson("tools/behavioral-gate/behavioral-gate-dzn-pt-mutation-status.json"),
+  "pt",
+  "tools/behavioral-gate/behavioral-gate-dzn-pt-mutation-status.json",
+);
+assertMutationStatusCoverage(
+  await readJson("tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json"),
+  "wh",
+  "tools/behavioral-gate/behavioral-gate-dzn-wh-mutation-status.json",
+);
 
 const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SYSTEMS");
 if (learnedRow == null) fail("validationQueue missing VQ-LEARNED-SYSTEMS");
