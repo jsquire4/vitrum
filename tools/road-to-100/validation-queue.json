@@ -274,7 +274,7 @@
       "id": "VQ-ADJOINT-SCOPED-PATH-REPLAY",
       "title": "pt-webgpu scoped adjoint path-replay and finite-difference downgrade taxonomy",
       "kind": "validation",
-      "status": "partial-proof-green",
+      "status": "committed-proof-green",
       "command": "npm run test --workspace @vitrum/pt-webgpu -- inverseSession.test.ts",
       "proofArtifacts": [
         { "path": "packages/pt-webgpu/src/inverse/inverseSession.ts" },
@@ -290,7 +290,7 @@
         { "path": "packages/pt-webgpu/src/__tests__/adjointPassPacking.test.ts" },
         { "path": "packages/pt-webgpu/src/__tests__/adjointEmitterGradientOracle.test.ts" }
       ],
-      "remaining": "Scoped direct-light path replay is source/test-pinned for supported material/emitter domains, and unsupported render regimes, transport, visibility, and displacement geometry degrade through structured finite-difference diagnostics. Full alpha/transport/indirect/environment-escape adjoint parity remains a future-contract expansion."
+      "remaining": "Scoped direct-light path replay is source/test-pinned for supported material/emitter domains, and unsupported render regimes, transport, visibility, and displacement geometry degrade through structured finite-difference diagnostics. Full alpha/transport/indirect/environment-escape adjoint parity is tracked separately as FC-ADJOINT-FULL-PATH-PARITY."
     },
     {
       "id": "VQ-LEARNED-SYSTEMS",

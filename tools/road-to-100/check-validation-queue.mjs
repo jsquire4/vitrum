@@ -869,6 +869,9 @@ if (productionCheckpoint === null) {
 
 const adjointRow = queue.validationQueue.find((row) => row.id === "VQ-ADJOINT-SCOPED-PATH-REPLAY");
 if (adjointRow == null) fail("validationQueue missing VQ-ADJOINT-SCOPED-PATH-REPLAY");
+if (adjointRow.status !== "committed-proof-green") {
+  fail("VQ-ADJOINT-SCOPED-PATH-REPLAY must stay committed-proof-green while full-path parity is isolated in FC-ADJOINT-FULL-PATH-PARITY");
+}
 assertRowCitesPaths(adjointRow, REQUIRED_ADJOINT_ARTIFACT_PATHS, "VQ-ADJOINT-SCOPED-PATH-REPLAY");
 for (const needle of [
   "path replay",
