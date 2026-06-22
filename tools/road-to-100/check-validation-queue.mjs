@@ -1069,6 +1069,9 @@ if (!["engine-first", "canvas-first", "canvas-only"].includes(gltfBrowserStatusA
 
 const radiometricPtRow = queue.validationQueue.find((row) => row.id === "VQ-RADIOMETRIC-PT");
 if (radiometricPtRow == null) fail("validationQueue missing VQ-RADIOMETRIC-PT");
+if (radiometricPtRow.workClass !== "research-promotion") {
+  fail("VQ-RADIOMETRIC-PT must stay classified as research-promotion rather than generic proof work");
+}
 const radiometricPtArtifactPaths = new Set(radiometricPtRow.proofArtifacts.map((artifact) => artifact?.path));
 for (const path of REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS) {
   if (!radiometricPtArtifactPaths.has(path)) {

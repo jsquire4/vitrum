@@ -137,6 +137,7 @@
       "id": "VQ-RADIOMETRIC-PT",
       "title": "pt-webgpu BDPT, ReSTIR-PT, SPPM, and Sobol radiometric A/B",
       "kind": "validation",
+      "workClass": "research-promotion",
       "status": "partial-proof-green",
       "command": "npm run radiometric-ab:proof-check",
       "proofArtifacts": [

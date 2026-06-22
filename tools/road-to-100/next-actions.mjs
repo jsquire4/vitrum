@@ -15,6 +15,7 @@ const queuePath = resolve(repoRoot, "tools/road-to-100/validation-queue.json");
 const PROOF_STATUSES = new Set(["partial-proof-green", "host-blocked", "evidence-needed"]);
 const PROVISIONING_STATUSES = new Set(["provisioning-needed"]);
 const DECISION_STATUSES = new Set(["decision-needed"]);
+const RESEARCH_PROMOTION_CLASSES = new Set(["research-promotion"]);
 
 /**
  * @typedef {{
@@ -22,6 +23,7 @@ const DECISION_STATUSES = new Set(["decision-needed"]);
  *   title?: string,
  *   status: string,
  *   kind?: string,
+ *   workClass?: string,
  *   remaining?: string,
  *   command?: string,
  *   promotionCommand?: string,
@@ -45,6 +47,7 @@ const DECISION_STATUSES = new Set(["decision-needed"]);
  *   implementation: QueueRow[],
  *   validationByStatus: Map<string, QueueRow[]>,
  *   proofRows: QueueRow[],
+ *   researchPromotionRows: QueueRow[],
  *   provisioningRows: QueueRow[],
  *   decisionRows: QueueRow[],
  *   futureRows: QueueRow[],
@@ -101,7 +104,13 @@ export function summarizeQueue(queue) {
     validationByStatus.set(row.status, rows);
   }
 
-  const proofRows = queue.validationQueue.filter((row) => PROOF_STATUSES.has(row.status));
+  const researchPromotionRows = queue.validationQueue.filter((row) =>
+    RESEARCH_PROMOTION_CLASSES.has(row.workClass ?? "")
+  );
+  const researchPromotionIds = new Set(researchPromotionRows.map((row) => row.id));
+  const proofRows = queue.validationQueue.filter((row) =>
+    PROOF_STATUSES.has(row.status) && !researchPromotionIds.has(row.id)
+  );
   const provisioningRows = queue.validationQueue.filter((row) => PROVISIONING_STATUSES.has(row.status));
   const decisionRows = queue.validationQueue.filter((row) => DECISION_STATUSES.has(row.status));
 
@@ -110,6 +119,7 @@ export function summarizeQueue(queue) {
     implementation: queue.implementationQueue,
     validationByStatus,
     proofRows,
+    researchPromotionRows,
     provisioningRows,
     decisionRows,
     futureRows: queue.futureContractRows,
@@ -147,6 +157,7 @@ export function formatSummary(summary) {
   }
 
   lines.push(`proof-or-adapter-work: ${summary.proofRows.length} (${ids(summary.proofRows)})`);
+  lines.push(`research-promotion-work: ${summary.researchPromotionRows.length} (${ids(summary.researchPromotionRows)})`);
   lines.push(`provisioning-work: ${summary.provisioningRows.length} (${ids(summary.provisioningRows)})`);
   lines.push(`decision-work: ${summary.decisionRows.length} (${ids(summary.decisionRows)})`);
   lines.push(`future-contract: ${summary.futureRows.length} (${ids(summary.futureRows)})`);
@@ -160,11 +171,14 @@ export function formatSummary(summary) {
   if (summary.proofRows.length > 0) {
     lines.push("  2. Run or provision the proof/adapter rows listed above; do not promote partial rows from source-only evidence.");
   }
+  if (summary.researchPromotionRows.length > 0) {
+    lines.push("  3. Treat research-promotion rows as estimator/default-tier work, not forgotten implementationQueue bugs.");
+  }
   if (summary.provisioningRows.length > 0) {
-    lines.push("  3. Provision learned-system assets/quality manifests before claiming production neural/NRC status.");
+    lines.push("  4. Provision learned-system assets/quality manifests before claiming production neural/NRC status.");
   }
   if (summary.futureRows.length > 0) {
-    lines.push("  4. Treat future-contract rows as product/API design work, not active bugs.");
+    lines.push("  5. Treat future-contract rows as product/API design work, not active bugs.");
   }
 
   return lines.join("\n");
@@ -177,6 +191,7 @@ export function formatSummary(summary) {
 function formatRowDetails(row) {
   const lines = [`  - ${row.id}: ${row.title ?? "(untitled)"} [${row.status}]`];
   if (row.kind) lines.push(`    kind: ${row.kind}`);
+  if (row.workClass) lines.push(`    workClass: ${row.workClass}`);
   if (row.command) lines.push(`    command: ${row.command}`);
   if (row.promotionCommand) lines.push(`    promotionCommand: ${row.promotionCommand}`);
   if (row.remaining) lines.push(`    remaining: ${row.remaining}`);
@@ -215,6 +230,7 @@ export function formatDetailedSummary(summary) {
 
   appendDetailedSection(lines, "implementationQueue", summary.implementation);
   appendDetailedSection(lines, "proofOrAdapterWork", summary.proofRows);
+  appendDetailedSection(lines, "researchPromotionWork", summary.researchPromotionRows);
   appendDetailedSection(lines, "provisioningWork", summary.provisioningRows);
   appendDetailedSection(lines, "decisionWork", summary.decisionRows);
   appendDetailedSection(lines, "futureContract", summary.futureRows);
@@ -233,6 +249,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         [...summary.validationByStatus.entries()].map(([status, rows]) => [status, rows.map((row) => row.id)]),
       ),
       proofOrAdapterWork: summary.proofRows.map((row) => row.id),
+      researchPromotionWork: summary.researchPromotionRows.map((row) => row.id),
       provisioningWork: summary.provisioningRows.map((row) => row.id),
       decisionWork: summary.decisionRows.map((row) => row.id),
       futureContract: summary.futureRows.map((row) => row.id),

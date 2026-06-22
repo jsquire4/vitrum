@@ -16,6 +16,13 @@ test('road-to-100 next-actions separates code, proof, provisioning, and future r
     ],
     validationQueue: [
       { id: 'VQ-PARTIAL', status: 'partial-proof-green', title: 'partial proof', remaining: 'needs A/B' },
+      {
+        id: 'VQ-RESEARCH',
+        status: 'partial-proof-green',
+        workClass: 'research-promotion',
+        title: 'research promotion',
+        remaining: 'needs estimator redesign',
+      },
       { id: 'VQ-HOST', status: 'host-blocked', title: 'host proof', remaining: 'needs browser' },
       { id: 'VQ-LEARNED', status: 'provisioning-needed', title: 'learned', remaining: 'needs checkpoint' },
       { id: 'VQ-GREEN', status: 'committed-proof-green', title: 'done', remaining: 'done' },
@@ -29,6 +36,7 @@ test('road-to-100 next-actions separates code, proof, provisioning, and future r
   assert.equal(summary.activeCodeBlocked, true);
   assert.deepEqual(summary.implementation.map((row) => row.id), ['IMPL-1']);
   assert.deepEqual(summary.proofRows.map((row) => row.id), ['VQ-PARTIAL', 'VQ-HOST']);
+  assert.deepEqual(summary.researchPromotionRows.map((row) => row.id), ['VQ-RESEARCH']);
   assert.deepEqual(summary.provisioningRows.map((row) => row.id), ['VQ-LEARNED']);
   assert.deepEqual(summary.futureRows.map((row) => row.id), ['FC-ONE']);
 
@@ -36,6 +44,7 @@ test('road-to-100 next-actions separates code, proof, provisioning, and future r
   assert.match(text, /implementationQueue: 1/);
   assert.match(text, /code-now: IMPL-1/);
   assert.match(text, /proof-or-adapter-work: 2 \(VQ-PARTIAL, VQ-HOST\)/);
+  assert.match(text, /research-promotion-work: 1 \(VQ-RESEARCH\)/);
   assert.match(text, /provisioning-work: 1 \(VQ-LEARNED\)/);
   assert.match(text, /future-contract: 1 \(FC-ONE\)/);
 });
@@ -45,6 +54,13 @@ test('road-to-100 next-actions reports code freeze when implementation queue is 
     currentAsOf: '2026-06-22',
     implementationQueue: [],
     validationQueue: [
+      {
+        id: 'VQ-RESEARCH',
+        status: 'partial-proof-green',
+        workClass: 'research-promotion',
+        title: 'research promotion',
+        remaining: 'needs estimator redesign',
+      },
       { id: 'VQ-PARTIAL', status: 'partial-proof-green', title: 'partial proof', remaining: 'needs A/B' },
     ],
     futureContractRows: [],
@@ -70,6 +86,15 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
         command: 'npm run proof',
         promotionCommand: 'npm run proof:required',
         remaining: 'needs browser host',
+      },
+      {
+        id: 'VQ-RESEARCH',
+        status: 'partial-proof-green',
+        kind: 'validation',
+        workClass: 'research-promotion',
+        title: 'research promotion',
+        command: 'npm run research-proof',
+        remaining: 'needs estimator redesign',
       },
       {
         id: 'VQ-LEARNED',
@@ -98,6 +123,9 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
   assert.match(text, /command: npm run proof/);
   assert.match(text, /promotionCommand: npm run proof:required/);
   assert.match(text, /remaining: needs browser host/);
+  assert.match(text, /researchPromotionWork: 1/);
+  assert.match(text, /VQ-RESEARCH: research promotion \[partial-proof-green\]/);
+  assert.match(text, /workClass: research-promotion/);
   assert.match(text, /provisioningWork: 1/);
   assert.match(text, /VQ-LEARNED: learned systems \[provisioning-needed\]/);
   assert.match(text, /futureContract: 1/);
