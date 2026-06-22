@@ -155,6 +155,8 @@ function parseEngineCaptureMode(rawValue) {
   const normalized = String(rawValue ?? 'engine-first').trim().toLowerCase();
   if (normalized === 'first' || normalized === 'engine-first') return 'engine-first';
   if (normalized === 'fallback' || normalized === 'engine-fallback') return 'engine-fallback';
+  if (normalized === 'canvas-only' || normalized === 'canvas-only-no-engine') return 'canvas-only';
+  if (normalized === 'canvas-first' || normalized === 'browser-first') return 'canvas-first';
   if (normalized === 'off' || normalized === 'disabled' || normalized === 'none') return 'canvas-only';
   return 'canvas-first';
 }

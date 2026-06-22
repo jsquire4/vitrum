@@ -61,6 +61,8 @@ test('gltf browser capture harness defaults to engine readback before browser re
   const source = await readFile(captureScript, 'utf8');
   assert.match(source, /VITRUM_ENGINE_CAPTURE_MODE/);
   assert.match(source, /String\(rawValue \?\? 'engine-first'\)/);
+  assert.match(source, /normalized === 'canvas-only'/);
+  assert.match(source, /normalized === 'canvas-first'/);
   assert.match(source, /isEngineReadbackHostBlock\(error\)/);
   assert.match(source, /hostBlockHint = 'engine-readback'/);
   assert.match(source, /snapshotPageDiagnostics\(page, 'pre-capture'\)/);
