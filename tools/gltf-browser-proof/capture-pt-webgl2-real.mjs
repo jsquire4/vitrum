@@ -22,6 +22,7 @@ const dataUrlTimeoutMs = Number(process.env.VITRUM_DATA_URL_TIMEOUT_MS ?? '15000
 const statusPath = resolveStatusPath(process.env.VITRUM_GLTF_BROWSER_STATUS_PATH);
 const browserExtraArgs = parseEnvArgs(process.env.VITRUM_CHROMIUM_EXTRA_ARGS);
 const pauseBeforeEngineCapture = parseBooleanEnv(process.env.VITRUM_PAUSE_BEFORE_CAPTURE);
+const engineCaptureMode = parseEngineCaptureMode(process.env.VITRUM_ENGINE_CAPTURE_MODE);
 const thresholds = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
 // Prevent browser readback failures from becoming white/black "successful" goldens.
 const structureThresholds = {
@@ -139,6 +140,14 @@ function parseBooleanEnv(rawValue) {
   if (rawValue == null || rawValue.length === 0) return false;
   const normalized = rawValue.toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'yes';
+}
+
+function parseEngineCaptureMode(rawValue) {
+  const normalized = String(rawValue ?? 'canvas-first').trim().toLowerCase();
+  if (normalized === 'first' || normalized === 'engine-first') return 'engine-first';
+  if (normalized === 'fallback' || normalized === 'engine-fallback') return 'engine-fallback';
+  if (normalized === 'off' || normalized === 'disabled' || normalized === 'none') return 'canvas-only';
+  return 'canvas-first';
 }
 
 function selectedAssets() {
@@ -275,29 +284,52 @@ async function capture(asset) {
 async function captureCanvasPng(page) {
   const canvas = page.locator('canvas').first();
   const timeout = Math.max(1000, Math.min(timeoutMs, screenshotTimeoutMs));
-  try {
-    captureStep = 'engine-captureFrame-output';
-    return {
-      method: 'engine-captureFrame-output',
-      bytes: await captureEngineFramePng(page, timeout),
-    };
-  } catch (error) {
+  let engineError = null;
+  if (engineCaptureMode === 'engine-first') {
     try {
-      captureStep = 'canvas-screenshot';
+      captureStep = 'engine-captureFrame-output';
       return {
-        method: 'playwright-screenshot',
-        bytes: await canvas.screenshot({ type: 'png', timeout }),
+        method: 'engine-captureFrame-output',
+        bytes: await captureEngineFramePng(page, timeout),
       };
-    } catch (screenshotError) {
+    } catch (error) {
+      engineError = error;
+    }
+  }
+
+  try {
+    captureStep = 'canvas-screenshot';
+    return {
+      method: 'playwright-screenshot',
+      bytes: await canvas.screenshot({ type: 'png', timeout }),
+    };
+  } catch (screenshotError) {
+    try {
+      captureStep = 'page-canvas-clip-screenshot';
+      return {
+        method: 'page-canvas-clip-screenshot',
+        bytes: await pageCanvasClipScreenshot(page, timeout),
+      };
+    } catch (clipError) {
       try {
-        captureStep = 'page-canvas-clip-screenshot';
-        return {
-          method: 'page-canvas-clip-screenshot',
-          bytes: await pageCanvasClipScreenshot(page, timeout),
-        };
-      } catch (clipError) {
         captureStep = 'canvas-data-url';
-        return await captureCanvasDataUrlPng(page, error, screenshotError, clipError);
+        return await captureCanvasDataUrlPng(page, engineError, screenshotError, clipError);
+      } catch (dataUrlError) {
+        if (engineCaptureMode === 'engine-fallback') {
+          try {
+            captureStep = 'engine-captureFrame-output';
+            return {
+              method: 'engine-captureFrame-output',
+              bytes: await captureEngineFramePng(page, timeout),
+            };
+          } catch (fallbackEngineError) {
+            throw new Error(
+              `${dataUrlError instanceof Error ? dataUrlError.message : String(dataUrlError)}; ` +
+                `engine captureFrame fallback failed (${fallbackEngineError instanceof Error ? fallbackEngineError.message : String(fallbackEngineError)})`,
+            );
+          }
+        }
+        throw dataUrlError;
       }
     }
   }
@@ -389,8 +421,11 @@ async function captureCanvasDataUrlPng(page, engineError, screenshotError, clipE
     dataUrlTimeout,
     'canvas PNG data URL fallback timed out',
   ).catch((fallbackError) => {
+    const enginePart = engineError == null
+      ? 'engine captureFrame fallback was not attempted'
+      : `engine captureFrame fallback failed (${engineError instanceof Error ? engineError.message : String(engineError)})`;
     throw new Error(
-      `engine captureFrame fallback failed (${engineError instanceof Error ? engineError.message : String(engineError)}); ` +
+      `${enginePart}; ` +
         `Playwright canvas screenshot failed (${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)}); ` +
         `page clipped screenshot failed (${clipError instanceof Error ? clipError.message : String(clipError)}); ` +
         `canvas PNG data URL fallback failed (${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)})`,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -8,6 +8,7 @@ import test from 'node:test';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checkScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'check-status.mjs');
+const captureScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'capture-pt-webgl2-real.mjs');
 
 test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summaries', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
@@ -54,6 +55,24 @@ test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summari
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /box-textured-glb: PASS status must include visual-structure metrics/);
+});
+
+test('gltf browser capture harness defaults to browser capture before engine readback', async () => {
+  const source = await readFile(captureScript, 'utf8');
+  assert.match(source, /VITRUM_ENGINE_CAPTURE_MODE/);
+  assert.match(source, /String\(rawValue \?\? 'canvas-first'\)/);
+
+  const captureFnStart = source.indexOf('async function captureCanvasPng(page)');
+  assert.notEqual(captureFnStart, -1);
+  const captureFn = source.slice(captureFnStart, source.indexOf('\nasync function pageCanvasClipScreenshot', captureFnStart));
+  assert.match(captureFn, /engineCaptureMode === 'engine-first'/);
+  assert.match(captureFn, /engineCaptureMode === 'engine-fallback'/);
+  assert.match(captureFn, /captureStep = 'canvas-screenshot'/);
+
+  const firstScreenshot = captureFn.indexOf("captureStep = 'canvas-screenshot'");
+  const fallbackReadback = captureFn.indexOf("engineCaptureMode === 'engine-fallback'");
+  assert.ok(firstScreenshot > 0);
+  assert.ok(fallbackReadback > firstScreenshot);
 });
 
 function hostBlockedRow(assetId, kind, overrides = {}) {
