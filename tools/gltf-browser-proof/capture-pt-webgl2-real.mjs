@@ -269,28 +269,28 @@ async function captureCanvasPng(page) {
   const canvas = page.locator('canvas').first();
   const timeout = Math.max(1000, Math.min(timeoutMs, screenshotTimeoutMs));
   try {
-    captureStep = 'canvas-screenshot';
+    captureStep = 'engine-captureFrame-output';
     return {
-      method: 'playwright-screenshot',
-      bytes: await canvas.screenshot({ type: 'png', timeout }),
+      method: 'engine-captureFrame-output',
+      bytes: await captureEngineFramePng(page, timeout),
     };
   } catch (error) {
     try {
-      captureStep = 'page-canvas-clip-screenshot';
+      captureStep = 'canvas-screenshot';
       return {
-        method: 'page-canvas-clip-screenshot',
-        bytes: await pageCanvasClipScreenshot(page, timeout),
+        method: 'playwright-screenshot',
+        bytes: await canvas.screenshot({ type: 'png', timeout }),
       };
-    } catch (clipError) {
+    } catch (screenshotError) {
       try {
-        captureStep = 'engine-captureFrame-output';
+        captureStep = 'page-canvas-clip-screenshot';
         return {
-          method: 'engine-captureFrame-output',
-          bytes: await captureEngineFramePng(page, timeout),
+          method: 'page-canvas-clip-screenshot',
+          bytes: await pageCanvasClipScreenshot(page, timeout),
         };
-      } catch (engineError) {
+      } catch (clipError) {
         captureStep = 'canvas-data-url';
-        return await captureCanvasDataUrlPng(page, error, clipError, engineError);
+        return await captureCanvasDataUrlPng(page, error, screenshotError, clipError);
       }
     }
   }
@@ -341,7 +341,7 @@ async function captureEngineFramePng(page, timeout) {
   return PNG.sync.write(png);
 }
 
-async function captureCanvasDataUrlPng(page, screenshotError, clipError, engineError) {
+async function captureCanvasDataUrlPng(page, engineError, screenshotError, clipError) {
   captureStep = 'canvas-data-url';
   const dataUrlTimeout = Math.max(1000, Math.min(timeoutMs, dataUrlTimeoutMs));
   const dataUrl = await withTimeout(
@@ -356,9 +356,9 @@ async function captureCanvasDataUrlPng(page, screenshotError, clipError, engineE
     'canvas PNG data URL fallback timed out',
   ).catch((fallbackError) => {
     throw new Error(
-      `Playwright canvas screenshot failed (${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)}); ` +
+      `engine captureFrame fallback failed (${engineError instanceof Error ? engineError.message : String(engineError)}); ` +
+        `Playwright canvas screenshot failed (${screenshotError instanceof Error ? screenshotError.message : String(screenshotError)}); ` +
         `page clipped screenshot failed (${clipError instanceof Error ? clipError.message : String(clipError)}); ` +
-        `engine captureFrame fallback failed (${engineError instanceof Error ? engineError.message : String(engineError)}); ` +
         `canvas PNG data URL fallback failed (${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)})`,
     );
   });
