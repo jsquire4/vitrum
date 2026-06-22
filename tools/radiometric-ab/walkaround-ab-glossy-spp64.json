@@ -1,0 +1,51 @@
+{
+  "glossy": {
+    "id": "GLOSSY",
+    "description": "B2 metallic probe: metalness=1,rough=0.05 vs metalness=0,rough=1 visible wall",
+    "spp": 64,
+    "resolution": "128x128",
+    "sampleRegion": "visible-back-wall-center-crop",
+    "metal": {
+      "sampleRegionLum": 0.0002506891157390779,
+      "floorLum": 0.0002506891157390779,
+      "overall": 0.000542950289844163
+    },
+    "diffuse": {
+      "sampleRegionLum": 0.1719142097656825,
+      "floorLum": 0.1719142097656825,
+      "overall": 0.06168879726226249
+    },
+    "sampleRatio": 0.0014582221916429414,
+    "floorRatio": 0.0014582221916429414,
+    "delta": {
+      "sampleRegionLum": -0.17166352064994342,
+      "floorLum": -0.17166352064994342,
+      "overall": -0.06114584697241833
+    },
+    "expectedMinSampleRatio": 0.8,
+    "expectedMinFloorRatio": 0.8,
+    "minSignalDelta": 0.0001,
+    "materialEffectObserved": true,
+    "promotion": {
+      "defaultReady": false,
+      "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+      "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
+    },
+    "renderTimeSec": 21.5,
+    "verdict": "FINDING",
+    "notes": [
+      "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
+      "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the probe field; brightness vs Lambertian is scene-direction dependent.",
+      "The diffuse control keeps the same baseColor as the metal arm; the measured delta isolates metallic/roughness behavior.",
+      "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
+      "Lavapipe SPP=16; metallic-mirror at low SPP has high variance and can legitimately reflect a darker direction than the diffuse control.",
+      "FINDING means the material path is live and visibly changes the render, but this capture is a do-not-promote rich-material GI result."
+    ],
+    "qualityProfile": "glossy-spp64",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 64
+    }
+  }
+}

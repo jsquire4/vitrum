@@ -192,11 +192,22 @@
         {
           "path": "tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json",
           "json": {
-            "verdict": "HOST-BLOCKED",
+            "verdict": "PASS-PARTIAL",
             "selectedCases": "glossy",
             "renderConfig.spp": "64",
             "renderConfig.qualityProfile": "glossy-spp64",
-            "reason.code": "deno-wgpu-hal-gles-index-oob"
+            "reason.code": "walkaround-ab-partial-proof"
+          }
+        },
+        {
+          "path": "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
+          "json": {
+            "glossy.verdict": "FINDING",
+            "glossy.materialEffectObserved": true,
+            "glossy.promotion.defaultReady": false,
+            "glossy.promotion.blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+            "glossy.qualityProfile": "glossy-spp64",
+            "glossy.renderConfig.spp": 64
           }
         },
         { "path": "packages/walkaround-hybrid/src/HybridEngineOptions.ts" },
@@ -225,7 +236,7 @@
           }
         }
       ],
-      "remaining": "Committed walkaround A/B proof now pins the full case set and current verdicts (a8 negligible, sun pass, glass pass, glossy finding), plus the source/proof files that define the GRIS, sun, glass, and glossy boundaries. A native-Deno 64-SPP glossy recapture path is wired and currently fail-closed as HOST-BLOCKED on the known wgpu-hal GLES panic. The row must remain PASS-PARTIAL/do-not-promote while glossy is a non-promotable FINDING. Remaining work is browser/real-adapter higher-quality case-specific references before promoting GRIS/ReSTIR-GI/PPG/NRC quality claims."
+      "remaining": "Committed walkaround A/B proof now pins the full case set and current verdicts (a8 negligible, sun pass, glass pass, glossy finding), plus the source/proof files that define the GRIS, sun, glass, and glossy boundaries. The native-Deno 64-SPP glossy recapture lane now runs on this WSL host when no Vulkan ICD is forced and records that glossy is a non-promotable FINDING. The row must remain PASS-PARTIAL/do-not-promote while glossy is a non-promotable rich-material GI approximation. Remaining work is browser/real-adapter higher-quality case-specific references before promoting GRIS/ReSTIR-GI/PPG/NRC quality claims."
     },
     {
       "id": "VQ-RENDERER-FIDELITY-PROOF",
