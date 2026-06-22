@@ -561,6 +561,37 @@ npm run typecheck --workspace @vitrum/gltf-adapter
 npm run typecheck --workspace @vitrum/engine
 ```
 
+### Wave 18 — Scoped Adjoint Downgrade Taxonomy Guard
+
+Status 2026-06-22: **CLOSED.** Source revalidation of
+`VQ-ADJOINT-SCOPED-PATH-REPLAY` found the implementation already separates
+supported direct-light path replay from finite-difference fallbacks for render
+regimes, transport, visibility, geometry, light-selection, and environment
+cases. The weak point was the Road validation checker: it mostly checked prose
+needles rather than the concrete diagnostic taxonomy.
+
+Implementation:
+
+- Strengthened `tools/road-to-100/check-validation-queue.mjs` so
+  `VQ-ADJOINT-SCOPED-PATH-REPLAY` fails if `inverseSession.ts` or
+  `inverseSession.test.ts` lose the concrete downgrade codes:
+  `path-replay-unsupported-render-regime`,
+  `path-replay-unsupported-transport`,
+  `path-replay-unsupported-visibility`,
+  `path-replay-unsupported-geometry`,
+  `path-replay-unsupported-light-selection`, and
+  `path-replay-unsupported-environment`.
+- Added checker requirements for the regression test names that pin transport,
+  alpha-visibility, and displacement finite-difference downgrade coverage.
+
+Focused gates:
+
+```bash
+npm run road-to-100-validation-status
+npm test --workspace @vitrum/pt-webgpu -- inverseSession.test.ts
+git diff --check
+```
+
 ### Wave 17 — Walkaround Glossy Finding Proof Guard
 
 Status 2026-06-22: **CLOSED.** Source revalidation of the walkaround `GLOSSY`

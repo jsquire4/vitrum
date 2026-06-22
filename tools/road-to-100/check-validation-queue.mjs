@@ -168,6 +168,7 @@ const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await P
   readText("plan/road-to-100.md"),
 ]);
 const inverseSessionSource = await readText("packages/pt-webgpu/src/inverse/inverseSession.ts");
+const inverseSessionTestSource = await readText("packages/pt-webgpu/src/__tests__/inverseSession.test.ts");
 const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
 
 if (queue.schema !== "vitrum.road-to-100.validation-queue.v1") fail("queue schema mismatch");
@@ -306,6 +307,30 @@ for (const needle of [
 ]) {
   if (!inverseSessionSource.includes(needle)) {
     fail(`inverseSession.ts scoped adjoint contract prose is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "path-replay-unsupported-render-regime",
+  "path-replay-unsupported-transport",
+  "path-replay-unsupported-visibility",
+  "path-replay-unsupported-geometry",
+  "path-replay-unsupported-light-selection",
+  "path-replay-unsupported-environment",
+]) {
+  if (!inverseSessionSource.includes(needle)) {
+    fail(`inverseSession.ts scoped adjoint downgrade taxonomy is stale: missing ${needle}`);
+  }
+  if (!inverseSessionTestSource.includes(needle)) {
+    fail(`inverseSession.test.ts scoped adjoint downgrade taxonomy is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "keeps transport params on finite-difference",
+  "keeps active cutout alpha coverage params on finite-difference",
+  "downgrades scalar displacement controls",
+]) {
+  if (!inverseSessionTestSource.includes(needle)) {
+    fail(`inverseSession.test.ts scoped adjoint finite-difference coverage is stale: missing ${needle}`);
   }
 }
 
