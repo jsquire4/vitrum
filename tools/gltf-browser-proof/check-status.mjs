@@ -6,6 +6,33 @@ const statusUrl = resolveInputUrl(readFlagValue("--status"), "./pt-webgl2-real-s
 const manifestUrl = resolveInputUrl(readFlagValue("--manifest"), "../reference-renders/gltf-real-browser-pt-webgl2/manifest.json");
 const requirePass = Deno.args.includes("--require-pass");
 
+const REQUIRED_BROWSER_ASSETS = [
+  {
+    assetId: "box-textured-glb",
+    kind: "textured-glb",
+    minTextures: 1,
+    requiredExtensions: [],
+    requiredHooks: [],
+    goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png",
+  },
+  {
+    assetId: "cesium-milk-truck-draco",
+    kind: "draco",
+    minTextures: 0,
+    requiredExtensions: ["KHR_draco_mesh_compression"],
+    requiredHooks: ["draco"],
+    goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png",
+  },
+  {
+    assetId: "meshopt-cube-real",
+    kind: "meshopt",
+    minTextures: 0,
+    requiredExtensions: ["KHR_meshopt_compression"],
+    requiredHooks: ["meshopt"],
+    goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png",
+  },
+];
+
 /**
  * @param {string} message
  * @returns {never}
@@ -23,10 +50,28 @@ if (status.backend !== "pt-webgl2") fail("status backend mismatch");
 if (manifest.kind !== "vitrum-browser-gltf-pt-webgl2-goldens") fail("manifest kind mismatch");
 if (manifest.backend !== "pt-webgl2") fail("manifest backend mismatch");
 if (manifest.assets?.length !== 3) fail("manifest should contain the textured, Draco, and meshopt asset rows");
+if (status.assetCount != null && status.assetCount !== manifest.assets.length) fail("status assetCount differs from manifest assets");
 
 const assetsById = byKey(manifest.assets, "assetId");
 const statusAssets = Array.isArray(status.assets) ? status.assets : [status];
 const statusById = byKey(statusAssets, "assetId");
+
+for (const required of REQUIRED_BROWSER_ASSETS) {
+  const asset = assetsById.get(required.assetId);
+  if (!asset) fail(`manifest is missing required browser asset ${required.assetId}`);
+  if (asset.kind !== required.kind) fail(`${required.assetId}: manifest kind differs from required browser proof contract`);
+  if (asset.minTextures !== required.minTextures) fail(`${required.assetId}: manifest minTextures differs from required browser proof contract`);
+  if (!sameJson(asset.requiredExtensions ?? [], required.requiredExtensions)) {
+    fail(`${required.assetId}: manifest requiredExtensions differ from required browser proof contract`);
+  }
+  if (!sameJson(asset.requiredHooks ?? [], required.requiredHooks)) {
+    fail(`${required.assetId}: manifest requiredHooks differ from required browser proof contract`);
+  }
+  if (asset.goldenPath !== required.goldenPath) {
+    fail(`${required.assetId}: manifest goldenPath differs from required browser proof contract`);
+  }
+  if (!statusById.has(required.assetId)) fail(`status is missing required browser asset ${required.assetId}`);
+}
 
 for (const asset of manifest.assets) {
   const row = statusById.get(asset.assetId);
@@ -180,6 +225,14 @@ function byKey(items, key) {
     map.set(value, item);
   }
   return map;
+}
+
+/**
+ * @param {unknown} a
+ * @param {unknown} b
+ */
+function sameJson(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
 }
 
 /** @param {string} name */
