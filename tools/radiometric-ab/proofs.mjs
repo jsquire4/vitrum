@@ -154,6 +154,7 @@ export const WALKAROUND_AB_RESULT_PROOF = {
   cases: {
     a8: {
       id: "A8",
+      expectedVerdict: "NEGLIGIBLE",
       allowedVerdicts: ["NEGLIGIBLE", "SMALL"],
       maxAbsOverallDelta: 0.03,
       maxAbsRegionDelta: 0.03,
@@ -161,17 +162,20 @@ export const WALKAROUND_AB_RESULT_PROOF = {
     },
     sun: {
       id: "SUN",
+      expectedVerdict: "PASS",
       allowedVerdicts: ["PASS", "PASS-PARTIAL"],
       maxAnalyticRatioError: 0.5,
     },
     glass: {
       id: "GLASS",
+      expectedVerdict: "PASS",
       allowedVerdicts: ["PASS", "SMOKE"],
       minCentreRatio: 0.5,
       minSignalDeltaForPass: 1e-4,
     },
     glossy: {
       id: "GLOSSY",
+      expectedVerdict: "FINDING",
       allowedVerdicts: ["PASS", "PASS-WEAK", "FINDING"],
       sampleRegion: "visible-back-wall-center-crop",
       minSampleRatio: 0.8,

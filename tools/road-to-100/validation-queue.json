@@ -130,7 +130,7 @@
         { "path": "tools/radiometric-ab/walkaround-ab-host-status.json", "json": { "verdict": "PASS-PARTIAL" } },
         { "path": "tools/radiometric-ab/walkaround-ab-results.json" }
       ],
-      "remaining": "Browser/real-adapter or higher-quality case-specific references before promoting GRIS/ReSTIR-GI/PPG/NRC quality claims."
+      "remaining": "Committed walkaround A/B proof now pins the full case set and current verdicts (a8 negligible, sun pass, glass pass, glossy finding). Remaining work is browser/real-adapter or higher-quality case-specific references before promoting GRIS/ReSTIR-GI/PPG/NRC quality claims."
     },
     {
       "id": "VQ-RENDERER-FIDELITY-PROOF",

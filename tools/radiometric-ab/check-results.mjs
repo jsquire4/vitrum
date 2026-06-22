@@ -548,6 +548,9 @@ function checkWalkaroundCaseCommon(label, proof, result) {
   if (!proof.allowedVerdicts.includes(result?.verdict)) {
     fail(`walkaround-ab ${label}: verdict ${result?.verdict} is outside ${proof.allowedVerdicts.join(", ")}`);
   }
+  if (proof.expectedVerdict != null && result?.verdict !== proof.expectedVerdict) {
+    fail(`walkaround-ab ${label}: verdict ${result?.verdict} differs from expected ${proof.expectedVerdict}`);
+  }
 }
 
 /**
