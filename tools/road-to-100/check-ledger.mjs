@@ -247,6 +247,12 @@ if (!ledger.includes("not the active implementation queue")) {
 if (ledger.includes("historical audit provenance plus\n  any explicitly marked open bug rows")) {
   fail("compact gap ledger must not imply items_to_fix.md is a live open-row queue");
 }
+if (ledger.includes("completed one-sample dzn campaign")) {
+  fail("compact gap ledger must not revive stale one-sample CWBVH repeat wording");
+}
+if (!ledger.includes("completed five-sample warmup-discarded dzn campaign")) {
+  fail("compact gap ledger must retain the current five-sample CWBVH repeat evidence summary");
+}
 
 const road = await readText("plan/road-to-100.md");
 const roadmap = await readText("plan/roadmap.md");
@@ -796,6 +802,9 @@ if (!behavioralGateReadme.includes("variants with the tiled ranked Sobol rotatio
 
 if (!items.includes("HISTORICAL AUDIT ITEMS") || !items.includes("G-P2.6 PERF-HYGIENE RECONCILIATION")) {
   fail("items_to_fix.md must retain the current historical-audit/provenance markers");
+}
+if (!items.includes("npm run road-to-100-next-actions") || !items.includes("tools/road-to-100/validation-queue.json")) {
+  fail("items_to_fix.md must point future agents at the machine-readable Road-to-100 queue");
 }
 if (items.includes("**OPEN ITEMS (2026-06-06):**")) {
   fail("items_to_fix.md must not revive the stale 2026-06-06 OPEN ITEMS heading");
