@@ -182,7 +182,12 @@ function isValidCwbvhTimingRow(row) {
     Number(row.cwbvhParityRmse) <= 1 &&
     Number(row.cwbvhParityMeanAbs) <= 0.5 &&
     Number(row.cwbvhParityMaxAbs) <= 8 &&
+    Number(row.gpuErrors) === 0 &&
+    row.nan === false &&
+    Number(row.luminance) >= 0.005 &&
     row.cwbvhPerfKind === 'same-scene' &&
+    Number(row.cwbvhBinaryMemoryBytes) > 0 &&
+    Number(row.cwbvhMemoryBytes) > 0 &&
     Number(row.cwbvhBinaryRenderMs) > 0 &&
     Number(row.cwbvhRenderMs) > 0 &&
     Number(row.cwbvhRenderMsRatio) > 0;

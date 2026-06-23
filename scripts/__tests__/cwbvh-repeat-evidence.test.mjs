@@ -85,6 +85,22 @@ test('CWBVH repeat evidence records invalid shard rows as failures', () => {
   assert.equal(summary.failures[0].reason, 'status-not-pass');
 });
 
+test('CWBVH repeat evidence rejects rows without GPU and memory sanity proof', () => {
+  const records = makeRecords(() => ({ ratio: 0.8 }), MIN_REPEAT_COUNT_PER_WORKLOAD + 1);
+  const row = records[0].status.configs[0];
+  row.gpuErrors = 1;
+  row.nan = true;
+  row.cwbvhMemoryBytes = 0;
+
+  const summary = summarizeCwbvhRepeatEvidence(records, { warmupCount: 1 });
+
+  assert.equal(summary.verdict, 'PASS-PARTIAL');
+  assert.equal(summary.promotion.defaultReady, false);
+  assert.equal(summary.failures.length, 1);
+  assert.equal(summary.failures[0].reason, 'invalid-cwbvh-row');
+  assert.equal(summary.failures[0].label, CWBVH_REPEAT_FILTERS[0].labels[0]);
+});
+
 test('CWBVH repeat campaign summaries do not promote interrupted captures', () => {
   const records = makeRecords(() => ({ ratio: 0.8 }), MIN_REPEAT_COUNT_PER_WORKLOAD + 1);
 
@@ -159,6 +175,8 @@ function makeStatus(entry, runIndex, ratioFor) {
         cwbvhParityMeanAbs: 0,
         cwbvhParityMaxAbs: 0,
         cwbvhPerfKind: 'same-scene',
+        cwbvhBinaryMemoryBytes: 4096,
+        cwbvhMemoryBytes: 3072,
         cwbvhBinaryRenderMs: binaryMs,
         cwbvhRenderMs: binaryMs * ratio,
         cwbvhRenderMsRatio: ratio,
