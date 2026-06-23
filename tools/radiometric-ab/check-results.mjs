@@ -250,6 +250,10 @@ async function checkBdptMultiVertexResearch(proof) {
   if (promotion == null || typeof promotion !== "object") {
     fail("bdpt multi-vertex: result must carry controls.multiVertexPromotion metadata");
   }
+  const finding = result.researchFindings?.bdptMultiVertex ?? null;
+  if (finding == null || typeof finding !== "object") {
+    fail("bdpt multi-vertex: result must carry researchFindings.bdptMultiVertex metadata");
+  }
   if (promotion.defaultReady !== proof.promotion.defaultReady) {
     fail("bdpt multi-vertex: result promotion.defaultReady differs from proof metadata");
   }
@@ -262,6 +266,19 @@ async function checkBdptMultiVertexResearch(proof) {
     if (promotion[key] !== expected) {
       fail(`bdpt multi-vertex: result promotion.${key} must be ${expected}`);
     }
+    if (finding[key] !== expected) {
+      fail(`bdpt multi-vertex: result researchFindings.bdptMultiVertex.${key} must be ${expected}`);
+    }
+  }
+  if (finding.defaultReady !== proof.promotion.defaultReady) {
+    fail("bdpt multi-vertex: result research finding defaultReady differs from proof metadata");
+  }
+  if (finding.firstFindingMaxLightBounces !== proof.controls.findingStartsAt) {
+    fail("bdpt multi-vertex: top-level firstFindingMaxLightBounces differs from proof metadata");
+  }
+  assertFiniteNumber(finding.firstFindingGlobalRelErr, "bdpt multi-vertex: top-level first finding globalRelErr");
+  if (finding.firstFindingGlobalRelErr !== firstFinding.globalRelErr) {
+    fail("bdpt multi-vertex: top-level firstFindingGlobalRelErr differs from control run");
   }
   const source = await Deno.readTextFile(new URL(`../../${proof.sourcePath}`, import.meta.url));
   for (const needle of [

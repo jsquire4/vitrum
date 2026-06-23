@@ -5,8 +5,9 @@
  * Resampling," SIGGRAPH 2021, §4.2 (initial-sample RIS).
  *
  * Per-pixel:
- *   1. Re-cast primary ray; on miss / metal → empty reservoir.
- *      Glass: 1-interface refraction walk to the first diffuse surface (B1 tail).
+ *   1. Re-cast primary ray. Misses produce an empty reservoir; glass may walk
+ *      one refraction interface to the first diffuse receiver (B1 tail), and
+ *      rich receivers keep their material-aware lobe target below.
  *   2. RIS over M_GI = 8 candidates. Each candidate samples a
  *      cosine-weighted hemisphere direction; the reconnection vertex
  *      is the first BVH hit along that direction (or sky).

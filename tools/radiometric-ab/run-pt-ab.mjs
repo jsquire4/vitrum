@@ -116,6 +116,15 @@ function buildPromotionStatus(hostStatus) {
   const bdptControls = bdpt.controls?.byMaxLightBounces ?? [];
   const endpoint = bdptControls.find((entry) => entry.maxLightBounces === 1);
   const firstBdptFinding = bdptControls.find((entry) => entry.maxLightBounces === 2);
+  const bdptMultiVertexFinding = bdpt.researchFindings?.bdptMultiVertex ?? {
+    defaultReady: bdpt.controls?.multiVertexPromotion?.defaultReady,
+    warningCode: 'pt-webgpu.bdpt-multivertex-research-mode',
+    blocker: bdpt.controls?.multiVertexPromotion?.blocker,
+    requiredEstimator: bdpt.controls?.multiVertexPromotion?.requiredEstimator,
+    firstFindingMaxLightBounces: firstBdptFinding?.maxLightBounces,
+    firstFindingGlobalRelErr: firstBdptFinding?.globalRelErr,
+    evidencePath: 'tools/radiometric-ab/results-bdpt.json',
+  };
   const sobolRatios = (sobol.scenes ?? []).map((scene) => scene.ratios ?? {});
 
   return {
@@ -157,13 +166,13 @@ function buildPromotionStatus(hostStatus) {
     },
     researchFindings: {
       bdptMultiVertex: {
-        defaultReady: bdpt.controls?.multiVertexPromotion?.defaultReady,
-        warningCode: 'pt-webgpu.bdpt-multivertex-research-mode',
-        blocker: bdpt.controls?.multiVertexPromotion?.blocker,
-        requiredEstimator: bdpt.controls?.multiVertexPromotion?.requiredEstimator,
-        firstFindingMaxLightBounces: firstBdptFinding?.maxLightBounces,
-        firstFindingGlobalRelErr: firstBdptFinding?.globalRelErr,
-        evidencePath: 'tools/radiometric-ab/results-bdpt.json',
+        defaultReady: bdptMultiVertexFinding.defaultReady,
+        warningCode: bdptMultiVertexFinding.warningCode,
+        blocker: bdptMultiVertexFinding.blocker,
+        requiredEstimator: bdptMultiVertexFinding.requiredEstimator,
+        firstFindingMaxLightBounces: bdptMultiVertexFinding.firstFindingMaxLightBounces,
+        firstFindingGlobalRelErr: bdptMultiVertexFinding.firstFindingGlobalRelErr,
+        evidencePath: bdptMultiVertexFinding.evidencePath,
       },
       restirPtGlossyResearch: {
         verdict: glossyResearch.verdict,

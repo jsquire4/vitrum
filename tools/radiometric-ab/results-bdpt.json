@@ -59,6 +59,17 @@
       "evidencePath": "tools/radiometric-ab/results-bdpt.json"
     }
   },
+  "researchFindings": {
+    "bdptMultiVertex": {
+      "defaultReady": false,
+      "warningCode": "pt-webgpu.bdpt-multivertex-research-mode",
+      "blocker": "not-weighted-against-regular-eye-path-strategy",
+      "requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+      "firstFindingMaxLightBounces": 2,
+      "firstFindingGlobalRelErr": 0.13211930886712425,
+      "evidencePath": "tools/radiometric-ab/results-bdpt.json"
+    }
+  },
   "globalRelErr": 0,
   "roiRelErr": 0,
   "varRatio": 1,

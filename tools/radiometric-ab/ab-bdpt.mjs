@@ -135,6 +135,15 @@ const firstMultiVertexControl = controlRuns.find((r) => r.maxLightBounces === 2)
 const multiVertexFindingStartsAt = firstMultiVertexControl != null && firstMultiVertexControl.globalRelErr > 0.10
   ? firstMultiVertexControl.maxLightBounces
   : null;
+const multiVertexResearchFinding = {
+  defaultReady: false,
+  warningCode: "pt-webgpu.bdpt-multivertex-research-mode",
+  blocker: "not-weighted-against-regular-eye-path-strategy",
+  requiredEstimator: "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+  firstFindingMaxLightBounces: multiVertexFindingStartsAt,
+  firstFindingGlobalRelErr: firstMultiVertexControl?.globalRelErr,
+  evidencePath: "tools/radiometric-ab/results-bdpt.json",
+};
 console.log(`  Endpoint-only control matches UNI: ${endpointOnlyMatchesUni ? "YES" : "NO"}`);
 if (multiVertexFindingStartsAt != null) {
   console.log(`  Multi-vertex finding starts at maxLightBounces:${multiVertexFindingStartsAt}.`);
@@ -211,12 +220,15 @@ const results = {
     endpointOnlyMatchesUni,
     multiVertexFindingStartsAt,
     multiVertexPromotion: {
-      defaultReady: false,
-      warningCode: "pt-webgpu.bdpt-multivertex-research-mode",
-      blocker: "not-weighted-against-regular-eye-path-strategy",
-      requiredEstimator: "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
-      evidencePath: "tools/radiometric-ab/results-bdpt.json",
+      defaultReady: multiVertexResearchFinding.defaultReady,
+      warningCode: multiVertexResearchFinding.warningCode,
+      blocker: multiVertexResearchFinding.blocker,
+      requiredEstimator: multiVertexResearchFinding.requiredEstimator,
+      evidencePath: multiVertexResearchFinding.evidencePath,
     },
+  },
+  researchFindings: {
+    bdptMultiVertex: multiVertexResearchFinding,
   },
   globalRelErr,
   roiRelErr,
