@@ -1170,6 +1170,7 @@ const expectedQualityRequirements = {
   requiresCaptureSource: true,
   requiresTonemap: true,
   requiresArtifacts: true,
+  requiresArtifactFiles: true,
   requiresHardware: true,
   requiresGeneratedAt: true,
   requiresCheckpointIdentity: true,

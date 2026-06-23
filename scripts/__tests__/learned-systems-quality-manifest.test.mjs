@@ -73,6 +73,17 @@ function validate(qualityManifest) {
   });
 }
 
+function validateWithArtifactSet(qualityManifest, existingPaths) {
+  validateProductionQualityManifest({
+    qualityManifest,
+    productionEntries: [PRODUCTION_ENTRY],
+    productionCheckpoint: PRODUCTION_ENTRY.name,
+    productionLike: [PRODUCTION_ENTRY.name],
+    expectedParamCount: EXPECTED_PARAM_COUNT,
+    artifactExists: (artifactPath) => existingPaths.has(artifactPath),
+  });
+}
+
 function cloneManifest() {
   return structuredClone(validQualityManifest());
 }
@@ -122,6 +133,23 @@ test('production neural quality manifest rejects missing reproducibility artifac
     () => validate(manifestWithoutReferenceOutputs),
     /artifacts\.referenceOutputsPath must be a non-empty string/,
   );
+});
+
+test('production neural quality manifest rejects nonexistent reproducibility artifacts when an existence checker is supplied', () => {
+  const manifest = cloneManifest();
+  const existingPaths = new Set([
+    manifest.artifacts.datasetManifestPath,
+    manifest.artifacts.resultSummaryPath,
+    manifest.artifacts.candidateOutputsPath,
+  ]);
+
+  assert.throws(
+    () => validateWithArtifactSet(manifest, existingPaths),
+    /artifacts\.referenceOutputsPath must point at an existing artifact/,
+  );
+
+  existingPaths.add(manifest.artifacts.referenceOutputsPath);
+  assert.doesNotThrow(() => validateWithArtifactSet(manifest, existingPaths));
 });
 
 test('production neural quality manifest rejects incomplete dataset metadata', () => {

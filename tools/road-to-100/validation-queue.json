@@ -524,6 +524,7 @@
             "neuralDenoiser.qualityManifestRequirements.requiresCaptureSource": true,
             "neuralDenoiser.qualityManifestRequirements.requiresTonemap": true,
             "neuralDenoiser.qualityManifestRequirements.requiresArtifacts": true,
+            "neuralDenoiser.qualityManifestRequirements.requiresArtifactFiles": true,
             "neuralDenoiser.qualityManifestRequirements.requiresCheckpointIdentity": true,
             "nrc.defaultEnabled": false,
             "nrc.productionDefaultEligible": false,

@@ -73,6 +73,7 @@ function productionQualityRequirements() {
     requiresCaptureSource: true,
     requiresTonemap: true,
     requiresArtifacts: true,
+    requiresArtifactFiles: true,
     requiresHardware: true,
     requiresGeneratedAt: true,
     requiresCheckpointIdentity: true,
@@ -292,8 +293,19 @@ async function assertNoSilentProductionCheckpoint(manifest) {
       productionCheckpoint: manifest.productionCheckpoint,
       productionLike,
       expectedParamCount: EXPECTED_PARAM_COUNT,
+      artifactExists: artifactPathExists,
       fail,
     });
+  }
+}
+
+/** @param {string} path */
+function artifactPathExists(path) {
+  try {
+    const stat = Deno.statSync(repoUrl(path));
+    return stat.isFile || stat.isDirectory;
+  } catch {
+    return false;
   }
 }
 

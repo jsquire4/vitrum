@@ -1,6 +1,6 @@
 {
   "schema": "vitrum.learned-systems.status.v1",
-  "generatedAt": "2026-06-23T13:36:54.362Z",
+  "generatedAt": "2026-06-23T15:21:31.449Z",
   "verdict": "PASS",
   "productionPosture": "provisioning-needed",
   "neuralDenoiser": {
@@ -22,6 +22,7 @@
       "requiresCaptureSource": true,
       "requiresTonemap": true,
       "requiresArtifacts": true,
+      "requiresArtifactFiles": true,
       "requiresHardware": true,
       "requiresGeneratedAt": true,
       "requiresCheckpointIdentity": true,

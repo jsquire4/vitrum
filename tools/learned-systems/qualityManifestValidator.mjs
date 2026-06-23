@@ -22,6 +22,7 @@ export const MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP = 4096;
  *   productionCheckpoint: string | null,
  *   productionLike?: string[],
  *   expectedParamCount: number,
+ *   artifactExists?: (path: string) => boolean,
  *   fail?: (message: string) => void,
  * }} ProductionQualityValidationInput
  */
@@ -37,6 +38,7 @@ export function validateProductionQualityManifest(input) {
     productionCheckpoint,
     productionLike = [],
     expectedParamCount,
+    artifactExists,
   } = input;
 
   if (productionCheckpoint == null) {
@@ -104,6 +106,9 @@ export function validateProductionQualityManifest(input) {
   ]) {
     if (typeof artifactRecord[field] !== "string" || artifactRecord[field].length === 0) {
       fail(`production neural quality manifest artifacts.${field} must be a non-empty string`);
+    }
+    if (artifactExists != null && !artifactExists(artifactRecord[field])) {
+      fail(`production neural quality manifest artifacts.${field} must point at an existing artifact`);
     }
   }
   const dataset = qualityManifest.dataset;
