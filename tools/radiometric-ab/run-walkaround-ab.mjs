@@ -8,7 +8,7 @@
  * machine-readable instead of leaving future runs as an unclassified crash.
  */
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -38,6 +38,20 @@ const resultPath = resolveFromRepo(
       ? 'tools/radiometric-ab/walkaround-ab-all-spp64.json'
       : 'tools/radiometric-ab/walkaround-ab-results.json',
 );
+const promotionStatusPath = resolve(scriptDir, 'walkaround-ab-promotion-status.json');
+const DEFAULT_SOURCE_STATUS_PATHS = [
+  'tools/radiometric-ab/walkaround-ab-host-status.json',
+  'tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json',
+  'tools/radiometric-ab/walkaround-ab-all-spp64-status.json',
+];
+const DEFAULT_RESULT_PATHS = {
+  baseline: 'tools/radiometric-ab/walkaround-ab-results.json',
+  glossySpp64: 'tools/radiometric-ab/walkaround-ab-glossy-spp64.json',
+  allSpp64: 'tools/radiometric-ab/walkaround-ab-all-spp64.json',
+};
+const usingDefaultProofPaths =
+  (process.env.VITRUM_WALKAROUND_AB_STATUS_PATH == null || process.env.VITRUM_WALKAROUND_AB_STATUS_PATH === '') &&
+  (process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH == null || process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH === '');
 
 function resolveFromRepo(raw, fallbackRelative) {
   if (raw == null || raw === '') return resolve(repoRoot, fallbackRelative);
@@ -46,6 +60,95 @@ function resolveFromRepo(raw, fallbackRelative) {
 
 function repoRelative(path) {
   return relative(repoRoot, path).replaceAll('\\', '/');
+}
+
+function readJson(relativePath) {
+  return JSON.parse(readFileSync(resolve(repoRoot, relativePath), 'utf8'));
+}
+
+function resultVerdicts(result) {
+  return Object.fromEntries(['a8', 'sun', 'glass', 'glossy'].map((id) => [
+    id,
+    result[id]?.verdict ?? 'UNKNOWN',
+  ]));
+}
+
+function glassProfile(label, resultPath, qualityProfile, spp) {
+  const glass = readJson(resultPath).glass;
+  return {
+    label,
+    resultPath,
+    spp,
+    qualityProfile,
+    verdict: glass?.verdict,
+    centreRatio: glass?.centreRatio,
+    overallRatio: glass?.overallRatio,
+    ratioWithinPromotionBounds: glass?.ratioWithinPromotionBounds,
+    materialEffectObserved: glass?.materialEffectObserved,
+  };
+}
+
+function glossyProfile(label, resultPath, qualityProfile, spp) {
+  const glossy = readJson(resultPath).glossy;
+  return {
+    label,
+    resultPath,
+    spp,
+    qualityProfile,
+    verdict: glossy?.verdict,
+    sampleRatio: glossy?.sampleRatio ?? glossy?.floorRatio,
+    materialEffectObserved: glossy?.materialEffectObserved,
+  };
+}
+
+function buildPromotionStatus(generatedAt) {
+  const baseline = readJson(DEFAULT_RESULT_PATHS.baseline);
+  const allSpp64 = readJson(DEFAULT_RESULT_PATHS.allSpp64);
+  return {
+    generatedAt,
+    harness: 'walkaround-ab-promotion-proof',
+    verdict: 'PASS-PARTIAL',
+    promotion: {
+      defaultReady: false,
+      classification: 'glossy-finding',
+      reason:
+        'Native WebGPU 16-SPP and 64-SPP recaptures now show bounded PASS glass transport, while glossy rich-material GI remains a non-promotable FINDING because the realtime DDGI cache stores cosine-weighted irradiance rather than GGX-filtered radiance.',
+      blocker: 'ddgi-irradiance-cache-not-ggx-filtered-radiance',
+      blockers: {
+        glossy: 'ddgi-irradiance-cache-not-ggx-filtered-radiance',
+      },
+      requiredEvidence: 'material-furnace-reference-ab-and-browser-real-adapter-recapture',
+    },
+    caseVerdicts: resultVerdicts(baseline),
+    highSppCaseVerdicts: resultVerdicts(allSpp64),
+    glassProfiles: [
+      glassProfile('baseline', DEFAULT_RESULT_PATHS.baseline, 'baseline', 16),
+      glassProfile('all-spp64', DEFAULT_RESULT_PATHS.allSpp64, 'all-spp64', 64),
+    ],
+    glossyProfiles: [
+      glossyProfile('baseline', DEFAULT_RESULT_PATHS.baseline, 'baseline', 16),
+      glossyProfile('glossy-spp64', DEFAULT_RESULT_PATHS.glossySpp64, 'glossy-spp64', 64),
+      glossyProfile('all-spp64', DEFAULT_RESULT_PATHS.allSpp64, 'all-spp64', 64),
+    ],
+    sourceStatuses: DEFAULT_SOURCE_STATUS_PATHS,
+  };
+}
+
+function maybeWritePromotionStatus(generatedAt) {
+  if (!usingDefaultProofPaths) return;
+  const requiredFiles = [
+    ...DEFAULT_SOURCE_STATUS_PATHS,
+    DEFAULT_RESULT_PATHS.baseline,
+    DEFAULT_RESULT_PATHS.glossySpp64,
+    DEFAULT_RESULT_PATHS.allSpp64,
+  ];
+  if (!requiredFiles.every((path) => existsSync(resolve(repoRoot, path)))) return;
+
+  const statuses = DEFAULT_SOURCE_STATUS_PATHS.map((path) => readJson(path));
+  if (statuses.some((status) => status.verdict === 'HOST-BLOCKED' || status.verdict === 'FAIL')) return;
+
+  const promotionStatus = buildPromotionStatus(generatedAt);
+  writeFileSync(promotionStatusPath, `${JSON.stringify(promotionStatus, null, 2)}\n`);
 }
 
 function parseTimeoutMs(raw) {
@@ -155,8 +258,9 @@ if (result.status === 0) {
     .filter(([, verdict]) => partialVerdicts.has(verdict))
     .map(([id, verdict]) => `${id}:${verdict}`);
   const partial = partialCaseIds.length > 0;
+  const generatedAt = new Date().toISOString();
   const status = {
-    generatedAt: new Date().toISOString(),
+    generatedAt,
     harness: 'walkaround-ab',
     verdict: partial ? 'PASS-PARTIAL' : 'PASS',
     command: `deno ${denoArgs.join(' ')}`,
@@ -186,6 +290,7 @@ if (result.status === 0) {
       : [],
   };
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
+  maybeWritePromotionStatus(generatedAt);
   process.exit(0);
 }
 

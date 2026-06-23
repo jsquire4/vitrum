@@ -60,6 +60,18 @@ test('walkaround A/B wrapper exposes the all-cases 64-SPP proof lane', async () 
   assert.match(runner, /glossySpp64 && allSpp64/);
 });
 
+test('walkaround A/B wrapper refreshes promotion status after default proof recaptures', async () => {
+  const runner = await readFile(walkaroundRunnerPath, 'utf8');
+  assert.match(runner, /walkaround-ab-promotion-status\.json/);
+  assert.match(runner, /function buildPromotionStatus/);
+  assert.match(runner, /function maybeWritePromotionStatus/);
+  assert.match(runner, /usingDefaultProofPaths/);
+  assert.match(runner, /sourceStatuses: DEFAULT_SOURCE_STATUS_PATHS/);
+  assert.match(runner, /glassProfiles/);
+  assert.match(runner, /glossyProfiles/);
+  assert.match(runner, /HOST-BLOCKED' \|\| status\.verdict === 'FAIL'/);
+});
+
 test('pt radiometric wrapper refreshes promotion status after complete recapture', async () => {
   const runner = await readFile(ptRunnerPath, 'utf8');
   assert.match(runner, /pt-promotion-status\.json/);
