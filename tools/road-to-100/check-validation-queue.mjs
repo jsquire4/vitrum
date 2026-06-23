@@ -519,6 +519,12 @@ const walkaroundMutationTestSource = await readText(
   "packages/walkaround-hybrid/src/__tests__/mutationMatrix.test.ts",
 );
 const walkaroundEngineSource = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
+const walkaroundConsumedMaterialFieldsSource = await readText(
+  "packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts",
+);
+const walkaroundConsumedMaterialFieldsTestSource = await readText(
+  "packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts",
+);
 const walkaroundPrimitiveUpdatesSource = await readText(
   "packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts",
 );
@@ -2046,6 +2052,28 @@ for (const snippet of [
 ]) {
   if (!promiseLedger.includes(snippet)) {
     fail(`walkaround specialty material future-contract row is stale: missing promise ledger snippet ${snippet}`);
+  }
+}
+for (const needle of [
+  "Every field NOT in this set is",
+  "spectralAttenuation: 'spectral'",
+  "dispersionAbbeNumber: 'spectral'",
+  "thinFilmStack: 'layered'",
+  "Everything else",
+  "warning/truthfulness surface",
+]) {
+  if (!walkaroundConsumedMaterialFieldsSource.includes(needle)) {
+    fail(`walkaround specialty material runtime truth surface is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "matches the BACKEND_PROMISE_LEDGER walkaround-hybrid material support matrix",
+  "does NOT contain permanently unsupported walkaround fields",
+  "does not warn for approximate walkaround volume scattering fields",
+  "categorizes unconsumed fields for structured warning consumers",
+]) {
+  if (!walkaroundConsumedMaterialFieldsTestSource.includes(needle)) {
+    fail(`walkaround specialty material warning tests are stale: missing ${needle}`);
   }
 }
 if (promiseLedger.includes("rest of the texture-map family is not sampled")) {

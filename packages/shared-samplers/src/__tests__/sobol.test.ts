@@ -83,7 +83,7 @@ describe('Sobol texture table', () => {
     expect(owenScrambledSobolU32(12345, 9, 4)).toBe(0x3cf4a000);
     expect(owenScrambledSobolU32(12345, 9, 63)).toBe(0x641bae00);
     expect(owenScrambledSobolFloat(12345, 9, 63)).toBeCloseTo(0.3910473585128784, 12);
-    expect(initOwenScrambledSobolState(9, 10, 123)).toBe(0xc0761100);
+    expect(initOwenScrambledSobolState(9, 10, 123)).toBe(0x007b2400);
   });
 
   it('documents high-dimension behavior: four direction tables, hash-decorrelated dimensions', () => {

@@ -68,6 +68,7 @@ let lastTelemetry = null;
 let lastConsole = [];
 let lastCaptureAttempts = [];
 let lastPageDiagnostics = null;
+let hostReadbackProbe = null;
 
 const server = spawn(
   process.execPath,
@@ -93,6 +94,7 @@ server.stderr.on('data', (chunk) => { serverLog += chunk.toString(); });
 let finalExitCode = 0;
 try {
   await waitForServer(port, timeoutMs);
+  hostReadbackProbe = await preflightBrowserReadbackProbe();
   const assets = selectedAssets();
   const results = [];
   for (const asset of assets) {
@@ -127,6 +129,7 @@ try {
     },
     telemetry: lastTelemetry,
     console: lastConsole.slice(-80),
+    hostReadbackProbe,
     serverLog: serverLog.slice(-4000),
   };
   await writeStatus(status);
@@ -165,6 +168,153 @@ function parseEngineCaptureMode(rawValue) {
   if (normalized === 'canvas-first' || normalized === 'browser-first') return 'canvas-first';
   if (normalized === 'off' || normalized === 'disabled' || normalized === 'none') return 'canvas-only';
   return 'canvas-first';
+}
+
+async function preflightBrowserReadbackProbe() {
+  const startedAt = new Date().toISOString();
+  const probeTimeout = Math.max(1000, Math.min(timeoutMs, 10000));
+  let browser = null;
+  try {
+    captureStep = 'browser-readback-preflight';
+    const { chromium } = await import('playwright');
+    browser = await chromium.launch({
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        ...browserExtraArgs,
+      ],
+    });
+    const browserVersion = typeof browser.version === 'function' ? browser.version() : null;
+    activeBrowser = browser;
+    const page = await browser.newPage({ viewport: { width: 16, height: 16 } });
+    const result = await withTimeout(
+      page.evaluate(() => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 2;
+        canvas.height = 2;
+        document.body.appendChild(canvas);
+        const gl = canvas.getContext('webgl2', {
+          alpha: false,
+          depth: false,
+          stencil: false,
+          antialias: false,
+          preserveDrawingBuffer: true,
+        });
+        if (gl == null) {
+          return {
+            webgl2: false,
+            status: 'FAIL',
+            reason: 'webgl2-context-unavailable',
+          };
+        }
+        const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
+        const renderer = debugInfo == null ? null : String(gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL));
+        const vendor = debugInfo == null ? null : String(gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL));
+        const extensions = gl.getSupportedExtensions() ?? [];
+        gl.viewport(0, 0, 2, 2);
+        gl.clearColor(0.25, 0.5, 0.75, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        const u8 = new Uint8Array(4);
+        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, u8);
+        const unsignedByteReadback = {
+          status: gl.getError() === gl.NO_ERROR ? 'PASS' : 'FAIL',
+          rgba: Array.from(u8),
+        };
+        let dataUrl = { status: 'FAIL', length: 0, prefix: '' };
+        try {
+          const url = canvas.toDataURL('image/png');
+          dataUrl = {
+            status: url.startsWith('data:image/png;base64,') ? 'PASS' : 'FAIL',
+            length: url.length,
+            prefix: url.slice(0, 22),
+          };
+        } catch (error) {
+          dataUrl = { status: 'FAIL', length: 0, prefix: '', error: String(error?.message ?? error) };
+        }
+        let floatReadback = { status: 'SKIPPED', reason: 'EXT_color_buffer_float-unavailable' };
+        if (gl.getExtension('EXT_color_buffer_float') != null) {
+          const tex = gl.createTexture();
+          const fbo = gl.createFramebuffer();
+          if (tex != null && fbo != null) {
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, null);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+            gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+            const framebufferStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+            if (framebufferStatus === gl.FRAMEBUFFER_COMPLETE) {
+              gl.clearColor(0.125, 0.25, 0.5, 1.0);
+              gl.clear(gl.COLOR_BUFFER_BIT);
+              const f32 = new Float32Array(4);
+              gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, f32);
+              floatReadback = {
+                status: gl.getError() === gl.NO_ERROR ? 'PASS' : 'FAIL',
+                rgba: Array.from(f32),
+              };
+            } else {
+              floatReadback = {
+                status: 'FAIL',
+                reason: `framebuffer-incomplete:${framebufferStatus}`,
+              };
+            }
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            gl.deleteFramebuffer(fbo);
+            gl.deleteTexture(tex);
+          } else {
+            floatReadback = { status: 'FAIL', reason: 'texture-or-framebuffer-allocation-failed' };
+          }
+        }
+        return {
+          webgl2: true,
+          status:
+            unsignedByteReadback.status === 'PASS' &&
+            dataUrl.status === 'PASS' &&
+            (floatReadback.status === 'PASS' || floatReadback.status === 'SKIPPED')
+              ? 'PASS'
+              : 'FAIL',
+          renderer,
+          vendor,
+          version: String(gl.getParameter(gl.VERSION)),
+          shadingLanguageVersion: String(gl.getParameter(gl.SHADING_LANGUAGE_VERSION)),
+          extensions,
+          unsignedByteReadback,
+          floatReadback,
+          dataUrl,
+        };
+      }),
+      probeTimeout,
+      'browser readback preflight timed out',
+    );
+    return {
+      generatedAt: startedAt,
+      finishedAt: new Date().toISOString(),
+      harness: 'gltf-browser-proof:host-readback-preflight',
+      browserVersion,
+      timeoutMs: probeTimeout,
+      ...result,
+    };
+  } catch (error) {
+    return {
+      generatedAt: startedAt,
+      finishedAt: new Date().toISOString(),
+      harness: 'gltf-browser-proof:host-readback-preflight',
+      status: 'FAIL',
+      timeoutMs: probeTimeout,
+      error: String(error?.stack ?? error),
+    };
+  } finally {
+    if (browser != null) {
+      await Promise.race([
+        browser.close().catch(() => undefined),
+        new Promise((resolvePromise) => setTimeout(resolvePromise, 2000)),
+      ]);
+      if (activeBrowser === browser) activeBrowser = null;
+    }
+  }
 }
 
 function selectedAssets() {
@@ -617,6 +767,7 @@ function hostBlockedStatus(asset, error) {
     hostBlockReason: hostBlock.reason,
     captureAttempts: snapshotCaptureAttempts(),
     pageDiagnostics: lastPageDiagnostics,
+    hostReadbackProbe,
     telemetry: lastTelemetry,
     console: lastConsole.slice(-80),
     serverLog: serverLog.slice(-4000),
@@ -692,6 +843,7 @@ function summarize(results) {
     backend: 'pt-webgl2',
     ...(hostBlockClasses.length > 0 ? { hostBlockClasses } : {}),
     captureMode: engineCaptureMode,
+    hostReadbackProbe,
     assets: results,
     assetCount: results.length,
   };

@@ -72,6 +72,11 @@ test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summari
 test('gltf browser capture harness defaults to engine readback before browser readback', async () => {
   const source = await readFile(captureScript, 'utf8');
   assert.match(source, /VITRUM_ENGINE_CAPTURE_MODE/);
+  assert.match(source, /preflightBrowserReadbackProbe/);
+  assert.match(source, /hostReadbackProbe/);
+  assert.match(source, /unsignedByteReadback/);
+  assert.match(source, /floatReadback/);
+  assert.match(source, /WEBGL_debug_renderer_info/);
   assert.match(source, /String\(rawValue \?\? 'engine-first'\)/);
   assert.match(source, /normalized === 'canvas-only'/);
   assert.match(source, /normalized === 'canvas-first'/);
@@ -106,6 +111,43 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.ok(firstScreenshot > firstClipScreenshot);
   assert.ok(fallbackReadback > firstScreenshot);
   assert.ok(dataUrlReadback > fallbackReadback);
+});
+
+test('gltf browser proof checker validates optional host readback preflight probes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
+  const statusPath = join(dir, 'host-blocked-with-probe.json');
+  await writeFile(statusPath, `${JSON.stringify({
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    backend: 'pt-webgl2',
+    captureMode: 'engine-first',
+    hostBlockClasses: ['multi-readback-timeout'],
+    hostReadbackProbe: validHostReadbackProbe(),
+    assets: [
+      {
+        ...hostBlockedRow('box-textured-glb', 'textured-glb', {
+          textureDecodeReport: { mapCount: 1 },
+        }),
+        hostReadbackProbe: validHostReadbackProbe(),
+      },
+      hostBlockedRow('cesium-milk-truck-draco', 'draco', {
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+        extensionsRequired: ['KHR_draco_mesh_compression'],
+        browserDecodeHooks: { requested: ['draco'], draco: true, meshopt: false },
+      }),
+      hostBlockedRow('meshopt-cube-real', 'meshopt', {
+        extensionsUsed: ['KHR_meshopt_compression'],
+        extensionsRequired: ['KHR_meshopt_compression'],
+        browserDecodeHooks: { requested: ['meshopt'], draco: false, meshopt: true },
+      }),
+    ],
+    assetCount: 3,
+  }, null, 2)}\n`);
+
+  const result = await runChecker(['--status', pathToFileURL(statusPath).href]);
+
+  assert.equal(result.status, 0);
 });
 
 test('gltf browser capture harness fails closed before per-asset readiness proof', async () => {
@@ -376,6 +418,36 @@ function pageDiagnosticsFor(assetId) {
     canvasClientHeight: 64,
     canvasRect: { x: 0, y: 0, width: 64, height: 64 },
     devicePixelRatio: 1,
+  };
+}
+
+function validHostReadbackProbe() {
+  return {
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    finishedAt: '2026-06-22T00:00:01.000Z',
+    harness: 'gltf-browser-proof:host-readback-preflight',
+    status: 'PASS',
+    browserVersion: '123.0.0.0',
+    timeoutMs: 10000,
+    webgl2: true,
+    renderer: 'test renderer',
+    vendor: 'test vendor',
+    version: 'WebGL 2.0',
+    shadingLanguageVersion: 'WebGL GLSL ES 3.00',
+    extensions: ['EXT_color_buffer_float'],
+    unsignedByteReadback: {
+      status: 'PASS',
+      rgba: [64, 128, 191, 255],
+    },
+    floatReadback: {
+      status: 'PASS',
+      rgba: [0.125, 0.25, 0.5, 1],
+    },
+    dataUrl: {
+      status: 'PASS',
+      length: 42,
+      prefix: 'data:image/png;base64,',
+    },
   };
 }
 

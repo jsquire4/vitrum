@@ -159,9 +159,9 @@ export function initOwenScrambledSobolState(
   const py = finiteIntegerOrZero(pixelY) >>> 0;
   const frame = finiteIntegerOrZero(frameSeed) >>> 0;
   const pixelSeed = sobolHash(sobolHashCombine(sobolHash(px), py));
-  const sampleIndex = (frame ^ pixelSeed) & 0x0000ffff;
-  const tile = (((py & 7) << 3) | (px & 7)) & 0xff;
-  return toU32((sampleIndex << 16) | (tile << 8));
+  const sampleIndex = frame & 0x0000ffff;
+  const rotationTile = sobolHash(sobolHashCombine(pixelSeed, frame >>> 16)) & 0xff;
+  return toU32((sampleIndex << 16) | (rotationTile << 8));
 }
 
 function sobolComponent(index: number, directions: readonly number[]): number {

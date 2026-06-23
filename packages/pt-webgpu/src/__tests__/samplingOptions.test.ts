@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning } from '@vitrum/core';
-import { owenScrambledSobolU32 } from '@vitrum/shared-samplers';
+import { initOwenScrambledSobolState, owenScrambledSobolU32 } from '@vitrum/shared-samplers';
 import { createPTEngine_WebGPU } from '../index.js';
 import { GpuResources } from '../gpuResources.js';
 import {
@@ -155,6 +155,7 @@ describe('pt-webgpu sampling options', () => {
       ['dimension-indexed rotation', 'ptSobolBlueNoiseRotation(rotationTile, dim)'],
       ['monotonic dimension increment', '((dim + 1u) & 0xffu)'],
     ]);
+    expect(initOwenScrambledSobolState(9, 10, 123)).toBe(0x007b2400);
     const first32Dimensions = Array.from(
       { length: 32 },
       (_unused, dim) => owenScrambledSobolU32(12_345, dim, 7),

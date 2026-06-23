@@ -49,6 +49,7 @@ const manifest = JSON.parse(await Deno.readTextFile(manifestUrl));
 
 if (status.harness !== "gltf-browser-proof:pt-webgl2-real") fail("status harness mismatch");
 if (status.backend !== "pt-webgl2") fail("status backend mismatch");
+if (status.hostReadbackProbe != null) assertHostReadbackProbe(status.hostReadbackProbe, "status");
 
 if (manifest.kind !== "vitrum-browser-gltf-pt-webgl2-goldens") fail("manifest kind mismatch");
 if (manifest.backend !== "pt-webgl2") fail("manifest backend mismatch");
@@ -109,6 +110,7 @@ if (status.verdict === "HOST-BLOCKED") {
       await assertPassingBrowserRow(row, assetsById.get(row.assetId));
     }
     if (row.verdict === "HOST-BLOCKED") {
+      if (row.hostReadbackProbe != null) assertHostReadbackProbe(row.hostReadbackProbe, `${row.assetId}: hostReadbackProbe`);
       assertHostBlockedPageDiagnostics(row);
       assertHostBlockedCaptureAttempts(row);
       assertHostBlockedClassification(row);
@@ -148,6 +150,59 @@ if (status.verdict === "HOST-BLOCKED") {
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF proof)");
 } else {
   fail(`status verdict must be PASS or HOST-BLOCKED, got ${status.verdict}`);
+}
+
+/** @param {Record<string, any>} probe */
+function assertHostReadbackProbe(probe, label) {
+  if (probe == null || typeof probe !== "object") fail(`${label}: hostReadbackProbe must be an object`);
+  if (probe.harness !== "gltf-browser-proof:host-readback-preflight") {
+    fail(`${label}: hostReadbackProbe harness mismatch`);
+  }
+  if (!["PASS", "FAIL"].includes(probe.status)) {
+    fail(`${label}: hostReadbackProbe status must be PASS or FAIL`);
+  }
+  if (typeof probe.generatedAt !== "string" || probe.generatedAt.length === 0) {
+    fail(`${label}: hostReadbackProbe must include generatedAt`);
+  }
+  if (typeof probe.finishedAt !== "string" || probe.finishedAt.length === 0) {
+    fail(`${label}: hostReadbackProbe must include finishedAt`);
+  }
+  if (!(Number(probe.timeoutMs) >= 1000)) {
+    fail(`${label}: hostReadbackProbe must include timeoutMs`);
+  }
+  if (probe.status === "FAIL") {
+    if (typeof probe.error !== "string" && typeof probe.reason !== "string") {
+      fail(`${label}: failed hostReadbackProbe must include error or reason`);
+    }
+    return;
+  }
+  if (probe.webgl2 !== true) fail(`${label}: passing hostReadbackProbe must prove webgl2=true`);
+  if (typeof probe.version !== "string" || probe.version.length === 0) {
+    fail(`${label}: passing hostReadbackProbe must include WebGL version`);
+  }
+  if (!Array.isArray(probe.extensions)) {
+    fail(`${label}: passing hostReadbackProbe must include extensions[]`);
+  }
+  if (probe.unsignedByteReadback?.status !== "PASS") {
+    fail(`${label}: passing hostReadbackProbe must prove RGBA/UNSIGNED_BYTE readPixels`);
+  }
+  if (!Array.isArray(probe.unsignedByteReadback?.rgba) || probe.unsignedByteReadback.rgba.length !== 4) {
+    fail(`${label}: hostReadbackProbe unsignedByteReadback.rgba must be a four-channel sample`);
+  }
+  if (!["PASS", "SKIPPED", "FAIL"].includes(probe.floatReadback?.status)) {
+    fail(`${label}: hostReadbackProbe floatReadback status must be structured`);
+  }
+  if (probe.floatReadback.status === "PASS") {
+    if (!Array.isArray(probe.floatReadback.rgba) || probe.floatReadback.rgba.length !== 4) {
+      fail(`${label}: hostReadbackProbe floatReadback.rgba must be a four-channel sample when PASS`);
+    }
+  }
+  if (probe.floatReadback.status === "SKIPPED" && typeof probe.floatReadback.reason !== "string") {
+    fail(`${label}: skipped floatReadback must include a reason`);
+  }
+  if (probe.dataUrl?.status !== "PASS" || !(Number(probe.dataUrl?.length) > 22)) {
+    fail(`${label}: hostReadbackProbe must prove canvas.toDataURL PNG readback`);
+  }
 }
 
 /** @param {Record<string, any>} status */
