@@ -9,7 +9,17 @@ import test from 'node:test';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checkScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'check-status.mjs');
 const captureScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'capture-pt-webgl2-real.mjs');
+const statusExitCodeHelper = join(repoRoot, 'tools', 'gltf-browser-proof', 'status-exit-code.mjs');
 const packageJsonPath = join(repoRoot, 'package.json');
+
+test('gltf browser capture harness fail-closes host-blocked and failed statuses', async () => {
+  const { gltfBrowserProofStatusExitCode } = await import(pathToFileURL(statusExitCodeHelper).href);
+
+  assert.equal(gltfBrowserProofStatusExitCode('PASS'), 0);
+  assert.equal(gltfBrowserProofStatusExitCode('HOST-BLOCKED'), 2);
+  assert.equal(gltfBrowserProofStatusExitCode('FAIL'), 1);
+  assert.equal(gltfBrowserProofStatusExitCode('UNKNOWN'), 1);
+});
 
 test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summaries', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));

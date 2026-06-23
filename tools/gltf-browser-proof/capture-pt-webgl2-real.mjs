@@ -6,6 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
+import { gltfBrowserProofStatusExitCode } from './status-exit-code.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
@@ -109,7 +110,7 @@ try {
   }
   const summary = summarize(results);
   await writeStatus(summary);
-  finalExitCode = statusExitCode(summary.verdict);
+  finalExitCode = gltfBrowserProofStatusExitCode(summary.verdict);
 } catch (error) {
   await closeActiveBrowser();
   const status = {
@@ -124,7 +125,7 @@ try {
     serverLog: serverLog.slice(-4000),
   };
   await writeStatus(status);
-  finalExitCode = 2;
+  finalExitCode = gltfBrowserProofStatusExitCode(status.verdict);
 } finally {
   await stopServer();
 }
@@ -689,12 +690,6 @@ function summarize(results) {
     assets: results,
     assetCount: results.length,
   };
-}
-
-function statusExitCode(verdict) {
-  if (verdict === 'PASS') return 0;
-  if (verdict === 'HOST-BLOCKED') return 2;
-  return 1;
 }
 
 async function compareOrUpdate(pngBytes, png, goldenPath, thresholds) {
