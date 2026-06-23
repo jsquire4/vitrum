@@ -144,6 +144,9 @@ if (!match) fail(`${LEDGER_PATH} must contain a \`\`\`json road-to-100-ledger.v1
  *   proofUmbrella?: string;
  *   validationQueue?: string;
  *   validationQueueCheck?: string;
+ *   activeCodePolicy?: string;
+ *   currentImplementationQueue?: unknown[];
+ *   validationStatusSummary?: Record<string, unknown>;
  *   closedContractCampaigns?: unknown[];
  *   openPromotionBuckets?: unknown[];
  *   requiredGreenGates?: unknown[];
@@ -163,6 +166,32 @@ if (metadata.currentAsOf < "2026-06-21") {
 const validationQueue = JSON.parse(await readText(VALIDATION_QUEUE_PATH));
 if (metadata.currentAsOf !== validationQueue.currentAsOf) {
   fail(`ledger currentAsOf ${metadata.currentAsOf} must match ${VALIDATION_QUEUE_PATH} currentAsOf ${validationQueue.currentAsOf}`);
+}
+if (!String(metadata.activeCodePolicy ?? "").includes("implementationQueue is empty")) {
+  fail("compact gap ledger must state the current empty implementationQueue policy");
+}
+if (JSON.stringify(metadata.currentImplementationQueue ?? null) !== JSON.stringify(validationQueue.implementationQueue)) {
+  fail("compact gap ledger currentImplementationQueue must match validation queue");
+}
+const summary = metadata.validationStatusSummary;
+if (summary == null || typeof summary !== "object") {
+  fail("compact gap ledger must include validationStatusSummary");
+}
+const validationRows = Array.isArray(validationQueue.validationQueue) ? validationQueue.validationQueue : [];
+const futureRows = Array.isArray(validationQueue.futureContractRows) ? validationQueue.futureContractRows : [];
+const idsByStatus = (status) => validationRows.filter((row) => row.status === status).map((row) => row.id);
+const expectedValidationSummary = {
+  committedProofGreen: idsByStatus("committed-proof-green"),
+  hostBlocked: idsByStatus("host-blocked"),
+  partialProofGreen: idsByStatus("partial-proof-green"),
+  provisioningNeeded: idsByStatus("provisioning-needed"),
+  futureContract: futureRows.map((row) => row.id),
+};
+for (const [key, expected] of Object.entries(expectedValidationSummary)) {
+  const actual = summary[key];
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    fail(`compact gap ledger validationStatusSummary.${key} must match validation queue`);
+  }
 }
 if (metadata.status !== "active") fail("ledger status must be active until Road-to-100 is complete");
 if (metadata.canonicalDetail !== "plan/road-to-100.md") fail("canonicalDetail must point at plan/road-to-100.md");
@@ -204,6 +233,9 @@ for (const [needle, label] of [
   ["GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT", "learned/biased-system evidence bucket"],
   ["explicit unsupported/approximate contract rows", "unsupported/approximate contract boundary"],
   ["future contract expands them", "future-contract expansion boundary"],
+  ["VQ-CWBVH-DEFAULT-PROMOTION", "CWBVH default-promotion evidence bucket"],
+  ["VQ-RENDERER-FIDELITY-PROOF", "renderer fidelity evidence bucket"],
+  ["VQ-LEARNED-SYSTEMS", "learned-systems provisioning bucket"],
 ]) {
   if (!openBuckets.some((entry) => entry.includes(needle))) {
     fail(`openPromotionBuckets must retain ${label}`);

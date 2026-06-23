@@ -17,6 +17,39 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
   "proofUmbrella": "npm run proof-check",
   "validationQueue": "tools/road-to-100/validation-queue.json",
   "validationQueueCheck": "npm run road-to-100-validation-status",
+  "activeCodePolicy": "implementationQueue is empty; do not reopen source work unless a current source read promotes a bounded bug into tools/road-to-100/validation-queue.json",
+  "currentImplementationQueue": [],
+  "validationStatusSummary": {
+    "committedProofGreen": [
+      "VQ-PT-WEBGPU-RUNTIME-GOLDENS",
+      "VQ-WALKAROUND-BEHAVIORAL-MATRIX",
+      "VQ-MUTATION-MATRIX",
+      "VQ-GLTF-REAL-WEBGPU",
+      "VQ-ADJOINT-SCOPED-PATH-REPLAY",
+      "VQ-GLTF-MATERIAL-TOPOLOGY"
+    ],
+    "hostBlocked": [
+      "VQ-GLTF-BROWSER-PTWEBGL2"
+    ],
+    "partialProofGreen": [
+      "VQ-RADIOMETRIC-PT",
+      "VQ-WALKAROUND-RADIOMETRIC-AB",
+      "VQ-RENDERER-FIDELITY-PROOF",
+      "VQ-CWBVH-DEFAULT-PROMOTION"
+    ],
+    "provisioningNeeded": [
+      "VQ-LEARNED-SYSTEMS"
+    ],
+    "futureContract": [
+      "FC-DISPLACEMENT-MICROTESSELLATION",
+      "FC-TRANSPARENT-GI-TRANSPORT",
+      "FC-WALKAROUND-SPECIALTY-MATERIAL-TRANSPORT",
+      "FC-NATIVE-POINT-LINE",
+      "FC-ARBITRARY-UV-ARRAYS",
+      "FC-NATIVE-INSTANCED-SKINNED-MORPHED",
+      "FC-ADJOINT-FULL-PATH-PARITY"
+    ]
+  },
   "closedContractCampaigns": [
     "glTF predictable API plumbing, selected-scene compatibility scoping, and texture readiness diagnostics",
     "backend structured warning/error surfaces for known degradation paths",
@@ -32,11 +65,12 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "machine-readable Road-to-100 validation queue and status checker so proof/provisioning/future-contract tails do not re-enter the code queue"
   ],
   "openPromotionBuckets": [
-    "GPU material-furnace and reference-render sweeps",
-    "broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens; npm run gltf-browser-proof-check:required fails on HOST-BLOCKED until real browser PNG/golden PASS exists",
-    "GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT quality and radiometric A/B evidence",
-    "browser and real-adapter validation outside WSL GPU smoke coverage",
-    "production neural checkpoint and NRC/neural default-tier decisions; displacement/microdisplacement limits, walkaround spectral/dispersion/thin-film/full-layer-stack fields, approximate walkaround scattering rows, pt-webgl2 unpromoted specialty rows, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
+    "VQ-GLTF-BROWSER-PTWEBGL2: broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens; npm run gltf-browser-proof-check:required fails on HOST-BLOCKED until real browser PNG/golden PASS exists",
+    "VQ-WALKAROUND-RADIOMETRIC-AB and VQ-RADIOMETRIC-PT: GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT quality and radiometric A/B evidence, including rich-material GI and multi-vertex BDPT research-promotion tails",
+    "VQ-RENDERER-FIDELITY-PROOF: pt-webgl2 browser/real-adapter reference A/B for unpromoted specialty rows and source/oracle material-furnace proofs before any native promotion",
+    "VQ-CWBVH-DEFAULT-PROMOTION: browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload before CWBVH default promotion",
+    "VQ-LEARNED-SYSTEMS: production neural checkpoint plus quality A/B and NRC/neural default-tier decisions",
+    "Future-contract rows: displacement/microdisplacement limits, walkaround spectral/dispersion/thin-film/full-layer-stack fields, approximate walkaround scattering rows, native point/line and arbitrary UV-array contracts, native instanced-skinned-morphed contracts, full analytic adjoint parity, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
   ],
   "requiredGreenGates": [
     "npm run typecheck",
