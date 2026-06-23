@@ -2348,10 +2348,11 @@ evidence rather than default-promotion speed evidence.
 
 **Remaining work:** browser/real-adapter throughput A/B over broader workloads
 before any renderer default promotion. The explicit capture lane is
-`npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1`, which
-runs the current dzn CWBVH shards repeatedly, discards warmup samples, and
-writes a per-workload repeat-evidence status plus raw repeat records after each
-completed shard for the default-promotion decision.
+`npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1
+--dzn-timeout-ms=900000`, which runs the current dzn CWBVH shards repeatedly,
+discards warmup samples, applies a 900s dzn shard timeout sized to the committed
+broader CWBVH lane, and writes a per-workload repeat-evidence status plus raw
+repeat records after each completed shard for the default-promotion decision.
 The first Road-required 5-repeat campaign is committed as an interrupted
 artifact: binary/complex warmup shards pass, but the broader material/glTF dzn
 shard currently returns `HOST-BLOCKED` after the configured timeout before any

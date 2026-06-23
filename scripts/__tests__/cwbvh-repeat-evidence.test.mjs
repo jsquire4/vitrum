@@ -7,6 +7,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const {
   buildCwbvhRepeatCampaignSummary,
   CWBVH_REPEAT_FILTERS,
+  DEFAULT_REPEAT_DZN_TIMEOUT_MS,
   MIN_REPEAT_COUNT_PER_WORKLOAD,
   summarizeCwbvhRepeatEvidence,
 } = await import(resolve(repoRoot, 'tools', 'behavioral-gate', 'run-cwbvh-default-promotion-repeats.mjs'));
@@ -105,6 +106,19 @@ test('CWBVH repeat campaign summaries do not promote interrupted captures', () =
   assert.equal(summary.promotion.defaultReady, false);
   assert.equal(summary.promotion.blockedBy, 'repeat-campaign-incomplete');
   assert.equal(summary.failure.exitStatus, 124);
+});
+
+test('CWBVH repeat campaign summaries pin the promotion-sized dzn timeout', () => {
+  const records = makeRecords(() => ({ ratio: 0.8 }), MIN_REPEAT_COUNT_PER_WORKLOAD + 1);
+
+  const summary = buildCwbvhRepeatCampaignSummary(records, {
+    repeats: MIN_REPEAT_COUNT_PER_WORKLOAD,
+    warmupCount: 1,
+    recordsPath: 'tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json',
+  });
+
+  assert.equal(summary.dznTimeoutMs, DEFAULT_REPEAT_DZN_TIMEOUT_MS);
+  assert.match(summary.command, /--dzn-timeout-ms=900000/);
 });
 
 function makeRecords(ratioFor, runCount) {

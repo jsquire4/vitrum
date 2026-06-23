@@ -854,7 +854,7 @@ if (cwbvhRow.status !== "partial-proof-green") {
 if (cwbvhRow.command !== "npm run cwbvh-gpu-proof-check") {
   fail("VQ-CWBVH-DEFAULT-PROMOTION command must stay on the CWBVH proof checker");
 }
-if (cwbvhRow.promotionCommand !== "npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1") {
+if (cwbvhRow.promotionCommand !== "npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 --dzn-timeout-ms=900000") {
   fail("VQ-CWBVH-DEFAULT-PROMOTION promotionCommand must name the repeat-measurement capture lane");
 }
 if (scripts["cwbvh-default-promotion-repeats"] !== "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs") {
@@ -891,6 +891,7 @@ for (const needle of [
   "dzn timing artifacts are uniformly slower",
   "single-sample rows",
   "multiple warmup-discarded repeats per workload",
+  "900s dzn shard timeout",
   "raw repeat records",
   "HOST-BLOCKED",
   "post-warmup samples",
@@ -986,6 +987,9 @@ for (const needle of [
   "cwbvh-default-promotion-repeat-records",
   "campaignStatus",
   "insufficient-samples",
+  "DEFAULT_REPEAT_DZN_TIMEOUT_MS = 900_000",
+  "--dzn-timeout-ms",
+  "VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS: String(dznTimeoutMs)",
   "recordsPath",
   "statusVerdict",
   "VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH",

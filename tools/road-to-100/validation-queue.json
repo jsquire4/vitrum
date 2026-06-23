@@ -353,7 +353,7 @@
       "kind": "validation",
       "status": "partial-proof-green",
       "command": "npm run cwbvh-gpu-proof-check",
-      "promotionCommand": "npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1",
+      "promotionCommand": "npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 --dzn-timeout-ms=900000",
       "proofArtifacts": [
         { "path": "tools/behavioral-gate/check-cwbvh-parity-status.mjs" },
         { "path": "tools/behavioral-gate/check-cwbvh-renderer-parity-status.mjs" },
@@ -452,7 +452,7 @@
         { "path": "packages/shared-bvh/src/__tests__/compressedWideBvh.test.ts" },
         { "path": "packages/shared-bvh/src/__tests__/cwbvhWgsl.test.ts" }
       ],
-      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, dzn full-tier simple/complex parity shards, and a broader dzn material/glTF workload shard. Default promotion is still blocked: the latest committed dzn timing artifacts are uniformly slower for CWBVH across the simple, complex, material-lobe, material-lobe-map, and glTF material-sweep shards, and those timings are single-sample rows. `npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1` now checkpoints summary and raw repeat records after every completed shard; the first committed campaign is interrupted/HOST-BLOCKED on the broader material/glTF dzn shard before any post-warmup samples, so browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload is still required before making CWBVH the default traversal."
+      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, dzn full-tier simple/complex parity shards, and a broader dzn material/glTF workload shard. Default promotion is still blocked: the latest committed dzn timing artifacts are uniformly slower for CWBVH across the simple, complex, material-lobe, material-lobe-map, and glTF material-sweep shards, and those timings are single-sample rows. `npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 --dzn-timeout-ms=900000` now checkpoints summary and raw repeat records after every completed shard and carries a 900s dzn shard timeout sized to the committed broader CWBVH lane; the first committed campaign is interrupted/HOST-BLOCKED on the broader material/glTF dzn shard before any post-warmup samples, so browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload is still required before making CWBVH the default traversal."
     },
     {
       "id": "VQ-ADJOINT-SCOPED-PATH-REPLAY",

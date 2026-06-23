@@ -30,6 +30,7 @@ export const CWBVH_REPEAT_FILTERS = [
 ];
 
 export const MIN_REPEAT_COUNT_PER_WORKLOAD = 5;
+export const DEFAULT_REPEAT_DZN_TIMEOUT_MS = 900_000;
 const DEFAULT_WARMUP_COUNT = 1;
 const DEFAULT_OUTPUT = 'tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json';
 const DEFAULT_RECORDS_OUTPUT = 'tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json';
@@ -136,17 +137,20 @@ function readStatusIfPresent(statusPath) {
 export function buildCwbvhRepeatCampaignSummary(records, options = {}) {
   const repeats = readPositiveInteger(options.repeats ?? MIN_REPEAT_COUNT_PER_WORKLOAD, 'repeats');
   const warmupCount = readNonNegativeInteger(options.warmupCount ?? DEFAULT_WARMUP_COUNT, 'warmupCount');
+  const dznTimeoutMs = readPositiveInteger(options.dznTimeoutMs ?? DEFAULT_REPEAT_DZN_TIMEOUT_MS, 'dznTimeoutMs');
   const campaignStatus = String(options.campaignStatus ?? 'complete');
   const failure = options.failure ?? null;
   const command = String(
     options.command ??
-      `node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=${repeats} --warmup=${warmupCount}`,
+      `node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs ` +
+        `--repeats=${repeats} --warmup=${warmupCount} --dzn-timeout-ms=${dznTimeoutMs}`,
   );
   const summary = {
     generatedAt: new Date().toISOString(),
     command,
     campaignStatus,
     requestedRepeatsPerWorkload: repeats,
+    dznTimeoutMs,
     recordsPath: options.recordsPath ?? DEFAULT_RECORDS_OUTPUT,
     filters: CWBVH_REPEAT_FILTERS.map((entry) => ({
       filter: entry.filter,
@@ -235,10 +239,20 @@ function displayPathForSummary(path) {
   return rel.startsWith('..') ? path : rel;
 }
 
-function writeCampaignProgress({ records, repeats, warmupCount, outputPath, recordsPath, campaignStatus, failure = null }) {
+function writeCampaignProgress({
+  records,
+  repeats,
+  warmupCount,
+  dznTimeoutMs,
+  outputPath,
+  recordsPath,
+  campaignStatus,
+  failure = null,
+}) {
   const summary = buildCwbvhRepeatCampaignSummary(records, {
     repeats,
     warmupCount,
+    dznTimeoutMs,
     campaignStatus,
     failure,
     recordsPath: displayPathForSummary(recordsPath),
@@ -257,6 +271,14 @@ function writeCampaignProgress({ records, repeats, warmupCount, outputPath, reco
 function runCampaign(args) {
   const repeats = readPositiveInteger(readFlagValue(args, '--repeats', String(MIN_REPEAT_COUNT_PER_WORKLOAD)), '--repeats');
   const warmupCount = readNonNegativeInteger(readFlagValue(args, '--warmup', String(DEFAULT_WARMUP_COUNT)), '--warmup');
+  const dznTimeoutMs = readPositiveInteger(
+    readFlagValue(
+      args,
+      '--dzn-timeout-ms',
+      process.env.VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS ?? String(DEFAULT_REPEAT_DZN_TIMEOUT_MS),
+    ),
+    '--dzn-timeout-ms',
+  );
   const outputPath = resolve(repoRoot, readFlagValue(args, '--status', DEFAULT_OUTPUT));
   const recordsPath = resolve(repoRoot, readFlagValue(args, '--records', DEFAULT_RECORDS_OUTPUT));
   const totalRuns = repeats + warmupCount;
@@ -277,6 +299,7 @@ function runCampaign(args) {
             env: {
               ...process.env,
               VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH: statusPath,
+              VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS: String(dznTimeoutMs),
             },
           },
         );
@@ -299,6 +322,7 @@ function runCampaign(args) {
             records,
             repeats,
             warmupCount,
+            dznTimeoutMs,
             outputPath,
             recordsPath,
             campaignStatus: 'interrupted',
@@ -328,6 +352,7 @@ function runCampaign(args) {
             records,
             repeats,
             warmupCount,
+            dznTimeoutMs,
             outputPath,
             recordsPath,
             campaignStatus: 'interrupted',
@@ -345,6 +370,7 @@ function runCampaign(args) {
           records,
           repeats,
           warmupCount,
+          dznTimeoutMs,
           outputPath,
           recordsPath,
           campaignStatus: 'running',
@@ -355,6 +381,7 @@ function runCampaign(args) {
       records,
       repeats,
       warmupCount,
+      dznTimeoutMs,
       outputPath,
       recordsPath,
       campaignStatus: 'complete',
