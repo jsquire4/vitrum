@@ -11,6 +11,7 @@
     "browserPromotionReady": false,
     "browserStatus": "HOST-BLOCKED",
     "hostBlockClasses": [
+      "browser-canvas-readback-timeout",
       "engine-readback-timeout"
     ],
     "nonPromotionGradeCount": 11,
@@ -19,6 +20,7 @@
   },
   "sourceStatuses": [
     "tools/gltf-browser-proof/pt-webgl2-real-status.json",
+    "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json",
     "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",
     "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
     "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",

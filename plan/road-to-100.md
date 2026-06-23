@@ -2020,6 +2020,14 @@ before the row's final `canvas-data-url` host-block verdict. The proof checker
 still rejects vague `HOST-BLOCKED` rows that lack structured capture attempts,
 and the required promotion gate still fails until real PNG/golden `PASS` rows
 are captured for all three assets.
+2026-06-23 follow-up: `pt-webgl2-real-canvas-first-status.json` is now committed
+as the bounded browser-readback companion artifact. It runs the same textured,
+Draco, and meshopt pages in `canvas-first` mode, proves the pages reach ready
+telemetry with the same decode hooks intact, and records
+`browser-canvas-readback-timeout` after clipped page screenshot, locator
+screenshot, and canvas data URL readback all time out. The package proof script
+checks both artifacts, while the required promotion script requires both to
+become real PNG/golden `PASS` rows before pt-webgl2 browser rows can promote.
 pt-webgl2 now dedupes repeated sampler-policy approximation warnings at the
 engine warning surface, keeping this browser proof lane focused on one stable
 structured diagnostic per material-map slot instead of repeating it on capture

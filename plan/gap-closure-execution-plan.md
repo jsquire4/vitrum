@@ -751,6 +751,11 @@ Implementation:
   data URL fallback attempts before the host-block verdict. Explicit
   `canvas-first` and `canvas-only` modes remain available for one-off browser
   readback probes through `VITRUM_ENGINE_CAPTURE_MODE`.
+- The committed `pt-webgl2-real-canvas-first-status.json` covers the same three
+  public real-asset rows in `canvas-first` mode and records the bounded
+  browser-canvas readback blocker separately, so promotion work now knows both
+  the engine-readback and browser-canvas-readback failure classes on this WSL
+  host.
 
 Focused gates:
 
@@ -1511,7 +1516,7 @@ for promotion from "implemented/approximate" to "trusted/native".
 | pt-webgl2 material furnace | pt-webgl2 | Source/oracle proof is guarded by `npm run renderer-fidelity-proof-check`: GGX white furnace, thickness/SSS packing and shader consumption, procedural-sky bake into the HDRI/CDF path, and emissive-map mesh-area MIS all have source/test needles. Remaining work is browser/real-adapter reference A/B before any supported-row promotion. |
 | Rich-material GI | walkaround | A/B showing receiver-lobe material target improves or preserves correctness. |
 | Transparent OIT visual proof | walkaround | `wh/transparent-oit` now has a committed `dzn-full` PNG golden plus a dzn PASS status proving a fractional alpha-blend pane with sun, point-light, and finite-area lighting against that golden, while preserving the approximation warning. Remaining work is reference-quality A/B proof for alpha shadow transmittance and layered-transport boundaries. |
-| Real glTF golden sweep | glTF/tools | pt-webgpu WSL public-asset golden lane covered; recommended-backend/browser import/decode readiness is proven for textured GLB, Draco, and meshopt rows. The pt-webgl2 browser harness now defaults to paused public `engine.captureFrame({ colorSpace:'output' })` readback, fail-closes WSL readback timeouts quickly with an `engine-captureFrame-output` attempt in every `HOST-BLOCKED` row, keeps locator screenshot / clipped screenshot / canvas data URL fallbacks for explicit modes, and supports opt-in Chromium GL/ANGLE args via `VITRUM_CHROMIUM_EXTRA_ARGS`; this WSL Playwright host still blocks on pixel readback, so PNG goldens/tolerance remain a browser-host validation item, not a source-code import gap. |
+| Real glTF golden sweep | glTF/tools | pt-webgpu WSL public-asset golden lane covered; recommended-backend/browser import/decode readiness is proven for textured GLB, Draco, and meshopt rows. The pt-webgl2 browser harness now defaults to paused public `engine.captureFrame({ colorSpace:'output' })` readback, fail-closes WSL readback timeouts quickly with an `engine-captureFrame-output` attempt in every `HOST-BLOCKED` row, and also has a committed `canvas-first` companion artifact proving clipped screenshot / locator screenshot / canvas data URL readback time out independently after the same pages are capture-ready. It supports opt-in Chromium GL/ANGLE args via `VITRUM_CHROMIUM_EXTRA_ARGS`; this WSL Playwright host still blocks on pixel readback, so PNG goldens/tolerance remain a browser-host validation item, not a source-code import gap. |
 | Mutation matrix on real GPU | engine/backends | `VQ-MUTATION-MATRIX` is closed for the explicit pt-webgpu + walkaround dzn shard scope: all eight mutation kinds on both backends have committed dzn full-tier status artifacts, observable before/after deltas, and dzn-full post-mutation goldens. Broader browser/adapter expansion now requires a new source-verified row. |
 | Browser/adapter coverage | tools | Browser or real-adapter validation for rows WSL lavapipe cannot prove. |
 

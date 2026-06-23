@@ -9,6 +9,7 @@ import test from 'node:test';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checkScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'check-status.mjs');
 const captureScript = join(repoRoot, 'tools', 'gltf-browser-proof', 'capture-pt-webgl2-real.mjs');
+const packageJsonPath = join(repoRoot, 'package.json');
 
 test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summaries', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
@@ -95,6 +96,17 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.ok(firstScreenshot > firstClipScreenshot);
   assert.ok(fallbackReadback > firstScreenshot);
   assert.ok(dataUrlReadback > fallbackReadback);
+});
+
+test('gltf browser proof package scripts check both committed host-block artifacts', async () => {
+  const pkg = JSON.parse(await readFile(packageJsonPath, 'utf8'));
+  const check = pkg.scripts?.['gltf-browser-proof-check'] ?? '';
+  const required = pkg.scripts?.['gltf-browser-proof-check:required'] ?? '';
+
+  assert.match(check, /tools\/gltf-browser-proof\/check-status\.mjs/);
+  assert.match(check, /pt-webgl2-real-canvas-first-status\.json/);
+  assert.match(required, /tools\/gltf-browser-proof\/check-status\.mjs --require-pass/);
+  assert.match(required, /pt-webgl2-real-canvas-first-status\.json --require-pass/);
 });
 
 test('gltf browser proof checker requires structured host-blocked capture attempts', async () => {

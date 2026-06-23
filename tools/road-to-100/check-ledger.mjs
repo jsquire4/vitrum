@@ -633,14 +633,31 @@ if (road.includes("status records each row as `HOST-BLOCKED` at `engine-captureF
 if (!road.includes("status first records the `engine-captureFrame-output` timeout and then the")) {
   fail("road-to-100.md must retain the current engine-first plus browser-fallback proof summary");
 }
-if (gapExecutionPlan.includes("now uses `canvas-first` mode")) {
-  fail("gap-closure-execution-plan.md contains stale pt-webgl2 browser artifact capture mode wording");
+if (!road.includes("`pt-webgl2-real-canvas-first-status.json` is now committed")) {
+  fail("road-to-100.md must retain the committed canvas-first browser proof artifact summary");
+}
+if (!road.includes("`browser-canvas-readback-timeout`")) {
+  fail("road-to-100.md must name the browser-canvas-readback host-block class");
+}
+if (!gapExecutionPlan.includes("The committed `pt-webgl2-real-canvas-first-status.json` covers the same three")) {
+  fail("gap-closure-execution-plan.md must retain the committed canvas-first browser proof artifact wording");
 }
 if (!gapExecutionPlan.includes("now uses the default `engine-first`")) {
   fail("gap-closure-execution-plan.md must retain the committed engine-first browser proof artifact wording");
 }
-if (packageJson.scripts?.["gltf-browser-proof-check:required"] !== "deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs --require-pass") {
-  fail("package.json must retain the strict browser glTF required proof script");
+const gltfBrowserProofCheckScript = packageJson.scripts?.["gltf-browser-proof-check"] ?? "";
+const gltfBrowserProofRequiredScript = packageJson.scripts?.["gltf-browser-proof-check:required"] ?? "";
+if (
+  !gltfBrowserProofCheckScript.includes("tools/gltf-browser-proof/check-status.mjs") ||
+  !gltfBrowserProofCheckScript.includes("pt-webgl2-real-canvas-first-status.json")
+) {
+  fail("package.json must retain both browser glTF proof status checks");
+}
+if (
+  !gltfBrowserProofRequiredScript.includes("tools/gltf-browser-proof/check-status.mjs --require-pass") ||
+  !gltfBrowserProofRequiredScript.includes("pt-webgl2-real-canvas-first-status.json --require-pass")
+) {
+  fail("package.json must retain the strict browser glTF required proof script for both artifacts");
 }
 
 const gltfBrowserProofCheck = await readText("tools/gltf-browser-proof/check-status.mjs");

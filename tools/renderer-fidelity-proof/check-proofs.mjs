@@ -10,6 +10,7 @@ const ARCHITECTURE_PATH = "plan/library-architecture.md";
 const HARDWARE_VALIDATION_PATH = "HARDWARE-VALIDATION-NEEDS.md";
 const GAP_EXECUTION_PLAN_PATH = "plan/gap-closure-execution-plan.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
+const PT_WEBGL2_BROWSER_CANVAS_FIRST_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json";
 const PT_WEBGL2_BROWSER_MANIFEST_PATH = "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json";
 const PROMOTION_STATUS_PATH = "tools/renderer-fidelity-proof/promotion-status.json";
 
@@ -724,10 +725,11 @@ async function assertPtWebgl2MaterialFurnaceProof(proof) {
 }
 
 /**
- * @param {Record<string, any>} ptWebgl2BrowserStatus
+ * @param {Array<Record<string, any>>} ptWebgl2BrowserStatuses
  */
-async function assertPromotionStatus(ptWebgl2BrowserStatus) {
+async function assertPromotionStatus(ptWebgl2BrowserStatuses) {
   const status = JSON.parse(await readText(PROMOTION_STATUS_PATH));
+  const primaryBrowserStatus = ptWebgl2BrowserStatuses[0];
   if (status.harness !== "renderer-fidelity-promotion-proof") fail(`${PROMOTION_STATUS_PATH} harness mismatch`);
   if (status.verdict !== "PASS-PARTIAL") {
     fail(`${PROMOTION_STATUS_PATH} must stay PASS-PARTIAL until pt-webgl2 browser promotion evidence lands`);
@@ -744,13 +746,18 @@ async function assertPromotionStatus(ptWebgl2BrowserStatus) {
   if (status.ptWebgl2?.browserPromotionReady !== false) {
     fail(`${PROMOTION_STATUS_PATH} ptWebgl2.browserPromotionReady must remain false while browser capture is blocked`);
   }
-  if (status.ptWebgl2?.browserStatus !== ptWebgl2BrowserStatus.verdict) {
+  if (!ptWebgl2BrowserStatuses.every((browserStatus) => browserStatus.verdict === primaryBrowserStatus.verdict)) {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgl2 browser status artifacts must agree before promotion accounting`);
+  }
+  if (status.ptWebgl2?.browserStatus !== primaryBrowserStatus.verdict) {
     fail(`${PROMOTION_STATUS_PATH} ptWebgl2.browserStatus must match ${PT_WEBGL2_BROWSER_STATUS_PATH}`);
   }
-  if (ptWebgl2BrowserStatus.verdict === "HOST-BLOCKED") {
-    const expectedClasses = ptWebgl2BrowserStatus.hostBlockClasses ?? [];
+  if (primaryBrowserStatus.verdict === "HOST-BLOCKED") {
+    const expectedClasses = Array.from(new Set(
+      ptWebgl2BrowserStatuses.flatMap((browserStatus) => browserStatus.hostBlockClasses ?? []),
+    )).sort();
     if (JSON.stringify(status.ptWebgl2?.hostBlockClasses) !== JSON.stringify(expectedClasses)) {
-      fail(`${PROMOTION_STATUS_PATH} ptWebgl2.hostBlockClasses must match browser proof status`);
+      fail(`${PROMOTION_STATUS_PATH} ptWebgl2.hostBlockClasses must match browser proof statuses`);
     }
   }
   if (status.ptWebgl2?.nonPromotionGradeCount !== PT_WEBGL2_EXPECTED_ROWS.length) {
@@ -764,6 +771,7 @@ async function assertPromotionStatus(ptWebgl2BrowserStatus) {
   }
   const expectedSourceStatuses = [
     PT_WEBGL2_BROWSER_STATUS_PATH,
+    PT_WEBGL2_BROWSER_CANVAS_FIRST_STATUS_PATH,
     PT_WEBGL2_BROWSER_MANIFEST_PATH,
     "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
     "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
@@ -782,6 +790,7 @@ const architecture = await readText(ARCHITECTURE_PATH);
 const hardwareValidation = await readText(HARDWARE_VALIDATION_PATH);
 const gapExecutionPlan = await readText(GAP_EXECUTION_PLAN_PATH);
 const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
+const ptWebgl2BrowserCanvasFirstStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_CANVAS_FIRST_STATUS_PATH));
 const ptWebgl2BrowserManifest = JSON.parse(await readText(PT_WEBGL2_BROWSER_MANIFEST_PATH));
 
 if (!matrix.includes("| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebGPU) |")) {
@@ -811,10 +820,17 @@ if (!gapExecutionPlan.includes("pt-webgl2 material furnace | pt-webgl2 | Source/
   fail("gap closure execution plan must classify pt-webgl2 material furnace as source/oracle-proof guarded, with remaining A/B called out separately");
 }
 
-if (ptWebgl2BrowserStatus.backend !== "pt-webgl2") {
-  fail(`${PT_WEBGL2_BROWSER_STATUS_PATH} backend mismatch`);
+for (const [path, status] of [
+  [PT_WEBGL2_BROWSER_STATUS_PATH, ptWebgl2BrowserStatus],
+  [PT_WEBGL2_BROWSER_CANVAS_FIRST_STATUS_PATH, ptWebgl2BrowserCanvasFirstStatus],
+]) {
+  if (status.backend !== "pt-webgl2") fail(`${path} backend mismatch`);
 }
-if (ptWebgl2BrowserStatus.verdict === "HOST-BLOCKED") {
+const browserStatuses = [ptWebgl2BrowserStatus, ptWebgl2BrowserCanvasFirstStatus];
+if (browserStatuses.some((status) => status.verdict === "HOST-BLOCKED")) {
+  if (!browserStatuses.every((status) => status.verdict === "HOST-BLOCKED")) {
+    fail("pt-webgl2 browser status artifacts must all pass before any promotion");
+  }
   for (const row of featureRows(matrix)) {
     const columns = row.split(" | ");
     const feature = columns[0].slice(2);
@@ -826,12 +842,14 @@ if (ptWebgl2BrowserStatus.verdict === "HOST-BLOCKED") {
       );
     }
   }
-} else if (ptWebgl2BrowserStatus.verdict !== "PASS") {
-  fail(`${PT_WEBGL2_BROWSER_STATUS_PATH} verdict must be PASS or HOST-BLOCKED`);
+} else if (browserStatuses.some((status) => status.verdict !== "PASS")) {
+  fail("pt-webgl2 browser status artifact verdicts must be PASS or HOST-BLOCKED");
 } else {
-  await assertPtWebgl2BrowserPassStatus(ptWebgl2BrowserStatus, ptWebgl2BrowserManifest);
+  for (const browserStatus of browserStatuses) {
+    await assertPtWebgl2BrowserPassStatus(browserStatus, ptWebgl2BrowserManifest);
+  }
 }
-await assertPromotionStatus(ptWebgl2BrowserStatus);
+await assertPromotionStatus(browserStatuses);
 
 for (const staleNeedle of PLAYBOOK_FORBIDDEN_STALE_NEEDLES) {
   if (playbook.includes(staleNeedle)) {

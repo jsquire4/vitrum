@@ -61,8 +61,8 @@
     "gltf-material-sweep": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/sweep.mjs",
     "gltf-material-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/check-proofs.mjs",
     "gltf-real-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-real-asset-sweep/check-proofs.mjs",
-    "gltf-browser-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs",
-    "gltf-browser-proof-check:required": "deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs --require-pass",
+    "gltf-browser-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs && deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs --status ./pt-webgl2-real-canvas-first-status.json",
+    "gltf-browser-proof-check:required": "deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs --require-pass && deno run --sloppy-imports --allow-read tools/gltf-browser-proof/check-status.mjs --status ./pt-webgl2-real-canvas-first-status.json --require-pass",
     "gltf-topology-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-topology-proofs/check-proofs.mjs",
     "gltf-real-asset-sweep": "deno run --sloppy-imports --allow-read --allow-net tools/gltf-real-asset-sweep/sweep.mjs"
   },

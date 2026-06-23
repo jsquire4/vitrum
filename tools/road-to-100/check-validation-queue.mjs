@@ -223,6 +223,7 @@ const REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS = [
   "HARDWARE-VALIDATION-NEEDS.md",
   "plan/gap-closure-execution-plan.md",
   "tools/gltf-browser-proof/pt-webgl2-real-status.json",
+  "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json",
   "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",
   "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
@@ -817,6 +818,7 @@ for (const path of REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS) {
 }
 const rendererPromotionStatus = await readJson("tools/renderer-fidelity-proof/promotion-status.json");
 const rendererBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-status.json");
+const rendererCanvasBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json");
 if (
   rendererPromotionStatus.verdict !== "PASS-PARTIAL" ||
   rendererPromotionStatus.ptWebgl2?.browserPromotionReady !== false ||
@@ -833,8 +835,12 @@ if (rendererPromotionStatus.ptWebgl2?.nonPromotionGradeCount !== 11) {
 if (rendererPromotionStatus.ptWebgl2?.materialFurnaceSourceOracleGroupCount !== 4) {
   fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin 4 pt-webgl2 source/oracle proof groups");
 }
-if (JSON.stringify(rendererPromotionStatus.ptWebgl2?.hostBlockClasses) !== JSON.stringify(rendererBrowserStatus.hostBlockClasses ?? [])) {
-  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary hostBlockClasses must match browser status");
+const rendererBrowserHostBlockClasses = Array.from(new Set([
+  ...(rendererBrowserStatus.hostBlockClasses ?? []),
+  ...(rendererCanvasBrowserStatus.hostBlockClasses ?? []),
+])).sort();
+if (JSON.stringify(rendererPromotionStatus.ptWebgl2?.hostBlockClasses ?? []) !== JSON.stringify(rendererBrowserHostBlockClasses)) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary hostBlockClasses must match browser status artifacts");
 }
 if (!String(rendererPromotionStatus.ptWebgl2?.requiredEvidence ?? "").includes("browser/real-adapter reference A/B")) {
   fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must name browser/real-adapter reference A/B");
@@ -1288,8 +1294,13 @@ if (gltfBrowserRow.command !== "npm run gltf-browser-proof-check") {
 if (gltfBrowserRow.promotionCommand !== "npm run gltf-browser-proof-check:required") {
   fail("VQ-GLTF-BROWSER-PTWEBGL2 promotionCommand must keep the required browser proof gate");
 }
-if (!String(gltfBrowserRow.remaining).includes("engine/canvas pixels")) {
-  fail("VQ-GLTF-BROWSER-PTWEBGL2 remaining text must name the engine/canvas pixel-readback blocker");
+const gltfBrowserRemaining = String(gltfBrowserRow.remaining);
+if (
+  !gltfBrowserRemaining.includes("engine readback") ||
+  !gltfBrowserRemaining.includes("browser canvas readback") ||
+  !gltfBrowserRemaining.includes("canvas-first")
+) {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 remaining text must name both bounded pixel-readback blockers");
 }
 const gltfBrowserStatusArtifact = gltfBrowserRow.proofArtifacts.find((artifact) =>
   artifact?.path === "tools/gltf-browser-proof/pt-webgl2-real-status.json"
@@ -1305,6 +1316,40 @@ if (!["engine-first", "canvas-first", "canvas-only"].includes(gltfBrowserStatusA
 }
 if (gltfBrowserStatusArtifact.json?.["hostBlockClasses.0"] !== "engine-readback-timeout") {
   fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin the current WSL host-block class");
+}
+const gltfBrowserCanvasStatusArtifact = gltfBrowserRow.proofArtifacts.find((artifact) =>
+  artifact?.path === "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json"
+);
+if (gltfBrowserCanvasStatusArtifact == null) {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 must cite pt-webgl2-real-canvas-first-status.json");
+}
+if (gltfBrowserCanvasStatusArtifact.json?.verdict !== "HOST-BLOCKED") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 canvas-first artifact must pin HOST-BLOCKED");
+}
+if (gltfBrowserCanvasStatusArtifact.json?.captureMode !== "canvas-first") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 canvas-first artifact must pin captureMode=canvas-first");
+}
+if (gltfBrowserCanvasStatusArtifact.json?.["hostBlockClasses.0"] !== "browser-canvas-readback-timeout") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 canvas-first artifact must pin browser-canvas-readback-timeout");
+}
+if (gltfBrowserCanvasStatusArtifact.json?.assetCount !== 3) {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 canvas-first artifact must pin the three-asset real-glTF sweep");
+}
+const gltfBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-status.json");
+const gltfBrowserCanvasStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json");
+if (gltfBrowserStatus.verdict !== "HOST-BLOCKED" || gltfBrowserStatus.captureMode !== "engine-first") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 engine-first status must remain a bounded HOST-BLOCKED artifact");
+}
+if (gltfBrowserCanvasStatus.verdict !== "HOST-BLOCKED" || gltfBrowserCanvasStatus.captureMode !== "canvas-first") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 canvas-first status must remain a bounded HOST-BLOCKED artifact");
+}
+if (gltfBrowserCanvasStatus.assetCount !== 3) {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 canvas-first status must cover all three real-glTF assets");
+}
+const gltfBrowserStatusAssetIds = (gltfBrowserStatus.assets ?? []).map((row) => row.assetId).sort();
+const gltfBrowserCanvasStatusAssetIds = (gltfBrowserCanvasStatus.assets ?? []).map((row) => row.assetId).sort();
+if (JSON.stringify(gltfBrowserCanvasStatusAssetIds) !== JSON.stringify(gltfBrowserStatusAssetIds)) {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 canvas-first status must cover the same real assets as engine-first status");
 }
 
 const radiometricPtRow = queue.validationQueue.find((row) => row.id === "VQ-RADIOMETRIC-PT");
