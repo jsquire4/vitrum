@@ -178,7 +178,15 @@
         { "path": "tools/radiometric-ab/results-restir-pt-glossy-research.json", "json": { "verdict": "FINDING", "promotion.defaultReady": false } },
         { "path": "tools/radiometric-ab/results-restir-pt-specialty.json" },
         { "path": "tools/radiometric-ab/results-sppm.json" },
-        { "path": "tools/radiometric-ab/results-sobol.json", "json": { "promotion.defaultReady": false, "promotion.requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B" } },
+        {
+          "path": "tools/radiometric-ab/results-sobol.json",
+          "json": {
+            "promotion.defaultReady": false,
+            "promotion.requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B",
+            "researchFindings.sobolDefault.defaultReady": false,
+            "researchFindings.sobolDefault.requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B"
+          }
+        },
         { "path": "packages/pt-webgpu/src/index.ts" },
         { "path": "packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts" },
         { "path": "packages/pt-webgpu/src/wgsl/bdpt/bdptConnection.wgsl.ts" },

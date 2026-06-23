@@ -19,6 +19,17 @@
     "reason": "WSL-lite evidence bounds correctness but does not show equal-time convergence superiority.",
     "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B"
   },
+  "researchFindings": {
+    "sobolDefault": {
+      "defaultReady": false,
+      "evidenceClass": "wsl-lite-equal-frame-proxy",
+      "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B",
+      "maxGlobalRmseRatio": 1.4858971059275516,
+      "maxRoiRmseRatio": 1.3821594259086538,
+      "maxElapsedMsRatio": 1.873493064995974,
+      "evidencePath": "tools/radiometric-ab/results-sobol.json"
+    }
+  },
   "thresholds": {
     "maxGlobalRmseRatio": 1.5,
     "maxRoiRmseRatio": 1.5,

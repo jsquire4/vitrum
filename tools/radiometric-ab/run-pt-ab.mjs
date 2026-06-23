@@ -136,6 +136,15 @@ function buildPromotionStatus(hostStatus) {
     evidencePath: 'tools/radiometric-ab/results-restir-pt-glossy-research.json',
   };
   const sobolRatios = (sobol.scenes ?? []).map((scene) => scene.ratios ?? {});
+  const sobolDefaultFinding = sobol.researchFindings?.sobolDefault ?? {
+    defaultReady: sobol.promotion?.defaultReady,
+    evidenceClass: sobol.promotion?.evidenceClass,
+    requiredEvidence: sobol.promotion?.requiredEvidence,
+    maxGlobalRmseRatio: maxBy(sobolRatios, (ratio) => ratio.globalRmse),
+    maxRoiRmseRatio: maxBy(sobolRatios, (ratio) => ratio.roiRmse),
+    maxElapsedMsRatio: maxBy(sobolRatios, (ratio) => ratio.elapsedMs),
+    evidencePath: 'tools/radiometric-ab/results-sobol.json',
+  };
 
   return {
     generatedAt: hostStatus.generatedAt,
@@ -195,12 +204,13 @@ function buildPromotionStatus(hostStatus) {
         evidencePath: restirPtGlossyFinding.evidencePath,
       },
       sobolDefault: {
-        defaultReady: sobol.promotion?.defaultReady,
-        evidenceClass: sobol.promotion?.evidenceClass,
-        requiredEvidence: sobol.promotion?.requiredEvidence,
-        maxGlobalRmseRatio: maxBy(sobolRatios, (ratio) => ratio.globalRmse),
-        maxElapsedMsRatio: maxBy(sobolRatios, (ratio) => ratio.elapsedMs),
-        evidencePath: 'tools/radiometric-ab/results-sobol.json',
+        defaultReady: sobolDefaultFinding.defaultReady,
+        evidenceClass: sobolDefaultFinding.evidenceClass,
+        requiredEvidence: sobolDefaultFinding.requiredEvidence,
+        maxGlobalRmseRatio: sobolDefaultFinding.maxGlobalRmseRatio,
+        maxRoiRmseRatio: sobolDefaultFinding.maxRoiRmseRatio,
+        maxElapsedMsRatio: sobolDefaultFinding.maxElapsedMsRatio,
+        evidencePath: sobolDefaultFinding.evidencePath,
       },
     },
     sourceStatuses: SOURCE_STATUS_PATHS,

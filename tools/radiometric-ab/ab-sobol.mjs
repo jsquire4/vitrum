@@ -46,6 +46,10 @@ function ratioOrInfinity(numerator, denominator) {
   return numerator / denominator;
 }
 
+function maxSceneRatio(scenes, key) {
+  return Math.max(...scenes.map((scene) => scene.ratios[key]));
+}
+
 function rmseOverRoi(rgbaA, rgbaB, roi) {
   return rmseROI(rgbaA, rgbaB, W, roi.x0, roi.y0, roi.x1, roi.y1);
 }
@@ -185,6 +189,17 @@ async function main() {
     candidateFrames: CANDIDATE_FRAMES,
     traceTier: 'lite',
     promotion: PROMOTION,
+    researchFindings: {
+      sobolDefault: {
+        defaultReady: PROMOTION.defaultReady,
+        evidenceClass: PROMOTION.evidenceClass,
+        requiredEvidence: PROMOTION.requiredEvidence,
+        maxGlobalRmseRatio: maxSceneRatio(scenes, 'globalRmse'),
+        maxRoiRmseRatio: maxSceneRatio(scenes, 'roiRmse'),
+        maxElapsedMsRatio: maxSceneRatio(scenes, 'elapsedMs'),
+        evidencePath: 'tools/radiometric-ab/results-sobol.json',
+      },
+    },
     thresholds: {
       maxGlobalRmseRatio: 1.5,
       maxRoiRmseRatio: 1.5,

@@ -331,6 +331,20 @@ function checkSobol(proof, result) {
       fail(`sobol: result promotion.${key} must be ${String(expected)}`);
     }
   }
+  const finding = result.researchFindings?.sobolDefault ?? null;
+  if (finding == null || typeof finding !== "object") {
+    fail("sobol: result must carry researchFindings.sobolDefault metadata");
+  }
+  for (const [key, expected] of Object.entries({
+    defaultReady: proof.researchFindings?.sobolDefault?.defaultReady,
+    evidenceClass: proof.researchFindings?.sobolDefault?.evidenceClass,
+    requiredEvidence: proof.researchFindings?.sobolDefault?.requiredEvidence,
+    evidencePath: proof.researchFindings?.sobolDefault?.evidencePath,
+  })) {
+    if (finding[key] !== expected) {
+      fail(`sobol: researchFindings.sobolDefault.${key} must be ${String(expected)}`);
+    }
+  }
   if (result.thresholds?.maxGlobalRmseRatio !== proof.thresholds.maxGlobalRmseRatio) {
     fail("sobol: maxGlobalRmseRatio differs from proofs.mjs");
   }
@@ -369,6 +383,19 @@ function checkSobol(proof, result) {
     }
     if (scene.ratios.elapsedMs > proof.thresholds.maxElapsedMsRatio) {
       fail(`sobol ${scene.id}: elapsed ratio ${scene.ratios.elapsedMs} exceeds ${proof.thresholds.maxElapsedMsRatio}`);
+    }
+  }
+  const maxGlobalRmseRatio = Math.max(...scenes.map((scene) => scene.ratios.globalRmse));
+  const maxRoiRmseRatio = Math.max(...scenes.map((scene) => scene.ratios.roiRmse));
+  const maxElapsedMsRatio = Math.max(...scenes.map((scene) => scene.ratios.elapsedMs));
+  for (const [key, expected] of Object.entries({
+    maxGlobalRmseRatio,
+    maxRoiRmseRatio,
+    maxElapsedMsRatio,
+  })) {
+    assertFiniteNumber(finding[key], `sobol: researchFindings.sobolDefault.${key}`);
+    if (finding[key] !== expected) {
+      fail(`sobol: researchFindings.sobolDefault.${key} must match committed scene ratios`);
     }
   }
 }
@@ -698,6 +725,30 @@ async function checkPtRadiometricPromotionStatus(proof) {
   }
 
   const sobolRatios = /** @type {any[]} */ (sobol.scenes ?? []).map((scene) => scene.ratios ?? {});
+  const sobolFinding = sobol.researchFindings?.sobolDefault ?? null;
+  if (sobolFinding == null || typeof sobolFinding !== "object") {
+    fail("pt-radiometric-promotion: Sobol result must carry researchFindings.sobolDefault");
+  }
+  for (const [key, expected] of Object.entries({
+    defaultReady: false,
+    evidenceClass: proof.researchFindings.sobolDefault.evidenceClass,
+    requiredEvidence: proof.researchFindings.sobolDefault.requiredEvidence,
+    evidencePath: proof.researchFindings.sobolDefault.resultPath,
+  })) {
+    if (sobolFinding[key] !== expected) {
+      fail(`pt-radiometric-promotion: Sobol research finding ${key} differs from proof metadata`);
+    }
+  }
+  for (const [key, expected] of Object.entries({
+    maxGlobalRmseRatio: Math.max(...sobolRatios.map((ratio) => ratio.globalRmse)),
+    maxRoiRmseRatio: Math.max(...sobolRatios.map((ratio) => ratio.roiRmse)),
+    maxElapsedMsRatio: Math.max(...sobolRatios.map((ratio) => ratio.elapsedMs)),
+  })) {
+    assertFiniteNumber(sobolFinding[key], `pt-radiometric-promotion: Sobol research finding ${key}`);
+    if (sobolFinding[key] !== expected) {
+      fail(`pt-radiometric-promotion: Sobol research finding ${key} does not match result ratios`);
+    }
+  }
   const glossyFinding = glossyResearch.researchFindings?.restirPtGlossyResearch ?? null;
   if (glossyFinding == null || typeof glossyFinding !== "object") {
     fail("pt-radiometric-promotion: glossy research result must carry researchFindings.restirPtGlossyResearch");
@@ -723,12 +774,13 @@ async function checkPtRadiometricPromotionStatus(proof) {
       evidencePath: glossyFinding.evidencePath,
     },
     sobolDefault: {
-      defaultReady: sobol.promotion?.defaultReady,
-      evidenceClass: sobol.promotion?.evidenceClass,
-      requiredEvidence: sobol.promotion?.requiredEvidence,
-      maxGlobalRmseRatio: Math.max(...sobolRatios.map((ratio) => ratio.globalRmse)),
-      maxElapsedMsRatio: Math.max(...sobolRatios.map((ratio) => ratio.elapsedMs)),
-      evidencePath: proof.researchFindings.sobolDefault.resultPath,
+      defaultReady: sobolFinding.defaultReady,
+      evidenceClass: sobolFinding.evidenceClass,
+      requiredEvidence: sobolFinding.requiredEvidence,
+      maxGlobalRmseRatio: sobolFinding.maxGlobalRmseRatio,
+      maxRoiRmseRatio: sobolFinding.maxRoiRmseRatio,
+      maxElapsedMsRatio: sobolFinding.maxElapsedMsRatio,
+      evidencePath: sobolFinding.evidencePath,
     },
   };
   if (!sameJson(status.researchFindings, expectedResearchFindings)) {
