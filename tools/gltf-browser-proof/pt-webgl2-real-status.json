@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-23T16:43:35.084Z",
+  "generatedAt": "2026-06-23T19:54:29.931Z",
   "harness": "gltf-browser-proof:pt-webgl2-real",
   "verdict": "HOST-BLOCKED",
   "backend": "pt-webgl2",
@@ -8,8 +8,8 @@
   ],
   "captureMode": "engine-first",
   "hostReadbackProbe": {
-    "generatedAt": "2026-06-23T16:42:13.396Z",
-    "finishedAt": "2026-06-23T16:42:15.994Z",
+    "generatedAt": "2026-06-23T19:53:09.780Z",
+    "finishedAt": "2026-06-23T19:53:10.876Z",
     "harness": "gltf-browser-proof:host-readback-preflight",
     "browserVersion": "148.0.7778.96",
     "timeoutMs": 10000,
@@ -76,7 +76,7 @@
   },
   "assets": [
     {
-      "generatedAt": "2026-06-23T16:42:41.940Z",
+      "generatedAt": "2026-06-23T19:53:36.164Z",
       "harness": "gltf-browser-proof:pt-webgl2-real",
       "verdict": "HOST-BLOCKED",
       "assetId": "box-textured-glb",
@@ -84,7 +84,7 @@
       "backend": "pt-webgl2",
       "captureMode": "engine-first",
       "step": "engine-captureFrame-output",
-      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:928:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
+      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:942:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
       "hostBlockClass": "engine-readback-timeout",
       "hostBlockMethods": [
         "engine-captureFrame-output"
@@ -95,9 +95,12 @@
           "method": "engine-captureFrame-output",
           "status": "failed",
           "step": "engine-captureFrame-output",
-          "startedAt": "2026-06-23T16:42:25.830Z",
+          "startedAt": "2026-06-23T19:53:20.062Z",
+          "pauseBeforeCapture": true,
+          "pauseProtocol": "VITRUM_CAPTURE_PAUSED",
+          "pausedAtCaptureStart": true,
           "error": "engine captureFrame fallback timed out",
-          "finishedAt": "2026-06-23T16:42:41.859Z",
+          "finishedAt": "2026-06-23T19:53:36.085Z",
           "hostBlockHint": "engine-readback"
         }
       ],
@@ -124,8 +127,8 @@
         "devicePixelRatio": 1
       },
       "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T16:42:13.396Z",
-        "finishedAt": "2026-06-23T16:42:15.994Z",
+        "generatedAt": "2026-06-23T19:53:09.780Z",
+        "finishedAt": "2026-06-23T19:53:10.876Z",
         "harness": "gltf-browser-proof:host-readback-preflight",
         "browserVersion": "148.0.7778.96",
         "timeoutMs": 10000,
@@ -217,12 +220,12 @@
         "debug: [vite] connecting...",
         "debug: [vite] connected.",
         "warning: No available adapters.",
-        "warning: [.WebGL-0xe9c00159000]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        "warning: [.WebGL-0x3b8c00158e00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
       ],
-      "serverLog": "\n  VITE v5.4.21  ready in 72 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+      "serverLog": "\n  VITE v5.4.21  ready in 69 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
     },
     {
-      "generatedAt": "2026-06-23T16:43:09.313Z",
+      "generatedAt": "2026-06-23T19:54:03.643Z",
       "harness": "gltf-browser-proof:pt-webgl2-real",
       "verdict": "HOST-BLOCKED",
       "assetId": "cesium-milk-truck-draco",
@@ -230,7 +233,7 @@
       "backend": "pt-webgl2",
       "captureMode": "engine-first",
       "step": "engine-captureFrame-output",
-      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:928:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
+      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:942:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
       "hostBlockClass": "engine-readback-timeout",
       "hostBlockMethods": [
         "engine-captureFrame-output"
@@ -241,9 +244,12 @@
           "method": "engine-captureFrame-output",
           "status": "failed",
           "step": "engine-captureFrame-output",
-          "startedAt": "2026-06-23T16:42:53.151Z",
+          "startedAt": "2026-06-23T19:53:47.483Z",
+          "pauseBeforeCapture": true,
+          "pauseProtocol": "VITRUM_CAPTURE_PAUSED",
+          "pausedAtCaptureStart": true,
           "error": "engine captureFrame fallback timed out",
-          "finishedAt": "2026-06-23T16:43:09.192Z",
+          "finishedAt": "2026-06-23T19:54:03.520Z",
           "hostBlockHint": "engine-readback"
         }
       ],
@@ -270,8 +276,8 @@
         "devicePixelRatio": 1
       },
       "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T16:42:13.396Z",
-        "finishedAt": "2026-06-23T16:42:15.994Z",
+        "generatedAt": "2026-06-23T19:53:09.780Z",
+        "finishedAt": "2026-06-23T19:53:10.876Z",
         "harness": "gltf-browser-proof:host-readback-preflight",
         "browserVersion": "148.0.7778.96",
         "timeoutMs": 10000,
@@ -371,12 +377,12 @@
         "warning: No available adapters.",
         "warning: [vitrum/createEngine] Scene has 5 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.",
         "warning: [gltf-viewer example] [vitrum/createEngine] Scene has 5 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2. {recommendation: prefer-tlas-backend, resolvedBackend: pt-webgl2}",
-        "warning: [.WebGL-0x2ce40015a200]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        "warning: [.WebGL-0xeec03f14000]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
       ],
-      "serverLog": "\n  VITE v5.4.21  ready in 72 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+      "serverLog": "\n  VITE v5.4.21  ready in 69 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
     },
     {
-      "generatedAt": "2026-06-23T16:43:35.084Z",
+      "generatedAt": "2026-06-23T19:54:29.930Z",
       "harness": "gltf-browser-proof:pt-webgl2-real",
       "verdict": "HOST-BLOCKED",
       "assetId": "meshopt-cube-real",
@@ -384,7 +390,7 @@
       "backend": "pt-webgl2",
       "captureMode": "engine-first",
       "step": "engine-captureFrame-output",
-      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:928:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
+      "error": "Error: engine captureFrame fallback timed out\n    at Timeout.<anonymous> (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:942:41)\n    at listOnTimeout (node:internal/timers:581:17)\n    at process.processTimers (node:internal/timers:519:7)",
       "hostBlockClass": "engine-readback-timeout",
       "hostBlockMethods": [
         "engine-captureFrame-output"
@@ -395,9 +401,12 @@
           "method": "engine-captureFrame-output",
           "status": "failed",
           "step": "engine-captureFrame-output",
-          "startedAt": "2026-06-23T16:43:18.960Z",
+          "startedAt": "2026-06-23T19:54:13.807Z",
+          "pauseBeforeCapture": true,
+          "pauseProtocol": "VITRUM_CAPTURE_PAUSED",
+          "pausedAtCaptureStart": true,
           "error": "engine captureFrame fallback timed out",
-          "finishedAt": "2026-06-23T16:43:35.007Z",
+          "finishedAt": "2026-06-23T19:54:29.849Z",
           "hostBlockHint": "engine-readback"
         }
       ],
@@ -424,8 +433,8 @@
         "devicePixelRatio": 1
       },
       "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T16:42:13.396Z",
-        "finishedAt": "2026-06-23T16:42:15.994Z",
+        "generatedAt": "2026-06-23T19:53:09.780Z",
+        "finishedAt": "2026-06-23T19:53:10.876Z",
         "harness": "gltf-browser-proof:host-readback-preflight",
         "browserVersion": "148.0.7778.96",
         "timeoutMs": 10000,
@@ -527,13 +536,13 @@
         "warning: No available adapters.",
         "warning: [vitrum/createEngine] Scene has 35 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.",
         "warning: [gltf-viewer example] [vitrum/createEngine] Scene has 35 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2. {recommendation: prefer-tlas-backend, resolvedBackend: pt-webgl2}",
-        "warning: [.WebGL-0x3c4c00158400]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "warning: [.WebGL-0x68c00153c00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
         "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-5\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
         "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-5\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-5, fields: Array(1), fallbackReason: geometry-bvh-texture-rebuild, nativePatchMissing: targeted-primitive-geometry-splice, textureRefreshMode: resident-storage-respecify}",
         "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-10\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
         "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-10\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-10, fields: Array(1), fallbackReason: geometry-bvh-texture-rebuild, nativePatchMissing: targeted-primitive-geometry-splice, textureRefreshMode: resident-storage-respecify}"
       ],
-      "serverLog": "\n  VITE v5.4.21  ready in 72 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
+      "serverLog": "\n  VITE v5.4.21  ready in 69 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
     }
   ],
   "assetCount": 3

@@ -275,6 +275,17 @@ function assertHostBlockedCaptureAttempts(row) {
     if (attempt.status === "started" || attempt.status === "failed") hasBlockedAttempt = true;
     if (attempt.method === row.step || attempt.step === row.step) hasStepAttempt = true;
     if (attempt.method === "engine-captureFrame-output") hasEngineAttempt = true;
+    if (attempt.method === "engine-captureFrame-output") {
+      if (attempt.pauseBeforeCapture !== true) {
+        fail(`${row.assetId}: engine-captureFrame-output attempt must record pauseBeforeCapture:true`);
+      }
+      if (attempt.pausedAtCaptureStart !== true) {
+        fail(`${row.assetId}: engine-captureFrame-output attempt must prove pausedAtCaptureStart:true`);
+      }
+      if (attempt.pauseProtocol !== "VITRUM_CAPTURE_PAUSED") {
+        fail(`${row.assetId}: engine-captureFrame-output attempt must record the VITRUM_CAPTURE_PAUSED protocol`);
+      }
+    }
     if (attempt.status === "failed" && String(attempt.error ?? "").length === 0) {
       fail(`${row.assetId}: failed capture attempt ${attempt.method} must include an error`);
     }

@@ -83,6 +83,9 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.match(source, /isEngineReadbackHostBlock\(error\)/);
   assert.match(source, /hostBlockHint = 'engine-readback'/);
   assert.match(source, /snapshotPageDiagnostics\(page, 'pre-capture'\)/);
+  assert.match(source, /attempt\.pauseBeforeCapture = pauseBeforeEngineCapture/);
+  assert.match(source, /attempt\.pausedAtCaptureStart = await page\.evaluate/);
+  assert.match(source, /attempt\.pauseProtocol = 'VITRUM_CAPTURE_PAUSED'/);
 
   const captureFnStart = source.indexOf('async function captureCanvasPng(page)');
   assert.notEqual(captureFnStart, -1);
@@ -207,6 +210,45 @@ test('gltf browser proof checker requires structured host-blocked capture attemp
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /box-textured-glb: HOST-BLOCKED status must include captureAttempts\[\]/);
+});
+
+test('gltf browser proof checker requires engine capture attempts to prove paused readback', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
+  const statusPath = join(dir, 'host-blocked-unpaused-engine-attempt.json');
+  const row = hostBlockedRow('box-textured-glb', 'textured-glb', {
+    textureDecodeReport: { mapCount: 1 },
+  });
+  row.captureAttempts = row.captureAttempts.map((attempt) =>
+    attempt.method === 'engine-captureFrame-output'
+      ? { ...attempt, pausedAtCaptureStart: false }
+      : attempt
+  );
+  await writeFile(statusPath, `${JSON.stringify({
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    backend: 'pt-webgl2',
+    hostBlockClasses: ['multi-readback-timeout'],
+    assets: [
+      row,
+      hostBlockedRow('cesium-milk-truck-draco', 'draco', {
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+        extensionsRequired: ['KHR_draco_mesh_compression'],
+        browserDecodeHooks: { requested: ['draco'], draco: true, meshopt: false },
+      }),
+      hostBlockedRow('meshopt-cube-real', 'meshopt', {
+        extensionsUsed: ['KHR_meshopt_compression'],
+        extensionsRequired: ['KHR_meshopt_compression'],
+        browserDecodeHooks: { requested: ['meshopt'], draco: false, meshopt: true },
+      }),
+    ],
+    assetCount: 3,
+  }, null, 2)}\n`);
+
+  const result = await runChecker(['--status', pathToFileURL(statusPath).href]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /box-textured-glb: engine-captureFrame-output attempt must prove pausedAtCaptureStart:true/);
 });
 
 test('gltf browser proof checker requires pre-capture page diagnostics for host blocks', async () => {
@@ -350,6 +392,9 @@ function hostBlockedRow(assetId, kind, overrides = {}) {
         status: 'failed',
         step: 'engine-captureFrame-output',
         error: 'engine captureFrame fallback timed out',
+        pauseBeforeCapture: true,
+        pausedAtCaptureStart: true,
+        pauseProtocol: 'VITRUM_CAPTURE_PAUSED',
       },
       {
         method: 'canvas-data-url',

@@ -466,7 +466,10 @@ async function captureCanvasPng(page) {
   if (engineCaptureMode === 'engine-first') {
     try {
       captureStep = 'engine-captureFrame-output';
-      return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
+      return await captureAttempt(
+        'engine-captureFrame-output',
+        (attempt) => captureEngineFramePng(page, timeout, attempt),
+      );
     } catch (error) {
       engineError = error;
       if (isEngineReadbackHostBlock(error)) {
@@ -511,7 +514,10 @@ async function captureCanvasPng(page) {
     if (engineCaptureMode === 'engine-fallback') {
       try {
         captureStep = 'engine-captureFrame-output';
-        return await captureAttempt('engine-captureFrame-output', () => captureEngineFramePng(page, timeout));
+        return await captureAttempt(
+          'engine-captureFrame-output',
+          (attempt) => captureEngineFramePng(page, timeout, attempt),
+        );
       } catch (fallbackEngineError) {
         engineError = fallbackEngineError;
       }
@@ -583,7 +589,7 @@ async function captureAttempt(method, run) {
   };
   lastCaptureAttempts.push(attempt);
   try {
-    const result = await run();
+    const result = await run(attempt);
     const bytes = result?.bytes ?? result;
     attempt.status = 'succeeded';
     attempt.finishedAt = new Date().toISOString();
@@ -615,8 +621,16 @@ async function pageCanvasClipScreenshot(page, timeout) {
   });
 }
 
-async function captureEngineFramePng(page, timeout) {
+async function captureEngineFramePng(page, timeout, attempt = null) {
+  if (attempt != null) {
+    attempt.pauseBeforeCapture = pauseBeforeEngineCapture;
+    attempt.pauseProtocol = 'VITRUM_CAPTURE_PAUSED';
+  }
   if (pauseBeforeEngineCapture) await pauseExampleRendering(page, timeout);
+  if (attempt != null) {
+    attempt.pausedAtCaptureStart = await page.evaluate(() => globalThis.VITRUM_CAPTURE_PAUSED === true)
+      .catch(() => false);
+  }
   let frame;
   try {
     frame = await withTimeout(
