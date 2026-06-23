@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { dirname, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
@@ -135,6 +136,26 @@ test('CWBVH repeat campaign summaries pin the promotion-sized dzn timeout', () =
 
   assert.equal(summary.dznTimeoutMs, DEFAULT_REPEAT_DZN_TIMEOUT_MS);
   assert.match(summary.command, /--dzn-timeout-ms=900000/);
+});
+
+test('CWBVH default-promotion summary cites the completed repeat evidence without promoting', async () => {
+  const summary = JSON.parse(await readFile(
+    resolve(repoRoot, 'tools', 'behavioral-gate', 'cwbvh-default-promotion-status.json'),
+    'utf8',
+  ));
+  const repeatStatus = JSON.parse(await readFile(
+    resolve(repoRoot, 'tools', 'behavioral-gate', 'cwbvh-default-promotion-repeat-status.json'),
+    'utf8',
+  ));
+
+  assert.equal(summary.verdict, 'PASS-PARTIAL');
+  assert.equal(summary.promotion.defaultReady, false);
+  assert.equal(summary.repeatEvidence.status, 'completed-five-sample-warmup-discarded-nonpromoting');
+  assert.equal(summary.repeatEvidence.sampleCountPerWorkload, repeatStatus.sampleCountPerWorkload);
+  assert.equal(summary.repeatEvidence.warmupDiscardedPerWorkload, repeatStatus.warmupDiscardedPerWorkload);
+  assert.equal(summary.repeatEvidence.classification, repeatStatus.classification);
+  assert.equal(summary.repeatEvidence.defaultPromotionEligible, false);
+  assert.match(summary.repeatEvidence.residual, /one material-lobe-map fast outlier/);
 });
 
 function makeRecords(ratioFor, runCount) {

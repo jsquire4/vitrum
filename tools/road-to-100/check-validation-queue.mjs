@@ -1069,6 +1069,28 @@ if (!String(cwbvhPromotionStatus.measurementSufficiency?.requiredEvidence ?? "")
   fail("VQ-CWBVH-DEFAULT-PROMOTION summary must name repeat-count evidence before default promotion");
 }
 if (
+  cwbvhPromotionStatus.repeatEvidence?.status !== "completed-five-sample-warmup-discarded-nonpromoting" ||
+  cwbvhPromotionStatus.repeatEvidence?.harness !== "cwbvh-default-promotion-repeat-proof" ||
+  cwbvhPromotionStatus.repeatEvidence?.sourceStatus !== "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json" ||
+  cwbvhPromotionStatus.repeatEvidence?.sourceRecords !== "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json" ||
+  cwbvhPromotionStatus.repeatEvidence?.campaignStatus !== cwbvhRepeatStatus.campaignStatus ||
+  cwbvhPromotionStatus.repeatEvidence?.adapterScope !== cwbvhRepeatStatus.adapterScope ||
+  cwbvhPromotionStatus.repeatEvidence?.sampleCountPerWorkload !== cwbvhRepeatStatus.sampleCountPerWorkload ||
+  cwbvhPromotionStatus.repeatEvidence?.warmupDiscardedPerWorkload !== cwbvhRepeatStatus.warmupDiscardedPerWorkload ||
+  cwbvhPromotionStatus.repeatEvidence?.minRepeatCountPerWorkload !== cwbvhRepeatStatus.minRepeatCountPerWorkload ||
+  cwbvhPromotionStatus.repeatEvidence?.classification !== cwbvhRepeatStatus.classification ||
+  cwbvhPromotionStatus.repeatEvidence?.defaultPromotionEligible !== false ||
+  cwbvhPromotionStatus.repeatEvidence?.requiredAdapterScope !== "browser/real-adapter"
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary repeatEvidence must mirror the completed five-sample non-promoting repeat campaign");
+}
+if (
+  !String(cwbvhPromotionStatus.repeatEvidence?.requiredEvidence ?? "").includes("browser/real-adapter throughput A/B") ||
+  !String(cwbvhPromotionStatus.repeatEvidence?.residual ?? "").includes("one material-lobe-map fast outlier")
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary repeatEvidence must preserve the browser/adapter tail and material-lobe-map outlier");
+}
+if (
   cwbvhPromotionStatus.rowCount !== cwbvhExpectedRatios.length ||
   cwbvhPromotionStatus.slowOrNeutralCount !== cwbvhSlowOrNeutralCount ||
   cwbvhPromotionStatus.fastCount !== cwbvhFastCount

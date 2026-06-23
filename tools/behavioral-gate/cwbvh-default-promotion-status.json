@@ -16,6 +16,22 @@
     "requiredAdapterScope": "browser/real-adapter",
     "requiredEvidence": "multiple repeats per workload on browser/real-adapter hosts with warmup-discarded timing before making CWBVH the default traversal; capture with npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1"
   },
+  "repeatEvidence": {
+    "status": "completed-five-sample-warmup-discarded-nonpromoting",
+    "harness": "cwbvh-default-promotion-repeat-proof",
+    "adapterScope": "wsl-dzn-real-adapter",
+    "campaignStatus": "complete",
+    "sampleCountPerWorkload": 5,
+    "warmupDiscardedPerWorkload": 1,
+    "minRepeatCountPerWorkload": 5,
+    "classification": "uniform-slower",
+    "defaultPromotionEligible": false,
+    "requiredAdapterScope": "browser/real-adapter",
+    "requiredEvidence": "browser/real-adapter throughput A/B beyond the committed WSL dzn repeat campaign before making CWBVH the default traversal",
+    "residual": "The committed WSL dzn campaign completed five warmup-discarded samples per workload and still found slower median CWBVH timing, with one material-lobe-map fast outlier that is not enough for default promotion.",
+    "sourceStatus": "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json",
+    "sourceRecords": "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json"
+  },
   "thresholds": {
     "slowOrNeutralRatio": 1,
     "fastRatio": 0.95,

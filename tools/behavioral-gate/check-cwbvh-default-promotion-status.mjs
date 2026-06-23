@@ -155,6 +155,7 @@ function assertCwbvhRow(row, path) {
  */
 async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification) {
   const status = JSON.parse(await Deno.readTextFile(SUMMARY_STATUS));
+  const repeatStatus = JSON.parse(await Deno.readTextFile(REPEAT_STATUS));
   if (status.harness !== "cwbvh-default-promotion-proof") fail(`${SUMMARY_STATUS}: harness mismatch`);
   if (status.verdict !== "PASS-PARTIAL") fail(`${SUMMARY_STATUS}: verdict must stay PASS-PARTIAL until default promotion is proven`);
   if (status.promotion?.defaultReady !== false) fail(`${SUMMARY_STATUS}: promotion.defaultReady must be false`);
@@ -181,6 +182,28 @@ async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification
   }
   if (!String(status.measurementSufficiency?.requiredEvidence ?? "").includes("multiple repeats per workload")) {
     fail(`${SUMMARY_STATUS}: measurementSufficiency.requiredEvidence must name repeat-count evidence`);
+  }
+  if (
+    status.repeatEvidence?.status !== "completed-five-sample-warmup-discarded-nonpromoting" ||
+    status.repeatEvidence?.harness !== "cwbvh-default-promotion-repeat-proof" ||
+    status.repeatEvidence?.sourceStatus !== REPEAT_STATUS ||
+    status.repeatEvidence?.sourceRecords !== REPEAT_RECORDS ||
+    status.repeatEvidence?.campaignStatus !== repeatStatus.campaignStatus ||
+    status.repeatEvidence?.adapterScope !== repeatStatus.adapterScope ||
+    status.repeatEvidence?.sampleCountPerWorkload !== repeatStatus.sampleCountPerWorkload ||
+    status.repeatEvidence?.warmupDiscardedPerWorkload !== repeatStatus.warmupDiscardedPerWorkload ||
+    status.repeatEvidence?.minRepeatCountPerWorkload !== repeatStatus.minRepeatCountPerWorkload ||
+    status.repeatEvidence?.classification !== repeatStatus.classification ||
+    status.repeatEvidence?.defaultPromotionEligible !== false ||
+    status.repeatEvidence?.requiredAdapterScope !== REQUIRED_ADAPTER_SCOPE
+  ) {
+    fail(`${SUMMARY_STATUS}: repeatEvidence must mirror the completed five-sample repeat status without promoting CWBVH`);
+  }
+  if (
+    !String(status.repeatEvidence?.requiredEvidence ?? "").includes("browser/real-adapter throughput A/B") ||
+    !String(status.repeatEvidence?.residual ?? "").includes("one material-lobe-map fast outlier")
+  ) {
+    fail(`${SUMMARY_STATUS}: repeatEvidence must preserve the browser/adapter tail and material-lobe-map outlier`);
   }
   if (status.thresholds?.slowOrNeutralRatio !== MIN_SLOW_OR_NEUTRAL_RATIO) {
     fail(`${SUMMARY_STATUS}: slowOrNeutralRatio threshold drifted`);
