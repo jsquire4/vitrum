@@ -116,10 +116,15 @@ try {
   const status = {
     generatedAt: new Date().toISOString(),
     harness: 'gltf-browser-proof:pt-webgl2-real',
-    verdict: 'HOST-BLOCKED',
+    verdict: 'FAIL',
     backend: 'pt-webgl2',
     step: captureStep,
     error: String(error?.stack ?? error),
+    reason: {
+      code: 'gltf-browser-proof-setup-failed',
+      message:
+        'The browser real-glTF capture harness failed before a per-asset page proved capture readiness; this cannot count as HOST-BLOCKED proof.',
+    },
     telemetry: lastTelemetry,
     console: lastConsole.slice(-80),
     serverLog: serverLog.slice(-4000),

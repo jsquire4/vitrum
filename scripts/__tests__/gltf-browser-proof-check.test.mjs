@@ -108,6 +108,18 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.ok(dataUrlReadback > fallbackReadback);
 });
 
+test('gltf browser capture harness fails closed before per-asset readiness proof', async () => {
+  const source = await readFile(captureScript, 'utf8');
+  assert.match(source, /gltf-browser-proof-setup-failed/);
+  assert.match(source, /failed before a per-asset page proved capture readiness/);
+
+  const setupCatchStart = source.indexOf('} catch (error) {');
+  assert.notEqual(setupCatchStart, -1);
+  const setupCatch = source.slice(setupCatchStart, source.indexOf('\n} finally {', setupCatchStart));
+  assert.match(setupCatch, /verdict: 'FAIL'/);
+  assert.doesNotMatch(setupCatch, /verdict: 'HOST-BLOCKED'/);
+});
+
 test('gltf browser proof package scripts check both committed host-block artifacts', async () => {
   const pkg = JSON.parse(await readFile(packageJsonPath, 'utf8'));
   const check = pkg.scripts?.['gltf-browser-proof-check'] ?? '';
