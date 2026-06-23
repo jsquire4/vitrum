@@ -9,13 +9,14 @@
  * of leaving repeated stack traces as the only status.
  */
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
 const statusPath = resolve(scriptDir, 'pt-ab-host-status.json');
+const promotionStatusPath = resolve(scriptDir, 'pt-promotion-status.json');
 const DEFAULT_TIMEOUT_MS = 900_000;
 
 const CASES = {
@@ -36,6 +37,16 @@ const CASES = {
     resultFile: 'tools/radiometric-ab/results-sobol.json',
   },
 };
+const ALL_CASE_IDS = Object.keys(CASES);
+const SOURCE_STATUS_PATHS = [
+  'tools/radiometric-ab/pt-ab-host-status.json',
+  'tools/radiometric-ab/results-sppm.json',
+  'tools/radiometric-ab/results-bdpt.json',
+  'tools/radiometric-ab/results-restir-pt.json',
+  'tools/radiometric-ab/results-restir-pt-specialty.json',
+  'tools/radiometric-ab/results-restir-pt-glossy-research.json',
+  'tools/radiometric-ab/results-sobol.json',
+];
 
 function parseTimeoutMs(raw) {
   if (raw == null || raw === '') return DEFAULT_TIMEOUT_MS;
@@ -82,6 +93,106 @@ function classifyHostBoundary(result, output, timeoutMs) {
     };
   }
   return null;
+}
+
+function readJson(relativePath) {
+  return JSON.parse(readFileSync(resolve(repoRoot, relativePath), 'utf8'));
+}
+
+function maxBy(values, getter) {
+  if (values.length === 0) return undefined;
+  return Math.max(...values.map(getter));
+}
+
+function buildPromotionStatus(hostStatus) {
+  const sppm = readJson('tools/radiometric-ab/results-sppm.json');
+  const bdpt = readJson('tools/radiometric-ab/results-bdpt.json');
+  const restirPt = readJson('tools/radiometric-ab/results-restir-pt.json');
+  const specialty = readJson('tools/radiometric-ab/results-restir-pt-specialty.json');
+  const glossyResearch = readJson('tools/radiometric-ab/results-restir-pt-glossy-research.json');
+  const sobol = readJson('tools/radiometric-ab/results-sobol.json');
+
+  const finalSppm = sppm.sppm?.[sppm.sppm.length - 1];
+  const bdptControls = bdpt.controls?.byMaxLightBounces ?? [];
+  const endpoint = bdptControls.find((entry) => entry.maxLightBounces === 1);
+  const firstBdptFinding = bdptControls.find((entry) => entry.maxLightBounces === 2);
+  const sobolRatios = (sobol.scenes ?? []).map((scene) => scene.ratios ?? {});
+
+  return {
+    generatedAt: hostStatus.generatedAt,
+    harness: 'pt-radiometric-promotion-proof',
+    verdict: 'PASS-PARTIAL',
+    hostStatus: {
+      verdict: hostStatus.verdict,
+      caseCount: hostStatus.selectedCases.length,
+      selectedCases: hostStatus.selectedCases,
+    },
+    safeDefaultProofs: {
+      sppm: {
+        verdict: sppm.verdict,
+        converging: sppm.converging,
+        inBallpark: sppm.inBallpark,
+        finalRelErr: finalSppm?.relErr,
+      },
+      bdptEndpointOnly: {
+        verdict: bdpt.verdict,
+        endpointOnlyMatchesUni: bdpt.controls?.endpointOnlyMatchesUni,
+        maxLightBounces: endpoint?.maxLightBounces,
+        globalRelErr: endpoint?.globalRelErr,
+        roiRelErr: endpoint?.roiRelErr,
+      },
+      restirPtDiffuse: {
+        verdict: restirPt.verdict,
+        meanAgreement: restirPt.meanAgreement,
+        varianceNotWorse: restirPt.varianceNotWorse,
+        globalRelErr: restirPt.globalRelErr,
+        varRatio: restirPt.varRatio,
+      },
+      restirPtSpecialty: {
+        mode: specialty.mode,
+        caseCount: specialty.summary?.caseCount,
+        maxAbsoluteError: specialty.summary?.maxAbsoluteError,
+        maxRelativeError: specialty.summary?.maxRelativeError,
+      },
+    },
+    researchFindings: {
+      bdptMultiVertex: {
+        defaultReady: bdpt.controls?.multiVertexPromotion?.defaultReady,
+        warningCode: 'pt-webgpu.bdpt-multivertex-research-mode',
+        blocker: bdpt.controls?.multiVertexPromotion?.blocker,
+        requiredEstimator: bdpt.controls?.multiVertexPromotion?.requiredEstimator,
+        firstFindingMaxLightBounces: firstBdptFinding?.maxLightBounces,
+        firstFindingGlobalRelErr: firstBdptFinding?.globalRelErr,
+        evidencePath: 'tools/radiometric-ab/results-bdpt.json',
+      },
+      restirPtGlossyResearch: {
+        verdict: glossyResearch.verdict,
+        defaultReady: glossyResearch.promotion?.defaultReady,
+        warningCode: 'pt-webgpu.restir-pt-glossy-reuse-research-mode',
+        blocker: 'glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope',
+        globalRelErr: glossyResearch.globalRelErr,
+        varRatio: glossyResearch.varRatio,
+        evidencePath: 'tools/radiometric-ab/results-restir-pt-glossy-research.json',
+      },
+      sobolDefault: {
+        defaultReady: sobol.promotion?.defaultReady,
+        evidenceClass: sobol.promotion?.evidenceClass,
+        requiredEvidence: sobol.promotion?.requiredEvidence,
+        maxGlobalRmseRatio: maxBy(sobolRatios, (ratio) => ratio.globalRmse),
+        maxElapsedMsRatio: maxBy(sobolRatios, (ratio) => ratio.elapsedMs),
+        evidencePath: 'tools/radiometric-ab/results-sobol.json',
+      },
+    },
+    sourceStatuses: SOURCE_STATUS_PATHS,
+  };
+}
+
+function maybeWritePromotionStatus(hostStatus) {
+  const selectedAllCases = ALL_CASE_IDS.every((id) => hostStatus.selectedCases.includes(id))
+    && hostStatus.selectedCases.length === ALL_CASE_IDS.length;
+  if (hostStatus.verdict !== 'PASS' || !selectedAllCases) return;
+  const promotionStatus = buildPromotionStatus(hostStatus);
+  writeFileSync(promotionStatusPath, `${JSON.stringify(promotionStatus, null, 2)}\n`);
 }
 
 const timeoutMs = parseTimeoutMs(process.env.VITRUM_PT_RADIOMETRIC_AB_TIMEOUT_MS);
@@ -169,6 +280,7 @@ const status = {
 };
 
 writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
+maybeWritePromotionStatus(status);
 
 if (hasFail) process.exit(1);
 if (hasBlocked) process.exit(2);
