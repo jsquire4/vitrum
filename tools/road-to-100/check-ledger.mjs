@@ -13,6 +13,13 @@ const REQUIRED_SOURCE_FILES = [
 const LEDGER_PATH = "plan/road-to-100-gap-ledger-2026-06-11.md";
 const PACKAGE_PATH = "package.json";
 const VALIDATION_QUEUE_PATH = "tools/road-to-100/validation-queue.json";
+const EXPECTED_REQUIRED_GREEN_GATES = [
+  "npm run typecheck",
+  "npm test",
+  "npm run shader-gate",
+  "npm run proof-check",
+  "npm run validate:gpu:smoke after render-changing backend work",
+];
 
 /** @param {string} path */
 function repoUrl(path) {
@@ -143,6 +150,7 @@ if (!match) fail(`${LEDGER_PATH} must contain a \`\`\`json road-to-100-ledger.v1
  * }}
  */
 const metadata = JSON.parse(match[1]);
+const packageJson = JSON.parse(await readText(PACKAGE_PATH));
 
 if (metadata.schema !== "vitrum.road-to-100.gap-ledger.v1") fail("ledger schema mismatch");
 if (metadata.ledgerDate !== "2026-06-11") fail("ledgerDate must remain 2026-06-11 for this named artifact");
@@ -170,8 +178,20 @@ if (!Array.isArray(metadata.closedContractCampaigns) || metadata.closedContractC
 if (!Array.isArray(metadata.openPromotionBuckets) || metadata.openPromotionBuckets.length < 4) {
   fail("openPromotionBuckets must keep remaining proof/promotion work explicit");
 }
-if (!Array.isArray(metadata.requiredGreenGates) || !metadata.requiredGreenGates.includes("npm run proof-check")) {
-  fail("requiredGreenGates must include npm run proof-check");
+if (!Array.isArray(metadata.requiredGreenGates)) {
+  fail("requiredGreenGates must be an array");
+}
+const requiredGreenGates = metadata.requiredGreenGates.map((entry) => String(entry));
+if (JSON.stringify(requiredGreenGates) !== JSON.stringify(EXPECTED_REQUIRED_GREEN_GATES)) {
+  fail(`requiredGreenGates must exactly match ${JSON.stringify(EXPECTED_REQUIRED_GREEN_GATES)}`);
+}
+for (const gate of requiredGreenGates) {
+  const match = gate.match(/^npm (?:run )?([^ ]+)/);
+  if (!match) fail(`required green gate is not an npm command: ${gate}`);
+  const scriptName = match[1];
+  if (typeof packageJson.scripts?.[scriptName] !== "string") {
+    fail(`required green gate ${gate} references missing package script ${scriptName}`);
+  }
 }
 const closedCampaigns = metadata.closedContractCampaigns.map((entry) => String(entry));
 if (!closedCampaigns.some((entry) => entry.includes("historical items_to_fix open-heading reconciliation"))) {
@@ -199,7 +219,6 @@ if (ledger.includes("historical audit provenance plus\n  any explicitly marked o
 const road = await readText("plan/road-to-100.md");
 const roadmap = await readText("plan/roadmap.md");
 const gapExecutionPlan = await readText("plan/gap-closure-execution-plan.md");
-const packageJson = JSON.parse(await readText(PACKAGE_PATH));
 const items = await readText("items_to_fix.md");
 const shaderGateReadme = await readText("tools/shader-gate/README.md");
 const radiometricReadme = await readText("tools/radiometric-ab/README.md");
