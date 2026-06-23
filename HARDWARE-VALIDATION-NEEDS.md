@@ -162,16 +162,18 @@ This file lists changes from the 2026-05-28 complexity-remediation sweep (and it
 
 ---
 
-## 0. Why WSL can't do this (verified)
+## 0. Why WSL browser Playwright capture could not do this (verified)
 `tools/benchmark-runner` adapter probe (`VITRUM_PROBE_START_SERVER=1 npm run benchmark:pt-webgpu-adapter-probe`) reports, for BOTH the "hardware" and "swiftshader" Playwright profiles in WSL2:
 ```
 maxStorageBuffersPerShaderStage: 10   maxStorageTexturesPerShaderStage: 4
 ptWebgpuFullTier: false   ptWebgpuLiteTier: true   hybridCanRun: false
 ```
 Consequences:
-- **walkaround-hybrid backend won't initialize** (`hybridCanRun: false` — needs ≥8 storage textures; SwiftShader gives 4). → all DDGI / ReSTIR / shade / stained-glass validation is blocked.
-- **pt-webgpu runs lite tier only** (full tier needs ≥23 storage buffers). → BDPT light-subpath + full-tier intersection paths can't run.
+- **walkaround-hybrid backend won't initialize in that browser capture path** (`hybridCanRun: false` — needs ≥8 storage textures; SwiftShader gives 4). → DDGI / ReSTIR / shade / stained-glass validation is blocked only for the browser-Playwright adapter lane.
+- **pt-webgpu runs lite tier only in that browser capture path** (full tier needs ≥23 storage buffers). → BDPT light-subpath + full-tier intersection paths can't run there.
 - The README warns SwiftShader renders are "slow and likely incorrect" for these scenarios.
+
+**2026-06-23 reconciliation:** this does **not** mean all WSL GPU validation is blocked. The native WSL validation seam (`npm run validate:gpu:smoke`, backed by `scripts/validate-gpu.mjs` and the sibling `wsl-gpu` lavapipe+dzn runner) now passes T1 smoke on this host, including lavapipe, dzn/RTX 4090, and RC/ReSTIR-TLAS/DDGI brute-force oracle checks. The blocker above is specifically the browser/Playwright capture adapter route.
 
 **First step on a real GPU:** run the probe and confirm `ptWebgpuFullTier: true` + `hybridCanRun: true` before trusting any capture.
 
