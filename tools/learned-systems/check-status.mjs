@@ -10,7 +10,11 @@ import {
   loadWeightsFromArrayBuffer,
   validateWeightsForSpec,
 } from "../../packages/walkaround-hybrid/src/neural/weights.ts";
-import { validateProductionQualityManifest } from "./qualityManifestValidator.mjs";
+import {
+  MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP,
+  MIN_PRODUCTION_NEURAL_SAMPLE_COUNT,
+  validateProductionQualityManifest,
+} from "./qualityManifestValidator.mjs";
 
 /** @typedef {import("../../packages/walkaround-hybrid/src/neural/weights.ts").ModelWeights} ModelWeights */
 /**
@@ -34,6 +38,7 @@ import { validateProductionQualityManifest } from "./qualityManifestValidator.mj
 
 const EXPECTED_PARAM_COUNT = 535107;
 const CHECKPOINT_MANIFEST_PATH = "tools/neural-denoiser-training/checkpoints/manifest.json";
+const QUALITY_MANIFEST_PATH = "tools/neural-denoiser-training/quality-ab-production.json";
 const STATUS_PATH = "tools/learned-systems/learned-systems-status.json";
 const WRITE_STATUS = Deno.args.includes("--write-status");
 const REQUIRED_RESEARCH_CHECKPOINTS = [
@@ -54,6 +59,26 @@ const REQUIRED_RESEARCH_CHECKPOINTS = [
     sha256: "6f59e32b8f84f05e90f4afdfa025a98ef97ae60f163a1a4a9f7703ac4fa3d9cb",
   },
 ];
+
+function productionQualityRequirements() {
+  return {
+    manifestPath: QUALITY_MANIFEST_PATH,
+    requiredVerdict: "PASS",
+    requiredMode: "production-neural-denoiser",
+    minSampleCount: MIN_PRODUCTION_NEURAL_SAMPLE_COUNT,
+    noisySpp: 1,
+    minCleanReferenceSpp: MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP,
+    requiresAlbedo: true,
+    requiresNormals: true,
+    requiresCaptureSource: true,
+    requiresTonemap: true,
+    requiresHardware: true,
+    requiresGeneratedAt: true,
+    requiresCheckpointIdentity: true,
+    requiresComparison: true,
+    requiresThresholds: true,
+  };
+}
 
 /** @param {string} path */
 function repoUrl(path) {
@@ -247,12 +272,12 @@ async function assertNoSilentProductionCheckpoint(manifest) {
 
   let qualityManifest;
   try {
-    qualityManifest = JSON.parse(await readText("tools/neural-denoiser-training/quality-ab-production.json"));
+    qualityManifest = JSON.parse(await readText(QUALITY_MANIFEST_PATH));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     fail(
       `production-like checkpoint(s) ${productionLike.join(", ")} require ` +
-      `tools/neural-denoiser-training/quality-ab-production.json (${message})`,
+      `${QUALITY_MANIFEST_PATH} (${message})`,
     );
   }
   if (qualityManifest.verdict !== "PASS" || qualityManifest.mode !== "production-neural-denoiser") {
@@ -290,10 +315,11 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
       researchCheckpointCount: researchCount,
       productionCheckpointCount: productionCount,
       productionDefaultEligible: hasProductionCheckpoint,
-      packageProvidesProductionWeights: false,
+      packageProvidesProductionWeights: hasProductionCheckpoint,
       qualityManifest: hasProductionCheckpoint
-        ? "tools/neural-denoiser-training/quality-ab-production.json"
+        ? QUALITY_MANIFEST_PATH
         : null,
+      qualityManifestRequirements: productionQualityRequirements(),
       remaining: hasProductionCheckpoint
         ? "Keep production default eligibility tied to the validated quality manifest."
         : "Provision a production neural checkpoint and passing quality A/B manifest before default or production claims.",
@@ -325,6 +351,62 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
     ],
   };
   await Deno.writeTextFile(STATUS_PATH, `${JSON.stringify(status, null, 2)}\n`);
+}
+
+/**
+ * @param {CheckpointManifest} checkpointManifest
+ * @param {number} researchCount
+ * @param {number} productionCount
+ */
+async function assertCommittedStatusArtifact(checkpointManifest, researchCount, productionCount) {
+  let status;
+  try {
+    status = JSON.parse(await readText(STATUS_PATH));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    fail(`${STATUS_PATH} is missing or invalid JSON: ${message}`);
+  }
+  if (status == null || typeof status !== "object") {
+    fail(`${STATUS_PATH} must contain a status object`);
+  }
+  const record = /** @type {Record<string, any>} */ (status);
+  const productionCheckpoint = checkpointManifest.productionCheckpoint ?? null;
+  const hasProductionCheckpoint = productionCheckpoint !== null && productionCount > 0;
+  const expectedPosture = hasProductionCheckpoint ? "quality-gated" : "provisioning-needed";
+  if (record.schema !== "vitrum.learned-systems.status.v1") fail(`${STATUS_PATH} schema mismatch`);
+  if (record.verdict !== "PASS") fail(`${STATUS_PATH} verdict must be PASS`);
+  if (record.productionPosture !== expectedPosture) {
+    fail(`${STATUS_PATH} productionPosture must be ${expectedPosture}`);
+  }
+  const neural = record.neuralDenoiser;
+  if (neural == null || typeof neural !== "object") {
+    fail(`${STATUS_PATH} neuralDenoiser must be an object`);
+  }
+  const neuralRecord = /** @type {Record<string, any>} */ (neural);
+  if (neuralRecord.productionCheckpoint !== productionCheckpoint) {
+    fail(`${STATUS_PATH} neuralDenoiser.productionCheckpoint must match checkpoint manifest`);
+  }
+  if (neuralRecord.researchCheckpointCount !== researchCount) {
+    fail(`${STATUS_PATH} neuralDenoiser.researchCheckpointCount must match checkpoint manifest`);
+  }
+  if (neuralRecord.productionCheckpointCount !== productionCount) {
+    fail(`${STATUS_PATH} neuralDenoiser.productionCheckpointCount must match checkpoint manifest`);
+  }
+  if (neuralRecord.productionDefaultEligible !== hasProductionCheckpoint) {
+    fail(`${STATUS_PATH} neuralDenoiser.productionDefaultEligible must track production checkpoint availability`);
+  }
+  if (neuralRecord.packageProvidesProductionWeights !== hasProductionCheckpoint) {
+    fail(`${STATUS_PATH} neuralDenoiser.packageProvidesProductionWeights must track bundled production checkpoint availability`);
+  }
+  const expectedQualityManifest = hasProductionCheckpoint ? QUALITY_MANIFEST_PATH : null;
+  if (neuralRecord.qualityManifest !== expectedQualityManifest) {
+    fail(`${STATUS_PATH} neuralDenoiser.qualityManifest must be ${String(expectedQualityManifest)}`);
+  }
+  const requirements = neuralRecord.qualityManifestRequirements;
+  const expectedRequirements = productionQualityRequirements();
+  if (JSON.stringify(requirements) !== JSON.stringify(expectedRequirements)) {
+    fail(`${STATUS_PATH} neuralDenoiser.qualityManifestRequirements must match the production quality validator thresholds`);
+  }
 }
 
 async function assertRuntimeTruthfulnessGuards() {
@@ -575,6 +657,7 @@ await assertBehavioralProofCoverage();
 const researchCount = checkpointManifest.checkpoints.filter((entry) => entry.role === "research").length;
 const productionCount = checkpointManifest.checkpoints.filter((entry) => entry.role === "production").length;
 await maybeWriteStatus(checkpointManifest, researchCount, productionCount);
+await assertCommittedStatusArtifact(checkpointManifest, researchCount, productionCount);
 console.log(
   `[learned-systems-proof-check] PASS ` +
   `(${researchCount} research checkpoints, ${productionCount} production checkpoints validate; neural/GRIS/NRC/PPG remain opt-in and non-default; behavioral proof coverage pinned)`,

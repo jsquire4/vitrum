@@ -1,6 +1,6 @@
 {
   "schema": "vitrum.learned-systems.status.v1",
-  "generatedAt": "2026-06-22T19:08:10.709Z",
+  "generatedAt": "2026-06-23T05:11:28.940Z",
   "verdict": "PASS",
   "productionPosture": "provisioning-needed",
   "neuralDenoiser": {
@@ -10,6 +10,23 @@
     "productionDefaultEligible": false,
     "packageProvidesProductionWeights": false,
     "qualityManifest": null,
+    "qualityManifestRequirements": {
+      "manifestPath": "tools/neural-denoiser-training/quality-ab-production.json",
+      "requiredVerdict": "PASS",
+      "requiredMode": "production-neural-denoiser",
+      "minSampleCount": 500,
+      "noisySpp": 1,
+      "minCleanReferenceSpp": 4096,
+      "requiresAlbedo": true,
+      "requiresNormals": true,
+      "requiresCaptureSource": true,
+      "requiresTonemap": true,
+      "requiresHardware": true,
+      "requiresGeneratedAt": true,
+      "requiresCheckpointIdentity": true,
+      "requiresComparison": true,
+      "requiresThresholds": true
+    },
     "remaining": "Provision a production neural checkpoint and passing quality A/B manifest before default or production claims."
   },
   "nrc": {

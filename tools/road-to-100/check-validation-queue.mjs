@@ -482,6 +482,7 @@ const adjointEmitterGradientOracleTestSource = await readText(
   "packages/pt-webgpu/src/__tests__/adjointEmitterGradientOracle.test.ts",
 );
 const learnedCheckpointManifest = await readJson(LEARNED_CHECKPOINT_MANIFEST_PATH);
+const learnedSystemsStatus = await readJson("tools/learned-systems/learned-systems-status.json");
 const behavioralGateSource = await readText("tools/behavioral-gate/gate.mjs");
 const transparentAlphaTransportContractTest = await readText(
   "packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts",
@@ -1027,6 +1028,33 @@ if (learnedCheckpointManifest.schema !== "vitrum.neural-denoiser.checkpoints.v1"
   fail("learned checkpoint manifest schema mismatch");
 }
 const productionCheckpoint = learnedCheckpointManifest.productionCheckpoint ?? null;
+if (learnedSystemsStatus.schema !== "vitrum.learned-systems.status.v1") {
+  fail("learned systems status schema mismatch");
+}
+if (learnedSystemsStatus.verdict !== "PASS") {
+  fail("learned systems status must pin verdict PASS");
+}
+const qualityRequirements = learnedSystemsStatus.neuralDenoiser?.qualityManifestRequirements;
+const expectedQualityRequirements = {
+  manifestPath: "tools/neural-denoiser-training/quality-ab-production.json",
+  requiredVerdict: "PASS",
+  requiredMode: "production-neural-denoiser",
+  minSampleCount: 500,
+  noisySpp: 1,
+  minCleanReferenceSpp: 4096,
+  requiresAlbedo: true,
+  requiresNormals: true,
+  requiresCaptureSource: true,
+  requiresTonemap: true,
+  requiresHardware: true,
+  requiresGeneratedAt: true,
+  requiresCheckpointIdentity: true,
+  requiresComparison: true,
+  requiresThresholds: true,
+};
+if (JSON.stringify(qualityRequirements) !== JSON.stringify(expectedQualityRequirements)) {
+  fail("learned systems status must pin machine-readable production neural quality requirements");
+}
 if (productionCheckpoint === null) {
   if (learnedRow.status !== "provisioning-needed") {
     fail("VQ-LEARNED-SYSTEMS must remain provisioning-needed while productionCheckpoint is null");
