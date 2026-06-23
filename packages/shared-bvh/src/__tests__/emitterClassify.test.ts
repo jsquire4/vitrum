@@ -116,6 +116,23 @@ describe('materialSpecEmissiveLe', () => {
     expect(le).toEqual([0, 0, 2]);
   });
 
+  it('falls back to scalar emissive when emissiveMap targets an unsupported UV lane', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([0, 0, 0, 1]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    };
+
+    const le = materialSpecEmissiveLeAtUv(material({
+      emissive: [1, 1.5, 2],
+      emissiveIntensity: 2,
+      emissiveMap: { handle, texCoord: 2 },
+    }), [0.5, 0.5]);
+
+    expect(le).toEqual([2, 3, 4]);
+  });
+
   it('estimates triangle emissive power from UV-local map samples instead of full-texture average', () => {
     const handle = {
       width: 2,
@@ -164,6 +181,18 @@ describe('materialSpecEmissiveLe', () => {
         },
       },
     }), 4)).toBe(4);
+    expect(emissiveMapTriangleSubdivisionLevel(material({
+      emissive: [1, 1, 1],
+      emissiveMap: {
+        texCoord: 2,
+        handle: {
+          width: 8,
+          height: 2,
+          data: new Float32Array(8 * 2 * 4).fill(1),
+          __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+        },
+      },
+    }), 4)).toBe(1);
   });
 
   it('enumerates barycentric micro-triangles with conserved area count', () => {
@@ -229,6 +258,38 @@ describe('materialSpecEmissiveLe', () => {
       .toBeCloseTo(0.25, 12);
     expect(patches.some((p) => p.radiance[0] === 2 && p.radiance[1] === 0)).toBe(true);
     expect(patches.some((p) => p.radiance[0] === 0 && p.radiance[1] === 2)).toBe(true);
+  });
+
+  it('does not split unsupported-UV emissive maps into exact texel sub-triangles', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+      ]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
+    };
+    let visits = 0;
+
+    const handled = forEachEmissiveMapTexelSubTriangle(
+      material({
+        emissive: [2, 2, 2],
+        emissiveMap: { handle, texCoord: 2 },
+      }),
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        visits += 1;
+      },
+    );
+
+    expect(handled).toBe(false);
+    expect(visits).toBe(0);
   });
 });
 

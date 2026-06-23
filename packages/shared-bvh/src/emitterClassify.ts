@@ -342,6 +342,7 @@ export function materialSpecEmissiveLeAtUv(
   const ref = material.emissiveMap;
   if (ref == null) return scalar;
   const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
+  if (texCoord > 1) return scalar;
   const uv = texCoord === 1 && uv1 != null ? uv1 : uv0;
   const map = sampleReadableTextureRgbAtUv(ref, uv, 'srgb') ?? [1, 1, 1];
   const out: [number, number, number] = [
@@ -372,6 +373,8 @@ export function emissiveMapTriangleSubdivisionLevel(
   maxSubdivision = 4,
 ): number {
   if (material.emissiveMap == null) return 1;
+  const texCoord = Math.max(0, Math.floor(material.emissiveMap.texCoord ?? 0));
+  if (texCoord > 1) return 1;
   const dims = readableTextureDimensions(material.emissiveMap);
   if (dims == null) return 1;
   const cappedMax = Math.max(1, Math.floor(maxSubdivision));
@@ -555,6 +558,7 @@ export function forEachEmissiveMapTexelSubTriangle(
   if (dims == null) return false;
 
   const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
+  if (texCoord > 1) return false;
   const useUv1 = texCoord === 1 && uv1A != null && uv1B != null && uv1C != null;
   const srcA = useUv1 ? uv1A : uv0A;
   const srcB = useUv1 ? uv1B : uv0B;
