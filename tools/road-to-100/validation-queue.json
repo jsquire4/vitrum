@@ -234,6 +234,17 @@
             "glossy.renderConfig.spp": 64
           }
         },
+        {
+          "path": "tools/radiometric-ab/walkaround-ab-promotion-status.json",
+          "json": {
+            "verdict": "PASS-PARTIAL",
+            "promotion.defaultReady": false,
+            "promotion.classification": "glossy-finding",
+            "promotion.blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+            "caseVerdicts.glossy": "FINDING",
+            "highSppCaseVerdicts.glossy": "FINDING"
+          }
+        },
         { "path": "packages/walkaround-hybrid/src/HybridEngineOptions.ts" },
         { "path": "packages/walkaround-hybrid/src/shaders/ggxBrdf.wgsl.ts" },
         { "path": "packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts" },

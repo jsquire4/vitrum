@@ -9,6 +9,7 @@ import {
   RESTIR_PT_GLOSSY_RESEARCH_PROOF,
   RESTIR_PT_SPECIALTY_PROOF,
   WALKAROUND_AB_HOST_STATUS_PROOF,
+  WALKAROUND_AB_PROMOTION_STATUS_PROOF,
   WALKAROUND_AB_RESULT_PROOF,
   WALKAROUND_ALL_SPP64_STATUS_PROOF,
   WALKAROUND_GLOSSY_SPP64_STATUS_PROOF,
@@ -943,6 +944,73 @@ async function checkWalkaroundResults(proof) {
   checkWalkaroundGlossy(proof.cases.glossy, result.glossy);
 }
 
+/** @param {any} proof */
+async function checkWalkaroundPromotionStatus(proof) {
+  const status = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.statusPath}`, import.meta.url)));
+  if (status.harness !== proof.harness) fail("walkaround promotion status: harness mismatch");
+  if (status.verdict !== proof.verdict) {
+    fail(`walkaround promotion status: verdict ${status.verdict} differs from ${proof.verdict}`);
+  }
+  if (status.promotion?.defaultReady !== proof.promotion.defaultReady) {
+    fail("walkaround promotion status: promotion.defaultReady must stay false");
+  }
+  if (status.promotion?.classification !== proof.promotion.classification) {
+    fail("walkaround promotion status: promotion.classification mismatch");
+  }
+  if (status.promotion?.blocker !== proof.promotion.blocker) {
+    fail("walkaround promotion status: blocker mismatch");
+  }
+  if (status.promotion?.requiredEvidence !== proof.promotion.requiredEvidence) {
+    fail("walkaround promotion status: requiredEvidence mismatch");
+  }
+  if (!sameJson(status.sourceStatuses, proof.sourceStatuses)) {
+    fail("walkaround promotion status: sourceStatuses mismatch");
+  }
+
+  const hostStatus = JSON.parse(await Deno.readTextFile(new URL(`../../${WALKAROUND_AB_HOST_STATUS_PROOF.statusPath}`, import.meta.url)));
+  const hostResults = JSON.parse(await Deno.readTextFile(new URL(`../../${WALKAROUND_AB_RESULT_PROOF.resultPath}`, import.meta.url)));
+  const allSpp64Status = JSON.parse(await Deno.readTextFile(new URL(`../../${WALKAROUND_ALL_SPP64_STATUS_PROOF.statusPath}`, import.meta.url)));
+  const allSpp64Results = JSON.parse(await Deno.readTextFile(new URL(`../../${WALKAROUND_ALL_SPP64_STATUS_PROOF.preservedResultFile}`, import.meta.url)));
+  if (hostStatus.verdict !== "PASS-PARTIAL" || hostStatus.reason?.code !== WALKAROUND_AB_HOST_STATUS_PROOF.partialReasonCode) {
+    fail("walkaround promotion status: baseline host status no longer pins PASS-PARTIAL");
+  }
+  if (allSpp64Status.verdict !== "PASS-PARTIAL" || allSpp64Status.reason?.code !== WALKAROUND_ALL_SPP64_STATUS_PROOF.partialReasonCode) {
+    fail("walkaround promotion status: all-spp64 status no longer pins PASS-PARTIAL");
+  }
+  const baselineVerdicts = Object.fromEntries(WALKAROUND_AB_CASE_IDS.map((id) => [id, hostResults[id]?.verdict]));
+  const allSpp64Verdicts = Object.fromEntries(WALKAROUND_AB_CASE_IDS.map((id) => [id, allSpp64Results[id]?.verdict]));
+  if (!sameJson(status.caseVerdicts, baselineVerdicts)) {
+    fail("walkaround promotion status: caseVerdicts do not match baseline result snapshot");
+  }
+  if (!sameJson(status.highSppCaseVerdicts, allSpp64Verdicts)) {
+    fail("walkaround promotion status: highSppCaseVerdicts do not match all-spp64 result snapshot");
+  }
+  if (baselineVerdicts.glossy !== "FINDING" || allSpp64Verdicts.glossy !== "FINDING") {
+    fail("walkaround promotion status: glossy must remain a FINDING until promotion evidence lands");
+  }
+
+  const expectedProfiles = [];
+  for (const profile of proof.glossyProfiles) {
+    const result = JSON.parse(await Deno.readTextFile(new URL(`../../${profile.resultPath}`, import.meta.url)));
+    const glossy = result[profile.resultKey];
+    expectedProfiles.push({
+      label: profile.label,
+      resultPath: profile.resultPath,
+      spp: profile.expectedSpp,
+      qualityProfile: profile.expectedQualityProfile,
+      verdict: glossy?.verdict,
+      sampleRatio: glossy?.sampleRatio ?? glossy?.floorRatio,
+      materialEffectObserved: glossy?.materialEffectObserved,
+    });
+    if (glossy?.promotion?.defaultReady !== false || glossy?.promotion?.blocker !== proof.promotion.blocker) {
+      fail(`walkaround promotion status: ${profile.label} glossy promotion metadata drifted`);
+    }
+  }
+  if (!sameJson(status.glossyProfiles, expectedProfiles)) {
+    fail("walkaround promotion status: glossyProfiles do not match committed result snapshots");
+  }
+}
+
 assertRequiredRadiometricRows();
 for (const proof of RADIOMETRIC_AB_PROOFS) {
   const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
@@ -963,5 +1031,6 @@ await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
 await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
 await checkWalkaroundGlossySpp64Status(WALKAROUND_GLOSSY_SPP64_STATUS_PROOF);
 await checkWalkaroundAllSpp64Status(WALKAROUND_ALL_SPP64_STATUS_PROOF);
+await checkWalkaroundPromotionStatus(WALKAROUND_AB_PROMOTION_STATUS_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases, 1 high-SPP glossy walkaround status, 1 high-SPP all-cases walkaround status)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases, 1 high-SPP glossy walkaround status, 1 high-SPP all-cases walkaround status, 1 walkaround promotion boundary status)`);

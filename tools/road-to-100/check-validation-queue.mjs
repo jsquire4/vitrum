@@ -263,6 +263,7 @@ const REQUIRED_WALKAROUND_AB_ARTIFACT_PATHS = [
   "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
   "tools/radiometric-ab/walkaround-ab-all-spp64-status.json",
   "tools/radiometric-ab/walkaround-ab-all-spp64.json",
+  "tools/radiometric-ab/walkaround-ab-promotion-status.json",
   "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
   "packages/walkaround-hybrid/src/shaders/ggxBrdf.wgsl.ts",
   "packages/walkaround-hybrid/src/shaders/shadingTerms.wgsl.ts",
@@ -1480,6 +1481,7 @@ if (walkaroundAbResults.glossy?.promotion?.blocker !== "ddgi-irradiance-cache-no
 }
 const walkaroundAllSpp64Status = await readJson("tools/radiometric-ab/walkaround-ab-all-spp64-status.json");
 const walkaroundAllSpp64Results = await readJson("tools/radiometric-ab/walkaround-ab-all-spp64.json");
+const walkaroundPromotionStatus = await readJson("tools/radiometric-ab/walkaround-ab-promotion-status.json");
 if (walkaroundAllSpp64Status.verdict !== "PASS-PARTIAL") {
   fail("walkaround all-spp64 status must pin PASS-PARTIAL");
 }
@@ -1495,6 +1497,45 @@ if (walkaroundAllSpp64Results.glass?.verdict !== "PASS") fail("walkaround all-sp
 if (walkaroundAllSpp64Results.glossy?.verdict !== "FINDING") fail("walkaround all-spp64 GLOSSY verdict must stay FINDING");
 if (walkaroundAllSpp64Results.glossy?.promotion?.defaultReady !== false) {
   fail("walkaround all-spp64 GLOSSY finding must pin promotion.defaultReady=false");
+}
+const walkaroundExpectedCaseVerdicts = {
+  a8: walkaroundAbResults.a8?.verdict,
+  sun: walkaroundAbResults.sun?.verdict,
+  glass: walkaroundAbResults.glass?.verdict,
+  glossy: walkaroundAbResults.glossy?.verdict,
+};
+const walkaroundExpectedHighSppVerdicts = {
+  a8: walkaroundAllSpp64Results.a8?.verdict,
+  sun: walkaroundAllSpp64Results.sun?.verdict,
+  glass: walkaroundAllSpp64Results.glass?.verdict,
+  glossy: walkaroundAllSpp64Results.glossy?.verdict,
+};
+if (
+  walkaroundPromotionStatus.verdict !== "PASS-PARTIAL" ||
+  walkaroundPromotionStatus.promotion?.defaultReady !== false ||
+  walkaroundPromotionStatus.promotion?.classification !== "glossy-finding"
+) {
+  fail("walkaround promotion summary must pin PASS-PARTIAL/defaultReady=false/glossy-finding");
+}
+if (walkaroundPromotionStatus.promotion?.blocker !== "ddgi-irradiance-cache-not-ggx-filtered-radiance") {
+  fail("walkaround promotion summary must pin the DDGI/GGX blocker");
+}
+if (!String(walkaroundPromotionStatus.promotion?.requiredEvidence ?? "").includes("browser-real-adapter")) {
+  fail("walkaround promotion summary must name browser-real-adapter evidence");
+}
+if (JSON.stringify(walkaroundPromotionStatus.caseVerdicts) !== JSON.stringify(walkaroundExpectedCaseVerdicts)) {
+  fail("walkaround promotion summary case verdicts must match the baseline result snapshot");
+}
+if (JSON.stringify(walkaroundPromotionStatus.highSppCaseVerdicts) !== JSON.stringify(walkaroundExpectedHighSppVerdicts)) {
+  fail("walkaround promotion summary high-SPP verdicts must match the all-spp64 result snapshot");
+}
+if (!Array.isArray(walkaroundPromotionStatus.glossyProfiles) || walkaroundPromotionStatus.glossyProfiles.length !== 3) {
+  fail("walkaround promotion summary must preserve baseline, glossy-spp64, and all-spp64 glossy profiles");
+}
+for (const profile of walkaroundPromotionStatus.glossyProfiles) {
+  if (profile.verdict !== "FINDING" || profile.materialEffectObserved !== true) {
+    fail(`walkaround promotion summary ${profile.label} must keep the glossy FINDING/material-effect evidence`);
+  }
 }
 const walkaroundAbHarness = await readText("tools/radiometric-ab/walkaround-ab.mjs");
 const walkaroundAbRunner = await readText("tools/radiometric-ab/run-walkaround-ab.mjs");
@@ -1531,6 +1572,7 @@ for (const needle of [
 for (const needle of [
   "WALKAROUND_AB_RESULT_PROOF",
   "WALKAROUND_ALL_SPP64_STATUS_PROOF",
+  "WALKAROUND_AB_PROMOTION_STATUS_PROOF",
   "expectedVerdict: \"FINDING\"",
   "ddgi-irradiance-cache-not-ggx-filtered-radiance",
   "material-furnace-reference-ab-and-browser-real-adapter-recapture",

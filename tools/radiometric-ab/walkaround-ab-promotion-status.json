@@ -1,0 +1,58 @@
+{
+  "generatedAt": "2026-06-23T05:05:00.000Z",
+  "harness": "walkaround-ab-promotion-proof",
+  "verdict": "PASS-PARTIAL",
+  "promotion": {
+    "defaultReady": false,
+    "classification": "glossy-finding",
+    "reason": "Native WebGPU 16-SPP and 64-SPP recaptures show a live glossy material delta, but the glossy rich-material GI row remains a non-promotable FINDING because the DDGI cache stores cosine-weighted irradiance rather than GGX-filtered radiance.",
+    "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+    "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
+  },
+  "caseVerdicts": {
+    "a8": "NEGLIGIBLE",
+    "sun": "PASS",
+    "glass": "PASS",
+    "glossy": "FINDING"
+  },
+  "highSppCaseVerdicts": {
+    "a8": "NEGLIGIBLE",
+    "sun": "PASS",
+    "glass": "PASS",
+    "glossy": "FINDING"
+  },
+  "glossyProfiles": [
+    {
+      "label": "baseline",
+      "resultPath": "tools/radiometric-ab/walkaround-ab-results.json",
+      "spp": 16,
+      "qualityProfile": "baseline",
+      "verdict": "FINDING",
+      "sampleRatio": 0.0051101152719256245,
+      "materialEffectObserved": true
+    },
+    {
+      "label": "glossy-spp64",
+      "resultPath": "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
+      "spp": 64,
+      "qualityProfile": "glossy-spp64",
+      "verdict": "FINDING",
+      "sampleRatio": 0.0014582221916429414,
+      "materialEffectObserved": true
+    },
+    {
+      "label": "all-spp64",
+      "resultPath": "tools/radiometric-ab/walkaround-ab-all-spp64.json",
+      "spp": 64,
+      "qualityProfile": "all-spp64",
+      "verdict": "FINDING",
+      "sampleRatio": 0.0014582221916429414,
+      "materialEffectObserved": true
+    }
+  ],
+  "sourceStatuses": [
+    "tools/radiometric-ab/walkaround-ab-host-status.json",
+    "tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json",
+    "tools/radiometric-ab/walkaround-ab-all-spp64-status.json"
+  ]
+}

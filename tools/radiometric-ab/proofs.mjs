@@ -269,6 +269,46 @@ export const WALKAROUND_ALL_SPP64_STATUS_PROOF = {
   doNotPromoteText: "Do not promote",
 };
 
+export const WALKAROUND_AB_PROMOTION_STATUS_PROOF = {
+  harness: "walkaround-ab-promotion-proof",
+  statusPath: "tools/radiometric-ab/walkaround-ab-promotion-status.json",
+  verdict: "PASS-PARTIAL",
+  promotion: {
+    defaultReady: false,
+    classification: "glossy-finding",
+    blocker: "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+    requiredEvidence: "material-furnace-reference-ab-and-browser-real-adapter-recapture",
+  },
+  sourceStatuses: [
+    WALKAROUND_AB_HOST_STATUS_PROOF.statusPath,
+    WALKAROUND_GLOSSY_SPP64_STATUS_PROOF.statusPath,
+    WALKAROUND_ALL_SPP64_STATUS_PROOF.statusPath,
+  ],
+  glossyProfiles: [
+    {
+      label: "baseline",
+      resultPath: WALKAROUND_AB_RESULT_PROOF.resultPath,
+      resultKey: "glossy",
+      expectedQualityProfile: "baseline",
+      expectedSpp: WALKAROUND_AB_RESULT_PROOF.spp,
+    },
+    {
+      label: "glossy-spp64",
+      resultPath: WALKAROUND_GLOSSY_SPP64_STATUS_PROOF.preservedResultFile,
+      resultKey: "glossy",
+      expectedQualityProfile: "glossy-spp64",
+      expectedSpp: 64,
+    },
+    {
+      label: "all-spp64",
+      resultPath: WALKAROUND_ALL_SPP64_STATUS_PROOF.preservedResultFile,
+      resultKey: "glossy",
+      expectedQualityProfile: "all-spp64",
+      expectedSpp: 64,
+    },
+  ],
+};
+
 /** @param {string} id */
 export function proofForRadiometricAb(id) {
   return RADIOMETRIC_AB_PROOFS.find((proof) => proof.id === id) ?? null;
