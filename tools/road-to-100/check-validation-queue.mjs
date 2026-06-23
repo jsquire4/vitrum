@@ -321,7 +321,7 @@ function isCompletedDznRepeatRecord(value) {
   if (value == null || typeof value !== "object") return false;
   const record = /** @type {{ phase?: unknown, status?: { verdict?: unknown, goldenVariant?: unknown, timeoutMs?: unknown } }} */ (value);
   return (
-    record.phase === "sample" &&
+    (record.phase === "warmup" || record.phase === "sample") &&
     record.status?.verdict === "PASS" &&
     record.status?.goldenVariant === "dzn-full" &&
     record.status?.timeoutMs === 900000
@@ -921,11 +921,12 @@ for (const needle of [
   "renderer binary-vs-CWBVH pixel parity",
   "broader dzn material/glTF workload shard",
   "Default promotion is still blocked",
-  "dzn timing artifacts are uniformly slower",
-  "single-sample rows",
+  "fixed per-shard dzn status artifacts are single-sample snapshots",
+  "uniformly slower",
   "multiple warmup-discarded repeats per workload",
   "900s dzn shard timeout",
-  "completed one-sample",
+  "completed five-sample warmup-discarded",
+  "one material-lobe-map fast outlier",
   "raw repeat records",
   "not enough for default promotion",
   "npm run cwbvh-default-promotion-repeats",
@@ -1080,25 +1081,32 @@ if (
   cwbvhRepeatStatus.recordsPath !== "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json" ||
   cwbvhRepeatStatus.campaignStatus !== "complete" ||
   cwbvhRepeatStatus.classification !== "uniform-slower" ||
-  cwbvhRepeatStatus.sampleCountPerWorkload !== 1 ||
+  cwbvhRepeatStatus.command !== "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=5 --warmup=1 --dzn-timeout-ms=900000" ||
+  cwbvhRepeatStatus.requestedRepeatsPerWorkload !== 5 ||
+  cwbvhRepeatStatus.warmupDiscardedPerWorkload !== 1 ||
+  cwbvhRepeatStatus.sampleCountPerWorkload !== 5 ||
   cwbvhRepeatStatus.dznTimeoutMs !== 900000 ||
   cwbvhRepeatStatus.allWorkloadsHaveAnySamples !== true ||
-  cwbvhRepeatStatus.allWorkloadsHaveRequiredRepeats !== false ||
+  cwbvhRepeatStatus.allWorkloadsHaveRequiredRepeats !== true ||
   cwbvhRepeatStatus.promotion?.defaultReady !== false ||
   !Array.isArray(cwbvhRepeatStatus.failures) ||
   cwbvhRepeatStatus.failures.length !== 0
 ) {
-  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat status must pin the completed one-sample uniform-slower campaign");
+  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat status must pin the completed five-sample warmup-discarded uniform-slower campaign");
 }
+const cwbvhRepeatRows = /** @type {Array<Record<string, any>>} */ (Array.isArray(cwbvhRepeatRecords.records) ? cwbvhRepeatRecords.records : []);
+const cwbvhWarmupRows = cwbvhRepeatRows.filter((record) => record?.phase === "warmup");
+const cwbvhSampleRows = cwbvhRepeatRows.filter((record) => record?.phase === "sample");
 if (
   cwbvhRepeatRecords.harness !== "cwbvh-default-promotion-repeat-records" ||
   cwbvhRepeatRecords.campaignStatus !== "complete" ||
   cwbvhRepeatRecords.failure !== null ||
-  !Array.isArray(cwbvhRepeatRecords.records) ||
-  cwbvhRepeatRecords.records.length !== 3 ||
-  !cwbvhRepeatRecords.records.every(isCompletedDznRepeatRecord)
+  cwbvhRepeatRows.length !== 18 ||
+  cwbvhWarmupRows.length !== 3 ||
+  cwbvhSampleRows.length !== 15 ||
+  !cwbvhRepeatRows.every(isCompletedDznRepeatRecord)
 ) {
-  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat records must preserve the completed one-sample dzn timing records");
+  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat records must preserve the completed five-sample dzn timing records plus one warmup per shard");
 }
 
 const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SYSTEMS");

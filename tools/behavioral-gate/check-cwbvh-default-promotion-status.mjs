@@ -54,7 +54,7 @@ function isCompletedDznRepeatRecord(value) {
   if (value == null || typeof value !== "object") return false;
   const record = /** @type {{ phase?: unknown, status?: { verdict?: unknown, goldenVariant?: unknown, timeoutMs?: unknown } }} */ (value);
   return (
-    record.phase === "sample" &&
+    (record.phase === "warmup" || record.phase === "sample") &&
     record.status?.verdict === "PASS" &&
     record.status?.goldenVariant === "dzn-full" &&
     record.status?.timeoutMs === 900000
@@ -205,30 +205,36 @@ async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification
 async function assertRepeatCaptureStatus() {
   const status = JSON.parse(await Deno.readTextFile(REPEAT_STATUS));
   const records = JSON.parse(await Deno.readTextFile(REPEAT_RECORDS));
+  const allRecords = /** @type {Array<Record<string, any>>} */ (Array.isArray(records.records) ? records.records : []);
+  const warmupRecords = allRecords.filter((record) => record?.phase === "warmup");
+  const sampleRecords = allRecords.filter((record) => record?.phase === "sample");
   if (
     status.harness !== "cwbvh-default-promotion-repeat-proof" ||
-    status.command !== "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=1 --warmup=0 --dzn-timeout-ms=900000" ||
+    status.command !== "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=5 --warmup=1 --dzn-timeout-ms=900000" ||
     status.recordsPath !== REPEAT_RECORDS ||
     status.verdict !== "PASS-PARTIAL" ||
     status.campaignStatus !== "complete" ||
     status.classification !== "uniform-slower" ||
-    status.sampleCountPerWorkload !== 1 ||
+    status.requestedRepeatsPerWorkload !== MIN_REPEAT_COUNT_PER_WORKLOAD ||
+    status.warmupDiscardedPerWorkload !== 1 ||
+    status.sampleCountPerWorkload !== MIN_REPEAT_COUNT_PER_WORKLOAD ||
     status.dznTimeoutMs !== 900000 ||
     status.allWorkloadsHaveAnySamples !== true ||
-    status.allWorkloadsHaveRequiredRepeats !== false ||
+    status.allWorkloadsHaveRequiredRepeats !== true ||
     status.promotion?.defaultReady !== false
   ) {
-    fail(`${REPEAT_STATUS}: must pin the completed one-sample uniform-slower repeat campaign`);
+    fail(`${REPEAT_STATUS}: must pin the completed five-sample warmup-discarded uniform-slower repeat campaign`);
   }
   if (
     records.harness !== "cwbvh-default-promotion-repeat-records" ||
     records.campaignStatus !== "complete" ||
     records.failure !== null ||
-    !Array.isArray(records.records) ||
-    records.records.length !== 3 ||
-    !records.records.every(isCompletedDznRepeatRecord)
+    allRecords.length !== 18 ||
+    warmupRecords.length !== 3 ||
+    sampleRecords.length !== 15 ||
+    !allRecords.every(isCompletedDznRepeatRecord)
   ) {
-    fail(`${REPEAT_RECORDS}: must preserve the completed one-sample dzn repeat records`);
+    fail(`${REPEAT_RECORDS}: must preserve the completed five-sample dzn repeat records plus one warmup per shard`);
   }
 }
 

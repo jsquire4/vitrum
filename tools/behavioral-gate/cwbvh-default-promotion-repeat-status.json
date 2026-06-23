@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-06-23T08:22:36.369Z",
-  "command": "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=1 --warmup=0 --dzn-timeout-ms=900000",
+  "generatedAt": "2026-06-23T10:53:19.606Z",
+  "command": "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=5 --warmup=1 --dzn-timeout-ms=900000",
   "campaignStatus": "complete",
-  "requestedRepeatsPerWorkload": 1,
+  "requestedRepeatsPerWorkload": 5,
   "dznTimeoutMs": 900000,
   "recordsPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
   "filters": [
@@ -33,11 +33,11 @@
   "harness": "cwbvh-default-promotion-repeat-proof",
   "verdict": "PASS-PARTIAL",
   "adapterScope": "wsl-dzn-real-adapter",
-  "warmupDiscardedPerWorkload": 0,
-  "sampleCountPerWorkload": 1,
+  "warmupDiscardedPerWorkload": 1,
+  "sampleCountPerWorkload": 5,
   "minRepeatCountPerWorkload": 5,
   "allWorkloadsHaveAnySamples": true,
-  "allWorkloadsHaveRequiredRepeats": false,
+  "allWorkloadsHaveRequiredRepeats": true,
   "classification": "uniform-slower",
   "promotion": {
     "defaultReady": false,
@@ -46,73 +46,93 @@
   "workloads": [
     {
       "label": "pt/cwbvh-binary-parity",
-      "totalRunCount": 1,
-      "sampleCount": 1,
+      "totalRunCount": 6,
+      "sampleCount": 5,
       "ratios": [
-        1.232
+        1.242,
+        1.28,
+        1.269,
+        1.269,
+        1.244
       ],
-      "minRatio": 1.232,
-      "medianRatio": 1.232,
-      "meanRatio": 1.232,
-      "maxRatio": 1.232,
+      "minRatio": 1.242,
+      "medianRatio": 1.269,
+      "meanRatio": 1.2608000000000001,
+      "maxRatio": 1.28,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 1
+      "slowOrNeutralSampleCount": 5
     },
     {
       "label": "pt/cwbvh-complex-parity",
-      "totalRunCount": 1,
-      "sampleCount": 1,
+      "totalRunCount": 6,
+      "sampleCount": 5,
       "ratios": [
-        1.261
+        1.268,
+        1.253,
+        1.261,
+        1.249,
+        1.251
       ],
-      "minRatio": 1.261,
-      "medianRatio": 1.261,
-      "meanRatio": 1.261,
-      "maxRatio": 1.261,
+      "minRatio": 1.249,
+      "medianRatio": 1.253,
+      "meanRatio": 1.2564,
+      "maxRatio": 1.268,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 1
+      "slowOrNeutralSampleCount": 5
     },
     {
       "label": "pt/cwbvh-broader-material-lobes",
-      "totalRunCount": 1,
-      "sampleCount": 1,
+      "totalRunCount": 6,
+      "sampleCount": 5,
       "ratios": [
-        1.266
+        1.266,
+        1.266,
+        1.263,
+        1.266,
+        1.248
       ],
-      "minRatio": 1.266,
+      "minRatio": 1.248,
       "medianRatio": 1.266,
-      "meanRatio": 1.266,
+      "meanRatio": 1.2618,
       "maxRatio": 1.266,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 1
+      "slowOrNeutralSampleCount": 5
     },
     {
       "label": "pt/cwbvh-broader-material-lobe-maps",
-      "totalRunCount": 1,
-      "sampleCount": 1,
+      "totalRunCount": 6,
+      "sampleCount": 5,
       "ratios": [
-        1.291
+        1.261,
+        1.28,
+        1.244,
+        0.072,
+        1.288
       ],
-      "minRatio": 1.291,
-      "medianRatio": 1.291,
-      "meanRatio": 1.291,
-      "maxRatio": 1.291,
-      "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 1
+      "minRatio": 0.072,
+      "medianRatio": 1.261,
+      "meanRatio": 1.0290000000000001,
+      "maxRatio": 1.288,
+      "fastSampleCount": 1,
+      "slowOrNeutralSampleCount": 4
     },
     {
       "label": "pt/cwbvh-broader-gltf-material-sweep",
-      "totalRunCount": 1,
-      "sampleCount": 1,
+      "totalRunCount": 6,
+      "sampleCount": 5,
       "ratios": [
-        1.094
+        1.117,
+        1.15,
+        1.079,
+        1.121,
+        1.08
       ],
-      "minRatio": 1.094,
-      "medianRatio": 1.094,
-      "meanRatio": 1.094,
-      "maxRatio": 1.094,
+      "minRatio": 1.079,
+      "medianRatio": 1.117,
+      "meanRatio": 1.1094000000000002,
+      "maxRatio": 1.15,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 1
+      "slowOrNeutralSampleCount": 5
     }
   ],
   "failures": []
