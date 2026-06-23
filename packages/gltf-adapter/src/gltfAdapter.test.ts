@@ -371,7 +371,7 @@ describe('minimal triangle', () => {
     expect(warnings.some((w) => w.includes('normalMap') && w.includes('TEXCOORD_2'))).toBe(true);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: 'ignored-material-texcoord',
-      path: 'meshes[0].primitives[0].material',
+      path: 'materials[0].normalTexture',
     }));
   });
 
@@ -437,7 +437,7 @@ describe('minimal triangle', () => {
     expect(warnings.some((w) => w.includes('normalMap') && w.includes('already references TEXCOORD_1'))).toBe(true);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: 'ignored-material-texcoord',
-      path: 'meshes[0].primitives[0].material',
+      path: 'materials[0].normalTexture',
     }));
   });
 

@@ -74,6 +74,7 @@ import { GltfComponentType } from './gltfTypes.js';
 import {
   buildTextureHandleMap,
   GLTF_TEXTURE_SOURCE_EXTENSIONS,
+  gltfTextureRefSource,
   type DecodeImageFn,
   type GltfImageBytesMap,
   type GltfTextureAcquisitionDiagnosticCode,
@@ -2190,11 +2191,12 @@ function _resolvePrimitiveUvMaterial(
       ? 'material already references TEXCOORD_1, so the high UV set cannot be losslessly remapped into uv1'
       : `primitive has no readable TEXCOORD_${[...highTexCoords][0] ?? '?'} accessor`;
 
-  for (const { field, texCoord } of highFields) {
+  for (const { field, ref, texCoord } of highFields) {
+    const source = gltfTextureRefSource(ref);
     emitImportDiagnostic(warnings, diagnostics, {
       severity: 'warning',
       code: 'ignored-material-texcoord',
-      path: `${primitivePath}.material`,
+      path: source?.path ?? `${primitivePath}.material`,
       message:
         `[vitrum/gltf-adapter] Mesh "${meshName}" material field "${field}" references ` +
         `TEXCOORD_${texCoord}, but ${conflictReason}. The texture field is ignored ` +

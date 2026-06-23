@@ -6291,7 +6291,7 @@ describe('loadGltfForEngine', () => {
       opaqueTextureHandlesReady: ['pt-webgl2'],
       createEngine,
     })).rejects.toThrow(
-      'import:ignored-material-texcoord=approximate at meshes[0].primitives[0].material',
+      'import:ignored-material-texcoord=approximate at materials[0].normalTexture',
     );
 
     expect(createEngine).not.toHaveBeenCalled();
