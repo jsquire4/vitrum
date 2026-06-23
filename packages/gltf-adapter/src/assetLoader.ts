@@ -168,25 +168,33 @@ export async function loadGltfAsset(
     ...(options.pointLineFallbackRadius !== undefined ? { pointLineFallbackRadius: options.pointLineFallbackRadius } : {}),
   };
   const sceneResult = await gltfToScene(parsed.gltf, sceneOptions);
-  const sceneWithMaterialTable = sceneResult.convertedMaterials === undefined
-    ? sceneResult.scene
+  const canBakeLiteVertexColors = (sceneResult.materialVariantBindings?.length ?? 0) === 0;
+  const scene = canBakeLiteVertexColors
+    ? bakePtWebgpuLiteCompatibleVertexColors(sceneResult.scene)
+    : sceneResult.scene;
+  const convertedMaterials = sceneResult.convertedMaterials;
+  const sceneWithMaterialTable = convertedMaterials === undefined
+    ? scene
     : appendInactiveMaterialPrimitives(
-      sceneResult.scene,
-      sceneResult.convertedMaterials,
+      scene,
+      convertedMaterials,
       materialIndicesForSelectedScene(sceneResult.materialVariantBindings),
     );
   const textureDecodeReport = buildTextureDecodeReport(sceneWithMaterialTable);
   const backendCompatibility = rerankBackendCompatibility(
     reconcileBackendCompatibilityAfterSceneImport(
       staticBackendCompatibility,
-      sceneResult.scene,
+      scene,
       textureDecodeReport,
+      canBakeLiteVertexColors,
     ),
     backendPolicy,
   );
 
   return {
     ...sceneResult,
+    scene,
+    ...(convertedMaterials !== undefined ? { convertedMaterials } : {}),
     gltf: parsed.gltf,
     sceneIndex,
     featureReport,
@@ -298,8 +306,9 @@ function reconcileBackendCompatibilityAfterSceneImport(
   compatibility: readonly GltfBackendCompatibility[],
   scene: Scene,
   textureDecodeReport: GltfTextureDecodeReport,
+  allowLiteVertexColorBake: boolean,
 ): readonly GltfBackendCompatibility[] {
-  const liteVertexColorsBakeable = sceneHasOnlyPtWebgpuLiteBakeableVertexColors(scene);
+  const liteVertexColorsBakeable = allowLiteVertexColorBake && sceneHasOnlyPtWebgpuLiteBakeableVertexColors(scene);
 
   return compatibility.map((candidate) => {
     if (candidate.profileId !== 'pt-webgpu-lite' || !liteVertexColorsBakeable) {
@@ -323,6 +332,36 @@ function sceneHasOnlyPtWebgpuLiteBakeableVertexColors(scene: Scene): boolean {
     }
   }
   return true;
+}
+
+function bakePtWebgpuLiteCompatibleVertexColors(scene: Scene): Scene {
+  let changed = false;
+  const primitives = scene.primitives.map((primitive) => {
+    const color = ptWebgpuLiteBakeableVertexColor(primitive);
+    if (color == null) return primitive;
+    changed = true;
+    const { colors: _colors, ...withoutColors } = primitive as ScenePrimitive & { readonly colors?: Float32Array };
+    const material = primitive.material;
+    return {
+      ...withoutColors,
+      material: {
+        ...material,
+        baseColor: [
+          material.baseColor[0] * color[0],
+          material.baseColor[1] * color[1],
+          material.baseColor[2] * color[2],
+        ],
+      },
+    } as ScenePrimitive;
+  });
+  return changed ? { ...scene, primitives } : scene;
+}
+
+function ptWebgpuLiteBakeableVertexColor(primitive: ScenePrimitive): readonly [number, number, number] | null {
+  const colors = (primitive as { readonly colors?: Float32Array }).colors;
+  if (colors == null || colors.length === 0) return null;
+  if (!ptWebgpuLiteCanBakeVertexColors(primitive)) return null;
+  return [colors[0] ?? 1, colors[1] ?? 1, colors[2] ?? 1];
 }
 
 function ptWebgpuLiteCanBakeVertexColors(primitive: ScenePrimitive): boolean {

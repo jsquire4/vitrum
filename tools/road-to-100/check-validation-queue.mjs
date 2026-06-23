@@ -135,6 +135,7 @@ const REQUIRED_GLTF_MATERIAL_TOPOLOGY_ARTIFACT_PATHS = [
   "tools/reference-renders/gltf-triangle-topology-behavioral/manifest.json",
   "tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png",
   "packages/gltf-adapter/src/primitiveModeFallback.ts",
+  "packages/gltf-adapter/src/assetLoader.ts",
   "packages/gltf-adapter/src/featureReport.ts",
   "packages/gltf-adapter/src/gltfPointLinePrimitivePolicy.test.ts",
   "packages/gltf-adapter/src/gltfKhronosSweep.test.ts",
@@ -483,6 +484,8 @@ const transparentAlphaTransportContractTest = await readText(
   "packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts",
 );
 const transparentOitSource = await readText("packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts");
+const gltfAssetLoaderSource = await readText("packages/gltf-adapter/src/assetLoader.ts");
+const gltfAssetApiTestSource = await readText("packages/gltf-adapter/src/gltfAssetApi.test.ts");
 const gltfMaterialProofSource = await readText("tools/gltf-material-sweep/check-proofs.mjs");
 const gltfMaterialFixtureSource = await readText("tools/gltf-material-sweep/fixture.mjs");
 const gltfTopologyProofSource = await readText("tools/gltf-topology-proofs/check-proofs.mjs");
@@ -1550,6 +1553,25 @@ for (const needle of [
 ]) {
   if (!behavioralGateSource.includes(needle)) {
     fail(`VQ-GLTF-MATERIAL-TOPOLOGY behavioral gate source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "bakePtWebgpuLiteCompatibleVertexColors",
+  "ptWebgpuLiteBakeableVertexColor",
+  "canBakeLiteVertexColors",
+  "materialVariantBindings",
+]) {
+  if (!gltfAssetLoaderSource.includes(needle)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY asset loader source is stale: missing ${needle}`);
+  }
+}
+for (const needle of [
+  "allows direct pt-webgpu-lite strict loads for primitive-constant RGB COLOR_0 scenes",
+  "primitive.colors).toBeUndefined",
+  "rejects direct pt-webgpu-lite strict loads for constant COLOR_0 material-variant scenes",
+]) {
+  if (!gltfAssetApiTestSource.includes(needle)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY gltfAssetApi test source is stale: missing ${needle}`);
   }
 }
 const materialSweepStatus = await readJson("tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json");

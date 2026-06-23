@@ -1,6 +1,6 @@
 {
   "schema": "vitrum.road-to-100.validation-queue.v1",
-  "currentAsOf": "2026-06-22",
+  "currentAsOf": "2026-06-23",
   "implementationQueue": [],
   "validationQueue": [
     {
@@ -468,6 +468,7 @@
         { "path": "tools/reference-renders/gltf-triangle-topology-behavioral/manifest.json" },
         { "path": "tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png", "type": "png" },
         { "path": "packages/gltf-adapter/src/primitiveModeFallback.ts" },
+        { "path": "packages/gltf-adapter/src/assetLoader.ts" },
         { "path": "packages/gltf-adapter/src/featureReport.ts" },
         { "path": "packages/gltf-adapter/src/gltfPointLinePrimitivePolicy.test.ts" },
         { "path": "packages/gltf-adapter/src/gltfKhronosSweep.test.ts" },

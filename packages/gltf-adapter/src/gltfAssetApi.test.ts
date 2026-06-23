@@ -5527,6 +5527,11 @@ describe('loadGltfForEngine', () => {
     expect(result.profileId).toBe('pt-webgpu-lite');
     expect(result.engine).toBe(engine);
     expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(engine.setScene).toHaveBeenCalledTimes(1);
+    const scene = engine.setScene.mock.calls[0]?.[0] as Scene;
+    const primitive = scene.primitives[0] as MeshPrimitive;
+    expect(primitive.colors).toBeUndefined();
+    expect(primitive.material.baseColor).toEqual([0.5, 0.25, 1]);
   });
 
   it('rejects direct pt-webgpu-lite strict loads before constructing nonconstant COLOR_0 scenes', async () => {
@@ -5561,6 +5566,42 @@ describe('loadGltfForEngine', () => {
       0.5, 0.25, 1, 0.5,
       0.5, 0.25, 1, 0.5,
     ], 'VEC4');
+    const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgpu-lite',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'Selected backend "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: primitive:vertexColors=unsupported',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
+  it('rejects direct pt-webgpu-lite strict loads for constant COLOR_0 material-variant scenes', async () => {
+    const { gltf, buffers } = makeInlineVertexColorGltf([
+      0.5, 0.25, 1,
+      0.5, 0.25, 1,
+      0.5, 0.25, 1,
+    ]);
+    gltf.extensionsUsed = ['KHR_materials_variants'];
+    gltf.extensionsRequired = ['KHR_materials_variants'];
+    gltf.extensions = { KHR_materials_variants: { variants: [{ name: 'blue' }] } };
+    gltf.materials = [
+      { name: 'base white', pbrMetallicRoughness: { baseColorFactor: [1, 1, 1, 1] } },
+      { name: 'variant blue', pbrMetallicRoughness: { baseColorFactor: [0, 0, 1, 1] } },
+    ];
+    gltf.meshes![0]!.primitives[0] = {
+      ...gltf.meshes![0]!.primitives[0]!,
+      material: 0,
+      extensions: {
+        KHR_materials_variants: {
+          mappings: [{ material: 1, variants: [0] }],
+        },
+      },
+    };
     const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
 
     await expect(loadGltfForEngine(gltf, {
