@@ -13,6 +13,12 @@ const REF_FRAMES = 40;
 const CANDIDATE_FRAMES = 12;
 const RESULT_PATH = new URL('./results-sobol.json', import.meta.url);
 const FULL_ROI = { x0: 0, y0: 0, x1: W - 1, y1: H - 1 };
+const PROMOTION = {
+  defaultReady: false,
+  evidenceClass: 'wsl-lite-equal-frame-proxy',
+  reason: 'WSL-lite evidence bounds correctness but does not show equal-time convergence superiority.',
+  requiredEvidence: 'full-tier/real-adapter equal-time Sobol RMSE A/B',
+};
 
 const SCENES = [
   {
@@ -178,6 +184,7 @@ async function main() {
     },
     candidateFrames: CANDIDATE_FRAMES,
     traceTier: 'lite',
+    promotion: PROMOTION,
     thresholds: {
       maxGlobalRmseRatio: 1.5,
       maxRoiRmseRatio: 1.5,

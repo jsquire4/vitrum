@@ -70,7 +70,9 @@ export const RADIOMETRIC_AB_PROOFS = [
     },
     promotion: {
       defaultReady: false,
+      evidenceClass: "wsl-lite-equal-frame-proxy",
       reason: "WSL-lite evidence bounds correctness but does not show equal-time convergence superiority.",
+      requiredEvidence: "full-tier/real-adapter equal-time Sobol RMSE A/B",
     },
   },
 ];

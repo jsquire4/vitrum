@@ -1288,6 +1288,18 @@ if (glossyResearchArtifact.json?.verdict !== "FINDING") {
 if (glossyResearchArtifact.json?.["promotion.defaultReady"] !== false) {
   fail("VQ-RADIOMETRIC-PT glossy research artifact must pin promotion.defaultReady=false");
 }
+const sobolArtifact = radiometricPtRow.proofArtifacts.find((artifact) =>
+  artifact?.path === "tools/radiometric-ab/results-sobol.json"
+);
+if (sobolArtifact == null) {
+  fail("VQ-RADIOMETRIC-PT must cite results-sobol.json");
+}
+if (sobolArtifact.json?.["promotion.defaultReady"] !== false) {
+  fail("VQ-RADIOMETRIC-PT Sobol artifact must pin promotion.defaultReady=false");
+}
+if (sobolArtifact.json?.["promotion.requiredEvidence"] !== "full-tier/real-adapter equal-time Sobol RMSE A/B") {
+  fail("VQ-RADIOMETRIC-PT Sobol artifact must pin required equal-time real-adapter evidence");
+}
 if (String(radiometricPtRow.remaining).includes("glossy ReSTIR-PT research-mode proof")) {
   fail("VQ-RADIOMETRIC-PT remaining text is stale; glossy research proof is now committed");
 }

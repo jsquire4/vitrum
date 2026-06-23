@@ -304,6 +304,14 @@ function checkSobol(proof, result) {
   if (result.reference?.sampling !== proof.reference.sampling) fail("sobol: reference sampling differs from proofs.mjs");
   if (result.reference?.frames !== proof.reference.frames) fail("sobol: reference frame count differs from proofs.mjs");
   if (result.candidateFrames !== proof.candidateFrames) fail("sobol: candidate frame count differs from proofs.mjs");
+  if (result.promotion == null || typeof result.promotion !== "object") {
+    fail("sobol: result must carry promotion metadata");
+  }
+  for (const [key, expected] of Object.entries(proof.promotion ?? {})) {
+    if (result.promotion[key] !== expected) {
+      fail(`sobol: result promotion.${key} must be ${String(expected)}`);
+    }
+  }
   if (result.thresholds?.maxGlobalRmseRatio !== proof.thresholds.maxGlobalRmseRatio) {
     fail("sobol: maxGlobalRmseRatio differs from proofs.mjs");
   }
