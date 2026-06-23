@@ -871,6 +871,8 @@ assertRowCitesPaths(cwbvhRow, [
   "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json",
   "tools/behavioral-gate/cwbvh-default-promotion-status.json",
+  "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json",
+  "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
   "tools/behavioral-gate/gate.mjs",
   "packages/pt-webgpu/src/index.ts",
   "packages/pt-webgpu/src/scene/uploadSceneBuffers.ts",
@@ -890,6 +892,8 @@ for (const needle of [
   "single-sample rows",
   "multiple warmup-discarded repeats per workload",
   "raw repeat records",
+  "HOST-BLOCKED",
+  "post-warmup samples",
   "npm run cwbvh-default-promotion-repeats",
   "material-lobe-map",
   "browser/real-adapter throughput A/B",
@@ -972,6 +976,8 @@ for (const label of broaderLabels) {
   }
 }
 const cwbvhPromotionStatus = await readJson("tools/behavioral-gate/cwbvh-default-promotion-status.json");
+const cwbvhRepeatStatus = await readJson("tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json");
+const cwbvhRepeatRecords = await readJson("tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json");
 const cwbvhRepeatHarness = await readText("tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs");
 for (const needle of [
   "cwbvh-default-promotion-repeat-proof",
@@ -979,7 +985,9 @@ for (const needle of [
   "warmupDiscardedPerWorkload",
   "cwbvh-default-promotion-repeat-records",
   "campaignStatus",
+  "insufficient-samples",
   "recordsPath",
+  "statusVerdict",
   "VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH",
   "behavioral-gate:dzn",
 ]) {
@@ -1028,6 +1036,30 @@ if (JSON.stringify(cwbvhPromotionStatus.ratios) !== JSON.stringify(cwbvhExpected
 }
 if (!String(cwbvhPromotionStatus.promotion?.requiredEvidence ?? "").includes("browser/real-adapter throughput A/B")) {
   fail("VQ-CWBVH-DEFAULT-PROMOTION summary must name browser/real-adapter throughput A/B");
+}
+if (
+  cwbvhRepeatStatus.harness !== "cwbvh-default-promotion-repeat-proof" ||
+  cwbvhRepeatStatus.verdict !== "PASS-PARTIAL" ||
+  cwbvhRepeatStatus.recordsPath !== "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json" ||
+  cwbvhRepeatStatus.campaignStatus !== "interrupted" ||
+  cwbvhRepeatStatus.classification !== "insufficient-samples" ||
+  cwbvhRepeatStatus.promotion?.defaultReady !== false ||
+  cwbvhRepeatStatus.promotion?.blockedBy !== "repeat-campaign-incomplete" ||
+  cwbvhRepeatStatus.failure?.filter !== "cwbvh-broader" ||
+  cwbvhRepeatStatus.failure?.statusVerdict !== "HOST-BLOCKED"
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat status must pin the broader dzn HOST-BLOCKED interrupted campaign");
+}
+if (
+  cwbvhRepeatRecords.harness !== "cwbvh-default-promotion-repeat-records" ||
+  cwbvhRepeatRecords.campaignStatus !== "interrupted" ||
+  cwbvhRepeatRecords.failure?.filter !== "cwbvh-broader" ||
+  cwbvhRepeatRecords.failure?.statusVerdict !== "HOST-BLOCKED" ||
+  !Array.isArray(cwbvhRepeatRecords.records) ||
+  cwbvhRepeatRecords.records.length < 3 ||
+  !JSON.stringify(cwbvhRepeatRecords).includes("dzn-behavioral-gate-timeout")
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat records must preserve the broader dzn timeout status");
 }
 
 const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SYSTEMS");

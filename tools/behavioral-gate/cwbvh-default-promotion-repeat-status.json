@@ -1,0 +1,124 @@
+{
+  "generatedAt": "2026-06-23T07:10:35.780Z",
+  "command": "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=5 --warmup=1",
+  "campaignStatus": "interrupted",
+  "requestedRepeatsPerWorkload": 5,
+  "recordsPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
+  "filters": [
+    {
+      "filter": "cwbvh-binary-parity",
+      "labels": [
+        "pt/cwbvh-binary-parity"
+      ],
+      "command": "npm run behavioral-gate:dzn -- --filter cwbvh-binary-parity --require-full-tier"
+    },
+    {
+      "filter": "cwbvh-complex-parity",
+      "labels": [
+        "pt/cwbvh-complex-parity"
+      ],
+      "command": "npm run behavioral-gate:dzn -- --filter cwbvh-complex-parity --require-full-tier"
+    },
+    {
+      "filter": "cwbvh-broader",
+      "labels": [
+        "pt/cwbvh-broader-material-lobes",
+        "pt/cwbvh-broader-material-lobe-maps",
+        "pt/cwbvh-broader-gltf-material-sweep"
+      ],
+      "command": "npm run behavioral-gate:dzn -- --filter cwbvh-broader --require-full-tier"
+    }
+  ],
+  "harness": "cwbvh-default-promotion-repeat-proof",
+  "verdict": "PASS-PARTIAL",
+  "adapterScope": "wsl-dzn-real-adapter",
+  "warmupDiscardedPerWorkload": 1,
+  "sampleCountPerWorkload": 0,
+  "minRepeatCountPerWorkload": 5,
+  "allWorkloadsHaveAnySamples": false,
+  "allWorkloadsHaveRequiredRepeats": false,
+  "classification": "insufficient-samples",
+  "promotion": {
+    "defaultReady": false,
+    "requiredEvidence": "multiple warmup-discarded repeats per workload on browser/real-adapter hosts",
+    "blockedBy": "repeat-campaign-incomplete"
+  },
+  "workloads": [
+    {
+      "label": "pt/cwbvh-binary-parity",
+      "totalRunCount": 1,
+      "sampleCount": 0,
+      "ratios": [],
+      "minRatio": null,
+      "medianRatio": null,
+      "meanRatio": null,
+      "maxRatio": null,
+      "fastSampleCount": 0,
+      "slowOrNeutralSampleCount": 0
+    },
+    {
+      "label": "pt/cwbvh-complex-parity",
+      "totalRunCount": 1,
+      "sampleCount": 0,
+      "ratios": [],
+      "minRatio": null,
+      "medianRatio": null,
+      "meanRatio": null,
+      "maxRatio": null,
+      "fastSampleCount": 0,
+      "slowOrNeutralSampleCount": 0
+    },
+    {
+      "label": "pt/cwbvh-broader-material-lobes",
+      "totalRunCount": 0,
+      "sampleCount": 0,
+      "ratios": [],
+      "minRatio": null,
+      "medianRatio": null,
+      "meanRatio": null,
+      "maxRatio": null,
+      "fastSampleCount": 0,
+      "slowOrNeutralSampleCount": 0
+    },
+    {
+      "label": "pt/cwbvh-broader-material-lobe-maps",
+      "totalRunCount": 0,
+      "sampleCount": 0,
+      "ratios": [],
+      "minRatio": null,
+      "medianRatio": null,
+      "meanRatio": null,
+      "maxRatio": null,
+      "fastSampleCount": 0,
+      "slowOrNeutralSampleCount": 0
+    },
+    {
+      "label": "pt/cwbvh-broader-gltf-material-sweep",
+      "totalRunCount": 0,
+      "sampleCount": 0,
+      "ratios": [],
+      "minRatio": null,
+      "medianRatio": null,
+      "meanRatio": null,
+      "maxRatio": null,
+      "fastSampleCount": 0,
+      "slowOrNeutralSampleCount": 0
+    }
+  ],
+  "failures": [
+    {
+      "runIndex": 0,
+      "filter": "cwbvh-broader",
+      "reason": "status-not-pass"
+    }
+  ],
+  "failure": {
+    "runIndex": 0,
+    "phase": "warmup",
+    "filter": "cwbvh-broader",
+    "command": "npm run behavioral-gate:dzn -- --filter cwbvh-broader --require-full-tier",
+    "exitStatus": 2,
+    "signal": null,
+    "statusVerdict": "HOST-BLOCKED"
+  }
+}

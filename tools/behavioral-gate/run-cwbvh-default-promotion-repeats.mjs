@@ -6,7 +6,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -94,12 +94,15 @@ export function summarizeCwbvhRepeatEvidence(records, options = {}) {
     };
   });
   const sampleCountPerWorkload = Math.min(...workloads.map((row) => row.sampleCount));
+  const allWorkloadsHaveAnySamples = sampleCountPerWorkload > 0;
   const allWorkloadsHaveRequiredRepeats = sampleCountPerWorkload >= MIN_REPEAT_COUNT_PER_WORKLOAD;
-  const allMedianFast = workloads.every((row) => Number(row.medianRatio) < 0.95);
-  const allMedianSlowOrNeutral = workloads.every((row) => Number(row.medianRatio) >= 1);
-  const classification = allMedianFast
+  const allMedianFast = allWorkloadsHaveAnySamples && workloads.every((row) => Number(row.medianRatio) < 0.95);
+  const allMedianSlowOrNeutral = allWorkloadsHaveAnySamples && workloads.every((row) => Number(row.medianRatio) >= 1);
+  const classification = !allWorkloadsHaveAnySamples
+    ? 'insufficient-samples'
+    : (allMedianFast
     ? 'uniform-faster'
-    : (allMedianSlowOrNeutral ? 'uniform-slower' : 'mixed');
+    : (allMedianSlowOrNeutral ? 'uniform-slower' : 'mixed'));
 
   return {
     harness: 'cwbvh-default-promotion-repeat-proof',
@@ -110,6 +113,7 @@ export function summarizeCwbvhRepeatEvidence(records, options = {}) {
     warmupDiscardedPerWorkload: warmupCount,
     sampleCountPerWorkload,
     minRepeatCountPerWorkload: MIN_REPEAT_COUNT_PER_WORKLOAD,
+    allWorkloadsHaveAnySamples,
     allWorkloadsHaveRequiredRepeats,
     classification,
     promotion: {
@@ -119,6 +123,14 @@ export function summarizeCwbvhRepeatEvidence(records, options = {}) {
     workloads,
     failures,
   };
+}
+
+function readStatusIfPresent(statusPath) {
+  try {
+    return JSON.parse(readFileSync(statusPath, 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 export function buildCwbvhRepeatCampaignSummary(records, options = {}) {
@@ -218,13 +230,18 @@ function writeJson(path, data) {
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
 }
 
+function displayPathForSummary(path) {
+  const rel = relative(repoRoot, path).replaceAll('\\', '/');
+  return rel.startsWith('..') ? path : rel;
+}
+
 function writeCampaignProgress({ records, repeats, warmupCount, outputPath, recordsPath, campaignStatus, failure = null }) {
   const summary = buildCwbvhRepeatCampaignSummary(records, {
     repeats,
     warmupCount,
     campaignStatus,
     failure,
-    recordsPath,
+    recordsPath: displayPathForSummary(recordsPath),
   });
   writeJson(recordsPath, {
     generatedAt: summary.generatedAt,
@@ -290,6 +307,7 @@ function runCampaign(args) {
           throw result.error;
         }
         if (result.status !== 0) {
+          const status = readStatusIfPresent(statusPath);
           const failure = {
             runIndex,
             phase: runIndex < warmupCount ? 'warmup' : 'sample',
@@ -297,12 +315,13 @@ function runCampaign(args) {
             command: commandFor(entry.filter),
             exitStatus: result.status,
             signal: result.signal,
+            statusVerdict: status?.verdict ?? null,
           };
           records.push({
             runIndex,
             phase: failure.phase,
             filter: entry.filter,
-            status: null,
+            status,
             failure,
           });
           writeCampaignProgress({

@@ -28,6 +28,8 @@ const STATUS_FILES = [
 
 const SOURCE_GUARD = "packages/pt-webgpu/src/index.ts";
 const SUMMARY_STATUS = "tools/behavioral-gate/cwbvh-default-promotion-status.json";
+const REPEAT_STATUS = "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json";
+const REPEAT_RECORDS = "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json";
 const REPEAT_HARNESS = "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs";
 const MIN_SLOW_OR_NEUTRAL_RATIO = 1.0;
 const MIN_FAST_RATIO = 0.95;
@@ -68,7 +70,9 @@ function assertRepeatHarness(source) {
     "warmupDiscardedPerWorkload",
     "cwbvh-default-promotion-repeat-records",
     "campaignStatus",
+    "insufficient-samples",
     "recordsPath",
+    "statusVerdict",
     "VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH",
     "behavioral-gate:dzn",
   ]) {
@@ -183,6 +187,39 @@ async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification
   }
 }
 
+async function assertRepeatCaptureStatus() {
+  const status = JSON.parse(await Deno.readTextFile(REPEAT_STATUS));
+  const records = JSON.parse(await Deno.readTextFile(REPEAT_RECORDS));
+  if (
+    status.harness !== "cwbvh-default-promotion-repeat-proof" ||
+    status.command !== "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=5 --warmup=1" ||
+    status.recordsPath !== REPEAT_RECORDS ||
+    status.verdict !== "PASS-PARTIAL" ||
+    status.campaignStatus !== "interrupted" ||
+    status.classification !== "insufficient-samples" ||
+    status.sampleCountPerWorkload !== 0 ||
+    status.allWorkloadsHaveAnySamples !== false ||
+    status.allWorkloadsHaveRequiredRepeats !== false ||
+    status.promotion?.defaultReady !== false ||
+    status.promotion?.blockedBy !== "repeat-campaign-incomplete" ||
+    status.failure?.filter !== "cwbvh-broader" ||
+    status.failure?.statusVerdict !== "HOST-BLOCKED"
+  ) {
+    fail(`${REPEAT_STATUS}: must pin the broader dzn HOST-BLOCKED interrupted repeat campaign`);
+  }
+  if (
+    records.harness !== "cwbvh-default-promotion-repeat-records" ||
+    records.campaignStatus !== "interrupted" ||
+    records.failure?.filter !== "cwbvh-broader" ||
+    records.failure?.statusVerdict !== "HOST-BLOCKED" ||
+    !Array.isArray(records.records) ||
+    records.records.length < 3 ||
+    !JSON.stringify(records).includes("dzn-behavioral-gate-timeout")
+  ) {
+    fail(`${REPEAT_RECORDS}: must preserve the broader dzn timeout status record`);
+  }
+}
+
 const source = await Deno.readTextFile(SOURCE_GUARD);
 assertSourceStillOptIn(source);
 const repeatHarness = await Deno.readTextFile(REPEAT_HARNESS);
@@ -214,6 +251,7 @@ if (slowOrNeutral.length < MIN_SLOW_OR_NEUTRAL_ROWS) {
 const ratioSummary = perfRows.map((row) => `${row.label}=${row.ratio.toFixed(3)}`).join(", ");
 const classification = fast.length > 0 ? "mixed" : "uniform-slower";
 await assertSummaryStatus(perfRows, slowOrNeutral, fast, classification);
+await assertRepeatCaptureStatus();
 console.log(
   `[cwbvh-default-promotion-proof-check] PASS (CWBVH remains opt-in; ${classification} dzn ratios: ${ratioSummary})`,
 );

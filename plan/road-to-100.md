@@ -2352,6 +2352,11 @@ before any renderer default promotion. The explicit capture lane is
 runs the current dzn CWBVH shards repeatedly, discards warmup samples, and
 writes a per-workload repeat-evidence status plus raw repeat records after each
 completed shard for the default-promotion decision.
+The first Road-required 5-repeat campaign is committed as an interrupted
+artifact: binary/complex warmup shards pass, but the broader material/glTF dzn
+shard currently returns `HOST-BLOCKED` after the configured timeout before any
+post-warmup sample exists, so the repeat status remains
+`classification:"insufficient-samples"` and `promotion.defaultReady:false`.
 The current artifacts prove opt-in same-scene correctness on lavapipe and dzn,
 with dzn showing slower CWBVH timing on the committed promotion shards, so the default remains binary
 traversal. Becomes decisive if/when a

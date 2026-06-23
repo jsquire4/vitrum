@@ -59,6 +59,19 @@ test('CWBVH repeat evidence fails closed on too few post-warmup samples', () => 
   assert.equal(summary.allWorkloadsHaveRequiredRepeats, false);
 });
 
+test('CWBVH repeat evidence reports insufficient samples when only warmup rows exist', () => {
+  const records = makeRecords(() => ({ ratio: 0.8 }), 1);
+
+  const summary = summarizeCwbvhRepeatEvidence(records, { warmupCount: 1 });
+
+  assert.equal(summary.verdict, 'PASS-PARTIAL');
+  assert.equal(summary.classification, 'insufficient-samples');
+  assert.equal(summary.promotion.defaultReady, false);
+  assert.equal(summary.sampleCountPerWorkload, 0);
+  assert.equal(summary.allWorkloadsHaveAnySamples, false);
+  assert.equal(summary.allWorkloadsHaveRequiredRepeats, false);
+});
+
 test('CWBVH repeat evidence records invalid shard rows as failures', () => {
   const records = makeRecords(() => ({ ratio: 0.8 }), MIN_REPEAT_COUNT_PER_WORKLOAD + 1);
   records[0].status.verdict = 'FAIL';
