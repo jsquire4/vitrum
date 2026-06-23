@@ -25,7 +25,7 @@
       "leftWall": 0.0000024802028590975925,
       "rightWall": -6.696656346301139e-7
     },
-    "renderTimeSec": 23.6,
+    "renderTimeSec": 21.2,
     "verdict": "NEGLIGIBLE",
     "notes": [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
@@ -72,7 +72,7 @@
     "floorRatioToAnalytic": 0.9994843571067382,
     "analyticAgreement": true,
     "shadowAssertionAuthored": false,
-    "renderTimeSec": 10.8,
+    "renderTimeSec": 10.4,
     "verdict": "PASS",
     "notes": [
       "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
@@ -111,7 +111,7 @@
     },
     "minSignalDelta": 0.0001,
     "materialEffectObserved": true,
-    "renderTimeSec": 21.8,
+    "renderTimeSec": 21.1,
     "verdict": "PASS",
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",

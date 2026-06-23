@@ -31,14 +31,14 @@
       "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
       "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
     },
-    "renderTimeSec": 21.5,
+    "renderTimeSec": 20.8,
     "verdict": "FINDING",
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
       "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the probe field; brightness vs Lambertian is scene-direction dependent.",
       "The diffuse control keeps the same baseColor as the metal arm; the measured delta isolates metallic/roughness behavior.",
       "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
-      "Lavapipe SPP=16; metallic-mirror at low SPP has high variance and can legitimately reflect a darker direction than the diffuse control.",
+      "Native WebGPU host SPP=64; metallic-mirror captures can legitimately reflect a darker direction than the diffuse control.",
       "FINDING means the material path is live and visibly changes the render, but this capture is a do-not-promote rich-material GI result."
     ],
     "qualityProfile": "glossy-spp64",

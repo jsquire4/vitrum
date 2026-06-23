@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-06-23T00:56:22.472Z",
+  "generatedAt": "2026-06-23T02:15:42.306Z",
   "harness": "walkaround-ab",
   "verdict": "PASS-PARTIAL",
   "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/walkaround-ab.mjs",
   "selectedCases": null,
-  "timeoutMs": 360000,
+  "timeoutMs": 180000,
   "icd": null,
   "renderConfig": {
     "width": "128",
