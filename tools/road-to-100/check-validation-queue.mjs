@@ -1694,6 +1694,7 @@ for (const needle of [
   "full case set",
   "PASS-PARTIAL",
   "do-not-promote",
+  "glass remains a non-promotable FINDING",
   "glossy remains a non-promotable FINDING",
   "64-SPP all-cases recapture lane",
   "browser/real-adapter",
@@ -1714,7 +1715,13 @@ if (walkaroundAbHostStatus.reason?.code !== "walkaround-ab-partial-proof") {
 }
 if (walkaroundAbResults.a8?.verdict !== "NEGLIGIBLE") fail("walkaround A/B A8 verdict must stay NEGLIGIBLE");
 if (walkaroundAbResults.sun?.verdict !== "PASS") fail("walkaround A/B SUN verdict must stay PASS");
-if (walkaroundAbResults.glass?.verdict !== "PASS") fail("walkaround A/B GLASS verdict must stay PASS");
+if (walkaroundAbResults.glass?.verdict !== "FINDING") fail("walkaround A/B GLASS verdict must stay FINDING");
+if (walkaroundAbResults.glass?.promotion?.defaultReady !== false) {
+  fail("walkaround A/B GLASS finding must pin promotion.defaultReady=false");
+}
+if (walkaroundAbResults.glass?.promotion?.blocker !== "glass-transport-radiance-blowout") {
+  fail("walkaround A/B GLASS finding must pin the glass transport blowout blocker");
+}
 if (walkaroundAbResults.glossy?.verdict !== "FINDING") fail("walkaround A/B GLOSSY verdict must stay FINDING");
 if (walkaroundAbResults.glossy?.promotion?.defaultReady !== false) {
   fail("walkaround A/B GLOSSY finding must pin promotion.defaultReady=false");
@@ -1736,7 +1743,10 @@ if (walkaroundAllSpp64Status.reason?.code !== "walkaround-ab-partial-proof") {
 }
 if (walkaroundAllSpp64Results.a8?.verdict !== "NEGLIGIBLE") fail("walkaround all-spp64 A8 verdict must stay NEGLIGIBLE");
 if (walkaroundAllSpp64Results.sun?.verdict !== "PASS") fail("walkaround all-spp64 SUN verdict must stay PASS");
-if (walkaroundAllSpp64Results.glass?.verdict !== "PASS") fail("walkaround all-spp64 GLASS verdict must stay PASS");
+if (walkaroundAllSpp64Results.glass?.verdict !== "FINDING") fail("walkaround all-spp64 GLASS verdict must stay FINDING");
+if (walkaroundAllSpp64Results.glass?.promotion?.defaultReady !== false) {
+  fail("walkaround all-spp64 GLASS finding must pin promotion.defaultReady=false");
+}
 if (walkaroundAllSpp64Results.glossy?.verdict !== "FINDING") fail("walkaround all-spp64 GLOSSY verdict must stay FINDING");
 if (walkaroundAllSpp64Results.glossy?.promotion?.defaultReady !== false) {
   fail("walkaround all-spp64 GLOSSY finding must pin promotion.defaultReady=false");
@@ -1756,12 +1766,18 @@ const walkaroundExpectedHighSppVerdicts = {
 if (
   walkaroundPromotionStatus.verdict !== "PASS-PARTIAL" ||
   walkaroundPromotionStatus.promotion?.defaultReady !== false ||
-  walkaroundPromotionStatus.promotion?.classification !== "glossy-finding"
+  walkaroundPromotionStatus.promotion?.classification !== "glass-and-glossy-findings"
 ) {
-  fail("walkaround promotion summary must pin PASS-PARTIAL/defaultReady=false/glossy-finding");
+  fail("walkaround promotion summary must pin PASS-PARTIAL/defaultReady=false/glass-and-glossy-findings");
 }
-if (walkaroundPromotionStatus.promotion?.blocker !== "ddgi-irradiance-cache-not-ggx-filtered-radiance") {
-  fail("walkaround promotion summary must pin the DDGI/GGX blocker");
+if (walkaroundPromotionStatus.promotion?.blocker !== "multiple-non-promotable-walkaround-findings") {
+  fail("walkaround promotion summary must pin the combined walkaround findings blocker");
+}
+if (
+  walkaroundPromotionStatus.promotion?.blockers?.glass !== "glass-transport-radiance-blowout" ||
+  walkaroundPromotionStatus.promotion?.blockers?.glossy !== "ddgi-irradiance-cache-not-ggx-filtered-radiance"
+) {
+  fail("walkaround promotion summary must pin both glass and glossy subcase blockers");
 }
 if (!String(walkaroundPromotionStatus.promotion?.requiredEvidence ?? "").includes("browser-real-adapter")) {
   fail("walkaround promotion summary must name browser-real-adapter evidence");
@@ -1774,6 +1790,14 @@ if (JSON.stringify(walkaroundPromotionStatus.highSppCaseVerdicts) !== JSON.strin
 }
 if (!Array.isArray(walkaroundPromotionStatus.glossyProfiles) || walkaroundPromotionStatus.glossyProfiles.length !== 3) {
   fail("walkaround promotion summary must preserve baseline, glossy-spp64, and all-spp64 glossy profiles");
+}
+if (!Array.isArray(walkaroundPromotionStatus.glassProfiles) || walkaroundPromotionStatus.glassProfiles.length !== 2) {
+  fail("walkaround promotion summary must preserve baseline and all-spp64 glass profiles");
+}
+for (const profile of walkaroundPromotionStatus.glassProfiles) {
+  if (profile.verdict !== "FINDING" || profile.materialEffectObserved !== true) {
+    fail(`walkaround promotion summary ${profile.label} must keep the glass FINDING/material-effect evidence`);
+  }
 }
 for (const profile of walkaroundPromotionStatus.glossyProfiles) {
   if (profile.verdict !== "FINDING" || profile.materialEffectObserved !== true) {

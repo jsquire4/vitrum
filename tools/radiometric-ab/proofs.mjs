@@ -251,10 +251,17 @@ export const WALKAROUND_AB_RESULT_PROOF = {
     },
     glass: {
       id: "GLASS",
-      expectedVerdict: "PASS",
-      allowedVerdicts: ["PASS", "SMOKE"],
+      expectedVerdict: "FINDING",
+      allowedVerdicts: ["PASS", "SMOKE", "FINDING"],
       minCentreRatio: 0.5,
+      maxCentreRatio: 4.0,
+      maxOverallRatio: 8.0,
       minSignalDeltaForPass: 1e-4,
+      promotion: {
+        defaultReady: false,
+        blocker: "glass-transport-radiance-blowout",
+        requiredEvidence: "case-specific-reference-ab-and-browser-real-adapter-recapture",
+      },
     },
     glossy: {
       id: "GLOSSY",
@@ -316,14 +323,34 @@ export const WALKAROUND_AB_PROMOTION_STATUS_PROOF = {
   verdict: "PASS-PARTIAL",
   promotion: {
     defaultReady: false,
-    classification: "glossy-finding",
-    blocker: "ddgi-irradiance-cache-not-ggx-filtered-radiance",
-    requiredEvidence: "material-furnace-reference-ab-and-browser-real-adapter-recapture",
+    classification: "glass-and-glossy-findings",
+    blocker: "multiple-non-promotable-walkaround-findings",
+    blockers: {
+      glass: "glass-transport-radiance-blowout",
+      glossy: "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+    },
+    requiredEvidence: "case-specific-reference-ab-material-furnace-and-browser-real-adapter-recapture",
   },
   sourceStatuses: [
     WALKAROUND_AB_HOST_STATUS_PROOF.statusPath,
     WALKAROUND_GLOSSY_SPP64_STATUS_PROOF.statusPath,
     WALKAROUND_ALL_SPP64_STATUS_PROOF.statusPath,
+  ],
+  glassProfiles: [
+    {
+      label: "baseline",
+      resultPath: WALKAROUND_AB_RESULT_PROOF.resultPath,
+      resultKey: "glass",
+      expectedQualityProfile: "baseline",
+      expectedSpp: WALKAROUND_AB_RESULT_PROOF.spp,
+    },
+    {
+      label: "all-spp64",
+      resultPath: WALKAROUND_ALL_SPP64_STATUS_PROOF.preservedResultFile,
+      resultKey: "glass",
+      expectedQualityProfile: "all-spp64",
+      expectedSpp: 64,
+    },
   ],
   glossyProfiles: [
     {

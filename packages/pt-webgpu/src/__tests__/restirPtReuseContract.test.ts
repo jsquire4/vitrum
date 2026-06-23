@@ -319,7 +319,8 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(code).toContain('let dirShadowDisabled = angDiamRaw < 0.0;');
     expect(code).toContain('let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);');
     expect(code).toContain('let lightDir = rptSampleDirectionalCone(rng, dDirAD.xyz, angDiam);');
-    expect(code).toContain('contrib = contrib + suffixThroughput * brdf * nDotL * dIrrMean.rgb;');
+    expect(code).toContain('let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);');
+    expect(code).toContain('contrib = contrib + suffixThroughput * brdf * nDotL * dIrrOut;');
     expect(code).not.toContain('contrib = contrib + suffixThroughput * brdf * nDotL * params.lightDir.w;');
   });
 
@@ -472,6 +473,19 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'evalJakobHanikaSpectrum(mat.spectralReflCoeffs, heroLambda)',
       'out.baseColor = vec3f(reflScalar);',
       'let emissive = select(sm.emissive, spectralEmissionAtHero(sm.emissive, heroLambda), params.spectralEnabled != 0u);',
+    ]) {
+      expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
+    }
+  });
+
+  it('mirrors megakernel spectral light handling for every suffix direct-light class', () => {
+    for (const line of [
+      'let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);',
+      'let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);',
+      'let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);',
+      'let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);',
+      'let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);',
+      'let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envMapIntensity;',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }

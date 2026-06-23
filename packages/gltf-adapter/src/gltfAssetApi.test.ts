@@ -5899,6 +5899,27 @@ describe('loadGltfForEngine', () => {
     expect(createEngine).not.toHaveBeenCalled();
   });
 
+  it('rejects unsupported animation target paths during strict pre-import compatibility', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.animations = [{
+      name: 'pointerish',
+      channels: [{ sampler: 0, target: { node: 0, path: 'pointer' as any } }],
+      samplers: [{ input: 0, output: 1, interpolation: 'LINEAR' }],
+    }];
+    const createEngine = vi.fn(async () => ({ setScene: vi.fn() }));
+
+    await expect(loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-unsupported',
+      createEngine,
+    })).rejects.toThrow(
+      'animation:target.path:pointer=unsupported at animations[0].channels[0].target.path',
+    );
+
+    expect(createEngine).not.toHaveBeenCalled();
+  });
+
   it('allows double-sided diagnostics in reject-unsupported mode but rejects them in reject-degraded mode', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {

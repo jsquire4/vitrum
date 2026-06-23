@@ -337,7 +337,8 @@ fn rptDirectAtVertex(
             specularColor, specularIntensity,
             anisotropy, anisotropyRotation,
           );
-          contrib = contrib + suffixThroughput * brdf * nDotL * dIrrMean.rgb;
+          let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
+          contrib = contrib + suffixThroughput * brdf * nDotL * dIrrOut;
         }
       }
     }
@@ -395,7 +396,8 @@ fn rptDirectAtVertex(
             specularColor, specularIntensity,
             anisotropy, anisotropyRotation,
           );
-          contrib = contrib + suffixThroughput * brdf * nDotL * rr / max(lightPdf, 1e-6);
+          let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
+          contrib = contrib + suffixThroughput * brdf * nDotL * rrOut / max(lightPdf, 1e-6);
         }
       }
     }
@@ -427,7 +429,8 @@ fn rptDirectAtVertex(
           specularColor, specularIntensity,
           anisotropy, anisotropyRotation,
         );
-        contrib = contrib + suffixThroughput * brdf * nDotL * rad * attenuation;
+        let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
+        contrib = contrib + suffixThroughput * brdf * nDotL * radOut * attenuation;
       }
     }
   }
@@ -466,7 +469,8 @@ fn rptDirectAtVertex(
             specularColor, specularIntensity,
             anisotropy, anisotropyRotation,
           );
-          contrib = contrib + suffixThroughput * brdf * nDotL * softness * srad * attenuation;
+          let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
+          contrib = contrib + suffixThroughput * brdf * nDotL * softness * sradOut * attenuation;
         }
       }
     }
@@ -507,7 +511,8 @@ fn rptDirectAtVertex(
             specularColor, specularIntensity,
             anisotropy, anisotropyRotation,
           );
-          contrib = contrib + suffixThroughput * brdf * nDotL * mr / max(lightPdf, 1e-6);
+          let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);
+          contrib = contrib + suffixThroughput * brdf * nDotL * mrOut / max(lightPdf, 1e-6);
         }
       }
     }

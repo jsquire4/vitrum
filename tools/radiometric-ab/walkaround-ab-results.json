@@ -25,7 +25,7 @@
       "leftWall": 0.000004769051508474523,
       "rightWall": -6.802122701279889e-7
     },
-    "renderTimeSec": 16.7,
+    "renderTimeSec": 17.7,
     "verdict": "NEGLIGIBLE",
     "notes": [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
@@ -72,7 +72,7 @@
     "floorRatioToAnalytic": 0.9994843571067382,
     "analyticAgreement": true,
     "shadowAssertionAuthored": false,
-    "renderTimeSec": 9.4,
+    "renderTimeSec": 8.3,
     "verdict": "PASS",
     "notes": [
       "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
@@ -95,6 +95,8 @@
     "resolution": "128x128",
     "fresnelT_normal_incidence_n1p5": 0.92,
     "expectedMinCentreRatio": 0.5,
+    "expectedMaxCentreRatio": 4,
+    "expectedMaxOverallRatio": 8,
     "glass": {
       "centreRegionLum": 2.8515613983154293,
       "overall": 2.8515499704360963
@@ -111,14 +113,21 @@
     },
     "minSignalDelta": 0.0001,
     "materialEffectObserved": true,
-    "renderTimeSec": 15.6,
-    "verdict": "PASS",
+    "ratioWithinPromotionBounds": false,
+    "promotion": {
+      "defaultReady": false,
+      "blocker": "glass-transport-radiance-blowout",
+      "requiredEvidence": "case-specific-reference-ab-and-browser-real-adapter-recapture"
+    },
+    "renderTimeSec": 14.9,
+    "verdict": "FINDING",
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
-      "Expected centreRatio ≥ 0.50 — conservative for mild Beer tint and low-Spp transport.",
+      "Expected centreRatio is bounded below by 0.50 and above by 4.0; overallRatio is bounded above by 8.0 for promotion-quality sanity.",
       "The glass pane is camera-side of the z=1 back wall (z=1.5), so the centre crop actually traverses it.",
       "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
-      "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone."
+      "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.",
+      "FINDING means glass transport is live but the committed A/B ratio is outside bounded radiometric sanity, so this is not promotion evidence."
     ],
     "qualityProfile": "baseline",
     "renderConfig": {
@@ -159,7 +168,7 @@
       "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
       "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
     },
-    "renderTimeSec": 13.8,
+    "renderTimeSec": 13.7,
     "verdict": "FINDING",
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",

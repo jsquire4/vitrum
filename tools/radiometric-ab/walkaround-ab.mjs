@@ -627,8 +627,10 @@ async function runGlass() {
   const overallGlass   = glassResult.lum;
   const overallNoGlass = noGlassResult.lum;
 
-  // Ratio: glass / no-glass. Should be ≥ 0.5 (transmittance lower-bound).
-  // A ratio of 0.0 means the glass region is black (GI not propagating through glass).
+  // Ratio: glass / no-glass. A ratio of 0.0 means the glass region is black
+  // (GI not propagating through glass). A huge ratio is not a PASS either: it
+  // proves live glass transport, but as an over-bright finding rather than
+  // promotion-quality bounded radiometry.
   const centerRatio = noGlassCenter > 0.01 ? glassCenter / noGlassCenter : 0;
   const overallRatio = noGlassResult.lum > 0.01 ? overallGlass / noGlassResult.lum : 0;
   const centreDelta = glassCenter - noGlassCenter;
@@ -638,19 +640,25 @@ async function runGlass() {
   // Two surfaces (enter + exit): T_total ≈ 0.96^2 ≈ 0.92. Beer absorption = none (no tint).
   // Expected centre ratio > 0.5 (allowing for denoiser, GTAO, temporal).
   const EXPECTED_MIN_RATIO = 0.5;
+  const EXPECTED_MAX_CENTRE_RATIO = 4.0;
+  const EXPECTED_MAX_OVERALL_RATIO = 8.0;
   const MIN_SIGNAL_DELTA = 1e-4;
   const notBlack  = glassCenter > 0.01;
   const ratioPass = centerRatio >= EXPECTED_MIN_RATIO;
+  const ratioWithinPromotionBounds =
+    centerRatio <= EXPECTED_MAX_CENTRE_RATIO &&
+    overallRatio <= EXPECTED_MAX_OVERALL_RATIO;
   const materialEffectObserved =
     Math.max(absDelta(glassCenter, noGlassCenter), absDelta(overallGlass, overallNoGlass)) >= MIN_SIGNAL_DELTA;
-  const verdict   = notBlack && ratioPass && materialEffectObserved ? "PASS"
+  const verdict   = notBlack && ratioPass && materialEffectObserved && ratioWithinPromotionBounds ? "PASS"
+                  : notBlack && ratioPass && materialEffectObserved ? "FINDING"
                   : notBlack ? "SMOKE"
                   : "FAIL";
 
   console.log(`  glass centre:   ${glassCenter.toFixed(4)}  overall=${overallGlass.toFixed(4)}`);
   console.log(`  no-glass centre:${noGlassCenter.toFixed(4)}  overall=${overallNoGlass.toFixed(4)}`);
-  console.log(`  centre ratio:   ${centerRatio.toFixed(3)}  (expected ≥ ${EXPECTED_MIN_RATIO}); delta=${centreDelta.toExponential(3)}`);
-  console.log(`  overall ratio:  ${overallRatio.toFixed(3)}`);
+  console.log(`  centre ratio:   ${centerRatio.toFixed(3)}  (expected ${EXPECTED_MIN_RATIO}..${EXPECTED_MAX_CENTRE_RATIO}); delta=${centreDelta.toExponential(3)}`);
+  console.log(`  overall ratio:  ${overallRatio.toFixed(3)}  (expected ≤ ${EXPECTED_MAX_OVERALL_RATIO})`);
   console.log(`  effect observed:${materialEffectObserved ? "YES" : "NO"}  (min |delta|=${MIN_SIGNAL_DELTA})`);
   console.log(`  verdict:        ${verdict} — render time ${dt}s`);
 
@@ -661,6 +669,8 @@ async function runGlass() {
     resolution: `${W}x${H}`,
     fresnelT_normal_incidence_n1p5: 0.92,
     expectedMinCentreRatio: EXPECTED_MIN_RATIO,
+    expectedMaxCentreRatio: EXPECTED_MAX_CENTRE_RATIO,
+    expectedMaxOverallRatio: EXPECTED_MAX_OVERALL_RATIO,
     glass: {
       centreRegionLum: glassCenter,
       overall:         overallGlass,
@@ -677,14 +687,23 @@ async function runGlass() {
     },
     minSignalDelta: MIN_SIGNAL_DELTA,
     materialEffectObserved,
+    ratioWithinPromotionBounds,
+    ...(verdict === "FINDING" ? {
+      promotion: {
+        defaultReady: false,
+        blocker: "glass-transport-radiance-blowout",
+        requiredEvidence: "case-specific-reference-ab-and-browser-real-adapter-recapture",
+      },
+    } : {}),
     renderTimeSec: parseFloat(dt),
     verdict,
     notes: [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
-      "Expected centreRatio ≥ 0.50 — conservative for mild Beer tint and low-Spp transport.",
+      "Expected centreRatio is bounded below by 0.50 and above by 4.0; overallRatio is bounded above by 8.0 for promotion-quality sanity.",
       "The glass pane is camera-side of the z=1 back wall (z=1.5), so the centre crop actually traverses it.",
       "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
       "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.",
+      "FINDING means glass transport is live but the committed A/B ratio is outside bounded radiometric sanity, so this is not promotion evidence.",
     ],
   };
 }

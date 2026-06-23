@@ -957,8 +957,15 @@ function checkWalkaroundSun(proof, result) {
 function checkWalkaroundGlass(proof, result) {
   checkWalkaroundCaseCommon("GLASS", proof, result);
   assertFiniteNumber(result.centreRatio, "walkaround-ab GLASS: centreRatio");
+  assertFiniteNumber(result.overallRatio, "walkaround-ab GLASS: overallRatio");
   if (result.centreRatio < proof.minCentreRatio) {
     fail(`walkaround-ab GLASS: centreRatio ${result.centreRatio} is below ${proof.minCentreRatio}`);
+  }
+  const withinPromotionBounds =
+    result.centreRatio <= proof.maxCentreRatio &&
+    result.overallRatio <= proof.maxOverallRatio;
+  if (result.ratioWithinPromotionBounds !== withinPromotionBounds) {
+    fail("walkaround-ab GLASS: ratioWithinPromotionBounds does not match committed ratios");
   }
   assertFiniteNumber(result.delta?.centreRegionLum, "walkaround-ab GLASS: delta.centreRegionLum");
   assertFiniteNumber(result.delta?.overall, "walkaround-ab GLASS: delta.overall");
@@ -966,11 +973,46 @@ function checkWalkaroundGlass(proof, result) {
   if (result.materialEffectObserved !== (signal >= proof.minSignalDeltaForPass)) {
     fail("walkaround-ab GLASS: materialEffectObserved does not match committed deltas");
   }
+  if (result.verdict === "PASS" && !withinPromotionBounds) {
+    fail(
+      `walkaround-ab GLASS: PASS requires bounded ratios; centre=${result.centreRatio}, ` +
+      `overall=${result.overallRatio}`,
+    );
+  }
   if (result.verdict === "PASS" && signal < proof.minSignalDeltaForPass) {
     fail(
       `walkaround-ab GLASS: PASS requires observed material effect; max delta ${signal} ` +
       `is below ${proof.minSignalDeltaForPass}`,
     );
+  }
+  if (result.verdict === "FINDING") {
+    if (signal < proof.minSignalDeltaForPass) {
+      fail(
+        `walkaround-ab GLASS: FINDING requires an observed material delta; max delta ${signal} ` +
+        `is below ${proof.minSignalDeltaForPass}`,
+      );
+    }
+    if (withinPromotionBounds) {
+      fail("walkaround-ab GLASS: FINDING requires an out-of-bounds promotion ratio");
+    }
+    if (result.materialEffectObserved !== true) {
+      fail("walkaround-ab GLASS: FINDING requires materialEffectObserved=true");
+    }
+    if (result.promotion?.defaultReady !== proof.promotion?.defaultReady) {
+      fail("walkaround-ab GLASS: FINDING must carry promotion.defaultReady=false");
+    }
+    if (result.promotion?.blocker !== proof.promotion?.blocker) {
+      fail(
+        `walkaround-ab GLASS: blocker ${result.promotion?.blocker} ` +
+        `differs from ${proof.promotion?.blocker}`,
+      );
+    }
+    if (result.promotion?.requiredEvidence !== proof.promotion?.requiredEvidence) {
+      fail(
+        `walkaround-ab GLASS: requiredEvidence ${result.promotion?.requiredEvidence} ` +
+        `differs from ${proof.promotion?.requiredEvidence}`,
+      );
+    }
   }
   if (result.verdict === "SMOKE") {
     if (result.materialEffectObserved !== false) {
@@ -1066,6 +1108,9 @@ async function checkWalkaroundPromotionStatus(proof) {
   if (status.promotion?.blocker !== proof.promotion.blocker) {
     fail("walkaround promotion status: blocker mismatch");
   }
+  if (!sameJson(status.promotion?.blockers, proof.promotion.blockers)) {
+    fail("walkaround promotion status: blockers mismatch");
+  }
   if (status.promotion?.requiredEvidence !== proof.promotion.requiredEvidence) {
     fail("walkaround promotion status: requiredEvidence mismatch");
   }
@@ -1094,6 +1139,32 @@ async function checkWalkaroundPromotionStatus(proof) {
   if (baselineVerdicts.glossy !== "FINDING" || allSpp64Verdicts.glossy !== "FINDING") {
     fail("walkaround promotion status: glossy must remain a FINDING until promotion evidence lands");
   }
+  if (baselineVerdicts.glass !== "FINDING" || allSpp64Verdicts.glass !== "FINDING") {
+    fail("walkaround promotion status: glass must remain a FINDING until bounded evidence lands");
+  }
+
+  const expectedGlassProfiles = [];
+  for (const profile of proof.glassProfiles) {
+    const result = JSON.parse(await Deno.readTextFile(new URL(`../../${profile.resultPath}`, import.meta.url)));
+    const glass = result[profile.resultKey];
+    expectedGlassProfiles.push({
+      label: profile.label,
+      resultPath: profile.resultPath,
+      spp: profile.expectedSpp,
+      qualityProfile: profile.expectedQualityProfile,
+      verdict: glass?.verdict,
+      centreRatio: glass?.centreRatio,
+      overallRatio: glass?.overallRatio,
+      ratioWithinPromotionBounds: glass?.ratioWithinPromotionBounds,
+      materialEffectObserved: glass?.materialEffectObserved,
+    });
+    if (glass?.promotion?.defaultReady !== false || glass?.promotion?.blocker !== WALKAROUND_AB_RESULT_PROOF.cases.glass.promotion.blocker) {
+      fail(`walkaround promotion status: ${profile.label} glass promotion metadata drifted`);
+    }
+  }
+  if (!sameJson(status.glassProfiles, expectedGlassProfiles)) {
+    fail("walkaround promotion status: glassProfiles do not match committed result snapshots");
+  }
 
   const expectedProfiles = [];
   for (const profile of proof.glossyProfiles) {
@@ -1108,7 +1179,7 @@ async function checkWalkaroundPromotionStatus(proof) {
       sampleRatio: glossy?.sampleRatio ?? glossy?.floorRatio,
       materialEffectObserved: glossy?.materialEffectObserved,
     });
-    if (glossy?.promotion?.defaultReady !== false || glossy?.promotion?.blocker !== proof.promotion.blocker) {
+    if (glossy?.promotion?.defaultReady !== false || glossy?.promotion?.blocker !== WALKAROUND_AB_RESULT_PROOF.cases.glossy.promotion.blocker) {
       fail(`walkaround promotion status: ${profile.label} glossy promotion metadata drifted`);
     }
   }

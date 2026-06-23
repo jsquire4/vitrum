@@ -438,6 +438,13 @@ function isPreImportBlockingCompatibilityIssue<
   preflight: GltfAssetCompatibilityPreflight,
   options: LoadGltfForEngineOptions<TEngine, TFactoryOptions>,
 ): boolean {
+  if (
+    issue.category === 'animation' &&
+    issue.support === 'unsupported' &&
+    issue.name.startsWith('target.path:')
+  ) {
+    return true;
+  }
   return issue.category === 'extension' &&
     issue.support === 'requires-hook' &&
     isTextureSourceExtensionIssue(issue.name) &&
