@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-23T11:37:38.381Z",
+  "generatedAt": "2026-06-23T17:21:42.156Z",
   "harness": "pt-radiometric-promotion-proof",
   "verdict": "PASS-PARTIAL",
   "hostStatus": {
@@ -17,7 +17,7 @@
       "verdict": "PASS",
       "converging": true,
       "inBallpark": true,
-      "finalRelErr": 0.23404132206464232
+      "finalRelErr": 0.2340380090151866
     },
     "bdptEndpointOnly": {
       "verdict": "PASS",
@@ -66,7 +66,7 @@
       "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B",
       "maxGlobalRmseRatio": 1.4858971059275516,
       "maxRoiRmseRatio": 1.3821594259086538,
-      "maxElapsedMsRatio": 1.873493064995974,
+      "maxElapsedMsRatio": 1.755144937414677,
       "evidencePath": "tools/radiometric-ab/results-sobol.json"
     }
   },

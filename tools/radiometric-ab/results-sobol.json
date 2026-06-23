@@ -1,7 +1,7 @@
 {
   "ab": "sobol-equal-frame-rmse",
   "verdict": "PASS",
-  "generatedAt": "2026-06-23T11:37:38.358Z",
+  "generatedAt": "2026-06-23T17:21:42.132Z",
   "resolution": {
     "width": 80,
     "height": 80
@@ -26,7 +26,7 @@
       "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B",
       "maxGlobalRmseRatio": 1.4858971059275516,
       "maxRoiRmseRatio": 1.3821594259086538,
-      "maxElapsedMsRatio": 1.873493064995974,
+      "maxElapsedMsRatio": 1.755144937414677,
       "evidencePath": "tools/radiometric-ab/results-sobol.json"
     }
   },
@@ -54,13 +54,13 @@
       "referenceFrames": 40,
       "candidateFrames": 12,
       "pcg": {
-        "elapsedMs": 574.596,
+        "elapsedMs": 566.634,
         "globalRmse": 0.165052190473949,
         "roiRmse": 0.1868439776609491,
         "roiSpatialVariance": 0.08715450941835301
       },
       "sobol": {
-        "elapsedMs": 1076.501,
+        "elapsedMs": 994.525,
         "globalRmse": 0.22556566272227685,
         "roiRmse": 0.25824816489834673,
         "roiSpatialVariance": 0.10351733141667087
@@ -69,7 +69,7 @@
         "globalRmse": 1.366632348680516,
         "roiRmse": 1.3821594259086538,
         "roiSpatialVariance": 1.1877449842528993,
-        "elapsedMs": 1.873493064995974
+        "elapsedMs": 1.755144937414677
       },
       "relativeErrors": {
         "globalRmse": 0.3666323486805162,
@@ -90,13 +90,13 @@
       "referenceFrames": 40,
       "candidateFrames": 12,
       "pcg": {
-        "elapsedMs": 577.787,
+        "elapsedMs": 591.704,
         "globalRmse": 0.10214406982361526,
         "roiRmse": 0.10838852817149666,
         "roiSpatialVariance": 0.057049093747272184
       },
       "sobol": {
-        "elapsedMs": 998.559,
+        "elapsedMs": 1006.024,
         "globalRmse": 0.15177557773857167,
         "roiRmse": 0.13927698556820095,
         "roiSpatialVariance": 0.052755535393591346
@@ -105,7 +105,7 @@
         "globalRmse": 1.4858971059275516,
         "roiRmse": 1.2849790279265656,
         "roiSpatialVariance": 0.9247392364775973,
-        "elapsedMs": 1.7282491084537697
+        "elapsedMs": 1.700216918740338
       },
       "relativeErrors": {
         "globalRmse": 0.48589710592755153,
