@@ -1169,6 +1169,7 @@ const expectedQualityRequirements = {
   requiresNormals: true,
   requiresCaptureSource: true,
   requiresTonemap: true,
+  requiresArtifacts: true,
   requiresHardware: true,
   requiresGeneratedAt: true,
   requiresCheckpointIdentity: true,
@@ -1193,6 +1194,7 @@ if (productionCheckpoint === null) {
     "albedo/normal buffers",
     "capture source",
     "tonemap",
+    "reproducibility artifact paths",
   ]) {
     if (!String(learnedRow.remaining).includes(needle)) {
       fail(`VQ-LEARNED-SYSTEMS remaining text must cite stricter production quality gate: ${needle}`);

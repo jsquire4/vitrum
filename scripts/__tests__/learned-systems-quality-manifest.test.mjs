@@ -39,6 +39,12 @@ function validQualityManifest() {
     },
     hardware: 'fixture-browser-webgpu',
     generatedAt: '2026-06-22T00:00:00.000Z',
+    artifacts: {
+      datasetManifestPath: 'tools/neural-denoiser-training/datasets/fixture-production-ab/manifest.json',
+      resultSummaryPath: 'tools/neural-denoiser-training/quality/fixture-production-ab/results.json',
+      candidateOutputsPath: 'tools/neural-denoiser-training/quality/fixture-production-ab/candidate/',
+      referenceOutputsPath: 'tools/neural-denoiser-training/quality/fixture-production-ab/reference/',
+    },
     dataset: {
       id: 'fixture-production-ab',
       sceneCount: 4,
@@ -99,6 +105,22 @@ test('production neural quality manifest rejects missing finite metrics', () => 
   assert.throws(
     () => validate(manifest),
     /must include at least one finite numeric quality bound/,
+  );
+});
+
+test('production neural quality manifest rejects missing reproducibility artifact paths', () => {
+  const manifest = cloneManifest();
+  delete manifest.artifacts;
+  assert.throws(
+    () => validate(manifest),
+    /must include reproducibility artifact paths/,
+  );
+
+  const manifestWithoutReferenceOutputs = cloneManifest();
+  manifestWithoutReferenceOutputs.artifacts.referenceOutputsPath = '';
+  assert.throws(
+    () => validate(manifestWithoutReferenceOutputs),
+    /artifacts\.referenceOutputsPath must be a non-empty string/,
   );
 });
 

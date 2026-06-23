@@ -91,6 +91,21 @@ export function validateProductionQualityManifest(input) {
   if (typeof qualityManifest.generatedAt !== "string" || qualityManifest.generatedAt.length === 0) {
     fail("production neural quality manifest must include generatedAt");
   }
+  const artifacts = qualityManifest.artifacts;
+  if (artifacts == null || typeof artifacts !== "object") {
+    fail("production neural quality manifest must include reproducibility artifact paths");
+  }
+  const artifactRecord = /** @type {Record<string, any>} */ (artifacts);
+  for (const field of [
+    "datasetManifestPath",
+    "resultSummaryPath",
+    "candidateOutputsPath",
+    "referenceOutputsPath",
+  ]) {
+    if (typeof artifactRecord[field] !== "string" || artifactRecord[field].length === 0) {
+      fail(`production neural quality manifest artifacts.${field} must be a non-empty string`);
+    }
+  }
   const dataset = qualityManifest.dataset;
   if (dataset == null || typeof dataset !== "object") {
     fail("production neural quality manifest must identify the validation dataset");

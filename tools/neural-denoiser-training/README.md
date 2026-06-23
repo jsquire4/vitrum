@@ -135,6 +135,10 @@ SHA-256, parameter count, and production-default eligibility. The root
 `npm run learned-systems-proof-check` command fails if a checkpoint is
 unregistered, if its bytes drift from the manifest, or if any production/default
 checkpoint appears without a passing `quality-ab-production.json` A/B manifest.
+That production quality manifest must also cite reproducibility artifacts:
+the dataset manifest, aggregate result summary, candidate outputs, and reference
+outputs used for the A/B. Metric-only manifests are rejected because they cannot
+support a production checkpoint claim.
 
 ## GPU capture (real dataset — for the GPU session)
 

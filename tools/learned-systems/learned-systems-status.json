@@ -21,6 +21,7 @@
       "requiresNormals": true,
       "requiresCaptureSource": true,
       "requiresTonemap": true,
+      "requiresArtifacts": true,
       "requiresHardware": true,
       "requiresGeneratedAt": true,
       "requiresCheckpointIdentity": true,

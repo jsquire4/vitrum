@@ -514,6 +514,7 @@
             "neuralDenoiser.qualityManifestRequirements.requiresNormals": true,
             "neuralDenoiser.qualityManifestRequirements.requiresCaptureSource": true,
             "neuralDenoiser.qualityManifestRequirements.requiresTonemap": true,
+            "neuralDenoiser.qualityManifestRequirements.requiresArtifacts": true,
             "neuralDenoiser.qualityManifestRequirements.requiresCheckpointIdentity": true,
             "nrc.defaultEnabled": false,
             "nrc.productionDefaultEligible": false,
@@ -549,7 +550,7 @@
         { "path": "packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts" },
         { "path": "HARDWARE-VALIDATION-NEEDS.md" }
       ],
-      "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence. The learned-systems proof checker validates research checkpoint identity and requires production quality metrics plus production-scale dataset metadata (>=500 samples, 1 spp noisy inputs, >=4096 spp clean references, albedo/normal buffers, capture source, and tonemap) before any production checkpoint can count."
+      "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence. The learned-systems proof checker validates research checkpoint identity and requires production quality metrics plus production-scale dataset metadata (>=500 samples, 1 spp noisy inputs, >=4096 spp clean references, albedo/normal buffers, capture source, tonemap, and reproducibility artifact paths) before any production checkpoint can count."
     },
     {
       "id": "VQ-GLTF-MATERIAL-TOPOLOGY",
