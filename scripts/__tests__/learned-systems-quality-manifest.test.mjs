@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateProductionQualityManifest } from '../../tools/learned-systems/qualityManifestValidator.mjs';
+import {
+  MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP,
+  MIN_PRODUCTION_NEURAL_SAMPLE_COUNT,
+  validateProductionQualityManifest,
+} from '../../tools/learned-systems/qualityManifestValidator.mjs';
 
 const EXPECTED_PARAM_COUNT = 42;
 const PRODUCTION_ENTRY = Object.freeze({
@@ -38,7 +42,13 @@ function validQualityManifest() {
     dataset: {
       id: 'fixture-production-ab',
       sceneCount: 4,
-      sampleCount: 512,
+      sampleCount: MIN_PRODUCTION_NEURAL_SAMPLE_COUNT,
+      noisySpp: 1,
+      cleanReferenceSpp: MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP,
+      includesAlbedo: true,
+      includesNormals: true,
+      captureSource: 'browser-webgpu-batched-capture',
+      tonemap: 'reinhard',
     },
     comparison: {
       baseline: 'pt-webgpu-4096spp',
@@ -97,7 +107,50 @@ test('production neural quality manifest rejects incomplete dataset metadata', (
   delete manifest.dataset.sampleCount;
   assert.throws(
     () => validate(manifest),
-    /dataset\.sampleCount must be positive/,
+    /dataset\.sampleCount must be >= 500/,
+  );
+});
+
+test('production neural quality manifest rejects tiny dataset samples', () => {
+  const manifest = cloneManifest();
+  manifest.dataset.sampleCount = MIN_PRODUCTION_NEURAL_SAMPLE_COUNT - 1;
+  assert.throws(
+    () => validate(manifest),
+    /dataset\.sampleCount must be >= 500/,
+  );
+});
+
+test('production neural quality manifest rejects non-production reference spp', () => {
+  const manifest = cloneManifest();
+  manifest.dataset.cleanReferenceSpp = MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP - 1;
+  assert.throws(
+    () => validate(manifest),
+    /dataset\.cleanReferenceSpp must be >= 4096/,
+  );
+});
+
+test('production neural quality manifest rejects missing auxiliary buffers', () => {
+  const manifest = cloneManifest();
+  manifest.dataset.includesNormals = false;
+  assert.throws(
+    () => validate(manifest),
+    /dataset\.includesNormals must be true/,
+  );
+});
+
+test('production neural quality manifest rejects missing capture source and tonemap', () => {
+  const manifest = cloneManifest();
+  manifest.dataset.captureSource = '';
+  assert.throws(
+    () => validate(manifest),
+    /dataset\.captureSource must be a non-empty string/,
+  );
+
+  const manifestWithoutTonemap = cloneManifest();
+  delete manifestWithoutTonemap.dataset.tonemap;
+  assert.throws(
+    () => validate(manifestWithoutTonemap),
+    /dataset\.tonemap must be a non-empty string/,
   );
 });
 

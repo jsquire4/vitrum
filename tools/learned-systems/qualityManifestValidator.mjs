@@ -1,6 +1,9 @@
 // @ts-check
 // Shared production neural quality manifest guard for learned-system promotion.
 
+export const MIN_PRODUCTION_NEURAL_SAMPLE_COUNT = 500;
+export const MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP = 4096;
+
 /**
  * @typedef {{
  *   name: string,
@@ -99,8 +102,38 @@ export function validateProductionQualityManifest(input) {
   if (!Number.isInteger(datasetRecord.sceneCount) || datasetRecord.sceneCount <= 0) {
     fail("production neural quality manifest dataset.sceneCount must be positive");
   }
-  if (!Number.isInteger(datasetRecord.sampleCount) || datasetRecord.sampleCount <= 0) {
-    fail("production neural quality manifest dataset.sampleCount must be positive");
+  if (
+    !Number.isInteger(datasetRecord.sampleCount) ||
+    datasetRecord.sampleCount < MIN_PRODUCTION_NEURAL_SAMPLE_COUNT
+  ) {
+    fail(
+      "production neural quality manifest dataset.sampleCount must be " +
+        `>= ${MIN_PRODUCTION_NEURAL_SAMPLE_COUNT}`,
+    );
+  }
+  if (datasetRecord.noisySpp !== 1) {
+    fail("production neural quality manifest dataset.noisySpp must be 1");
+  }
+  if (
+    !Number.isInteger(datasetRecord.cleanReferenceSpp) ||
+    datasetRecord.cleanReferenceSpp < MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP
+  ) {
+    fail(
+      "production neural quality manifest dataset.cleanReferenceSpp must be " +
+        `>= ${MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP}`,
+    );
+  }
+  if (datasetRecord.includesAlbedo !== true) {
+    fail("production neural quality manifest dataset.includesAlbedo must be true");
+  }
+  if (datasetRecord.includesNormals !== true) {
+    fail("production neural quality manifest dataset.includesNormals must be true");
+  }
+  if (typeof datasetRecord.captureSource !== "string" || datasetRecord.captureSource.length === 0) {
+    fail("production neural quality manifest dataset.captureSource must be a non-empty string");
+  }
+  if (typeof datasetRecord.tonemap !== "string" || datasetRecord.tonemap.length === 0) {
+    fail("production neural quality manifest dataset.tonemap must be a non-empty string");
   }
   const comparison = qualityManifest.comparison;
   if (comparison == null || typeof comparison !== "object") {

@@ -975,6 +975,19 @@ if (productionCheckpoint === null) {
   if (!String(learnedRow.remaining).includes("Production neural checkpoint")) {
     fail("VQ-LEARNED-SYSTEMS remaining text must keep the production-checkpoint tail explicit");
   }
+  for (const needle of [
+    "production-scale dataset metadata",
+    ">=500 samples",
+    "1 spp noisy inputs",
+    ">=4096 spp clean references",
+    "albedo/normal buffers",
+    "capture source",
+    "tonemap",
+  ]) {
+    if (!String(learnedRow.remaining).includes(needle)) {
+      fail(`VQ-LEARNED-SYSTEMS remaining text must cite stricter production quality gate: ${needle}`);
+    }
+  }
 } else {
   if (typeof productionCheckpoint !== "string") {
     fail("learned checkpoint manifest productionCheckpoint must be null or a string");
