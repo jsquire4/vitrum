@@ -25,7 +25,7 @@
       "leftWall": 0.0000024802028590975925,
       "rightWall": -6.696656346301139e-7
     },
-    "renderTimeSec": 21,
+    "renderTimeSec": 21.4,
     "verdict": "NEGLIGIBLE",
     "notes": [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
@@ -72,7 +72,7 @@
     "floorRatioToAnalytic": 0.9994843571067382,
     "analyticAgreement": true,
     "shadowAssertionAuthored": false,
-    "renderTimeSec": 10.2,
+    "renderTimeSec": 10.1,
     "verdict": "PASS",
     "notes": [
       "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
@@ -98,29 +98,24 @@
     "expectedMaxCentreRatio": 4,
     "expectedMaxOverallRatio": 8,
     "glass": {
-      "centreRegionLum": 2.8515625,
-      "overall": 2.8515625
+      "centreRegionLum": 0.58935546875,
+      "overall": 0.4326807567826029
     },
     "noGlass": {
       "centreRegionLum": 0.15402649173736643,
       "overall": 0.05828998281747442
     },
-    "centreRatio": 18.513454846860075,
-    "overallRatio": 48.920283763493345,
+    "centreRatio": 3.8263253424931696,
+    "overallRatio": 7.422900743297046,
     "delta": {
-      "centreRegionLum": 2.6975360082626336,
-      "overall": 2.7932725171825257
+      "centreRegionLum": 0.43532897701263357,
+      "overall": 0.3743907739651285
     },
     "minSignalDelta": 0.0001,
     "materialEffectObserved": true,
-    "ratioWithinPromotionBounds": false,
-    "promotion": {
-      "defaultReady": false,
-      "blocker": "glass-transport-radiance-blowout",
-      "requiredEvidence": "case-specific-reference-ab-and-browser-real-adapter-recapture"
-    },
-    "renderTimeSec": 19.6,
-    "verdict": "FINDING",
+    "ratioWithinPromotionBounds": true,
+    "renderTimeSec": 18.9,
+    "verdict": "PASS",
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
       "Expected centreRatio is bounded below by 0.50 and above by 4.0; overallRatio is bounded above by 8.0 for promotion-quality sanity.",
@@ -168,7 +163,7 @@
       "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
       "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
     },
-    "renderTimeSec": 19.4,
+    "renderTimeSec": 19.1,
     "verdict": "FINDING",
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",

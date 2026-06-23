@@ -241,10 +241,9 @@
           "json": {
             "a8.verdict": "NEGLIGIBLE",
             "sun.verdict": "PASS",
-            "glass.verdict": "FINDING",
+            "glass.verdict": "PASS",
             "glass.materialEffectObserved": true,
-            "glass.promotion.defaultReady": false,
-            "glass.promotion.blocker": "glass-transport-radiance-blowout",
+            "glass.ratioWithinPromotionBounds": true,
             "glossy.verdict": "FINDING",
             "glossy.materialEffectObserved": true,
             "glossy.promotion.defaultReady": false,
@@ -257,13 +256,12 @@
           "json": {
             "verdict": "PASS-PARTIAL",
             "promotion.defaultReady": false,
-            "promotion.classification": "glass-and-glossy-findings",
-            "promotion.blocker": "multiple-non-promotable-walkaround-findings",
-            "promotion.blockers.glass": "glass-transport-radiance-blowout",
+            "promotion.classification": "glossy-finding",
+            "promotion.blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
             "promotion.blockers.glossy": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
-            "caseVerdicts.glass": "FINDING",
+            "caseVerdicts.glass": "PASS",
             "caseVerdicts.glossy": "FINDING",
-            "highSppCaseVerdicts.glass": "FINDING",
+            "highSppCaseVerdicts.glass": "PASS",
             "highSppCaseVerdicts.glossy": "FINDING"
           }
         },
@@ -285,10 +283,9 @@
           "json": {
             "a8.verdict": "NEGLIGIBLE",
             "sun.verdict": "PASS",
-            "glass.verdict": "FINDING",
+            "glass.verdict": "PASS",
             "glass.materialEffectObserved": true,
-            "glass.promotion.defaultReady": false,
-            "glass.promotion.blocker": "glass-transport-radiance-blowout",
+            "glass.ratioWithinPromotionBounds": true,
             "glossy.verdict": "FINDING",
             "glossy.materialEffectObserved": true,
             "glossy.promotion.defaultReady": false,
@@ -296,7 +293,7 @@
           }
         }
       ],
-      "remaining": "Committed walkaround A/B proof now pins the full case set and current verdicts (a8 negligible, sun pass, glass finding, glossy finding), plus the source/proof files that define the GRIS, sun, glass, and glossy boundaries. The native-Deno 64-SPP glossy recapture lane and the native-Deno 64-SPP all-cases recapture lane now run on this WSL host when no Vulkan ICD is forced; both record that glass remains a non-promotable FINDING and glossy remains a non-promotable FINDING. The row must remain PASS-PARTIAL/do-not-promote while glass transport has bounded-radiometry blowout evidence and glossy is a non-promotable rich-material GI approximation. Remaining work is browser/real-adapter higher-quality case-specific references before promoting GRIS/ReSTIR-GI/PPG/NRC quality claims."
+      "remaining": "Committed walkaround A/B proof now pins the full case set and current verdicts (a8 negligible, sun pass, glass pass, glossy finding), plus the source/proof files that define the GRIS, sun, glass, and glossy boundaries. The native-Deno 64-SPP glossy recapture lane and the native-Deno 64-SPP all-cases recapture lane now run on this WSL host with the lavapipe ICD forced; both record that glass is bounded PASS and glossy remains a non-promotable FINDING. The row must remain PASS-PARTIAL/do-not-promote while glossy is a non-promotable rich-material GI approximation. Remaining work is browser/real-adapter higher-quality case-specific references before promoting GRIS/ReSTIR-GI/PPG/NRC quality claims."
     },
     {
       "id": "VQ-RENDERER-FIDELITY-PROOF",

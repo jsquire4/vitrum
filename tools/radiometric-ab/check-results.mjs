@@ -1139,8 +1139,8 @@ async function checkWalkaroundPromotionStatus(proof) {
   if (baselineVerdicts.glossy !== "FINDING" || allSpp64Verdicts.glossy !== "FINDING") {
     fail("walkaround promotion status: glossy must remain a FINDING until promotion evidence lands");
   }
-  if (baselineVerdicts.glass !== "FINDING" || allSpp64Verdicts.glass !== "FINDING") {
-    fail("walkaround promotion status: glass must remain a FINDING until bounded evidence lands");
+  if (baselineVerdicts.glass !== "PASS" || allSpp64Verdicts.glass !== "PASS") {
+    fail("walkaround promotion status: glass must remain PASS in baseline and all-spp64 proofs");
   }
 
   const expectedGlassProfiles = [];
@@ -1158,8 +1158,11 @@ async function checkWalkaroundPromotionStatus(proof) {
       ratioWithinPromotionBounds: glass?.ratioWithinPromotionBounds,
       materialEffectObserved: glass?.materialEffectObserved,
     });
-    if (glass?.promotion?.defaultReady !== false || glass?.promotion?.blocker !== WALKAROUND_AB_RESULT_PROOF.cases.glass.promotion.blocker) {
-      fail(`walkaround promotion status: ${profile.label} glass promotion metadata drifted`);
+    if (glass?.verdict !== "PASS" || glass?.ratioWithinPromotionBounds !== true || glass?.materialEffectObserved !== true) {
+      fail(`walkaround promotion status: ${profile.label} glass must remain bounded PASS evidence`);
+    }
+    if (glass?.promotion != null) {
+      fail(`walkaround promotion status: ${profile.label} glass PASS must not carry stale promotion blockers`);
     }
   }
   if (!sameJson(status.glassProfiles, expectedGlassProfiles)) {

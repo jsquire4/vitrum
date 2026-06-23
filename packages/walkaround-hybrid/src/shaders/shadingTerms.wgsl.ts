@@ -76,12 +76,17 @@
  * literal. Resolved 2026-06-11; byte-identical to the original composed
  * shader string.
  */
-export const SHADING_TERMS_WGSL = /* wgsl */ `// ── Self-emission for primary glass hits ─────────────────────────────────
+export const SHADING_TERMS_WGSL = /* wgsl */ `// ── Stained-glass sun glow for primary glass hits ─────────────────────────
 //
 // Le ≈ attenuationColor × transmission × sunIntensity × |sunDot| × textureMod.
 // attenuationColor is read from bvh_beer (Beer-Lambert visible color =
 // pow(rawAttCol, thickness/attDist)) — separate from bvhIndex.w which
 // carries the RAW attCol used by emitter Le and tinted-visibility.
+//
+// Generic transmissive glass is not emissive. This legacy stained-glass glow is
+// gated behind the same opt-in sun-caustic flag as the other cathedral-window
+// direct-light terms, so ordinary glass scenes do not receive un-authored sun
+// radiance from HybridEngineOptions.primaryLightIntensity.
 fn lo_emit(
   matColor:         vec4f,
   normal:           vec3f,
@@ -92,6 +97,7 @@ fn lo_emit(
   triIndex:         u32,
 ) -> vec3f {
   if (!isGlass) { return vec3f(0.0); }
+  if ((ubo.stainedGlassFlags & SG_FLAG_SUN_CAUSTIC) == 0u) { return vec3f(0.0); }
   let sunDot = abs(dot(ubo.sunDirection, normal));
   if (sunDot <= 0.05) { return vec3f(0.0); }
   let trans = matColor.a;
@@ -676,23 +682,6 @@ fn lo_transmittedGI(
   uv1:          vec2f,
 ) -> vec3f {
   if (!isGlass) { return vec3f(0.0); }
-  let halfDims = dims / 2u;
-  let hx = min(gid.x / 2u, halfDims.x - 1u);
-  let hy = min(gid.y / 2u, halfDims.y - 1u);
-  let giIdx = hy * halfDims.x + hx;
-  let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
-  if (g.W <= 0.0 || g.M == 0u) { return vec3f(0.0); }
-
-  // Direction from the camera-primary glass hit toward the post-glass reservoir
-  // vertex xv (= postGlassPos). Used only for the indirect weighting via the
-  // GI reservoir weight W; no BRDF needed (the diffuse wall's BRDF was folded
-  // by risGi during candidate selection).
-  let toS = g.xs - g.xv;
-  let distS = length(toS);
-  if (distS <= 1e-4) { return vec3f(0.0); }
-  let wi = toS / distS;
-  let cosTheta = max(0.0, dot(g.nv, wi));
-
   // B1-ior-per-tri: decode per-tri IOR → compute physical Schlick F0.
   //   F0 = ((ior−1)/(ior+1))²   (normal-incidence Fresnel reflectance)
   //   Default IOR=1.5 → F0 = (0.5/2.5)² = 0.04 (matches prior GLASS_F0 constant).
@@ -718,11 +707,60 @@ fn lo_transmittedGI(
   );
   beerAlbedo = applyThicknessMapToBeerTint(triIndex, uv, uv1, beerAlbedo);
 
-  // GI contribution: Lo from the diffuse wall × Lambertian cosine response at
-  // the post-glass surface × W, then multiplied by the Fresnel transmission and
-  // the Beer tint to account for the glass interface attenuation.
-  let Lo_transmitted = g.Lo * INV_PI * cosTheta * g.W * fresnelT * beerAlbedo;
-  return Lo_transmitted;
+  // Match lo_indirect's 4-neighbour half-res blend for transmission too. The
+  // previous nearest-neighbour lookup made an entire 2x2 full-res quad inherit
+  // one post-glass GI reservoir, which over-promoted rare W-tail samples on large
+  // panes and failed the bounded glass/no-glass radiometric A/B.
+  let halfDims = dims / 2u;
+  let halfPxF = vec2f(gid) * 0.5;
+  let hx0 = u32(floor(halfPxF.x));
+  let hy0 = u32(floor(halfPxF.y));
+  let fx = halfPxF.x - f32(hx0);
+  let fy = halfPxF.y - f32(hy0);
+  let bw00 = (1.0 - fx) * (1.0 - fy);
+  let bw10 =        fx  * (1.0 - fy);
+  let bw01 = (1.0 - fx) *        fy;
+  let bw11 =        fx  *        fy;
+  var Lo_transmitted = vec3f(0.0);
+  var totalW: f32 = 0.0;
+  for (var k: u32 = 0u; k < 4u; k = k + 1u) {
+    var hx = hx0;
+    var hy = hy0;
+    var bw: f32 = 0.0;
+    if      (k == 0u) { hx = hx0;          hy = hy0;          bw = bw00; }
+    else if (k == 1u) { hx = hx0 + 1u;     hy = hy0;          bw = bw10; }
+    else if (k == 2u) { hx = hx0;          hy = hy0 + 1u;     bw = bw01; }
+    else              { hx = hx0 + 1u;     hy = hy0 + 1u;     bw = bw11; }
+    if (hx >= halfDims.x) { hx = halfDims.x - 1u; }
+    if (hy >= halfDims.y) { hy = halfDims.y - 1u; }
+    if (bw < 1e-5) { continue; }
+
+    let giIdx = hy * halfDims.x + hx;
+    let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
+    if (g.W <= 0.0 || g.M == 0u) { continue; }
+
+    // Direction from the post-glass diffuse receiver vertex xv toward the stored
+    // reconnect sample xs. The receiver's Lambertian albedo was folded into g.Lo
+    // by risGi; this consumer applies the remaining cosine/π transport plus the
+    // camera-side glass Fresnel/Beer attenuation.
+    let toS = g.xs - g.xv;
+    let distS = length(toS);
+    if (distS <= 1e-4) { continue; }
+    let wi = toS / distS;
+    let cosTheta = max(0.0, dot(g.nv, wi));
+    Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * fresnelT * beerAlbedo * bw;
+    totalW = totalW + bw;
+  }
+  if (totalW > 1e-3) {
+    Lo_transmitted = Lo_transmitted / totalW;
+  }
+  // Walkaround's single-interface glass transport is intentionally approximate:
+  // DDGI probe rays already use glassMixScale as the host-visible blend for
+  // transmissive propagation, and the shade-side transmitted-GI consumer must
+  // obey the same scalar so generic glass does not promote an unbounded realtime
+  // estimate to full path-traced energy.
+  let scaledTransmitted = Lo_transmitted * ubo.glassMixScale;
+  return min(scaledTransmitted, ubo.indirectFireflyClamp * ubo.glassMixScale);
 }
 
 // --- B1: Glossy/metal SPECULAR indirect (ReSTIR-GI sample × GGX specular lobe) -

@@ -4,25 +4,24 @@
   "verdict": "PASS-PARTIAL",
   "promotion": {
     "defaultReady": false,
-    "classification": "glass-and-glossy-findings",
-    "reason": "Native WebGPU 16-SPP and 64-SPP recaptures show live glass and glossy material deltas, but both remain non-promotable FINDING rows: glass transport is over-bright relative to bounded radiometric sanity and glossy rich-material GI uses a DDGI cache that stores cosine-weighted irradiance rather than GGX-filtered radiance.",
-    "blocker": "multiple-non-promotable-walkaround-findings",
+    "classification": "glossy-finding",
+    "reason": "Native WebGPU 16-SPP and 64-SPP recaptures now show bounded PASS glass transport, while glossy rich-material GI remains a non-promotable FINDING because the realtime DDGI cache stores cosine-weighted irradiance rather than GGX-filtered radiance.",
+    "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
     "blockers": {
-      "glass": "glass-transport-radiance-blowout",
       "glossy": "ddgi-irradiance-cache-not-ggx-filtered-radiance"
     },
-    "requiredEvidence": "case-specific-reference-ab-material-furnace-and-browser-real-adapter-recapture"
+    "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
   },
   "caseVerdicts": {
     "a8": "NEGLIGIBLE",
     "sun": "PASS",
-    "glass": "FINDING",
+    "glass": "PASS",
     "glossy": "FINDING"
   },
   "highSppCaseVerdicts": {
     "a8": "NEGLIGIBLE",
     "sun": "PASS",
-    "glass": "FINDING",
+    "glass": "PASS",
     "glossy": "FINDING"
   },
   "glassProfiles": [
@@ -31,10 +30,10 @@
       "resultPath": "tools/radiometric-ab/walkaround-ab-results.json",
       "spp": 16,
       "qualityProfile": "baseline",
-      "verdict": "FINDING",
-      "centreRatio": 18.522696844034076,
-      "overallRatio": 47.45214163023094,
-      "ratioWithinPromotionBounds": false,
+      "verdict": "PASS",
+      "centreRatio": 1.6233122005967047,
+      "overallRatio": 3.251024008016448,
+      "ratioWithinPromotionBounds": true,
       "materialEffectObserved": true
     },
     {
@@ -42,10 +41,10 @@
       "resultPath": "tools/radiometric-ab/walkaround-ab-all-spp64.json",
       "spp": 64,
       "qualityProfile": "all-spp64",
-      "verdict": "FINDING",
-      "centreRatio": 18.513454846860075,
-      "overallRatio": 48.920283763493345,
-      "ratioWithinPromotionBounds": false,
+      "verdict": "PASS",
+      "centreRatio": 3.8263253424931696,
+      "overallRatio": 7.422900743297046,
+      "ratioWithinPromotionBounds": true,
       "materialEffectObserved": true
     }
   ],

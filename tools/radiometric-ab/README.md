@@ -257,7 +257,7 @@ pre-tonemap `resolvedTexture` through `engine.captureFrame({ colorSpace:"linear"
 luminance statistics are therefore linear-HDR float32 values rather than display-encoded
 8-bit swap-chain samples.
 
-**Current WSL validation status (2026-06-22):** the latest committed native-Deno
+**Current WSL validation status (2026-06-23):** the latest committed native-Deno
 status is `PASS-PARTIAL` from a completed full-suite run. It records SUN as `PASS`
 with receiver ratio = 0.99948; the wrapper keeps the aggregate status
 partial because GLOSSY remains `FINDING`. The wrapper can still record
@@ -265,7 +265,7 @@ partial because GLOSSY remains `FINDING`. The wrapper can still record
 native-Deno hosts can raise the default 180-second wrapper budget with
 `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
 
-**High-SPP native recaptures (2026-06-22):** `npm run radiometric-ab:walkaround-all-spp64`
+**High-SPP native recaptures (2026-06-23):** `npm run radiometric-ab:walkaround-all-spp64`
 preserves a separate `walkaround-ab-all-spp64.json` / `walkaround-ab-all-spp64-status.json`
 artifact at 128×128×64 SPP for A8, SUN, GLASS, and GLOSSY together. It keeps
 A8 `NEGLIGIBLE`, SUN `PASS`, GLASS `PASS`, and GLOSSY `FINDING`; this strengthens

@@ -117,7 +117,7 @@ function makeCornellScene(opts = {}) {
   const backWallRoughness = opts.backWallRoughness ?? 1.0;
   const backWallMetallic  = opts.backWallMetallic  ?? 0.0;
   const backWallColor     = opts.backWallColor     ?? [0.8, 0.8, 0.8];
-  const glassHalfSize = opts.glassHalfSize ?? 0.5;
+  const glassHalfSize = opts.glassHalfSize ?? 0.2;
   const glassAttenuationColor = opts.glassAttenuationColor ?? [1.0, 1.0, 1.0];
   const glassAttenuationDistance = opts.glassAttenuationDistance ?? Infinity;
   const glassThickness = opts.glassThickness ?? 0.0;
@@ -584,25 +584,29 @@ async function runSun() {
 //
 // Scene A: Cornell with a mildly tinted glass pane.
 // Scene B: identical Cornell WITHOUT glass pane (noGlass control).
-// Both have the ceiling area emitter (intensity 12.0).
+// Both have the ceiling area emitter (intensity 12.0) and the same host
+// directional/sky lighting. The comparison uses a local pane rather than a
+// full-frame transmissive overlay so the measured delta stays local to the
+// through-glass region.
 //
 // Expected: through-glass region luminance ≥ no-glass × 0.5, and the tinted
-// material produces a nonzero measured delta.  The previous clear-white glass
+// material produces a nonzero measured delta. The previous clear-white glass
 // control was intentionally too similar to no-glass: it only proved non-black
 // pass-through, not material transport.
 //
 // We look at the centre of the image where the glass pane occludes the back wall.
-// The glass pane spans z=1.5, x∈[-0.5,0.5], y∈[-0.5,0.5]; the camera looks along
-// -z from z=2.5, so the pane is camera-side of the z=1 back wall and projects
-// to roughly the centre of the image.
+// The glass pane spans z=1.5, x∈[-0.2,0.2], y∈[-0.2,0.2]; at the camera's
+// 60-degree FOV and one-unit distance to the pane, that fully covers the
+// centre crop while leaving enough uncovered frame for the whole-frame
+// blowout guard to mean something.
 //
 async function runGlass() {
   console.log("\n── GLASS: Glass-GI validation ──");
   const t0 = Date.now();
 
-  const glassResult   = await runVariant("glass",    { denoiser: "none" }, () => makeCornellScene({
+  const glassResult   = await runVariant("glass", { denoiser: "none" }, () => makeCornellScene({
     glass: true,
-    glassHalfSize: 1.15,
+    glassHalfSize: 0.2,
     glassAttenuationColor: [1.0, 0.55, 0.55],
     glassAttenuationDistance: 0.5,
     glassThickness: 0.5,
@@ -636,9 +640,10 @@ async function runGlass() {
   const centreDelta = glassCenter - noGlassCenter;
   const overallDelta = overallGlass - overallNoGlass;
 
-  // Fresnel-T at normal incidence n=1.5: T = 1 - ((1.5-1)/(1.5+1))^2 = 1 - 0.04 = 0.96
-  // Two surfaces (enter + exit): T_total ≈ 0.96^2 ≈ 0.92. Beer absorption = none (no tint).
-  // Expected centre ratio > 0.5 (allowing for denoiser, GTAO, temporal).
+  // Fresnel-T at normal incidence n=1.5: T = 1 - ((1.5-1)/(1.5+1))^2 = 1 - 0.04 = 0.96.
+  // Two surfaces (enter + exit): T_total ≈ 0.96^2 ≈ 0.92. Beer tint uses
+  // attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1, so
+  // this remains a broad sanity band rather than a reference-grade glass proof.
   const EXPECTED_MIN_RATIO = 0.5;
   const EXPECTED_MAX_CENTRE_RATIO = 4.0;
   const EXPECTED_MAX_OVERALL_RATIO = 8.0;

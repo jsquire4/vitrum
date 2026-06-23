@@ -1694,7 +1694,7 @@ for (const needle of [
   "full case set",
   "PASS-PARTIAL",
   "do-not-promote",
-  "glass remains a non-promotable FINDING",
+  "glass is bounded PASS",
   "glossy remains a non-promotable FINDING",
   "64-SPP all-cases recapture lane",
   "browser/real-adapter",
@@ -1715,12 +1715,9 @@ if (walkaroundAbHostStatus.reason?.code !== "walkaround-ab-partial-proof") {
 }
 if (walkaroundAbResults.a8?.verdict !== "NEGLIGIBLE") fail("walkaround A/B A8 verdict must stay NEGLIGIBLE");
 if (walkaroundAbResults.sun?.verdict !== "PASS") fail("walkaround A/B SUN verdict must stay PASS");
-if (walkaroundAbResults.glass?.verdict !== "FINDING") fail("walkaround A/B GLASS verdict must stay FINDING");
-if (walkaroundAbResults.glass?.promotion?.defaultReady !== false) {
-  fail("walkaround A/B GLASS finding must pin promotion.defaultReady=false");
-}
-if (walkaroundAbResults.glass?.promotion?.blocker !== "glass-transport-radiance-blowout") {
-  fail("walkaround A/B GLASS finding must pin the glass transport blowout blocker");
+if (walkaroundAbResults.glass?.verdict !== "PASS") fail("walkaround A/B GLASS verdict must stay PASS");
+if (walkaroundAbResults.glass?.ratioWithinPromotionBounds !== true || walkaroundAbResults.glass?.promotion != null) {
+  fail("walkaround A/B GLASS PASS must stay bounded and free of stale promotion blockers");
 }
 if (walkaroundAbResults.glossy?.verdict !== "FINDING") fail("walkaround A/B GLOSSY verdict must stay FINDING");
 if (walkaroundAbResults.glossy?.promotion?.defaultReady !== false) {
@@ -1743,9 +1740,9 @@ if (walkaroundAllSpp64Status.reason?.code !== "walkaround-ab-partial-proof") {
 }
 if (walkaroundAllSpp64Results.a8?.verdict !== "NEGLIGIBLE") fail("walkaround all-spp64 A8 verdict must stay NEGLIGIBLE");
 if (walkaroundAllSpp64Results.sun?.verdict !== "PASS") fail("walkaround all-spp64 SUN verdict must stay PASS");
-if (walkaroundAllSpp64Results.glass?.verdict !== "FINDING") fail("walkaround all-spp64 GLASS verdict must stay FINDING");
-if (walkaroundAllSpp64Results.glass?.promotion?.defaultReady !== false) {
-  fail("walkaround all-spp64 GLASS finding must pin promotion.defaultReady=false");
+if (walkaroundAllSpp64Results.glass?.verdict !== "PASS") fail("walkaround all-spp64 GLASS verdict must stay PASS");
+if (walkaroundAllSpp64Results.glass?.ratioWithinPromotionBounds !== true || walkaroundAllSpp64Results.glass?.promotion != null) {
+  fail("walkaround all-spp64 GLASS PASS must stay bounded and free of stale promotion blockers");
 }
 if (walkaroundAllSpp64Results.glossy?.verdict !== "FINDING") fail("walkaround all-spp64 GLOSSY verdict must stay FINDING");
 if (walkaroundAllSpp64Results.glossy?.promotion?.defaultReady !== false) {
@@ -1766,18 +1763,18 @@ const walkaroundExpectedHighSppVerdicts = {
 if (
   walkaroundPromotionStatus.verdict !== "PASS-PARTIAL" ||
   walkaroundPromotionStatus.promotion?.defaultReady !== false ||
-  walkaroundPromotionStatus.promotion?.classification !== "glass-and-glossy-findings"
+  walkaroundPromotionStatus.promotion?.classification !== "glossy-finding"
 ) {
-  fail("walkaround promotion summary must pin PASS-PARTIAL/defaultReady=false/glass-and-glossy-findings");
+  fail("walkaround promotion summary must pin PASS-PARTIAL/defaultReady=false/glossy-finding");
 }
-if (walkaroundPromotionStatus.promotion?.blocker !== "multiple-non-promotable-walkaround-findings") {
-  fail("walkaround promotion summary must pin the combined walkaround findings blocker");
+if (walkaroundPromotionStatus.promotion?.blocker !== "ddgi-irradiance-cache-not-ggx-filtered-radiance") {
+  fail("walkaround promotion summary must pin the glossy walkaround finding blocker");
 }
 if (
-  walkaroundPromotionStatus.promotion?.blockers?.glass !== "glass-transport-radiance-blowout" ||
+  walkaroundPromotionStatus.promotion?.blockers?.glass != null ||
   walkaroundPromotionStatus.promotion?.blockers?.glossy !== "ddgi-irradiance-cache-not-ggx-filtered-radiance"
 ) {
-  fail("walkaround promotion summary must pin both glass and glossy subcase blockers");
+  fail("walkaround promotion summary must pin only the glossy subcase blocker");
 }
 if (!String(walkaroundPromotionStatus.promotion?.requiredEvidence ?? "").includes("browser-real-adapter")) {
   fail("walkaround promotion summary must name browser-real-adapter evidence");
@@ -1795,8 +1792,8 @@ if (!Array.isArray(walkaroundPromotionStatus.glassProfiles) || walkaroundPromoti
   fail("walkaround promotion summary must preserve baseline and all-spp64 glass profiles");
 }
 for (const profile of walkaroundPromotionStatus.glassProfiles) {
-  if (profile.verdict !== "FINDING" || profile.materialEffectObserved !== true) {
-    fail(`walkaround promotion summary ${profile.label} must keep the glass FINDING/material-effect evidence`);
+  if (profile.verdict !== "PASS" || profile.ratioWithinPromotionBounds !== true || profile.materialEffectObserved !== true) {
+    fail(`walkaround promotion summary ${profile.label} must keep the bounded glass PASS/material-effect evidence`);
   }
 }
 for (const profile of walkaroundPromotionStatus.glossyProfiles) {

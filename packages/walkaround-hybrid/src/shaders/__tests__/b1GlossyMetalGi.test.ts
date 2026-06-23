@@ -69,6 +69,13 @@ function fnBody(src: string, name: string): string {
 }
 
 describe('B1 — metals receive direct light (no isMetal early-out)', () => {
+  it('generic glass does not self-emit unless stained-glass sun-caustic is opted in', () => {
+    const body = fnBody(SHADE_WGSL, 'lo_emit');
+    expect(body).toContain('if (!isGlass) { return vec3f(0.0); }');
+    expect(body).toContain('if ((ubo.stainedGlassFlags & SG_FLAG_SUN_CAUSTIC) == 0u) { return vec3f(0.0); }');
+    expect(body).toContain('return beerAlbedo * trans * ubo.sunIntensity * sunDot * texMod;');
+  });
+
   it('lo_direct early-out is glass-only', () => {
     const body = fnBody(SHADE_WGSL, 'lo_direct');
     expect(body).toContain('if (isGlass) { return vec3f(0.0); }');
@@ -174,6 +181,16 @@ describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
     // Physical Schlick F0 = ((ior-1)/(ior+1))².
     expect(SHADE_WGSL).toContain('decodeIor(packedG)');
     expect(SHADE_WGSL).toContain('iorMinus1 / iorPlus1');
+  });
+
+  it('shade lo_transmittedGI blends half-res GI reservoirs and uses the indirect clamp', () => {
+    const body = fnBody(SHADE_WGSL, 'lo_transmittedGI');
+    expect(body).toContain('let halfPxF = vec2f(gid) * 0.5;');
+    expect(body).toContain('for (var k: u32 = 0u; k < 4u; k = k + 1u)');
+    expect(body).toContain('Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * fresnelT * beerAlbedo * bw;');
+    expect(body).toContain('Lo_transmitted = Lo_transmitted / totalW;');
+    expect(body).toContain('let scaledTransmitted = Lo_transmitted * ubo.glassMixScale;');
+    expect(body).toContain('return min(scaledTransmitted, ubo.indirectFireflyClamp * ubo.glassMixScale);');
   });
 
   it('risGi / risGiNrc rough-glass GI perturbation is gated on ROUGH_GLASS_THRESHOLD', () => {
