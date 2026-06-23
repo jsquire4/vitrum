@@ -4,7 +4,7 @@
 // pass/fail guard; this reporter is the work-order view so code, proof, and
 // future-contract tails do not get mixed together during long closure runs.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,14 @@ const RESEARCH_PROMOTION_CLASSES = new Set(["research-promotion"]);
 
 /**
  * @typedef {{
+ *   path: string,
+ *   type?: string,
+ *   json?: Record<string, unknown>
+ * }} ProofArtifact
+ */
+
+/**
+ * @typedef {{
  *   id: string,
  *   title?: string,
  *   status: string,
@@ -28,6 +36,7 @@ const RESEARCH_PROMOTION_CLASSES = new Set(["research-promotion"]);
  *   command?: string,
  *   promotionCommand?: string,
  *   allCasesHighSppCommand?: string,
+ *   proofArtifacts?: ProofArtifact[],
  *   currentContract?: string,
  *   decisionBlockers?: string[]
  * }} QueueRow
@@ -198,6 +207,11 @@ function formatRowDetails(row) {
     if (key === "command" || !key.endsWith("Command") || value == null) continue;
     lines.push(`    ${key}: ${String(value)}`);
   }
+  const artifactLines = formatProofArtifactStatus(row);
+  if (artifactLines.length > 0) {
+    lines.push("    proofArtifactStatus:");
+    lines.push(...artifactLines.map((line) => `      ${line}`));
+  }
   if (row.remaining) lines.push(`    remaining: ${row.remaining}`);
   if (row.currentContract) lines.push(`    currentContract: ${row.currentContract}`);
   if (Array.isArray(row.decisionBlockers) && row.decisionBlockers.length > 0) {
@@ -205,6 +219,67 @@ function formatRowDetails(row) {
     for (const blocker of row.decisionBlockers) lines.push(`      * ${blocker}`);
   }
   return lines;
+}
+
+/**
+ * @param {QueueRow} row
+ * @returns {string[]}
+ */
+function formatProofArtifactStatus(row) {
+  const artifacts = Array.isArray(row.proofArtifacts) ? row.proofArtifacts : [];
+  const jsonArtifacts = artifacts.filter((artifact) =>
+    artifact?.path?.endsWith(".json") || artifact?.json != null
+  );
+  if (jsonArtifacts.length === 0) return [];
+
+  const maxRows = 5;
+  const lines = [];
+  for (const artifact of jsonArtifacts.slice(0, maxRows)) {
+    lines.push(formatOneProofArtifactStatus(artifact));
+  }
+  const remaining = jsonArtifacts.length - maxRows;
+  if (remaining > 0) lines.push(`... ${remaining} more JSON proof artifact(s)`);
+  return lines;
+}
+
+/**
+ * @param {ProofArtifact} artifact
+ * @returns {string}
+ */
+function formatOneProofArtifactStatus(artifact) {
+  const artifactPath = artifact.path;
+  const absolute = resolve(repoRoot, artifactPath);
+  if (!existsSync(absolute)) return `${artifactPath}: missing`;
+  try {
+    const value = JSON.parse(readFileSync(absolute, "utf8"));
+    const parts = [];
+    const verdict = readNested(value, "verdict") ?? readNested(value, "status");
+    const generatedAt = readNested(value, "generatedAt");
+    const assetCount = readNested(value, "assetCount");
+    const qualityProfile = readNested(value, "renderConfig.qualityProfile");
+    const spp = readNested(value, "renderConfig.spp");
+    if (verdict != null) parts.push(`verdict=${String(verdict)}`);
+    if (generatedAt != null) parts.push(`generatedAt=${String(generatedAt)}`);
+    if (assetCount != null) parts.push(`assetCount=${String(assetCount)}`);
+    if (qualityProfile != null) parts.push(`qualityProfile=${String(qualityProfile)}`);
+    if (spp != null) parts.push(`spp=${String(spp)}`);
+    return parts.length > 0 ? `${artifactPath}: ${parts.join(", ")}` : `${artifactPath}: JSON`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `${artifactPath}: unreadable JSON (${message})`;
+  }
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} path
+ * @returns {unknown}
+ */
+function readNested(value, path) {
+  return path.split(".").reduce((cursor, part) => {
+    if (cursor == null || typeof cursor !== "object") return undefined;
+    return /** @type {Record<string, unknown>} */ (cursor)[part];
+  }, value);
 }
 
 /**

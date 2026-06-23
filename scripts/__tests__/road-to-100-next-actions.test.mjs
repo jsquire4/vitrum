@@ -103,6 +103,12 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
         kind: 'provisioning',
         title: 'learned systems',
         command: 'npm run learned',
+        proofArtifacts: [
+          {
+            path: 'tools/learned-systems/learned-systems-status.json',
+            json: { verdict: 'PASS' },
+          },
+        ],
         remaining: 'needs production checkpoint',
       },
     ],
@@ -130,6 +136,8 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
   assert.match(text, /workClass: research-promotion/);
   assert.match(text, /provisioningWork: 1/);
   assert.match(text, /VQ-LEARNED: learned systems \[provisioning-needed\]/);
+  assert.match(text, /proofArtifactStatus:/);
+  assert.match(text, /tools\/learned-systems\/learned-systems-status\.json: verdict=PASS/);
   assert.match(text, /futureContract: 1/);
   assert.match(text, /currentContract: fallback is explicit/);
   assert.match(text, /decisionBlockers:/);
