@@ -79,6 +79,8 @@ export interface GltfTextureDecodeReportEntry {
   readonly imageUri?: string;
   readonly imageMimeType?: string;
   readonly textureSourceExtension?: GltfTextureSourceExtension;
+  readonly handleChannels?: 1 | 2 | 3 | 4;
+  readonly handleDataType?: 'uint8' | 'uint16' | 'float32';
   /**
    * The decoded payload's own color-space hint when the handle exposes one.
    * This is intentionally separate from `colorSpace`, which describes the
@@ -316,6 +318,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
       uniqueHandles.add(ref.handle);
       const handleKind = classifyTextureHandle(ref.handle);
       const handleColorSpace = textureHandleColorSpace(ref.handle);
+      const payloadFields = textureHandlePayloadReportFields(ref.handle);
       const samplerFields = textureSamplerReportFields(ref);
       const source = gltfTextureRefSource(ref);
       const dimensionFields = textureDimensionReportFields(ref.handle);
@@ -340,6 +343,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
         ...(source?.textureSourceExtension !== undefined
           ? { textureSourceExtension: source.textureSourceExtension }
           : {}),
+        ...payloadFields,
         ...(handleColorSpace !== undefined ? { handleColorSpace } : {}),
         colorSpace: gltfTextureColorSpaceForField(field),
         handleKind,
@@ -414,6 +418,44 @@ function textureHandleDimensions(handle: unknown): { readonly width: number; rea
     return { width: image.width, height: image.height };
   }
   return null;
+}
+
+function textureHandlePayloadReportFields(
+  handle: unknown,
+): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> {
+  const hint = textureHandlePayloadHint(handle);
+  if (hint !== null) return hint;
+  const pixels = decodedPixelsFromCpuReadableHandle(handle);
+  if (pixels === null) return {};
+  const width = Math.max(0, Math.floor(pixels.width));
+  const height = Math.max(0, Math.floor(pixels.height));
+  if (width <= 0 || height <= 0 || !isArrayLikeData(pixels.data)) return {};
+  return {
+    handleChannels: pixels.channels ?? inferDecodedChannels(pixels.data, width, height),
+    handleDataType: pixels.dataType ?? inferDecodedDataType(pixels.data),
+  };
+}
+
+function textureHandlePayloadHint(
+  handle: unknown,
+): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> | null {
+  if (!isRecord(handle)) return null;
+  const direct = texturePayloadHintFromRecord(handle);
+  if (direct !== null) return direct;
+  return isRecord(handle.image) ? texturePayloadHintFromRecord(handle.image, handle) : null;
+}
+
+function texturePayloadHintFromRecord(
+  record: Record<string, unknown>,
+  metadata: Record<string, unknown> = record,
+): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> | null {
+  const hint = isRecord(metadata.__vitrum_hint__) ? metadata.__vitrum_hint__ : metadata;
+  const channels = hint.channels;
+  const dataType = hint.dataType;
+  const out: { handleChannels?: 1 | 2 | 3 | 4; handleDataType?: 'uint8' | 'uint16' | 'float32' } = {};
+  if (channels === 1 || channels === 2 || channels === 3 || channels === 4) out.handleChannels = channels;
+  if (dataType === 'uint8' || dataType === 'uint16' || dataType === 'float32') out.handleDataType = dataType;
+  return out.handleChannels !== undefined || out.handleDataType !== undefined ? out : null;
 }
 
 function textureDecodeHint(handle: unknown): {

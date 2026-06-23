@@ -1580,6 +1580,8 @@ describe('loadGltfAsset', () => {
       expect.objectContaining({
         materialField: 'baseColorMap',
         handleKind: 'pixel-data',
+        handleChannels: 4,
+        handleDataType: 'float32',
         handleColorSpace: 'linear',
         width: 2,
         height: 1,
@@ -2667,6 +2669,8 @@ describe('decodeSceneTextures', () => {
       expect.objectContaining({
         materialField: 'baseColorMap',
         colorSpace: 'srgb',
+        handleChannels: 4,
+        handleDataType: 'float32',
         handleColorSpace: 'srgb',
         handleKind: 'pixel-data',
         backendReadiness: expect.objectContaining({
@@ -2704,12 +2708,16 @@ describe('decodeSceneTextures', () => {
     expect(result.textureDecodeReport.entries).toEqual(expect.arrayContaining([
       expect.objectContaining({
         materialField: 'specularColorMap',
+        handleChannels: 4,
+        handleDataType: 'float32',
         handleColorSpace: 'srgb',
         handleKind: 'pixel-data',
         backendReadiness: expect.objectContaining({ ptWebgpu: 'ready' }),
       }),
       expect.objectContaining({
         materialField: 'roughnessMap',
+        handleChannels: 4,
+        handleDataType: 'float32',
         handleColorSpace: 'linear',
         handleKind: 'pixel-data',
         backendReadiness: expect.objectContaining({ ptWebgpu: 'ready' }),

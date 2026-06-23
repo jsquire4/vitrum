@@ -400,7 +400,10 @@ predictable pre-upload path for glTF loads that would otherwise leave
 `usesMipmaps` when the asset authored a mipmapped minification mode. It also
 separates the material role's color space (`colorSpace`) from the decoded handle
 hint (`handleColorSpace`) when known, so hosts can tell a CPU-linear bake from a
-WebGPU-ready sRGB-preserved payload. Browser default `ImageBitmap` handles from
+WebGPU-ready sRGB-preserved payload. It also reports decoded handle payload shape
+(`handleChannels`, `handleDataType`) when known, so one-call loaders can inspect
+whether a backend-ready map is the expected RGBA float payload before upload.
+Browser default `ImageBitmap` handles from
 ordinary `loadGltfAsset()` are reported through `imageBitmapCount` /
 `imageBitmapRefs`; decoded loads report CPU-readable `pixel-data` handles when
 browser readback or a custom decoder succeeds, and preserve a structured
