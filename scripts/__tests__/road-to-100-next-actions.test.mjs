@@ -85,6 +85,7 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
         title: 'browser proof',
         command: 'npm run proof',
         promotionCommand: 'npm run proof:required',
+        allCasesHighSppCommand: 'npm run proof:all-spp64',
         remaining: 'needs browser host',
       },
       {
@@ -121,6 +122,7 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
   assert.match(text, /proofOrAdapterWork: 1/);
   assert.match(text, /VQ-HOST: browser proof \[host-blocked\]/);
   assert.match(text, /command: npm run proof/);
+  assert.match(text, /allCasesHighSppCommand: npm run proof:all-spp64/);
   assert.match(text, /promotionCommand: npm run proof:required/);
   assert.match(text, /remaining: needs browser host/);
   assert.match(text, /researchPromotionWork: 1/);

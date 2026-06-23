@@ -27,6 +27,7 @@ const RESEARCH_PROMOTION_CLASSES = new Set(["research-promotion"]);
  *   remaining?: string,
  *   command?: string,
  *   promotionCommand?: string,
+ *   allCasesHighSppCommand?: string,
  *   currentContract?: string,
  *   decisionBlockers?: string[]
  * }} QueueRow
@@ -193,7 +194,10 @@ function formatRowDetails(row) {
   if (row.kind) lines.push(`    kind: ${row.kind}`);
   if (row.workClass) lines.push(`    workClass: ${row.workClass}`);
   if (row.command) lines.push(`    command: ${row.command}`);
-  if (row.promotionCommand) lines.push(`    promotionCommand: ${row.promotionCommand}`);
+  for (const [key, value] of Object.entries(row).sort(([a], [b]) => a.localeCompare(b))) {
+    if (key === "command" || !key.endsWith("Command") || value == null) continue;
+    lines.push(`    ${key}: ${String(value)}`);
+  }
   if (row.remaining) lines.push(`    remaining: ${row.remaining}`);
   if (row.currentContract) lines.push(`    currentContract: ${row.currentContract}`);
   if (Array.isArray(row.decisionBlockers) && row.decisionBlockers.length > 0) {
