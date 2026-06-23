@@ -27,8 +27,10 @@ const STATUS_FILES = [
 ];
 
 const SOURCE_GUARD = "packages/pt-webgpu/src/index.ts";
+const SUMMARY_STATUS = "tools/behavioral-gate/cwbvh-default-promotion-status.json";
 const MIN_SLOW_OR_NEUTRAL_RATIO = 1.0;
 const MIN_FAST_RATIO = 0.95;
+const MIN_SLOW_OR_NEUTRAL_ROWS = 2;
 
 /** @param {string} message @returns {never} */
 function fail(message) {
@@ -102,6 +104,45 @@ function assertCwbvhRow(row, path) {
   return { label, ratio };
 }
 
+/**
+ * @param {Array<{ label: string; ratio: number }>} perfRows
+ * @param {Array<{ label: string; ratio: number }>} slowOrNeutral
+ * @param {Array<{ label: string; ratio: number }>} fast
+ * @param {string} classification
+ */
+async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification) {
+  const status = JSON.parse(await Deno.readTextFile(SUMMARY_STATUS));
+  if (status.harness !== "cwbvh-default-promotion-proof") fail(`${SUMMARY_STATUS}: harness mismatch`);
+  if (status.verdict !== "PASS-PARTIAL") fail(`${SUMMARY_STATUS}: verdict must stay PASS-PARTIAL until default promotion is proven`);
+  if (status.promotion?.defaultReady !== false) fail(`${SUMMARY_STATUS}: promotion.defaultReady must be false`);
+  if (status.promotion?.classification !== classification) {
+    fail(`${SUMMARY_STATUS}: promotion.classification expected ${classification}, got ${status.promotion?.classification}`);
+  }
+  if (!String(status.promotion?.requiredEvidence ?? "").includes("browser/real-adapter throughput A/B")) {
+    fail(`${SUMMARY_STATUS}: requiredEvidence must name browser/real-adapter throughput A/B`);
+  }
+  if (status.thresholds?.slowOrNeutralRatio !== MIN_SLOW_OR_NEUTRAL_RATIO) {
+    fail(`${SUMMARY_STATUS}: slowOrNeutralRatio threshold drifted`);
+  }
+  if (status.thresholds?.fastRatio !== MIN_FAST_RATIO) {
+    fail(`${SUMMARY_STATUS}: fastRatio threshold drifted`);
+  }
+  if (status.thresholds?.minSlowOrNeutralRows !== MIN_SLOW_OR_NEUTRAL_ROWS) {
+    fail(`${SUMMARY_STATUS}: minSlowOrNeutralRows threshold drifted`);
+  }
+  if (status.rowCount !== perfRows.length) fail(`${SUMMARY_STATUS}: rowCount mismatch`);
+  if (status.slowOrNeutralCount !== slowOrNeutral.length) fail(`${SUMMARY_STATUS}: slowOrNeutralCount mismatch`);
+  if (status.fastCount !== fast.length) fail(`${SUMMARY_STATUS}: fastCount mismatch`);
+  const expectedRatios = perfRows.map((row) => ({ label: row.label, ratio: row.ratio }));
+  if (JSON.stringify(status.ratios) !== JSON.stringify(expectedRatios)) {
+    fail(`${SUMMARY_STATUS}: ratios do not match committed dzn CWBVH status rows`);
+  }
+  const expectedSources = STATUS_FILES.map((entry) => entry.path);
+  if (JSON.stringify(status.sourceStatuses) !== JSON.stringify(expectedSources)) {
+    fail(`${SUMMARY_STATUS}: sourceStatuses do not match checker inputs`);
+  }
+}
+
 const source = await Deno.readTextFile(SOURCE_GUARD);
 assertSourceStillOptIn(source);
 
@@ -121,7 +162,7 @@ for (const expected of STATUS_FILES) {
 if (perfRows.length !== 5) fail(`expected 5 CWBVH performance rows, got ${perfRows.length}`);
 const slowOrNeutral = perfRows.filter((row) => row.ratio >= MIN_SLOW_OR_NEUTRAL_RATIO);
 const fast = perfRows.filter((row) => row.ratio < MIN_FAST_RATIO);
-if (slowOrNeutral.length < 2) {
+if (slowOrNeutral.length < MIN_SLOW_OR_NEUTRAL_ROWS) {
   fail(
     `default-promotion blocker disappeared: expected at least two slow/neutral rows ` +
       `(ratio >= ${MIN_SLOW_OR_NEUTRAL_RATIO}), got ${slowOrNeutral.length}`,
@@ -130,6 +171,7 @@ if (slowOrNeutral.length < 2) {
 
 const ratioSummary = perfRows.map((row) => `${row.label}=${row.ratio.toFixed(3)}`).join(", ");
 const classification = fast.length > 0 ? "mixed" : "uniform-slower";
+await assertSummaryStatus(perfRows, slowOrNeutral, fast, classification);
 console.log(
   `[cwbvh-default-promotion-proof-check] PASS (CWBVH remains opt-in; ${classification} dzn ratios: ${ratioSummary})`,
 );

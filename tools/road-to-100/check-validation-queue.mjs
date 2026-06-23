@@ -829,6 +829,7 @@ assertRowCitesPaths(cwbvhRow, [
   "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json",
+  "tools/behavioral-gate/cwbvh-default-promotion-status.json",
   "tools/behavioral-gate/gate.mjs",
   "packages/pt-webgpu/src/index.ts",
   "packages/pt-webgpu/src/scene/uploadSceneBuffers.ts",
@@ -924,6 +925,37 @@ for (const label of broaderLabels) {
   if (config.cwbvhPerfKind !== "same-scene" || !(Number(config.cwbvhBinaryRenderMs) > 0) || !(Number(config.cwbvhRenderMs) > 0)) {
     fail(`VQ-CWBVH-DEFAULT-PROMOTION ${label} must preserve same-scene CWBVH timing evidence`);
   }
+}
+const cwbvhPromotionStatus = await readJson("tools/behavioral-gate/cwbvh-default-promotion-status.json");
+const cwbvhTimingRows = [
+  ...dznCwbvhStatuses.map((status) => status.configs[0]),
+  ...broaderLabels.map((label) => dznCwbvhBroaderStatus.configs.find((entry) => entry?.label === label)),
+];
+const cwbvhExpectedRatios = cwbvhTimingRows.map((entry) => ({
+  label: entry.label,
+  ratio: Number(entry.cwbvhRenderMsRatio),
+}));
+const cwbvhSlowOrNeutralCount = cwbvhExpectedRatios.filter((entry) => entry.ratio >= 1).length;
+const cwbvhFastCount = cwbvhExpectedRatios.filter((entry) => entry.ratio < 0.95).length;
+if (
+  cwbvhPromotionStatus.verdict !== "PASS-PARTIAL" ||
+  cwbvhPromotionStatus.promotion?.defaultReady !== false ||
+  cwbvhPromotionStatus.promotion?.classification !== "uniform-slower"
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary must pin PASS-PARTIAL/defaultReady=false/uniform-slower");
+}
+if (
+  cwbvhPromotionStatus.rowCount !== cwbvhExpectedRatios.length ||
+  cwbvhPromotionStatus.slowOrNeutralCount !== cwbvhSlowOrNeutralCount ||
+  cwbvhPromotionStatus.fastCount !== cwbvhFastCount
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary counts must match committed timing rows");
+}
+if (JSON.stringify(cwbvhPromotionStatus.ratios) !== JSON.stringify(cwbvhExpectedRatios)) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary ratios must match committed timing rows");
+}
+if (!String(cwbvhPromotionStatus.promotion?.requiredEvidence ?? "").includes("browser/real-adapter throughput A/B")) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary must name browser/real-adapter throughput A/B");
 }
 
 const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SYSTEMS");

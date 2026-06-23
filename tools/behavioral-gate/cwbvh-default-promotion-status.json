@@ -1,0 +1,46 @@
+{
+  "generatedAt": "2026-06-23T04:38:00.000Z",
+  "harness": "cwbvh-default-promotion-proof",
+  "verdict": "PASS-PARTIAL",
+  "promotion": {
+    "defaultReady": false,
+    "classification": "uniform-slower",
+    "reason": "Committed dzn full-tier parity rows pass, but every measured CWBVH same-scene timing ratio is slower than binary traversal.",
+    "requiredEvidence": "browser/real-adapter throughput A/B over broader workloads before making CWBVH the default traversal"
+  },
+  "thresholds": {
+    "slowOrNeutralRatio": 1,
+    "fastRatio": 0.95,
+    "minSlowOrNeutralRows": 2
+  },
+  "rowCount": 5,
+  "slowOrNeutralCount": 5,
+  "fastCount": 0,
+  "ratios": [
+    {
+      "label": "pt/cwbvh-binary-parity",
+      "ratio": 1.312
+    },
+    {
+      "label": "pt/cwbvh-complex-parity",
+      "ratio": 1.34
+    },
+    {
+      "label": "pt/cwbvh-broader-material-lobes",
+      "ratio": 1.25
+    },
+    {
+      "label": "pt/cwbvh-broader-material-lobe-maps",
+      "ratio": 1.271
+    },
+    {
+      "label": "pt/cwbvh-broader-gltf-material-sweep",
+      "ratio": 1.154
+    }
+  ],
+  "sourceStatuses": [
+    "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json"
+  ]
+}
