@@ -158,7 +158,9 @@
             "hostStatus.verdict": "PASS",
             "hostStatus.caseCount": 4,
             "researchFindings.bdptMultiVertex.defaultReady": false,
+            "researchFindings.bdptMultiVertex.currentEstimator": "additive-sidecar-not-weighted-against-eye-path",
             "researchFindings.bdptMultiVertex.blocker": "not-weighted-against-regular-eye-path-strategy",
+            "researchFindings.bdptMultiVertex.safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
             "researchFindings.restirPtGlossyResearch.verdict": "FINDING",
             "researchFindings.restirPtGlossyResearch.defaultReady": false,
             "researchFindings.restirPtGlossyResearch.requiredEvidence": "glossy-material-furnace-reference-ab-and-browser-real-adapter-recapture",
@@ -170,8 +172,10 @@
           "path": "tools/radiometric-ab/results-bdpt.json",
           "json": {
             "controls.multiVertexPromotion.defaultReady": false,
+            "controls.multiVertexPromotion.currentEstimator": "additive-sidecar-not-weighted-against-eye-path",
             "controls.multiVertexPromotion.blocker": "not-weighted-against-regular-eye-path-strategy",
-            "controls.multiVertexPromotion.requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy"
+            "controls.multiVertexPromotion.requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+            "controls.multiVertexPromotion.safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1"
           }
         },
         { "path": "tools/radiometric-ab/results-restir-pt.json" },
@@ -319,7 +323,9 @@
             "ptWebgpuFullTier.supportedRowCount": 10,
             "ptWebgpuFullTier.bdptBoundary.safeDefault": "endpoint-only",
             "ptWebgpuFullTier.bdptBoundary.multiVertexDefaultReady": false,
+            "ptWebgpuFullTier.bdptBoundary.multiVertexCurrentEstimator": "additive-sidecar-not-weighted-against-eye-path",
             "ptWebgpuFullTier.bdptBoundary.multiVertexBlocker": "not-weighted-against-regular-eye-path-strategy",
+            "ptWebgpuFullTier.bdptBoundary.multiVertexSafeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
             "ptWebgl2.browserPromotionReady": false,
             "ptWebgl2.browserStatus": "HOST-BLOCKED",
             "ptWebgl2.hostBlockClasses.0": "browser-canvas-readback-timeout",
@@ -347,8 +353,8 @@
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-light-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json", "json": { "verdict": "PASS" } },
-        { "path": "tools/radiometric-ab/pt-promotion-status.json", "json": { "researchFindings.bdptMultiVertex.defaultReady": false, "researchFindings.bdptMultiVertex.blocker": "not-weighted-against-regular-eye-path-strategy" } },
-        { "path": "tools/radiometric-ab/results-bdpt.json", "json": { "controls.endpointOnlyMatchesUni": true, "controls.multiVertexPromotion.defaultReady": false, "controls.multiVertexPromotion.blocker": "not-weighted-against-regular-eye-path-strategy" } },
+        { "path": "tools/radiometric-ab/pt-promotion-status.json", "json": { "researchFindings.bdptMultiVertex.defaultReady": false, "researchFindings.bdptMultiVertex.currentEstimator": "additive-sidecar-not-weighted-against-eye-path", "researchFindings.bdptMultiVertex.blocker": "not-weighted-against-regular-eye-path-strategy", "researchFindings.bdptMultiVertex.safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1" } },
+        { "path": "tools/radiometric-ab/results-bdpt.json", "json": { "controls.endpointOnlyMatchesUni": true, "controls.multiVertexPromotion.defaultReady": false, "controls.multiVertexPromotion.currentEstimator": "additive-sidecar-not-weighted-against-eye-path", "controls.multiVertexPromotion.blocker": "not-weighted-against-regular-eye-path-strategy", "controls.multiVertexPromotion.safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1" } },
         { "path": "tools/reference-renders/baseline/ptwgpu-spectral-hero.png", "type": "png" },
         { "path": "tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png", "type": "png" },
         { "path": "tools/reference-renders/baseline/ptwgpu-cauchy-dispersion.png", "type": "png" },

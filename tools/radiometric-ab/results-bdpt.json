@@ -1,6 +1,6 @@
 {
   "ab": "bdpt-vs-unidirectional",
-  "date": "2026-06-23T17:17:56.349Z",
+  "date": "2026-06-23T17:59:42.311Z",
   "resolution": {
     "W": 80,
     "H": 80
@@ -54,8 +54,10 @@
     "multiVertexPromotion": {
       "defaultReady": false,
       "warningCode": "pt-webgpu.bdpt-multivertex-research-mode",
+      "currentEstimator": "additive-sidecar-not-weighted-against-eye-path",
       "blocker": "not-weighted-against-regular-eye-path-strategy",
       "requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+      "safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
       "evidencePath": "tools/radiometric-ab/results-bdpt.json"
     }
   },
@@ -63,8 +65,10 @@
     "bdptMultiVertex": {
       "defaultReady": false,
       "warningCode": "pt-webgpu.bdpt-multivertex-research-mode",
+      "currentEstimator": "additive-sidecar-not-weighted-against-eye-path",
       "blocker": "not-weighted-against-regular-eye-path-strategy",
       "requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+      "safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
       "firstFindingMaxLightBounces": 2,
       "firstFindingGlobalRelErr": 0.13211930886712425,
       "evidencePath": "tools/radiometric-ab/results-bdpt.json"

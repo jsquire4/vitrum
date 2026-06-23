@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-23T17:21:42.156Z",
+  "generatedAt": "2026-06-23T18:03:14.376Z",
   "harness": "pt-radiometric-promotion-proof",
   "verdict": "PASS-PARTIAL",
   "hostStatus": {
@@ -17,7 +17,7 @@
       "verdict": "PASS",
       "converging": true,
       "inBallpark": true,
-      "finalRelErr": 0.2340380090151866
+      "finalRelErr": 0.23403966311701657
     },
     "bdptEndpointOnly": {
       "verdict": "PASS",
@@ -44,8 +44,10 @@
     "bdptMultiVertex": {
       "defaultReady": false,
       "warningCode": "pt-webgpu.bdpt-multivertex-research-mode",
+      "currentEstimator": "additive-sidecar-not-weighted-against-eye-path",
       "blocker": "not-weighted-against-regular-eye-path-strategy",
       "requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+      "safeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
       "firstFindingMaxLightBounces": 2,
       "firstFindingGlobalRelErr": 0.13211930886712425,
       "evidencePath": "tools/radiometric-ab/results-bdpt.json"
@@ -66,7 +68,7 @@
       "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B",
       "maxGlobalRmseRatio": 1.4858971059275516,
       "maxRoiRmseRatio": 1.3821594259086538,
-      "maxElapsedMsRatio": 1.755144937414677,
+      "maxElapsedMsRatio": 1.8274217765736416,
       "evidencePath": "tools/radiometric-ab/results-sobol.json"
     }
   },

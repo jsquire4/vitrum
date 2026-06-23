@@ -11,7 +11,9 @@
       "endpointOnlyMatchesUni": true,
       "multiVertexDefaultReady": false,
       "multiVertexWarningCode": "pt-webgpu.bdpt-multivertex-research-mode",
+      "multiVertexCurrentEstimator": "additive-sidecar-not-weighted-against-eye-path",
       "multiVertexBlocker": "not-weighted-against-regular-eye-path-strategy",
+      "multiVertexSafeAlternative": "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
       "evidencePath": "tools/radiometric-ab/results-bdpt.json"
     }
   },

@@ -883,7 +883,9 @@ if (
   rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.endpointOnlyMatchesUni !== rendererBdptResult.controls?.endpointOnlyMatchesUni ||
   rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.multiVertexDefaultReady !== rendererPtPromotionStatus.researchFindings?.bdptMultiVertex?.defaultReady ||
   rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.multiVertexWarningCode !== rendererPtPromotionStatus.researchFindings?.bdptMultiVertex?.warningCode ||
+  rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.multiVertexCurrentEstimator !== "additive-sidecar-not-weighted-against-eye-path" ||
   rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.multiVertexBlocker !== "not-weighted-against-regular-eye-path-strategy" ||
+  rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.multiVertexSafeAlternative !== "omit bdptOptions.maxLightBounces or set maxLightBounces:1" ||
   rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.evidencePath !== "tools/radiometric-ab/results-bdpt.json"
 ) {
   fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin the pt-webgpu BDPT safe-default/research boundary");
@@ -891,6 +893,8 @@ if (
 if (
   rendererBdptResult.controls?.endpointOnlyMatchesUni !== true ||
   rendererBdptResult.controls?.multiVertexPromotion?.defaultReady !== false ||
+  rendererBdptResult.controls?.multiVertexPromotion?.currentEstimator !== "additive-sidecar-not-weighted-against-eye-path" ||
+  rendererBdptResult.controls?.multiVertexPromotion?.safeAlternative !== "omit bdptOptions.maxLightBounces or set maxLightBounces:1" ||
   rendererPtPromotionStatus.researchFindings?.bdptMultiVertex?.defaultReady !== false
 ) {
   fail("VQ-RENDERER-FIDELITY-PROOF BDPT artifacts must keep multi-vertex out of renderer promotion");
@@ -1610,6 +1614,14 @@ if (
 if (ptRadiometricPromotionStatus.researchFindings?.bdptMultiVertex?.blocker !== "not-weighted-against-regular-eye-path-strategy") {
   fail("VQ-RADIOMETRIC-PT promotion status must pin the BDPT multi-vertex blocker");
 }
+if (
+  ptRadiometricPromotionStatus.researchFindings?.bdptMultiVertex?.currentEstimator !==
+  "additive-sidecar-not-weighted-against-eye-path" ||
+  ptRadiometricPromotionStatus.researchFindings?.bdptMultiVertex?.safeAlternative !==
+  "omit bdptOptions.maxLightBounces or set maxLightBounces:1"
+) {
+  fail("VQ-RADIOMETRIC-PT promotion status must pin the BDPT multi-vertex current estimator and safe alternative");
+}
 if (ptRadiometricPromotionStatus.researchFindings?.restirPtGlossyResearch?.verdict !== "FINDING") {
   fail("VQ-RADIOMETRIC-PT promotion status must pin glossy research as FINDING");
 }
@@ -1713,8 +1725,10 @@ const ptWebgpuIndexSource = await readText("packages/pt-webgpu/src/index.ts");
 for (const needle of [
   "pt-webgpu.bdpt-multivertex-research-mode",
   "promotionReady: false",
+  "currentEstimator: 'additive-sidecar-not-weighted-against-eye-path'",
   "not-weighted-against-regular-eye-path-strategy",
   "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+  "safeAlternative: 'omit bdptOptions.maxLightBounces or set maxLightBounces:1'",
   "tools/radiometric-ab/results-bdpt.json",
   "pt-webgpu.restir-pt-glossy-reuse-research-mode",
   "restirPtReuseOptions.experimentalGlossyReuse=true",

@@ -138,8 +138,10 @@ const multiVertexFindingStartsAt = firstMultiVertexControl != null && firstMulti
 const multiVertexResearchFinding = {
   defaultReady: false,
   warningCode: "pt-webgpu.bdpt-multivertex-research-mode",
+  currentEstimator: "additive-sidecar-not-weighted-against-eye-path",
   blocker: "not-weighted-against-regular-eye-path-strategy",
   requiredEstimator: "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+  safeAlternative: "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
   firstFindingMaxLightBounces: multiVertexFindingStartsAt,
   firstFindingGlobalRelErr: firstMultiVertexControl?.globalRelErr,
   evidencePath: "tools/radiometric-ab/results-bdpt.json",
@@ -222,8 +224,10 @@ const results = {
     multiVertexPromotion: {
       defaultReady: multiVertexResearchFinding.defaultReady,
       warningCode: multiVertexResearchFinding.warningCode,
+      currentEstimator: multiVertexResearchFinding.currentEstimator,
       blocker: multiVertexResearchFinding.blocker,
       requiredEstimator: multiVertexResearchFinding.requiredEstimator,
+      safeAlternative: multiVertexResearchFinding.safeAlternative,
       evidencePath: multiVertexResearchFinding.evidencePath,
     },
   },

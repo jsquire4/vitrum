@@ -161,8 +161,10 @@ export const BDPT_MULTIVERTEX_RESEARCH_PROOF = {
   resultPath: "tools/radiometric-ab/results-bdpt.json",
   sourcePath: "packages/pt-webgpu/src/index.ts",
   warningCode: "pt-webgpu.bdpt-multivertex-research-mode",
+  currentEstimator: "additive-sidecar-not-weighted-against-eye-path",
   blocker: "not-weighted-against-regular-eye-path-strategy",
   requiredEstimator: "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+  safeAlternative: "omit bdptOptions.maxLightBounces or set maxLightBounces:1",
   evidencePath: "tools/radiometric-ab/results-bdpt.json",
   promotion: {
     defaultReady: false,
@@ -215,8 +217,10 @@ export const PT_RADIOMETRIC_PROMOTION_STATUS_PROOF = {
     bdptMultiVertex: {
       resultPath: BDPT_MULTIVERTEX_RESEARCH_PROOF.resultPath,
       warningCode: BDPT_MULTIVERTEX_RESEARCH_PROOF.warningCode,
+      currentEstimator: BDPT_MULTIVERTEX_RESEARCH_PROOF.currentEstimator,
       blocker: BDPT_MULTIVERTEX_RESEARCH_PROOF.blocker,
       requiredEstimator: BDPT_MULTIVERTEX_RESEARCH_PROOF.requiredEstimator,
+      safeAlternative: BDPT_MULTIVERTEX_RESEARCH_PROOF.safeAlternative,
       firstFindingMaxLightBounces: BDPT_MULTIVERTEX_RESEARCH_PROOF.controls.findingStartsAt,
     },
     restirPtGlossyResearch: {

@@ -755,7 +755,9 @@ async function assertPromotionStatus(ptWebgl2BrowserStatuses) {
     endpointOnlyMatchesUni: bdptRadiometricResult.controls?.endpointOnlyMatchesUni,
     multiVertexDefaultReady: ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.defaultReady,
     multiVertexWarningCode: ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.warningCode,
+    multiVertexCurrentEstimator: ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.currentEstimator,
     multiVertexBlocker: ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.blocker,
+    multiVertexSafeAlternative: ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.safeAlternative,
     evidencePath: BDPT_RADIOMETRIC_RESULT_PATH,
   };
   if (JSON.stringify(status.ptWebgpuFullTier?.bdptBoundary) !== JSON.stringify(expectedBdptBoundary)) {
@@ -764,7 +766,10 @@ async function assertPromotionStatus(ptWebgl2BrowserStatuses) {
   if (
     bdptRadiometricResult.controls?.endpointOnlyMatchesUni !== true ||
     bdptRadiometricResult.controls?.multiVertexPromotion?.defaultReady !== false ||
+    bdptRadiometricResult.controls?.multiVertexPromotion?.currentEstimator !== "additive-sidecar-not-weighted-against-eye-path" ||
+    bdptRadiometricResult.controls?.multiVertexPromotion?.safeAlternative !== "omit bdptOptions.maxLightBounces or set maxLightBounces:1" ||
     ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.defaultReady !== false ||
+    ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.currentEstimator !== "additive-sidecar-not-weighted-against-eye-path" ||
     ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.blocker !== "not-weighted-against-regular-eye-path-strategy"
   ) {
     fail(`${PROMOTION_STATUS_PATH} BDPT boundary artifacts no longer preserve endpoint-only safe default and multi-vertex non-promotion`);

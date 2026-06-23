@@ -144,8 +144,10 @@ function buildPromotionStatus(hostStatus) {
   const bdptMultiVertexFinding = bdpt.researchFindings?.bdptMultiVertex ?? {
     defaultReady: bdpt.controls?.multiVertexPromotion?.defaultReady,
     warningCode: 'pt-webgpu.bdpt-multivertex-research-mode',
+    currentEstimator: bdpt.controls?.multiVertexPromotion?.currentEstimator,
     blocker: bdpt.controls?.multiVertexPromotion?.blocker,
     requiredEstimator: bdpt.controls?.multiVertexPromotion?.requiredEstimator,
+    safeAlternative: bdpt.controls?.multiVertexPromotion?.safeAlternative,
     firstFindingMaxLightBounces: firstBdptFinding?.maxLightBounces,
     firstFindingGlobalRelErr: firstBdptFinding?.globalRelErr,
     evidencePath: 'tools/radiometric-ab/results-bdpt.json',
@@ -212,8 +214,10 @@ function buildPromotionStatus(hostStatus) {
       bdptMultiVertex: {
         defaultReady: bdptMultiVertexFinding.defaultReady,
         warningCode: bdptMultiVertexFinding.warningCode,
+        currentEstimator: bdptMultiVertexFinding.currentEstimator,
         blocker: bdptMultiVertexFinding.blocker,
         requiredEstimator: bdptMultiVertexFinding.requiredEstimator,
+        safeAlternative: bdptMultiVertexFinding.safeAlternative,
         firstFindingMaxLightBounces: bdptMultiVertexFinding.firstFindingMaxLightBounces,
         firstFindingGlobalRelErr: bdptMultiVertexFinding.firstFindingGlobalRelErr,
         evidencePath: bdptMultiVertexFinding.evidencePath,

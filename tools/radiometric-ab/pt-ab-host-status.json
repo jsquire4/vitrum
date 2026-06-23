@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-23T17:21:42.156Z",
+  "generatedAt": "2026-06-23T18:03:14.376Z",
   "harness": "pt-radiometric-ab",
   "verdict": "PASS",
   "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-*.mjs",

@@ -147,8 +147,10 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
         safeDefault: 1,
         experimentalMultiVertex: true,
         promotionReady: false,
+        currentEstimator: 'additive-sidecar-not-weighted-against-eye-path',
         blocker: 'not-weighted-against-regular-eye-path-strategy',
         requiredEstimator: 'multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy',
+        safeAlternative: 'omit bdptOptions.maxLightBounces or set maxLightBounces:1',
         evidencePath: 'tools/radiometric-ab/results-bdpt.json',
       }),
     }));

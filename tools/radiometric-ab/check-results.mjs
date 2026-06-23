@@ -259,8 +259,10 @@ async function checkBdptMultiVertexResearch(proof) {
   }
   for (const [key, expected] of Object.entries({
     warningCode: proof.warningCode,
+    currentEstimator: proof.currentEstimator,
     blocker: proof.blocker,
     requiredEstimator: proof.requiredEstimator,
+    safeAlternative: proof.safeAlternative,
     evidencePath: proof.evidencePath,
   })) {
     if (promotion[key] !== expected) {
@@ -283,8 +285,10 @@ async function checkBdptMultiVertexResearch(proof) {
   const source = await Deno.readTextFile(new URL(`../../${proof.sourcePath}`, import.meta.url));
   for (const needle of [
     proof.warningCode,
+    proof.currentEstimator,
     proof.blocker,
     proof.requiredEstimator,
+    proof.safeAlternative,
     proof.evidencePath,
     "promotionReady: false",
   ]) {
@@ -757,8 +761,10 @@ async function checkPtRadiometricPromotionStatus(proof) {
     bdptMultiVertex: {
       defaultReady: bdpt.controls?.multiVertexPromotion?.defaultReady,
       warningCode: proof.researchFindings.bdptMultiVertex.warningCode,
+      currentEstimator: bdpt.controls?.multiVertexPromotion?.currentEstimator,
       blocker: bdpt.controls?.multiVertexPromotion?.blocker,
       requiredEstimator: bdpt.controls?.multiVertexPromotion?.requiredEstimator,
+      safeAlternative: bdpt.controls?.multiVertexPromotion?.safeAlternative,
       firstFindingMaxLightBounces: firstBdptFinding?.maxLightBounces,
       firstFindingGlobalRelErr: firstBdptFinding?.globalRelErr,
       evidencePath: proof.researchFindings.bdptMultiVertex.resultPath,
