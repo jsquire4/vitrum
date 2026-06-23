@@ -1550,6 +1550,8 @@ for (const needle of [
   "pt/gltf-material-sweep",
   "gltfReal",
   "gltf: \"material-sweep\"",
+  "configMatchesFilter",
+  "cfg.label.startsWith(\"pt/cwbvh-\") && !filter.includes(\"cwbvh\")",
 ]) {
   if (!behavioralGateSource.includes(needle)) {
     fail(`VQ-GLTF-MATERIAL-TOPOLOGY behavioral gate source is stale: missing ${needle}`);

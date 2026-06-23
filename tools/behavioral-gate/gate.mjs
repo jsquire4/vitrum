@@ -2824,13 +2824,24 @@ if (labelFilter) console.log(`Filter: ${labelFilter}`);
 console.log("");
 
 const results = [];
+function configMatchesFilter(cfg, filter, focused = false) {
+  if (!filter) return true;
+  if (!cfg.label.includes(filter)) return false;
+  // CWBVH promotion lanes may contain ordinary fixture names such as `gltf` or
+  // `material-lobes`, but they require full-tier adapters and are selected
+  // explicitly via `--filter cwbvh...`.
+  if (focused && cfg.label.startsWith("pt/cwbvh-") && !filter.includes("cwbvh")) {
+    return false;
+  }
+  return true;
+}
 const ptConfigs = labelFilter
   ? [
-      ...PT_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)),
-      ...PT_FOCUSED_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)),
+      ...PT_CONFIGS.filter((cfg) => configMatchesFilter(cfg, labelFilter)),
+      ...PT_FOCUSED_CONFIGS.filter((cfg) => configMatchesFilter(cfg, labelFilter, true)),
     ]
   : PT_CONFIGS;
-const whConfigs = labelFilter ? WH_CONFIGS.filter((cfg) => cfg.label.includes(labelFilter)) : WH_CONFIGS;
+const whConfigs = labelFilter ? WH_CONFIGS.filter((cfg) => configMatchesFilter(cfg, labelFilter)) : WH_CONFIGS;
 if (labelFilter && ptConfigs.length + whConfigs.length === 0) {
   console.error(`No behavioral-gate configs matched --filter=${labelFilter}`);
   Deno.exit(1);
