@@ -161,6 +161,7 @@
             "researchFindings.bdptMultiVertex.blocker": "not-weighted-against-regular-eye-path-strategy",
             "researchFindings.restirPtGlossyResearch.verdict": "FINDING",
             "researchFindings.restirPtGlossyResearch.defaultReady": false,
+            "researchFindings.restirPtGlossyResearch.requiredEvidence": "glossy-material-furnace-reference-ab-and-browser-real-adapter-recapture",
             "researchFindings.sobolDefault.defaultReady": false,
             "researchFindings.sobolDefault.requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B"
           }

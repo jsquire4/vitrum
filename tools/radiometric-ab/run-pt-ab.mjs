@@ -125,6 +125,16 @@ function buildPromotionStatus(hostStatus) {
     firstFindingGlobalRelErr: firstBdptFinding?.globalRelErr,
     evidencePath: 'tools/radiometric-ab/results-bdpt.json',
   };
+  const restirPtGlossyFinding = glossyResearch.researchFindings?.restirPtGlossyResearch ?? {
+    verdict: glossyResearch.verdict,
+    defaultReady: glossyResearch.promotion?.defaultReady,
+    warningCode: 'pt-webgpu.restir-pt-glossy-reuse-research-mode',
+    blocker: 'glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope',
+    requiredEvidence: 'glossy-material-furnace-reference-ab-and-browser-real-adapter-recapture',
+    globalRelErr: glossyResearch.globalRelErr,
+    varRatio: glossyResearch.varRatio,
+    evidencePath: 'tools/radiometric-ab/results-restir-pt-glossy-research.json',
+  };
   const sobolRatios = (sobol.scenes ?? []).map((scene) => scene.ratios ?? {});
 
   return {
@@ -175,13 +185,14 @@ function buildPromotionStatus(hostStatus) {
         evidencePath: bdptMultiVertexFinding.evidencePath,
       },
       restirPtGlossyResearch: {
-        verdict: glossyResearch.verdict,
-        defaultReady: glossyResearch.promotion?.defaultReady,
-        warningCode: 'pt-webgpu.restir-pt-glossy-reuse-research-mode',
-        blocker: 'glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope',
-        globalRelErr: glossyResearch.globalRelErr,
-        varRatio: glossyResearch.varRatio,
-        evidencePath: 'tools/radiometric-ab/results-restir-pt-glossy-research.json',
+        verdict: restirPtGlossyFinding.verdict,
+        defaultReady: restirPtGlossyFinding.defaultReady,
+        warningCode: restirPtGlossyFinding.warningCode,
+        blocker: restirPtGlossyFinding.blocker,
+        requiredEvidence: restirPtGlossyFinding.requiredEvidence,
+        globalRelErr: restirPtGlossyFinding.globalRelErr,
+        varRatio: restirPtGlossyFinding.varRatio,
+        evidencePath: restirPtGlossyFinding.evidencePath,
       },
       sobolDefault: {
         defaultReady: sobol.promotion?.defaultReady,

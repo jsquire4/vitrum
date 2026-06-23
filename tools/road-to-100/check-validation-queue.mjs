@@ -1520,6 +1520,12 @@ if (ptRadiometricPromotionStatus.researchFindings?.bdptMultiVertex?.blocker !== 
 if (ptRadiometricPromotionStatus.researchFindings?.restirPtGlossyResearch?.verdict !== "FINDING") {
   fail("VQ-RADIOMETRIC-PT promotion status must pin glossy research as FINDING");
 }
+if (
+  ptRadiometricPromotionStatus.researchFindings?.restirPtGlossyResearch?.requiredEvidence !==
+  "glossy-material-furnace-reference-ab-and-browser-real-adapter-recapture"
+) {
+  fail("VQ-RADIOMETRIC-PT promotion status must pin glossy research required evidence");
+}
 if (ptRadiometricPromotionStatus.researchFindings?.sobolDefault?.requiredEvidence !== "full-tier/real-adapter equal-time Sobol RMSE A/B") {
   fail("VQ-RADIOMETRIC-PT promotion status must pin Sobol equal-time real-adapter evidence");
 }

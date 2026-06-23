@@ -55,6 +55,7 @@
       "defaultReady": false,
       "warningCode": "pt-webgpu.restir-pt-glossy-reuse-research-mode",
       "blocker": "glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope",
+      "requiredEvidence": "glossy-material-furnace-reference-ab-and-browser-real-adapter-recapture",
       "globalRelErr": 1.0842436609544777,
       "varRatio": 7.713987825269332,
       "evidencePath": "tools/radiometric-ab/results-restir-pt-glossy-research.json"

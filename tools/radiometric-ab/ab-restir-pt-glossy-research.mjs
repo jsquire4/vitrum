@@ -46,6 +46,9 @@ const THRESHOLDS = {
   globalRelErrMax: 0.10,
   varRatioMax: 3.0,
 };
+const GLOSSY_RESEARCH_WARNING_CODE = "pt-webgpu.restir-pt-glossy-reuse-research-mode";
+const GLOSSY_RESEARCH_BLOCKER = "glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope";
+const GLOSSY_RESEARCH_REQUIRED_EVIDENCE = "glossy-material-furnace-reference-ab-and-browser-real-adapter-recapture";
 
 console.log(
   `Indirect ROI: cols ${ROI.x0}-${ROI.x1}, rows ${ROI.y0}-${ROI.y1} ` +
@@ -139,6 +142,18 @@ const results = {
     reason: verdict === "PASS"
       ? "Single repaired-Cornell research-mode capture is bounded but insufficient for default promotion."
       : "Experimental glossy/metallic visible-vertex reuse is outside the committed safe-default radiometric envelope.",
+  },
+  researchFindings: {
+    restirPtGlossyResearch: {
+      verdict,
+      defaultReady: false,
+      warningCode: GLOSSY_RESEARCH_WARNING_CODE,
+      blocker: GLOSSY_RESEARCH_BLOCKER,
+      requiredEvidence: GLOSSY_RESEARCH_REQUIRED_EVIDENCE,
+      globalRelErr,
+      varRatio,
+      evidencePath: "tools/radiometric-ab/results-restir-pt-glossy-research.json",
+    },
   },
   verdict,
 };

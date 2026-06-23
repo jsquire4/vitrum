@@ -505,6 +505,23 @@ async function checkRestirPtGlossyResearch(proof) {
   if (result.promotion?.defaultReady !== proof.promotion.defaultReady) {
     fail("restir-pt-glossy-research: promotion.defaultReady must remain false");
   }
+  const finding = result.researchFindings?.restirPtGlossyResearch ?? null;
+  if (finding == null || typeof finding !== "object") {
+    fail("restir-pt-glossy-research: result must carry researchFindings.restirPtGlossyResearch metadata");
+  }
+  for (const [key, expected] of Object.entries({
+    warningCode: proof.warningCode,
+    blocker: proof.blocker,
+    requiredEvidence: proof.requiredEvidence,
+    evidencePath: proof.resultPath,
+  })) {
+    if (finding[key] !== expected) {
+      fail(`restir-pt-glossy-research: researchFindings.restirPtGlossyResearch.${key} must be ${expected}`);
+    }
+  }
+  if (finding.defaultReady !== proof.promotion.defaultReady) {
+    fail("restir-pt-glossy-research: research finding defaultReady differs from proof metadata");
+  }
   /** @type {Array<[string, string[]]>} */
   const finiteGroups = [
     ["base", ["globalLum", "roiLum", "variance"]],
@@ -527,6 +544,15 @@ async function checkRestirPtGlossyResearch(proof) {
   const expectedVerdict = result.meanAgreement && result.varianceNotWorse ? "PASS" : "FINDING";
   if (result.verdict !== expectedVerdict) {
     fail(`restir-pt-glossy-research: verdict ${result.verdict} should be ${expectedVerdict}`);
+  }
+  if (finding.verdict !== result.verdict) {
+    fail("restir-pt-glossy-research: research finding verdict differs from result verdict");
+  }
+  if (finding.globalRelErr !== result.globalRelErr) {
+    fail("restir-pt-glossy-research: research finding globalRelErr differs from result");
+  }
+  if (finding.varRatio !== result.varRatio) {
+    fail("restir-pt-glossy-research: research finding varRatio differs from result");
   }
 }
 
@@ -672,6 +698,10 @@ async function checkPtRadiometricPromotionStatus(proof) {
   }
 
   const sobolRatios = /** @type {any[]} */ (sobol.scenes ?? []).map((scene) => scene.ratios ?? {});
+  const glossyFinding = glossyResearch.researchFindings?.restirPtGlossyResearch ?? null;
+  if (glossyFinding == null || typeof glossyFinding !== "object") {
+    fail("pt-radiometric-promotion: glossy research result must carry researchFindings.restirPtGlossyResearch");
+  }
   const expectedResearchFindings = {
     bdptMultiVertex: {
       defaultReady: bdpt.controls?.multiVertexPromotion?.defaultReady,
@@ -683,13 +713,14 @@ async function checkPtRadiometricPromotionStatus(proof) {
       evidencePath: proof.researchFindings.bdptMultiVertex.resultPath,
     },
     restirPtGlossyResearch: {
-      verdict: glossyResearch.verdict,
-      defaultReady: glossyResearch.promotion?.defaultReady,
-      warningCode: proof.researchFindings.restirPtGlossyResearch.warningCode,
-      blocker: proof.researchFindings.restirPtGlossyResearch.blocker,
-      globalRelErr: glossyResearch.globalRelErr,
-      varRatio: glossyResearch.varRatio,
-      evidencePath: proof.researchFindings.restirPtGlossyResearch.resultPath,
+      verdict: glossyFinding.verdict,
+      defaultReady: glossyFinding.defaultReady,
+      warningCode: glossyFinding.warningCode,
+      blocker: glossyFinding.blocker,
+      requiredEvidence: glossyFinding.requiredEvidence,
+      globalRelErr: glossyFinding.globalRelErr,
+      varRatio: glossyFinding.varRatio,
+      evidencePath: glossyFinding.evidencePath,
     },
     sobolDefault: {
       defaultReady: sobol.promotion?.defaultReady,

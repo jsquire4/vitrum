@@ -127,6 +127,9 @@ export const RESTIR_PT_GLOSSY_RESEARCH_PROOF = {
   mode: "research",
   scriptPath: "tools/radiometric-ab/ab-restir-pt-glossy-research.mjs",
   resultPath: "tools/radiometric-ab/results-restir-pt-glossy-research.json",
+  warningCode: "pt-webgpu.restir-pt-glossy-reuse-research-mode",
+  blocker: "glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope",
+  requiredEvidence: "glossy-material-furnace-reference-ab-and-browser-real-adapter-recapture",
   resolution: { W: 80, H: 80 },
   meanFrames: 60,
   varianceRuns: 8,
@@ -210,8 +213,9 @@ export const PT_RADIOMETRIC_PROMOTION_STATUS_PROOF = {
     },
     restirPtGlossyResearch: {
       resultPath: RESTIR_PT_GLOSSY_RESEARCH_PROOF.resultPath,
-      warningCode: "pt-webgpu.restir-pt-glossy-reuse-research-mode",
-      blocker: "glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope",
+      warningCode: RESTIR_PT_GLOSSY_RESEARCH_PROOF.warningCode,
+      blocker: RESTIR_PT_GLOSSY_RESEARCH_PROOF.blocker,
+      requiredEvidence: RESTIR_PT_GLOSSY_RESEARCH_PROOF.requiredEvidence,
     },
     sobolDefault: {
       resultPath: "tools/radiometric-ab/results-sobol.json",
