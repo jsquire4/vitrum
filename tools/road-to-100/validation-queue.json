@@ -605,6 +605,21 @@
       "status": "future-contract",
       "codeNowBounded": false,
       "currentContract": "CPU-readable vertex displacement is consumed approximately; no tessellation or microgeometry synthesis is promised.",
+      "sourceEvidence": [
+        {
+          "path": "packages/core/src/engine/promiseLedger.ts",
+          "includes": [
+            "no tessellation/microdisplacement is synthesized, so the row is approximate.",
+            "displacementMap: 'approximate'"
+          ]
+        },
+        {
+          "path": "packages/core/src/__tests__/ledgerVsCapabilities.test.ts",
+          "includes": [
+            "displacement rows stay approximate on every backend until microdisplacement is contracted"
+          ]
+        }
+      ],
       "decisionBlockers": [
         "Define public dicing/tessellation controls, error bounds, and displacement bounds.",
         "Specify readable texture residency, generated-normal/tangent policy, BVH rebuild/refit semantics, and backend capability grades."
@@ -616,6 +631,22 @@
       "status": "future-contract",
       "codeNowBounded": false,
       "currentContract": "OIT and alpha-aware direct/shadow handling are implemented; transparent surfaces are not full ReSTIR/GI transport vertices.",
+      "sourceEvidence": [
+        {
+          "path": "packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts",
+          "includes": [
+            "approximations rather than transparent ReSTIR/GI reservoir participation"
+          ]
+        },
+        {
+          "path": "packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts",
+          "includes": [
+            "keeps fractional alpha-blend surfaces out of ReSTIR primary and reconnection vertices",
+            "keeps transparent OIT lighting local instead of coupling it to ReSTIR reservoirs",
+            "not.toMatch(/var<storage,"
+          ]
+        }
+      ],
       "decisionBlockers": [
         "Choose alpha coverage versus physical transmission semantics for reservoir/GI vertices.",
         "Define layered throughput payloads, reuse rules, DDGI/RC participation, and denoiser expectations."
@@ -627,6 +658,25 @@
       "status": "future-contract",
       "codeNowBounded": false,
       "currentContract": "walkaround-hybrid consumes broad atlas-backed PBR, alpha, direct-light, GI suffix, and receiver-lobe material payloads, but spectralAttenuation, dispersionAbbeNumber, and thinFilmStack/full-layer-stack transport remain unsupported; scatteringCoefficient, scatteringCoefficientRGB, frontLayer, backLayer, and displacement are approximate/diagnostic rather than path-tracer-equivalent. Arbitrary rich glTF assets should route to PT backends unless hosts accept those walkaround approximations.",
+      "sourceEvidence": [
+        {
+          "path": "packages/core/src/engine/promiseLedger.ts",
+          "includes": [
+            "spectralAttenuation: 'unsupported'",
+            "thinFilmStack: 'unsupported'",
+            "scatteringCoefficientRGB: 'approximate'"
+          ]
+        },
+        {
+          "path": "packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts",
+          "includes": [
+            "Everything else",
+            "warning/truthfulness surface",
+            "spectralAttenuation: 'spectral'",
+            "thinFilmStack: 'layered'"
+          ]
+        }
+      ],
       "decisionBlockers": [
         "Define what native realtime spectral/dispersion/thin-film/layer-stack transport means for an RGB reservoir backend.",
         "Choose promotion targets for bounded approximations versus routing rich assets to PT backends."
@@ -638,6 +688,22 @@
       "status": "future-contract",
       "codeNowBounded": false,
       "currentContract": "glTF POINTS and LINES import through generated mesh fallbacks.",
+      "sourceEvidence": [
+        {
+          "path": "packages/gltf-adapter/src/primitiveModeFallback.ts",
+          "includes": [
+            "have no first-class @vitrum/core",
+            "fallback-generated-mesh, not native topology support"
+          ]
+        },
+        {
+          "path": "packages/gltf-adapter/README.md",
+          "includes": [
+            "Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP)",
+            "Supported as `fallback-generated-mesh`"
+          ]
+        }
+      ],
       "decisionBlockers": [
         "Add a first-class core point/line primitive contract.",
         "Define width, caps/joins, hit/intersection semantics, shadows, picking, and backend fidelity grades."
@@ -649,6 +715,22 @@
       "status": "future-contract",
       "codeNowBounded": false,
       "currentContract": "Single high TEXCOORD_N lossless remap is implemented; direct core PT backend packers warn/drop texCoord > 1 maps; true arbitrary UV arrays require a new core/backend contract.",
+      "sourceEvidence": [
+        {
+          "path": "packages/gltf-adapter/src/gltfToScene.ts",
+          "includes": [
+            "highTexCoords.size === 1 && !usesUv1",
+            "_cloneMaterialWithTextureRef(remapped, field, { ...ref, texCoord: 1 })",
+            "ignored-material-texcoord"
+          ]
+        },
+        {
+          "path": "packages/core/src/scene/material.ts",
+          "includes": [
+            "readonly texCoord?: number"
+          ]
+        }
+      ],
       "decisionBlockers": [
         "Extend core primitive geometry and TextureRef contracts beyond uv0/uv1.",
         "Rework shared packers, mutation patches, tangent generation, and backend shader descriptor layouts for arbitrary UV indexing."
@@ -660,6 +742,30 @@
       "status": "future-contract",
       "codeNowBounded": false,
       "currentContract": "Renderable fallback expansion is implemented; native instanced skinned/morphed primitives are a performance/core-contract expansion.",
+      "sourceEvidence": [
+        {
+          "path": "packages/core/src/scene/primitives.ts",
+          "includes": [
+            "export type ScenePrimitive =",
+            "| InstancedMeshPrimitive",
+            "| SkinnedMeshPrimitive"
+          ]
+        },
+        {
+          "path": "packages/gltf-adapter/src/featureReport.ts",
+          "includes": [
+            "fallback-expanded into one SkinnedMeshPrimitive",
+            "not native instanced skinning"
+          ]
+        },
+        {
+          "path": "packages/gltf-adapter/src/gltfToScene.ts",
+          "includes": [
+            "code: 'fallback-expanded-gpu-instancing'",
+            "per authored instance so every instance remains renderable under the existing core contract"
+          ]
+        }
+      ],
       "decisionBlockers": [
         "Add a combined instanced-skinned/morphed primitive contract with per-instance pose/morph semantics.",
         "Define GPU/CPU skinning, TLAS/BLAS update, animation-controller, and mutation behavior without exploding memory."
@@ -671,6 +777,27 @@
       "status": "future-contract",
       "codeNowBounded": false,
       "currentContract": "pt-webgpu supports scoped direct-light path replay for bounded material/emitter domains and finite-difference fallback diagnostics for transport, visibility, displacement geometry, unsupported render regimes, indirect paths, and full-path parity cases.",
+      "sourceEvidence": [
+        {
+          "path": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+          "includes": [
+            "path-replay-unsupported-transport",
+            "path-replay-unsupported-visibility",
+            "path-replay-unsupported-geometry",
+            "path-replay-unsupported-light-selection",
+            "path-replay-unsupported-environment"
+          ]
+        },
+        {
+          "path": "packages/pt-webgpu/src/__tests__/inverseSession.test.ts",
+          "includes": [
+            "path-replay-unsupported-transport",
+            "path-replay-unsupported-visibility",
+            "path-replay-unsupported-geometry",
+            "path-replay-unsupported-light-selection"
+          ]
+        }
+      ],
       "decisionBlockers": [
         "Choose a differentiable transport strategy for visibility, stochastic sampling, multi-bounce, caustics, BDPT/ReSTIR regimes, and environment escape.",
         "Define promotion tests and fallback semantics for full material/path parity beyond the scoped direct-light replay contract."

@@ -381,6 +381,33 @@ function assertRowCitesPaths(row, paths, label) {
   }
 }
 
+/** @param {{ id?: unknown, sourceEvidence?: unknown }} row */
+async function assertSourceEvidence(row) {
+  const id = String(row.id ?? "future-contract-row");
+  if (!Array.isArray(row.sourceEvidence) || row.sourceEvidence.length === 0) {
+    fail(`${id}: sourceEvidence must cite current code/test anchors`);
+  }
+  for (const [entryIndex, entry] of row.sourceEvidence.entries()) {
+    if (entry == null || typeof entry !== "object") {
+      fail(`${id}: sourceEvidence[${entryIndex}] must be an object`);
+    }
+    const evidence = /** @type {{ path?: unknown, includes?: unknown }} */ (entry);
+    assertNonEmptyString(evidence.path, `${id}: sourceEvidence[${entryIndex}].path`);
+    if (!Array.isArray(evidence.includes) || evidence.includes.length === 0) {
+      fail(`${id}: sourceEvidence[${entryIndex}].includes must list snippets`);
+    }
+    const path = /** @type {string} */ (evidence.path);
+    await assertFile(path);
+    const source = await readText(path);
+    for (const [snippetIndex, snippet] of evidence.includes.entries()) {
+      assertNonEmptyString(snippet, `${id}: sourceEvidence[${entryIndex}].includes[${snippetIndex}]`);
+      if (!source.includes(/** @type {string} */ (snippet))) {
+        fail(`${id}: sourceEvidence snippet missing from ${path}: ${snippet}`);
+      }
+    }
+  }
+}
+
 /**
  * @param {string} command
  * @param {Record<string, string>} scripts
@@ -2049,6 +2076,7 @@ for (const row of queue.futureContractRows) {
   if (!Array.isArray(row.decisionBlockers) || row.decisionBlockers.length < 2) {
     fail(`${row.id}: decisionBlockers must list at least two concrete blockers`);
   }
+  await assertSourceEvidence(row);
   for (const [idx, blocker] of row.decisionBlockers.entries()) {
     assertNonEmptyString(blocker, `${row.id}: decisionBlockers[${idx}]`);
   }
