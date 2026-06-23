@@ -650,6 +650,9 @@ if (!road.includes("Timing is uniformly slower\n   for CWBVH on the committed dz
 if (!road.includes("browser/real-adapter default-promotion throughput evidence")) {
   fail("road-to-100.md must retain the narrowed CWBVH promotion-only residual");
 }
+if (!road.includes("npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1")) {
+  fail("road-to-100.md must retain the executable CWBVH repeat-evidence command");
+}
 if (!road.includes("fidelity matrix tracks the active `pt-webgl2` / `pt-webgpu` columns and records")) {
   fail("road-to-100.md must retain the reconciled C5 renderer-matrix summary");
 }

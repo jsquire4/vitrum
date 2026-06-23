@@ -2347,9 +2347,12 @@ That timing is uniformly slower for CWBVH on the committed dzn promotion shards
 evidence rather than default-promotion speed evidence.
 
 **Remaining work:** browser/real-adapter throughput A/B over broader workloads
-before any renderer default promotion. The current artifacts prove opt-in
-same-scene correctness on lavapipe and dzn, with dzn showing slower CWBVH timing
-on the committed promotion shards, so the default remains binary
+before any renderer default promotion. The explicit capture lane is
+`npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1`, which
+runs the current dzn CWBVH shards repeatedly, discards warmup samples, and
+writes a per-workload repeat-evidence status for the default-promotion decision.
+The current artifacts prove opt-in same-scene correctness on lavapipe and dzn,
+with dzn showing slower CWBVH timing on the committed promotion shards, so the default remains binary
 traversal. Becomes decisive if/when a
 WebGPU ray-tracing extension ships (whole-field handicap today: no RT cores in
 the browser for anyone).

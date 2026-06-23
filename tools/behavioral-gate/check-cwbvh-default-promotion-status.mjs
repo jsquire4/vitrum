@@ -28,6 +28,7 @@ const STATUS_FILES = [
 
 const SOURCE_GUARD = "packages/pt-webgpu/src/index.ts";
 const SUMMARY_STATUS = "tools/behavioral-gate/cwbvh-default-promotion-status.json";
+const REPEAT_HARNESS = "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs";
 const MIN_SLOW_OR_NEUTRAL_RATIO = 1.0;
 const MIN_FAST_RATIO = 0.95;
 const MIN_SLOW_OR_NEUTRAL_ROWS = 2;
@@ -56,6 +57,19 @@ function assertSourceStillOptIn(source) {
   }
   if (!source.includes("renderer parity/performance A/B is still required before default promotion")) {
     fail("pt-webgpu CWBVH opt-in warning no longer preserves the promotion caveat");
+  }
+}
+
+/** @param {string} source */
+function assertRepeatHarness(source) {
+  for (const needle of [
+    "cwbvh-default-promotion-repeat-proof",
+    "MIN_REPEAT_COUNT_PER_WORKLOAD = 5",
+    "warmupDiscardedPerWorkload",
+    "VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH",
+    "behavioral-gate:dzn",
+  ]) {
+    if (!source.includes(needle)) fail(`${REPEAT_HARNESS}: missing ${needle}`);
   }
 }
 
@@ -168,6 +182,8 @@ async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification
 
 const source = await Deno.readTextFile(SOURCE_GUARD);
 assertSourceStillOptIn(source);
+const repeatHarness = await Deno.readTextFile(REPEAT_HARNESS);
+assertRepeatHarness(repeatHarness);
 
 /** @type {Array<{ label: string; ratio: number }>} */
 const perfRows = [];

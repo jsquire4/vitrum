@@ -6,7 +6,7 @@
     "defaultReady": false,
     "classification": "uniform-slower",
     "reason": "Committed dzn full-tier parity rows pass, but every measured CWBVH same-scene timing ratio is slower than binary traversal.",
-    "requiredEvidence": "browser/real-adapter throughput A/B over broader workloads before making CWBVH the default traversal"
+    "requiredEvidence": "browser/real-adapter throughput A/B over broader workloads before making CWBVH the default traversal; capture with npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1"
   },
   "measurementSufficiency": {
     "status": "single-sample-insufficient-for-default-promotion",
@@ -14,7 +14,7 @@
     "sampleCountPerWorkload": 1,
     "minRepeatCountPerWorkload": 5,
     "requiredAdapterScope": "browser/real-adapter",
-    "requiredEvidence": "multiple repeats per workload on browser/real-adapter hosts with warmup-discarded timing before making CWBVH the default traversal"
+    "requiredEvidence": "multiple repeats per workload on browser/real-adapter hosts with warmup-discarded timing before making CWBVH the default traversal; capture with npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1"
   },
   "thresholds": {
     "slowOrNeutralRatio": 1,

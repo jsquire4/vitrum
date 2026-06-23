@@ -854,10 +854,17 @@ if (cwbvhRow.status !== "partial-proof-green") {
 if (cwbvhRow.command !== "npm run cwbvh-gpu-proof-check") {
   fail("VQ-CWBVH-DEFAULT-PROMOTION command must stay on the CWBVH proof checker");
 }
+if (cwbvhRow.promotionCommand !== "npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1") {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION promotionCommand must name the repeat-measurement capture lane");
+}
+if (scripts["cwbvh-default-promotion-repeats"] !== "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs") {
+  fail("package.json must expose the CWBVH repeat-measurement capture lane");
+}
 assertRowCitesPaths(cwbvhRow, [
   "tools/behavioral-gate/check-cwbvh-parity-status.mjs",
   "tools/behavioral-gate/check-cwbvh-renderer-parity-status.mjs",
   "tools/behavioral-gate/cwbvh-parity-oracle.mjs",
+  "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
   "tools/behavioral-gate/cwbvh-parity-status.json",
   "tools/behavioral-gate/behavioral-gate-cwbvh-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
@@ -882,6 +889,7 @@ for (const needle of [
   "dzn timing artifacts are uniformly slower",
   "single-sample rows",
   "multiple warmup-discarded repeats per workload",
+  "npm run cwbvh-default-promotion-repeats",
   "material-lobe-map",
   "browser/real-adapter throughput A/B",
 ]) {
@@ -963,6 +971,18 @@ for (const label of broaderLabels) {
   }
 }
 const cwbvhPromotionStatus = await readJson("tools/behavioral-gate/cwbvh-default-promotion-status.json");
+const cwbvhRepeatHarness = await readText("tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs");
+for (const needle of [
+  "cwbvh-default-promotion-repeat-proof",
+  "MIN_REPEAT_COUNT_PER_WORKLOAD = 5",
+  "warmupDiscardedPerWorkload",
+  "VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH",
+  "behavioral-gate:dzn",
+]) {
+  if (!cwbvhRepeatHarness.includes(needle)) {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION repeat harness is stale: missing ${needle}`);
+  }
+}
 const cwbvhTimingRows = [
   ...dznCwbvhStatuses.map((status) => status.configs[0]),
   ...broaderLabels.map((label) => dznCwbvhBroaderStatus.configs.find((entry) => entry?.label === label)),
