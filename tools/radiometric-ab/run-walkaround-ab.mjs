@@ -49,6 +49,7 @@ const DEFAULT_RESULT_PATHS = {
   glossySpp64: 'tools/radiometric-ab/walkaround-ab-glossy-spp64.json',
   allSpp64: 'tools/radiometric-ab/walkaround-ab-all-spp64.json',
 };
+const WALKAROUND_AB_CASE_IDS = ['a8', 'sun', 'glass', 'glossy'];
 const usingDefaultProofPaths =
   (process.env.VITRUM_WALKAROUND_AB_STATUS_PATH == null || process.env.VITRUM_WALKAROUND_AB_STATUS_PATH === '') &&
   (process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH == null || process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH === '');
@@ -158,6 +159,73 @@ function parseTimeoutMs(raw) {
   return Math.max(1, Math.trunc(parsed));
 }
 
+function expectedCaseIdsForStatus() {
+  if (selectedCases == null || selectedCases === '') return WALKAROUND_AB_CASE_IDS;
+  return String(selectedCases)
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function failClosedResultStatus(generatedAt, code, message) {
+  const status = {
+    generatedAt,
+    harness: 'walkaround-ab',
+    verdict: 'FAIL',
+    command: `deno ${denoArgs.join(' ')}`,
+    selectedCases,
+    timeoutMs,
+    icd: process.env.VK_ICD_FILENAMES ?? null,
+    renderConfig,
+    exitStatus: result.status,
+    signal: result.signal,
+    preservedResultFile: resultFile,
+    reason: {
+      code,
+      message,
+    },
+    nextSteps: [
+      'Re-run the walkaround radiometric A/B wrapper so it can write a complete result artifact.',
+      'Do not promote GRIS, rich-material GI, glass, or glossy walkaround rows from this malformed capture.',
+    ],
+  };
+  writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
+  console.error(`[walkaround-ab] FAIL status written to ${statusPath}: ${message}`);
+  process.exit(1);
+}
+
+function readWalkaroundResultsForStatus(generatedAt) {
+  let payload;
+  try {
+    payload = JSON.parse(readFileSync(resultPath, 'utf8'));
+  } catch (err) {
+    failClosedResultStatus(
+      generatedAt,
+      'walkaround-ab-missing-result',
+      `The native WebGPU harness exited 0 but did not write readable result JSON: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) {
+    failClosedResultStatus(
+      generatedAt,
+      'walkaround-ab-invalid-result',
+      'The native WebGPU harness exited 0 but wrote a non-object result artifact.',
+    );
+  }
+  const missing = expectedCaseIdsForStatus().filter((id) => {
+    const row = payload[id];
+    return row == null || typeof row !== 'object' || typeof row.verdict !== 'string';
+  });
+  if (missing.length > 0) {
+    failClosedResultStatus(
+      generatedAt,
+      'walkaround-ab-incomplete-result',
+      `The native WebGPU harness exited 0 but the result artifact is missing verdicts for: ${missing.join(', ')}`,
+    );
+  }
+  return payload;
+}
+
 const denoArgs = [
   'run',
   '--unstable-webgpu',
@@ -232,19 +300,12 @@ if (result.error) {
   throw result.error;
 }
 if (result.status === 0) {
-  let walkaroundResults = null;
-  try {
-    walkaroundResults = JSON.parse(readFileSync(resultPath, 'utf8'));
-  } catch {
-    // The Deno harness is expected to write this file before exiting 0; keep
-    // the success status truthful even if a future harness changes that shape.
-  }
-  const caseVerdicts = walkaroundResults == null
-    ? {}
-    : Object.fromEntries(Object.entries(walkaroundResults).map(([key, value]) => [
-      key,
-      value?.verdict ?? 'UNKNOWN',
-    ]));
+  const generatedAt = new Date().toISOString();
+  const walkaroundResults = readWalkaroundResultsForStatus(generatedAt);
+  const caseVerdicts = Object.fromEntries(Object.entries(walkaroundResults).map(([key, value]) => [
+    key,
+    value?.verdict ?? 'UNKNOWN',
+  ]));
   const partialVerdicts = new Set([
     'PASS-PARTIAL',
     'PASS-WEAK',
@@ -258,7 +319,6 @@ if (result.status === 0) {
     .filter(([, verdict]) => partialVerdicts.has(verdict))
     .map(([id, verdict]) => `${id}:${verdict}`);
   const partial = partialCaseIds.length > 0;
-  const generatedAt = new Date().toISOString();
   const status = {
     generatedAt,
     harness: 'walkaround-ab',

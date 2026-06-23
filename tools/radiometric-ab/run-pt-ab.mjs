@@ -95,6 +95,31 @@ function classifyHostBoundary(result, output, timeoutMs) {
   return null;
 }
 
+function passResultArtifactProblem(id, resultFile) {
+  let payload;
+  try {
+    payload = JSON.parse(readFileSync(resolve(repoRoot, resultFile), 'utf8'));
+  } catch (err) {
+    return {
+      code: 'pt-radiometric-ab-missing-result',
+      message: `${id} exited 0 but did not write readable result JSON: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (payload == null || typeof payload !== 'object' || Array.isArray(payload)) {
+    return {
+      code: 'pt-radiometric-ab-invalid-result',
+      message: `${id} exited 0 but wrote a non-object result artifact.`,
+    };
+  }
+  if (typeof payload.verdict !== 'string') {
+    return {
+      code: 'pt-radiometric-ab-incomplete-result',
+      message: `${id} exited 0 but the result artifact is missing a verdict.`,
+    };
+  }
+  return null;
+}
+
 function readJson(relativePath) {
   return JSON.parse(readFileSync(resolve(repoRoot, relativePath), 'utf8'));
 }
@@ -255,7 +280,10 @@ for (const id of selected) {
 
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
   const hostBoundary = classifyHostBoundary(result, output, timeoutMs);
-  const status = result.status === 0
+  const artifactProblem = result.status === 0
+    ? passResultArtifactProblem(id, entry.resultFile)
+    : null;
+  const status = result.status === 0 && artifactProblem == null
     ? 'PASS'
     : hostBoundary != null
       ? 'HOST-BLOCKED'
@@ -267,7 +295,7 @@ for (const id of selected) {
     resultFile: entry.resultFile,
     exitStatus: result.status,
     signal: result.signal,
-    reason: hostBoundary,
+    reason: artifactProblem ?? hostBoundary,
   });
 }
 

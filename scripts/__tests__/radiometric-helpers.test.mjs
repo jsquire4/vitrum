@@ -72,6 +72,17 @@ test('walkaround A/B wrapper refreshes promotion status after default proof reca
   assert.match(runner, /HOST-BLOCKED' \|\| status\.verdict === 'FAIL'/);
 });
 
+test('walkaround A/B wrapper fails closed on missing or incomplete result artifacts', async () => {
+  const runner = await readFile(walkaroundRunnerPath, 'utf8');
+  assert.match(runner, /function readWalkaroundResultsForStatus/);
+  assert.match(runner, /function failClosedResultStatus/);
+  assert.match(runner, /walkaround-ab-missing-result/);
+  assert.match(runner, /walkaround-ab-invalid-result/);
+  assert.match(runner, /walkaround-ab-incomplete-result/);
+  assert.match(runner, /typeof row\.verdict !== 'string'/);
+  assert.match(runner, /verdict: 'FAIL'/);
+});
+
 test('pt radiometric wrapper refreshes promotion status after complete recapture', async () => {
   const runner = await readFile(ptRunnerPath, 'utf8');
   assert.match(runner, /pt-promotion-status\.json/);
@@ -82,6 +93,16 @@ test('pt radiometric wrapper refreshes promotion status after complete recapture
   assert.match(runner, /safeDefaultProofs/);
   assert.match(runner, /researchFindings/);
   assert.match(runner, /sourceStatuses: SOURCE_STATUS_PATHS/);
+});
+
+test('pt radiometric wrapper fails closed on missing or incomplete result artifacts', async () => {
+  const runner = await readFile(ptRunnerPath, 'utf8');
+  assert.match(runner, /function passResultArtifactProblem/);
+  assert.match(runner, /pt-radiometric-ab-missing-result/);
+  assert.match(runner, /pt-radiometric-ab-invalid-result/);
+  assert.match(runner, /pt-radiometric-ab-incomplete-result/);
+  assert.match(runner, /typeof payload\.verdict !== 'string'/);
+  assert.match(runner, /artifactProblem \?\? hostBoundary/);
 });
 
 async function loadVarianceROI() {
