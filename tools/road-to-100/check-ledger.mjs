@@ -12,6 +12,7 @@ const REQUIRED_SOURCE_FILES = [
 
 const LEDGER_PATH = "plan/road-to-100-gap-ledger-2026-06-11.md";
 const PACKAGE_PATH = "package.json";
+const VALIDATION_QUEUE_PATH = "tools/road-to-100/validation-queue.json";
 
 /** @param {string} path */
 function repoUrl(path) {
@@ -134,6 +135,8 @@ if (!match) fail(`${LEDGER_PATH} must contain a \`\`\`json road-to-100-ledger.v1
  *   historicalBugLedger?: string;
  *   sourceCheck?: string;
  *   proofUmbrella?: string;
+ *   validationQueue?: string;
+ *   validationQueueCheck?: string;
  *   closedContractCampaigns?: unknown[];
  *   openPromotionBuckets?: unknown[];
  *   requiredGreenGates?: unknown[];
@@ -149,11 +152,17 @@ if (typeof metadata.currentAsOf !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(meta
 if (metadata.currentAsOf < "2026-06-21") {
   fail("ledger currentAsOf predates the historical-provenance reconciliation");
 }
+const validationQueue = JSON.parse(await readText(VALIDATION_QUEUE_PATH));
+if (metadata.currentAsOf !== validationQueue.currentAsOf) {
+  fail(`ledger currentAsOf ${metadata.currentAsOf} must match ${VALIDATION_QUEUE_PATH} currentAsOf ${validationQueue.currentAsOf}`);
+}
 if (metadata.status !== "active") fail("ledger status must be active until Road-to-100 is complete");
 if (metadata.canonicalDetail !== "plan/road-to-100.md") fail("canonicalDetail must point at plan/road-to-100.md");
 if (metadata.historicalBugLedger !== "items_to_fix.md") fail("historicalBugLedger must point at items_to_fix.md");
 if (metadata.sourceCheck !== "npm run road-to-100-source-check") fail("sourceCheck command mismatch");
 if (metadata.proofUmbrella !== "npm run proof-check") fail("proofUmbrella command mismatch");
+if (metadata.validationQueue !== VALIDATION_QUEUE_PATH) fail(`validationQueue must point at ${VALIDATION_QUEUE_PATH}`);
+if (metadata.validationQueueCheck !== "npm run road-to-100-validation-status") fail("validationQueueCheck command mismatch");
 
 if (!Array.isArray(metadata.closedContractCampaigns) || metadata.closedContractCampaigns.length < 5) {
   fail("closedContractCampaigns must summarize the closed implementation campaigns");

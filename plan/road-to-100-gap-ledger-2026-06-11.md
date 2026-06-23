@@ -9,7 +9,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
 {
   "schema": "vitrum.road-to-100.gap-ledger.v1",
   "ledgerDate": "2026-06-11",
-  "currentAsOf": "2026-06-22",
+  "currentAsOf": "2026-06-23",
   "status": "active",
   "canonicalDetail": "plan/road-to-100.md",
   "historicalBugLedger": "items_to_fix.md",
