@@ -371,7 +371,7 @@
         { "path": "packages/shared-bvh/src/__tests__/compressedWideBvh.test.ts" },
         { "path": "packages/shared-bvh/src/__tests__/cwbvhWgsl.test.ts" }
       ],
-      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, dzn full-tier simple/complex parity shards, and a broader dzn material/glTF workload shard. Default promotion is still blocked: committed dzn timing artifacts are mixed across broader workloads, with slower simple/complex/material-lobe shards and a faster material-lobe-map shard, so browser/real-adapter throughput A/B over broader workloads is still required before making CWBVH the default traversal."
+      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, dzn full-tier simple/complex parity shards, and a broader dzn material/glTF workload shard. Default promotion is still blocked: the latest committed dzn timing artifacts are uniformly slower for CWBVH across the simple, complex, material-lobe, material-lobe-map, and glTF material-sweep shards, so browser/real-adapter throughput A/B over broader workloads is still required before making CWBVH the default traversal."
     },
     {
       "id": "VQ-ADJOINT-SCOPED-PATH-REPLAY",

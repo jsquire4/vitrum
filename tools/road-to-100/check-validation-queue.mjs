@@ -844,8 +844,8 @@ for (const needle of [
   "renderer binary-vs-CWBVH pixel parity",
   "broader dzn material/glTF workload shard",
   "Default promotion is still blocked",
-  "dzn timing artifacts are mixed",
-  "faster material-lobe-map shard",
+  "dzn timing artifacts are uniformly slower",
+  "material-lobe-map",
   "browser/real-adapter throughput A/B",
 ]) {
   if (!String(cwbvhRow.remaining).includes(needle)) {

@@ -127,14 +127,9 @@ if (slowOrNeutral.length < 2) {
       `(ratio >= ${MIN_SLOW_OR_NEUTRAL_RATIO}), got ${slowOrNeutral.length}`,
   );
 }
-if (fast.length < 1) {
-  fail(
-    `expected at least one faster row (ratio < ${MIN_FAST_RATIO}) to preserve the ` +
-      "mixed-performance classification instead of a uniform slowdown",
-  );
-}
 
 const ratioSummary = perfRows.map((row) => `${row.label}=${row.ratio.toFixed(3)}`).join(", ");
+const classification = fast.length > 0 ? "mixed" : "uniform-slower";
 console.log(
-  `[cwbvh-default-promotion-proof-check] PASS (CWBVH remains opt-in; mixed dzn ratios: ${ratioSummary})`,
+  `[cwbvh-default-promotion-proof-check] PASS (CWBVH remains opt-in; ${classification} dzn ratios: ${ratioSummary})`,
 );

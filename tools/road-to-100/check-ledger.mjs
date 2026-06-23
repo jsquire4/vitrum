@@ -609,11 +609,11 @@ if (!road.includes("zero-delta readback against binary traversal plus same-scene
 if (!road.includes("dzn shards\n   prove exact full-tier parity on both original CWBVH lanes")) {
   fail("road-to-100.md must retain the dzn CWBVH cross-adapter parity summary");
 }
-if (!road.includes("2026-06-22 broader dzn shard proves exact parity on material-lobes")) {
+if (!road.includes("2026-06-23 broader dzn recapture proves exact parity on material-lobes")) {
   fail("road-to-100.md must retain the broader CWBVH material/glTF dzn parity summary");
 }
-if (!road.includes("Timing is mixed on dzn")) {
-  fail("road-to-100.md must retain the mixed CWBVH timing/default-promotion boundary");
+if (!road.includes("Timing is uniformly slower\n   for CWBVH on the committed dzn promotion shards")) {
+  fail("road-to-100.md must retain the current CWBVH timing/default-promotion boundary");
 }
 if (!road.includes("browser/real-adapter default-promotion throughput evidence")) {
   fail("road-to-100.md must retain the narrowed CWBVH promotion-only residual");

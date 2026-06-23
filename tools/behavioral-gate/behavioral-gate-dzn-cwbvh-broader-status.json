@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-23T00:45:11.389Z",
+  "generatedAt": "2026-06-23T03:24:41.248Z",
   "harness": "behavioral-gate:dzn",
   "verdict": "PASS",
   "command": "npm run behavioral-gate:dzn -- --filter cwbvh-broader --require-full-tier",
@@ -37,11 +37,11 @@
         "maxMeanAbs": 0.5,
         "maxAbs": 8
       },
-      "cwbvhPerf": "cwbvhPerf=same-scene binaryMs=131995.751 cwbvhMs=166546.967 ratio=1.262 binaryMem=310040 cwbvhMem=310040 memDelta=0 binaryScene=14616 cwbvhScene=14616 sceneDelta=0",
+      "cwbvhPerf": "cwbvhPerf=same-scene binaryMs=127271.281 cwbvhMs=159063.232 ratio=1.250 binaryMem=310040 cwbvhMem=310040 memDelta=0 binaryScene=14616 cwbvhScene=14616 sceneDelta=0",
       "cwbvhPerfKind": "same-scene",
-      "cwbvhBinaryRenderMs": 131995.751,
-      "cwbvhRenderMs": 166546.967,
-      "cwbvhRenderMsRatio": 1.262,
+      "cwbvhBinaryRenderMs": 127271.281,
+      "cwbvhRenderMs": 159063.232,
+      "cwbvhRenderMsRatio": 1.25,
       "cwbvhBinaryMemoryBytes": 310040,
       "cwbvhMemoryBytes": 310040,
       "cwbvhMemoryBytesDelta": 0,
@@ -55,7 +55,7 @@
       "meanAbs": null,
       "maxAbs": null,
       "thresholds": null,
-      "rawLine": "PASS | pt/cwbvh-broader-material-lobes | OK | tier=full lum=0.3356 gpuErrs=0 nan=false | cwbvhParity=binary rmse=0.000 meanAbs=0.000 maxAbs=0 <=(1.0,0.5,8) | cwbvhPerf=same-scene binaryMs=131995.751 cwbvhMs=166546.967 ratio=1.262 binaryMem=310040 cwbvhMem=310040 memDelta=0 binaryScene=14616 cwbvhScene=14616 sceneDelta=0"
+      "rawLine": "PASS | pt/cwbvh-broader-material-lobes | OK | tier=full lum=0.3356 gpuErrs=0 nan=false | cwbvhParity=binary rmse=0.000 meanAbs=0.000 maxAbs=0 <=(1.0,0.5,8) | cwbvhPerf=same-scene binaryMs=127271.281 cwbvhMs=159063.232 ratio=1.250 binaryMem=310040 cwbvhMem=310040 memDelta=0 binaryScene=14616 cwbvhScene=14616 sceneDelta=0"
     },
     {
       "verdict": "PASS",
@@ -79,11 +79,11 @@
         "maxMeanAbs": 0.5,
         "maxAbs": 8
       },
-      "cwbvhPerf": "cwbvhPerf=same-scene binaryMs=129851.871 cwbvhMs=8963.962 ratio=0.069 binaryMem=310192 cwbvhMem=310192 memDelta=0 binaryScene=14768 cwbvhScene=14768 sceneDelta=0",
+      "cwbvhPerf": "cwbvhPerf=same-scene binaryMs=123244.217 cwbvhMs=156636.337 ratio=1.271 binaryMem=310192 cwbvhMem=310192 memDelta=0 binaryScene=14768 cwbvhScene=14768 sceneDelta=0",
       "cwbvhPerfKind": "same-scene",
-      "cwbvhBinaryRenderMs": 129851.871,
-      "cwbvhRenderMs": 8963.962,
-      "cwbvhRenderMsRatio": 0.069,
+      "cwbvhBinaryRenderMs": 123244.217,
+      "cwbvhRenderMs": 156636.337,
+      "cwbvhRenderMsRatio": 1.271,
       "cwbvhBinaryMemoryBytes": 310192,
       "cwbvhMemoryBytes": 310192,
       "cwbvhMemoryBytesDelta": 0,
@@ -97,7 +97,7 @@
       "meanAbs": null,
       "maxAbs": null,
       "thresholds": null,
-      "rawLine": "PASS | pt/cwbvh-broader-material-lobe-maps | OK | tier=full lum=0.3344 gpuErrs=0 nan=false | cwbvhParity=binary rmse=0.000 meanAbs=0.000 maxAbs=0 <=(1.0,0.5,8) | cwbvhPerf=same-scene binaryMs=129851.871 cwbvhMs=8963.962 ratio=0.069 binaryMem=310192 cwbvhMem=310192 memDelta=0 binaryScene=14768 cwbvhScene=14768 sceneDelta=0"
+      "rawLine": "PASS | pt/cwbvh-broader-material-lobe-maps | OK | tier=full lum=0.3344 gpuErrs=0 nan=false | cwbvhParity=binary rmse=0.000 meanAbs=0.000 maxAbs=0 <=(1.0,0.5,8) | cwbvhPerf=same-scene binaryMs=123244.217 cwbvhMs=156636.337 ratio=1.271 binaryMem=310192 cwbvhMem=310192 memDelta=0 binaryScene=14768 cwbvhScene=14768 sceneDelta=0"
     },
     {
       "verdict": "PASS",
@@ -121,11 +121,11 @@
         "maxMeanAbs": 0.5,
         "maxAbs": 8
       },
-      "cwbvhPerf": "cwbvhPerf=same-scene binaryMs=8353.416 cwbvhMs=9152.674 ratio=1.096 binaryMem=957164 cwbvhMem=957164 memDelta=0 binaryScene=661740 cwbvhScene=661740 sceneDelta=0",
+      "cwbvhPerf": "cwbvhPerf=same-scene binaryMs=7724.582 cwbvhMs=8913.929 ratio=1.154 binaryMem=957164 cwbvhMem=957164 memDelta=0 binaryScene=661740 cwbvhScene=661740 sceneDelta=0",
       "cwbvhPerfKind": "same-scene",
-      "cwbvhBinaryRenderMs": 8353.416,
-      "cwbvhRenderMs": 9152.674,
-      "cwbvhRenderMsRatio": 1.096,
+      "cwbvhBinaryRenderMs": 7724.582,
+      "cwbvhRenderMs": 8913.929,
+      "cwbvhRenderMsRatio": 1.154,
       "cwbvhBinaryMemoryBytes": 957164,
       "cwbvhMemoryBytes": 957164,
       "cwbvhMemoryBytesDelta": 0,
@@ -139,7 +139,7 @@
       "meanAbs": null,
       "maxAbs": null,
       "thresholds": null,
-      "rawLine": "PASS | pt/cwbvh-broader-gltf-material-sweep | OK | tier=full lum=0.4940 gpuErrs=0 nan=false | cwbvhParity=binary rmse=0.000 meanAbs=0.000 maxAbs=0 <=(1.0,0.5,8) | cwbvhPerf=same-scene binaryMs=8353.416 cwbvhMs=9152.674 ratio=1.096 binaryMem=957164 cwbvhMem=957164 memDelta=0 binaryScene=661740 cwbvhScene=661740 sceneDelta=0"
+      "rawLine": "PASS | pt/cwbvh-broader-gltf-material-sweep | OK | tier=full lum=0.4940 gpuErrs=0 nan=false | cwbvhParity=binary rmse=0.000 meanAbs=0.000 maxAbs=0 <=(1.0,0.5,8) | cwbvhPerf=same-scene binaryMs=7724.582 cwbvhMs=8913.929 ratio=1.154 binaryMem=957164 cwbvhMem=957164 memDelta=0 binaryScene=661740 cwbvhScene=661740 sceneDelta=0"
     }
   ]
 }
