@@ -227,7 +227,7 @@ async function checkBdptMultiVertexResearch(proof) {
   if (proof.promotion?.defaultReady !== false) {
     fail("bdpt multi-vertex: promotion.defaultReady must be false");
   }
-  const controls = result.controls?.byMaxLightBounces ?? [];
+  const controls = /** @type {any[]} */ (result.controls?.byMaxLightBounces ?? []);
   const firstFinding = controls.find((entry) =>
     entry.maxLightBounces === proof.controls.findingStartsAt
   );
@@ -409,7 +409,8 @@ async function checkRestirPtSpecialty(proof) {
   }
   const byId = new Map(cases.map((entry) => [String(entry.id), entry]));
   const actualCaseIds = [...byId.keys()].sort();
-  const expectedCaseIds = proof.cases.map((entry) => entry.id).sort();
+  const expectedCases = /** @type {any[]} */ (proof.cases);
+  const expectedCaseIds = expectedCases.map((entry) => entry.id).sort();
   if (!sameJson(actualCaseIds, expectedCaseIds)) {
     fail(`restir-pt-specialty: case ids ${JSON.stringify(actualCaseIds)} differ from proofs.mjs`);
   }
@@ -477,10 +478,12 @@ async function checkRestirPtGlossyResearch(proof) {
   if (result.promotion?.defaultReady !== proof.promotion.defaultReady) {
     fail("restir-pt-glossy-research: promotion.defaultReady must remain false");
   }
-  for (const [group, fields] of [
+  /** @type {Array<[string, string[]]>} */
+  const finiteGroups = [
     ["base", ["globalLum", "roiLum", "variance"]],
     ["glossyResearch", ["globalLum", "roiLum", "variance"]],
-  ]) {
+  ];
+  for (const [group, fields] of finiteGroups) {
     for (const field of fields) {
       assertFiniteNumber(result[group]?.[field], `restir-pt-glossy-research: ${group}.${field}`);
     }
@@ -564,8 +567,7 @@ async function checkPtRadiometricHostStatus(proof) {
         fail(`pt-radiometric-ab: blocked reason code ${entry.reason?.code} is not allowed`);
       }
     }
-    /** @type {any[]} */
-    const nextSteps = status.nextSteps ?? [];
+    const nextSteps = /** @type {unknown[]} */ (status.nextSteps ?? []);
     if (!nextSteps.some((step) => String(step).includes("Do not promote"))) {
       fail("pt-radiometric-ab: host-blocked status must preserve the do-not-promote warning");
     }
@@ -598,8 +600,7 @@ async function checkWalkaroundHostStatus(proof) {
     if (!proof.blockedReasonCodes.includes(status.reason?.code)) {
       fail(`walkaround-ab: blocked reason code ${status.reason?.code} is not allowed`);
     }
-    /** @type {any[]} */
-    const nextSteps = status.nextSteps ?? [];
+    const nextSteps = /** @type {unknown[]} */ (status.nextSteps ?? []);
     if (!nextSteps.some((step) => String(step).includes("Do not promote"))) {
       fail("walkaround-ab: HOST-BLOCKED status must preserve the do-not-promote warning");
     }
@@ -648,7 +649,7 @@ async function checkWalkaroundGlossySpp64Status(proof) {
       fail(`walkaround glossy-spp64: blocked reason code ${status.reason?.code} is not allowed`);
     }
     const nextSteps = status.nextSteps ?? [];
-    if (!nextSteps.some((step) => String(step).includes(proof.doNotPromoteText))) {
+    if (!nextSteps.some((/** @type {unknown} */ step) => String(step).includes(proof.doNotPromoteText))) {
       fail("walkaround glossy-spp64: HOST-BLOCKED status must preserve the do-not-promote warning");
     }
     return;
@@ -702,7 +703,7 @@ async function checkWalkaroundAllSpp64Status(proof) {
       fail(`walkaround all-spp64: blocked reason code ${status.reason?.code} is not allowed`);
     }
     const nextSteps = status.nextSteps ?? [];
-    if (!nextSteps.some((step) => String(step).includes(proof.doNotPromoteText))) {
+    if (!nextSteps.some((/** @type {unknown} */ step) => String(step).includes(proof.doNotPromoteText))) {
       fail("walkaround all-spp64: HOST-BLOCKED status must preserve the do-not-promote warning");
     }
     return;

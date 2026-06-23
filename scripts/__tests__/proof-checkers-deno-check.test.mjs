@@ -9,6 +9,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const proofCheckers = [
   join(repoRoot, 'tools', 'behavioral-gate', 'check-dzn-status.mjs'),
   join(repoRoot, 'tools', 'behavioral-gate', 'check-cwbvh-default-promotion-status.mjs'),
+  join(repoRoot, 'tools', 'radiometric-ab', 'check-results.mjs'),
   join(repoRoot, 'tools', 'renderer-fidelity-proof', 'check-proofs.mjs'),
   join(repoRoot, 'tools', 'learned-systems', 'check-status.mjs'),
 ];
