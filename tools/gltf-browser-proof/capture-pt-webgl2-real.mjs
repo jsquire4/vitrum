@@ -595,6 +595,7 @@ function requiredHooksPresent(asset, telemetry) {
 }
 
 function hostBlockedStatus(asset, error) {
+  const hostBlock = classifyHostBlock(error, lastCaptureAttempts);
   return {
     generatedAt: new Date().toISOString(),
     harness: 'gltf-browser-proof:pt-webgl2-real',
@@ -605,11 +606,63 @@ function hostBlockedStatus(asset, error) {
     captureMode: engineCaptureMode,
     step: captureStep,
     error: String(error?.stack ?? error),
+    hostBlockClass: hostBlock.class,
+    hostBlockMethods: hostBlock.methods,
+    hostBlockReason: hostBlock.reason,
     captureAttempts: snapshotCaptureAttempts(),
     pageDiagnostics: lastPageDiagnostics,
     telemetry: lastTelemetry,
     console: lastConsole.slice(-80),
     serverLog: serverLog.slice(-4000),
+  };
+}
+
+function classifyHostBlock(error, attempts) {
+  const failedAttempts = attempts.filter((attempt) => attempt.status === 'failed' || attempt.status === 'started');
+  const methods = Array.from(new Set(failedAttempts.map((attempt) => attempt.method)));
+  const fragments = [
+    String(error?.message ?? error ?? ''),
+    ...failedAttempts.map((attempt) => `${attempt.method}: ${attempt.error ?? ''} ${attempt.hostBlockHint ?? ''}`),
+  ].join('\n');
+  const hasEngineReadback = failedAttempts.some((attempt) =>
+    attempt.method === 'engine-captureFrame-output' &&
+    (
+      attempt.hostBlockHint === 'engine-readback' ||
+      String(attempt.error ?? '').includes('engine captureFrame fallback timed out')
+    )
+  );
+  const hasCanvasScreenshot = failedAttempts.some((attempt) =>
+    attempt.method === 'playwright-screenshot' ||
+    attempt.method === 'page-canvas-clip-screenshot'
+  );
+  const hasCanvasDataUrl = failedAttempts.some((attempt) => attempt.method === 'canvas-data-url');
+  const timedOut = /timed out|Timeout/i.test(fragments);
+
+  if (hasEngineReadback && !hasCanvasScreenshot && !hasCanvasDataUrl) {
+    return {
+      class: 'engine-readback-timeout',
+      methods,
+      reason: 'pt-webgl2 engine.captureFrame readPixels timed out before browser fallback could run safely',
+    };
+  }
+  if (hasEngineReadback && (hasCanvasScreenshot || hasCanvasDataUrl)) {
+    return {
+      class: 'multi-readback-timeout',
+      methods,
+      reason: 'engine captureFrame and browser canvas readback paths did not return pixels on this host',
+    };
+  }
+  if ((hasCanvasScreenshot || hasCanvasDataUrl) && timedOut) {
+    return {
+      class: 'browser-canvas-readback-timeout',
+      methods,
+      reason: 'browser canvas screenshot/data-url readback timed out after the real glTF page became capture-ready',
+    };
+  }
+  return {
+    class: 'host-readback-blocked',
+    methods,
+    reason: 'browser host could not return pixels after the real glTF page became capture-ready',
   };
 }
 
@@ -620,11 +673,18 @@ function snapshotCaptureAttempts() {
 function summarize(results) {
   const pass = results.every((result) => result.verdict === 'PASS');
   const hostBlocked = results.every((result) => result.verdict === 'PASS' || result.verdict === 'HOST-BLOCKED');
+  const hostBlockClasses = Array.from(new Set(
+    results
+      .filter((result) => result.verdict === 'HOST-BLOCKED')
+      .map((result) => result.hostBlockClass)
+      .filter(Boolean),
+  ));
   return {
     generatedAt: new Date().toISOString(),
     harness: 'gltf-browser-proof:pt-webgl2-real',
     verdict: pass ? 'PASS' : hostBlocked ? 'HOST-BLOCKED' : 'FAIL',
     backend: 'pt-webgl2',
+    ...(hostBlockClasses.length > 0 ? { hostBlockClasses } : {}),
     captureMode: engineCaptureMode,
     assets: results,
     assetCount: results.length,

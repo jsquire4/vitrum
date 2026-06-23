@@ -1202,6 +1202,9 @@ if (gltfBrowserStatusArtifact.json?.verdict !== "HOST-BLOCKED") {
 if (!["engine-first", "canvas-first", "canvas-only"].includes(gltfBrowserStatusArtifact.json?.captureMode)) {
   fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin a bounded browser proof capture mode");
 }
+if (gltfBrowserStatusArtifact.json?.["hostBlockClasses.0"] !== "engine-readback-timeout") {
+  fail("VQ-GLTF-BROWSER-PTWEBGL2 status artifact must pin the current WSL host-block class");
+}
 
 const radiometricPtRow = queue.validationQueue.find((row) => row.id === "VQ-RADIOMETRIC-PT");
 if (radiometricPtRow == null) fail("validationQueue missing VQ-RADIOMETRIC-PT");

@@ -18,6 +18,7 @@ test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summari
     harness: 'gltf-browser-proof:pt-webgl2-real',
     verdict: 'HOST-BLOCKED',
     backend: 'pt-webgl2',
+    hostBlockClasses: ['multi-readback-timeout'],
     assets: [
       {
         generatedAt: '2026-06-22T00:00:00.000Z',
@@ -104,6 +105,7 @@ test('gltf browser proof checker requires structured host-blocked capture attemp
     harness: 'gltf-browser-proof:pt-webgl2-real',
     verdict: 'HOST-BLOCKED',
     backend: 'pt-webgl2',
+    hostBlockClasses: ['multi-readback-timeout'],
     assets: [
       {
         ...hostBlockedRow('box-textured-glb', 'textured-glb', {
@@ -139,6 +141,7 @@ test('gltf browser proof checker requires pre-capture page diagnostics for host 
     harness: 'gltf-browser-proof:pt-webgl2-real',
     verdict: 'HOST-BLOCKED',
     backend: 'pt-webgl2',
+    hostBlockClasses: ['multi-readback-timeout'],
     assets: [
       {
         ...hostBlockedRow('box-textured-glb', 'textured-glb', {
@@ -174,6 +177,7 @@ test('gltf browser proof checker accepts canvas-first host blocks without engine
     harness: 'gltf-browser-proof:pt-webgl2-real',
     verdict: 'HOST-BLOCKED',
     backend: 'pt-webgl2',
+    hostBlockClasses: ['browser-canvas-readback-timeout'],
     assets: [
       canvasFirstHostBlockedRow('box-textured-glb', 'textured-glb', {
         textureDecodeReport: { mapCount: 1 },
@@ -197,6 +201,42 @@ test('gltf browser proof checker accepts canvas-first host blocks without engine
   assert.equal(result.status, 0);
 });
 
+test('gltf browser proof checker requires structured host-block classification', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
+  const statusPath = join(dir, 'host-blocked-missing-classification.json');
+  await writeFile(statusPath, `${JSON.stringify({
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    backend: 'pt-webgl2',
+    hostBlockClasses: ['multi-readback-timeout'],
+    assets: [
+      {
+        ...hostBlockedRow('box-textured-glb', 'textured-glb', {
+          textureDecodeReport: { mapCount: 1 },
+        }),
+        hostBlockClass: undefined,
+      },
+      hostBlockedRow('cesium-milk-truck-draco', 'draco', {
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+        extensionsRequired: ['KHR_draco_mesh_compression'],
+        browserDecodeHooks: { requested: ['draco'], draco: true, meshopt: false },
+      }),
+      hostBlockedRow('meshopt-cube-real', 'meshopt', {
+        extensionsUsed: ['KHR_meshopt_compression'],
+        extensionsRequired: ['KHR_meshopt_compression'],
+        browserDecodeHooks: { requested: ['meshopt'], draco: false, meshopt: true },
+      }),
+    ],
+    assetCount: 3,
+  }, null, 2)}\n`);
+
+  const result = await runChecker(['--status', pathToFileURL(statusPath).href]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /box-textured-glb: HOST-BLOCKED status must include a recognized hostBlockClass/);
+});
+
 function hostBlockedRow(assetId, kind, overrides = {}) {
   return {
     generatedAt: '2026-06-22T00:00:00.000Z',
@@ -208,6 +248,14 @@ function hostBlockedRow(assetId, kind, overrides = {}) {
     captureMode: 'engine-first',
     step: 'canvas-data-url',
     error: 'canvas PNG data URL fallback failed',
+    hostBlockClass: 'multi-readback-timeout',
+    hostBlockMethods: [
+      'playwright-screenshot',
+      'page-canvas-clip-screenshot',
+      'engine-captureFrame-output',
+      'canvas-data-url',
+    ],
+    hostBlockReason: 'engine captureFrame and browser canvas readback paths did not return pixels on this host',
     captureAttempts: [
       {
         method: 'playwright-screenshot',
@@ -247,6 +295,13 @@ function canvasFirstHostBlockedRow(assetId, kind, overrides = {}) {
     captureMode: 'canvas-first',
     step: 'canvas-data-url',
     error: 'canvas PNG data URL fallback failed',
+    hostBlockClass: 'browser-canvas-readback-timeout',
+    hostBlockMethods: [
+      'page-canvas-clip-screenshot',
+      'playwright-screenshot',
+      'canvas-data-url',
+    ],
+    hostBlockReason: 'browser canvas screenshot/data-url readback timed out after the real glTF page became capture-ready',
     captureAttempts: [
       {
         method: 'page-canvas-clip-screenshot',

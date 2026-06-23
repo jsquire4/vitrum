@@ -111,6 +111,7 @@ if (status.verdict === "HOST-BLOCKED") {
     if (row.verdict === "HOST-BLOCKED") {
       assertHostBlockedPageDiagnostics(row);
       assertHostBlockedCaptureAttempts(row);
+      assertHostBlockedClassification(row);
       if (
         row.step !== "canvas-screenshot" &&
         row.step !== "page-canvas-clip-screenshot" &&
@@ -134,6 +135,7 @@ if (status.verdict === "HOST-BLOCKED") {
       }
     }
   }
+  assertTopLevelHostBlockClasses(status, statusAssets);
   if (requirePass) {
     fail("require-pass mode needs browser real glTF PASS; current status is HOST-BLOCKED");
   }
@@ -146,6 +148,21 @@ if (status.verdict === "HOST-BLOCKED") {
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF proof)");
 } else {
   fail(`status verdict must be PASS or HOST-BLOCKED, got ${status.verdict}`);
+}
+
+/** @param {Record<string, any>} status */
+function assertTopLevelHostBlockClasses(status, statusAssets) {
+  const expected = Array.from(new Set(
+    statusAssets
+      .filter((row) => row.verdict === "HOST-BLOCKED")
+      .map((row) => row.hostBlockClass)
+      .filter(Boolean),
+  )).sort();
+  if (expected.length === 0) return;
+  const actual = Array.isArray(status.hostBlockClasses) ? [...status.hostBlockClasses].sort() : [];
+  if (!sameJson(actual, expected)) {
+    fail(`top-level hostBlockClasses must match row classes ${JSON.stringify(expected)}`);
+  }
 }
 
 /** @param {Record<string, any>} row */
@@ -215,6 +232,58 @@ function assertHostBlockedCaptureAttempts(row) {
     !hasEngineAttempt
   ) {
     fail(`${row.assetId}: HOST-BLOCKED status must include an engine-captureFrame-output attempt`);
+  }
+}
+
+/** @param {Record<string, any>} row */
+function assertHostBlockedClassification(row) {
+  const allowedClasses = new Set([
+    "engine-readback-timeout",
+    "multi-readback-timeout",
+    "browser-canvas-readback-timeout",
+    "host-readback-blocked",
+  ]);
+  if (!allowedClasses.has(row.hostBlockClass)) {
+    fail(`${row.assetId}: HOST-BLOCKED status must include a recognized hostBlockClass`);
+  }
+  if (!Array.isArray(row.hostBlockMethods) || row.hostBlockMethods.length === 0) {
+    fail(`${row.assetId}: HOST-BLOCKED status must include hostBlockMethods[]`);
+  }
+  const attemptMethods = new Set((row.captureAttempts ?? []).map((attempt) => attempt?.method));
+  for (const method of row.hostBlockMethods) {
+    if (!attemptMethods.has(method)) {
+      fail(`${row.assetId}: hostBlockMethods includes ${method} which is absent from captureAttempts[]`);
+    }
+  }
+  if (typeof row.hostBlockReason !== "string" || row.hostBlockReason.length < 24) {
+    fail(`${row.assetId}: HOST-BLOCKED status must include a descriptive hostBlockReason`);
+  }
+  if (row.hostBlockClass === "engine-readback-timeout") {
+    if (!row.hostBlockMethods.includes("engine-captureFrame-output")) {
+      fail(`${row.assetId}: engine-readback-timeout must cite engine-captureFrame-output`);
+    }
+    if (row.hostBlockMethods.length !== 1) {
+      fail(`${row.assetId}: engine-readback-timeout should not mask unattempted browser readback fallbacks`);
+    }
+  }
+  if (row.hostBlockClass === "browser-canvas-readback-timeout") {
+    const hasBrowserReadback =
+      row.hostBlockMethods.includes("page-canvas-clip-screenshot") ||
+      row.hostBlockMethods.includes("playwright-screenshot") ||
+      row.hostBlockMethods.includes("canvas-data-url");
+    if (!hasBrowserReadback) {
+      fail(`${row.assetId}: browser-canvas-readback-timeout must cite a browser canvas readback method`);
+    }
+  }
+  if (row.hostBlockClass === "multi-readback-timeout") {
+    const hasEngine = row.hostBlockMethods.includes("engine-captureFrame-output");
+    const hasBrowser =
+      row.hostBlockMethods.includes("page-canvas-clip-screenshot") ||
+      row.hostBlockMethods.includes("playwright-screenshot") ||
+      row.hostBlockMethods.includes("canvas-data-url");
+    if (!hasEngine || !hasBrowser) {
+      fail(`${row.assetId}: multi-readback-timeout must cite both engine and browser readback methods`);
+    }
   }
 }
 
