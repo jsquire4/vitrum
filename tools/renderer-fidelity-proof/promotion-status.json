@@ -22,6 +22,21 @@
       "browser-canvas-readback-timeout",
       "engine-readback-timeout"
     ],
+    "browserReadbackPreflight": {
+      "statusByCaptureMode": {
+        "engine-first": "PASS",
+        "canvas-first": "PASS"
+      },
+      "webgl2": true,
+      "unsignedByteReadback": "PASS",
+      "floatReadback": "PASS",
+      "dataUrl": "PASS",
+      "scope": "simple WebGL2 readback preflight passes; real glTF page browser capture remains HOST-BLOCKED",
+      "sourceStatuses": [
+        "tools/gltf-browser-proof/pt-webgl2-real-status.json",
+        "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json"
+      ]
+    },
     "nonPromotionGradeCount": 11,
     "materialFurnaceSourceOracleGroupCount": 4,
     "requiredEvidence": "browser/real-adapter reference A/B for pt-webgl2 specialty rows and any native-promotion claims"

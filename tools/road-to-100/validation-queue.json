@@ -324,6 +324,12 @@
             "ptWebgl2.browserStatus": "HOST-BLOCKED",
             "ptWebgl2.hostBlockClasses.0": "browser-canvas-readback-timeout",
             "ptWebgl2.hostBlockClasses.1": "engine-readback-timeout",
+            "ptWebgl2.browserReadbackPreflight.statusByCaptureMode.engine-first": "PASS",
+            "ptWebgl2.browserReadbackPreflight.statusByCaptureMode.canvas-first": "PASS",
+            "ptWebgl2.browserReadbackPreflight.webgl2": true,
+            "ptWebgl2.browserReadbackPreflight.unsignedByteReadback": "PASS",
+            "ptWebgl2.browserReadbackPreflight.floatReadback": "PASS",
+            "ptWebgl2.browserReadbackPreflight.dataUrl": "PASS",
             "ptWebgl2.nonPromotionGradeCount": 11,
             "ptWebgl2.materialFurnaceSourceOracleGroupCount": 4
           }
@@ -334,8 +340,8 @@
         { "path": "plan/library-architecture.md" },
         { "path": "HARDWARE-VALIDATION-NEEDS.md" },
         { "path": "plan/gap-closure-execution-plan.md" },
-        { "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json", "json": { "verdict": "HOST-BLOCKED", "backend": "pt-webgl2", "hostBlockClasses.0": "engine-readback-timeout" } },
-        { "path": "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json", "json": { "verdict": "HOST-BLOCKED", "backend": "pt-webgl2", "hostBlockClasses.0": "browser-canvas-readback-timeout" } },
+        { "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json", "json": { "verdict": "HOST-BLOCKED", "backend": "pt-webgl2", "hostBlockClasses.0": "engine-readback-timeout", "hostReadbackProbe.status": "PASS" } },
+        { "path": "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json", "json": { "verdict": "HOST-BLOCKED", "backend": "pt-webgl2", "hostBlockClasses.0": "browser-canvas-readback-timeout", "hostReadbackProbe.status": "PASS" } },
         { "path": "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json" },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-light-status.json", "json": { "verdict": "PASS" } },

@@ -785,6 +785,40 @@ async function assertPromotionStatus(ptWebgl2BrowserStatuses) {
     if (JSON.stringify(status.ptWebgl2?.hostBlockClasses) !== JSON.stringify(expectedClasses)) {
       fail(`${PROMOTION_STATUS_PATH} ptWebgl2.hostBlockClasses must match browser proof statuses`);
     }
+    const expectedPreflightByMode = Object.fromEntries(
+      ptWebgl2BrowserStatuses.map((browserStatus) => [
+        browserStatus.captureMode,
+        browserStatus.hostReadbackProbe?.status,
+      ]),
+    );
+    if (JSON.stringify(status.ptWebgl2?.browserReadbackPreflight?.statusByCaptureMode) !== JSON.stringify(expectedPreflightByMode)) {
+      fail(`${PROMOTION_STATUS_PATH} ptWebgl2.browserReadbackPreflight.statusByCaptureMode must match browser proof probes`);
+    }
+    for (const browserStatus of ptWebgl2BrowserStatuses) {
+      const probe = browserStatus.hostReadbackProbe;
+      if (
+        probe?.status !== "PASS" ||
+        probe.webgl2 !== true ||
+        probe.unsignedByteReadback?.status !== "PASS" ||
+        probe.floatReadback?.status !== "PASS" ||
+        probe.dataUrl?.status !== "PASS"
+      ) {
+        fail(`${browserStatus.captureMode}: browser proof must preserve passing WebGL2/readPixels/toDataURL preflight diagnostics`);
+      }
+    }
+    if (
+      status.ptWebgl2?.browserReadbackPreflight?.webgl2 !== true ||
+      status.ptWebgl2?.browserReadbackPreflight?.unsignedByteReadback !== "PASS" ||
+      status.ptWebgl2?.browserReadbackPreflight?.floatReadback !== "PASS" ||
+      status.ptWebgl2?.browserReadbackPreflight?.dataUrl !== "PASS" ||
+      !String(status.ptWebgl2?.browserReadbackPreflight?.scope ?? "").includes("real glTF page browser capture remains HOST-BLOCKED") ||
+      JSON.stringify(status.ptWebgl2?.browserReadbackPreflight?.sourceStatuses) !== JSON.stringify([
+        PT_WEBGL2_BROWSER_STATUS_PATH,
+        PT_WEBGL2_BROWSER_CANVAS_FIRST_STATUS_PATH,
+      ])
+    ) {
+      fail(`${PROMOTION_STATUS_PATH} ptWebgl2.browserReadbackPreflight must summarize passing simple readback and blocked real glTF capture`);
+    }
   }
   if (status.ptWebgl2?.nonPromotionGradeCount !== PT_WEBGL2_EXPECTED_ROWS.length) {
     fail(`${PROMOTION_STATUS_PATH} ptWebgl2.nonPromotionGradeCount drifted`);

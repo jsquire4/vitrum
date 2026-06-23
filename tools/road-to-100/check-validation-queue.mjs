@@ -881,6 +881,43 @@ const rendererBrowserHostBlockClasses = Array.from(new Set([
 if (JSON.stringify(rendererPromotionStatus.ptWebgl2?.hostBlockClasses ?? []) !== JSON.stringify(rendererBrowserHostBlockClasses)) {
   fail("VQ-RENDERER-FIDELITY-PROOF promotion summary hostBlockClasses must match browser status artifacts");
 }
+const rendererBrowserPreflightByMode = Object.fromEntries(
+  [rendererBrowserStatus, rendererCanvasBrowserStatus].map((status) => [
+    status.captureMode,
+    status.hostReadbackProbe?.status,
+  ]),
+);
+if (
+  JSON.stringify(rendererPromotionStatus.ptWebgl2?.browserReadbackPreflight?.statusByCaptureMode ?? {}) !==
+  JSON.stringify(rendererBrowserPreflightByMode)
+) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary browserReadbackPreflight must match browser status probes");
+}
+for (const status of [rendererBrowserStatus, rendererCanvasBrowserStatus]) {
+  const probe = status.hostReadbackProbe;
+  if (
+    probe?.status !== "PASS" ||
+    probe.webgl2 !== true ||
+    probe.unsignedByteReadback?.status !== "PASS" ||
+    probe.floatReadback?.status !== "PASS" ||
+    probe.dataUrl?.status !== "PASS"
+  ) {
+    fail(`VQ-RENDERER-FIDELITY-PROOF ${status.captureMode} browser probe must preserve passing readback diagnostics`);
+  }
+}
+if (
+  rendererPromotionStatus.ptWebgl2?.browserReadbackPreflight?.webgl2 !== true ||
+  rendererPromotionStatus.ptWebgl2?.browserReadbackPreflight?.unsignedByteReadback !== "PASS" ||
+  rendererPromotionStatus.ptWebgl2?.browserReadbackPreflight?.floatReadback !== "PASS" ||
+  rendererPromotionStatus.ptWebgl2?.browserReadbackPreflight?.dataUrl !== "PASS" ||
+  !String(rendererPromotionStatus.ptWebgl2?.browserReadbackPreflight?.scope ?? "").includes("real glTF page browser capture remains HOST-BLOCKED") ||
+  JSON.stringify(rendererPromotionStatus.ptWebgl2?.browserReadbackPreflight?.sourceStatuses ?? []) !== JSON.stringify([
+    "tools/gltf-browser-proof/pt-webgl2-real-status.json",
+    "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json",
+  ])
+) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must preserve passing preflight readback and blocked real-glTF capture");
+}
 if (!String(rendererPromotionStatus.ptWebgl2?.requiredEvidence ?? "").includes("browser/real-adapter reference A/B")) {
   fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must name browser/real-adapter reference A/B");
 }
