@@ -151,6 +151,20 @@
         { "path": "tools/radiometric-ab/check-results.mjs" },
         { "path": "tools/radiometric-ab/proofs.mjs" },
         {
+          "path": "tools/radiometric-ab/pt-promotion-status.json",
+          "json": {
+            "verdict": "PASS-PARTIAL",
+            "hostStatus.verdict": "PASS",
+            "hostStatus.caseCount": 4,
+            "researchFindings.bdptMultiVertex.defaultReady": false,
+            "researchFindings.bdptMultiVertex.blocker": "not-weighted-against-regular-eye-path-strategy",
+            "researchFindings.restirPtGlossyResearch.verdict": "FINDING",
+            "researchFindings.restirPtGlossyResearch.defaultReady": false,
+            "researchFindings.sobolDefault.defaultReady": false,
+            "researchFindings.sobolDefault.requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B"
+          }
+        },
+        {
           "path": "tools/radiometric-ab/results-bdpt.json",
           "json": {
             "controls.multiVertexPromotion.defaultReady": false,

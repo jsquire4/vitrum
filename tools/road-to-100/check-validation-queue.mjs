@@ -283,6 +283,7 @@ const REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS = [
   "tools/radiometric-ab/ab-sobol.mjs",
   "tools/radiometric-ab/check-results.mjs",
   "tools/radiometric-ab/proofs.mjs",
+  "tools/radiometric-ab/pt-promotion-status.json",
   "tools/radiometric-ab/results-bdpt.json",
   "tools/radiometric-ab/results-restir-pt.json",
   "tools/radiometric-ab/results-restir-pt-glossy-research.json",
@@ -1276,6 +1277,7 @@ for (const path of REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS) {
   }
 }
 const ptRadiometricHostStatus = await readJson("tools/radiometric-ab/pt-ab-host-status.json");
+const ptRadiometricPromotionStatus = await readJson("tools/radiometric-ab/pt-promotion-status.json");
 if (ptRadiometricHostStatus.harness !== "pt-radiometric-ab") {
   fail("VQ-RADIOMETRIC-PT host status must pin harness=pt-radiometric-ab");
 }
@@ -1302,6 +1304,32 @@ if (Array.isArray(ptRadiometricHostStatus.nextSteps) && ptRadiometricHostStatus.
 }
 if (!Array.isArray(ptRadiometricHostStatus.cases) || ptRadiometricHostStatus.cases.length !== expectedPtRadiometricCases.length) {
   fail("VQ-RADIOMETRIC-PT host status must include exactly four case records");
+}
+if (
+  ptRadiometricPromotionStatus.verdict !== "PASS-PARTIAL" ||
+  ptRadiometricPromotionStatus.hostStatus?.verdict !== ptRadiometricHostStatus.verdict ||
+  ptRadiometricPromotionStatus.hostStatus?.caseCount !== expectedPtRadiometricCases.length
+) {
+  fail("VQ-RADIOMETRIC-PT promotion status must pin PASS-PARTIAL plus the full PASS host recapture");
+}
+if (JSON.stringify(ptRadiometricPromotionStatus.hostStatus?.selectedCases) !== JSON.stringify(expectedPtRadiometricCases.map((row) => row[0]))) {
+  fail("VQ-RADIOMETRIC-PT promotion status must preserve the selected pt case list");
+}
+if (
+  ptRadiometricPromotionStatus.researchFindings?.bdptMultiVertex?.defaultReady !== false ||
+  ptRadiometricPromotionStatus.researchFindings?.restirPtGlossyResearch?.defaultReady !== false ||
+  ptRadiometricPromotionStatus.researchFindings?.sobolDefault?.defaultReady !== false
+) {
+  fail("VQ-RADIOMETRIC-PT promotion status must keep all research/default blockers explicit");
+}
+if (ptRadiometricPromotionStatus.researchFindings?.bdptMultiVertex?.blocker !== "not-weighted-against-regular-eye-path-strategy") {
+  fail("VQ-RADIOMETRIC-PT promotion status must pin the BDPT multi-vertex blocker");
+}
+if (ptRadiometricPromotionStatus.researchFindings?.restirPtGlossyResearch?.verdict !== "FINDING") {
+  fail("VQ-RADIOMETRIC-PT promotion status must pin glossy research as FINDING");
+}
+if (ptRadiometricPromotionStatus.researchFindings?.sobolDefault?.requiredEvidence !== "full-tier/real-adapter equal-time Sobol RMSE A/B") {
+  fail("VQ-RADIOMETRIC-PT promotion status must pin Sobol equal-time real-adapter evidence");
 }
 for (const [id, script, resultFile] of expectedPtRadiometricCases) {
   const entry = ptRadiometricHostStatus.cases.find((item) => item?.id === id);

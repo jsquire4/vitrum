@@ -180,6 +180,47 @@ export const PT_RADIOMETRIC_AB_HOST_STATUS_PROOF = {
   ],
 };
 
+export const PT_RADIOMETRIC_PROMOTION_STATUS_PROOF = {
+  harness: "pt-radiometric-promotion-proof",
+  statusPath: "tools/radiometric-ab/pt-promotion-status.json",
+  verdict: "PASS-PARTIAL",
+  hostStatusPath: PT_RADIOMETRIC_AB_HOST_STATUS_PROOF.statusPath,
+  sourceStatuses: [
+    PT_RADIOMETRIC_AB_HOST_STATUS_PROOF.statusPath,
+    "tools/radiometric-ab/results-sppm.json",
+    BDPT_MULTIVERTEX_RESEARCH_PROOF.resultPath,
+    "tools/radiometric-ab/results-restir-pt.json",
+    RESTIR_PT_SPECIALTY_PROOF.resultPath,
+    RESTIR_PT_GLOSSY_RESEARCH_PROOF.resultPath,
+    "tools/radiometric-ab/results-sobol.json",
+  ],
+  safeDefaultProofs: {
+    sppm: { resultPath: "tools/radiometric-ab/results-sppm.json" },
+    bdptEndpointOnly: { resultPath: BDPT_MULTIVERTEX_RESEARCH_PROOF.resultPath, maxLightBounces: 1 },
+    restirPtDiffuse: { resultPath: "tools/radiometric-ab/results-restir-pt.json" },
+    restirPtSpecialty: { resultPath: RESTIR_PT_SPECIALTY_PROOF.resultPath },
+  },
+  researchFindings: {
+    bdptMultiVertex: {
+      resultPath: BDPT_MULTIVERTEX_RESEARCH_PROOF.resultPath,
+      warningCode: BDPT_MULTIVERTEX_RESEARCH_PROOF.warningCode,
+      blocker: BDPT_MULTIVERTEX_RESEARCH_PROOF.blocker,
+      requiredEstimator: BDPT_MULTIVERTEX_RESEARCH_PROOF.requiredEstimator,
+      firstFindingMaxLightBounces: BDPT_MULTIVERTEX_RESEARCH_PROOF.controls.findingStartsAt,
+    },
+    restirPtGlossyResearch: {
+      resultPath: RESTIR_PT_GLOSSY_RESEARCH_PROOF.resultPath,
+      warningCode: "pt-webgpu.restir-pt-glossy-reuse-research-mode",
+      blocker: "glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope",
+    },
+    sobolDefault: {
+      resultPath: "tools/radiometric-ab/results-sobol.json",
+      evidenceClass: "wsl-lite-equal-frame-proxy",
+      requiredEvidence: "full-tier/real-adapter equal-time Sobol RMSE A/B",
+    },
+  },
+};
+
 export const WALKAROUND_AB_HOST_STATUS_PROOF = {
   harness: "walkaround-ab",
   statusPath: "tools/radiometric-ab/walkaround-ab-host-status.json",

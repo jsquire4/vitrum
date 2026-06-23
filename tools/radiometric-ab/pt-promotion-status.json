@@ -1,0 +1,75 @@
+{
+  "generatedAt": "2026-06-23T05:45:00.000Z",
+  "harness": "pt-radiometric-promotion-proof",
+  "verdict": "PASS-PARTIAL",
+  "hostStatus": {
+    "verdict": "PASS",
+    "caseCount": 4,
+    "selectedCases": ["sppm", "bdpt", "restir-pt", "sobol"]
+  },
+  "safeDefaultProofs": {
+    "sppm": {
+      "verdict": "PASS",
+      "converging": true,
+      "inBallpark": true,
+      "finalRelErr": 0.23403800416939083
+    },
+    "bdptEndpointOnly": {
+      "verdict": "PASS",
+      "endpointOnlyMatchesUni": true,
+      "maxLightBounces": 1,
+      "globalRelErr": 0,
+      "roiRelErr": 0
+    },
+    "restirPtDiffuse": {
+      "verdict": "PASS",
+      "meanAgreement": true,
+      "varianceNotWorse": true,
+      "globalRelErr": 0.07914708533870615,
+      "varRatio": 0.9402825600665269
+    },
+    "restirPtSpecialty": {
+      "mode": "cpu-static",
+      "caseCount": 4,
+      "maxAbsoluteError": 0,
+      "maxRelativeError": 0
+    }
+  },
+  "researchFindings": {
+    "bdptMultiVertex": {
+      "defaultReady": false,
+      "warningCode": "pt-webgpu.bdpt-multivertex-research-mode",
+      "blocker": "not-weighted-against-regular-eye-path-strategy",
+      "requiredEstimator": "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
+      "firstFindingMaxLightBounces": 2,
+      "firstFindingGlobalRelErr": 0.13211930886712425,
+      "evidencePath": "tools/radiometric-ab/results-bdpt.json"
+    },
+    "restirPtGlossyResearch": {
+      "verdict": "FINDING",
+      "defaultReady": false,
+      "warningCode": "pt-webgpu.restir-pt-glossy-reuse-research-mode",
+      "blocker": "glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope",
+      "globalRelErr": 1.0842436609544777,
+      "varRatio": 7.713987825269332,
+      "evidencePath": "tools/radiometric-ab/results-restir-pt-glossy-research.json"
+    },
+    "sobolDefault": {
+      "defaultReady": false,
+      "evidenceClass": "wsl-lite-equal-frame-proxy",
+      "requiredEvidence": "full-tier/real-adapter equal-time Sobol RMSE A/B",
+      "maxGlobalRmseRatio": 1.4858971059275516,
+      "maxElapsedMsRatio": 1.865161945457462,
+      "evidencePath": "tools/radiometric-ab/results-sobol.json"
+    }
+  },
+  "sourceStatuses": [
+    "tools/radiometric-ab/pt-ab-host-status.json",
+    "tools/radiometric-ab/results-sppm.json",
+    "tools/radiometric-ab/results-bdpt.json",
+    "tools/radiometric-ab/results-restir-pt.json",
+    "tools/radiometric-ab/results-restir-pt-specialty.json",
+    "tools/radiometric-ab/results-restir-pt-glossy-research.json",
+    "tools/radiometric-ab/results-sobol.json"
+  ]
+}

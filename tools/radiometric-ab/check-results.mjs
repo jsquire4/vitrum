@@ -5,6 +5,7 @@
 import {
   BDPT_MULTIVERTEX_RESEARCH_PROOF,
   PT_RADIOMETRIC_AB_HOST_STATUS_PROOF,
+  PT_RADIOMETRIC_PROMOTION_STATUS_PROOF,
   RADIOMETRIC_AB_PROOFS,
   RESTIR_PT_GLOSSY_RESEARCH_PROOF,
   RESTIR_PT_SPECIALTY_PROOF,
@@ -590,6 +591,111 @@ async function checkPtRadiometricHostStatus(proof) {
 }
 
 /** @param {any} proof */
+async function checkPtRadiometricPromotionStatus(proof) {
+  const status = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.statusPath}`, import.meta.url)));
+  if (status.harness !== proof.harness) fail("pt-radiometric-promotion: harness mismatch");
+  if (status.verdict !== proof.verdict) fail("pt-radiometric-promotion: verdict must stay PASS-PARTIAL");
+  if (!sameJson(status.sourceStatuses, proof.sourceStatuses)) {
+    fail("pt-radiometric-promotion: sourceStatuses mismatch");
+  }
+
+  const host = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.hostStatusPath}`, import.meta.url)));
+  const selectedCases = host.selectedCases ?? [];
+  if (status.hostStatus?.verdict !== host.verdict) fail("pt-radiometric-promotion: host verdict mismatch");
+  if (status.hostStatus?.caseCount !== selectedCases.length) fail("pt-radiometric-promotion: host caseCount mismatch");
+  if (!sameJson(status.hostStatus?.selectedCases, selectedCases)) {
+    fail("pt-radiometric-promotion: selectedCases mismatch");
+  }
+  if (host.verdict !== "PASS") fail("pt-radiometric-promotion: host recapture must remain PASS");
+
+  const sppm = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.safeDefaultProofs.sppm.resultPath}`, import.meta.url)));
+  const bdpt = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.safeDefaultProofs.bdptEndpointOnly.resultPath}`, import.meta.url)));
+  const restirPt = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.safeDefaultProofs.restirPtDiffuse.resultPath}`, import.meta.url)));
+  const specialty = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.safeDefaultProofs.restirPtSpecialty.resultPath}`, import.meta.url)));
+  const glossyResearch = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.researchFindings.restirPtGlossyResearch.resultPath}`, import.meta.url)));
+  const sobol = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.researchFindings.sobolDefault.resultPath}`, import.meta.url)));
+
+  const finalSppm = sppm.sppm?.[sppm.sppm.length - 1];
+  const endpoint = /** @type {any[]} */ (bdpt.controls?.byMaxLightBounces ?? []).find((entry) =>
+    entry.maxLightBounces === proof.safeDefaultProofs.bdptEndpointOnly.maxLightBounces
+  );
+  const firstBdptFinding = /** @type {any[]} */ (bdpt.controls?.byMaxLightBounces ?? []).find((entry) =>
+    entry.maxLightBounces === proof.researchFindings.bdptMultiVertex.firstFindingMaxLightBounces
+  );
+  const expectedSafeDefaults = {
+    sppm: {
+      verdict: sppm.verdict,
+      converging: sppm.converging,
+      inBallpark: sppm.inBallpark,
+      finalRelErr: finalSppm?.relErr,
+    },
+    bdptEndpointOnly: {
+      verdict: bdpt.verdict,
+      endpointOnlyMatchesUni: bdpt.controls?.endpointOnlyMatchesUni,
+      maxLightBounces: endpoint?.maxLightBounces,
+      globalRelErr: endpoint?.globalRelErr,
+      roiRelErr: endpoint?.roiRelErr,
+    },
+    restirPtDiffuse: {
+      verdict: restirPt.verdict,
+      meanAgreement: restirPt.meanAgreement,
+      varianceNotWorse: restirPt.varianceNotWorse,
+      globalRelErr: restirPt.globalRelErr,
+      varRatio: restirPt.varRatio,
+    },
+    restirPtSpecialty: {
+      mode: specialty.mode,
+      caseCount: specialty.summary?.caseCount,
+      maxAbsoluteError: specialty.summary?.maxAbsoluteError,
+      maxRelativeError: specialty.summary?.maxRelativeError,
+    },
+  };
+  if (!sameJson(status.safeDefaultProofs, expectedSafeDefaults)) {
+    fail("pt-radiometric-promotion: safeDefaultProofs do not match committed result snapshots");
+  }
+
+  const sobolRatios = /** @type {any[]} */ (sobol.scenes ?? []).map((scene) => scene.ratios ?? {});
+  const expectedResearchFindings = {
+    bdptMultiVertex: {
+      defaultReady: bdpt.controls?.multiVertexPromotion?.defaultReady,
+      warningCode: proof.researchFindings.bdptMultiVertex.warningCode,
+      blocker: bdpt.controls?.multiVertexPromotion?.blocker,
+      requiredEstimator: bdpt.controls?.multiVertexPromotion?.requiredEstimator,
+      firstFindingMaxLightBounces: firstBdptFinding?.maxLightBounces,
+      firstFindingGlobalRelErr: firstBdptFinding?.globalRelErr,
+      evidencePath: proof.researchFindings.bdptMultiVertex.resultPath,
+    },
+    restirPtGlossyResearch: {
+      verdict: glossyResearch.verdict,
+      defaultReady: glossyResearch.promotion?.defaultReady,
+      warningCode: proof.researchFindings.restirPtGlossyResearch.warningCode,
+      blocker: proof.researchFindings.restirPtGlossyResearch.blocker,
+      globalRelErr: glossyResearch.globalRelErr,
+      varRatio: glossyResearch.varRatio,
+      evidencePath: proof.researchFindings.restirPtGlossyResearch.resultPath,
+    },
+    sobolDefault: {
+      defaultReady: sobol.promotion?.defaultReady,
+      evidenceClass: sobol.promotion?.evidenceClass,
+      requiredEvidence: sobol.promotion?.requiredEvidence,
+      maxGlobalRmseRatio: Math.max(...sobolRatios.map((ratio) => ratio.globalRmse)),
+      maxElapsedMsRatio: Math.max(...sobolRatios.map((ratio) => ratio.elapsedMs)),
+      evidencePath: proof.researchFindings.sobolDefault.resultPath,
+    },
+  };
+  if (!sameJson(status.researchFindings, expectedResearchFindings)) {
+    fail("pt-radiometric-promotion: researchFindings do not match committed result snapshots");
+  }
+  if (
+    status.researchFindings.bdptMultiVertex.defaultReady !== false ||
+    status.researchFindings.restirPtGlossyResearch.defaultReady !== false ||
+    status.researchFindings.sobolDefault.defaultReady !== false
+  ) {
+    fail("pt-radiometric-promotion: research/default promotion blockers must remain explicit");
+  }
+}
+
+/** @param {any} proof */
 async function checkWalkaroundHostStatus(proof) {
   const statusUrl = new URL(`../../${proof.statusPath}`, import.meta.url);
   const status = JSON.parse(await Deno.readTextFile(statusUrl));
@@ -1027,10 +1133,11 @@ await checkBdptMultiVertexResearch(BDPT_MULTIVERTEX_RESEARCH_PROOF);
 await checkRestirPtSpecialty(RESTIR_PT_SPECIALTY_PROOF);
 await checkRestirPtGlossyResearch(RESTIR_PT_GLOSSY_RESEARCH_PROOF);
 await checkPtRadiometricHostStatus(PT_RADIOMETRIC_AB_HOST_STATUS_PROOF);
+await checkPtRadiometricPromotionStatus(PT_RADIOMETRIC_PROMOTION_STATUS_PROOF);
 await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
 await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
 await checkWalkaroundGlossySpp64Status(WALKAROUND_GLOSSY_SPP64_STATUS_PROOF);
 await checkWalkaroundAllSpp64Status(WALKAROUND_ALL_SPP64_STATUS_PROOF);
 await checkWalkaroundPromotionStatus(WALKAROUND_AB_PROMOTION_STATUS_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases, 1 high-SPP glossy walkaround status, 1 high-SPP all-cases walkaround status, 1 walkaround promotion boundary status)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, 1 pt radiometric promotion boundary status, walkaround host status, 4 walkaround A/B cases, 1 high-SPP glossy walkaround status, 1 high-SPP all-cases walkaround status, 1 walkaround promotion boundary status)`);
