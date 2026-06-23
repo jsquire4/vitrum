@@ -35,7 +35,20 @@ import { asMat4 } from '@vitrum/core';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
 import { WALKAROUND_DENOISER_UNET_SPEC } from '../neural/unetArchitecture.js';
-import type { LayerWeights, ModelWeights } from '../neural/weights.js';
+import type { LayerWeights, ModelWeights, NeuralCheckpointMetadata } from '../neural/weights.js';
+
+const PRODUCTION_CHECKPOINT: NeuralCheckpointMetadata = {
+  id: 'capability-fixture',
+  trainingSamples: 512,
+  noisySpp: 1,
+  cleanSpp: 4096,
+  auxiliaryInputs: ['albedo', 'normal'],
+  captureSource: 'gpu-reference-capture',
+  captureBackend: 'pt-webgpu-full',
+  tonemap: 'linear-hdr',
+  hardware: 'real-adapter-fixture',
+  qualityReport: { status: 'pass', reportPath: 'tools/neural-denoiser-training/reports/capability-fixture.json' },
+};
 
 /** Minimal GPUDevice stub — HybridEngine's constructor only stores the device
  *  (DDGI is CPU-side) and the factory's duck-type check needs
@@ -79,6 +92,10 @@ function makeZeroNeuralWeights(): ModelWeights {
     });
   }
   return { layers };
+}
+
+function makeProductionNeuralWeights(): ModelWeights {
+  return { ...makeZeroNeuralWeights(), checkpoint: PRODUCTION_CHECKPOINT };
 }
 
 function resolvedDenoiser(engine: HybridEngine): string {
@@ -285,13 +302,13 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
     }
   });
 
-  it("resolves denoiser:'auto' to neural only when full-tier host weights are supplied", () => {
+  it("resolves denoiser:'auto' to neural only when full-tier production host weights are supplied", () => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const warnings: unknown[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
       denoiser: 'auto',
-      neuralWeights: makeZeroNeuralWeights(),
+      neuralWeights: makeProductionNeuralWeights(),
       onWarning: (warning) => warnings.push(warning),
     });
     try {
@@ -306,6 +323,8 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
             resolved: 'neural',
             reason: 'host-neural-weights',
             packageProvidesProductionWeights: false,
+            neuralCheckpointProductionReady: true,
+            neuralCheckpointMissing: [],
           }),
         }),
         expect.objectContaining({
@@ -314,9 +333,41 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
             denoiser: 'neural',
             packageProvidesProductionWeights: false,
             defaultEnabled: false,
+            checkpointProductionReady: true,
+            checkpointMissing: [],
           }),
         }),
       ]));
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it("keeps denoiser:'auto' off neural for shape-valid non-production weights", () => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: unknown[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      denoiser: 'auto',
+      neuralWeights: makeZeroNeuralWeights(),
+      onWarning: (warning) => warnings.push(warning),
+    });
+    try {
+      expect(resolvedDenoiser(engine)).toBe('atrous-variance');
+      expect(engine.capabilities.experimentalFeatures?.has('walkaround-hybrid-neural-denoiser-host-weights')).toBe(false);
+      expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('approximate');
+      expect(warnings).toEqual([
+        expect.objectContaining({
+          code: 'walkaround-hybrid.denoiser-auto-resolved',
+          details: expect.objectContaining({
+            requested: 'auto',
+            resolved: 'atrous-variance',
+            reason: 'host-neural-weights-not-production-ready',
+            neuralCheckpointProductionReady: false,
+            neuralCheckpointMissing: ['checkpoint metadata'],
+          }),
+        }),
+      ]);
     } finally {
       engine.dispose();
     }
@@ -382,6 +433,8 @@ describe('walkaround-hybrid capability/partition reconciliation', () => {
             weightsRequired: true,
             packageProvidesProductionWeights: false,
             defaultEnabled: false,
+            checkpointProductionReady: false,
+            checkpointMissing: ['checkpoint metadata'],
           }),
         }),
       ]));

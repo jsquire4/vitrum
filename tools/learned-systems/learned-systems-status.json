@@ -1,6 +1,6 @@
 {
   "schema": "vitrum.learned-systems.status.v1",
-  "generatedAt": "2026-06-23T05:11:28.940Z",
+  "generatedAt": "2026-06-23T13:36:54.362Z",
   "verdict": "PASS",
   "productionPosture": "provisioning-needed",
   "neuralDenoiser": {
@@ -26,6 +26,12 @@
       "requiresCheckpointIdentity": true,
       "requiresComparison": true,
       "requiresThresholds": true
+    },
+    "runtimePolicy": {
+      "autoSelectsNeuralOnlyWithProductionCheckpoint": true,
+      "explicitNeuralWithNonProductionWeights": "allowed-as-approximate",
+      "nonProductionCapabilitySupport": "approximate",
+      "requiredMetadataContract": "NeuralCheckpointMetadata"
     },
     "remaining": "Provision a production neural checkpoint and passing quality A/B manifest before default or production claims."
   },

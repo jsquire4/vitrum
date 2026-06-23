@@ -22,7 +22,12 @@ import { readTunables, readInitTunables, type Tunables, type InitTunables } from
 import { resolveQualityPreset } from './HybridEngineQualityPreset.js';
 import { fingerprintHybridPipelineRebuildKey } from './HybridEngineFrameOrchestrator.js';
 import type { ReSTIRBvhMode } from './restir/bvhCore.js';
-import { validateWeightsForSpec, type ModelWeights } from './neural/weights.js';
+import {
+  assessNeuralCheckpointProductionReadiness,
+  validateWeightsForSpec,
+  type ModelWeights,
+  type NeuralCheckpointProductionAssessment,
+} from './neural/weights.js';
 import { WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';
 import { PPG_MIS_ALPHA } from './ppg/ppgConstants.js';
 
@@ -33,6 +38,7 @@ type HybridDenoiser = (typeof VALID_DENOISERS)[number];
 export type ResolvedHybridDenoiser = Exclude<HybridDenoiser, 'auto'>;
 export type DenoiserAutoResolutionReason =
   | 'host-neural-weights'
+  | 'host-neural-weights-not-production-ready'
   | 'host-oidn-model-url'
   | 'lite-neural-unavailable'
   | 'no-host-model-assets';
@@ -43,6 +49,8 @@ export interface DenoiserAutoResolution {
   readonly reason: DenoiserAutoResolutionReason;
   readonly packageProvidesProductionWeights: false;
   readonly defaultEnabled: false;
+  readonly neuralCheckpointProductionReady: boolean;
+  readonly neuralCheckpointMissing: readonly string[];
 }
 
 function emitConfigWarning(opts: HybridEngineOptions, warning: EngineWarning): void {
@@ -91,6 +99,7 @@ export interface ParsedHybridEngineConfig {
   readonly denoiser: ResolvedHybridDenoiser;
   readonly denoiserAutoResolution: DenoiserAutoResolution | undefined;
   readonly neuralWeights: ModelWeights | undefined;
+  readonly neuralCheckpointAssessment: NeuralCheckpointProductionAssessment;
   readonly oidnModelUrl: string | undefined;
   readonly oidnExecutionProviders: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'> | undefined;
   readonly restirBvhModeOverride: ReSTIRBvhMode | undefined;
@@ -235,6 +244,7 @@ function resolveHybridDenoiser(
   oidnModelUrl: string | undefined,
 ): { denoiser: ResolvedHybridDenoiser; autoResolution: DenoiserAutoResolution | undefined } {
   const fallback = resolvePresetDenoiser(preset);
+  const neuralCheckpointAssessment = assessNeuralCheckpointProductionReadiness(opts.neuralWeights);
   if (opts.denoiser !== 'auto') {
     return {
       denoiser: (opts.denoiser ?? fallback) as ResolvedHybridDenoiser,
@@ -244,9 +254,11 @@ function resolveHybridDenoiser(
 
   let resolved: ResolvedHybridDenoiser = fallback;
   let reason: DenoiserAutoResolutionReason = 'no-host-model-assets';
-  if (opts.tier !== 'lite' && opts.neuralWeights != null) {
+  if (opts.tier !== 'lite' && opts.neuralWeights != null && neuralCheckpointAssessment.productionReady) {
     resolved = 'neural';
     reason = 'host-neural-weights';
+  } else if (opts.tier !== 'lite' && opts.neuralWeights != null) {
+    reason = 'host-neural-weights-not-production-ready';
   } else if (opts.tier === 'lite' && opts.neuralWeights != null) {
     reason = 'lite-neural-unavailable';
   }
@@ -263,6 +275,8 @@ function resolveHybridDenoiser(
       reason,
       packageProvidesProductionWeights: false,
       defaultEnabled: false,
+      neuralCheckpointProductionReady: neuralCheckpointAssessment.productionReady,
+      neuralCheckpointMissing: neuralCheckpointAssessment.missing,
     },
   };
 }
@@ -393,6 +407,7 @@ export function deriveHybridEngineConfig(
 
   const whExt = readWalkaroundHybridExt(opts);
   const oidnModelUrl = whExt?.oidnModelUrl;
+  const neuralCheckpointAssessment = assessNeuralCheckpointProductionReadiness(opts.neuralWeights);
   const denoiser = resolveHybridDenoiser(opts, preset, oidnModelUrl);
 
   return {
@@ -401,6 +416,7 @@ export function deriveHybridEngineConfig(
     denoiser: denoiser.denoiser,
     denoiserAutoResolution: denoiser.autoResolution,
     neuralWeights: opts.neuralWeights,
+    neuralCheckpointAssessment,
     oidnModelUrl,
     oidnExecutionProviders: whExt?.oidnExecutionProviders,
     // Lite forces merged BVH (drops the 5 TLAS scene-group buffers — the lite

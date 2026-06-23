@@ -3,7 +3,20 @@ import { describe, expect, it } from 'vitest';
 import { parseHybridEngineOptions } from '../HybridEngineConfig.js';
 import type { HybridEngineOptions } from '../HybridEngineOptions.js';
 import { WALKAROUND_DENOISER_UNET_SPEC } from '../neural/unetArchitecture.js';
-import type { LayerWeights, ModelWeights } from '../neural/weights.js';
+import type { LayerWeights, ModelWeights, NeuralCheckpointMetadata } from '../neural/weights.js';
+
+const PRODUCTION_CHECKPOINT: NeuralCheckpointMetadata = {
+  id: 'prod-fixture',
+  trainingSamples: 512,
+  noisySpp: 1,
+  cleanSpp: 4096,
+  auxiliaryInputs: ['albedo', 'normal'],
+  captureSource: 'gpu-reference-capture',
+  captureBackend: 'pt-webgpu-full',
+  tonemap: 'linear-hdr',
+  hardware: 'real-adapter-fixture',
+  qualityReport: { status: 'pass', reportPath: 'tools/neural-denoiser-training/reports/prod-fixture.json' },
+};
 
 function fakeDevice(): GPUDevice {
   return {
@@ -47,6 +60,23 @@ function hostWeights(): ModelWeights {
   return { layers };
 }
 
+function productionHostWeights(): ModelWeights {
+  return { ...hostWeights(), checkpoint: PRODUCTION_CHECKPOINT };
+}
+
+function incompleteProductionHostWeights(): ModelWeights {
+  return {
+    ...hostWeights(),
+    checkpoint: {
+      ...PRODUCTION_CHECKPOINT,
+      trainingSamples: 32,
+      cleanSpp: 256,
+      auxiliaryInputs: ['albedo'],
+      qualityReport: { status: 'pass' },
+    },
+  };
+}
+
 function malformedHostWeights(): ModelWeights {
   return { layers: [] };
 }
@@ -62,14 +92,16 @@ describe('learned-system option parsing', () => {
       reason: 'no-host-model-assets',
       packageProvidesProductionWeights: false,
       defaultEnabled: false,
+      neuralCheckpointProductionReady: false,
+      neuralCheckpointMissing: ['checkpoint metadata'],
     });
     expect(cfg.neuralWeights).toBeUndefined();
     expect(cfg.nrcEnabled).toBe(0);
     expect(cfg.ppgEnabled).toBe(0);
   });
 
-  it("resolves denoiser:'auto' to neural only when full-tier host weights exist", () => {
-    const weights = hostWeights();
+  it("resolves denoiser:'auto' to neural only when full-tier host production weights exist", () => {
+    const weights = productionHostWeights();
     const cfg = parseHybridEngineOptions(baseOpts({
       denoiser: 'auto',
       neuralWeights: weights,
@@ -82,6 +114,47 @@ describe('learned-system option parsing', () => {
       reason: 'host-neural-weights',
       packageProvidesProductionWeights: false,
       defaultEnabled: false,
+      neuralCheckpointProductionReady: true,
+      neuralCheckpointMissing: [],
+    });
+  });
+
+  it("does not auto-select neural for shape-valid non-production weights", () => {
+    const weights = hostWeights();
+    const cfg = parseHybridEngineOptions(baseOpts({
+      denoiser: 'auto',
+      neuralWeights: weights,
+    }));
+
+    expect(cfg.denoiser).toBe('atrous-variance');
+    expect(cfg.neuralWeights).toBe(weights);
+    expect(cfg.neuralCheckpointAssessment.productionReady).toBe(false);
+    expect(cfg.denoiserAutoResolution).toMatchObject({
+      resolved: 'atrous-variance',
+      reason: 'host-neural-weights-not-production-ready',
+      neuralCheckpointProductionReady: false,
+      neuralCheckpointMissing: ['checkpoint metadata'],
+    });
+  });
+
+  it('requires production checkpoint thresholds before auto-selecting neural', () => {
+    const cfg = parseHybridEngineOptions(baseOpts({
+      denoiser: 'auto',
+      neuralWeights: incompleteProductionHostWeights(),
+    }));
+
+    expect(cfg.denoiser).toBe('atrous-variance');
+    expect(cfg.neuralCheckpointAssessment.productionReady).toBe(false);
+    expect(cfg.neuralCheckpointAssessment.missing).toEqual(expect.arrayContaining([
+      'trainingSamples>=500',
+      'cleanSpp>=4096',
+      'auxiliaryInputs.normal',
+      'qualityReport.reportPath',
+    ]));
+    expect(cfg.denoiserAutoResolution).toMatchObject({
+      resolved: 'atrous-variance',
+      reason: 'host-neural-weights-not-production-ready',
+      neuralCheckpointProductionReady: false,
     });
   });
 
@@ -112,6 +185,8 @@ describe('learned-system option parsing', () => {
       reason: 'lite-neural-unavailable',
       packageProvidesProductionWeights: false,
       defaultEnabled: false,
+      neuralCheckpointProductionReady: false,
+      neuralCheckpointMissing: ['checkpoint metadata'],
     });
   });
 

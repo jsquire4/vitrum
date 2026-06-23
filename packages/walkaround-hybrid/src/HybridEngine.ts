@@ -192,14 +192,18 @@ function buildWalkaroundExperimentalFeatures(cfg: ParsedHybridEngineConfig): Rea
   return features;
 }
 
-function buildWalkaroundSupportDetails(opts: HybridEngineOptions): NonNullable<EngineCapabilities['supportDetails']> {
+function buildWalkaroundSupportDetails(
+  opts: HybridEngineOptions,
+  cfg: ParsedHybridEngineConfig,
+): NonNullable<EngineCapabilities['supportDetails']> {
   const base = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails;
-  if (opts.tier !== 'lite' && opts.neuralWeights != null) return base;
+  const fullTierWeights = opts.tier !== 'lite' && cfg.neuralWeights != null;
+  if (fullTierWeights && cfg.neuralCheckpointAssessment.productionReady) return base;
   return {
     ...base,
     denoisers: {
       ...base.denoisers,
-      neural: 'unsupported',
+      neural: fullTierWeights ? 'approximate' : 'unsupported',
     },
   };
 }
@@ -563,8 +567,8 @@ export class HybridEngine implements Engine {
         method: 'createWalkaroundEngine_Hybrid',
         message:
           `[HybridEngine] denoiser:'auto' resolved to '${r.resolved}' (${r.reason}). ` +
-          `The package does not ship production neural weights; neural is selected ` +
-          `only when the host provides neuralWeights, and OIDN only when the host ` +
+          `The package does not ship production neural weights; neural auto-selection ` +
+          `requires host neuralWeights with production checkpoint metadata, and OIDN only when the host ` +
           `provides an OIDN model URL.`,
         details: {
           requested: r.requested,
@@ -572,6 +576,8 @@ export class HybridEngine implements Engine {
           reason: r.reason,
           packageProvidesProductionWeights: r.packageProvidesProductionWeights,
           defaultEnabled: r.defaultEnabled,
+          neuralCheckpointProductionReady: r.neuralCheckpointProductionReady,
+          neuralCheckpointMissing: r.neuralCheckpointMissing,
         },
       });
     }
@@ -689,12 +695,15 @@ export class HybridEngine implements Engine {
         message:
           `[HybridEngine] denoiser:'neural' is an opt-in GPU U-Net path that ` +
           `requires host-provided, scene-validated weights. The package does ` +
-          `not ship production neural weights or enable neural by default.`,
+          `not ship production neural weights or enable neural by default; ` +
+          `non-production checkpoint metadata is reported as approximate support.`,
         details: {
           denoiser: 'neural',
           weightsRequired: true,
           packageProvidesProductionWeights: false,
           defaultEnabled: false,
+          checkpointProductionReady: cfg.neuralCheckpointAssessment.productionReady,
+          checkpointMissing: cfg.neuralCheckpointAssessment.missing,
         },
       });
     }
@@ -848,7 +857,7 @@ export class HybridEngine implements Engine {
       // limits, not because turbidity/rayleigh/mie are dropped.
       supportedEnvironmentKinds: new Set<SceneEnvironment['kind']>(['none', 'hdri', 'procedural-sky']),
       presentationMode:          'swapchain-required',
-      supportDetails:            buildWalkaroundSupportDetails(opts),
+      supportDetails:            buildWalkaroundSupportDetails(opts, this._cfg),
       experimentalFeatures:      buildWalkaroundExperimentalFeatures(this._cfg),
       // RFE-05: Real-time caustic strategies (MNEE / photon-map) are not
       // compatible with the walkaround engine's frame cadence; the walkaround

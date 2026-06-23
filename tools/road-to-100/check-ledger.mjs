@@ -1995,7 +1995,9 @@ for (const needle of [
   "export type ResolvedHybridDenoiser = Exclude<HybridDenoiser, 'auto'>;",
   "function resolveHybridDenoiser",
   "opts.denoiser !== 'auto'",
+  "assessNeuralCheckpointProductionReadiness",
   "reason = 'host-neural-weights'",
+  "reason = 'host-neural-weights-not-production-ready'",
   "reason = 'host-oidn-model-url'",
   "reason = 'lite-neural-unavailable'",
   "packageProvidesProductionWeights: false",
@@ -2021,8 +2023,10 @@ const walkaroundCapabilitiesPartitionTest = await readText("packages/walkaround-
 for (const needle of [
   "resolves denoiser:'auto' to the default when no host model assets exist",
   "reason: 'no-host-model-assets'",
-  "resolves denoiser:'auto' to neural only when full-tier host weights are supplied",
+  "resolves denoiser:'auto' to neural only when full-tier production host weights are supplied",
   "reason: 'host-neural-weights'",
+  "keeps denoiser:'auto' off neural for shape-valid non-production weights",
+  "reason: 'host-neural-weights-not-production-ready'",
   "resolves denoiser:'auto' away from neural on lite even if weights are present",
   "reason: 'lite-neural-unavailable'",
 ]) {

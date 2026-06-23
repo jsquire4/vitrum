@@ -320,6 +320,12 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
         ? QUALITY_MANIFEST_PATH
         : null,
       qualityManifestRequirements: productionQualityRequirements(),
+      runtimePolicy: {
+        autoSelectsNeuralOnlyWithProductionCheckpoint: true,
+        explicitNeuralWithNonProductionWeights: "allowed-as-approximate",
+        nonProductionCapabilitySupport: "approximate",
+        requiredMetadataContract: "NeuralCheckpointMetadata",
+      },
       remaining: hasProductionCheckpoint
         ? "Keep production default eligibility tied to the validated quality manifest."
         : "Provision a production neural checkpoint and passing quality A/B manifest before default or production claims.",
@@ -407,6 +413,22 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
   if (JSON.stringify(requirements) !== JSON.stringify(expectedRequirements)) {
     fail(`${STATUS_PATH} neuralDenoiser.qualityManifestRequirements must match the production quality validator thresholds`);
   }
+  const runtimePolicy = neuralRecord.runtimePolicy;
+  if (runtimePolicy == null || typeof runtimePolicy !== "object") {
+    fail(`${STATUS_PATH} neuralDenoiser.runtimePolicy must be an object`);
+  }
+  if (runtimePolicy.autoSelectsNeuralOnlyWithProductionCheckpoint !== true) {
+    fail(`${STATUS_PATH} must pin neural auto-selection to production checkpoints only`);
+  }
+  if (runtimePolicy.explicitNeuralWithNonProductionWeights !== "allowed-as-approximate") {
+    fail(`${STATUS_PATH} must pin non-production explicit neural as approximate`);
+  }
+  if (runtimePolicy.nonProductionCapabilitySupport !== "approximate") {
+    fail(`${STATUS_PATH} must pin non-production neural supportDetails as approximate`);
+  }
+  if (runtimePolicy.requiredMetadataContract !== "NeuralCheckpointMetadata") {
+    fail(`${STATUS_PATH} must cite NeuralCheckpointMetadata as the production contract`);
+  }
 }
 
 async function assertRuntimeTruthfulnessGuards() {
@@ -425,7 +447,9 @@ async function assertRuntimeTruthfulnessGuards() {
     [config, "opts.denoiser === 'neural' && !opts.neuralWeights", "neural weights construction guard"],
     [config, "function resolveHybridDenoiser", "denoiser auto/default resolver"],
     [config, "opts.denoiser !== 'auto'", "non-auto denoiser path"],
+    [config, "assessNeuralCheckpointProductionReadiness", "neural checkpoint production-readiness resolver"],
     [config, "reason = 'host-neural-weights'", "auto denoiser host neural route"],
+    [config, "reason = 'host-neural-weights-not-production-ready'", "auto denoiser research-checkpoint fallback disclosure"],
     [config, "reason = 'host-oidn-model-url'", "auto denoiser host OIDN route"],
     [config, "let reason: DenoiserAutoResolutionReason = 'no-host-model-assets'", "auto denoiser fallback disclosure"],
     [config, "validateWeightsForSpec(WALKAROUND_DENOISER_UNET_SPEC", "neural checkpoint shape validation before construction"],
@@ -437,6 +461,8 @@ async function assertRuntimeTruthfulnessGuards() {
     [engine, "walkaround-hybrid.neural-host-weights-required", "neural host-weights warning code"],
     [engine, "walkaround-hybrid.denoiser-auto-resolved", "denoiser auto resolution warning code"],
     [engine, "packageProvidesProductionWeights: false", "neural warning production-weight disclosure"],
+    [engine, "neuralCheckpointAssessment.productionReady", "neural production-readiness capability gate"],
+    [engine, "neural: fullTierWeights ? 'approximate' : 'unsupported'", "non-production neural supportDetails downgrade"],
     [engine, "walkaround-hybrid-gris-unbiased-reuse", "GRIS opt-in experimental feature"],
     [engine, "walkaround-hybrid-ppg-guided-gi", "PPG opt-in experimental feature"],
     [engine, "walkaround-hybrid-nrc-biased-cache", "NRC opt-in experimental feature"],
@@ -457,6 +483,9 @@ async function assertRuntimeTruthfulnessGuards() {
     [trainingReadme, "checkpoint classification", "training README checkpoint manifest disclosure"],
     [weights, "Repo-only research checkpoints", "weights.ts research checkpoint disclosure"],
     [weights, "does not ship production neural weights", "weights.ts production-weight disclosure"],
+    [weights, "export interface NeuralCheckpointMetadata", "weights.ts production metadata contract"],
+    [weights, "NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS", "weights.ts production readiness thresholds"],
+    [weights, "assessNeuralCheckpointProductionReadiness", "weights.ts production readiness assessment"],
     [hardwareNeeds, "default-tier quality/convergence A/B before any default-on decision", "NRC hardware-validation default-tier caveat"],
     [hardwareNeeds, "biased-cache QUALITY A/B", "NRC hardware-validation quality A/B tail"],
     [hardwareNeeds, "not mean-preserving", "NRC hardware-validation biased-cache caveat"],
@@ -528,7 +557,8 @@ async function assertBehavioralProofCoverage() {
       path: "packages/walkaround-hybrid/src/__tests__/learnedSystemConfig.test.ts",
       needles: [
         "keeps denoiser:'auto' on the non-learned default when no host model assets exist",
-        "resolves denoiser:'auto' to neural only when full-tier host weights exist",
+        "resolves denoiser:'auto' to neural only when full-tier host production weights exist",
+        "does not auto-select neural for shape-valid non-production weights",
         "does not auto-select neural on tier:'lite', even when host weights exist",
         "rejects denoiser:'auto' host weights that do not match the U-Net checkpoint contract",
         "rejects denoiser:'neural' host weights that do not match the U-Net checkpoint contract",
@@ -545,7 +575,8 @@ async function assertBehavioralProofCoverage() {
       needles: [
         "keeps learned/research paths out of experimentalFeatures until explicitly enabled",
         "resolves denoiser:'auto' to the default when no host model assets exist",
-        "resolves denoiser:'auto' to neural only when full-tier host weights are supplied",
+        "resolves denoiser:'auto' to neural only when full-tier production host weights are supplied",
+        "keeps denoiser:'auto' off neural for shape-valid non-production weights",
         "resolves denoiser:'auto' away from neural on lite even if weights are present",
         "declares opt-in learned/research paths as experimental features",
         "walkaround-hybrid.nrc-experimental-biased",

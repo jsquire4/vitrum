@@ -36,12 +36,21 @@ export {
 // Neural-denoiser host wiring surface (kept public for example hosts).
 export {
   buildRandomWeightsForSpec,
+  assessNeuralCheckpointProductionReadiness,
+  isNeuralCheckpointProductionReady,
   loadWeightsFromArrayBuffer,
   serializeWeightsToArrayBuffer,
   VITRUM_MODEL_MAGIC,
   VITRUM_MODEL_VERSION,
+  NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS,
 } from './neural/weights.js';
-export type { ModelWeights, LayerWeights } from './neural/weights.js';
+export type {
+  ModelWeights,
+  LayerWeights,
+  NeuralCheckpointMetadata,
+  NeuralCheckpointProductionAssessment,
+  NeuralCheckpointQualityReport,
+} from './neural/weights.js';
 export { WALKAROUND_DENOISER_UNET_SPEC } from './neural/unetArchitecture.js';
 
 // Quality preset public surface — hosts can enumerate tiers, resolve preset

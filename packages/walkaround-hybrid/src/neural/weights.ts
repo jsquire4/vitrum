@@ -37,6 +37,98 @@ export interface LayerWeights {
 export interface ModelWeights {
   /** Layer weights in execution order (matches UNetSpec.layers order). */
   readonly layers: readonly LayerWeights[];
+  /** Optional provenance/quality metadata for production-readiness decisions. */
+  readonly checkpoint?: NeuralCheckpointMetadata;
+}
+
+export type NeuralCheckpointAuxInput = 'albedo' | 'normal' | 'depth' | 'motion';
+
+export interface NeuralCheckpointQualityReport {
+  readonly status: 'pass' | 'fail' | 'unknown';
+  readonly reportPath?: string;
+  readonly validationScenes?: number;
+  readonly psnrDb?: number;
+  readonly ssim?: number;
+}
+
+export interface NeuralCheckpointMetadata {
+  readonly id: string;
+  readonly trainingSamples: number;
+  readonly noisySpp: number;
+  readonly cleanSpp: number;
+  readonly auxiliaryInputs: readonly NeuralCheckpointAuxInput[];
+  readonly captureSource: string;
+  readonly captureBackend: string;
+  readonly tonemap: string;
+  readonly hardware: string;
+  readonly qualityReport: NeuralCheckpointQualityReport;
+}
+
+export interface NeuralCheckpointProductionAssessment {
+  readonly productionReady: boolean;
+  readonly missing: readonly string[];
+  readonly metadata?: NeuralCheckpointMetadata;
+}
+
+export const NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS = Object.freeze({
+  minTrainingSamples: 500,
+  noisySpp: 1,
+  minCleanSpp: 4096,
+  requiredAuxiliaryInputs: ['albedo', 'normal'] as const,
+  requiredQualityStatus: 'pass' as const,
+});
+
+export function assessNeuralCheckpointProductionReadiness(
+  weights: ModelWeights | undefined,
+): NeuralCheckpointProductionAssessment {
+  const missing: string[] = [];
+  const metadata = weights?.checkpoint;
+  if (metadata == null) {
+    return { productionReady: false, missing: ['checkpoint metadata'] };
+  }
+
+  if (typeof metadata.id !== 'string' || metadata.id.length === 0) {
+    missing.push('checkpoint.id');
+  }
+  if (!isFiniteAtLeast(metadata.trainingSamples, NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS.minTrainingSamples)) {
+    missing.push(`trainingSamples>=${NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS.minTrainingSamples}`);
+  }
+  if (metadata.noisySpp !== NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS.noisySpp) {
+    missing.push(`noisySpp=${NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS.noisySpp}`);
+  }
+  if (!isFiniteAtLeast(metadata.cleanSpp, NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS.minCleanSpp)) {
+    missing.push(`cleanSpp>=${NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS.minCleanSpp}`);
+  }
+  const auxiliaryInputs = Array.isArray(metadata.auxiliaryInputs) ? metadata.auxiliaryInputs : [];
+  if (auxiliaryInputs.length === 0) {
+    missing.push('auxiliaryInputs');
+  }
+  for (const input of NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS.requiredAuxiliaryInputs) {
+    if (!auxiliaryInputs.includes(input)) {
+      missing.push(`auxiliaryInputs.${input}`);
+    }
+  }
+  for (const field of ['captureSource', 'captureBackend', 'tonemap', 'hardware'] as const) {
+    if (typeof metadata[field] !== 'string' || metadata[field].length === 0) {
+      missing.push(field);
+    }
+  }
+  if (metadata.qualityReport?.status !== NEURAL_PRODUCTION_CHECKPOINT_REQUIREMENTS.requiredQualityStatus) {
+    missing.push('qualityReport.status=pass');
+  }
+  if (typeof metadata.qualityReport?.reportPath !== 'string' || metadata.qualityReport.reportPath.length === 0) {
+    missing.push('qualityReport.reportPath');
+  }
+
+  return { productionReady: missing.length === 0, missing, metadata };
+}
+
+export function isNeuralCheckpointProductionReady(weights: ModelWeights | undefined): boolean {
+  return assessNeuralCheckpointProductionReadiness(weights).productionReady;
+}
+
+function isFiniteAtLeast(value: number, min: number): boolean {
+  return Number.isFinite(value) && value >= min;
 }
 
 // ── Spec validation ─────────────────────────────────────────────────────────
