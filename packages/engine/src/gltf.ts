@@ -15,6 +15,7 @@ import type {
   GltfBackendProfileId,
   GltfForEngineResult,
   GltfImportDiagnostic,
+  GltfTextureDecodePolicyContext,
   GltfSceneController,
   DecodeSceneTextureDiagnostic,
   GltfTextureDecodeReport,
@@ -146,8 +147,18 @@ export async function loadGltfWithEngine(
   }
 
   let runtimeProfileId: GltfBackendProfileId | undefined;
-  const runtimeProfile = await maybeProbePtWebgpuRuntimeProfile(preferredAdapterBackend, adapterOptions);
-  const loadOptions = withRuntimeTextureCap(adapterOptions, runtimeProfile);
+  let runtimeProfile = await maybeProbePtWebgpuRuntimeProfile(preferredAdapterBackend, adapterOptions);
+  const loadOptions = withRecommendedRuntimeTextureCap(
+    withRuntimeTextureCap(adapterOptions, runtimeProfile),
+    preferredAdapterBackend,
+    async (backend, context) => {
+      runtimeProfile = await maybeProbePtWebgpuRuntimeProfile(backend, {
+        ...adapterOptions,
+        ...context.decodeOptions,
+      });
+      return runtimeProfile;
+    },
+  );
   const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
     ...loadOptions,
     ...(preferredAdapterBackend !== undefined ? { backend: preferredAdapterBackend } : {}),
@@ -293,6 +304,46 @@ function withRuntimeTextureCap<TOptions extends Pick<LoadGltfWithEngineOptions, 
   return maxTextureSize === undefined
     ? options
     : { ...options, maxTextureSize };
+}
+
+function withRecommendedRuntimeTextureCap<TOptions extends LoadGltfWithEngineOptions>(
+  options: TOptions,
+  selectedBackend: CreateEngineBackendId | GltfEngineSelection | undefined,
+  resolveRuntimeProfile: (
+    backend: CreateEngineBackendId | GltfEngineSelection,
+    context: GltfTextureDecodePolicyContext,
+  ) => Promise<PtWebgpuRuntimeProfile | null>,
+): TOptions {
+  if (selectedBackend !== undefined) return options;
+  return {
+    ...options,
+    configureTextureDecode: async (context) => {
+      const hostPatch = await options.configureTextureDecode?.(context);
+      const decodeOptions = hostPatch === undefined
+        ? context.decodeOptions
+        : { ...context.decodeOptions, ...hostPatch };
+      const recommendedBackend = context.asset.recommendedBackend.backend;
+      const runtimeProfile = recommendedBackend === 'pt-webgpu'
+        ? await resolveRuntimeProfile(recommendedBackend, {
+        ...context,
+        decodeOptions,
+        })
+        : null;
+      const capPatch = runtimeTextureCapPatch(decodeOptions, runtimeProfile);
+      return hostPatch === undefined && capPatch === undefined
+        ? undefined
+        : { ...(hostPatch ?? {}), ...(capPatch ?? {}) };
+    },
+  };
+}
+
+function runtimeTextureCapPatch(
+  options: Pick<LoadGltfWithEngineOptions, 'maxTextureSize'>,
+  runtimeProfile: PtWebgpuRuntimeProfile | null,
+): Pick<LoadGltfWithEngineOptions, 'maxTextureSize'> | undefined {
+  if (options.maxTextureSize !== undefined || runtimeProfile == null) return undefined;
+  const maxTextureSize = runtimeMaxTextureSize(runtimeProfile);
+  return maxTextureSize === undefined ? undefined : { maxTextureSize };
 }
 
 function runtimeMaxTextureSize(profile: PtWebgpuRuntimeProfile): number | undefined {

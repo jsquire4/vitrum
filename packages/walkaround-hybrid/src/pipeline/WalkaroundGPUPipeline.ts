@@ -472,6 +472,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   // scheduling. T2.H3 — `PPGCoordinator.enabled` mirrors the gate forwarded
   // into `PassGateOptions.ppgEnabled`.
   private readonly _ppg: PPGCoordinator;
+  /** CPU shadow of the merged BVH position buffer used only to cold-restart
+   * scene-bounds-dependent learned subsystems after geometry mutation. */
+  private _learningBvhPositionsCpuData: ArrayBuffer | null = null;
 
   /** ReGIR (Boksansky 2021) grid coordinator. Constructed at `initialize`
    *  (config arrives in the init options). Off by default ⇒ a no-op coordinator
@@ -1089,6 +1092,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
 
     // ── Upload BVH buffers ────────────────────────────────────────────────
     this._bvhHost.uploadInitial(d, bvhBuffers);
+    this._learningBvhPositionsCpuData = bvhBuffers.bvhPositions.cpuData.slice(0);
 
     // Phase-0 productization — resolve the GTAO mode BEFORE allocating frame
     // resources, since `'quarter'` sizes the AO target at a smaller resolution.
@@ -1413,12 +1417,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   ): void {
     if (!this._initialized) return;
     this._bvhHost.refreshBvhRefit(this._device, bvhNodesBytes, positionsSlice);
+    this.#patchLearningBvhPositions(positionsSlice);
   }
 
   /** PR-7 — upload refit BVH nodes only (positions already on GPU). */
   refreshBvhNodesOnly(bvhNodesBytes: ArrayBuffer): void {
     if (!this._initialized) return;
     this._bvhHost.refreshBvhNodesOnly(this._device, bvhNodesBytes);
+    this.#resetLearnedSceneStateFromShadow();
   }
 
   /** H19 — upload a per-vertex normals slice after a transform/positions refit. */
@@ -1471,6 +1477,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   ): void {
     if (!this._initialized) return;
     this._bvhHost.refreshTlasRefit(this._device, tlasNodes, worldToLocal, localToWorld);
+    this.#resetLearnedSceneStateFromShadow();
   }
 
   /**
@@ -1524,6 +1531,30 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   ): void {
     if (!this._initialized) return;
     this._bvhHost.refreshBvhFullRebuild(this._device, bvhBuffers);
+    this.#replaceLearningBvhPositions(bvhBuffers.bvhPositions.cpuData);
+  }
+
+  #replaceLearningBvhPositions(cpuData: ArrayBuffer): void {
+    this._learningBvhPositionsCpuData = cpuData.slice(0);
+    this.#resetLearnedSceneStateFromShadow();
+  }
+
+  #patchLearningBvhPositions(slice: { byteOffset: number; data: ArrayBuffer }): void {
+    if (this._learningBvhPositionsCpuData == null) return;
+    const target = new Uint8Array(this._learningBvhPositionsCpuData);
+    const source = new Uint8Array(slice.data);
+    if (slice.byteOffset < 0 || slice.byteOffset + source.byteLength > target.byteLength) return;
+    target.set(source, slice.byteOffset);
+    this.#resetLearnedSceneStateFromShadow();
+  }
+
+  #resetLearnedSceneStateFromShadow(): void {
+    const cpuData = this._learningBvhPositionsCpuData;
+    if (cpuData == null) return;
+    const bvhPositions = { bvhPositions: { cpuData } };
+    this._ppg.resetForSceneBvh(bvhPositions, this._res, this._width, this._height);
+    const aabb = deriveSceneAABBFromBvhPositions(bvhPositions);
+    this._nrc?.resetForSceneBounds(aabb.min, aabb.max);
   }
 
   /**

@@ -221,13 +221,7 @@ export class WebGl2FiniteDifferenceInverseSession implements InverseSession {
             `length ${initial.length}, expected ${slot.length}.`,
         );
       }
-      for (const value of initial) {
-        if (!Number.isFinite(value)) {
-          throw new Error(
-            `createInverseSession: parameter "${slot.param.path}" initial value must be finite.`,
-          );
-        }
-      }
+      validateInitialSceneValue(slot, initial, slot.param.initial != null);
       this.#flat.set(initial, slot.offset);
     }
 
@@ -420,7 +414,7 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
       case 'transmission': return [material.transmission ?? 0];
       case 'thickness': return [material.thickness ?? 0];
       case 'attenuationColor': return [...(material.attenuationColor ?? [1, 1, 1])];
-      case 'attenuationDistance': return [finiteDefault(material.attenuationDistance, 1)];
+      case 'attenuationDistance': return [material.attenuationDistance ?? Number.POSITIVE_INFINITY];
       case 'dispersionAbbeNumber': return [material.dispersionAbbeNumber ?? 0];
       case 'scatteringCoefficient': return [material.scatteringCoefficient ?? 0];
       case 'scatteringAnisotropy': return [material.scatteringAnisotropy ?? 0];
@@ -456,8 +450,26 @@ function readSceneValue(scene: Scene, target: ResolvedParamTarget, length: numbe
   return new Array<number>(length).fill(0);
 }
 
-function finiteDefault(value: number | undefined, fallback: number): number {
-  return value !== undefined && Number.isFinite(value) ? value : fallback;
+function validateInitialSceneValue(slot: ParamSlot, value: readonly number[], fromExplicitInitial: boolean): void {
+  if (slot.target.domain === 'materials' && slot.target.field === 'attenuationDistance') {
+    const distance = value[0];
+    if (Number.isFinite(distance) && distance! > 0) return;
+    const source = fromExplicitInitial ? 'initial' : 'scene';
+    throw new Error(
+      `createInverseSession: parameter "${slot.param.path}" requires a finite positive ${source} ` +
+        'attenuationDistance. Undefined or Infinity means "no finite absorbing medium" in the ' +
+        'renderer, so pt-webgl2 cannot forward-difference this parameter without an explicit ' +
+        'finite seed. Set parameter.initial to start fitting a finite medium.',
+    );
+  }
+
+  for (const component of value) {
+    if (!Number.isFinite(component)) {
+      throw new Error(
+        `createInverseSession: parameter "${slot.param.path}" initial value must be finite.`,
+      );
+    }
+  }
 }
 
 function defaultClampRange(field: string): [number, number] {

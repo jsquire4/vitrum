@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineError, EngineWarning } from '@vitrum/core';
 import { PPGCoordinator } from '../PPGCoordinator.js';
-import type { FrameResources } from '../resourceManager.js';
+import type { FrameResources, PPGFrameResources } from '../resourceManager.js';
 
 type PPGCoordinatorInternals = {
   _enabled: boolean;
@@ -14,11 +14,54 @@ type PPGCoordinatorInternals = {
   _reportTrainingReadbackFailure(raw: unknown): void;
 };
 
+function makeGpuBuffer(size = 256): GPUBuffer {
+  return { size, destroy: vi.fn() } as unknown as GPUBuffer;
+}
+
+function makeGpuDevice(): GPUDevice & {
+  readonly queue: GPUQueue & { writeBuffer: ReturnType<typeof vi.fn>; submit: ReturnType<typeof vi.fn> };
+  readonly clearBuffer: ReturnType<typeof vi.fn>;
+} {
+  const clearBuffer = vi.fn();
+  return {
+    queue: {
+      writeBuffer: vi.fn(),
+      submit: vi.fn(),
+    },
+    clearBuffer,
+    createCommandEncoder: vi.fn(() => ({
+      clearBuffer,
+      finish: vi.fn(() => ({})),
+    })),
+  } as unknown as GPUDevice & {
+    readonly queue: GPUQueue & { writeBuffer: ReturnType<typeof vi.fn>; submit: ReturnType<typeof vi.fn> };
+    readonly clearBuffer: ReturnType<typeof vi.fn>;
+  };
+}
+
+function makeFrameResources(): FrameResources {
+  return {
+    ppg: {
+      sTreeBuf: makeGpuBuffer(),
+      dTreeBuf: makeGpuBuffer(),
+      dTreeOffsetsBuf: makeGpuBuffer(32),
+      fluxAtomicsBuf: makeGpuBuffer(128),
+      cellSampleCountsBuf: makeGpuBuffer(32),
+      updateUboBuffer: makeGpuBuffer(16),
+    },
+  } as unknown as FrameResources;
+}
+
+function ppgResources(frameResources: FrameResources): PPGFrameResources {
+  return frameResources.ppg as PPGFrameResources;
+}
+
 function makeCoordinator(
   warnings: EngineWarning[] = [],
   errors: EngineError[] = [],
+  device: GPUDevice = {} as GPUDevice,
 ): PPGCoordinator {
-  const coordinator = new PPGCoordinator({} as GPUDevice, {
+  const coordinator = new PPGCoordinator(device, {
     onWarning: (warning) => warnings.push(warning),
     onError: (error) => errors.push(error),
   });
@@ -44,6 +87,31 @@ function makeSnapshot(overrides: Partial<Parameters<PPGCoordinator['importSTree'
 }
 
 describe('PPGCoordinator diagnostics', () => {
+  it('cold-restarts scene-bound PPG state and clears training accumulators after BVH mutation', () => {
+    const device = makeGpuDevice();
+    const coordinator = makeCoordinator([], [], device);
+    const internals = coordinator as unknown as PPGCoordinatorInternals;
+    const frameResources = makeFrameResources();
+    const bvhPositions = new Float32Array([
+      2, 0, 0, 0,
+      4, 6, 8, 0,
+    ]);
+
+    coordinator.resetForSceneBvh(
+      { bvhPositions: { cpuData: bvhPositions.buffer } },
+      frameResources,
+      64,
+      32,
+    );
+
+    expect(internals._sceneAABB.min[0]).toBeLessThan(2);
+    expect(internals._sceneAABB.max[2]).toBeGreaterThan(8);
+    expect(device.queue.writeBuffer).toHaveBeenCalled();
+    expect(device.clearBuffer).toHaveBeenCalledWith(ppgResources(frameResources).fluxAtomicsBuf);
+    expect(device.clearBuffer).toHaveBeenCalledWith(ppgResources(frameResources).cellSampleCountsBuf);
+    expect(device.queue.submit).toHaveBeenCalledTimes(1);
+  });
+
   it('routes maxSpatialCells import mismatch through structured warnings', () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const warnings: EngineWarning[] = [];

@@ -26,7 +26,9 @@ export type {
   GltfAssetFetchResponse,
   GltfAssetInput,
   GltfAssetResult,
+  ConfigureGltfTextureDecodeOptions,
   GltfDecodedAssetResult,
+  GltfTextureDecodePolicyContext,
   LoadGltfAndDecodeTexturesOptions,
   LoadGltfAssetOptions,
 } from './assetLoader.js';

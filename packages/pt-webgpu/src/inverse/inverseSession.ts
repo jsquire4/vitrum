@@ -157,6 +157,8 @@ export interface InversePathReplayRenderContext {
   readonly restirPtReuse?: boolean;
   readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
   readonly directLighting?: 'sampled-selection' | 'summed-expectation';
+  readonly cameraVisibleEmitters?: boolean;
+  readonly implicitEmissiveMeshLights?: boolean;
 }
 
 export interface InversePathReplayGeometryCapabilities {
@@ -866,7 +868,13 @@ function diagnosePathReplaySlot(
     }];
   }
 
-  const materialIssue = pathReplayMaterialIssue(prim, target.field, iridescenceOptimizedPrimitiveIds.has(target.id));
+  const materialIssue = pathReplayMaterialIssue(
+    scene,
+    prim,
+    target.field,
+    iridescenceOptimizedPrimitiveIds.has(target.id),
+    renderContext,
+  );
   if (materialIssue != null) {
     return [{
       severity: 'info',
@@ -1210,15 +1218,19 @@ function pathReplayEmitterReceiverMaterialIssue(
 }
 
 function pathReplayMaterialIssue(
+  scene: Scene,
   primitive: ScenePrimitive,
   field: string,
   iridescenceCoupled: boolean,
+  renderContext: InversePathReplayRenderContext,
 ): PathReplayMaterialIssue | null {
   const material = primitive.material;
   if (field === 'baseColor' && material.shadingModel === 'unlit') {
     return materialIssueForPrimaryHit(material, primitive);
   }
   if (field === 'emissive' || field === 'emissiveIntensity') {
+    const foldIssue = pathReplayMaterialEmissiveFoldIssue(scene, primitive, renderContext);
+    if (foldIssue != null) return foldIssue;
     return materialIssueForEmissive(material, primitive);
   }
   if (field === 'aoMapIntensity') {
@@ -1255,6 +1267,31 @@ function pathReplayMaterialIssue(
     return materialIssueForAdditiveLobe(material, primitive);
   }
   return materialIssueForBrdf(material, primitive);
+}
+
+function pathReplayMaterialEmissiveFoldIssue(
+  scene: Scene,
+  primitive: ScenePrimitive,
+  renderContext: InversePathReplayRenderContext,
+): PathReplayMaterialIssue | null {
+  if (renderContext.cameraVisibleEmitters !== true) return null;
+  const foldedEmitter = scene.emitters.find((emitter) =>
+    emitter.kind === 'mesh-area' &&
+    emitter.meshId === primitive.id &&
+    directEmitterContributes(scene, emitter)
+  );
+  if (foldedEmitter == null) return null;
+  return {
+    code: 'path-replay-unsupported-material',
+    message:
+      'material emissive is overwritten by camera-visible mesh-area emitter folding; optimize the emitter color/intensity target instead',
+    details: {
+      primitiveId: primitive.id,
+      emitterId: foldedEmitter.id,
+      emitterKind: foldedEmitter.kind,
+      finiteDifferenceReason: 'mesh-area-emissive-fold',
+    },
+  };
 }
 
 function materialIssueForEmissive(
@@ -1843,7 +1880,7 @@ function pathReplayLightingIssue(
     return environmentIssue;
   }
 
-  const candidates = directLightCandidateLabels(scene);
+  const candidates = directLightCandidateLabels(scene, context);
   if (candidates.length > 1 && context.directLighting !== 'summed-expectation') {
     return {
       code: 'path-replay-unsupported-light-selection',
@@ -1883,7 +1920,10 @@ function pathReplayEnvironmentIssue(environment: {
   };
 }
 
-function directLightCandidateLabels(scene: Scene): readonly string[] {
+function directLightCandidateLabels(
+  scene: Scene,
+  context: InversePathReplayRenderContext,
+): readonly string[] {
   const candidates: string[] = [];
   for (const emitter of scene.emitters as unknown as ReadonlyArray<{
     readonly id?: string | number;
@@ -1897,6 +1937,10 @@ function directLightCandidateLabels(scene: Scene): readonly string[] {
     if (!directEmitterContributes(scene, emitter)) continue;
     candidates.push(`emitter:${String(emitter.id ?? '(unnamed)')}:${emitter.kind}`);
   }
+  for (const primitive of scene.primitives) {
+    if (!implicitEmissiveMeshContributes(scene, primitive, context)) continue;
+    candidates.push(`implicit-emissive-mesh:${primitive.id}`);
+  }
   if (environmentContributesDirectLight(scene.environment as unknown as {
     readonly kind?: string;
     readonly intensity?: number;
@@ -1904,6 +1948,37 @@ function directLightCandidateLabels(scene: Scene): readonly string[] {
     candidates.push(`environment:${scene.environment.kind}`);
   }
   return candidates;
+}
+
+function implicitEmissiveMeshContributes(
+  scene: Scene,
+  primitive: ScenePrimitive,
+  context: InversePathReplayRenderContext,
+): boolean {
+  if (context.implicitEmissiveMeshLights !== true) return false;
+  if (!isTriangleBackedPrimitiveForReplay(primitive)) return false;
+  if (!materialHasPositiveImplicitEmission(primitive.material)) return false;
+  const explicitMeshEmitter = scene.emitters.some((emitter) =>
+    emitter.kind === 'mesh-area' &&
+    emitter.meshId === primitive.id &&
+    directEmitterContributes(scene, emitter)
+  );
+  if (explicitMeshEmitter) return false;
+  return true;
+}
+
+function isTriangleBackedPrimitiveForReplay(primitive: ScenePrimitive): boolean {
+  return primitive.kind === 'mesh' ||
+    primitive.kind === 'skinned-mesh' ||
+    primitive.kind === 'instanced-mesh';
+}
+
+function materialHasPositiveImplicitEmission(material: MaterialSpec): boolean {
+  const intensity = material.emissiveIntensity ?? 1;
+  if (!(intensity > 0)) return false;
+  if (material.emissiveMap != null) return true;
+  const emissive = material.emissive ?? [0, 0, 0];
+  return ((emissive[0] ?? 0) > 0 || (emissive[1] ?? 0) > 0 || (emissive[2] ?? 0) > 0);
 }
 
 function directEmitterContributes(scene: Scene, emitter: {

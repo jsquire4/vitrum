@@ -128,6 +128,36 @@ function encodingConfig(cfg: NrcConfig, aabbMin: readonly [number, number, numbe
   };
 }
 
+function initialHashGridTableData(tableScalars: number): Float32Array {
+  const tableData = new Float32Array(tableScalars);
+  let s = 0x9e3779b1 >>> 0;
+  for (let i = 0; i < tableScalars; i++) {
+    s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+    tableData[i] = (s / 0x100000000 - 0.5) * 2e-4;
+  }
+  return tableData;
+}
+
+function packNrcConfigUbo(
+  cfg: NrcConfig,
+  trainedSteps: number,
+  recordStride: number,
+  aabbMin: readonly [number, number, number],
+  aabbMax: readonly [number, number, number],
+): ArrayBuffer {
+  const ab = new ArrayBuffer(48);
+  const f = new Float32Array(ab);
+  const u = new Uint32Array(ab);
+  f[0] = aabbMin[0]; f[1] = aabbMin[1]; f[2] = aabbMin[2]; f[3] = cfg.spreadC;
+  f[4] = aabbMax[0]; f[5] = aabbMax[1]; f[6] = aabbMax[2];
+  u[7] = cfg.recordCap >>> 0;
+  u[8] = recordStride >>> 0;
+  f[9] = 1.0;
+  u[10] = trainedSteps >>> 0;
+  u[11] = Math.max(0, Math.floor(cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8)) >>> 0;
+  return ab;
+}
+
 export class NrcSubsystem implements PipelineSubsystem {
   readonly cfg: NrcConfig;
   private readonly _device: GPUDevice;
@@ -226,12 +256,7 @@ export class NrcSubsystem implements PipelineSubsystem {
     }
     const tableScalars = totalRows * F;
     // Small random table init (Instant-NGP §3: U(-1e-4, 1e-4)).
-    const tableData = new Float32Array(tableScalars);
-    let s = 0x9e3779b1 >>> 0;
-    for (let i = 0; i < tableScalars; i++) {
-      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
-      tableData[i] = (s / 0x100000000 - 0.5) * 2e-4;
-    }
+    const tableData = initialHashGridTableData(tableScalars);
 
     const ST = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
     // The tables buffer is now WRITTEN-EVERY-FRAME by the table Adam step (it was
@@ -240,7 +265,7 @@ export class NrcSubsystem implements PipelineSubsystem {
       label: 'nrc-tables', size: Math.max(16, tableScalars * 4),
       usage: ST | GPUBufferUsage.COPY_SRC,
     });
-    d.queue.writeBuffer(this._tablesBuf, 0, tableData);
+    d.queue.writeBuffer(this._tablesBuf, 0, tableData as unknown as BufferSource);
     this._levelsBuf = d.createBuffer({ label: 'nrc-levels', size: Math.max(16, cfg.levels * 16), usage: ST });
     d.queue.writeBuffer(this._levelsBuf, 0, levelDescs);
 
@@ -277,21 +302,12 @@ export class NrcSubsystem implements PipelineSubsystem {
 
     // ── Config UBO (matches NrcCfgUBO in nrcQuery.wgsl: vec3+f32, vec3+u32, ...) ──
     this._cfgUbo = d.createBuffer({ label: 'nrc-cfg', size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const ab = new ArrayBuffer(48);
-    const f = new Float32Array(ab);
-    const u = new Uint32Array(ab);
-    f[0] = aabbMin[0]; f[1] = aabbMin[1]; f[2] = aabbMin[2]; f[3] = cfg.spreadC;
-    f[4] = aabbMax[0]; f[5] = aabbMax[1]; f[6] = aabbMax[2];
-    u[7] = cfg.recordCap >>> 0;
-    u[8] = this._recordStride >>> 0;
     // f[9] = cameraPixelPdf — initialised to 1.0 (pinhole, unit resolution).
-    // Updated every frame by updateCameraPixelPdf() once the host supplies
-    // the camera projection matrix and render resolution.  1.0 is the safe
-    // fallback used by the old hard-coded path.
-    f[9] = 1.0;
-    u[10] = this._trainedSteps >>> 0;
-    u[11] = Math.max(0, Math.floor(cfg.warmupSteps ?? DEFAULT_NRC_CONFIG.warmupSteps ?? 8)) >>> 0;
-    d.queue.writeBuffer(this._cfgUbo, 0, ab);
+    // Updated every frame by updateCameraPixelPdf() once the host supplies the
+    // camera projection matrix and render resolution.
+    d.queue.writeBuffer(this._cfgUbo, 0, packNrcConfigUbo(
+      cfg, this._trainedSteps, this._recordStride, aabbMin, aabbMax,
+    ));
 
     // ── H27 — per-slot atomic claim flags (one u32 per recordCap slot). ──
     // The GPU shader uses atomicCompareExchangeWeak at @group(4) @binding(6)
@@ -329,6 +345,50 @@ export class NrcSubsystem implements PipelineSubsystem {
     this._batchX = new Float32Array(cfg.recordCap * this._inW);
     this._batchY = new Float32Array(cfg.recordCap * OUT_W);
     this._batchPos = new Float32Array(cfg.recordCap * 3);
+  }
+
+  /**
+   * Cold-restart learned NRC state after scene-geometry mutation.
+   *
+   * The compiled query/training pipelines are independent of scene bounds, but
+   * the hash-grid normalization, cached records, warmup gate, optimizer moments,
+   * MLP weights, and trainable tables are not. Reset those in place so mutation
+   * never keeps predictions trained against the previous scene volume.
+   */
+  resetForSceneBounds(
+    aabbMin: readonly [number, number, number],
+    aabbMax: readonly [number, number, number],
+  ): void {
+    const d = this._device;
+    const cfg = this.cfg;
+    this._readPending = false;
+    this._trainedSteps = 0;
+
+    const { w, b } = heInit(this._trainer);
+    this._trainer.setWeights(w, b);
+    this._trainer.adamT = 0;
+
+    const tableScalars = cfg.levels * cfg.tableSize * cfg.featuresPerEntry;
+    d.queue.writeBuffer(this._tablesBuf, 0, initialHashGridTableData(tableScalars) as unknown as BufferSource);
+    this._tableTrainer.resetForSceneBounds(aabbMin, aabbMax);
+    d.queue.writeBuffer(this._cfgUbo, 0, packNrcConfigUbo(
+      cfg, this._trainedSteps, this._recordStride, aabbMin, aabbMax,
+    ));
+
+    const encoder = d.createCommandEncoder({ label: 'nrc-scene-reset-clear' });
+    encoder.clearBuffer(this._recordsBuf);
+    encoder.clearBuffer(this._slotClaimsBuf);
+    encoder.clearBuffer(this._trainer.gradWfx!);
+    encoder.clearBuffer(this._trainer.gradBfx!);
+    encoder.clearBuffer(this._trainer.gradInputFx!);
+    encoder.clearBuffer(this._trainer.gradWf!);
+    encoder.clearBuffer(this._trainer.gradBf!);
+    encoder.clearBuffer(this._trainer.gradInputF!);
+    encoder.clearBuffer(this._trainer.mW!);
+    encoder.clearBuffer(this._trainer.vW!);
+    encoder.clearBuffer(this._trainer.mB!);
+    encoder.clearBuffer(this._trainer.vB!);
+    d.queue.submit([encoder.finish()]);
   }
 
   /** The `@group(4)` NRC bind group the gi-ris NRC pipeline binds at slot 4. */

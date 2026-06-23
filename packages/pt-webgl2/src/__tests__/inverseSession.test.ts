@@ -115,4 +115,41 @@ describe('pt-webgl2 finite-difference inverse session', () => {
       expect.objectContaining({ code: 'path-replay-hook-missing' }),
     ]);
   });
+
+  it('rejects attenuationDistance fitting when the scene has no finite absorbing medium seed', () => {
+    const scene = makeScene();
+
+    expect(() => new WebGl2FiniteDifferenceInverseSession({
+      getScene: () => scene,
+      renderAndReadback: async () => ({ rgba: new Float32Array([0, 0, 0, 1]), channels: 4 }),
+      patchMaterial: (primitiveId, patch) => {
+        patchTriMaterial(scene, patch);
+        expect(primitiveId).toBe('tri');
+      },
+      patchEmitter: (_emitterId: string, _patch: Partial<SceneEmitter>) => {},
+    }, {
+      target: { width: 1, height: 1, data: new Float32Array([0, 0, 0]) },
+      parameters: [{ path: 'materials.tri.attenuationDistance', kind: 'scalar' }],
+    })).toThrow(/finite positive scene attenuationDistance/);
+  });
+
+  it('accepts an explicit finite attenuationDistance seed and patches it into the scene', () => {
+    const scene = makeScene();
+    const session = new WebGl2FiniteDifferenceInverseSession({
+      getScene: () => scene,
+      renderAndReadback: async () => ({ rgba: new Float32Array([0, 0, 0, 1]), channels: 4 }),
+      patchMaterial: (primitiveId, patch) => {
+        patchTriMaterial(scene, patch);
+        expect(primitiveId).toBe('tri');
+      },
+      patchEmitter: (_emitterId: string, _patch: Partial<SceneEmitter>) => {},
+    }, {
+      target: { width: 1, height: 1, data: new Float32Array([0, 0, 0]) },
+      parameters: [{ path: 'materials.tri.attenuationDistance', kind: 'scalar', initial: [2.5] }],
+    });
+
+    expect(session.currentValues()[0]).toEqual([expect.closeTo(2.5, 6)]);
+    expect(scene.primitives[0]!.material.attenuationDistance).toBeCloseTo(2.5, 6);
+    session.dispose();
+  });
 });

@@ -144,6 +144,30 @@ export class HashGridTableTrainer {
   }
 
   /**
+   * Cold-restart the trainable hash-grid for a mutated scene without
+   * recompiling pipelines. The scene-dependent data is the AABB in the
+   * encode-backward params UBO plus optimizer/gradient buffers.
+   */
+  resetForSceneBounds(
+    aabbMin: readonly [number, number, number],
+    aabbMax: readonly [number, number, number],
+  ): void {
+    const ab = new ArrayBuffer(32);
+    const f = new Float32Array(ab);
+    f[0] = aabbMin[0]; f[1] = aabbMin[1]; f[2] = aabbMin[2];
+    f[4] = aabbMax[0]; f[5] = aabbMax[1]; f[6] = aabbMax[2];
+    this._device.queue.writeBuffer(this._encBwdParamsUbo, 0, ab);
+    this._tableAdamT = 0;
+
+    const encoder = this._device.createCommandEncoder({ label: 'nrc-table-trainer-scene-reset' });
+    encoder.clearBuffer(this._gradTablesFx);
+    encoder.clearBuffer(this._gradTablesF);
+    encoder.clearBuffer(this._mTables);
+    encoder.clearBuffer(this._vTables);
+    this._device.queue.submit([encoder.finish()]);
+  }
+
+  /**
    * Run ONE hash-grid TABLE training step (the half that makes the encoding LEARN):
    *   1. upload the dense query positions + active count;
    *   2. clear gradTablesFx, dispatch the encode-backward scatter (reads the

@@ -42,8 +42,14 @@ import type { EngineError, EngineWarning } from '@vitrum/core';
  * This AABB is used for the sTree root cell extents so adaptive splits
  * subdivide the actual scene volume.
  */
-function derivePPGSceneAABB(bvh: { bvhPositions: { cpuData: ArrayBuffer; count: number } }): AABB {
+function derivePPGSceneAABB(bvh: SceneBvhPositionData): AABB {
   return deriveSceneAABBFromBvhPositions(bvh);
+}
+
+interface SceneBvhPositionData {
+  readonly bvhPositions: {
+    readonly cpuData: ArrayBuffer;
+  };
 }
 
 /**
@@ -202,6 +208,33 @@ export class PPGCoordinator implements PipelineSubsystem {
     this._frameResourcesGeneration++;
     this._uploadTree(frameResources);
     this._writeUpdateUBO(frameResources, width, height);
+  }
+
+  /**
+   * Cold-restart the guide after scene-geometry mutation.
+   *
+   * A BVH/TLAS refit can move or resize the scene volume. Reusing the previous
+   * sTree would train/sample against stale bounds and stale per-cell flux, so
+   * mutation paths rebuild the single-cell root from the current BVH and clear
+   * in-flight training state while preserving the already-allocated GPU buffers.
+   */
+  resetForSceneBvh(
+    bvhBuffers: SceneBvhPositionData,
+    frameResources: FrameResources,
+    width: number,
+    height: number,
+  ): void {
+    if (!this._enabled) return;
+    this._sceneAABB = derivePPGSceneAABB(bvhBuffers);
+    this._sTree = buildSTree(this._sceneAABB);
+    this._fluxReadbackInFlight = false;
+    this._lastFluxReadbackFrame = -1;
+    this._lastTrainingReadbackErrorMessage = null;
+    this._fluxZeroScratch = null;
+    this._frameResourcesGeneration++;
+    this._uploadTree(frameResources);
+    this._writeUpdateUBO(frameResources, width, height);
+    this._clearTrainingBuffers(frameResources);
   }
 
   /**
@@ -605,6 +638,16 @@ export class PPGCoordinator implements PipelineSubsystem {
     u32[2] = sampleCountBudget;
     u32[3] = 0;
     this._device.queue.writeBuffer(buf, 0, data);
+  }
+
+  private _clearTrainingBuffers(frameResources: FrameResources): void {
+    if (!this._enabled) return;
+    if (!isPPGAllocated(frameResources.ppg)) return;
+    const ppg = frameResources.ppg;
+    const encoder = this._device.createCommandEncoder({ label: 'ppg-scene-reset-clear' });
+    encoder.clearBuffer(ppg.fluxAtomicsBuf);
+    encoder.clearBuffer(ppg.cellSampleCountsBuf);
+    this._device.queue.submit([encoder.finish()]);
   }
 
   /**

@@ -101,9 +101,28 @@ export interface LoadGltfAndDecodeTexturesOptions extends LoadGltfAssetOptions {
   readonly maxTextureSize?: number;
   readonly warnOnNpotRepeatWrap?: boolean;
   readonly npotRepeatWrapPolicy?: DecodeSceneTexturesOptions['npotRepeatWrapPolicy'];
+  /**
+   * Optional policy hook invoked after glTF preflight/import has built the
+   * initial asset report, but before scene texture handles are decoded. Engine
+   * bridges use this to add runtime-adapter decode limits once the selected or
+   * recommended backend is known, without doing a second load.
+   */
+  readonly configureTextureDecode?: ConfigureGltfTextureDecodeOptions;
   readonly onTextureDiagnostic?: (diagnostic: DecodeSceneTextureDiagnostic) => void;
   readonly onTextureWarning?: (message: string) => void;
 }
+
+export interface GltfTextureDecodePolicyContext {
+  readonly asset: GltfAssetResult;
+  readonly decodeOptions: DecodeSceneTexturesOptions;
+}
+
+export type ConfigureGltfTextureDecodeOptions = (
+  context: GltfTextureDecodePolicyContext,
+) =>
+  | Partial<DecodeSceneTexturesOptions>
+  | void
+  | Promise<Partial<DecodeSceneTexturesOptions> | void>;
 
 export interface GltfDecodedAssetResult extends GltfAssetResult {
   readonly decodedTextureCount: number;
@@ -209,7 +228,7 @@ export async function loadGltfAndDecodeTextures(
   options: LoadGltfAndDecodeTexturesOptions = {},
 ): Promise<GltfDecodedAssetResult> {
   const asset = await loadGltfAsset(input, loadOptionsForTextureDecode(options));
-  const decodeOptions: DecodeSceneTexturesOptions = {
+  let decodeOptions: DecodeSceneTexturesOptions = {
     target: options.textureTarget ?? 'cpu-linear',
     ...(options.decodePixels ? { decodePixels: options.decodePixels } : {}),
     ...(options.maxTextureSize !== undefined ? { maxTextureSize: options.maxTextureSize } : {}),
@@ -218,6 +237,10 @@ export async function loadGltfAndDecodeTextures(
     ...(options.onTextureDiagnostic ? { onDiagnostic: options.onTextureDiagnostic } : {}),
     ...(options.onTextureWarning ? { onWarning: options.onTextureWarning } : {}),
   };
+  const configuredDecodeOptions = await options.configureTextureDecode?.({ asset, decodeOptions });
+  if (configuredDecodeOptions !== undefined) {
+    decodeOptions = { ...decodeOptions, ...configuredDecodeOptions };
+  }
   const decoded = await decodeSceneTextures(asset.scene, decodeOptions);
   const convertedMaterials = asset.convertedMaterials === undefined
     ? undefined

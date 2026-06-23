@@ -2049,6 +2049,8 @@ class PTEngineWebGPU implements Engine {
         restirPtReuse: this.#restirPtReuse,
         causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
         directLighting: 'summed-expectation',
+        cameraVisibleEmitters: this.#cameraVisibleEmitters,
+        implicitEmissiveMeshLights: true,
       }),
       getPathReplayGeometryCapabilities: () => ({
         supportedAnalyticShapes: this.#supportedAnalyticShapes(),

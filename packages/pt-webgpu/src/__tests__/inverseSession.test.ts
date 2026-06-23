@@ -827,7 +827,10 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
 
   it('resolves to path-replay when the engine provides the hook + every param is eligible', () => {
     const fake = makeFakeEngine();
-    const hooks: InverseEngineHooks = { ...fake.hooks, computeAdjointGradient: async () => new Float32Array(3) };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
     const session = new PtWebgpuInverseSession(hooks, eligibleOpts());
     expect(session.method).toBe('path-replay');
     expect(session.diagnostics).toEqual([]);
@@ -3840,6 +3843,75 @@ describe('InverseSession — Phase-1 path-replay adjoint wire', () => {
         candidates: expect.arrayContaining([
           'emitter:lamp:point',
           'emitter:mesh-light:mesh-area',
+        ]),
+      }),
+    }));
+    session.dispose();
+  });
+
+  it('degrades material emissive path-replay when camera-visible mesh-area folding owns the rendered emission', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'mesh-light',
+        color: [1, 0.5, 0.25],
+        intensity: 3,
+        meshId: 'panel',
+      }],
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayRenderContext: () => ({ cameraVisibleEmitters: true }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.emissive', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-material',
+      path: 'materials.panel.emissive',
+      details: expect.objectContaining({
+        primitiveId: 'panel',
+        emitterId: 'mesh-light',
+        finiteDifferenceReason: 'mesh-area-emissive-fold',
+      }),
+    }));
+    session.dispose();
+  });
+
+  it('counts implicit emissive meshes as direct-light candidates for sampled-selection diagnostics', () => {
+    const fake = makeFakeEngine();
+    fake.scene = {
+      ...fake.scene,
+      primitives: fake.scene.primitives.map((primitive) =>
+        primitive.id === 'panel'
+          ? { ...primitive, material: { ...primitive.material, emissive: [1, 0, 0] as [number, number, number], emissiveIntensity: 2 } }
+          : primitive,
+      ),
+    };
+    const hooks: InverseEngineHooks = {
+      ...fake.hooks,
+      getPathReplayRenderContext: () => ({ implicitEmissiveMeshLights: true }),
+      computeAdjointGradient: async () => new Float32Array(3),
+    };
+    const session = new PtWebgpuInverseSession(hooks, {
+      target: targetImage(2, 2, [0.8, 0.1, 0.1]),
+      parameters: [{ path: 'materials.panel.baseColor', kind: 'rgb' }],
+      method: 'path-replay',
+    });
+    expect(session.method).toBe('finite-difference');
+    expect(session.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'path-replay-unsupported-light-selection',
+      details: expect.objectContaining({
+        candidateCount: 2,
+        candidates: expect.arrayContaining([
+          'emitter:lamp:point',
+          'implicit-emissive-mesh:panel',
         ]),
       }),
     }));
