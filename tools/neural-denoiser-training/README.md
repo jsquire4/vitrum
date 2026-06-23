@@ -138,7 +138,10 @@ checkpoint appears without a passing `quality-ab-production.json` A/B manifest.
 That production quality manifest must also cite reproducibility artifacts:
 the dataset manifest, aggregate result summary, candidate outputs, and reference
 outputs used for the A/B. Metric-only manifests are rejected because they cannot
-support a production checkpoint claim.
+support a production checkpoint claim. The cited dataset manifest is validated
+against `dataset_spec.md`'s `vitrum.neural-denoiser.dataset.v1` schema, including
+scene counts, sample counts, required albedo/normal buffers, and noisy/clean
+artifact locations.
 
 ## GPU capture (real dataset — for the GPU session)
 

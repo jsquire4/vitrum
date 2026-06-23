@@ -294,6 +294,7 @@ async function assertNoSilentProductionCheckpoint(manifest) {
       productionLike,
       expectedParamCount: EXPECTED_PARAM_COUNT,
       artifactExists: artifactPathExists,
+      artifactText: artifactPathText,
       fail,
     });
   }
@@ -307,6 +308,11 @@ function artifactPathExists(path) {
   } catch {
     return false;
   }
+}
+
+/** @param {string} path */
+function artifactPathText(path) {
+  return Deno.readTextFileSync(repoUrl(path));
 }
 
 /**
@@ -524,6 +530,7 @@ async function assertTrainingPipelineEvidence() {
   const exportScript = await readText("tools/neural-denoiser-training/export_weights.py");
   const captureDataset = await readText("tools/neural-denoiser-training/capture-dataset.mjs");
   const datasetSpec = await readText("tools/neural-denoiser-training/dataset_spec.md");
+  const qualityValidator = await readText("tools/learned-systems/qualityManifestValidator.mjs");
   const roundTripTest = await readText("packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts");
 
   const requiredFragments = [
@@ -550,8 +557,13 @@ async function assertTrainingPipelineEvidence() {
     [datasetSpec, "frame_0001_albedo.png", "dataset spec albedo layout"],
     [datasetSpec, "frame_0001_normal.png", "dataset spec normal layout"],
     [datasetSpec, "frame_0001.png           # 4096 spp reference", "dataset spec clean image layout"],
+    [datasetSpec, "vitrum.neural-denoiser.dataset.v1", "dataset spec production manifest schema"],
+    [datasetSpec, "scenes[].sampleCount", "dataset spec production manifest sample sum"],
     [datasetSpec, "This repo does NOT currently ship a batched G-buffer capture script", "dataset spec production capture gap"],
     [datasetSpec, "5000 pairs recommended for production quality", "dataset spec production dataset sizing"],
+    [qualityValidator, "PRODUCTION_NEURAL_DATASET_MANIFEST_SCHEMA", "quality validator dataset manifest schema constant"],
+    [qualityValidator, "validateProductionDatasetManifest", "quality validator dataset manifest content guard"],
+    [qualityValidator, "artifactText(artifactRecord.datasetManifestPath)", "quality validator reads dataset manifest artifact JSON"],
     [roundTripTest, "neuralWeightsRoundTrip.test.ts — capture → train → export → load round-trip", "round-trip proof header"],
     [roundTripTest, "CANONICAL_PARAM_COUNT = 535107", "round-trip canonical param count"],
     [roundTripTest, "loadWeightsFromArrayBuffer", "round-trip runtime loader"],

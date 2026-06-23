@@ -4,6 +4,8 @@ import test from 'node:test';
 import {
   MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP,
   MIN_PRODUCTION_NEURAL_SAMPLE_COUNT,
+  PRODUCTION_NEURAL_DATASET_MANIFEST_SCHEMA,
+  validateProductionDatasetManifest,
   validateProductionQualityManifest,
 } from '../../tools/learned-systems/qualityManifestValidator.mjs';
 
@@ -63,6 +65,55 @@ function validQualityManifest() {
   };
 }
 
+function validDatasetManifest(qualityManifest = validQualityManifest()) {
+  return {
+    schema: PRODUCTION_NEURAL_DATASET_MANIFEST_SCHEMA,
+    id: qualityManifest.dataset.id,
+    sceneCount: qualityManifest.dataset.sceneCount,
+    sampleCount: qualityManifest.dataset.sampleCount,
+    noisySpp: qualityManifest.dataset.noisySpp,
+    cleanReferenceSpp: qualityManifest.dataset.cleanReferenceSpp,
+    includesAlbedo: qualityManifest.dataset.includesAlbedo,
+    includesNormals: qualityManifest.dataset.includesNormals,
+    captureSource: qualityManifest.dataset.captureSource,
+    tonemap: qualityManifest.dataset.tonemap,
+    scenes: [
+      {
+        id: 'cornell-box',
+        sampleCount: 125,
+        noisyPath: 'datasets/fixture-production-ab/cornell-box/noisy/',
+        cleanPath: 'datasets/fixture-production-ab/cornell-box/clean/',
+        albedoPath: 'datasets/fixture-production-ab/cornell-box/noisy/*_albedo.png',
+        normalPath: 'datasets/fixture-production-ab/cornell-box/noisy/*_normal.png',
+      },
+      {
+        id: 'multi-material',
+        sampleCount: 125,
+        noisyPath: 'datasets/fixture-production-ab/multi-material/noisy/',
+        cleanPath: 'datasets/fixture-production-ab/multi-material/clean/',
+        albedoPath: 'datasets/fixture-production-ab/multi-material/noisy/*_albedo.png',
+        normalPath: 'datasets/fixture-production-ab/multi-material/noisy/*_normal.png',
+      },
+      {
+        id: 'glass-emitter',
+        sampleCount: 125,
+        noisyPath: 'datasets/fixture-production-ab/glass-emitter/noisy/',
+        cleanPath: 'datasets/fixture-production-ab/glass-emitter/clean/',
+        albedoPath: 'datasets/fixture-production-ab/glass-emitter/noisy/*_albedo.png',
+        normalPath: 'datasets/fixture-production-ab/glass-emitter/noisy/*_normal.png',
+      },
+      {
+        id: 'foliage-cards',
+        sampleCount: 125,
+        noisyPath: 'datasets/fixture-production-ab/foliage-cards/noisy/',
+        cleanPath: 'datasets/fixture-production-ab/foliage-cards/clean/',
+        albedoPath: 'datasets/fixture-production-ab/foliage-cards/noisy/*_albedo.png',
+        normalPath: 'datasets/fixture-production-ab/foliage-cards/noisy/*_normal.png',
+      },
+    ],
+  };
+}
+
 function validate(qualityManifest) {
   validateProductionQualityManifest({
     qualityManifest,
@@ -70,6 +121,21 @@ function validate(qualityManifest) {
     productionCheckpoint: PRODUCTION_ENTRY.name,
     productionLike: [PRODUCTION_ENTRY.name],
     expectedParamCount: EXPECTED_PARAM_COUNT,
+  });
+}
+
+function validateWithDatasetManifest(qualityManifest, datasetManifest) {
+  validateProductionQualityManifest({
+    qualityManifest,
+    productionEntries: [PRODUCTION_ENTRY],
+    productionCheckpoint: PRODUCTION_ENTRY.name,
+    productionLike: [PRODUCTION_ENTRY.name],
+    expectedParamCount: EXPECTED_PARAM_COUNT,
+    artifactExists: () => true,
+    artifactText: (artifactPath) => {
+      assert.equal(artifactPath, qualityManifest.artifacts.datasetManifestPath);
+      return JSON.stringify(datasetManifest);
+    },
   });
 }
 
@@ -150,6 +216,56 @@ test('production neural quality manifest rejects nonexistent reproducibility art
 
   existingPaths.add(manifest.artifacts.referenceOutputsPath);
   assert.doesNotThrow(() => validateWithArtifactSet(manifest, existingPaths));
+});
+
+test('production neural quality manifest validates dataset manifest artifact contents when available', () => {
+  const manifest = validQualityManifest();
+  assert.doesNotThrow(() => validateWithDatasetManifest(manifest, validDatasetManifest(manifest)));
+});
+
+test('production neural quality manifest rejects invalid dataset manifest JSON', () => {
+  const manifest = validQualityManifest();
+  assert.throws(
+    () => validateProductionQualityManifest({
+      qualityManifest: manifest,
+      productionEntries: [PRODUCTION_ENTRY],
+      productionCheckpoint: PRODUCTION_ENTRY.name,
+      productionLike: [PRODUCTION_ENTRY.name],
+      expectedParamCount: EXPECTED_PARAM_COUNT,
+      artifactExists: () => true,
+      artifactText: () => '{not-json',
+    }),
+    /must point at valid dataset manifest JSON/,
+  );
+});
+
+test('production neural dataset manifest rejects quality-manifest mismatches', () => {
+  const qualityManifest = validQualityManifest();
+  const datasetManifest = validDatasetManifest(qualityManifest);
+  datasetManifest.sampleCount = qualityManifest.dataset.sampleCount + 1;
+  assert.throws(
+    () => validateWithDatasetManifest(qualityManifest, datasetManifest),
+    /dataset manifest sampleCount must match qualityManifest\.dataset\.sampleCount/,
+  );
+});
+
+test('production neural dataset manifest rejects incomplete per-scene artifact records', () => {
+  const datasetManifest = validDatasetManifest();
+  delete datasetManifest.scenes[0].normalPath;
+  assert.throws(
+    () => validateProductionDatasetManifest(datasetManifest, validQualityManifest().dataset),
+    /normalPath must be a non-empty string/,
+  );
+});
+
+test('production neural dataset manifest rejects inconsistent scene sample totals', () => {
+  const qualityManifest = validQualityManifest();
+  const datasetManifest = validDatasetManifest(qualityManifest);
+  datasetManifest.scenes[0].sampleCount -= 1;
+  assert.throws(
+    () => validateWithDatasetManifest(qualityManifest, datasetManifest),
+    /scene sampleCount total 499 must equal qualityManifest\.dataset\.sampleCount 500/,
+  );
 });
 
 test('production neural quality manifest rejects incomplete dataset metadata', () => {

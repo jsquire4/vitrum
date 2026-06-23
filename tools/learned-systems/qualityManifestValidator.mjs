@@ -3,6 +3,8 @@
 
 export const MIN_PRODUCTION_NEURAL_SAMPLE_COUNT = 500;
 export const MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP = 4096;
+export const PRODUCTION_NEURAL_DATASET_MANIFEST_SCHEMA =
+  "vitrum.neural-denoiser.dataset.v1";
 
 /**
  * @typedef {{
@@ -23,6 +25,7 @@ export const MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP = 4096;
  *   productionLike?: string[],
  *   expectedParamCount: number,
  *   artifactExists?: (path: string) => boolean,
+ *   artifactText?: (path: string) => string,
  *   fail?: (message: string) => void,
  * }} ProductionQualityValidationInput
  */
@@ -39,6 +42,7 @@ export function validateProductionQualityManifest(input) {
     productionLike = [],
     expectedParamCount,
     artifactExists,
+    artifactText,
   } = input;
 
   if (productionCheckpoint == null) {
@@ -155,6 +159,19 @@ export function validateProductionQualityManifest(input) {
   if (typeof datasetRecord.tonemap !== "string" || datasetRecord.tonemap.length === 0) {
     fail("production neural quality manifest dataset.tonemap must be a non-empty string");
   }
+  if (artifactText != null) {
+    let datasetManifest;
+    try {
+      datasetManifest = JSON.parse(artifactText(artifactRecord.datasetManifestPath));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      fail(
+        "production neural quality manifest artifacts.datasetManifestPath " +
+          `must point at valid dataset manifest JSON (${message})`,
+      );
+    }
+    validateProductionDatasetManifest(datasetManifest, datasetRecord, fail);
+  }
   const comparison = qualityManifest.comparison;
   if (comparison == null || typeof comparison !== "object") {
     fail("production neural quality manifest must include an A/B comparison descriptor");
@@ -184,6 +201,85 @@ export function validateProductionQualityManifest(input) {
           `does not satisfy threshold ${thresholdRecord[name]}`,
       );
     }
+  }
+}
+
+/**
+ * @param {unknown} datasetManifest
+ * @param {Record<string, any>} expectedDataset
+ * @param {(message: string) => void} fail
+ */
+export function validateProductionDatasetManifest(datasetManifest, expectedDataset, fail = defaultFail) {
+  if (datasetManifest == null || typeof datasetManifest !== "object") {
+    fail("production neural dataset manifest must be an object");
+  }
+  const record = /** @type {Record<string, any>} */ (datasetManifest);
+  const expected = {
+    schema: PRODUCTION_NEURAL_DATASET_MANIFEST_SCHEMA,
+    id: expectedDataset.id,
+    sceneCount: expectedDataset.sceneCount,
+    sampleCount: expectedDataset.sampleCount,
+    noisySpp: expectedDataset.noisySpp,
+    cleanReferenceSpp: expectedDataset.cleanReferenceSpp,
+    includesAlbedo: expectedDataset.includesAlbedo,
+    includesNormals: expectedDataset.includesNormals,
+    captureSource: expectedDataset.captureSource,
+    tonemap: expectedDataset.tonemap,
+  };
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    if (record[key] !== expectedValue) {
+      fail(
+        `production neural dataset manifest ${key} must match ` +
+          `qualityManifest.dataset.${key} (${String(expectedValue)})`,
+      );
+    }
+  }
+
+  if (!Array.isArray(record.scenes)) {
+    fail("production neural dataset manifest scenes must be an array");
+  }
+  if (record.scenes.length !== expectedDataset.sceneCount) {
+    fail(
+      "production neural dataset manifest scenes length must equal " +
+        `qualityManifest.dataset.sceneCount (${expectedDataset.sceneCount})`,
+    );
+  }
+
+  let sampleTotal = 0;
+  const seen = new Set();
+  for (const [index, scene] of record.scenes.entries()) {
+    if (scene == null || typeof scene !== "object") {
+      fail(`production neural dataset manifest scenes[${index}] must be an object`);
+    }
+    const sceneRecord = /** @type {Record<string, any>} */ (scene);
+    if (typeof sceneRecord.id !== "string" || sceneRecord.id.length === 0) {
+      fail(`production neural dataset manifest scenes[${index}].id must be a non-empty string`);
+    }
+    if (seen.has(sceneRecord.id)) {
+      fail(`production neural dataset manifest scene id ${sceneRecord.id} is duplicated`);
+    }
+    seen.add(sceneRecord.id);
+    if (!Number.isInteger(sceneRecord.sampleCount) || sceneRecord.sampleCount <= 0) {
+      fail(
+        `production neural dataset manifest scene ${sceneRecord.id} ` +
+          "sampleCount must be a positive integer",
+      );
+    }
+    sampleTotal += sceneRecord.sampleCount;
+    for (const field of ["noisyPath", "cleanPath", "albedoPath", "normalPath"]) {
+      if (typeof sceneRecord[field] !== "string" || sceneRecord[field].length === 0) {
+        fail(
+          `production neural dataset manifest scene ${sceneRecord.id} ` +
+            `${field} must be a non-empty string`,
+        );
+      }
+    }
+  }
+  if (sampleTotal !== expectedDataset.sampleCount) {
+    fail(
+      `production neural dataset manifest scene sampleCount total ${sampleTotal} ` +
+        `must equal qualityManifest.dataset.sampleCount ${expectedDataset.sampleCount}`,
+    );
   }
 }
 

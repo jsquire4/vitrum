@@ -38,6 +38,42 @@ path-traced linear energy.
 Normals are encoded as `(n * 0.5 + 0.5)` to fit world-space normals in [0, 1].
 Decode with `n * 2 - 1` to recover world-space [-1, 1] normals.
 
+## Dataset Manifest
+
+Production quality evidence must include a dataset manifest JSON referenced by
+`quality-ab-production.json` as `artifacts.datasetManifestPath`. The learned
+systems proof checker validates this manifest when a production checkpoint is
+registered.
+
+```json
+{
+  "schema": "vitrum.neural-denoiser.dataset.v1",
+  "id": "browser-webgpu-production-ab-2026-06",
+  "sceneCount": 4,
+  "sampleCount": 500,
+  "noisySpp": 1,
+  "cleanReferenceSpp": 4096,
+  "includesAlbedo": true,
+  "includesNormals": true,
+  "captureSource": "browser-webgpu-batched-capture",
+  "tonemap": "reinhard",
+  "scenes": [
+    {
+      "id": "cornell-box",
+      "sampleCount": 125,
+      "noisyPath": "datasets/browser-webgpu-production-ab-2026-06/cornell-box/noisy/",
+      "cleanPath": "datasets/browser-webgpu-production-ab-2026-06/cornell-box/clean/",
+      "albedoPath": "datasets/browser-webgpu-production-ab-2026-06/cornell-box/noisy/*_albedo.png",
+      "normalPath": "datasets/browser-webgpu-production-ab-2026-06/cornell-box/noisy/*_normal.png"
+    }
+  ]
+}
+```
+
+The top-level fields must match the `dataset` block in the production quality
+manifest exactly. `scenes[].sampleCount` values must sum to `sampleCount`, and
+each scene must name noisy, clean, albedo, and normal artifact locations.
+
 ## Capturing Training Data
 
 1. Render the same scene from diverse camera positions and lighting conditions.
