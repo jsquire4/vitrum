@@ -297,7 +297,8 @@ export class NrcSubsystem implements PipelineSubsystem {
     // The GPU shader uses atomicCompareExchangeWeak at @group(4) @binding(6)
     // to ensure only the first invocation to claim a slot writes its record
     // (preventing torn records when two pixels alias to the same slot).
-    // The host clears this buffer to zero each frame via clearSlotClaims().
+    // The host clears this buffer to zero each frame via clearSlotClaims(),
+    // which also clears stale record payloads for slots no invocation claims.
     this._slotClaimsBuf = d.createBuffer({
       label: 'nrc-slot-claims',
       size: Math.max(16, cfg.recordCap * 4),
@@ -336,16 +337,20 @@ export class NrcSubsystem implements PipelineSubsystem {
   }
 
   /**
-   * Clear the per-slot claim buffer to zero so every slot is available for this
-   * frame's NRC records. Must be called BEFORE the gi-ris NRC pass runs each
-   * frame (or at the start of each training window).
+   * Clear the per-slot claim buffer and gathered record payloads to zero so
+   * every slot is available for this frame's NRC records. Must be called BEFORE
+   * the gi-ris NRC pass runs each frame (or at the start of each training
+   * window).
    *
    * H27 first-writer-wins: the GPU shader uses atomicCompareExchangeWeak against
    * this buffer — a 0-value means unclaimed, 1 means claimed. Writing zeros here
-   * resets all slots so the shader can claim them fresh each frame.
+   * resets all slots so the shader can claim them fresh each frame. Clearing the
+   * record buffer at the same boundary preserves the all-zero encoded-input
+   * empty-slot contract for slots no invocation fills this frame.
    */
   clearSlotClaims(encoder: GPUCommandEncoder): void {
     encoder.clearBuffer(this._slotClaimsBuf);
+    encoder.clearBuffer(this._recordsBuf);
   }
 
   /**

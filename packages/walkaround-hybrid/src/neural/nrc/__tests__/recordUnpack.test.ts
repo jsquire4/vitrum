@@ -6,6 +6,7 @@
 // (the GPU zero-initializes the record buffer and nrcWriteRecord only runs when
 // the spread heuristic fired); zero-TARGET records are VALID samples.
 
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import { unpackRecords } from '../recordUnpack.ts';
 
@@ -115,5 +116,12 @@ describe('unpackRecords — NRC record gap detection + dense repack', () => {
     expect(out.x.subarray(inW).every((v) => v === 0)).toBe(true);
     expect(out.y.subarray(OUT_W).every((v) => v === 0)).toBe(true);
     expect(out.pos.subarray(3).every((v) => v === 0)).toBe(true);
+  });
+
+  it('clears record payloads at the same frame boundary as slot claims', () => {
+    const source = readFileSync(new URL('../nrcSubsystem.ts', import.meta.url), 'utf8');
+    const method = source.match(/clearSlotClaims\(encoder: GPUCommandEncoder\): void \{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(method).toContain('encoder.clearBuffer(this._slotClaimsBuf);');
+    expect(method).toContain('encoder.clearBuffer(this._recordsBuf);');
   });
 });

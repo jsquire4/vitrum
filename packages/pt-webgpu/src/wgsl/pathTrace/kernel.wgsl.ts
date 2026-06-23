@@ -264,18 +264,16 @@ export function composePathTraceKernelWgsl(opts: {
   // the VERBATIM original block (byte-identical pin). In composite mode the
   // BSDF-sampled direct connections MUST BE KEPT for composited pixels: analytic
   // lights (rect-area, disc, env/sky, directional) are NOT in the TLAS/BVH, so the
-  // producer's reconnection vertex xs can NEVER land on an analytic light. Therefore
-  // rptComposite.rgb can NEVER double-count bsdfAreaLightConnectionContribution or
-  // bsdfEnvironmentConnectionContribution at E0. Dropping them (the previous
-  // !rptCompositeContributed gate) caused a ~46% energy under-bias verified by the
-  // A/B harness (tools/radiometric-ab/ab-restir-pt.mjs, 2026-06-10).
+  // producer's reconnection vertex xs can NEVER land on an analytic light. Dropping
+  // them (the previous !rptCompositeContributed gate) caused a ~46% energy
+  // under-bias verified by the A/B harness
+  // (tools/radiometric-ab/ab-restir-pt.mjs, 2026-06-10).
   //
-  // For mesh area lights where xs IS the emissive mesh: the resolve's Lo includes
-  // emissive(xs) AND bsdfAreaLightConnectionContribution at E0 also captures the
-  // mesh hit. This is a slight over-count for that uncommon case (xs on a mesh
-  // emitter), but it is far less biased than the 46% under-count the gate caused.
-  // NEE (deltas + area + env) stays regardless — it is E0's own direct lighting,
-  // which the resolve indirect does NOT include.
+  // Mesh area lights are different: xs CAN be the emissive mesh, so the resolve's
+  // Lo already includes emissive(xs). In composite mode, contributed pixels keep
+  // rect/disc analytic BSDF connections but suppress only the mesh-area branch of
+  // bsdfAreaLightConnectionContribution. Producer-dropped pixels and the default
+  // megakernel keep the full rect/disc/mesh connection set.
   //
   // A1 composite preamble — read the resolve indirect for THIS pixel once. A pixel
   // the producer contributed to (rpt.a > 0.5) gets the E0-direct-only + composited-
@@ -293,6 +291,7 @@ export function composePathTraceKernelWgsl(opts: {
   // (composited or not) because analytic lights are never reconnection vertices,
   // so there is no double-count risk. OFF = the verbatim original.
   const sampleAllowsAreaMisCond = 'sampleAllowsAreaMis';
+  const includeMeshAreaLightsExpr = composite ? '!rptCompositeContributed' : 'true';
   const bsdfAreaConnect = /* wgsl */ `    if (${sampleAllowsAreaMisCond}) {
       // H52/PTWG-MAT: BSDF-side area/env connections receive the decoded
       // extension lobe scalars so connect.wgsl can use evaluateBrdfFull and
@@ -322,6 +321,7 @@ export function composePathTraceKernelWgsl(opts: {
         anisoRotation,
         throughputAtVertex,
         heroLambda,
+        ${includeMeshAreaLightsExpr},
       );
       radiance = radiance + bsdfEnvironmentConnectionContribution(
         hitPos,

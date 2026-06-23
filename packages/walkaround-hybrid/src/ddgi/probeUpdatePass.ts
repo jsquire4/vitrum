@@ -1006,9 +1006,26 @@ export class ProbeUpdatePass {
       }
       gpu.envMapView = this._envMapView;
       gpu.envSamplerForProbe = this._envSampler ?? gpu.linearSampler;
+    } else {
+      // HDRI disabled/reset. If the current view came from an external pipeline
+      // texture, drop that borrowed view immediately and bind a fresh pass-owned
+      // 1x1 placeholder so future probe-ray bind groups cannot retain a stale or
+      // destroyed environment view after updateEnvironment(null).
+      if (gpu.envMapOwnedByPass) {
+        gpu.envSamplerForProbe = gpu.linearSampler;
+        return;
+      }
+      const placeholder = gpu.device.createTexture({
+        label: 'ddgi.env-placeholder',
+        size: [1, 1, 1],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      gpu.envMapPlaceholderTex = placeholder;
+      gpu.envMapView = placeholder.createView();
+      gpu.envMapOwnedByPass = true;
+      gpu.envSamplerForProbe = gpu.linearSampler;
     }
-    // When _envMapView is null (setEnvironment with hasEnv=false, or reset),
-    // the placeholder is kept as-is — it's already the right view and sampler.
   }
 
   private _uploadBlendParams(device: GPUDevice): void {

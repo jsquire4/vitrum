@@ -242,6 +242,7 @@ fn bsdfAreaLightConnectionContribution(
   anisotropyRotation: f32,
   throughputAtVertex: vec3f,
   heroLambda: f32,
+  includeMeshAreaLights: bool,
 ) -> vec3f {
   let nDotL = max(dot(normal, wi), 0.0);
   if (nDotL <= 1e-5) {
@@ -257,9 +258,12 @@ fn bsdfAreaLightConnectionContribution(
   if (bsdfPdf <= 1e-6) {
     return vec3f(0.0);
   }
-  // Sum MIS over all area lights: iterate every rect and mesh light, keep the
-  // closest unoccluded hit. Cost is O(N_lights) intersection tests — acceptable
-  // for experimental scenes with ≤ 8 lights (D9 decision).
+  // Sum MIS over all area lights: iterate every rect/disc and, when allowed,
+  // mesh light, keep the closest unoccluded hit. Cost is O(N_lights)
+  // intersection tests — acceptable for experimental scenes with ≤ 8 lights
+  // (D9 decision). ReSTIR-PT composite mode disables the mesh branch for
+  // contributed pixels because the resolve already carries xs-on-emissive-mesh
+  // radiance, while rect/disc analytic emitters cannot be reconnection vertices.
   // Ref: Veach 1997 Ch. 9 — sum-MIS is unbiased; choosing the closest hit along
   //      the BSDF-sampled direction is correct because the sample is a direction,
   //      not a point, so only the nearest light along that direction contributes.
@@ -283,17 +287,19 @@ fn bsdfAreaLightConnectionContribution(
       }
     }
   }
-  for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
-    var meshDist = INFINITY;
-    var meshPdf = 0.0;
-    if (intersectMeshAreaLightRay(mi, offsetOrigin, wi, &meshDist, &meshPdf)) {
-      let shadowRay = Ray(offsetOrigin, wi);
-      // SHADOW-01 — meshAreaLights[mi*4+3].w carries castShadowDisabled (NEE parity).
-      let meshShadowDisabled = meshAreaLights[mi * 4u + 3u].w > 0.5;
-      if ((meshShadowDisabled || !traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3))) && meshDist < bestDist) {
-        bestDist = meshDist;
-        bestLightPdf = meshPdf;
-        bestEmission = meshAreaLights[mi * 4u + 3u].rgb;
+  if (includeMeshAreaLights) {
+    for (var mi = 0u; mi < params.meshAreaLightCount; mi = mi + 1u) {
+      var meshDist = INFINITY;
+      var meshPdf = 0.0;
+      if (intersectMeshAreaLightRay(mi, offsetOrigin, wi, &meshDist, &meshPdf)) {
+        let shadowRay = Ray(offsetOrigin, wi);
+        // SHADOW-01 — meshAreaLights[mi*4+3].w carries castShadowDisabled (NEE parity).
+        let meshShadowDisabled = meshAreaLights[mi * 4u + 3u].w > 0.5;
+        if ((meshShadowDisabled || !traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3))) && meshDist < bestDist) {
+          bestDist = meshDist;
+          bestLightPdf = meshPdf;
+          bestEmission = meshAreaLights[mi * 4u + 3u].rgb;
+        }
       }
     }
   }

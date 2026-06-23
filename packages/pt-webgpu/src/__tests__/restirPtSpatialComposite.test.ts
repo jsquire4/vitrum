@@ -86,15 +86,14 @@ describe('A1 — ReSTIR-PT composite megakernel (estimator split)', () => {
     expect(composite).toContain('radiance = radiance + rptComposite.rgb;');
   });
 
-  it('the composite runs the BSDF→light/env area-MIS at E0 for ALL pixels (analytic lights not in TLAS — no double-count)', () => {
+  it('the composite keeps analytic BSDF→light/env area-MIS but suppresses mesh-area double-counts', () => {
     const composite = composePtWebgpuCompositeTraceWgsl(false);
     const dflt = composePtWebgpuTraceWgsl(false);
     // Both the default and composite megakernels run the BSDF-area connection on
-    // sampleAllowsAreaMis only — no additional gate in composite mode.
+    // sampleAllowsAreaMis only — no broad additional gate in composite mode.
     // Analytic lights (rect-area, disc, env, sky, directional) are NOT in the TLAS,
     // so the producer's xs cannot be an analytic light, and rptComposite.rgb cannot
-    // double-count bsdfAreaLightConnectionContribution or
-    // bsdfEnvironmentConnectionContribution. Dropping these (the previous
+    // double-count those branches. Dropping these (the previous
     // !rptCompositeContributed gate) caused a ~46% energy under-bias (2026-06-10 A/B).
     expect(dflt).toContain('if (sampleAllowsAreaMis) {');
     expect(dflt).not.toContain('!rptCompositeContributed');
@@ -102,6 +101,10 @@ describe('A1 — ReSTIR-PT composite megakernel (estimator split)', () => {
     expect(composite).not.toContain('if (sampleAllowsAreaMis && !rptCompositeContributed) {');
     // The connection BODY is present and runs for composited pixels.
     expect(composite).toContain('radiance = radiance + bsdfAreaLightConnectionContribution(');
+    // But only the mesh-area branch is disabled for contributed ReSTIR pixels,
+    // because the resolve Lo already carries xs-on-emissive-mesh radiance.
+    expect(dflt).toMatch(/heroLambda,\s*true,\s*\);/);
+    expect(composite).toMatch(/heroLambda,\s*!rptCompositeContributed,\s*\);/);
   });
 
   it('the DEFAULT (non-composite) megakernel is unchanged — no rpt_result_in, full path', () => {

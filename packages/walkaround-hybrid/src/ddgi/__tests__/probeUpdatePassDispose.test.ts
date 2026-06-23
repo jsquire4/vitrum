@@ -208,6 +208,47 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
     expect(tracking.destroyedBuffers.length).toBe(countAfter1);
   });
 
+  it('rebinds a fresh pass-owned env placeholder when HDRI is disabled after an external view', async () => {
+    const bvh = new SceneBvh();
+    const grid = new ProbeGrid();
+    const pass = new ProbeUpdatePass(bvh, grid);
+
+    const rendererAdapter = {
+      backend: { device: mockDevice, isWebGPUBackend: true as const },
+    };
+
+    await pass.init(rendererAdapter);
+    const internal = pass as unknown as { _gpu: {
+      envMapView: GPUTextureView;
+      envMapOwnedByPass: boolean;
+      envMapPlaceholderTex: GPUTexture | null;
+      envSamplerForProbe: GPUSampler;
+      linearSampler: GPUSampler;
+    }};
+    const gpu = internal._gpu;
+    const initialPlaceholder = gpu.envMapPlaceholderTex;
+    expect(initialPlaceholder).not.toBeNull();
+    expect(gpu.envMapOwnedByPass).toBe(true);
+
+    const externalView = {} as GPUTextureView;
+    const externalSampler = {} as GPUSampler;
+    pass.setEnvironment(externalView, externalSampler, 0.25, 1.5, true);
+    expect(gpu.envMapView).toBe(externalView);
+    expect(gpu.envSamplerForProbe).toBe(externalSampler);
+    expect(gpu.envMapOwnedByPass).toBe(false);
+    expect(gpu.envMapPlaceholderTex).toBeNull();
+    expect(tracking.destroyedTextures).toContain(initialPlaceholder);
+
+    const texturesBeforeDisable = tracking.createdTextures.length;
+    pass.setEnvironment(null, null, 0, 0, false);
+    expect(gpu.envMapView).not.toBe(externalView);
+    expect(gpu.envSamplerForProbe).toBe(gpu.linearSampler);
+    expect(gpu.envMapOwnedByPass).toBe(true);
+    expect(gpu.envMapPlaceholderTex).not.toBeNull();
+    expect(tracking.createdTextures.length).toBe(texturesBeforeDisable + 1);
+    expect(tracking.createdTextures).toContain(gpu.envMapPlaceholderTex);
+  });
+
   /**
    * Verify that each of the 6 previously-leaking resources is individually
    * destroyed.  The gpu-state object fields are accessed via internal access

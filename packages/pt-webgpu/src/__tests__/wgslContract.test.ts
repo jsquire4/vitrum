@@ -305,8 +305,8 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-22: bump-map finite-difference height reads now consume
     // the same per-map mip/filter sampler policy as regular linear material maps.
     // RENDER-CHANGING only for authored non-default bump sampler policies.
-    expect(digest).toBe('f0f207c240899c4c7af469d779b50ff754d907e67f35676759aab2eb24e6829b');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(403082);
+    expect(digest).toBe('b5a74db5bf44612a7de45e9f9336ed0868c235b12f641b7344fa797e866c6e97');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(403431);
   });
 });
 
