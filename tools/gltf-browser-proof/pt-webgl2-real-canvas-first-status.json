@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-23T16:46:50.898Z",
+  "generatedAt": "2026-06-23T20:49:22.917Z",
   "harness": "gltf-browser-proof:pt-webgl2-real",
   "verdict": "HOST-BLOCKED",
   "backend": "pt-webgl2",
@@ -8,8 +8,8 @@
   ],
   "captureMode": "canvas-first",
   "hostReadbackProbe": {
-    "generatedAt": "2026-06-23T16:44:01.945Z",
-    "finishedAt": "2026-06-23T16:44:02.235Z",
+    "generatedAt": "2026-06-23T20:47:58.678Z",
+    "finishedAt": "2026-06-23T20:47:58.946Z",
     "harness": "gltf-browser-proof:host-readback-preflight",
     "browserVersion": "148.0.7778.96",
     "timeoutMs": 10000,
@@ -76,7 +76,7 @@
   },
   "assets": [
     {
-      "generatedAt": "2026-06-23T16:44:58.044Z",
+      "generatedAt": "2026-06-23T20:48:26.006Z",
       "harness": "gltf-browser-proof:pt-webgl2-real",
       "verdict": "HOST-BLOCKED",
       "assetId": "box-textured-glb",
@@ -84,38 +84,38 @@
       "backend": "pt-webgl2",
       "captureMode": "canvas-first",
       "step": "canvas-data-url",
-      "error": "Error: engine captureFrame fallback was not attempted; Playwright canvas screenshot failed (locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n); page clipped screenshot failed (page clipped screenshot timed out); canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)\n    at file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:707:11\n    at async captureCanvasDataUrlPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:687:19)\n    at async captureAttempt (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:586:20)\n    at async captureCanvasPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:522:14)\n    at async capture (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:392:21)",
+      "error": "Error: engine captureFrame fallback was not attempted; Playwright canvas screenshot was not attempted; page clipped screenshot was not attempted; canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)\n    at file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:736:11\n    at async captureCanvasDataUrlPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:716:19)\n    at async captureAttempt (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:607:20)\n    at async captureCanvasPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:496:16)\n    at async capture (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:392:21)",
       "hostBlockClass": "browser-canvas-readback-timeout",
       "hostBlockMethods": [
+        "canvas-data-url",
         "page-canvas-clip-screenshot",
-        "playwright-screenshot",
-        "canvas-data-url"
+        "playwright-screenshot"
       ],
       "hostBlockReason": "browser canvas screenshot/data-url readback timed out after the real glTF page became capture-ready",
       "captureAttempts": [
         {
+          "method": "canvas-data-url",
+          "status": "failed",
+          "step": "canvas-data-url",
+          "startedAt": "2026-06-23T20:48:07.918Z",
+          "error": "engine captureFrame fallback was not attempted; Playwright canvas screenshot was not attempted; page clipped screenshot was not attempted; canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)",
+          "finishedAt": "2026-06-23T20:48:22.919Z"
+        },
+        {
           "method": "page-canvas-clip-screenshot",
           "status": "failed",
           "step": "page-canvas-clip-screenshot",
-          "startedAt": "2026-06-23T16:44:10.887Z",
-          "error": "page clipped screenshot timed out",
-          "finishedAt": "2026-06-23T16:44:26.888Z"
+          "startedAt": "2026-06-23T20:48:22.919Z",
+          "error": "locator.boundingBox: Timeout 1000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
+          "finishedAt": "2026-06-23T20:48:23.922Z"
         },
         {
           "method": "playwright-screenshot",
           "status": "failed",
           "step": "canvas-screenshot",
-          "startedAt": "2026-06-23T16:44:26.888Z",
-          "error": "locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
-          "finishedAt": "2026-06-23T16:44:41.904Z"
-        },
-        {
-          "method": "canvas-data-url",
-          "status": "failed",
-          "step": "canvas-data-url",
-          "startedAt": "2026-06-23T16:44:41.904Z",
-          "error": "engine captureFrame fallback was not attempted; Playwright canvas screenshot failed (locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n); page clipped screenshot failed (page clipped screenshot timed out); canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)",
-          "finishedAt": "2026-06-23T16:44:56.918Z"
+          "startedAt": "2026-06-23T20:48:23.922Z",
+          "error": "locator.screenshot: Timeout 1000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
+          "finishedAt": "2026-06-23T20:48:24.922Z"
         }
       ],
       "pageDiagnostics": {
@@ -141,8 +141,8 @@
         "devicePixelRatio": 1
       },
       "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T16:44:01.945Z",
-        "finishedAt": "2026-06-23T16:44:02.235Z",
+        "generatedAt": "2026-06-23T20:47:58.678Z",
+        "finishedAt": "2026-06-23T20:47:58.946Z",
         "harness": "gltf-browser-proof:host-readback-preflight",
         "browserVersion": "148.0.7778.96",
         "timeoutMs": 10000,
@@ -234,12 +234,12 @@
         "debug: [vite] connecting...",
         "debug: [vite] connected.",
         "warning: No available adapters.",
-        "warning: [.WebGL-0x354400154800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        "warning: [.WebGL-0x2f5400158800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
       ],
       "serverLog": "\n  VITE v5.4.21  ready in 66 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
     },
     {
-      "generatedAt": "2026-06-23T16:45:55.368Z",
+      "generatedAt": "2026-06-23T20:48:54.931Z",
       "harness": "gltf-browser-proof:pt-webgl2-real",
       "verdict": "HOST-BLOCKED",
       "assetId": "cesium-milk-truck-draco",
@@ -247,38 +247,38 @@
       "backend": "pt-webgl2",
       "captureMode": "canvas-first",
       "step": "canvas-data-url",
-      "error": "Error: engine captureFrame fallback was not attempted; Playwright canvas screenshot failed (locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n); page clipped screenshot failed (page clipped screenshot timed out); canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)\n    at file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:707:11\n    at async captureCanvasDataUrlPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:687:19)\n    at async captureAttempt (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:586:20)\n    at async captureCanvasPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:522:14)\n    at async capture (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:392:21)",
+      "error": "Error: engine captureFrame fallback was not attempted; Playwright canvas screenshot was not attempted; page clipped screenshot was not attempted; canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)\n    at file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:736:11\n    at async captureCanvasDataUrlPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:716:19)\n    at async captureAttempt (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:607:20)\n    at async captureCanvasPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:496:16)\n    at async capture (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:392:21)",
       "hostBlockClass": "browser-canvas-readback-timeout",
       "hostBlockMethods": [
+        "canvas-data-url",
         "page-canvas-clip-screenshot",
-        "playwright-screenshot",
-        "canvas-data-url"
+        "playwright-screenshot"
       ],
       "hostBlockReason": "browser canvas screenshot/data-url readback timed out after the real glTF page became capture-ready",
       "captureAttempts": [
         {
+          "method": "canvas-data-url",
+          "status": "failed",
+          "step": "canvas-data-url",
+          "startedAt": "2026-06-23T20:48:36.784Z",
+          "error": "engine captureFrame fallback was not attempted; Playwright canvas screenshot was not attempted; page clipped screenshot was not attempted; canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)",
+          "finishedAt": "2026-06-23T20:48:51.798Z"
+        },
+        {
           "method": "page-canvas-clip-screenshot",
           "status": "failed",
           "step": "page-canvas-clip-screenshot",
-          "startedAt": "2026-06-23T16:45:08.151Z",
-          "error": "page clipped screenshot timed out",
-          "finishedAt": "2026-06-23T16:45:24.153Z"
+          "startedAt": "2026-06-23T20:48:51.798Z",
+          "error": "locator.boundingBox: Timeout 1000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
+          "finishedAt": "2026-06-23T20:48:52.799Z"
         },
         {
           "method": "playwright-screenshot",
           "status": "failed",
           "step": "canvas-screenshot",
-          "startedAt": "2026-06-23T16:45:24.153Z",
-          "error": "locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
-          "finishedAt": "2026-06-23T16:45:39.167Z"
-        },
-        {
-          "method": "canvas-data-url",
-          "status": "failed",
-          "step": "canvas-data-url",
-          "startedAt": "2026-06-23T16:45:39.167Z",
-          "error": "engine captureFrame fallback was not attempted; Playwright canvas screenshot failed (locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n); page clipped screenshot failed (page clipped screenshot timed out); canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)",
-          "finishedAt": "2026-06-23T16:45:54.181Z"
+          "startedAt": "2026-06-23T20:48:52.799Z",
+          "error": "locator.screenshot: Timeout 1000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
+          "finishedAt": "2026-06-23T20:48:53.800Z"
         }
       ],
       "pageDiagnostics": {
@@ -304,8 +304,8 @@
         "devicePixelRatio": 1
       },
       "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T16:44:01.945Z",
-        "finishedAt": "2026-06-23T16:44:02.235Z",
+        "generatedAt": "2026-06-23T20:47:58.678Z",
+        "finishedAt": "2026-06-23T20:47:58.946Z",
         "harness": "gltf-browser-proof:host-readback-preflight",
         "browserVersion": "148.0.7778.96",
         "timeoutMs": 10000,
@@ -405,12 +405,12 @@
         "warning: No available adapters.",
         "warning: [vitrum/createEngine] Scene has 5 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.",
         "warning: [gltf-viewer example] [vitrum/createEngine] Scene has 5 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2. {recommendation: prefer-tlas-backend, resolvedBackend: pt-webgl2}",
-        "warning: [.WebGL-0x2b3c00158800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
+        "warning: [.WebGL-0x9440404c000]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels"
       ],
       "serverLog": "\n  VITE v5.4.21  ready in 66 ms\n\n  ➜  Local:   http://127.0.0.1:5187/\n"
     },
     {
-      "generatedAt": "2026-06-23T16:46:50.898Z",
+      "generatedAt": "2026-06-23T20:49:22.916Z",
       "harness": "gltf-browser-proof:pt-webgl2-real",
       "verdict": "HOST-BLOCKED",
       "assetId": "meshopt-cube-real",
@@ -418,38 +418,38 @@
       "backend": "pt-webgl2",
       "captureMode": "canvas-first",
       "step": "canvas-data-url",
-      "error": "Error: engine captureFrame fallback was not attempted; Playwright canvas screenshot failed (locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n); page clipped screenshot failed (page clipped screenshot timed out); canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)\n    at file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:707:11\n    at async captureCanvasDataUrlPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:687:19)\n    at async captureAttempt (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:586:20)\n    at async captureCanvasPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:522:14)\n    at async capture (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:392:21)",
+      "error": "Error: engine captureFrame fallback was not attempted; Playwright canvas screenshot was not attempted; page clipped screenshot was not attempted; canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)\n    at file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:736:11\n    at async captureCanvasDataUrlPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:716:19)\n    at async captureAttempt (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:607:20)\n    at async captureCanvasPng (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:496:16)\n    at async capture (file:///home/jsquire4/projects/vitrum/tools/gltf-browser-proof/capture-pt-webgl2-real.mjs:392:21)",
       "hostBlockClass": "browser-canvas-readback-timeout",
       "hostBlockMethods": [
+        "canvas-data-url",
         "page-canvas-clip-screenshot",
-        "playwright-screenshot",
-        "canvas-data-url"
+        "playwright-screenshot"
       ],
       "hostBlockReason": "browser canvas screenshot/data-url readback timed out after the real glTF page became capture-ready",
       "captureAttempts": [
         {
+          "method": "canvas-data-url",
+          "status": "failed",
+          "step": "canvas-data-url",
+          "startedAt": "2026-06-23T20:49:04.816Z",
+          "error": "engine captureFrame fallback was not attempted; Playwright canvas screenshot was not attempted; page clipped screenshot was not attempted; canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)",
+          "finishedAt": "2026-06-23T20:49:19.830Z"
+        },
+        {
           "method": "page-canvas-clip-screenshot",
           "status": "failed",
           "step": "page-canvas-clip-screenshot",
-          "startedAt": "2026-06-23T16:46:03.732Z",
-          "error": "page clipped screenshot timed out",
-          "finishedAt": "2026-06-23T16:46:19.734Z"
+          "startedAt": "2026-06-23T20:49:19.830Z",
+          "error": "locator.boundingBox: Timeout 1000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
+          "finishedAt": "2026-06-23T20:49:20.832Z"
         },
         {
           "method": "playwright-screenshot",
           "status": "failed",
           "step": "canvas-screenshot",
-          "startedAt": "2026-06-23T16:46:19.734Z",
-          "error": "locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
-          "finishedAt": "2026-06-23T16:46:34.749Z"
-        },
-        {
-          "method": "canvas-data-url",
-          "status": "failed",
-          "step": "canvas-data-url",
-          "startedAt": "2026-06-23T16:46:34.749Z",
-          "error": "engine captureFrame fallback was not attempted; Playwright canvas screenshot failed (locator.screenshot: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n); page clipped screenshot failed (page clipped screenshot timed out); canvas PNG data URL fallback failed (canvas PNG data URL fallback timed out)",
-          "finishedAt": "2026-06-23T16:46:49.763Z"
+          "startedAt": "2026-06-23T20:49:20.832Z",
+          "error": "locator.screenshot: Timeout 1000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('canvas').first()\u001b[22m\n",
+          "finishedAt": "2026-06-23T20:49:21.833Z"
         }
       ],
       "pageDiagnostics": {
@@ -475,8 +475,8 @@
         "devicePixelRatio": 1
       },
       "hostReadbackProbe": {
-        "generatedAt": "2026-06-23T16:44:01.945Z",
-        "finishedAt": "2026-06-23T16:44:02.235Z",
+        "generatedAt": "2026-06-23T20:47:58.678Z",
+        "finishedAt": "2026-06-23T20:47:58.946Z",
         "harness": "gltf-browser-proof:host-readback-preflight",
         "browserVersion": "148.0.7778.96",
         "timeoutMs": 10000,
@@ -578,7 +578,7 @@
         "warning: No available adapters.",
         "warning: [vitrum/createEngine] Scene has 35 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2.",
         "warning: [gltf-viewer example] [vitrum/createEngine] Scene has 35 mesh-like primitive(s) and 0 TLAS instance(s); prefer @vitrum/walkaround-hybrid or @vitrum/pt-webgpu over merged-BVH pt-webgl2. {recommendation: prefer-tlas-backend, resolvedBackend: pt-webgl2}",
-        "warning: [.WebGL-0xefc0015ba00]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
+        "warning: [.WebGL-0x3bac00154800]GL Driver Message (OpenGL, Performance, GL_CLOSE_PATH_NV, High): GPU stall due to ReadPixels",
         "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-5\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",
         "warning: [gltf-viewer example] [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-5\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch. {primitiveId: gltf-prim-5, fields: Array(1), fallbackReason: geometry-bvh-texture-rebuild, nativePatchMissing: targeted-primitive-geometry-splice, textureRefreshMode: resident-storage-respecify}",
         "warning: [vitrum/pt-webgl2] updatePrimitive(\"gltf-prim-10\") fields [transform] are supported by rebuilding the backend scene-texture/BVH pack rather than by a targeted native patch.",

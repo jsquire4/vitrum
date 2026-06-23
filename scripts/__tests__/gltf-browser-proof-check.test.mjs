@@ -69,7 +69,7 @@ test('gltf browser proof checker validates PASS rows inside HOST-BLOCKED summari
   assert.match(result.stderr, /box-textured-glb: PASS status must include visual-structure metrics/);
 });
 
-test('gltf browser capture harness defaults to engine readback before browser readback', async () => {
+test('gltf browser capture harness orders engine and browser readbacks by mode', async () => {
   const source = await readFile(captureScript, 'utf8');
   assert.match(source, /VITRUM_ENGINE_CAPTURE_MODE/);
   assert.match(source, /preflightBrowserReadbackProbe/);
@@ -91,8 +91,10 @@ test('gltf browser capture harness defaults to engine readback before browser re
   assert.notEqual(captureFnStart, -1);
   const captureFn = source.slice(captureFnStart, source.indexOf('\nasync function pageCanvasClipScreenshot', captureFnStart));
   assert.match(captureFn, /engineCaptureMode === 'engine-first'/);
+  assert.match(captureFn, /engineCaptureMode === 'canvas-first'/);
   assert.match(captureFn, /engineCaptureMode === 'engine-fallback'/);
   assert.match(captureFn, /pauseExampleRenderingForCanvasCapture\(page, timeout\)/);
+  assert.match(captureFn, /let dataUrlError = null/);
   assert.match(captureFn, /let clipError = null/);
   assert.match(captureFn, /let screenshotError = null/);
   assert.match(captureFn, /captureStep = 'canvas-screenshot'/);
@@ -104,16 +106,18 @@ test('gltf browser capture harness defaults to engine readback before browser re
 
   const firstEngineReadback = captureFn.indexOf("captureStep = 'engine-captureFrame-output'");
   const canvasPause = captureFn.indexOf('pauseExampleRenderingForCanvasCapture(page, timeout)');
+  const firstDataUrlReadback = captureFn.indexOf("captureStep = 'canvas-data-url'");
   const firstClipScreenshot = captureFn.indexOf("captureStep = 'page-canvas-clip-screenshot'");
   const firstScreenshot = captureFn.indexOf("captureStep = 'canvas-screenshot'");
   const fallbackReadback = captureFn.indexOf("engineCaptureMode === 'engine-fallback'");
-  const dataUrlReadback = captureFn.indexOf("captureStep = 'canvas-data-url'");
+  const finalDataUrlReadback = captureFn.lastIndexOf("captureStep = 'canvas-data-url'");
   assert.ok(firstEngineReadback > 0);
   assert.ok(canvasPause > firstEngineReadback);
-  assert.ok(firstClipScreenshot > canvasPause);
+  assert.ok(firstDataUrlReadback > canvasPause);
+  assert.ok(firstClipScreenshot > firstDataUrlReadback);
   assert.ok(firstScreenshot > firstClipScreenshot);
   assert.ok(fallbackReadback > firstScreenshot);
-  assert.ok(dataUrlReadback > fallbackReadback);
+  assert.ok(finalDataUrlReadback > fallbackReadback);
 });
 
 test('gltf browser proof checker validates optional host readback preflight probes', async () => {
