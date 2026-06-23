@@ -29,6 +29,7 @@ const REQUIRED_VALIDATION_IDS = [
   "VQ-RADIOMETRIC-PT",
   "VQ-WALKAROUND-RADIOMETRIC-AB",
   "VQ-RENDERER-FIDELITY-PROOF",
+  "VQ-CWBVH-DEFAULT-PROMOTION",
   "VQ-ADJOINT-SCOPED-PATH-REPLAY",
   "VQ-LEARNED-SYSTEMS",
   "VQ-GLTF-MATERIAL-TOPOLOGY",
@@ -803,6 +804,86 @@ for (const path of REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS) {
   }
 }
 
+const cwbvhRow = queue.validationQueue.find((row) => row.id === "VQ-CWBVH-DEFAULT-PROMOTION");
+if (cwbvhRow == null) fail("validationQueue missing VQ-CWBVH-DEFAULT-PROMOTION");
+if (cwbvhRow.status !== "partial-proof-green") {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION must stay partial-proof-green until default-promotion throughput evidence lands");
+}
+if (cwbvhRow.command !== "npm run cwbvh-gpu-proof-check") {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION command must stay on the CWBVH proof checker");
+}
+assertRowCitesPaths(cwbvhRow, [
+  "tools/behavioral-gate/check-cwbvh-parity-status.mjs",
+  "tools/behavioral-gate/check-cwbvh-renderer-parity-status.mjs",
+  "tools/behavioral-gate/cwbvh-parity-oracle.mjs",
+  "tools/behavioral-gate/cwbvh-parity-status.json",
+  "tools/behavioral-gate/behavioral-gate-cwbvh-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
+  "packages/pt-webgpu/src/index.ts",
+  "packages/pt-webgpu/src/scene/uploadSceneBuffers.ts",
+  "packages/pt-webgpu/src/__tests__/cwbvhSceneBuffers.test.ts",
+  "packages/pt-webgpu/src/__tests__/cwbvhTraversalWiring.test.ts",
+  "packages/shared-bvh/src/compressedWideBvh.ts",
+  "packages/shared-bvh/src/wgsl/cwbvhIntersect.wgsl.ts",
+  "packages/shared-bvh/src/__tests__/compressedWideBvh.test.ts",
+  "packages/shared-bvh/src/__tests__/cwbvhWgsl.test.ts",
+], "VQ-CWBVH-DEFAULT-PROMOTION");
+for (const needle of [
+  "opt-in CWBVH",
+  "renderer binary-vs-CWBVH pixel parity",
+  "Default promotion is still blocked",
+  "dzn timing artifacts show CWBVH slower",
+  "browser/real-adapter throughput A/B",
+]) {
+  if (!String(cwbvhRow.remaining).includes(needle)) {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION remaining text must include ${needle}`);
+  }
+}
+const cwbvhOracleStatus = await readJson("tools/behavioral-gate/cwbvh-parity-status.json");
+if (cwbvhOracleStatus.verdict !== "PASS" || cwbvhOracleStatus.rootCount !== 2) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION CWBVH oracle status must pin PASS multi-root traversal");
+}
+if (
+  cwbvhOracleStatus.checks?.nonzeroRootClosest !== true ||
+  cwbvhOracleStatus.checks?.nonzeroRootAny !== true
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION oracle status must prove nonzero-root closest/any traversal");
+}
+const cwbvhRendererStatus = await readJson("tools/behavioral-gate/behavioral-gate-cwbvh-status.json");
+if (cwbvhRendererStatus.verdict !== "PASS" || cwbvhRendererStatus.summary?.failures !== 0) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION renderer parity status must pin PASS and zero failures");
+}
+if (!Array.isArray(cwbvhRendererStatus.configs) || cwbvhRendererStatus.configs.length !== 2) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION renderer parity status must contain simple and complex lanes");
+}
+for (const label of ["pt/cwbvh-binary-parity", "pt/cwbvh-complex-parity"]) {
+  const config = cwbvhRendererStatus.configs.find((entry) => entry?.label === label);
+  if (config == null) fail(`VQ-CWBVH-DEFAULT-PROMOTION renderer status missing ${label}`);
+  if (config.verdict !== "PASS" || config.cwbvhParityKind !== "binary") {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION ${label} must pin binary parity PASS`);
+  }
+  if (config.cwbvhParityRmse !== 0 || config.cwbvhParityMeanAbs !== 0 || config.cwbvhParityMaxAbs !== 0) {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION ${label} must pin exact parity in the committed local artifact`);
+  }
+}
+const dznCwbvhStatuses = [
+  await readJson("tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json"),
+  await readJson("tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json"),
+];
+for (const status of dznCwbvhStatuses) {
+  if (status.verdict !== "PASS" || status.goldenVariant !== "dzn-full" || status.summary?.failures !== 0) {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION ${status.filter} dzn status must pin PASS/dzn-full/zero failures`);
+  }
+  const config = Array.isArray(status.configs) ? status.configs[0] : null;
+  if (config == null || config.cwbvhParityKind !== "binary" || config.cwbvhParityRmse !== 0) {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION ${status.filter} dzn status must pin exact binary-vs-CWBVH parity`);
+  }
+  if (!(Number(config.cwbvhRenderMsRatio) > 1)) {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION ${status.filter} dzn status must preserve the no-default-promotion slowdown finding`);
+  }
+}
+
 const learnedRow = queue.validationQueue.find((row) => row.id === "VQ-LEARNED-SYSTEMS");
 if (learnedRow == null) fail("validationQueue missing VQ-LEARNED-SYSTEMS");
 for (const path of [
@@ -1165,6 +1246,8 @@ for (const needle of [
   "structured research-mode warning",
   "weighted against the regular eye-path strategy",
   "not yet composed against the ordinary eye-path estimator",
+  "full-tier/real-adapter equal-time Sobol RMSE A/B",
+  "Sobol default promotion",
 ]) {
   if (!String(radiometricPtRow.remaining).includes(needle)) {
     fail(`VQ-RADIOMETRIC-PT remaining text must include ${needle}`);

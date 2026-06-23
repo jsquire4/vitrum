@@ -175,7 +175,7 @@
         { "path": "packages/pt-webgpu/src/__tests__/ggxMultiscatterFurnace.test.ts" },
         { "path": "packages/shared-samplers/__tests__/bdptVeachFull.test.ts" }
       ],
-      "remaining": "Committed proof now pins BDPT endpoint-only default, the opt-in multi-vertex BDPT branch as a structured non-promotable research finding, SPPM/Sobol/ReSTIR-PT snapshots, ReSTIR-PT specialty case/lobe invariants, and the opt-in glossy ReSTIR-PT research branch as a non-promotable FINDING with a structured research-mode warning. The main kernel source must continue to state that multi-vertex BDPT is not yet composed against the ordinary eye-path estimator. Remaining work is a redesigned multi-vertex BDPT estimator that is weighted against the regular eye-path strategy, plus tighter caustic/material-furnace quality evidence."
+      "remaining": "Committed proof now pins BDPT endpoint-only default, the opt-in multi-vertex BDPT branch as a structured non-promotable research finding, SPPM/Sobol/ReSTIR-PT snapshots, ReSTIR-PT specialty case/lobe invariants, and the opt-in glossy ReSTIR-PT research branch as a non-promotable FINDING with a structured research-mode warning. The main kernel source must continue to state that multi-vertex BDPT is not yet composed against the ordinary eye-path estimator. Remaining work is a redesigned multi-vertex BDPT estimator that is weighted against the regular eye-path strategy, plus tighter caustic/material-furnace quality evidence and full-tier/real-adapter equal-time Sobol RMSE A/B before any Sobol default promotion."
     },
     {
       "id": "VQ-WALKAROUND-RADIOMETRIC-AB",
@@ -282,6 +282,62 @@
         { "path": "packages/pt-webgl2/src/glsl/shader/sampling/light_sampling_functions.glsl.js" }
       ],
       "remaining": "Browser/real-adapter reference A/B for pt-webgl2 specialty rows and any native-promotion claims. The proof checker now pins the expected pt-webgl2 non-promotion grades while browser/WebGL2 capture is HOST-BLOCKED."
+    },
+    {
+      "id": "VQ-CWBVH-DEFAULT-PROMOTION",
+      "title": "pt-webgpu CWBVH opt-in parity and default-promotion evidence",
+      "kind": "validation",
+      "status": "partial-proof-green",
+      "command": "npm run cwbvh-gpu-proof-check",
+      "proofArtifacts": [
+        { "path": "tools/behavioral-gate/check-cwbvh-parity-status.mjs" },
+        { "path": "tools/behavioral-gate/check-cwbvh-renderer-parity-status.mjs" },
+        { "path": "tools/behavioral-gate/cwbvh-parity-oracle.mjs" },
+        {
+          "path": "tools/behavioral-gate/cwbvh-parity-status.json",
+          "json": {
+            "verdict": "PASS",
+            "rootCount": 2,
+            "checks.nonzeroRootClosest": true,
+            "checks.nonzeroRootAny": true
+          }
+        },
+        {
+          "path": "tools/behavioral-gate/behavioral-gate-cwbvh-status.json",
+          "json": {
+            "verdict": "PASS",
+            "filter": "cwbvh",
+            "summary.failures": 0
+          }
+        },
+        {
+          "path": "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
+          "json": {
+            "verdict": "PASS",
+            "filter": "cwbvh-binary-parity",
+            "goldenVariant": "dzn-full",
+            "summary.failures": 0
+          }
+        },
+        {
+          "path": "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
+          "json": {
+            "verdict": "PASS",
+            "filter": "cwbvh-complex-parity",
+            "goldenVariant": "dzn-full",
+            "summary.failures": 0
+          }
+        },
+        { "path": "packages/pt-webgpu/src/index.ts" },
+        { "path": "packages/pt-webgpu/src/scene/uploadSceneBuffers.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/cwbvhSceneBuffers.test.ts" },
+        { "path": "packages/pt-webgpu/src/__tests__/cwbvhTraversalWiring.test.ts" },
+        { "path": "packages/shared-bvh/src/compressedWideBvh.ts" },
+        { "path": "packages/shared-bvh/src/wgsl/cwbvhIntersect.wgsl.ts" },
+        { "path": "packages/shared-bvh/src/__tests__/compressedWideBvh.test.ts" },
+        { "path": "packages/shared-bvh/src/__tests__/cwbvhWgsl.test.ts" }
+      ],
+      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, and dzn full-tier parity shards. Default promotion is still blocked: committed dzn timing artifacts show CWBVH slower than binary traversal, so browser/real-adapter throughput A/B over broader workloads is still required before making CWBVH the default traversal."
     },
     {
       "id": "VQ-ADJOINT-SCOPED-PATH-REPLAY",

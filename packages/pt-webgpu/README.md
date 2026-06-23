@@ -16,7 +16,7 @@ productionisation is complete:
 - **GPU-verified per-feature; not yet cross-backend pixel-diffed.** The
   CPU/struct-layout audit (`plan/archive/pt-webgpu-deep-audit-archived-2026-05-28.md`)
   is closed (all HIGH + MEDIUM + LOW findings fixed or NOT-A-BUG by 2026-05-19),
-  and as of 2026-06-04 **nine rendering rows are `supported`** in
+  and as of 2026-06-04 **ten rendering rows are `supported`** in
   `plan/renderer-fidelity-matrix.md` — each GPU-validated on dzn (RTX 4090) against a
   deterministic reference (analytic / forward-traced) with a committed, sha-pinned
   baseline PNG (hero-λ spectral, spectral Beer–Lambert, thin-film TMM, Cauchy dispersion,
@@ -42,7 +42,7 @@ not baseline correctness. What's implemented:
 - Multi-bounce sampling (clamped by `maxBounces`)
 - Material-driven diffuse/specular/emissive shading with an experimental transmission/refraction branch
 - Extended packed-material payload path with bounded rich scattering/layered/thin-film/spectral fields (**29 vec4s / material**: 8 thin-film layers × `(ior, thicknessNm, extinctionCoefficient)` plus stack `incidentIor` / `angleDependent`, 32 spectral samples, WS4 volumetric absorption coefficient σ_a, Disney/KHR scalar lobes, Jakob-Hanika spectral reflectance coefficients, `KHR_materials_specular`, and KHR volume thickness)
-- Full-tier material texture path for readable `TextureRef` handles: base color/emissive sRGB maps, normal/bump with authored/generated tangent frames, roughness/metallic/AO/light/alpha/transmission/thickness maps, per-map UV set/transform/wrap metadata, and clearcoat/sheen/iridescence/specular extension-lobe maps. See the promise ledger for native vs approximate rows.
+- Full-tier material texture path for readable `TextureRef` handles: base color/emissive sRGB maps, normal/bump with authored/generated tangent frames, roughness/metallic/AO/light/alpha/transmission/thickness maps, per-map uv0/uv1 selection plus transform/wrap metadata, and clearcoat/sheen/iridescence/specular extension-lobe maps. See the promise ledger for native vs approximate rows.
 - Procedural-sky environment lighting controls (scene-driven tint/sun direction)
 - HDRI environment importance sampling when CPU-side HDRI payload provides `width`, `height`, and float RGB texel data
 - Direct lighting for bounded **arrays** of emitters (counts in uniform `FrameParams`, payloads in storage buffers):

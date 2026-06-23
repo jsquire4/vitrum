@@ -37,8 +37,8 @@ Force a tier with `traceTier: 'full' | 'lite'` in options.
 | Analytic shapes (sphere, box, capsule, cylinder, h-channel came) | Supported as generated mesh fallback (`fallback-generated-mesh`) |
 | Emitters: directional, point, spot, rect-area, disc-area, mesh-area | Supported |
 | Environment: none, hdri | Supported (HDRI requires raw `{width, height, data}` RGB float payload) |
-| Spectral hero-wavelength (`spectral: true`) | Supported: CIE CMF reconstruction plus per-material Jakob-Hanika reflectance coefficients |
-| Bidirectional path tracing (`bdpt: true`) | Supported (A5, 2026-06-10; mesh-area/environment subpath follow-ups 2026-06-20): host opt-in (`bdpt: true`); analytic, mesh-area, and HDRI environment light subpath passes are driven on any driver. No ANGLE-specific gating exists — `EXT_disjoint_timer_query` is NOT used as a gate. |
+| Spectral hero-wavelength (`spectral: true`) | Implemented, but fidelity-promotion pending: CIE CMF reconstruction plus per-material Jakob-Hanika reflectance coefficients are wired; `plan/renderer-fidelity-matrix.md` keeps the pt-webgl2 row `experimental` until runtime A/B evidence lands. |
+| Bidirectional path tracing (`bdpt: true`) | Implemented, but fidelity-promotion pending: host opt-in (`bdpt: true`); analytic, mesh-area, and HDRI environment light subpath passes are driven on any driver. No ANGLE-specific gating exists — `EXT_disjoint_timer_query` is NOT used as a gate. `plan/renderer-fidelity-matrix.md` keeps the pt-webgl2 row `approximate` until visual A/B promotion lands. |
 | `backgroundAlpha` | Supported (0 = transparent background; <1 forces alpha-composite regime) |
 | Analytic lights NEE (`lights.count`) | Supported (H1 fix) |
 | Texture atlas (material maps) | Supported — raw `{width,height,data}` or DataTexture-shaped |
