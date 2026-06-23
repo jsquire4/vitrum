@@ -547,9 +547,10 @@ for (const row of queue.validationQueue) {
   } else if (row.status !== "evidence-needed" && row.status !== "decision-needed") {
     fail(`${row.id}: non-decision validation rows need a command`);
   }
-  if (row.promotionCommand != null) {
-    assertNonEmptyString(row.promotionCommand, `${row.id}: promotionCommand`);
-    assertCommandScriptsExist(row.promotionCommand, scripts);
+  for (const [key, value] of Object.entries(row)) {
+    if (key === "command" || !key.endsWith("Command") || value == null) continue;
+    assertNonEmptyString(value, `${row.id}: ${key}`);
+    assertCommandScriptsExist(value, scripts);
   }
   if (!Array.isArray(row.proofArtifacts)) fail(`${row.id}: proofArtifacts must be an array`);
   for (const artifact of row.proofArtifacts) await assertArtifact(artifact, row.id);
