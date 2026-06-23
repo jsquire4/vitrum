@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-06-23T11:45:42.386Z",
+  "generatedAt": "2026-06-23T13:55:28.396Z",
   "harness": "walkaround-ab",
   "verdict": "PASS-PARTIAL",
   "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/walkaround-ab.mjs",
   "selectedCases": "glossy",
   "timeoutMs": 180000,
-  "icd": null,
+  "icd": "/usr/share/vulkan/icd.d/lvp_icd.json",
   "renderConfig": {
     "width": "128",
     "height": "128",
