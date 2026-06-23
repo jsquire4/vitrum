@@ -229,6 +229,8 @@ const REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS = [
   "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
+  "tools/radiometric-ab/pt-promotion-status.json",
+  "tools/radiometric-ab/results-bdpt.json",
   "tools/reference-renders/baseline/ptwgpu-spectral-hero.png",
   "tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png",
   "tools/reference-renders/baseline/ptwgpu-cauchy-dispersion.png",
@@ -831,6 +833,8 @@ for (const path of REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS) {
 const rendererPromotionStatus = await readJson("tools/renderer-fidelity-proof/promotion-status.json");
 const rendererBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-status.json");
 const rendererCanvasBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json");
+const rendererPtPromotionStatus = await readJson("tools/radiometric-ab/pt-promotion-status.json");
+const rendererBdptResult = await readJson("tools/radiometric-ab/results-bdpt.json");
 if (
   rendererPromotionStatus.verdict !== "PASS-PARTIAL" ||
   rendererPromotionStatus.ptWebgl2?.browserPromotionReady !== false ||
@@ -840,6 +844,23 @@ if (
 }
 if (rendererPromotionStatus.ptWebgpuFullTier?.supportedRowCount !== 10) {
   fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin 10 pt-webgpu full-tier supported rows");
+}
+if (
+  rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.safeDefault !== "endpoint-only" ||
+  rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.endpointOnlyMatchesUni !== rendererBdptResult.controls?.endpointOnlyMatchesUni ||
+  rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.multiVertexDefaultReady !== rendererPtPromotionStatus.researchFindings?.bdptMultiVertex?.defaultReady ||
+  rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.multiVertexWarningCode !== rendererPtPromotionStatus.researchFindings?.bdptMultiVertex?.warningCode ||
+  rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.multiVertexBlocker !== "not-weighted-against-regular-eye-path-strategy" ||
+  rendererPromotionStatus.ptWebgpuFullTier?.bdptBoundary?.evidencePath !== "tools/radiometric-ab/results-bdpt.json"
+) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin the pt-webgpu BDPT safe-default/research boundary");
+}
+if (
+  rendererBdptResult.controls?.endpointOnlyMatchesUni !== true ||
+  rendererBdptResult.controls?.multiVertexPromotion?.defaultReady !== false ||
+  rendererPtPromotionStatus.researchFindings?.bdptMultiVertex?.defaultReady !== false
+) {
+  fail("VQ-RENDERER-FIDELITY-PROOF BDPT artifacts must keep multi-vertex out of renderer promotion");
 }
 if (rendererPromotionStatus.ptWebgl2?.nonPromotionGradeCount !== 11) {
   fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin 11 pt-webgl2 non-promotion grades");

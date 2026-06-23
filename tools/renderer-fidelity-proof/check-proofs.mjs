@@ -13,6 +13,8 @@ const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-s
 const PT_WEBGL2_BROWSER_CANVAS_FIRST_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json";
 const PT_WEBGL2_BROWSER_MANIFEST_PATH = "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json";
 const PROMOTION_STATUS_PATH = "tools/renderer-fidelity-proof/promotion-status.json";
+const PT_RADIOMETRIC_PROMOTION_STATUS_PATH = "tools/radiometric-ab/pt-promotion-status.json";
+const BDPT_RADIOMETRIC_RESULT_PATH = "tools/radiometric-ab/results-bdpt.json";
 
 /**
  * @typedef {{
@@ -175,6 +177,9 @@ const PT_WEBGPU_SUPPORTED_ROWS = [
     matrixNeedles: [
       "pt-webgpu GPU-validated (V18/V25)",
       "tools/reference-renders/baseline/cornell-bdpt-on.png",
+      "`bdpt:true` safe default is endpoint-only",
+      "opt-in multi-vertex (`maxLightBounces>1`) remains research-only",
+      "not-weighted-against-regular-eye-path-strategy",
     ],
     goldenPaths: [
       goldenPng(
@@ -729,6 +734,8 @@ async function assertPtWebgl2MaterialFurnaceProof(proof) {
  */
 async function assertPromotionStatus(ptWebgl2BrowserStatuses) {
   const status = JSON.parse(await readText(PROMOTION_STATUS_PATH));
+  const ptRadiometricPromotion = JSON.parse(await readText(PT_RADIOMETRIC_PROMOTION_STATUS_PATH));
+  const bdptRadiometricResult = JSON.parse(await readText(BDPT_RADIOMETRIC_RESULT_PATH));
   const primaryBrowserStatus = ptWebgl2BrowserStatuses[0];
   if (status.harness !== "renderer-fidelity-promotion-proof") fail(`${PROMOTION_STATUS_PATH} harness mismatch`);
   if (status.verdict !== "PASS-PARTIAL") {
@@ -742,6 +749,25 @@ async function assertPromotionStatus(ptWebgl2BrowserStatuses) {
   }
   if (status.ptWebgpuFullTier?.promotionBoundary !== "row-level-supported") {
     fail(`${PROMOTION_STATUS_PATH} ptWebgpuFullTier.promotionBoundary mismatch`);
+  }
+  const expectedBdptBoundary = {
+    safeDefault: "endpoint-only",
+    endpointOnlyMatchesUni: bdptRadiometricResult.controls?.endpointOnlyMatchesUni,
+    multiVertexDefaultReady: ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.defaultReady,
+    multiVertexWarningCode: ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.warningCode,
+    multiVertexBlocker: ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.blocker,
+    evidencePath: BDPT_RADIOMETRIC_RESULT_PATH,
+  };
+  if (JSON.stringify(status.ptWebgpuFullTier?.bdptBoundary) !== JSON.stringify(expectedBdptBoundary)) {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgpuFullTier.bdptBoundary must match the radiometric BDPT research boundary`);
+  }
+  if (
+    bdptRadiometricResult.controls?.endpointOnlyMatchesUni !== true ||
+    bdptRadiometricResult.controls?.multiVertexPromotion?.defaultReady !== false ||
+    ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.defaultReady !== false ||
+    ptRadiometricPromotion.researchFindings?.bdptMultiVertex?.blocker !== "not-weighted-against-regular-eye-path-strategy"
+  ) {
+    fail(`${PROMOTION_STATUS_PATH} BDPT boundary artifacts no longer preserve endpoint-only safe default and multi-vertex non-promotion`);
   }
   if (status.ptWebgl2?.browserPromotionReady !== false) {
     fail(`${PROMOTION_STATUS_PATH} ptWebgl2.browserPromotionReady must remain false while browser capture is blocked`);
@@ -777,6 +803,8 @@ async function assertPromotionStatus(ptWebgl2BrowserStatuses) {
     "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
     "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
     "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
+    PT_RADIOMETRIC_PROMOTION_STATUS_PATH,
+    BDPT_RADIOMETRIC_RESULT_PATH,
   ];
   if (JSON.stringify(status.sourceStatuses) !== JSON.stringify(expectedSourceStatuses)) {
     fail(`${PROMOTION_STATUS_PATH} sourceStatuses drifted`);

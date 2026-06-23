@@ -5,7 +5,15 @@
   "ptWebgpuFullTier": {
     "supportedRowCount": 10,
     "runtimeProofClass": "committed-dzn-full-tier-and-golden-artifacts",
-    "promotionBoundary": "row-level-supported"
+    "promotionBoundary": "row-level-supported",
+    "bdptBoundary": {
+      "safeDefault": "endpoint-only",
+      "endpointOnlyMatchesUni": true,
+      "multiVertexDefaultReady": false,
+      "multiVertexWarningCode": "pt-webgpu.bdpt-multivertex-research-mode",
+      "multiVertexBlocker": "not-weighted-against-regular-eye-path-strategy",
+      "evidencePath": "tools/radiometric-ab/results-bdpt.json"
+    }
   },
   "ptWebgl2": {
     "browserPromotionReady": false,
@@ -25,6 +33,8 @@
     "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
     "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
     "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
-    "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json"
+    "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
+    "tools/radiometric-ab/pt-promotion-status.json",
+    "tools/radiometric-ab/results-bdpt.json"
   ]
 }

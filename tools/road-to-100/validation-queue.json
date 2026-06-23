@@ -301,6 +301,9 @@
           "json": {
             "verdict": "PASS-PARTIAL",
             "ptWebgpuFullTier.supportedRowCount": 10,
+            "ptWebgpuFullTier.bdptBoundary.safeDefault": "endpoint-only",
+            "ptWebgpuFullTier.bdptBoundary.multiVertexDefaultReady": false,
+            "ptWebgpuFullTier.bdptBoundary.multiVertexBlocker": "not-weighted-against-regular-eye-path-strategy",
             "ptWebgl2.browserPromotionReady": false,
             "ptWebgl2.browserStatus": "HOST-BLOCKED",
             "ptWebgl2.hostBlockClasses.0": "browser-canvas-readback-timeout",
@@ -322,6 +325,8 @@
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-light-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json", "json": { "verdict": "PASS" } },
+        { "path": "tools/radiometric-ab/pt-promotion-status.json", "json": { "researchFindings.bdptMultiVertex.defaultReady": false, "researchFindings.bdptMultiVertex.blocker": "not-weighted-against-regular-eye-path-strategy" } },
+        { "path": "tools/radiometric-ab/results-bdpt.json", "json": { "controls.endpointOnlyMatchesUni": true, "controls.multiVertexPromotion.defaultReady": false, "controls.multiVertexPromotion.blocker": "not-weighted-against-regular-eye-path-strategy" } },
         { "path": "tools/reference-renders/baseline/ptwgpu-spectral-hero.png", "type": "png" },
         { "path": "tools/reference-renders/baseline/ptwgpu-thinfilm-angle.png", "type": "png" },
         { "path": "tools/reference-renders/baseline/ptwgpu-cauchy-dispersion.png", "type": "png" },
