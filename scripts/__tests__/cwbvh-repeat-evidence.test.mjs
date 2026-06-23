@@ -5,6 +5,7 @@ import test from 'node:test';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const {
+  buildCwbvhRepeatCampaignSummary,
   CWBVH_REPEAT_FILTERS,
   MIN_REPEAT_COUNT_PER_WORKLOAD,
   summarizeCwbvhRepeatEvidence,
@@ -68,6 +69,29 @@ test('CWBVH repeat evidence records invalid shard rows as failures', () => {
   assert.equal(summary.promotion.defaultReady, false);
   assert.equal(summary.failures.length, 1);
   assert.equal(summary.failures[0].reason, 'status-not-pass');
+});
+
+test('CWBVH repeat campaign summaries do not promote interrupted captures', () => {
+  const records = makeRecords(() => ({ ratio: 0.8 }), MIN_REPEAT_COUNT_PER_WORKLOAD + 1);
+
+  const summary = buildCwbvhRepeatCampaignSummary(records, {
+    repeats: MIN_REPEAT_COUNT_PER_WORKLOAD,
+    warmupCount: 1,
+    campaignStatus: 'interrupted',
+    failure: {
+      runIndex: 6,
+      filter: 'cwbvh-broader',
+      exitStatus: 124,
+    },
+    recordsPath: 'tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json',
+  });
+
+  assert.equal(summary.campaignStatus, 'interrupted');
+  assert.equal(summary.verdict, 'PASS-PARTIAL');
+  assert.equal(summary.classification, 'uniform-faster');
+  assert.equal(summary.promotion.defaultReady, false);
+  assert.equal(summary.promotion.blockedBy, 'repeat-campaign-incomplete');
+  assert.equal(summary.failure.exitStatus, 124);
 });
 
 function makeRecords(ratioFor, runCount) {

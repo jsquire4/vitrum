@@ -68,7 +68,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "VQ-GLTF-BROWSER-PTWEBGL2: broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens; npm run gltf-browser-proof-check:required fails on HOST-BLOCKED until real browser PNG/golden PASS exists",
     "VQ-WALKAROUND-RADIOMETRIC-AB and VQ-RADIOMETRIC-PT: GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT quality and radiometric A/B evidence, including rich-material GI and multi-vertex BDPT research-promotion tails",
     "VQ-RENDERER-FIDELITY-PROOF: pt-webgl2 browser/real-adapter reference A/B for unpromoted specialty rows and source/oracle material-furnace proofs before any native promotion",
-    "VQ-CWBVH-DEFAULT-PROMOTION: browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload before CWBVH default promotion; capture lane is npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1",
+    "VQ-CWBVH-DEFAULT-PROMOTION: browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload before CWBVH default promotion; capture lane is npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 and checkpoints summary plus raw repeat records after every shard",
     "VQ-LEARNED-SYSTEMS: production neural checkpoint plus quality A/B and NRC/neural default-tier decisions",
     "Future-contract rows: displacement/microdisplacement limits, walkaround spectral/dispersion/thin-film/full-layer-stack fields, approximate walkaround scattering rows, native point/line and arbitrary UV-array contracts, native instanced-skinned-morphed contracts, full analytic adjoint parity, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
   ],

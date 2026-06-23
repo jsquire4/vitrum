@@ -32,6 +32,7 @@ export const CWBVH_REPEAT_FILTERS = [
 export const MIN_REPEAT_COUNT_PER_WORKLOAD = 5;
 const DEFAULT_WARMUP_COUNT = 1;
 const DEFAULT_OUTPUT = 'tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json';
+const DEFAULT_RECORDS_OUTPUT = 'tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 export function summarizeCwbvhRepeatEvidence(records, options = {}) {
@@ -120,6 +121,42 @@ export function summarizeCwbvhRepeatEvidence(records, options = {}) {
   };
 }
 
+export function buildCwbvhRepeatCampaignSummary(records, options = {}) {
+  const repeats = readPositiveInteger(options.repeats ?? MIN_REPEAT_COUNT_PER_WORKLOAD, 'repeats');
+  const warmupCount = readNonNegativeInteger(options.warmupCount ?? DEFAULT_WARMUP_COUNT, 'warmupCount');
+  const campaignStatus = String(options.campaignStatus ?? 'complete');
+  const failure = options.failure ?? null;
+  const command = String(
+    options.command ??
+      `node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=${repeats} --warmup=${warmupCount}`,
+  );
+  const summary = {
+    generatedAt: new Date().toISOString(),
+    command,
+    campaignStatus,
+    requestedRepeatsPerWorkload: repeats,
+    recordsPath: options.recordsPath ?? DEFAULT_RECORDS_OUTPUT,
+    filters: CWBVH_REPEAT_FILTERS.map((entry) => ({
+      filter: entry.filter,
+      labels: entry.labels,
+      command: commandFor(entry.filter),
+    })),
+    ...summarizeCwbvhRepeatEvidence(records, { warmupCount }),
+  };
+
+  if (failure != null) summary.failure = failure;
+  if (campaignStatus !== 'complete') {
+    summary.verdict = 'PASS-PARTIAL';
+    summary.promotion = {
+      ...summary.promotion,
+      defaultReady: false,
+      blockedBy: 'repeat-campaign-incomplete',
+    };
+  }
+
+  return summary;
+}
+
 function isValidCwbvhTimingRow(row) {
   return row != null &&
     row.verdict === 'PASS' &&
@@ -176,10 +213,35 @@ function commandFor(filter) {
   return `npm run behavioral-gate:dzn -- --filter ${filter} --require-full-tier`;
 }
 
+function writeJson(path, data) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function writeCampaignProgress({ records, repeats, warmupCount, outputPath, recordsPath, campaignStatus, failure = null }) {
+  const summary = buildCwbvhRepeatCampaignSummary(records, {
+    repeats,
+    warmupCount,
+    campaignStatus,
+    failure,
+    recordsPath,
+  });
+  writeJson(recordsPath, {
+    generatedAt: summary.generatedAt,
+    harness: 'cwbvh-default-promotion-repeat-records',
+    campaignStatus,
+    failure,
+    records,
+  });
+  writeJson(outputPath, summary);
+  return summary;
+}
+
 function runCampaign(args) {
   const repeats = readPositiveInteger(readFlagValue(args, '--repeats', String(MIN_REPEAT_COUNT_PER_WORKLOAD)), '--repeats');
   const warmupCount = readNonNegativeInteger(readFlagValue(args, '--warmup', String(DEFAULT_WARMUP_COUNT)), '--warmup');
   const outputPath = resolve(repoRoot, readFlagValue(args, '--status', DEFAULT_OUTPUT));
+  const recordsPath = resolve(repoRoot, readFlagValue(args, '--records', DEFAULT_RECORDS_OUTPUT));
   const totalRuns = repeats + warmupCount;
   const tempDir = mkdtempSync(resolve(tmpdir(), 'vitrum-cwbvh-repeat-'));
   const records = [];
@@ -201,8 +263,57 @@ function runCampaign(args) {
             },
           },
         );
-        if (result.error) throw result.error;
+        if (result.error) {
+          const failure = {
+            runIndex,
+            phase: runIndex < warmupCount ? 'warmup' : 'sample',
+            filter: entry.filter,
+            command: commandFor(entry.filter),
+            spawnError: result.error.message,
+          };
+          records.push({
+            runIndex,
+            phase: failure.phase,
+            filter: entry.filter,
+            status: null,
+            failure,
+          });
+          writeCampaignProgress({
+            records,
+            repeats,
+            warmupCount,
+            outputPath,
+            recordsPath,
+            campaignStatus: 'interrupted',
+            failure,
+          });
+          throw result.error;
+        }
         if (result.status !== 0) {
+          const failure = {
+            runIndex,
+            phase: runIndex < warmupCount ? 'warmup' : 'sample',
+            filter: entry.filter,
+            command: commandFor(entry.filter),
+            exitStatus: result.status,
+            signal: result.signal,
+          };
+          records.push({
+            runIndex,
+            phase: failure.phase,
+            filter: entry.filter,
+            status: null,
+            failure,
+          });
+          writeCampaignProgress({
+            records,
+            repeats,
+            warmupCount,
+            outputPath,
+            recordsPath,
+            campaignStatus: 'interrupted',
+            failure,
+          });
           throw new Error(`${commandFor(entry.filter)} failed with exit status ${result.status}`);
         }
         records.push({
@@ -211,21 +322,26 @@ function runCampaign(args) {
           filter: entry.filter,
           status: JSON.parse(readFileSync(statusPath, 'utf8')),
         });
+        writeCampaignProgress({
+          records,
+          repeats,
+          warmupCount,
+          outputPath,
+          recordsPath,
+          campaignStatus: 'running',
+        });
       }
     }
-    const summary = {
-      generatedAt: new Date().toISOString(),
-      command: `node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=${repeats} --warmup=${warmupCount}`,
-      filters: CWBVH_REPEAT_FILTERS.map((entry) => ({
-        filter: entry.filter,
-        labels: entry.labels,
-        command: commandFor(entry.filter),
-      })),
-      ...summarizeCwbvhRepeatEvidence(records, { warmupCount }),
-    };
-    mkdirSync(dirname(outputPath), { recursive: true });
-    writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`);
+    const summary = writeCampaignProgress({
+      records,
+      repeats,
+      warmupCount,
+      outputPath,
+      recordsPath,
+      campaignStatus: 'complete',
+    });
     console.log(`[cwbvh-default-promotion-repeats] wrote ${outputPath}`);
+    console.log(`[cwbvh-default-promotion-repeats] wrote ${recordsPath}`);
     console.log(`[cwbvh-default-promotion-repeats] verdict=${summary.verdict} classification=${summary.classification} sampleCountPerWorkload=${summary.sampleCountPerWorkload}`);
     return summary.verdict === 'PASS' ? 0 : 2;
   } finally {

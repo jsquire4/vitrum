@@ -66,6 +66,9 @@ function assertRepeatHarness(source) {
     "cwbvh-default-promotion-repeat-proof",
     "MIN_REPEAT_COUNT_PER_WORKLOAD = 5",
     "warmupDiscardedPerWorkload",
+    "cwbvh-default-promotion-repeat-records",
+    "campaignStatus",
+    "recordsPath",
     "VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH",
     "behavioral-gate:dzn",
   ]) {

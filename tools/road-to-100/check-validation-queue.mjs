@@ -889,6 +889,7 @@ for (const needle of [
   "dzn timing artifacts are uniformly slower",
   "single-sample rows",
   "multiple warmup-discarded repeats per workload",
+  "raw repeat records",
   "npm run cwbvh-default-promotion-repeats",
   "material-lobe-map",
   "browser/real-adapter throughput A/B",
@@ -976,6 +977,9 @@ for (const needle of [
   "cwbvh-default-promotion-repeat-proof",
   "MIN_REPEAT_COUNT_PER_WORKLOAD = 5",
   "warmupDiscardedPerWorkload",
+  "cwbvh-default-promotion-repeat-records",
+  "campaignStatus",
+  "recordsPath",
   "VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH",
   "behavioral-gate:dzn",
 ]) {
