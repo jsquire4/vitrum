@@ -874,6 +874,8 @@ for (const needle of [
   "broader dzn material/glTF workload shard",
   "Default promotion is still blocked",
   "dzn timing artifacts are uniformly slower",
+  "single-sample rows",
+  "multiple warmup-discarded repeats per workload",
   "material-lobe-map",
   "browser/real-adapter throughput A/B",
 ]) {
@@ -971,6 +973,18 @@ if (
   cwbvhPromotionStatus.promotion?.classification !== "uniform-slower"
 ) {
   fail("VQ-CWBVH-DEFAULT-PROMOTION summary must pin PASS-PARTIAL/defaultReady=false/uniform-slower");
+}
+if (
+  cwbvhPromotionStatus.measurementSufficiency?.status !== "single-sample-insufficient-for-default-promotion" ||
+  cwbvhPromotionStatus.measurementSufficiency?.defaultPromotionEligible !== false ||
+  cwbvhPromotionStatus.measurementSufficiency?.sampleCountPerWorkload !== 1 ||
+  cwbvhPromotionStatus.measurementSufficiency?.minRepeatCountPerWorkload !== 5 ||
+  cwbvhPromotionStatus.measurementSufficiency?.requiredAdapterScope !== "browser/real-adapter"
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary must keep single-sample timing evidence out of default promotion");
+}
+if (!String(cwbvhPromotionStatus.measurementSufficiency?.requiredEvidence ?? "").includes("multiple repeats per workload")) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary must name repeat-count evidence before default promotion");
 }
 if (
   cwbvhPromotionStatus.rowCount !== cwbvhExpectedRatios.length ||

@@ -31,6 +31,8 @@ const SUMMARY_STATUS = "tools/behavioral-gate/cwbvh-default-promotion-status.jso
 const MIN_SLOW_OR_NEUTRAL_RATIO = 1.0;
 const MIN_FAST_RATIO = 0.95;
 const MIN_SLOW_OR_NEUTRAL_ROWS = 2;
+const MIN_REPEAT_COUNT_PER_WORKLOAD = 5;
+const REQUIRED_ADAPTER_SCOPE = "browser/real-adapter";
 
 /** @param {string} message @returns {never} */
 function fail(message) {
@@ -121,6 +123,24 @@ async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification
   if (!String(status.promotion?.requiredEvidence ?? "").includes("browser/real-adapter throughput A/B")) {
     fail(`${SUMMARY_STATUS}: requiredEvidence must name browser/real-adapter throughput A/B`);
   }
+  if (status.measurementSufficiency?.status !== "single-sample-insufficient-for-default-promotion") {
+    fail(`${SUMMARY_STATUS}: measurementSufficiency must keep single-sample timing evidence out of default promotion`);
+  }
+  if (status.measurementSufficiency?.sampleCountPerWorkload !== 1) {
+    fail(`${SUMMARY_STATUS}: measurementSufficiency.sampleCountPerWorkload must reflect committed single-run timing rows`);
+  }
+  if (status.measurementSufficiency?.minRepeatCountPerWorkload !== MIN_REPEAT_COUNT_PER_WORKLOAD) {
+    fail(`${SUMMARY_STATUS}: measurementSufficiency.minRepeatCountPerWorkload drifted`);
+  }
+  if (status.measurementSufficiency?.requiredAdapterScope !== REQUIRED_ADAPTER_SCOPE) {
+    fail(`${SUMMARY_STATUS}: measurementSufficiency.requiredAdapterScope must name browser/real-adapter validation`);
+  }
+  if (status.measurementSufficiency?.defaultPromotionEligible !== false) {
+    fail(`${SUMMARY_STATUS}: measurementSufficiency.defaultPromotionEligible must remain false`);
+  }
+  if (!String(status.measurementSufficiency?.requiredEvidence ?? "").includes("multiple repeats per workload")) {
+    fail(`${SUMMARY_STATUS}: measurementSufficiency.requiredEvidence must name repeat-count evidence`);
+  }
   if (status.thresholds?.slowOrNeutralRatio !== MIN_SLOW_OR_NEUTRAL_RATIO) {
     fail(`${SUMMARY_STATUS}: slowOrNeutralRatio threshold drifted`);
   }
@@ -129,6 +149,9 @@ async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification
   }
   if (status.thresholds?.minSlowOrNeutralRows !== MIN_SLOW_OR_NEUTRAL_ROWS) {
     fail(`${SUMMARY_STATUS}: minSlowOrNeutralRows threshold drifted`);
+  }
+  if (status.thresholds?.minRepeatCountPerWorkload !== MIN_REPEAT_COUNT_PER_WORKLOAD) {
+    fail(`${SUMMARY_STATUS}: minRepeatCountPerWorkload threshold drifted`);
   }
   if (status.rowCount !== perfRows.length) fail(`${SUMMARY_STATUS}: rowCount mismatch`);
   if (status.slowOrNeutralCount !== slowOrNeutral.length) fail(`${SUMMARY_STATUS}: slowOrNeutralCount mismatch`);
