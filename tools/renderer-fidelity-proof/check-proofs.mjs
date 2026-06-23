@@ -11,6 +11,7 @@ const HARDWARE_VALIDATION_PATH = "HARDWARE-VALIDATION-NEEDS.md";
 const GAP_EXECUTION_PLAN_PATH = "plan/gap-closure-execution-plan.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
 const PT_WEBGL2_BROWSER_MANIFEST_PATH = "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json";
+const PROMOTION_STATUS_PATH = "tools/renderer-fidelity-proof/promotion-status.json";
 
 /**
  * @typedef {{
@@ -722,6 +723,58 @@ async function assertPtWebgl2MaterialFurnaceProof(proof) {
   }
 }
 
+/**
+ * @param {Record<string, any>} ptWebgl2BrowserStatus
+ */
+async function assertPromotionStatus(ptWebgl2BrowserStatus) {
+  const status = JSON.parse(await readText(PROMOTION_STATUS_PATH));
+  if (status.harness !== "renderer-fidelity-promotion-proof") fail(`${PROMOTION_STATUS_PATH} harness mismatch`);
+  if (status.verdict !== "PASS-PARTIAL") {
+    fail(`${PROMOTION_STATUS_PATH} must stay PASS-PARTIAL until pt-webgl2 browser promotion evidence lands`);
+  }
+  if (status.ptWebgpuFullTier?.supportedRowCount !== PT_WEBGPU_SUPPORTED_ROWS.length) {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgpuFullTier.supportedRowCount drifted`);
+  }
+  if (status.ptWebgpuFullTier?.runtimeProofClass !== "committed-dzn-full-tier-and-golden-artifacts") {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgpuFullTier.runtimeProofClass mismatch`);
+  }
+  if (status.ptWebgpuFullTier?.promotionBoundary !== "row-level-supported") {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgpuFullTier.promotionBoundary mismatch`);
+  }
+  if (status.ptWebgl2?.browserPromotionReady !== false) {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgl2.browserPromotionReady must remain false while browser capture is blocked`);
+  }
+  if (status.ptWebgl2?.browserStatus !== ptWebgl2BrowserStatus.verdict) {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgl2.browserStatus must match ${PT_WEBGL2_BROWSER_STATUS_PATH}`);
+  }
+  if (ptWebgl2BrowserStatus.verdict === "HOST-BLOCKED") {
+    const expectedClasses = ptWebgl2BrowserStatus.hostBlockClasses ?? [];
+    if (JSON.stringify(status.ptWebgl2?.hostBlockClasses) !== JSON.stringify(expectedClasses)) {
+      fail(`${PROMOTION_STATUS_PATH} ptWebgl2.hostBlockClasses must match browser proof status`);
+    }
+  }
+  if (status.ptWebgl2?.nonPromotionGradeCount !== PT_WEBGL2_EXPECTED_ROWS.length) {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgl2.nonPromotionGradeCount drifted`);
+  }
+  if (status.ptWebgl2?.materialFurnaceSourceOracleGroupCount !== PT_WEBGL2_MATERIAL_FURNACE_PROOFS.length) {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgl2.materialFurnaceSourceOracleGroupCount drifted`);
+  }
+  if (!String(status.ptWebgl2?.requiredEvidence ?? "").includes("browser/real-adapter reference A/B")) {
+    fail(`${PROMOTION_STATUS_PATH} ptWebgl2.requiredEvidence must name browser/real-adapter reference A/B`);
+  }
+  const expectedSourceStatuses = [
+    PT_WEBGL2_BROWSER_STATUS_PATH,
+    PT_WEBGL2_BROWSER_MANIFEST_PATH,
+    "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
+  ];
+  if (JSON.stringify(status.sourceStatuses) !== JSON.stringify(expectedSourceStatuses)) {
+    fail(`${PROMOTION_STATUS_PATH} sourceStatuses drifted`);
+  }
+}
+
 const matrix = await readText(MATRIX_PATH);
 const playbook = await readText(PLAYBOOK_PATH);
 const readme = await readText(README_PATH);
@@ -778,6 +831,7 @@ if (ptWebgl2BrowserStatus.verdict === "HOST-BLOCKED") {
 } else {
   await assertPtWebgl2BrowserPassStatus(ptWebgl2BrowserStatus, ptWebgl2BrowserManifest);
 }
+await assertPromotionStatus(ptWebgl2BrowserStatus);
 
 for (const staleNeedle of PLAYBOOK_FORBIDDEN_STALE_NEEDLES) {
   if (playbook.includes(staleNeedle)) {
@@ -803,5 +857,5 @@ if (hardwareValidation.includes("WSL2 with SwiftShader only") ||
 }
 
 console.log(
-  `[renderer-fidelity-proof-check] PASS (${PT_WEBGPU_SUPPORTED_ROWS.length} pt-webgpu supported rows verified; ${PT_WEBGL2_EXPECTED_ROWS.length} pt-webgl2 non-promotion grades pinned; ${PT_WEBGL2_MATERIAL_FURNACE_PROOFS.length} pt-webgl2 material-furnace source/oracle proof groups verified; pt-webgl2 browser-promotion guard checked)`,
+  `[renderer-fidelity-proof-check] PASS (${PT_WEBGPU_SUPPORTED_ROWS.length} pt-webgpu supported rows verified; ${PT_WEBGL2_EXPECTED_ROWS.length} pt-webgl2 non-promotion grades pinned; ${PT_WEBGL2_MATERIAL_FURNACE_PROOFS.length} pt-webgl2 material-furnace source/oracle proof groups verified; pt-webgl2 browser-promotion guard checked; renderer promotion status pinned)`,
 );

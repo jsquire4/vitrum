@@ -281,6 +281,18 @@
       "command": "npm run renderer-fidelity-proof-check",
       "proofArtifacts": [
         { "path": "tools/renderer-fidelity-proof/check-proofs.mjs" },
+        {
+          "path": "tools/renderer-fidelity-proof/promotion-status.json",
+          "json": {
+            "verdict": "PASS-PARTIAL",
+            "ptWebgpuFullTier.supportedRowCount": 10,
+            "ptWebgl2.browserPromotionReady": false,
+            "ptWebgl2.browserStatus": "HOST-BLOCKED",
+            "ptWebgl2.hostBlockClasses.0": "engine-readback-timeout",
+            "ptWebgl2.nonPromotionGradeCount": 11,
+            "ptWebgl2.materialFurnaceSourceOracleGroupCount": 4
+          }
+        },
         { "path": "plan/renderer-fidelity-matrix.md" },
         { "path": "plan/fidelity-promotion-playbook.md" },
         { "path": "README.md" },

@@ -1,0 +1,28 @@
+{
+  "generatedAt": "2026-06-23T05:25:00.000Z",
+  "harness": "renderer-fidelity-promotion-proof",
+  "verdict": "PASS-PARTIAL",
+  "ptWebgpuFullTier": {
+    "supportedRowCount": 10,
+    "runtimeProofClass": "committed-dzn-full-tier-and-golden-artifacts",
+    "promotionBoundary": "row-level-supported"
+  },
+  "ptWebgl2": {
+    "browserPromotionReady": false,
+    "browserStatus": "HOST-BLOCKED",
+    "hostBlockClasses": [
+      "engine-readback-timeout"
+    ],
+    "nonPromotionGradeCount": 11,
+    "materialFurnaceSourceOracleGroupCount": 4,
+    "requiredEvidence": "browser/real-adapter reference A/B for pt-webgl2 specialty rows and any native-promotion claims"
+  },
+  "sourceStatuses": [
+    "tools/gltf-browser-proof/pt-webgl2-real-status.json",
+    "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
+    "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json"
+  ]
+}

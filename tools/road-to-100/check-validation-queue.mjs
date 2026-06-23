@@ -215,6 +215,7 @@ const REQUIRED_WALKAROUND_BEHAVIORAL_ARTIFACT_PATHS = [
 
 const REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS = [
   "tools/renderer-fidelity-proof/check-proofs.mjs",
+  "tools/renderer-fidelity-proof/promotion-status.json",
   "plan/renderer-fidelity-matrix.md",
   "plan/fidelity-promotion-playbook.md",
   "README.md",
@@ -811,6 +812,30 @@ for (const path of REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS) {
   if (!rendererFidelityArtifactPaths.has(path)) {
     fail(`VQ-RENDERER-FIDELITY-PROOF proofArtifacts must cite ${path}`);
   }
+}
+const rendererPromotionStatus = await readJson("tools/renderer-fidelity-proof/promotion-status.json");
+const rendererBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-status.json");
+if (
+  rendererPromotionStatus.verdict !== "PASS-PARTIAL" ||
+  rendererPromotionStatus.ptWebgl2?.browserPromotionReady !== false ||
+  rendererPromotionStatus.ptWebgl2?.browserStatus !== rendererBrowserStatus.verdict
+) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin PASS-PARTIAL and pt-webgl2 browser non-promotion");
+}
+if (rendererPromotionStatus.ptWebgpuFullTier?.supportedRowCount !== 10) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin 10 pt-webgpu full-tier supported rows");
+}
+if (rendererPromotionStatus.ptWebgl2?.nonPromotionGradeCount !== 11) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin 11 pt-webgl2 non-promotion grades");
+}
+if (rendererPromotionStatus.ptWebgl2?.materialFurnaceSourceOracleGroupCount !== 4) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must pin 4 pt-webgl2 source/oracle proof groups");
+}
+if (JSON.stringify(rendererPromotionStatus.ptWebgl2?.hostBlockClasses) !== JSON.stringify(rendererBrowserStatus.hostBlockClasses ?? [])) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary hostBlockClasses must match browser status");
+}
+if (!String(rendererPromotionStatus.ptWebgl2?.requiredEvidence ?? "").includes("browser/real-adapter reference A/B")) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must name browser/real-adapter reference A/B");
 }
 
 const cwbvhRow = queue.validationQueue.find((row) => row.id === "VQ-CWBVH-DEFAULT-PROMOTION");
