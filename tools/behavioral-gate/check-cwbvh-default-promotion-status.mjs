@@ -90,6 +90,11 @@ function assertRepeatHarness(source) {
     "statusVerdict",
     "VITRUM_BEHAVIORAL_GATE_DZN_STATUS_PATH",
     "behavioral-gate:dzn",
+    "Number(row.gpuErrors) === 0",
+    "row.nan === false",
+    "Number(row.luminance) >= 0.005",
+    "Number(row.cwbvhBinaryMemoryBytes) > 0",
+    "Number(row.cwbvhMemoryBytes) > 0",
   ]) {
     if (!source.includes(needle)) fail(`${REPEAT_HARNESS}: missing ${needle}`);
   }
