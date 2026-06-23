@@ -17,17 +17,26 @@ const repoRoot = resolve(scriptDir, '../..');
 const DEFAULT_TIMEOUT_MS = 180_000;
 const args = new Set(process.argv.slice(2));
 const glossySpp64 = args.has('--glossy-spp64');
+const allSpp64 = args.has('--all-spp64');
+if (glossySpp64 && allSpp64) {
+  console.error('[walkaround-ab] choose only one of --glossy-spp64 or --all-spp64.');
+  process.exit(2);
+}
 const statusPath = resolveFromRepo(
   process.env.VITRUM_WALKAROUND_AB_STATUS_PATH,
   glossySpp64
     ? 'tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json'
-    : 'tools/radiometric-ab/walkaround-ab-host-status.json',
+    : allSpp64
+      ? 'tools/radiometric-ab/walkaround-ab-all-spp64-status.json'
+      : 'tools/radiometric-ab/walkaround-ab-host-status.json',
 );
 const resultPath = resolveFromRepo(
   process.env.VITRUM_WALKAROUND_AB_OUTPUT_PATH,
   glossySpp64
     ? 'tools/radiometric-ab/walkaround-ab-glossy-spp64.json'
-    : 'tools/radiometric-ab/walkaround-ab-results.json',
+    : allSpp64
+      ? 'tools/radiometric-ab/walkaround-ab-all-spp64.json'
+      : 'tools/radiometric-ab/walkaround-ab-results.json',
 );
 
 function resolveFromRepo(raw, fallbackRelative) {
@@ -61,8 +70,8 @@ const resultFile = repoRelative(resultPath);
 const renderConfig = {
   width: process.env.VITRUM_WALKAROUND_AB_WIDTH ?? '128',
   height: process.env.VITRUM_WALKAROUND_AB_HEIGHT ?? '128',
-  spp: process.env.VITRUM_WALKAROUND_AB_SPP ?? (glossySpp64 ? '64' : '16'),
-  qualityProfile: process.env.VITRUM_WALKAROUND_AB_PROFILE ?? (glossySpp64 ? 'glossy-spp64' : null),
+  spp: process.env.VITRUM_WALKAROUND_AB_SPP ?? (glossySpp64 || allSpp64 ? '64' : '16'),
+  qualityProfile: process.env.VITRUM_WALKAROUND_AB_PROFILE ?? (glossySpp64 ? 'glossy-spp64' : allSpp64 ? 'all-spp64' : null),
 };
 const denoEnv = {
   ...process.env,

@@ -50,6 +50,15 @@ test('walkaround A/B wrapper exposes the glossy 64-SPP promotion lane', async ()
   assert.match(runner, /VITRUM_WALKAROUND_AB_SPP: renderConfig\.spp/);
 });
 
+test('walkaround A/B wrapper exposes the all-cases 64-SPP proof lane', async () => {
+  const runner = await readFile(walkaroundRunnerPath, 'utf8');
+  assert.match(runner, /--all-spp64/);
+  assert.match(runner, /walkaround-ab-all-spp64-status\.json/);
+  assert.match(runner, /walkaround-ab-all-spp64\.json/);
+  assert.match(runner, /all-spp64/);
+  assert.match(runner, /glossySpp64 && allSpp64/);
+});
+
 async function loadVarianceROI() {
   const source = await readFile(helpersPath, 'utf8');
   const match = source.match(/export function varianceROI\(([^)]*)\) \{([\s\S]*?)\n\}/);

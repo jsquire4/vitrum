@@ -57,6 +57,7 @@
     "renderer-fidelity-proof-check": "deno run --sloppy-imports --allow-read tools/renderer-fidelity-proof/check-proofs.mjs",
     "radiometric-ab:walkaround": "node tools/radiometric-ab/run-walkaround-ab.mjs",
     "radiometric-ab:walkaround-glossy-spp64": "node tools/radiometric-ab/run-walkaround-ab.mjs --glossy-spp64",
+    "radiometric-ab:walkaround-all-spp64": "node tools/radiometric-ab/run-walkaround-ab.mjs --all-spp64",
     "gltf-material-sweep": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/sweep.mjs",
     "gltf-material-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-material-sweep/check-proofs.mjs",
     "gltf-real-proof-check": "deno run --sloppy-imports --allow-read tools/gltf-real-asset-sweep/check-proofs.mjs",

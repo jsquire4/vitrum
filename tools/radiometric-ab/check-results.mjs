@@ -10,6 +10,7 @@ import {
   RESTIR_PT_SPECIALTY_PROOF,
   WALKAROUND_AB_HOST_STATUS_PROOF,
   WALKAROUND_AB_RESULT_PROOF,
+  WALKAROUND_ALL_SPP64_STATUS_PROOF,
   WALKAROUND_GLOSSY_SPP64_STATUS_PROOF,
 } from "./proofs.mjs";
 
@@ -675,6 +676,57 @@ async function checkWalkaroundGlossySpp64Status(proof) {
   });
 }
 
+/** @param {any} proof */
+async function checkWalkaroundAllSpp64Status(proof) {
+  const statusUrl = new URL(`../../${proof.statusPath}`, import.meta.url);
+  const status = JSON.parse(await Deno.readTextFile(statusUrl));
+  if (status.harness !== proof.harness) fail("walkaround all-spp64: harness mismatch");
+  if (!proof.allowedVerdicts.includes(status.verdict)) {
+    fail(`walkaround all-spp64: verdict ${status.verdict} is outside ${proof.allowedVerdicts.join(", ")}`);
+  }
+  if ((status.selectedCases ?? null) !== proof.selectedCases) {
+    fail(`walkaround all-spp64: selectedCases ${status.selectedCases} differs from ${proof.selectedCases}`);
+  }
+  const resultFile = status.preservedResultFile ?? status.resultFile;
+  if (resultFile !== proof.preservedResultFile) {
+    fail("walkaround all-spp64: result file differs from proofs.mjs");
+  }
+  if (!sameJson(status.renderConfig, proof.expectedRenderConfig)) {
+    fail(
+      `walkaround all-spp64: renderConfig ${JSON.stringify(status.renderConfig)} ` +
+      `differs from ${JSON.stringify(proof.expectedRenderConfig)}`,
+    );
+  }
+  if (status.verdict === "HOST-BLOCKED") {
+    if (!proof.blockedReasonCodes.includes(status.reason?.code)) {
+      fail(`walkaround all-spp64: blocked reason code ${status.reason?.code} is not allowed`);
+    }
+    const nextSteps = status.nextSteps ?? [];
+    if (!nextSteps.some((step) => String(step).includes(proof.doNotPromoteText))) {
+      fail("walkaround all-spp64: HOST-BLOCKED status must preserve the do-not-promote warning");
+    }
+    return;
+  }
+  assertWalkaroundFullFreshStatus(status, JSON.parse(await Deno.readTextFile(new URL(`../../${resultFile}`, import.meta.url))));
+  if (status.verdict === "PASS-PARTIAL" && status.reason?.code !== proof.partialReasonCode) {
+    fail(`walkaround all-spp64: partial reason code ${status.reason?.code} differs from proofs.mjs`);
+  }
+  const resultUrl = new URL(`../../${resultFile}`, import.meta.url);
+  const result = JSON.parse(await Deno.readTextFile(resultUrl));
+  const resolution = `${proof.expectedRenderConfig.width}x${proof.expectedRenderConfig.height}`;
+  const spp = Number(proof.expectedRenderConfig.spp);
+  const highSppCases = {
+    a8: { ...WALKAROUND_AB_RESULT_PROOF.cases.a8, resolution, spp, expectedVerdict: null },
+    sun: { ...WALKAROUND_AB_RESULT_PROOF.cases.sun, resolution, spp, expectedVerdict: null },
+    glass: { ...WALKAROUND_AB_RESULT_PROOF.cases.glass, resolution, spp, expectedVerdict: null },
+    glossy: { ...WALKAROUND_AB_RESULT_PROOF.cases.glossy, resolution, spp, expectedVerdict: null },
+  };
+  checkWalkaroundA8(highSppCases.a8, result.a8);
+  checkWalkaroundSun(highSppCases.sun, result.sun);
+  checkWalkaroundGlass(highSppCases.glass, result.glass);
+  checkWalkaroundGlossy(highSppCases.glossy, result.glossy);
+}
+
 /**
  * @param {any} status
  * @param {Record<string, any>} preservedResult
@@ -711,12 +763,14 @@ function assertWalkaroundFullFreshStatus(status, preservedResult) {
  * @param {any} result
  */
 function checkWalkaroundCaseCommon(label, proof, result) {
+  const expectedResolution = proof.resolution ?? WALKAROUND_AB_RESULT_PROOF.resolution;
+  const expectedSpp = proof.spp ?? WALKAROUND_AB_RESULT_PROOF.spp;
   if (result?.id !== proof.id) fail(`walkaround-ab ${label}: id ${result?.id} differs from ${proof.id}`);
-  if (result?.resolution !== WALKAROUND_AB_RESULT_PROOF.resolution) {
-    fail(`walkaround-ab ${label}: resolution ${result?.resolution} differs from ${WALKAROUND_AB_RESULT_PROOF.resolution}`);
+  if (result?.resolution !== expectedResolution) {
+    fail(`walkaround-ab ${label}: resolution ${result?.resolution} differs from ${expectedResolution}`);
   }
-  if (result?.spp !== WALKAROUND_AB_RESULT_PROOF.spp) {
-    fail(`walkaround-ab ${label}: spp ${result?.spp} differs from ${WALKAROUND_AB_RESULT_PROOF.spp}`);
+  if (result?.spp !== expectedSpp) {
+    fail(`walkaround-ab ${label}: spp ${result?.spp} differs from ${expectedSpp}`);
   }
   if (!proof.allowedVerdicts.includes(result?.verdict)) {
     fail(`walkaround-ab ${label}: verdict ${result?.verdict} is outside ${proof.allowedVerdicts.join(", ")}`);
@@ -899,5 +953,6 @@ await checkPtRadiometricHostStatus(PT_RADIOMETRIC_AB_HOST_STATUS_PROOF);
 await checkWalkaroundHostStatus(WALKAROUND_AB_HOST_STATUS_PROOF);
 await checkWalkaroundResults(WALKAROUND_AB_RESULT_PROOF);
 await checkWalkaroundGlossySpp64Status(WALKAROUND_GLOSSY_SPP64_STATUS_PROOF);
+await checkWalkaroundAllSpp64Status(WALKAROUND_ALL_SPP64_STATUS_PROOF);
 
-console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases, 1 high-SPP glossy walkaround status)`);
+console.log(`[radiometric-ab-proof-check] PASS (${RADIOMETRIC_AB_PROOFS.length} committed radiometric A/B result snapshots, 1 BDPT multi-vertex research guard, 1 ReSTIR-PT specialty fixture, 1 glossy research artifact, pt host status, walkaround host status, 4 walkaround A/B cases, 1 high-SPP glossy walkaround status, 1 high-SPP all-cases walkaround status)`);

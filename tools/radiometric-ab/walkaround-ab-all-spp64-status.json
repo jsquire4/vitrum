@@ -1,0 +1,32 @@
+{
+  "generatedAt": "2026-06-23T00:56:22.472Z",
+  "harness": "walkaround-ab",
+  "verdict": "PASS-PARTIAL",
+  "command": "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/walkaround-ab.mjs",
+  "selectedCases": null,
+  "timeoutMs": 360000,
+  "icd": null,
+  "renderConfig": {
+    "width": "128",
+    "height": "128",
+    "spp": "64",
+    "qualityProfile": "all-spp64"
+  },
+  "exitStatus": 0,
+  "signal": null,
+  "resultFile": "tools/radiometric-ab/walkaround-ab-all-spp64.json",
+  "caseVerdicts": {
+    "a8": "NEGLIGIBLE",
+    "sun": "PASS",
+    "glass": "PASS",
+    "glossy": "FINDING"
+  },
+  "reason": {
+    "code": "walkaround-ab-partial-proof",
+    "message": "The native WebGPU harness ran to completion, but at least one case is only a partial/weak proof."
+  },
+  "nextSteps": [
+    "Do not promote partial/weak walkaround rows from this proof alone (glossy:FINDING).",
+    "Use higher-SPP, HDR, browser/real-adapter, or case-specific reference captures before promotion."
+  ]
+}

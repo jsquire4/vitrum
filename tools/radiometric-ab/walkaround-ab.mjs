@@ -444,7 +444,7 @@ async function runA8() {
     notes: [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
       "Delta is (unbiased - biased). Positive = biased underestimates; negative = biased overestimates.",
-      "Lavapipe (software Vulkan) — MC variance at SPP=16 is ~1-3% of mean.",
+      `Native WebGPU host — MC variance note recorded at SPP=${SPP}.`,
     ],
   };
 }
@@ -575,7 +575,7 @@ async function runSun() {
       "primaryLightDir is the surface-to-light vector; the recorded travel direction is included only to document the physical sun ray direction.",
       "Sun proof disables sky, GTAO, denoising, and sun shadow rays; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.",
       "The old left-wall shadow assertion was removed because the shared camera windows hit the visible back-wall receiver, not a shadow-only wall.",
-      "Lavapipe — SPP=16.",
+      `Native WebGPU host — SPP=${SPP}.`,
     ],
   };
 }
@@ -794,7 +794,7 @@ async function runGlossy() {
       "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the probe field; brightness vs Lambertian is scene-direction dependent.",
       "The diffuse control keeps the same baseColor as the metal arm; the measured delta isolates metallic/roughness behavior.",
       "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
-      "Lavapipe SPP=16; metallic-mirror at low SPP has high variance and can legitimately reflect a darker direction than the diffuse control.",
+      `Native WebGPU host SPP=${SPP}; metallic-mirror captures can legitimately reflect a darker direction than the diffuse control.`,
       "FINDING means the material path is live and visibly changes the render, but this capture is a do-not-promote rich-material GI result.",
     ],
   };

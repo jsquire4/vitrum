@@ -265,6 +265,14 @@ partial because GLOSSY remains `FINDING`. The wrapper can still record
 native-Deno hosts can raise the default 180-second wrapper budget with
 `VITRUM_WALKAROUND_AB_TIMEOUT_MS`.
 
+**High-SPP native recaptures (2026-06-22):** `npm run radiometric-ab:walkaround-all-spp64`
+preserves a separate `walkaround-ab-all-spp64.json` / `walkaround-ab-all-spp64-status.json`
+artifact at 128×128×64 SPP for A8, SUN, GLASS, and GLOSSY together. It keeps
+A8 `NEGLIGIBLE`, SUN `PASS`, GLASS `PASS`, and GLOSSY `FINDING`; this strengthens
+the native proof while keeping the row `PASS-PARTIAL`. The older
+`npm run radiometric-ab:walkaround-glossy-spp64` single-case lane remains useful
+for quick focused recapture of the rich-material GI blocker.
+
 The harness now accepts `VITRUM_WALKAROUND_AB_CASES=a8,sun,glass,glossy` to
 rerun a subset of cases while preserving the other committed results. The SUN
 fixture compares a diffuse-only visible directional receiver against

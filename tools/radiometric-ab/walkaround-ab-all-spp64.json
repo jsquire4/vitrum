@@ -1,0 +1,179 @@
+{
+  "a8": {
+    "id": "A8",
+    "description": "GRIS bias quantification: restirPtReuse:false vs true",
+    "spp": 64,
+    "resolution": "128x128",
+    "biased": {
+      "overall": 0.05788909650681037,
+      "floor": 0.040307684863928876,
+      "ceiling": 0.004590226252520527,
+      "leftWall": 0.0053247149321436656,
+      "rightWall": 0.0018109041685678729
+    },
+    "unbiased": {
+      "overall": 0.05783340930911715,
+      "floor": 0.040299708438740624,
+      "ceiling": 0.0045879490415696765,
+      "leftWall": 0.005327195135002763,
+      "rightWall": 0.0018102345029332428
+    },
+    "delta": {
+      "overall": -0.00005568719769322161,
+      "floor": -0.000007976425188252478,
+      "ceiling": -0.0000022772109508507193,
+      "leftWall": 0.0000024802028590975925,
+      "rightWall": -6.696656346301139e-7
+    },
+    "renderTimeSec": 23.6,
+    "verdict": "NEGLIGIBLE",
+    "notes": [
+      "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
+      "Delta is (unbiased - biased). Positive = biased underestimates; negative = biased overestimates.",
+      "Native WebGPU host — MC variance note recorded at SPP=64."
+    ],
+    "qualityProfile": "all-spp64",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 64
+    }
+  },
+  "sun": {
+    "id": "SUN",
+    "description": "Sun-NEE analytic validation: directional-lit diffuse visible receiver vs analytic Lo=I·cosθ·albedo/π",
+    "spp": 64,
+    "resolution": "128x128",
+    "sunTravelDirection": [
+      0,
+      0,
+      -1
+    ],
+    "primaryLightDir": [
+      0,
+      0,
+      1
+    ],
+    "sunIntensity": 0.3,
+    "receiverAlbedo": 0.8,
+    "floorAlbedo": 0.8,
+    "diffuseOnly": true,
+    "cosTheta": 1,
+    "analyticExpectedReceiverLum": 0.07639437268410976,
+    "analyticExpectedFloorLum": 0.07639437268410976,
+    "rendered": {
+      "receiverLum": 0.07635498046875,
+      "sideDiagnosticLum": 0.07635498046875,
+      "floorLum": 0.07635498046875,
+      "leftWallLum": 0.07635498046875,
+      "overall": 0.07635498046875
+    },
+    "receiverRatioToAnalytic": 0.9994843571067382,
+    "floorRatioToAnalytic": 0.9994843571067382,
+    "analyticAgreement": true,
+    "shadowAssertionAuthored": false,
+    "renderTimeSec": 10.8,
+    "verdict": "PASS",
+    "notes": [
+      "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
+      "primaryLightDir is the surface-to-light vector; the recorded travel direction is included only to document the physical sun ray direction.",
+      "Sun proof disables sky, GTAO, denoising, and sun shadow rays; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.",
+      "The old left-wall shadow assertion was removed because the shared camera windows hit the visible back-wall receiver, not a shadow-only wall.",
+      "Native WebGPU host — SPP=64."
+    ],
+    "qualityProfile": "all-spp64",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 64
+    }
+  },
+  "glass": {
+    "id": "GLASS",
+    "description": "Glass-GI: Cornell+glass vs Cornell-no-glass, centre-region luminance ratio",
+    "spp": 64,
+    "resolution": "128x128",
+    "fresnelT_normal_incidence_n1p5": 0.92,
+    "expectedMinCentreRatio": 0.5,
+    "glass": {
+      "centreRegionLum": 2.8515625,
+      "overall": 2.8515625
+    },
+    "noGlass": {
+      "centreRegionLum": 0.15402649173736643,
+      "overall": 0.05828998281747442
+    },
+    "centreRatio": 18.513454846860075,
+    "overallRatio": 48.920283763493345,
+    "delta": {
+      "centreRegionLum": 2.6975360082626336,
+      "overall": 2.7932725171825257
+    },
+    "minSignalDelta": 0.0001,
+    "materialEffectObserved": true,
+    "renderTimeSec": 21.8,
+    "verdict": "PASS",
+    "notes": [
+      "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
+      "Expected centreRatio ≥ 0.50 — conservative for mild Beer tint and low-Spp transport.",
+      "The glass pane is camera-side of the z=1 back wall (z=1.5), so the centre crop actually traverses it.",
+      "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
+      "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone."
+    ],
+    "qualityProfile": "all-spp64",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 64
+    }
+  },
+  "glossy": {
+    "id": "GLOSSY",
+    "description": "B2 metallic probe: metalness=1,rough=0.05 vs metalness=0,rough=1 visible wall",
+    "spp": 64,
+    "resolution": "128x128",
+    "sampleRegion": "visible-back-wall-center-crop",
+    "metal": {
+      "sampleRegionLum": 0.0002506891157390779,
+      "floorLum": 0.0002506891157390779,
+      "overall": 0.000542950289844163
+    },
+    "diffuse": {
+      "sampleRegionLum": 0.1719142097656825,
+      "floorLum": 0.1719142097656825,
+      "overall": 0.06168879726226249
+    },
+    "sampleRatio": 0.0014582221916429414,
+    "floorRatio": 0.0014582221916429414,
+    "delta": {
+      "sampleRegionLum": -0.17166352064994342,
+      "floorLum": -0.17166352064994342,
+      "overall": -0.06114584697241833
+    },
+    "expectedMinSampleRatio": 0.8,
+    "expectedMinFloorRatio": 0.8,
+    "minSignalDelta": 0.0001,
+    "materialEffectObserved": true,
+    "promotion": {
+      "defaultReady": false,
+      "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
+      "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
+    },
+    "renderTimeSec": 19,
+    "verdict": "FINDING",
+    "notes": [
+      "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
+      "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the probe field; brightness vs Lambertian is scene-direction dependent.",
+      "The diffuse control keeps the same baseColor as the metal arm; the measured delta isolates metallic/roughness behavior.",
+      "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
+      "Native WebGPU host SPP=64; metallic-mirror captures can legitimately reflect a darker direction than the diffuse control.",
+      "FINDING means the material path is live and visibly changes the render, but this capture is a do-not-promote rich-material GI result."
+    ],
+    "qualityProfile": "all-spp64",
+    "renderConfig": {
+      "width": 128,
+      "height": 128,
+      "spp": 64
+    }
+  }
+}
