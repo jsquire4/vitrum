@@ -137,6 +137,9 @@ const EXPECTATION_TABLE = {
   "pt/mutation-add-primitive": { expected: "ok" },
   "pt/mutation-remove-primitive": { expected: "ok" },
   "pt/cwbvh-binary-parity": { expected: "ok" },
+  "pt/cwbvh-broader-material-lobes": { expected: "ok" },
+  "pt/cwbvh-broader-material-lobe-maps": { expected: "ok" },
+  "pt/cwbvh-broader-gltf-material-sweep": { expected: "ok" },
 
   // walkaround configs
   "wh/default":           { expected: "ok" },
@@ -234,6 +237,11 @@ const PT_FOCUSED_CONFIGS = [
   // by its own focused proof status rather than the default lavapipe sweep.
   { label: "pt/cwbvh-binary-parity", eng: {},                                   scene: { cwbvhBinaryParity: true, ptSmokeLight: "rect" } },
   { label: "pt/cwbvh-complex-parity", eng: {},                                  scene: { cwbvhBinaryParity: true, cwbvhComplex: true } },
+  // Default-promotion evidence lane: same-scene binary-vs-CWBVH parity and timing
+  // on richer material/glTF workloads, without implying CWBVH should be default.
+  { label: "pt/cwbvh-broader-material-lobes", eng: {},                           scene: { cwbvhBinaryParity: true, materialLobes: true } },
+  { label: "pt/cwbvh-broader-material-lobe-maps", eng: {},                       scene: { cwbvhBinaryParity: true, materialLobeMaps: true } },
+  { label: "pt/cwbvh-broader-gltf-material-sweep", eng: {},                      scene: { cwbvhBinaryParity: true, gltf: "material-sweep" } },
 ];
 
 const WH_CONFIGS = [

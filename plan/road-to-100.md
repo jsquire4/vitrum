@@ -2158,9 +2158,12 @@ contract-complete to contract-complete plus SOTA throughput/convergence.
    (`complex binaryMs=5911.334`, `complex cwbvhMs=5738.875`,
    `complex ratio=0.971`, `complex binaryScene=373464`, `memDelta=0`,
    `sceneDelta=0`) in the checked-in status artifact. 2026-06-21 dzn shards
-   now also prove exact full-tier parity on both CWBVH lanes, but record slower
-   CWBVH timing on that adapter (`ratio=1.312` simple, `ratio=1.340` complex).
-   Remaining work is browser/real-adapter default-promotion throughput evidence.
+   prove exact full-tier parity on both original CWBVH lanes, and the
+   2026-06-22 broader dzn shard proves exact parity on material-lobes,
+   material-lobe maps, and the glTF material sweep. Timing is mixed on dzn:
+   the simple, complex, material-lobe, and glTF-sweep shards are slower under
+   CWBVH, while the material-lobe-map shard is faster. Remaining work is
+   browser/real-adapter default-promotion throughput evidence.
 
 ### Execution dependency
 
@@ -2320,13 +2323,20 @@ were recaptured as separate dzn full-tier shards because the combined shard can
 exceed the WSL/dzn timeout. Both shards pass exact binary-vs-CWBVH readback
 parity with zero GPU errors (`pt/cwbvh-binary-parity`, `pt/cwbvh-complex-parity`),
 but dzn timing is slower for CWBVH (`ratio=1.312` simple, `ratio=1.340`
-complex). `behavioral-gate:dzn-status-check` now preserves that as a checked
-no-default-promotion finding rather than treating parity as speed evidence.
+complex). 2026-06-22 broader-workload follow-up: `pt/cwbvh-broader-material-lobes`,
+`pt/cwbvh-broader-material-lobe-maps`, and `pt/cwbvh-broader-gltf-material-sweep`
+now run as a separate full-tier dzn shard; all three preserve exact
+binary-vs-CWBVH readback parity and positive same-scene timing/memory evidence.
+That timing is mixed (`ratio=1.262` material-lobes, `ratio=0.069`
+material-lobe maps, `ratio=1.096` glTF material sweep), so
+`behavioral-gate:dzn-status-check` preserves the row as opt-in correctness
+evidence rather than default-promotion speed evidence.
 
 **Remaining work:** browser/real-adapter throughput A/B over broader workloads
 before any renderer default promotion. The current artifacts prove opt-in
-same-scene correctness on lavapipe and dzn, with dzn explicitly showing a
-slowdown, so the default remains binary traversal. Becomes decisive if/when a
+same-scene correctness on lavapipe and dzn, with dzn showing mixed timing that
+is still not broad enough for a default flip, so the default remains binary
+traversal. Becomes decisive if/when a
 WebGPU ray-tracing extension ships (whole-field handicap today: no RT cores in
 the browser for anyone).
 

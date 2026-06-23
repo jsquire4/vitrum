@@ -328,6 +328,16 @@
             "summary.failures": 0
           }
         },
+        {
+          "path": "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json",
+          "json": {
+            "verdict": "PASS",
+            "filter": "cwbvh-broader",
+            "goldenVariant": "dzn-full",
+            "summary.failures": 0
+          }
+        },
+        { "path": "tools/behavioral-gate/gate.mjs" },
         { "path": "packages/pt-webgpu/src/index.ts" },
         { "path": "packages/pt-webgpu/src/scene/uploadSceneBuffers.ts" },
         { "path": "packages/pt-webgpu/src/__tests__/cwbvhSceneBuffers.test.ts" },
@@ -337,7 +347,7 @@
         { "path": "packages/shared-bvh/src/__tests__/compressedWideBvh.test.ts" },
         { "path": "packages/shared-bvh/src/__tests__/cwbvhWgsl.test.ts" }
       ],
-      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, and dzn full-tier parity shards. Default promotion is still blocked: committed dzn timing artifacts show CWBVH slower than binary traversal, so browser/real-adapter throughput A/B over broader workloads is still required before making CWBVH the default traversal."
+      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, dzn full-tier simple/complex parity shards, and a broader dzn material/glTF workload shard. Default promotion is still blocked: committed dzn timing artifacts are mixed across broader workloads, with slower simple/complex/material-lobe shards and a faster material-lobe-map shard, so browser/real-adapter throughput A/B over broader workloads is still required before making CWBVH the default traversal."
     },
     {
       "id": "VQ-ADJOINT-SCOPED-PATH-REPLAY",

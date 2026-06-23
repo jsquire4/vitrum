@@ -820,6 +820,8 @@ assertRowCitesPaths(cwbvhRow, [
   "tools/behavioral-gate/behavioral-gate-cwbvh-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
   "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json",
+  "tools/behavioral-gate/gate.mjs",
   "packages/pt-webgpu/src/index.ts",
   "packages/pt-webgpu/src/scene/uploadSceneBuffers.ts",
   "packages/pt-webgpu/src/__tests__/cwbvhSceneBuffers.test.ts",
@@ -832,8 +834,10 @@ assertRowCitesPaths(cwbvhRow, [
 for (const needle of [
   "opt-in CWBVH",
   "renderer binary-vs-CWBVH pixel parity",
+  "broader dzn material/glTF workload shard",
   "Default promotion is still blocked",
-  "dzn timing artifacts show CWBVH slower",
+  "dzn timing artifacts are mixed",
+  "faster material-lobe-map shard",
   "browser/real-adapter throughput A/B",
 ]) {
   if (!String(cwbvhRow.remaining).includes(needle)) {
@@ -881,6 +885,36 @@ for (const status of dznCwbvhStatuses) {
   }
   if (!(Number(config.cwbvhRenderMsRatio) > 1)) {
     fail(`VQ-CWBVH-DEFAULT-PROMOTION ${status.filter} dzn status must preserve the no-default-promotion slowdown finding`);
+  }
+}
+const dznCwbvhBroaderStatus = await readJson("tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json");
+if (
+  dznCwbvhBroaderStatus.verdict !== "PASS" ||
+  dznCwbvhBroaderStatus.filter !== "cwbvh-broader" ||
+  dznCwbvhBroaderStatus.goldenVariant !== "dzn-full" ||
+  dznCwbvhBroaderStatus.summary?.failures !== 0
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION broader dzn status must pin PASS/cwbvh-broader/dzn-full/zero failures");
+}
+const broaderLabels = [
+  "pt/cwbvh-broader-material-lobes",
+  "pt/cwbvh-broader-material-lobe-maps",
+  "pt/cwbvh-broader-gltf-material-sweep",
+];
+if (!Array.isArray(dznCwbvhBroaderStatus.configs) || dznCwbvhBroaderStatus.configs.length !== broaderLabels.length) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION broader dzn status must contain the material/glTF workload set");
+}
+for (const label of broaderLabels) {
+  const config = dznCwbvhBroaderStatus.configs.find((entry) => entry?.label === label);
+  if (config == null) fail(`VQ-CWBVH-DEFAULT-PROMOTION broader dzn status missing ${label}`);
+  if (config.verdict !== "PASS" || config.rawStatus !== "OK" || config.tier !== "full") {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION ${label} must pin a full-tier PASS`);
+  }
+  if (config.cwbvhParityKind !== "binary" || config.cwbvhParityRmse > 1 || config.cwbvhParityMeanAbs > 0.5 || config.cwbvhParityMaxAbs > 8) {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION ${label} must preserve binary-vs-CWBVH parity bounds`);
+  }
+  if (config.cwbvhPerfKind !== "same-scene" || !(Number(config.cwbvhBinaryRenderMs) > 0) || !(Number(config.cwbvhRenderMs) > 0)) {
+    fail(`VQ-CWBVH-DEFAULT-PROMOTION ${label} must preserve same-scene CWBVH timing evidence`);
   }
 }
 
