@@ -163,8 +163,11 @@ export interface MaterialSpec {
 
   // ── Alpha / coverage (glTF alphaMode; distinct from physical transmission) ─
   /** glTF alpha mode. 'opaque' (default) ignores alpha; 'mask' = alpha-test
-   *  against `alphaCutoff`; 'blend' = (order-independent) alpha blending.
-   *  Distinct from `transmission`, which is physical refractive glass. */
+   *  against `alphaCutoff`; 'blend' = fractional coverage. Backends report
+   *  their exact fidelity through `EngineCapabilities.supportDetails.materials`:
+   *  path tracers may use stochastic pass-through, while realtime backends may
+   *  use camera-visible OIT/compositing. Distinct from `transmission`, which is
+   *  physical refractive glass. */
   readonly alphaMode?: 'opaque' | 'mask' | 'blend';
   /** Alpha-test threshold for `alphaMode: 'mask'`. Default 0.5. */
   readonly alphaCutoff?: number;

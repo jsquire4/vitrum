@@ -1629,6 +1629,24 @@ for (const needle of [
 }
 
 const walkaroundConsumedMaterialFields = await readText("packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts");
+const coreMaterialSpec = await readText("packages/core/src/scene/material.ts");
+for (const stalePhrase of [
+  "'blend' = (order-independent) alpha blending",
+  "blend' = (order-independent) alpha blending",
+]) {
+  if (coreMaterialSpec.includes(stalePhrase)) {
+    fail(`MaterialSpec alphaMode contract must not over-promise backend-wide OIT: ${stalePhrase}`);
+  }
+}
+for (const needle of [
+  "'blend' = fractional coverage",
+  "path tracers may use stochastic pass-through",
+  "realtime backends may",
+]) {
+  if (!coreMaterialSpec.includes(needle)) {
+    fail(`MaterialSpec alphaMode contract must retain backend-specific blend semantics: ${needle}`);
+  }
+}
 for (const needle of [
   "baseColorMapCanReduceAlpha(mat.baseColorMap) || mat.alphaMap != null",
   "function baseColorMapCanReduceAlpha",
