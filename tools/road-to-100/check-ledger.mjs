@@ -1061,13 +1061,18 @@ for (const needle of [
   "the importer expands it to one `SkinnedMeshPrimitive` per authored instance",
   "`reject-unsupported` accepts it",
   "`reject-degraded` rejects it as a non-native approximation",
+  "pt-webgpu lite accepts the primitive-constant opaque RGB case by baking the tint into `material.baseColor`",
+  "reports a structured unsupported issue for non-constant colors, alpha-bearing colors, or material-variant scenes",
 ]) {
   if (!gltfReadme.includes(needle)) {
-    fail(`gltf-adapter README must describe instanced skinned/morphed fallback expansion: ${needle}`);
+    fail(`gltf-adapter README must describe current compatibility fallback behavior: ${needle}`);
   }
 }
 if (gltfReadme.includes("imports the skinned/morphed primitive once")) {
   fail("gltf-adapter README must not revive the stale instanced skinned/morphed single-import wording");
+}
+if (gltfReadme.includes("pt-webgpu lite reports a structured unsupported issue. Secondary vertex color sets")) {
+  fail("gltf-adapter README must not revive the stale blanket pt-webgpu-lite COLOR_0 unsupported wording");
 }
 
 const gltfFeatureReport = await readText("packages/gltf-adapter/src/featureReport.ts");
