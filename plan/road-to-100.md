@@ -2353,14 +2353,17 @@ before any renderer default promotion. The explicit capture lane is
 discards warmup samples, applies a 900s dzn shard timeout sized to the committed
 broader CWBVH lane, and writes a per-workload repeat-evidence status plus raw
 repeat records after each completed shard for the default-promotion decision.
-The first Road-required 5-repeat campaign is committed as an interrupted
-artifact: binary/complex warmup shards pass, but the broader material/glTF dzn
-shard currently returns `HOST-BLOCKED` after the configured timeout before any
-post-warmup sample exists, so the repeat status remains
-`classification:"insufficient-samples"` and `promotion.defaultReady:false`.
-The current artifacts prove opt-in same-scene correctness on lavapipe and dzn,
-with dzn showing slower CWBVH timing on the committed promotion shards, so the default remains binary
-traversal. Becomes decisive if/when a
+The first bounded Road repeat campaign is now committed as a completed
+one-sample dzn artifact across all five workloads:
+`pt/cwbvh-binary-parity`, `pt/cwbvh-complex-parity`,
+`pt/cwbvh-broader-material-lobes`, `pt/cwbvh-broader-material-lobe-maps`, and
+`pt/cwbvh-broader-gltf-material-sweep` all finish under the 900s shard timeout
+with exact binary-vs-CWBVH readback parity. The repeat status remains
+`classification:"uniform-slower"` and `promotion.defaultReady:false` because the
+single-sample timing rows are uniformly slower for CWBVH and are not enough for
+default promotion. The current artifacts prove opt-in same-scene correctness on
+lavapipe and dzn, with dzn showing slower CWBVH timing on the committed
+promotion shards, so the default remains binary traversal. Becomes decisive if/when a
 WebGPU ray-tracing extension ships (whole-field handicap today: no RT cores in
 the browser for anyone).
 

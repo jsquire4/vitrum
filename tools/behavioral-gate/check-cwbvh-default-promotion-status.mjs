@@ -49,6 +49,18 @@ function requireFinite(value, label) {
   return n;
 }
 
+/** @param {unknown} value */
+function isCompletedDznRepeatRecord(value) {
+  if (value == null || typeof value !== "object") return false;
+  const record = /** @type {{ phase?: unknown, status?: { verdict?: unknown, goldenVariant?: unknown, timeoutMs?: unknown } }} */ (value);
+  return (
+    record.phase === "sample" &&
+    record.status?.verdict === "PASS" &&
+    record.status?.goldenVariant === "dzn-full" &&
+    record.status?.timeoutMs === 900000
+  );
+}
+
 /** @param {string} source */
 function assertSourceStillOptIn(source) {
   if (!source.includes("opts.bvhTraversal === 'cwbvh-closest-experimental'")) {
@@ -195,31 +207,28 @@ async function assertRepeatCaptureStatus() {
   const records = JSON.parse(await Deno.readTextFile(REPEAT_RECORDS));
   if (
     status.harness !== "cwbvh-default-promotion-repeat-proof" ||
-    status.command !== "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=5 --warmup=1" ||
+    status.command !== "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=1 --warmup=0 --dzn-timeout-ms=900000" ||
     status.recordsPath !== REPEAT_RECORDS ||
     status.verdict !== "PASS-PARTIAL" ||
-    status.campaignStatus !== "interrupted" ||
-    status.classification !== "insufficient-samples" ||
-    status.sampleCountPerWorkload !== 0 ||
-    status.allWorkloadsHaveAnySamples !== false ||
+    status.campaignStatus !== "complete" ||
+    status.classification !== "uniform-slower" ||
+    status.sampleCountPerWorkload !== 1 ||
+    status.dznTimeoutMs !== 900000 ||
+    status.allWorkloadsHaveAnySamples !== true ||
     status.allWorkloadsHaveRequiredRepeats !== false ||
-    status.promotion?.defaultReady !== false ||
-    status.promotion?.blockedBy !== "repeat-campaign-incomplete" ||
-    status.failure?.filter !== "cwbvh-broader" ||
-    status.failure?.statusVerdict !== "HOST-BLOCKED"
+    status.promotion?.defaultReady !== false
   ) {
-    fail(`${REPEAT_STATUS}: must pin the broader dzn HOST-BLOCKED interrupted repeat campaign`);
+    fail(`${REPEAT_STATUS}: must pin the completed one-sample uniform-slower repeat campaign`);
   }
   if (
     records.harness !== "cwbvh-default-promotion-repeat-records" ||
-    records.campaignStatus !== "interrupted" ||
-    records.failure?.filter !== "cwbvh-broader" ||
-    records.failure?.statusVerdict !== "HOST-BLOCKED" ||
+    records.campaignStatus !== "complete" ||
+    records.failure !== null ||
     !Array.isArray(records.records) ||
-    records.records.length < 3 ||
-    !JSON.stringify(records).includes("dzn-behavioral-gate-timeout")
+    records.records.length !== 3 ||
+    !records.records.every(isCompletedDznRepeatRecord)
   ) {
-    fail(`${REPEAT_RECORDS}: must preserve the broader dzn timeout status record`);
+    fail(`${REPEAT_RECORDS}: must preserve the completed one-sample dzn repeat records`);
   }
 }
 

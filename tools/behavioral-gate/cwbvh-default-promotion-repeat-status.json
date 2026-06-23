@@ -1,8 +1,9 @@
 {
-  "generatedAt": "2026-06-23T07:10:35.780Z",
-  "command": "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=5 --warmup=1",
-  "campaignStatus": "interrupted",
-  "requestedRepeatsPerWorkload": 5,
+  "generatedAt": "2026-06-23T08:22:36.369Z",
+  "command": "node tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs --repeats=1 --warmup=0 --dzn-timeout-ms=900000",
+  "campaignStatus": "complete",
+  "requestedRepeatsPerWorkload": 1,
+  "dznTimeoutMs": 900000,
   "recordsPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
   "filters": [
     {
@@ -32,93 +33,87 @@
   "harness": "cwbvh-default-promotion-repeat-proof",
   "verdict": "PASS-PARTIAL",
   "adapterScope": "wsl-dzn-real-adapter",
-  "warmupDiscardedPerWorkload": 1,
-  "sampleCountPerWorkload": 0,
+  "warmupDiscardedPerWorkload": 0,
+  "sampleCountPerWorkload": 1,
   "minRepeatCountPerWorkload": 5,
-  "allWorkloadsHaveAnySamples": false,
+  "allWorkloadsHaveAnySamples": true,
   "allWorkloadsHaveRequiredRepeats": false,
-  "classification": "insufficient-samples",
+  "classification": "uniform-slower",
   "promotion": {
     "defaultReady": false,
-    "requiredEvidence": "multiple warmup-discarded repeats per workload on browser/real-adapter hosts",
-    "blockedBy": "repeat-campaign-incomplete"
+    "requiredEvidence": "multiple warmup-discarded repeats per workload on browser/real-adapter hosts"
   },
   "workloads": [
     {
       "label": "pt/cwbvh-binary-parity",
       "totalRunCount": 1,
-      "sampleCount": 0,
-      "ratios": [],
-      "minRatio": null,
-      "medianRatio": null,
-      "meanRatio": null,
-      "maxRatio": null,
+      "sampleCount": 1,
+      "ratios": [
+        1.232
+      ],
+      "minRatio": 1.232,
+      "medianRatio": 1.232,
+      "meanRatio": 1.232,
+      "maxRatio": 1.232,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 0
+      "slowOrNeutralSampleCount": 1
     },
     {
       "label": "pt/cwbvh-complex-parity",
       "totalRunCount": 1,
-      "sampleCount": 0,
-      "ratios": [],
-      "minRatio": null,
-      "medianRatio": null,
-      "meanRatio": null,
-      "maxRatio": null,
+      "sampleCount": 1,
+      "ratios": [
+        1.261
+      ],
+      "minRatio": 1.261,
+      "medianRatio": 1.261,
+      "meanRatio": 1.261,
+      "maxRatio": 1.261,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 0
+      "slowOrNeutralSampleCount": 1
     },
     {
       "label": "pt/cwbvh-broader-material-lobes",
-      "totalRunCount": 0,
-      "sampleCount": 0,
-      "ratios": [],
-      "minRatio": null,
-      "medianRatio": null,
-      "meanRatio": null,
-      "maxRatio": null,
+      "totalRunCount": 1,
+      "sampleCount": 1,
+      "ratios": [
+        1.266
+      ],
+      "minRatio": 1.266,
+      "medianRatio": 1.266,
+      "meanRatio": 1.266,
+      "maxRatio": 1.266,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 0
+      "slowOrNeutralSampleCount": 1
     },
     {
       "label": "pt/cwbvh-broader-material-lobe-maps",
-      "totalRunCount": 0,
-      "sampleCount": 0,
-      "ratios": [],
-      "minRatio": null,
-      "medianRatio": null,
-      "meanRatio": null,
-      "maxRatio": null,
+      "totalRunCount": 1,
+      "sampleCount": 1,
+      "ratios": [
+        1.291
+      ],
+      "minRatio": 1.291,
+      "medianRatio": 1.291,
+      "meanRatio": 1.291,
+      "maxRatio": 1.291,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 0
+      "slowOrNeutralSampleCount": 1
     },
     {
       "label": "pt/cwbvh-broader-gltf-material-sweep",
-      "totalRunCount": 0,
-      "sampleCount": 0,
-      "ratios": [],
-      "minRatio": null,
-      "medianRatio": null,
-      "meanRatio": null,
-      "maxRatio": null,
+      "totalRunCount": 1,
+      "sampleCount": 1,
+      "ratios": [
+        1.094
+      ],
+      "minRatio": 1.094,
+      "medianRatio": 1.094,
+      "meanRatio": 1.094,
+      "maxRatio": 1.094,
       "fastSampleCount": 0,
-      "slowOrNeutralSampleCount": 0
+      "slowOrNeutralSampleCount": 1
     }
   ],
-  "failures": [
-    {
-      "runIndex": 0,
-      "filter": "cwbvh-broader",
-      "reason": "status-not-pass"
-    }
-  ],
-  "failure": {
-    "runIndex": 0,
-    "phase": "warmup",
-    "filter": "cwbvh-broader",
-    "command": "npm run behavioral-gate:dzn -- --filter cwbvh-broader --require-full-tier",
-    "exitStatus": 2,
-    "signal": null,
-    "statusVerdict": "HOST-BLOCKED"
-  }
+  "failures": []
 }
