@@ -25,7 +25,7 @@
       "leftWall": 0.0000024802028590975925,
       "rightWall": -6.696656346301139e-7
     },
-    "renderTimeSec": 21,
+    "renderTimeSec": 23.5,
     "verdict": "NEGLIGIBLE",
     "notes": [
       "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
@@ -72,7 +72,7 @@
     "floorRatioToAnalytic": 0.9994843571067382,
     "analyticAgreement": true,
     "shadowAssertionAuthored": false,
-    "renderTimeSec": 9.3,
+    "renderTimeSec": 9.7,
     "verdict": "PASS",
     "notes": [
       "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
@@ -114,7 +114,7 @@
     "minSignalDelta": 0.0001,
     "materialEffectObserved": true,
     "ratioWithinPromotionBounds": true,
-    "renderTimeSec": 19.5,
+    "renderTimeSec": 20.9,
     "verdict": "PASS",
     "notes": [
       "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
@@ -163,7 +163,7 @@
       "blocker": "ddgi-irradiance-cache-not-ggx-filtered-radiance",
       "requiredEvidence": "material-furnace-reference-ab-and-browser-real-adapter-recapture"
     },
-    "renderTimeSec": 18.5,
+    "renderTimeSec": 19.1,
     "verdict": "FINDING",
     "notes": [
       "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
