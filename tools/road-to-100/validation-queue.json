@@ -127,6 +127,10 @@
       "status": "host-blocked",
       "command": "npm run gltf-browser-proof-check",
       "promotionCommand": "npm run gltf-browser-proof-check:required",
+      "executionScope": "external-browser-host",
+      "blockedBy": "WSL Playwright cannot return required real-glTF engine and browser canvas pixels.",
+      "nextLocalAction": "None unless the capture harness changes; current engine-first and canvas-first WSL statuses are fail-closed HOST-BLOCKED.",
+      "rerunPolicy": "Do not rerun the required promotion command on WSL; run it on a browser/WebGL2 host that can return real asset pixels.",
       "proofArtifacts": [
         { "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json", "json": { "verdict": "HOST-BLOCKED", "captureMode": "engine-first", "hostBlockClasses.0": "engine-readback-timeout" } },
         { "path": "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json", "json": { "verdict": "HOST-BLOCKED", "captureMode": "canvas-first", "hostBlockClasses.0": "browser-canvas-readback-timeout", "assetCount": 3 } },
@@ -141,6 +145,10 @@
       "workClass": "research-promotion",
       "status": "partial-proof-green",
       "command": "npm run radiometric-ab:proof-check",
+      "executionScope": "research-design-and-real-adapter-validation",
+      "blockedBy": "Multi-vertex BDPT remains an additive research sidecar not weighted against the regular eye-path strategy; Sobol default still needs real-adapter equal-time RMSE A/B.",
+      "nextLocalAction": "Implement a redesigned multi-vertex BDPT estimator only as a dedicated research wave; otherwise keep the explicit research fence and proof checks green.",
+      "rerunPolicy": "Do not rerun committed radiometric snapshots unless estimator/render code changes or a real-adapter Sobol/caustic/material-furnace campaign is available.",
       "proofArtifacts": [
         { "path": "tools/radiometric-ab/pt-ab-host-status.json", "json": { "verdict": "PASS" } },
         { "path": "tools/radiometric-ab/ab-sppm.mjs" },
@@ -213,6 +221,10 @@
       "command": "npm run radiometric-ab:walkaround",
       "promotionCommand": "npm run radiometric-ab:walkaround-glossy-spp64",
       "allCasesHighSppCommand": "npm run radiometric-ab:walkaround-all-spp64",
+      "executionScope": "external-real-adapter-validation",
+      "blockedBy": "Current WSL lavapipe 64-SPP proof pins bounded glass PASS and glossy rich-material GI as a non-promotable FINDING.",
+      "nextLocalAction": "None unless walkaround render code changes or a new local material-furnace oracle is added.",
+      "rerunPolicy": "Do not rerun the WSL 64-SPP lanes just for a new timestamp; rerun after render-changing code or on browser/real-adapter reference hosts.",
       "proofArtifacts": [
         { "path": "tools/radiometric-ab/check-results.mjs" },
         { "path": "tools/radiometric-ab/proofs.mjs" },
@@ -314,6 +326,10 @@
       "kind": "validation",
       "status": "partial-proof-green",
       "command": "npm run renderer-fidelity-proof-check",
+      "executionScope": "external-browser-host",
+      "blockedBy": "pt-webgl2 browser real-glTF proof remains HOST-BLOCKED, so native pt-webgl2 promotion cannot be claimed.",
+      "nextLocalAction": "Keep source/oracle proof green; no local promotion run is meaningful until browser capture returns pixels.",
+      "rerunPolicy": "Run renderer-fidelity-proof-check after proof metadata changes; run browser promotion only on a readback-capable browser host.",
       "proofArtifacts": [
         { "path": "tools/renderer-fidelity-proof/check-proofs.mjs" },
         {
@@ -387,6 +403,10 @@
       "status": "partial-proof-green",
       "command": "npm run cwbvh-gpu-proof-check",
       "promotionCommand": "npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 --dzn-timeout-ms=900000",
+      "executionScope": "external-real-adapter-throughput",
+      "blockedBy": "Committed WSL dzn five-sample warmup-discarded campaign completed but classified CWBVH as uniform-slower.",
+      "nextLocalAction": "None unless CWBVH traversal/performance code changes.",
+      "rerunPolicy": "Do not rerun the long WSL repeat campaign for a fresh timestamp; next promotion evidence must be browser/real-adapter throughput A/B or post-code-change repeats.",
       "proofArtifacts": [
         { "path": "tools/behavioral-gate/check-cwbvh-parity-status.mjs" },
         { "path": "tools/behavioral-gate/check-cwbvh-renderer-parity-status.mjs" },
@@ -516,6 +536,10 @@
       "kind": "provisioning",
       "status": "provisioning-needed",
       "command": "npm run learned-systems-proof-check",
+      "executionScope": "asset-provisioning-and-quality-ab",
+      "blockedBy": "No production neural checkpoint or passing NRC/GRIS/PPG/neural quality manifests are provisioned.",
+      "nextLocalAction": "Keep validators and runtime truthfulness guards green; provisioning requires real checkpoint/training/quality artifacts.",
+      "rerunPolicy": "Run learned-systems-status only after checkpoint or quality-manifest artifacts change.",
       "proofArtifacts": [
         { "path": "tools/learned-systems/check-status.mjs" },
         { "path": "tools/learned-systems/qualityManifestValidator.mjs" },

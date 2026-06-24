@@ -86,6 +86,10 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
         command: 'npm run proof',
         promotionCommand: 'npm run proof:required',
         allCasesHighSppCommand: 'npm run proof:all-spp64',
+        executionScope: 'external-browser-host',
+        blockedBy: 'browser readback is unavailable on this host',
+        nextLocalAction: 'none until the browser host changes',
+        rerunPolicy: 'do not rerun required proof on WSL',
         remaining: 'needs browser host',
       },
       {
@@ -130,6 +134,10 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
   assert.match(text, /command: npm run proof/);
   assert.match(text, /allCasesHighSppCommand: npm run proof:all-spp64/);
   assert.match(text, /promotionCommand: npm run proof:required/);
+  assert.match(text, /executionScope: external-browser-host/);
+  assert.match(text, /blockedBy: browser readback is unavailable on this host/);
+  assert.match(text, /nextLocalAction: none until the browser host changes/);
+  assert.match(text, /rerunPolicy: do not rerun required proof on WSL/);
   assert.match(text, /remaining: needs browser host/);
   assert.match(text, /researchPromotionWork: 1/);
   assert.match(text, /VQ-RESEARCH: research promotion \[partial-proof-green\]/);

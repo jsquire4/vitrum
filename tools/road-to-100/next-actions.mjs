@@ -36,6 +36,10 @@ const RESEARCH_PROMOTION_CLASSES = new Set(["research-promotion"]);
  *   command?: string,
  *   promotionCommand?: string,
  *   allCasesHighSppCommand?: string,
+ *   executionScope?: string,
+ *   blockedBy?: string,
+ *   nextLocalAction?: string,
+ *   rerunPolicy?: string,
  *   proofArtifacts?: ProofArtifact[],
  *   currentContract?: string,
  *   decisionBlockers?: string[]
@@ -202,6 +206,10 @@ function formatRowDetails(row) {
   const lines = [`  - ${row.id}: ${row.title ?? "(untitled)"} [${row.status}]`];
   if (row.kind) lines.push(`    kind: ${row.kind}`);
   if (row.workClass) lines.push(`    workClass: ${row.workClass}`);
+  if (row.executionScope) lines.push(`    executionScope: ${row.executionScope}`);
+  if (row.blockedBy) lines.push(`    blockedBy: ${row.blockedBy}`);
+  if (row.nextLocalAction) lines.push(`    nextLocalAction: ${row.nextLocalAction}`);
+  if (row.rerunPolicy) lines.push(`    rerunPolicy: ${row.rerunPolicy}`);
   if (row.command) lines.push(`    command: ${row.command}`);
   for (const [key, value] of Object.entries(row).sort(([a], [b]) => a.localeCompare(b))) {
     if (key === "command" || !key.endsWith("Command") || value == null) continue;
