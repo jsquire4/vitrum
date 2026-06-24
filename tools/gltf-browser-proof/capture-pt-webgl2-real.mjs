@@ -462,7 +462,6 @@ async function captureCanvasPng(page) {
   const canvas = page.locator('canvas').first();
   const timeout = Math.max(1000, Math.min(timeoutMs, screenshotTimeoutMs));
   let engineError = null;
-  let dataUrlError = null;
   lastCaptureAttempts = [];
   if (engineCaptureMode === 'engine-first') {
     try {
@@ -490,15 +489,6 @@ async function captureCanvasPng(page) {
     ? await pauseExampleRenderingForCanvasCapture(page, timeout)
     : false;
   try {
-    if (engineCaptureMode === 'canvas-first') {
-      try {
-        captureStep = 'canvas-data-url';
-        return await captureAttempt('canvas-data-url', () => captureCanvasDataUrlPng(page, engineError, null, null));
-      } catch (error) {
-        dataUrlError = error;
-      }
-    }
-
     let clipError = null;
     try {
       captureStep = 'page-canvas-clip-screenshot';
@@ -531,11 +521,6 @@ async function captureCanvasPng(page) {
       } catch (fallbackEngineError) {
         engineError = fallbackEngineError;
       }
-    }
-
-    if (dataUrlError != null) {
-      captureStep = 'canvas-data-url';
-      throw dataUrlError;
     }
 
     try {
