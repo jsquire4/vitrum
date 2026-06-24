@@ -82,6 +82,14 @@ function productionQualityRequirements() {
   };
 }
 
+function learnedPromotionQualityRequirements() {
+  return {
+    nrc: { manifestPath: "tools/learned-systems/nrc-quality-convergence.json", requiredVerdict: "PASS", requiredMode: "nrc-quality-convergence", requiresQualityComparison: true, requiresConvergenceComparison: true, requiresDefaultTierDecision: true, requiresHardware: true, requiresGeneratedAt: true, requiresArtifacts: true, requiresArtifactFiles: true, requiresBiasedEstimatorDisclosure: true },
+    gris: { manifestPath: "tools/learned-systems/gris-unbiasedness-ab.json", requiredVerdict: "PASS", requiredMode: "gris-unbiasedness-ab", requiresUnbiasednessAB: true, requiresBiasedDefaultErrorQuantification: true, requiresReferenceEstimator: true, requiresHardware: true, requiresGeneratedAt: true, requiresArtifacts: true, requiresArtifactFiles: true },
+    ppg: { manifestPath: "tools/learned-systems/ppg-favorable-scene-ab.json", requiredVerdict: "PASS", requiredMode: "ppg-favorable-scene-ab", requiresFavorableSceneAB: true, requiresConvergenceComparison: true, requiresInstabilityChecks: true, requiresHardware: true, requiresGeneratedAt: true, requiresArtifacts: true, requiresArtifactFiles: true },
+  };
+}
+
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -324,6 +332,7 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
   if (!WRITE_STATUS) return;
   const productionCheckpoint = checkpointManifest.productionCheckpoint ?? null;
   const hasProductionCheckpoint = productionCheckpoint !== null && productionCount > 0;
+  const learnedRequirements = learnedPromotionQualityRequirements();
   const status = {
     schema: "vitrum.learned-systems.status.v1",
     generatedAt: new Date().toISOString(),
@@ -353,6 +362,8 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
       defaultEnabled: false,
       estimator: "biased",
       productionDefaultEligible: false,
+      qualityManifest: null,
+      qualityManifestRequirements: learnedRequirements.nrc,
       remaining:
         "Run quality/convergence A/B and make a default-tier decision before promoting NRC beyond opt-in.",
     },
@@ -361,11 +372,16 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
       optInFlag: "restirPtReuse",
       estimator: "unbiased-when-enabled",
       productionDefaultEligible: false,
+      qualityManifest: null,
+      qualityManifestRequirements: learnedRequirements.gris,
       remaining:
         "Run GRIS-on unbiasedness A/B and biased-default error quantification before any default-tier promotion.",
     },
     ppg: {
       defaultEnabled: false,
+      productionDefaultEligible: false,
+      qualityManifest: null,
+      qualityManifestRequirements: learnedRequirements.ppg,
       remaining:
         "Run favorable-scene A/B and convergence/instability checks before production promotion.",
     },
@@ -446,7 +462,37 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
     fail(`${STATUS_PATH} must pin non-production neural supportDetails as approximate`);
   }
   if (runtimePolicy.requiredMetadataContract !== "NeuralCheckpointMetadata") {
-    fail(`${STATUS_PATH} must cite NeuralCheckpointMetadata as the production contract`);
+    fail(STATUS_PATH + " must cite NeuralCheckpointMetadata as the production contract");
+  }
+
+  const learnedRequirements = learnedPromotionQualityRequirements();
+  for (const [key, expectedRequirements] of Object.entries(learnedRequirements)) {
+    const section = record[key];
+    if (section == null || typeof section !== "object") {
+      fail(STATUS_PATH + " " + key + " must be an object");
+    }
+    const sectionRecord = /** @type {Record<string, any>} */ (section);
+    if (sectionRecord.defaultEnabled !== false) {
+      fail(STATUS_PATH + " " + key + ".defaultEnabled must be false");
+    }
+    if (sectionRecord.productionDefaultEligible !== false) {
+      fail(STATUS_PATH + " " + key + ".productionDefaultEligible must be false");
+    }
+    if (sectionRecord.qualityManifest !== null) {
+      fail(STATUS_PATH + " " + key + ".qualityManifest must remain null until proof exists");
+    }
+    if (JSON.stringify(sectionRecord.qualityManifestRequirements) !== JSON.stringify(expectedRequirements)) {
+      fail(STATUS_PATH + " " + key + ".qualityManifestRequirements must match the learned-system promotion evidence contract");
+    }
+  }
+  if (record.nrc?.estimator !== "biased") {
+    fail(STATUS_PATH + " nrc.estimator must be biased");
+  }
+  if (record.gris?.optInFlag !== "restirPtReuse") {
+    fail(STATUS_PATH + " gris.optInFlag must be restirPtReuse");
+  }
+  if (record.gris?.estimator !== "unbiased-when-enabled") {
+    fail(STATUS_PATH + " gris.estimator must be unbiased-when-enabled");
   }
 }
 

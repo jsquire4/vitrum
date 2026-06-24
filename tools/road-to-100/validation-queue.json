@@ -540,8 +540,19 @@
             "neuralDenoiser.qualityManifestRequirements.requiresCheckpointIdentity": true,
             "nrc.defaultEnabled": false,
             "nrc.productionDefaultEligible": false,
+            "nrc.qualityManifest": null,
+            "nrc.qualityManifestRequirements.manifestPath": "tools/learned-systems/nrc-quality-convergence.json",
+            "nrc.qualityManifestRequirements.requiresDefaultTierDecision": true,
             "gris.defaultEnabled": false,
-            "gris.productionDefaultEligible": false
+            "gris.productionDefaultEligible": false,
+            "gris.qualityManifest": null,
+            "gris.qualityManifestRequirements.manifestPath": "tools/learned-systems/gris-unbiasedness-ab.json",
+            "gris.qualityManifestRequirements.requiresUnbiasednessAB": true,
+            "ppg.defaultEnabled": false,
+            "ppg.productionDefaultEligible": false,
+            "ppg.qualityManifest": null,
+            "ppg.qualityManifestRequirements.manifestPath": "tools/learned-systems/ppg-favorable-scene-ab.json",
+            "ppg.qualityManifestRequirements.requiresFavorableSceneAB": true
           }
         },
         { "path": "tools/neural-denoiser-training/checkpoints/manifest.json" },

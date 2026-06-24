@@ -1,6 +1,6 @@
 {
   "schema": "vitrum.learned-systems.status.v1",
-  "generatedAt": "2026-06-24T17:48:39.193Z",
+  "generatedAt": "2026-06-24T18:51:48.716Z",
   "verdict": "PASS",
   "productionPosture": "provisioning-needed",
   "neuralDenoiser": {
@@ -41,6 +41,20 @@
     "defaultEnabled": false,
     "estimator": "biased",
     "productionDefaultEligible": false,
+    "qualityManifest": null,
+    "qualityManifestRequirements": {
+      "manifestPath": "tools/learned-systems/nrc-quality-convergence.json",
+      "requiredVerdict": "PASS",
+      "requiredMode": "nrc-quality-convergence",
+      "requiresQualityComparison": true,
+      "requiresConvergenceComparison": true,
+      "requiresDefaultTierDecision": true,
+      "requiresHardware": true,
+      "requiresGeneratedAt": true,
+      "requiresArtifacts": true,
+      "requiresArtifactFiles": true,
+      "requiresBiasedEstimatorDisclosure": true
+    },
     "remaining": "Run quality/convergence A/B and make a default-tier decision before promoting NRC beyond opt-in."
   },
   "gris": {
@@ -48,10 +62,37 @@
     "optInFlag": "restirPtReuse",
     "estimator": "unbiased-when-enabled",
     "productionDefaultEligible": false,
+    "qualityManifest": null,
+    "qualityManifestRequirements": {
+      "manifestPath": "tools/learned-systems/gris-unbiasedness-ab.json",
+      "requiredVerdict": "PASS",
+      "requiredMode": "gris-unbiasedness-ab",
+      "requiresUnbiasednessAB": true,
+      "requiresBiasedDefaultErrorQuantification": true,
+      "requiresReferenceEstimator": true,
+      "requiresHardware": true,
+      "requiresGeneratedAt": true,
+      "requiresArtifacts": true,
+      "requiresArtifactFiles": true
+    },
     "remaining": "Run GRIS-on unbiasedness A/B and biased-default error quantification before any default-tier promotion."
   },
   "ppg": {
     "defaultEnabled": false,
+    "productionDefaultEligible": false,
+    "qualityManifest": null,
+    "qualityManifestRequirements": {
+      "manifestPath": "tools/learned-systems/ppg-favorable-scene-ab.json",
+      "requiredVerdict": "PASS",
+      "requiredMode": "ppg-favorable-scene-ab",
+      "requiresFavorableSceneAB": true,
+      "requiresConvergenceComparison": true,
+      "requiresInstabilityChecks": true,
+      "requiresHardware": true,
+      "requiresGeneratedAt": true,
+      "requiresArtifacts": true,
+      "requiresArtifactFiles": true
+    },
     "remaining": "Run favorable-scene A/B and convergence/instability checks before production promotion."
   },
   "guardrails": [
