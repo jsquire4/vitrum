@@ -1199,7 +1199,7 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 
 #### 2B — Material packing gaps → ledger `native`
 
-**pt-webgl2** (`materialsTexture.ts` + GLSL): scalar `anisotropy` / `anisotropyRotation` plus `anisotropyMap` are now native; `thicknessMap` is approximate via a KHR volume thickness-texture clamp; `displacement*` remains unsupported.
+**pt-webgl2** (`materialsTexture.ts` + GLSL): scalar `anisotropy` / `anisotropyRotation` plus `anisotropyMap` are now native; `thicknessMap` is approximate via a KHR volume thickness-texture clamp; `displacement*` is approximate shared-BVH vertex displacement for CPU-readable handles, with no tessellation or microdisplacement.
 
 | Field | Work |
 |-------|------|
