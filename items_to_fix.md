@@ -178,7 +178,7 @@ For posterity, the following items were on the previous version of this list, so
 - `Material.anisotropy` missing from contract (`@vitrum/core/scene.ts:321,332` declares it; `convertMaterial()` reads it at `three-bindings/src/material.ts:107-110`)
 - `HybridEngine.setSize` missing (exists at `HybridEngine.ts:882`)
 - `HybridEngine.updateLighting` missing (exists at `HybridEngine.ts:813`)
-- `SURFACE_TEXTURE_ID` table not exported (now exported from `@vitrum/walkaround-hybrid`; verified via stainedGlass importing it at `packages/stained-glass-physics/src/baking/surfaceTextureIds.ts:17`)
+- `SURFACE_TEXTURE_ID` table not exported (now exported from `@vitrum/stained-glass-extensions` via `packages/stained-glass-extensions/src/index.ts`; pinned by `packages/stained-glass-extensions/__tests__/stainedGlassExtensions.test.ts` and the walkaround wire-contract test at `packages/walkaround-hybrid/__tests__/surfaceTextureIds.test.ts`)
 
 This section exists to prevent re-introduction. If a future audit doc claims one of these is open, the auditor should open the cited file before relaying.
 
