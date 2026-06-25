@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
@@ -151,4 +152,48 @@ test('road-to-100 next-actions details include commands, remaining work, and fut
   assert.match(text, /decisionBlockers:/);
   assert.match(text, /\* define contract/);
   assert.match(text, /\* add backend grades/);
+});
+
+test('committed road unresolved rows carry enforced execution metadata', async () => {
+  const [queueRaw, checkerSource] = await Promise.all([
+    readFile(new URL('../../tools/road-to-100/validation-queue.json', import.meta.url), 'utf8'),
+    readFile(new URL('../../tools/road-to-100/check-validation-queue.mjs', import.meta.url), 'utf8'),
+  ]);
+  const queue = JSON.parse(queueRaw);
+  const unresolvedStatuses = new Set([
+    'partial-proof-green',
+    'host-blocked',
+    'evidence-needed',
+    'provisioning-needed',
+    'decision-needed',
+  ]);
+  const allowedScopes = new Set([
+    'external-browser-host',
+    'external-real-adapter-validation',
+    'external-real-adapter-throughput',
+    'research-design-and-real-adapter-validation',
+    'asset-provisioning-and-quality-ab',
+  ]);
+  const unresolvedRows = queue.validationQueue.filter((row) => unresolvedStatuses.has(row.status));
+  assert.deepEqual(unresolvedRows.map((row) => row.id), [
+    'VQ-GLTF-BROWSER-PTWEBGL2',
+    'VQ-RADIOMETRIC-PT',
+    'VQ-WALKAROUND-RADIOMETRIC-AB',
+    'VQ-RENDERER-FIDELITY-PROOF',
+    'VQ-CWBVH-DEFAULT-PROMOTION',
+    'VQ-LEARNED-SYSTEMS',
+  ]);
+  for (const row of unresolvedRows) {
+    assert.ok(allowedScopes.has(row.executionScope), row.id + ' executionScope should be classified');
+    assert.equal(typeof row.blockedBy, 'string', row.id + ' blockedBy should be present');
+    assert.ok(row.blockedBy.length > 20, row.id + ' blockedBy should explain the blocker');
+    assert.equal(typeof row.nextLocalAction, 'string', row.id + ' nextLocalAction should be present');
+    assert.ok(row.nextLocalAction.length > 10, row.id + ' nextLocalAction should guide local work');
+    assert.equal(typeof row.rerunPolicy, 'string', row.id + ' rerunPolicy should be present');
+    assert.match(row.rerunPolicy, /rerun/i, row.id + ' rerunPolicy should say when to rerun');
+  }
+  assert.match(checkerSource, /UNRESOLVED_VALIDATION_STATUSES/);
+  assert.match(checkerSource, /ALLOWED_EXECUTION_SCOPES/);
+  assert.match(checkerSource, /function assertUnresolvedExecutionMetadata/);
+  assert.match(checkerSource, /assertUnresolvedExecutionMetadata\(row\)/);
 });

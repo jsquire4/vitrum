@@ -329,7 +329,7 @@
       "executionScope": "external-browser-host",
       "blockedBy": "pt-webgl2 browser real-glTF proof remains HOST-BLOCKED, so native pt-webgl2 promotion cannot be claimed.",
       "nextLocalAction": "Keep source/oracle proof green; no local promotion run is meaningful until browser capture returns pixels.",
-      "rerunPolicy": "Run renderer-fidelity-proof-check after proof metadata changes; run browser promotion only on a readback-capable browser host.",
+      "rerunPolicy": "Rerun renderer-fidelity-proof-check after proof metadata changes; run browser promotion only on a readback-capable browser host.",
       "proofArtifacts": [
         { "path": "tools/renderer-fidelity-proof/check-proofs.mjs" },
         {
@@ -539,7 +539,7 @@
       "executionScope": "asset-provisioning-and-quality-ab",
       "blockedBy": "No production neural checkpoint or passing NRC/GRIS/PPG/neural quality manifests are provisioned.",
       "nextLocalAction": "Keep validators and runtime truthfulness guards green; provisioning requires real checkpoint/training/quality artifacts.",
-      "rerunPolicy": "Run learned-systems-status only after checkpoint or quality-manifest artifacts change.",
+      "rerunPolicy": "Rerun learned-systems-status only after checkpoint or quality-manifest artifacts change.",
       "proofArtifacts": [
         { "path": "tools/learned-systems/check-status.mjs" },
         { "path": "tools/learned-systems/qualityManifestValidator.mjs" },

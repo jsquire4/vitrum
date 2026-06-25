@@ -20,6 +20,22 @@ const ALLOWED_STATUSES = new Set([
   "future-contract",
 ]);
 
+const UNRESOLVED_VALIDATION_STATUSES = new Set([
+  "partial-proof-green",
+  "host-blocked",
+  "evidence-needed",
+  "provisioning-needed",
+  "decision-needed",
+]);
+
+const ALLOWED_EXECUTION_SCOPES = new Set([
+  "external-browser-host",
+  "external-real-adapter-validation",
+  "external-real-adapter-throughput",
+  "research-design-and-real-adapter-validation",
+  "asset-provisioning-and-quality-ab",
+]);
+
 const REQUIRED_VALIDATION_IDS = [
   "VQ-PT-WEBGPU-RUNTIME-GOLDENS",
   "VQ-WALKAROUND-BEHAVIORAL-MATRIX",
@@ -422,6 +438,34 @@ function assertCommandScriptsExist(command, scripts) {
 }
 
 /**
+ * @param {{ id?: unknown, status?: unknown, executionScope?: unknown, blockedBy?: unknown, nextLocalAction?: unknown, rerunPolicy?: unknown }} row
+ */
+function assertUnresolvedExecutionMetadata(row) {
+  const id = String(row.id ?? "validation row");
+  const status = String(row.status ?? "");
+  const allowedScopes = Array.from(ALLOWED_EXECUTION_SCOPES).join(", ");
+  if (!UNRESOLVED_VALIDATION_STATUSES.has(status)) {
+    if (row.executionScope != null) {
+      assertNonEmptyString(row.executionScope, id + ": executionScope");
+      if (!ALLOWED_EXECUTION_SCOPES.has(String(row.executionScope))) {
+        fail(id + ": executionScope must be one of " + allowedScopes);
+      }
+    }
+    return;
+  }
+  assertNonEmptyString(row.executionScope, id + ": executionScope");
+  if (!ALLOWED_EXECUTION_SCOPES.has(String(row.executionScope))) {
+    fail(id + ": executionScope must be one of " + allowedScopes);
+  }
+  assertNonEmptyString(row.blockedBy, id + ": blockedBy");
+  assertNonEmptyString(row.nextLocalAction, id + ": nextLocalAction");
+  assertNonEmptyString(row.rerunPolicy, id + ": rerunPolicy");
+  if (!String(row.rerunPolicy).toLowerCase().includes("rerun")) {
+    fail(id + ": rerunPolicy must describe when to rerun or not rerun the lane");
+  }
+}
+
+/**
  * @param {unknown} object
  * @param {string} path
  */
@@ -593,6 +637,7 @@ for (const row of queue.validationQueue) {
   assertNonEmptyString(row.remaining, `${row.id}: remaining`);
   if (!ALLOWED_STATUSES.has(row.status)) fail(`${row.id}: invalid status ${row.status}`);
   if (row.status === "future-contract") fail(`${row.id}: future-contract rows belong in futureContractRows`);
+  assertUnresolvedExecutionMetadata(row);
   if (row.command != null) {
     assertNonEmptyString(row.command, `${row.id}: command`);
     assertCommandScriptsExist(row.command, scripts);
