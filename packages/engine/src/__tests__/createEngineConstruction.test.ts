@@ -262,6 +262,65 @@ describe('createEngine backend construction safety', () => {
     warnSpy.mockRestore();
   });
 
+  it('keeps material-feature routing when a glTF asset hint has no recommended backend', async () => {
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter: vi.fn(async () => adapter),
+          getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'),
+        },
+      },
+      configurable: true,
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnings: EngineWarning[] = [];
+    const engine = makeEngine();
+    ptFactory.mockResolvedValue(engine);
+    const materialRouteScene: Scene = {
+      primitives: [{
+        kind: 'mesh',
+        id: 'gltf-hint-thin-film-triangle',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.2,
+          metallic: 0,
+          thinFilmStack: {
+            layers: [{ ior: 1.45, thicknessNm: 180 }],
+          },
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const result = await createEngine({
+      canvas: makeCanvas(),
+      scene: materialRouteScene,
+      prefer: 'auto',
+      gltfAsset: {},
+      onWarning: (warning) => warnings.push(warning),
+    });
+
+    expect(result.backendId).toBe('pt-webgpu');
+    expect(ptFactory).toHaveBeenCalledTimes(1);
+    expect(hybridFactory).not.toHaveBeenCalled();
+    expect(engine.setScene).toHaveBeenCalledWith(materialRouteScene);
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'createEngine.material-feature-backend-recommended',
+      details: expect.objectContaining({
+        fields: ['thinFilmStack'],
+        defaultAutoBackend: 'walkaround-hybrid',
+        resolvedBackend: 'pt-webgpu',
+      }),
+    }));
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
   it('forces full pt-webgpu trace tier on the shared-device progressive path', async () => {
     const device = makeDevice();
     const shared: SharedDeviceCtx = {

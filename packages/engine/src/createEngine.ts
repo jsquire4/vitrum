@@ -107,7 +107,8 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
   const aabb = computeSceneAABB(vitrumScene);
   const tlasAudit = auditSceneNeedsTlas(vitrumScene);
   const gpu = await detectGpu({ publishToWindow: false });
-  const materialRecommendation = opts.gltfAsset == null
+  const gltfRecommendedBackend = opts.gltfAsset?.recommendedBackend?.backend;
+  const materialRecommendation = gltfRecommendedBackend == null
     ? recommendBackendForSceneMaterials(vitrumScene, gpu.isWebGPU)
     : null;
   const backend = pickBackend(
@@ -115,7 +116,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
     gpu.isWebGPU,
     aabb.triangleCount,
     tlasAudit.needsTlas,
-    opts.gltfAsset?.recommendedBackend?.backend,
+    gltfRecommendedBackend,
     materialRecommendation?.backend,
   );
   const backendWithoutMaterialRecommendation = materialRecommendation == null
@@ -125,7 +126,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
       gpu.isWebGPU,
       aabb.triangleCount,
       tlasAudit.needsTlas,
-      opts.gltfAsset?.recommendedBackend?.backend,
+      gltfRecommendedBackend,
     );
   if (materialRecommendation != null && backend !== backendWithoutMaterialRecommendation) {
     emitCreateEngineWarning(opts.onWarning, {

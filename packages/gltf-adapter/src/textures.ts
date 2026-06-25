@@ -523,6 +523,14 @@ function textureMinFilterModes(value: number | undefined): {
   }
 }
 
+function rawImageHandleMimeType(handle: unknown): string | undefined {
+  if (handle === null || typeof handle !== 'object') return undefined;
+  const raw = handle as Partial<RawImageHandle>;
+  return raw.kind === 'raw-image' && typeof raw.mimeType === 'string'
+    ? raw.mimeType
+    : undefined;
+}
+
 /**
  * Resolve a GltfTextureInfo to a TextureRef, given the decoded handle map.
  * Returns undefined if the texture is missing or its image failed to decode.
@@ -556,6 +564,7 @@ export function resolveTextureRef(
   const image = selectedSource.imageIndex !== undefined
     ? gltf?.images?.[selectedSource.imageIndex]
     : undefined;
+  const imageMimeType = image?.mimeType ?? rawImageHandleMimeType(handle);
 
   const ref: TextureRef = {
     handle,
@@ -573,7 +582,7 @@ export function resolveTextureRef(
     ...(selectedSource.imageIndex !== undefined ? { imageIndex: selectedSource.imageIndex } : {}),
     ...(samplerIdx !== undefined ? { samplerIndex: samplerIdx } : {}),
     ...(image?.uri !== undefined ? { imageUri: image.uri } : {}),
-    ...(image?.mimeType !== undefined ? { imageMimeType: image.mimeType } : {}),
+    ...(imageMimeType !== undefined ? { imageMimeType } : {}),
     ...(selectedSource.textureSourceExtension !== undefined
       ? { textureSourceExtension: selectedSource.textureSourceExtension }
       : {}),

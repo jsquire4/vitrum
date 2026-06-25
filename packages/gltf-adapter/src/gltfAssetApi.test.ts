@@ -1276,6 +1276,44 @@ describe('loadGltfAsset', () => {
     });
   });
 
+  it('carries acquired data-URI image MIME into decode contexts and texture reports', async () => {
+    const { gltf, buffers } = makeInlineTexturedGltf();
+    gltf.images![0] = { uri: 'data:image/webp;base64,AQIDBA==' };
+    const decodePixels = vi.fn((
+      handle: Parameters<DecodeGltfTexturePixelsFn>[0],
+      context: Parameters<DecodeGltfTexturePixelsFn>[1],
+    ) => {
+      expect(handle).toMatchObject({ kind: 'raw-image', mimeType: 'image/webp' });
+      expect(context).toMatchObject({
+        imageMimeType: 'image/webp',
+        imageUri: 'data:image/webp;base64,AQIDBA==',
+        textureIndex: 0,
+        imageIndex: 0,
+      });
+      return {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([255, 255, 255, 255]),
+        channels: 4 as const,
+        dataType: 'uint8' as const,
+        colorSpace: context.colorSpace,
+      };
+    });
+
+    const result = await loadGltfAndDecodeTextures(gltf, { buffers, decodePixels });
+
+    expect(decodePixels).toHaveBeenCalledTimes(1);
+    expect(result.textureDecodeDiagnostics).toEqual([]);
+    expect(result.textureDecodeReport.entries).toContainEqual(expect.objectContaining({
+      materialField: 'baseColorMap',
+      textureIndex: 0,
+      imageIndex: 0,
+      imageUri: 'data:image/webp;base64,AQIDBA==',
+      imageMimeType: 'image/webp',
+      handleKind: 'pixel-data',
+    }));
+  });
+
   it('loadGltfAndDecodeTextures normalizes raw images when a pixel decoder is supplied', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
     const decodePixels = vi.fn((...[, context]: Parameters<DecodeGltfTexturePixelsFn>) => ({

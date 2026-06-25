@@ -887,21 +887,47 @@ export async function gltfToScene(
       }
       let normals: Float32Array = normAttempt ?? generateFlatNormals(positions, indices);
 
-      // UVs — optional.
-      let uvs = _tryUnpackFloat(
-        gltf, buffers, prim.attributes['TEXCOORD_0'],
-        `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-        diagnostics,
-        'unreadable-optional-attribute',
+      // UVs — optional, but glTF TEXCOORD_N accessors must be VEC2.
+      const uv0Idx = prim.attributes['TEXCOORD_0'];
+      let uvs = _validatePrimitiveAttributeAccessor(
+        gltf,
+        uv0Idx,
+        ['VEC2'],
+        vertexCount,
+        'TEXCOORD_0',
+        `${mesh.name ?? node.mesh}`,
         `${primitivePath}.attributes.TEXCOORD_0`,
-      );
-      let uv1 = _tryUnpackFloat(
-        gltf, buffers, prim.attributes['TEXCOORD_1'],
-        `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        warnings,
         diagnostics,
-        'unreadable-optional-attribute',
+      )
+        ? _tryUnpackFloat(
+            gltf, buffers, uv0Idx,
+            `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+            diagnostics,
+            'unreadable-optional-attribute',
+            `${primitivePath}.attributes.TEXCOORD_0`,
+          )
+        : undefined;
+      const uv1Idx = prim.attributes['TEXCOORD_1'];
+      let uv1 = _validatePrimitiveAttributeAccessor(
+        gltf,
+        uv1Idx,
+        ['VEC2'],
+        vertexCount,
+        'TEXCOORD_1',
+        `${mesh.name ?? node.mesh}`,
         `${primitivePath}.attributes.TEXCOORD_1`,
-      );
+        warnings,
+        diagnostics,
+      )
+        ? _tryUnpackFloat(
+            gltf, buffers, uv1Idx,
+            `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+            diagnostics,
+            'unreadable-optional-attribute',
+            `${primitivePath}.attributes.TEXCOORD_1`,
+          )
+        : undefined;
       let primitiveUv1 = uv1;
 
       // Tangents — optional (xyzw per vertex).
@@ -1148,6 +1174,7 @@ export async function gltfToScene(
         prim,
         material,
         uv1,
+        vertexCount,
         warnings,
         diagnostics,
         primitivePath,
@@ -1584,6 +1611,7 @@ function _buildPrimitiveMaterialVariantPatch(
     primitive,
     material,
     primitiveUv1,
+    positions.length / 3,
     warnings,
     diagnostics,
     primitivePath,
@@ -2134,6 +2162,7 @@ function _resolvePrimitiveUvMaterial(
   primitive: GltfPrimitive,
   material: MaterialSpec,
   uv1: Float32Array | undefined,
+  vertexCount: number,
   warnings: string[],
   diagnostics: GltfImportDiagnostic[],
   primitivePath: string,
@@ -2163,17 +2192,30 @@ function _resolvePrimitiveUvMaterial(
   if (highTexCoords.size === 1 && !usesUv1) {
     const texCoord = [...highTexCoords][0]!;
     const attrName = `TEXCOORD_${texCoord}`;
-    const remapUv = _tryUnpackFloat(
+    const attrIndex = primitive.attributes[attrName];
+    const remapUv = _validatePrimitiveAttributeAccessor(
       gltf,
-      buffers,
-      primitive.attributes[attrName],
-      `${attrName} for "${meshName}"`,
-      warnings,
-      onAccessorDiagnostic,
-      diagnostics,
-      'unreadable-optional-attribute',
+      attrIndex,
+      ['VEC2'],
+      vertexCount,
+      attrName,
+      `${meshName}`,
       `${primitivePath}.attributes.${attrName}`,
-    );
+      warnings,
+      diagnostics,
+    )
+      ? _tryUnpackFloat(
+          gltf,
+          buffers,
+          attrIndex,
+          `${attrName} for "${meshName}"`,
+          warnings,
+          onAccessorDiagnostic,
+          diagnostics,
+          'unreadable-optional-attribute',
+          `${primitivePath}.attributes.${attrName}`,
+        )
+      : undefined;
     if (remapUv !== undefined) {
       let remapped = material;
       for (const { field, ref } of highFields) {
