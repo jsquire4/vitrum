@@ -210,6 +210,43 @@ describe('POINTS / line primitive policy', () => {
     expect(diagnostics).toHaveLength(POINT_LINE_MODES.length);
   });
 
+  it('does not report discarded normal diagnostics for generated point/line fallback meshes', async () => {
+    const withoutNormals = makePointLineModeGltf();
+    for (const primitive of withoutNormals.meshes![0]!.primitives) {
+      delete primitive.attributes.NORMAL;
+    }
+
+    const missingNormals = await gltfToScene(withoutNormals, {
+      buffers: makePointLineBuffers(),
+      pointLineFallbackRadius: 0.05,
+    });
+    const missingCodes = missingNormals.diagnostics.map((diagnostic) => diagnostic.code);
+    expect(missingNormals.scene.primitives).toHaveLength(POINT_LINE_MODES.length);
+    expect(missingCodes.filter((code) => code === 'fallback-generated-primitive-mode'))
+      .toHaveLength(POINT_LINE_MODES.length);
+    expect(missingCodes).not.toContain('generated-flat-normals');
+    expect(missingCodes).not.toContain('unreadable-normal');
+    expect(missingNormals.warnings).toHaveLength(POINT_LINE_MODES.length);
+    expect(missingNormals.warnings.some((warning) =>
+      warning.includes('Generating flat normals') || warning.includes('NORMAL unreadable'),
+    )).toBe(false);
+
+    const unreadableNormals = await gltfToScene(makePointLineModeGltf(), {
+      buffers: new Map([[0, f32Buffer(POSITIONS)]]),
+      pointLineFallbackRadius: 0.05,
+    });
+    const unreadableCodes = unreadableNormals.diagnostics.map((diagnostic) => diagnostic.code);
+    expect(unreadableNormals.scene.primitives).toHaveLength(POINT_LINE_MODES.length);
+    expect(unreadableCodes.filter((code) => code === 'fallback-generated-primitive-mode'))
+      .toHaveLength(POINT_LINE_MODES.length);
+    expect(unreadableCodes).not.toContain('generated-flat-normals');
+    expect(unreadableCodes).not.toContain('unreadable-normal');
+    expect(unreadableNormals.warnings).toHaveLength(POINT_LINE_MODES.length);
+    expect(unreadableNormals.warnings.some((warning) =>
+      warning.includes('Generating flat normals') || warning.includes('NORMAL unreadable'),
+    )).toBe(false);
+  });
+
   it('replicates UVs, vertex colors, identity skin, and morph deltas onto generated point meshes', async () => {
     const { scene } = await gltfToScene(makePointAttributeRemapGltf(), {
       buffers: makeAttributeRemapBuffers(),

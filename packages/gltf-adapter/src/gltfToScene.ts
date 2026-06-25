@@ -857,16 +857,22 @@ export async function gltfToScene(
         indices = tris;
       }
 
+      const usesPointLineFallback = isPointLineMode(mode);
+
       // Normals — generate flat normals if absent or unreadable.
+      // Point/line fallback generates its own mesh normals below, so reporting
+      // normal generation for the discarded source topology would be misleading.
       const normIdx = prim.attributes['NORMAL'];
-      const normAttempt = _tryUnpackFloat(
-        gltf, buffers, normIdx,
-        `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-        diagnostics,
-        'unreadable-normal',
-        `${primitivePath}.attributes.NORMAL`,
-      );
-      if (normAttempt === undefined && normIdx === undefined) {
+      const normAttempt = usesPointLineFallback
+        ? undefined
+        : _tryUnpackFloat(
+            gltf, buffers, normIdx,
+            `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+            diagnostics,
+            'unreadable-normal',
+            `${primitivePath}.attributes.NORMAL`,
+          );
+      if (!usesPointLineFallback && normAttempt === undefined && normIdx === undefined) {
         emitImportDiagnostic(warnings, diagnostics, {
           severity: 'warning',
           code: 'generated-flat-normals',
@@ -875,7 +881,7 @@ export async function gltfToScene(
             `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has no NORMAL attribute. ` +
             'Generating flat normals.',
         });
-      } else if (normAttempt === undefined) {
+      } else if (!usesPointLineFallback && normAttempt === undefined) {
         emitImportDiagnostic(warnings, diagnostics, {
           severity: 'warning',
           code: 'unreadable-normal',
@@ -885,7 +891,9 @@ export async function gltfToScene(
             'Generating flat normals.',
         });
       }
-      let normals: Float32Array = normAttempt ?? generateFlatNormals(positions, indices);
+      let normals: Float32Array = usesPointLineFallback
+        ? new Float32Array(positions.length)
+        : normAttempt ?? generateFlatNormals(positions, indices);
 
       // UVs — optional, but glTF TEXCOORD_N accessors must be VEC2.
       const uv0Idx = prim.attributes['TEXCOORD_0'];
@@ -1190,7 +1198,7 @@ export async function gltfToScene(
         positions.length / 3, uvs, uv1, uvResolvedMaterial.uv1SourceTexCoord,
         `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics, onAccessorDiagnostic,
       );
-      if (isPointLineMode(mode)) {
+      if (usesPointLineFallback) {
         const originalVertexCount = Math.floor(positions.length / 3);
         const fallback = buildPointLineFallbackGeometry(
           positions,
