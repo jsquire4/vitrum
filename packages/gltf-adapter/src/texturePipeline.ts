@@ -58,6 +58,7 @@ export interface GltfTextureDecodeReportEntry {
   readonly primitiveIndex: number;
   readonly materialField: GltfMaterialTextureField;
   readonly path: string;
+  readonly imageSourcePath?: string;
   readonly texCoord: number;
   readonly hasTransform: boolean;
   readonly wrapS: TextureWrapMode;
@@ -152,6 +153,7 @@ export type DecodeGltfTexturePixelsFn = (
   context: {
     readonly materialField: GltfMaterialTextureField;
     readonly path: string;
+    readonly imageSourcePath?: string;
     readonly colorSpace: GltfTextureColorSpace;
     readonly primitiveId: string;
     readonly primitiveIndex: number;
@@ -182,6 +184,7 @@ export interface DecodeSceneTextureDiagnostic {
   readonly severity: 'warning';
   readonly code: DecodeSceneTextureDiagnosticCode;
   readonly path: string;
+  readonly imageSourcePath?: string;
   readonly materialField: GltfMaterialTextureField;
   readonly primitiveId: string;
   readonly primitiveIndex: number;
@@ -329,6 +332,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
         primitiveIndex,
         materialField: field,
         path: source?.path ?? scenePath,
+        ...(source?.imageSourcePath !== undefined ? { imageSourcePath: source.imageSourcePath } : {}),
         texCoord: ref.texCoord ?? 0,
         hasTransform: ref.transform !== undefined,
         wrapS: ref.wrapS ?? 'repeat',
@@ -581,9 +585,10 @@ function textureSourceDiagnosticFields(
   source: GltfTextureRefSource | undefined,
 ): Pick<
   DecodeSceneTextureDiagnostic,
-  'textureIndex' | 'imageIndex' | 'samplerIndex' | 'imageUri' | 'imageMimeType' | 'textureSourceExtension'
+  'imageSourcePath' | 'textureIndex' | 'imageIndex' | 'samplerIndex' | 'imageUri' | 'imageMimeType' | 'textureSourceExtension'
 > {
   return {
+    ...(source?.imageSourcePath !== undefined ? { imageSourcePath: source.imageSourcePath } : {}),
     ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
     ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
     ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),

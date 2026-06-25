@@ -7434,6 +7434,7 @@ describe('loadGltfForEngine', () => {
         textureIndex: 0,
         imageIndex: 0,
         textureSourceExtension: 'EXT_texture_webp',
+        imageSourcePath: 'textures[0].extensions.EXT_texture_webp.source',
       }),
     ]);
   });
@@ -7491,6 +7492,12 @@ describe('loadGltfForEngine', () => {
     });
     expect(createEngine).toHaveBeenCalledTimes(1);
     expect(decodePixelsMock).toHaveBeenCalledTimes(1);
+    expect(decodePixelsMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        imageSourcePath: 'textures[0].extensions.EXT_texture_webp.source',
+      }),
+    );
     expect(decodedHandle).toMatchObject({
       kind: 'raw-image',
       mimeType: 'image/webp',
@@ -7501,6 +7508,7 @@ describe('loadGltfForEngine', () => {
         textureIndex: 0,
         imageIndex: 0,
         textureSourceExtension: 'EXT_texture_webp',
+        imageSourcePath: 'textures[0].extensions.EXT_texture_webp.source',
         handleKind: 'pixel-data',
         backendReadiness: {
           ptWebgl2: 'ready',
@@ -7579,6 +7587,7 @@ describe('loadGltfForEngine', () => {
         imageIndex: 0,
         imageMimeType: 'image/webp',
         textureSourceExtension: 'EXT_texture_webp',
+        imageSourcePath: 'textures[0].extensions.EXT_texture_webp.source',
         handleKind: 'pixel-data',
         backendReadiness: {
           ptWebgl2: 'ready',

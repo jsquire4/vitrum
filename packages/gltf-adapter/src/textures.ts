@@ -71,6 +71,7 @@ const GLTF_TEXTURE_REF_SOURCE = Symbol('vitrum.gltf.textureRefSource');
 
 export interface GltfTextureRefSource {
   readonly path: string;
+  readonly imageSourcePath?: string;
   readonly textureIndex?: number;
   readonly imageIndex?: number;
   readonly samplerIndex?: number;
@@ -578,6 +579,7 @@ export function resolveTextureRef(
   };
   const source: GltfTextureRefSource = {
     path: sourcePath ?? `textures[${info.index}]`,
+    ...(selectedSource.path !== undefined ? { imageSourcePath: selectedSource.path } : {}),
     textureIndex: info.index,
     ...(selectedSource.imageIndex !== undefined ? { imageIndex: selectedSource.imageIndex } : {}),
     ...(samplerIdx !== undefined ? { samplerIndex: samplerIdx } : {}),
