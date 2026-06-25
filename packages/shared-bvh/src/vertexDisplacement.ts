@@ -41,8 +41,21 @@ function textureHandleType(handle: unknown): string {
   return handle == null ? 'null' : Object.prototype.toString.call(handle);
 }
 
-function warningPrefix(primitiveId: string): string {
-  return `Primitive "${primitiveId}" displacementMap`;
+function textureRefSourcePath(ref: TextureRef | undefined): string | undefined {
+  if (ref == null) return undefined;
+  for (const symbol of Object.getOwnPropertySymbols(ref)) {
+    if (symbol.description !== 'vitrum.gltf.textureRefSource') continue;
+    const value = (ref as unknown as Record<symbol, unknown>)[symbol];
+    if (value == null || typeof value !== 'object') return undefined;
+    const path = (value as { readonly path?: unknown }).path;
+    return typeof path === 'string' ? path : undefined;
+  }
+  return undefined;
+}
+
+function warningPrefix(primitiveId: string, ref?: TextureRef): string {
+  const sourcePath = textureRefSourcePath(ref);
+  return `Primitive "${primitiveId}" displacementMap${sourcePath !== undefined ? ` at ${sourcePath}` : ''}`;
 }
 
 function handlePayload(handle: unknown): {
@@ -118,12 +131,12 @@ function readHeightPixels(
 ): RawHeightPixels | null {
   const payload = handlePayload(ref.handle);
   if (payload == null) {
-    warn(`${warningPrefix(primitiveId)} handle is not CPU-readable (${textureHandleType(ref.handle)}); displacement skipped.`);
+    warn(`${warningPrefix(primitiveId, ref)} handle is not CPU-readable (${textureHandleType(ref.handle)}); displacement skipped.`);
     return null;
   }
   const { width, height, data, hint } = payload;
   if (width <= 0 || height <= 0 || data == null || typeof data.length !== 'number') {
-    warn(`${warningPrefix(primitiveId)} handle is missing positive width/height/data; displacement skipped.`);
+    warn(`${warningPrefix(primitiveId, ref)} handle is missing positive width/height/data; displacement skipped.`);
     return null;
   }
   const pixelCount = width * height;
@@ -131,7 +144,7 @@ function readHeightPixels(
   const channels = hint?.channels ?? inferredChannels;
   if (![1, 2, 3, 4].includes(channels) || !Number.isInteger(channels)) {
     warn(
-      `${warningPrefix(primitiveId)} has ${data.length} values for ${width}x${height} pixels; ` +
+      `${warningPrefix(primitiveId, ref)} has ${data.length} values for ${width}x${height} pixels; ` +
       'expected 1, 2, 3, or 4 channels. Displacement skipped.',
     );
     return null;
@@ -232,12 +245,12 @@ export function maybeDisplaceMeshPositions(
   const warn = input.onWarning ?? (() => {});
   const texCoord = ref.texCoord ?? 0;
   if (texCoord !== 0 && texCoord !== 1) {
-    warn(`${warningPrefix(input.primitiveId)} requests TEXCOORD_${texCoord}; vertex displacement supports TEXCOORD_0/1 only. Skipped.`);
+    warn(`${warningPrefix(input.primitiveId, ref)} requests TEXCOORD_${texCoord}; vertex displacement supports TEXCOORD_0/1 only. Skipped.`);
     return null;
   }
   const uvSource = texCoord === 1 ? input.uv1 : input.uvs;
   if (uvSource == null || uvSource.length === 0) {
-    warn(`${warningPrefix(input.primitiveId)} requests TEXCOORD_${texCoord}, but that UV channel is absent; displacement skipped.`);
+    warn(`${warningPrefix(input.primitiveId, ref)} requests TEXCOORD_${texCoord}, but that UV channel is absent; displacement skipped.`);
     return null;
   }
   const pixels = readHeightPixels(ref, input.primitiveId, warn);
@@ -272,20 +285,21 @@ function resolveDisplacementSubdivisions(
   primitiveId: string,
   warn: DisplacementWarningSink,
 ): number {
+  const ref = material.displacementMap;
   const raw = material.displacementSubdivisions;
   if (raw == null || raw <= 0) return 0;
   if (!Number.isFinite(raw)) {
-    warn(`${warningPrefix(primitiveId)} displacementSubdivisions is non-finite; microdisplacement disabled.`);
+    warn(`${warningPrefix(primitiveId, ref)} displacementSubdivisions is non-finite; microdisplacement disabled.`);
     return 0;
   }
   const rounded = Math.floor(raw);
   if (rounded < 1) return 0;
   if (rounded !== raw) {
-    warn(`${warningPrefix(primitiveId)} displacementSubdivisions=${raw} is not an integer; using ${rounded}.`);
+    warn(`${warningPrefix(primitiveId, ref)} displacementSubdivisions=${raw} is not an integer; using ${rounded}.`);
   }
   if (rounded > MAX_DISPLACEMENT_SUBDIVISIONS) {
     warn(
-      `${warningPrefix(primitiveId)} displacementSubdivisions=${rounded} exceeds the shared-BVH cap ` +
+      `${warningPrefix(primitiveId, ref)} displacementSubdivisions=${rounded} exceeds the shared-BVH cap ` +
       `${MAX_DISPLACEMENT_SUBDIVISIONS}; using ${MAX_DISPLACEMENT_SUBDIVISIONS}.`,
     );
     return MAX_DISPLACEMENT_SUBDIVISIONS;
@@ -376,12 +390,12 @@ export function maybeMicrodisplaceMeshGeometry(input: {
   if (subdivisions <= 0) return null;
   const texCoord = ref.texCoord ?? 0;
   if (texCoord !== 0 && texCoord !== 1) {
-    warn(`${warningPrefix(input.primitiveId)} requests TEXCOORD_${texCoord}; microdisplacement supports TEXCOORD_0/1 only. Falling back to vertex displacement.`);
+    warn(`${warningPrefix(input.primitiveId, ref)} requests TEXCOORD_${texCoord}; microdisplacement supports TEXCOORD_0/1 only. Falling back to vertex displacement.`);
     return null;
   }
   const uvSource = texCoord === 1 ? input.uv1 : input.uvs;
   if (uvSource == null || uvSource.length === 0) {
-    warn(`${warningPrefix(input.primitiveId)} requests TEXCOORD_${texCoord}, but that UV channel is absent; microdisplacement disabled.`);
+    warn(`${warningPrefix(input.primitiveId, ref)} requests TEXCOORD_${texCoord}, but that UV channel is absent; microdisplacement disabled.`);
     return null;
   }
   const pixels = readHeightPixels(ref, input.primitiveId, warn);
@@ -394,7 +408,7 @@ export function maybeMicrodisplaceMeshGeometry(input: {
   const generatedTriCount = sourceTriCount * steps * steps;
   if (generatedTriCount > MAX_MICRODISPLACED_TRIANGLES) {
     warn(
-      `${warningPrefix(input.primitiveId)} displacementSubdivisions=${subdivisions} would generate ` +
+      `${warningPrefix(input.primitiveId, ref)} displacementSubdivisions=${subdivisions} would generate ` +
       `${generatedTriCount} triangles, above the shared-BVH safety cap ${MAX_MICRODISPLACED_TRIANGLES}; ` +
       'falling back to vertex displacement.',
     );
@@ -479,7 +493,7 @@ export function maybeMicrodisplaceMeshGeometry(input: {
     const ic = sourceIndices[tri * 3 + 2] ?? 0;
     if (ia >= vertexCount || ib >= vertexCount || ic >= vertexCount) {
       warn(
-        `${warningPrefix(input.primitiveId)} triangle ${tri} references an out-of-range vertex index ` +
+        `${warningPrefix(input.primitiveId, ref)} triangle ${tri} references an out-of-range vertex index ` +
         `(i0=${ia}, i1=${ib}, i2=${ic}; vertexCount=${vertexCount}); microdisplacement disabled.`,
       );
       return null;

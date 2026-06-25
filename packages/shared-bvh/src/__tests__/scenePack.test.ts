@@ -171,6 +171,39 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(merged.warnings).toEqual([]);
   });
 
+  it('carries glTF source paths into unreadable displacement warnings', () => {
+    const source = displacedTriScene();
+    const primitive = source.primitives[0]!;
+    const displacementMap = { handle: { id: 'height' } };
+    Object.defineProperty(displacementMap, Symbol('vitrum.gltf.textureRefSource'), {
+      value: {
+        path: 'materials[0].extensions.VITRUM_displacement.displacementTexture',
+        textureIndex: 3,
+      },
+    });
+    const scene: Scene = {
+      ...source,
+      primitives: [
+        {
+          ...primitive,
+          material: {
+            ...primitive.material,
+            displacementMap,
+          },
+        },
+      ],
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
+
+    expect(packed.warnings).toEqual([
+      expect.stringContaining(
+        'Primitive "displaced" displacementMap at materials[0].extensions.VITRUM_displacement.displacementTexture',
+      ),
+    ]);
+    expect(packed.warnings[0]).toContain('displacement skipped');
+  });
+
   it('treats plain Uint16Array displacement handles as normalized height pixels', () => {
     const source = displacedTriScene();
     const primitive = source.primitives[0]!;
