@@ -280,7 +280,30 @@ export const RICH_MATERIAL_GI_APPROXIMATION_DETAILS = {
   ],
 } as const;
 
+/** Structured payload for consumed volume/layer fields that remain realtime approximations. */
+export const VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS = {
+  consumedBy: [
+    'shade-owned-direct-light',
+    'transparent-OIT-face-layer-shading',
+    'ReSTIR-DI-candidate-and-resolve-material-payloads',
+    'ReSTIR-GI-suffix-and-receiver-target-material-payloads',
+    'DDGI/RC-probe-hit-compact-material-payloads',
+  ],
+  approximation: 'compact-single-surface-volume-layer-response',
+  missing: 'path-tracer-equivalent-participating-media-and-full-layer-stack-transport',
+  proofTail: [
+    'walkaround-specialty-material-transport-reference-ab',
+    'rich-material-GI-A/B',
+    'future-contract-specialty-material-transport',
+  ],
+} as const;
+
 export interface ApproximateRichMaterialPrimitiveFields {
+  readonly primitiveId: string;
+  readonly fields: readonly string[];
+}
+
+export interface ApproximateVolumeLayerPrimitiveFields {
   readonly primitiveId: string;
   readonly fields: readonly string[];
 }
@@ -528,6 +551,54 @@ export function collectApproximateRichMaterialPrimitiveFields(
     }
   }
   return out.sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
+}
+
+export function collectApproximateVolumeLayerPrimitiveFields(
+  primitives: ReadonlyArray<{
+    readonly id?: string;
+    readonly kind: string;
+    readonly material?: Record<string, unknown>;
+  }>,
+): ApproximateVolumeLayerPrimitiveFields[] {
+  const out: ApproximateVolumeLayerPrimitiveFields[] = [];
+  for (const prim of primitives) {
+    if (!materialBearingPrimitiveKind(prim.kind)) continue;
+    const fields = collectApproximateVolumeLayerFieldsForMaterial(prim.material);
+    if (fields.length > 0) {
+      out.push({ primitiveId: prim.id ?? '(unnamed)', fields });
+    }
+  }
+  return out.sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
+}
+
+export function collectApproximateVolumeLayerFieldsForMaterial(
+  material: Record<string, unknown> | undefined,
+): string[] {
+  if (!material) return [];
+  const fields = new Set<string>();
+  const scalar = (key: string, fallback: number): number => {
+    const value = material[key];
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  };
+  const vectorAnyNonZero = (key: string): boolean => {
+    const value = material[key];
+    if (!Array.isArray(value)) return false;
+    return value.some((entry) => Math.abs(Number(entry ?? 0)) > 1e-6);
+  };
+  const layerHasPayload = (key: string): boolean => {
+    const value = material[key];
+    if (value == null) return false;
+    if (typeof value !== 'object') return true;
+    return Object.keys(value as Record<string, unknown>).length > 0;
+  };
+
+  if (Math.abs(scalar('scatteringCoefficient', 0)) > 1e-6) fields.add('scatteringCoefficient');
+  if (vectorAnyNonZero('scatteringCoefficientRGB')) fields.add('scatteringCoefficientRGB');
+  if (Math.abs(scalar('scatteringAnisotropy', 0)) > 1e-6) fields.add('scatteringAnisotropy');
+  if (layerHasPayload('frontLayer')) fields.add('frontLayer');
+  if (layerHasPayload('backLayer')) fields.add('backLayer');
+
+  return [...fields].sort();
 }
 
 export function collectApproximateRichMaterialFieldsForMaterial(

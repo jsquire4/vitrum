@@ -121,12 +121,15 @@ import {
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectApproximateLightMapPrimitiveIds,
   collectApproximateRichMaterialPrimitiveFields,
+  collectApproximateVolumeLayerPrimitiveFields,
   collectUnconsumedMaterialFieldsForMaterial,
   collectUnconsumedMaterialPrimitiveFields,
   EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
   LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
   RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
+  VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
   type ApproximateRichMaterialPrimitiveFields,
+  type ApproximateVolumeLayerPrimitiveFields,
   type UnconsumedMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
@@ -256,6 +259,8 @@ export class HybridEngine implements Engine {
   private _warnedLightMapApproximationIds = new Set<string>();
   /** Tracks which rich-material approximation primitive/field sets have warned. */
   private _warnedRichMaterialApproximationIds = new Set<string>();
+  /** Tracks which volume/layer transport approximation primitive/field sets have warned. */
+  private _warnedVolumeLayerTransportApproximationIds = new Set<string>();
   /** Tracks atlas-backed material texture drops already reported to hosts. */
   private _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
   /** Tracks invalid setSize dimensions already reported to hosts. */
@@ -1071,6 +1076,39 @@ export class HybridEngine implements Engine {
     });
   }
 
+  private _warnApproximateVolumeLayerPrimitiveFields(
+    primitiveFields: readonly ApproximateVolumeLayerPrimitiveFields[],
+    method: 'setScene' | 'updatePrimitive',
+  ): void {
+    if (primitiveFields.length === 0) return;
+    const normalized = primitiveFields
+      .map((entry) => ({
+        primitiveId: entry.primitiveId,
+        fields: [...entry.fields].sort(),
+      }))
+      .sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
+    const key = normalized.map((entry) => `${entry.primitiveId}:${entry.fields.join('|')}`).join(',');
+    if (this._warnedVolumeLayerTransportApproximationIds.has(key)) return;
+    this._warnedVolumeLayerTransportApproximationIds.add(key);
+    const fieldSet = [...new Set(normalized.flatMap((entry) => entry.fields))].sort();
+    this._warn({
+      code: 'walkaround-hybrid.volume-layer-transport-approximation',
+      backend: 'walkaround-hybrid',
+      phase: method,
+      method,
+      message:
+        `[vitrum/walkaround-hybrid] ${method}: volume scattering and face-layer ` +
+        `material fields are consumed by the compact realtime material path, but ` +
+        `full participating-media and layered-stack transport remains approximate; ` +
+        `primitives: ${normalized.map((entry) => entry.primitiveId).join(', ')}.`,
+      details: {
+        primitiveFields: normalized,
+        fields: fieldSet,
+        ...VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
+      },
+    });
+  }
+
   private _warnReservedReceiveShadowPrimitiveIds(
     primitiveIds: readonly string[],
     method: 'setScene' | 'updatePrimitive',
@@ -1277,6 +1315,15 @@ export class HybridEngine implements Engine {
       }>,
     );
     this._warnApproximateRichMaterialPrimitiveFields(richMaterialApproxFields, 'setScene');
+
+    const volumeLayerApproxFields = collectApproximateVolumeLayerPrimitiveFields(
+      scene.primitives as unknown as ReadonlyArray<{
+        readonly id?: string;
+        readonly kind: string;
+        readonly material?: Record<string, unknown>;
+      }>,
+    );
+    this._warnApproximateVolumeLayerPrimitiveFields(volumeLayerApproxFields, 'setScene');
 
     // SHADOW-01 — receiveShadow is reserved/unsupported: a "receiver ignores
     // occlusion" toggle is non-physical for this GI renderer. castShadow rows
@@ -1545,6 +1592,14 @@ export class HybridEngine implements Engine {
     );
     this._warnApproximateRichMaterialPrimitiveFields(
       collectApproximateRichMaterialPrimitiveFields([{
+        id,
+        kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
+        material,
+      }]),
+      'updatePrimitive',
+    );
+    this._warnApproximateVolumeLayerPrimitiveFields(
+      collectApproximateVolumeLayerPrimitiveFields([{
         id,
         kind: patch.kind ?? previousPrimitive?.kind ?? 'mesh',
         material,

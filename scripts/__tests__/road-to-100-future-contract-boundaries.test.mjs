@@ -85,6 +85,8 @@ test('future-contract boundary text pins the current truthful API surface', () =
   assert.deepEqual(sourcePaths(specialtyTransport), [
     'packages/core/src/engine/promiseLedger.ts',
     'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
+    'packages/walkaround-hybrid/src/HybridEngine.ts',
+    'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
   ]);
 
   const pointLine = futureRow('FC-NATIVE-POINT-LINE');

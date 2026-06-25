@@ -25,12 +25,14 @@ import {
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectApproximateLightMapPrimitiveIds,
   collectApproximateRichMaterialPrimitiveFields,
+  collectApproximateVolumeLayerPrimitiveFields,
   collectUnconsumedMaterialFields,
   collectUnconsumedMaterialFieldsForMaterial,
   collectUnconsumedMaterialPrimitiveFields,
   EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
   LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
   RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
+  VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
 } from '../restir/consumedMaterialFields.js';
 import { HybridEngine } from '../HybridEngine.js';
 import type { HybridEngineOptions } from '../HybridEngine.js';
@@ -149,6 +151,9 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'anisotropy', 'anisotropyRotation', 'anisotropyMap',
       'iridescence', 'iridescenceIor', 'iridescenceThicknessRange',
       'iridescenceMap', 'iridescenceThicknessMap',
+      'scatteringCoefficient', 'scatteringCoefficientRGB', 'scatteringAnisotropy',
+      'frontLayer', 'frontLayer.normalMap', 'frontLayer.normalScale',
+      'backLayer', 'backLayer.normalMap', 'backLayer.normalScale',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(f)).toBe(true);
     }
@@ -220,7 +225,7 @@ describe('collectUnconsumedMaterialFields', () => {
     })).toEqual(WALKAROUND_PERMANENT_UNSUPPORTED_FIELDS);
   });
 
-  it('does not warn for approximate walkaround volume scattering fields', () => {
+  it('does not report approximate walkaround volume scattering fields as unconsumed', () => {
     expect(collectUnconsumedMaterialFieldsForMaterial({
       baseColor: [1, 1, 1],
       roughness: 1,
@@ -229,6 +234,49 @@ describe('collectUnconsumedMaterialFields', () => {
       scatteringAnisotropy: 0.25,
       scatteringCoefficientRGB: [0.1, 0.2, 0.3],
     })).toEqual([]);
+  });
+
+  it('collects approximate volume scattering and face-layer transport fields', () => {
+    const prims: ReadonlyArray<PrimLike> = [
+      {
+        id: 'volume-layer-pane',
+        kind: 'mesh',
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          scatteringCoefficient: 0.15,
+          scatteringAnisotropy: 0.25,
+          scatteringCoefficientRGB: [0.1, 0, 0.3],
+          frontLayer: { transmission: [1, 0.5, 0.25] },
+          backLayer: { normalMap: { handle: 'back-normal' } },
+        },
+      },
+      {
+        id: 'default-volume-fields',
+        kind: 'mesh',
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          scatteringCoefficient: 0,
+          scatteringAnisotropy: 0,
+          scatteringCoefficientRGB: [0, 0, 0],
+          frontLayer: {},
+        },
+      },
+    ];
+
+    expect(collectApproximateVolumeLayerPrimitiveFields(prims)).toEqual([{
+      primitiveId: 'volume-layer-pane',
+      fields: [
+        'backLayer',
+        'frontLayer',
+        'scatteringAnisotropy',
+        'scatteringCoefficient',
+        'scatteringCoefficientRGB',
+      ],
+    }]);
   });
 
   it('categorizes unconsumed fields for structured warning consumers', () => {
@@ -960,6 +1008,60 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
         w.code === 'walkaround-hybrid.directional-angular-diameter-partial-support',
       );
       expect(warnings).toHaveLength(0);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('emits a structured warning for volume/layer transport approximation', () => {
+    const structured: EngineWarning[] = [];
+    const engine = new HybridEngine({
+      ...makeOpts(),
+      onWarning: (w) => structured.push(w),
+    });
+    try {
+      const scene = consumedOnlyScene();
+      const prim = scene.primitives[0]!;
+      const volumeLayerScene: Scene = {
+        ...scene,
+        primitives: [
+          {
+            ...prim,
+            id: 'volume-layer-pane',
+            material: {
+              ...prim.material,
+              scatteringCoefficient: 0.1,
+              scatteringAnisotropy: -0.2,
+              frontLayer: { transmission: [0.8, 0.7, 0.6] },
+              backLayer: { normalMap: { handle: 'back-normal' } },
+            },
+          } as unknown as ScenePrimitive,
+        ],
+      };
+
+      engine.setScene(volumeLayerScene);
+      engine.setScene(volumeLayerScene);
+
+      const warnings = structured.filter((w) =>
+        w.code === 'walkaround-hybrid.volume-layer-transport-approximation',
+      );
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatchObject({
+        backend: 'walkaround-hybrid',
+        phase: 'setScene',
+        method: 'setScene',
+        details: {
+          primitiveFields: [{
+            primitiveId: 'volume-layer-pane',
+            fields: ['backLayer', 'frontLayer', 'scatteringAnisotropy', 'scatteringCoefficient'],
+          }],
+          fields: ['backLayer', 'frontLayer', 'scatteringAnisotropy', 'scatteringCoefficient'],
+          ...VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
+        },
+      });
+      expect(warnSpy.mock.calls.flat().map(String).some((m) =>
+        m.includes('participating-media') && m.includes('volume-layer-pane'),
+      )).toBe(true);
     } finally {
       engine.dispose();
     }

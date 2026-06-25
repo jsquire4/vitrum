@@ -757,7 +757,26 @@
             "Everything else",
             "warning/truthfulness surface",
             "spectralAttenuation: 'spectral'",
-            "thinFilmStack: 'layered'"
+            "thinFilmStack: 'layered'",
+            "VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS",
+            "collectApproximateVolumeLayerPrimitiveFields",
+            "missing: 'path-tracer-equivalent-participating-media-and-full-layer-stack-transport'"
+          ]
+        },
+        {
+          "path": "packages/walkaround-hybrid/src/HybridEngine.ts",
+          "includes": [
+            "code: 'walkaround-hybrid.volume-layer-transport-approximation'",
+            "full participating-media and layered-stack transport remains approximate",
+            "collectApproximateVolumeLayerPrimitiveFields"
+          ]
+        },
+        {
+          "path": "packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts",
+          "includes": [
+            "collects approximate volume scattering and face-layer transport fields",
+            "emits a structured warning for volume/layer transport approximation",
+            "walkaround-hybrid.volume-layer-transport-approximation"
           ]
         }
       ],

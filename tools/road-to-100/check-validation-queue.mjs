@@ -2215,7 +2215,9 @@ for (const needle of [
 for (const needle of [
   "matches the BACKEND_PROMISE_LEDGER walkaround-hybrid material support matrix",
   "does NOT contain permanently unsupported walkaround fields",
-  "does not warn for approximate walkaround volume scattering fields",
+  "does not report approximate walkaround volume scattering fields as unconsumed",
+  "collects approximate volume scattering and face-layer transport fields",
+  "emits a structured warning for volume/layer transport approximation",
   "categorizes unconsumed fields for structured warning consumers",
 ]) {
   if (!walkaroundConsumedMaterialFieldsTestSource.includes(needle)) {
