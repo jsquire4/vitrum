@@ -7,7 +7,8 @@ vi.mock('../createEngine.js', () => ({
   createEngine: createEngineMock,
 }));
 
-import { attachVitrum } from '../lifecycle/vanilla.js';
+import { attachVitrum, type AttachVitrumRecreateEngineContext } from '../lifecycle/vanilla.js';
+import type { EngineWithBackendId } from '../createEngineInternals.js';
 
 const sceneA: Scene = { primitives: [], emitters: [], environment: { kind: 'none' } };
 const sceneB: Scene = {
@@ -280,6 +281,42 @@ describe('attachVitrum auto-recreate scene tracking', () => {
 
     handle.dispose();
     warn.mockRestore();
+  });
+
+  it('uses a supplied recreateEngine factory for progressive/custom supplied engines', async () => {
+    const first = makeEngine('pt-webgpu', sceneB);
+    const second = makeEngine('pt-webgpu');
+    const recreateEngine = vi.fn(async (_context: AttachVitrumRecreateEngineContext) =>
+      second.engine as unknown as EngineWithBackendId,
+    );
+
+    const handle = await attachVitrum({
+      canvas: makeCanvas(),
+      engine: first.engine as never,
+      scene: sceneA,
+      camera: makeCamera(),
+      autoRecreateOnDeviceLoss: true,
+      recreateEngine,
+    });
+
+    handle.engine.setScene(sceneB);
+    first.errorCallbacks[0]!({
+      kind: 'device-lost',
+      fatal: true,
+      message: 'lost',
+    } as EngineError);
+
+    await vi.waitFor(() => expect(handle.engine.renderFrame).toBe(second.engine.renderFrame));
+    expect(recreateEngine).toHaveBeenCalledTimes(1);
+    expect(createEngineMock).not.toHaveBeenCalled();
+    expect(recreateEngine.mock.calls[0]![0]).toEqual(expect.objectContaining({
+      scene: sceneB,
+      previousBackendId: 'pt-webgpu',
+      reason: 'device-lost',
+      attempt: 1,
+    }));
+
+    handle.dispose();
   });
 
   it('exposes the selected backend id through the stable attach handle', async () => {

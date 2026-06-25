@@ -187,6 +187,19 @@ export type QualityOption =
   | NonNullable<FrameInput['quality']>
   | (() => NonNullable<FrameInput['quality']> | undefined);
 
+export type AttachVitrumAutoRecreateReason = 'device-lost' | 'context-lost';
+
+export interface AttachVitrumRecreateEngineContext {
+  readonly scene: AttachVitrumOptions['scene'];
+  readonly previousBackendId: EngineWithBackendId['backendId'];
+  readonly reason: AttachVitrumAutoRecreateReason;
+  readonly attempt: number;
+}
+
+export type AttachVitrumRecreateEngineFactory = (
+  context: AttachVitrumRecreateEngineContext,
+) => Promise<EngineWithBackendId>;
+
 export interface AttachVitrumSceneControllerPlaybackOptions {
   /** Forwarded to `sceneController.advance(..., { loop })`. Default true. */
   readonly loop?: boolean;
@@ -202,8 +215,8 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    * through a higher-level bridge before handing off to the lifecycle loop.
    * The supplied engine must already represent `scene`; attachVitrum will own
    * its RAF/resize/error subscriptions and dispose it with the handle. Fatal
-   * auto-recreate still falls back to `createEngine()` using the latest tracked
-   * scene.
+   * auto-recreate uses `recreateEngine` when supplied, otherwise it falls back
+   * to `createEngine()` using the latest tracked scene.
    */
   readonly engine?: EngineWithBackendId;
   /**
@@ -265,6 +278,14 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    * Default: `false`.
    */
   readonly autoRecreateOnDeviceLoss?: boolean;
+  /**
+   * Optional factory for fatal auto-recreate when the initial engine came from
+   * a higher-level facade that `createEngine()` cannot reproduce by itself
+   * (for example the progressive walkaround->pt-webgpu coordinator).
+   * Normal attachVitrum callers should omit this and use the default
+   * `createEngine()` recreation path.
+   */
+  readonly recreateEngine?: AttachVitrumRecreateEngineFactory;
   /** Scene description in the host-agnostic @vitrum/core contract. */
   readonly scene: CreateEngineOptions['scene'];
   /** Camera the engine reads viewMatrix / projMatrix / position from every
@@ -571,16 +592,21 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     autoRecreateMachine.times.push(now);
 
     // Fire-and-forget; errors inside recreate are surface-logged.
-    void performAutoRecreate();
+    void performAutoRecreate(err);
   };
 
-  const performAutoRecreate = async (): Promise<void> => {
+  const performAutoRecreate = async (lossError: EngineError): Promise<void> => {
     // 1. Stop the RAF loop while we recreate.
     stopped = true;
     if (rafHandle != null) {
       cancelAnimationFrame(rafHandle);
       rafHandle = null;
     }
+    const previousBackendId = engine.backendId;
+    const recreateAttempt = autoRecreateMachine.times.length;
+    const recreateReason: AttachVitrumAutoRecreateReason = lossError.kind === 'context-lost'
+      ? 'context-lost'
+      : 'device-lost';
 
     // 2. Export GI state before dispose (walkaround-hybrid backend only).
     const giEngine = engine as Engine & Partial<GIStatePersistable>;
@@ -656,7 +682,14 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
     // 4. Recreate.
     try {
-      engine = await buildEngineFromOpts(opts, currentScene);
+      engine = opts.recreateEngine != null
+        ? await opts.recreateEngine({
+            scene: currentScene,
+            previousBackendId,
+            reason: recreateReason,
+            attempt: recreateAttempt,
+          })
+        : await buildEngineFromOpts(opts, currentScene);
       trackEngineScene(engine);
       attachSceneController(engine);
       lastSceneControllerFrameMs = null;

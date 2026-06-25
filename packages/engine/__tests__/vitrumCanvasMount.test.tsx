@@ -612,6 +612,101 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     root.unmount();
   });
 
+  it('passes a progressive recreate factory that rebuilds the coordinator with the current scene', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const gltfModule = await import('../src/gltf.js');
+    const progressiveModule = await import('../src/createProgressiveEngine.js');
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+
+    const attachSpy = vi.spyOn(vanillaModule, 'attachVitrum').mockResolvedValue(makeMockHandle());
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const importedScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const currentScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const asset = makeMockGltfAsset(gltf, importedScene);
+    const initialCoordinator = {
+      getScene: vi.fn(() => importedScene),
+      setScene: vi.fn(),
+      updatePrimitive: vi.fn(),
+      addPrimitive: vi.fn(),
+      removePrimitive: vi.fn(),
+      reset: vi.fn(),
+      frame: vi.fn(() => ({ phase: 'realtime', output: { kind: 'skipped', samplesAccumulated: 0, isConverged: false } })),
+    };
+    const recreatedCoordinator = {
+      getScene: vi.fn(() => currentScene),
+      setScene: vi.fn(),
+      updatePrimitive: vi.fn(),
+      addPrimitive: vi.fn(),
+      removePrimitive: vi.fn(),
+      reset: vi.fn(),
+      frame: vi.fn(() => ({ phase: 'realtime', output: { kind: 'skipped', samplesAccumulated: 0, isConverged: false } })),
+    };
+    const progressiveResult = makeMockProgressiveGltfResult(asset, initialCoordinator);
+    const recreatedHandle = makeMockProgressiveGltfResult(asset, recreatedCoordinator).engine;
+    vi.spyOn(gltfModule, 'loadGltfWithProgressiveEngine').mockResolvedValue(progressiveResult);
+    const createProgressiveSpy = vi.spyOn(progressiveModule, 'createProgressiveEngine')
+      .mockResolvedValue(recreatedHandle);
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0]);
+
+    const root = createRoot(container);
+    root.render(React.createElement(VitrumCanvas, {
+      gltf,
+      gltfOptions: { buffers },
+      gltfProgressive: true,
+      gltfProgressiveOptions: {
+        seedFromRealtime: false,
+        stillFramesBeforeHandoff: 2,
+      },
+      gltfPlayback: { loop: false },
+      camera: CAMERA,
+      debug: true,
+    }));
+    await happyWindow.happyDOM.waitUntilComplete();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await happyWindow.happyDOM.waitUntilComplete();
+
+    const opts = attachSpy.mock.calls[0]![0];
+    expect(typeof opts.recreateEngine).toBe('function');
+
+    const recreatedEngine = await opts.recreateEngine!({
+      scene: currentScene,
+      previousBackendId: 'pt-webgpu',
+      reason: 'device-lost',
+      attempt: 1,
+    });
+
+    expect(createProgressiveSpy).toHaveBeenCalledWith(expect.objectContaining({
+      canvas: expect.any(Object),
+      scene: currentScene,
+      controller: progressiveResult.controller,
+      seedFromRealtime: false,
+      stillFramesBeforeHandoff: 2,
+      controllerLoop: false,
+      debug: true,
+    }));
+    expect(progressiveResult.controller.attachEngine).toHaveBeenCalledWith(
+      recreatedHandle.coordinator,
+      { setScene: false },
+    );
+    expect(recreatedEngine.backendId).toBe('pt-webgpu');
+    recreatedEngine.setScene(currentScene);
+    expect(recreatedCoordinator.setScene).toHaveBeenCalledWith(currentScene);
+
+    root.unmount();
+  });
+
   it('disposes a loaded glTF engine when unmounted before attachVitrum takes ownership', async () => {
     const { createRoot } = await import('react-dom/client');
     const React = await import('react');

@@ -36,6 +36,7 @@ import {
 } from '@vitrum/gltf-adapter';
 import type {
   AttachVitrumHandle,
+  AttachVitrumRecreateEngineFactory,
   AttachVitrumSceneControllerPlayback,
   CameraLike,
 } from '../lifecycle/vanilla.js';
@@ -53,7 +54,7 @@ import {
   type GltfProgressiveEngineResult,
   type LoadGltfWithEngineOptions,
 } from '../gltf.js';
-import type { ProgressiveEngineHandle } from '../createProgressiveEngine.js';
+import { createProgressiveEngine, type ProgressiveEngineHandle } from '../createProgressiveEngine.js';
 
 export type VitrumCanvasGltfOptions = Omit<
   LoadGltfWithEngineOptions,
@@ -327,6 +328,27 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         const gltfEngine = isProgressiveGltfResult(gltfResult)
           ? progressiveHandleAsEngine(gltfResult.engine)
           : gltfResult?.engine;
+        const progressiveRecreateEngine: AttachVitrumRecreateEngineFactory | undefined =
+          isProgressiveGltfResult(gltfResult)
+            ? async ({ scene: recreateScene }) => {
+                const progressiveOptions = props.gltfProgressiveOptions ?? {};
+                const playbackEnabled = vitrumCanvasPlaybackEnabled(props.gltfPlayback);
+                const playbackLoop = vitrumCanvasPlaybackLoop(props.gltfPlayback);
+                const nextHandle = await createProgressiveEngine({
+                  canvas,
+                  scene: recreateScene,
+                  controller: gltfResult.controller,
+                  ...(playbackEnabled ? {} : { controllerDeltaSeconds: 0 }),
+                  ...(playbackLoop !== undefined ? { controllerLoop: playbackLoop } : {}),
+                  ...progressiveOptions,
+                  ...(props.debug != null ? { debug: props.debug } : {}),
+                  onAdapterProfile: (profile) => { try { onAdapterProfileRef.current?.(profile); } catch { /* host callback must not propagate — ignore */ } },
+                  onError: (error, event) => { onErrorRef.current?.(error, event); },
+                });
+                gltfResult.controller.attachEngine(nextHandle.coordinator, { setScene: false });
+                return progressiveHandleAsEngine(nextHandle);
+              }
+            : undefined;
         if (scene == null) {
           throw new TypeError('[VitrumCanvas] either `scene` or `gltf` must be supplied.');
         }
@@ -335,6 +357,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           scene,
           ...(gltfResult !== undefined ? { gltfAsset: gltfResult.asset } : {}),
           ...(gltfEngine !== undefined ? { engine: gltfEngine } : {}),
+          ...(progressiveRecreateEngine !== undefined ? { recreateEngine: progressiveRecreateEngine } : {}),
           ...(gltfResult?.controller !== undefined && !isProgressiveGltfResult(gltfResult)
             ? { sceneController: gltfResult.controller }
             : {}),
