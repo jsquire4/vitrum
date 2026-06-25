@@ -127,7 +127,7 @@ function warnScenePackWarnings(
 ): void {
   for (const warning of warnings) {
     const isVertexDisplacementSkip = warning.includes('displacementMap') &&
-      warning.includes('vertex displacement skipped');
+      warning.includes('displacement skipped');
     warnCoreBvh(options, {
       code: isVertexDisplacementSkip
         ? 'walkaround-hybrid.vertex-displacement-skipped'
@@ -139,7 +139,7 @@ function warnScenePackWarnings(
       details: {
         warning,
         source: 'shared-bvh',
-        fallback: isVertexDisplacementSkip ? 'vertex displacement skipped' : 'scene pack warning retained',
+        fallback: isVertexDisplacementSkip ? 'displacement skipped' : 'scene pack warning retained',
       },
     });
   }

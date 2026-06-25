@@ -1199,7 +1199,7 @@ Required for **arbitrary glTF** on fidelity backends. Walkaround is Phase 3.
 
 #### 2B — Material packing gaps → ledger `native`
 
-**pt-webgl2** (`materialsTexture.ts` + GLSL): scalar `anisotropy` / `anisotropyRotation` plus `anisotropyMap` are now native; `thicknessMap` is approximate via a KHR volume thickness-texture clamp; `displacement*` is approximate shared-BVH vertex displacement for CPU-readable handles, with no tessellation or microdisplacement.
+**pt-webgl2** (`materialsTexture.ts` + GLSL): scalar `anisotropy` / `anisotropyRotation` plus `anisotropyMap` are now native; `thicknessMap` is approximate via a KHR volume thickness-texture clamp; `displacement*` is approximate shared-BVH displacement for CPU-readable handles: vertex-only by default, with bounded uniform CPU microdisplacement when `displacementSubdivisions` is set; adaptive/error-bounded microgeometry remains future-contract.
 
 | Field | Work |
 |-------|------|
@@ -1517,8 +1517,7 @@ reservoir-backed ReSTIR direct light and GI participation still follow the
 approximate realtime lanes,
 and baked light maps' non-camera paths still use scalar packed lanes. Bump maps now feed
 shade-owned, DI, and GI suffix visible-normal payloads; CPU-readable displacement maps now
-apply vertex-level geometry before shared BVH construction, but remain approximate because
-no tessellation/microdisplacement is synthesized.
+apply shared-BVH geometry before BVH construction. Authored vertices move by default; `displacementSubdivisions` opts into bounded uniform CPU microdisplacement, but the rows remain approximate because adaptive/error-bounded microgeometry is not contracted.
 
 | Component | File(s) | Notes |
 |-----------|---------|-------|
@@ -1570,7 +1569,7 @@ Scalar `specularColor` / `specularIntensity`, readable `specularColorMap` / `spe
 
 #### 3F — Fields intentionally permanent `unsupported` on walkaround
 
-Document in ledger + planner: `spectralAttenuation`, `dispersionAbbeNumber`, and `thinFilmStack` are permanent `unsupported` rows on walkaround. These fields are now pinned by walkaround unit + engine-warning tests on both `setScene()` and `updatePrimitive()`, including the `KHR_materials_dispersion` source path in glTF compatibility reporting. `scatteringCoefficient`, `scatteringAnisotropy`, and `scatteringCoefficientRGB` are no longer in this bucket: they are approximate realtime volume-scattering rows, with atlas-packed sigmaS/aniso controls consumed in shade, OIT, ReSTIR-DI, ReSTIR-GI, and DDGI; true volumetric random walks/delta tracking remain outside walkaround scope. `frontLayer` and `backLayer` are no longer in this bucket: they are approximate face absorption layers, with transmission plus roughness controls consumed in shade, OIT, ReSTIR-DI, ReSTIR-GI, and DDGI; layer-local normal maps and full layered/TMM transport remain unsupported. `displacementMap` / `displacementScale` / `displacementBias` are not in this unsupported bucket: they are approximate vertex-level shared-BVH displacement when CPU-readable, with no tessellation/microdisplacement. **Arbitrary glTF 100%** routes assets using unsupported specialty fields to pt-webgpu via `rankGltfBackends` — walkaround 100% ≠ all fields native.
+Document in ledger + planner: `spectralAttenuation`, `dispersionAbbeNumber`, and `thinFilmStack` are permanent `unsupported` rows on walkaround. These fields are now pinned by walkaround unit + engine-warning tests on both `setScene()` and `updatePrimitive()`, including the `KHR_materials_dispersion` source path in glTF compatibility reporting. `scatteringCoefficient`, `scatteringAnisotropy`, and `scatteringCoefficientRGB` are no longer in this bucket: they are approximate realtime volume-scattering rows, with atlas-packed sigmaS/aniso controls consumed in shade, OIT, ReSTIR-DI, ReSTIR-GI, and DDGI; true volumetric random walks/delta tracking remain outside walkaround scope. `frontLayer` and `backLayer` are no longer in this bucket: they are approximate face absorption layers, with transmission plus roughness controls consumed in shade, OIT, ReSTIR-DI, ReSTIR-GI, and DDGI; layer-local normal maps and full layered/TMM transport remain unsupported. `displacementMap` / `displacementScale` / `displacementBias` are not in this unsupported bucket: they are approximate shared-BVH displacement when CPU-readable: vertex-only by default, with bounded uniform CPU microdisplacement when `displacementSubdivisions` is set. **Arbitrary glTF 100%** routes assets using unsupported specialty fields to pt-webgpu via `rankGltfBackends` — walkaround 100% ≠ all fields native.
 
 #### 3G — Structural debt (items_to_fix §H)
 
@@ -2076,7 +2075,7 @@ is camera-visible OIT composition rather than true layered ReSTIR/GI transport.
 | Maps (17+) | supported/readable material maps listed in 3D | 3D atlas + decode pipeline; unsupported volume/spectral/layered families remain explicit below; displacement is vertex-level approximate when CPU-readable |
 | Disney scalars | specular*, clearcoat*, sheen*, anisotropy*, iridescence* | 3E; these rows are approximate after shade-owned, ReSTIR-DI, GI suffix, and receiver-lobe GI target consumption; native promotion still needs material-furnace/reference A/B where applicable |
 | Volume/spectral | spectral*, dispersion, thinFilm, front/back layer, scattering* | Spectral/dispersion/thinFilm remain permanent unsupported + planner routes to PT; scattering* and front/back layers are approximate realtime rows |
-| Displacement | displacement* | Approximate shared-BVH vertex displacement for CPU-readable handles on shipping renderers; no tessellation/microdisplacement, and inverse path replay still downgrades to geometry finite difference |
+| Displacement | displacement* | Approximate shared-BVH displacement for CPU-readable handles on shipping renderers; vertex-only by default, bounded uniform CPU microdisplacement with `displacementSubdivisions`, and inverse path replay still downgrades to geometry finite difference |
 
 **pt-webgl2 ledger residuals:** `extensions` is ledger-unsupported but host-discretionary and intentionally warning-free. `displacementMap`, `displacementScale`, and `displacementBias` are now approximate: CPU-readable height maps displace existing vertices before the shared merged BVH is uploaded, while scalar displacement material patches fall back to a scene repack instead of using a material-only fast path. Approximate fields are `shadingModel`, `thickness`, `thicknessMap`, `scatteringCoefficientRGB`, and the displacement trio; `frontLayer` and `backLayer` are native field-consumption rows after face-selected transmission/roughness plus nested normal-map/normal-scale packing and shader consumption. `emitterCastShadow` is native in the shadow matrix after folded mesh-area emitter shadow flags reached the forward emissive-hit MIS estimator. 2026-06-20 follow-up: pt-webgl2 now exposes `createInverseSession()` with the backend-agnostic finite-difference method, using the retained last camera, frozen seed sequence, normal WebGL2 render path, RGBA32F readback, and material/emitter mutation hooks; path-replay adjoints remain pt-webgpu-only.
 

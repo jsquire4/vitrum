@@ -182,7 +182,7 @@ describe('ReSTIR bvhCore material resolver', () => {
       const scenePackWarnings = buffers.warnings ?? [];
       expect(scenePackWarnings.some((warning) =>
         warning.includes('Primitive "panel" displacementMap') &&
-        warning.includes('vertex displacement skipped'),
+        warning.includes('displacement skipped'),
       )).toBe(true);
       expect(warnSpy).not.toHaveBeenCalled();
       expect(warnings).toContainEqual(expect.objectContaining({
@@ -192,7 +192,7 @@ describe('ReSTIR bvhCore material resolver', () => {
         method: 'setScene',
         details: expect.objectContaining({
           source: 'shared-bvh',
-          fallback: 'vertex displacement skipped',
+          fallback: 'displacement skipped',
           warning: expect.stringContaining('Primitive "panel" displacementMap'),
         }),
       }));

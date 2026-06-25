@@ -153,8 +153,9 @@
  * roughnessMap / metallicMap / aoMap / alphaMap / emissiveMap /
  * transmissionMap / thicknessMap / lightMap / specular maps / clearcoat maps /
  * sheen maps / anisotropyMap / iridescence maps / bumpMap / displacementMap,
- * layer-local normal maps, spectral curves, thin-film stacks, and unlisted
- * future maps/extension families
+ * scalar displacement controls other than displacementScale /
+ * displacementBias / displacementSubdivisions, layer-local normal maps,
+ * spectral curves, thin-film stacks, and unlisted future maps/extension families
  * — is rejected by the
  * warning/truthfulness surface rather than silently rendered as native.
  */
@@ -218,6 +219,7 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'displacementMap',
   'displacementScale',
   'displacementBias',
+  'displacementSubdivisions',
   'roughnessMap',
   'metallicMap',
   'aoMap',

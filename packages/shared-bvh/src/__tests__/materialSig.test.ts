@@ -88,6 +88,12 @@ describe('materialSig — Beer-Lambert fields (H33)', () => {
     expect(materialSig(opaque)).not.toBe(materialSig(masked));
   });
 
+  it('includes displacement subdivision level because it changes generated geometry', () => {
+    const vertexOnly: MaterialSpec = { ...BASE, displacementSubdivisions: 0 };
+    const diced: MaterialSpec = { ...BASE, displacementSubdivisions: 2 };
+    expect(materialSig(vertexOnly)).not.toBe(materialSig(diced));
+  });
+
   it('includes every packed texture-map handle identity', () => {
     const handleA = { name: 'alpha-a' };
     const handleB = { name: 'alpha-b' };

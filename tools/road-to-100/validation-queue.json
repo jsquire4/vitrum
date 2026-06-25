@@ -645,24 +645,24 @@
       "title": "real displacement/microdisplacement",
       "status": "future-contract",
       "codeNowBounded": false,
-      "currentContract": "CPU-readable vertex displacement is consumed approximately; no tessellation or microgeometry synthesis is promised.",
+      "currentContract": "CPU-readable displacement maps move authored vertices by default and can opt into bounded uniform CPU microdisplacement via displacementSubdivisions; adaptive/error-bounded microgeometry is not promised.",
       "sourceEvidence": [
         {
           "path": "packages/core/src/engine/promiseLedger.ts",
           "includes": [
-            "no tessellation/microdisplacement is synthesized, so the row is approximate.",
+            "displacementSubdivisions adds bounded CPU microdisplacement",
             "displacementMap: 'approximate'"
           ]
         },
         {
           "path": "packages/core/src/__tests__/ledgerVsCapabilities.test.ts",
           "includes": [
-            "displacement rows stay approximate on every backend until microdisplacement is contracted"
+            "displacement rows stay approximate until adaptive/error-bounded microgeometry is contracted"
           ]
         }
       ],
       "decisionBlockers": [
-        "Define public dicing/tessellation controls, error bounds, and displacement bounds.",
+        "Define adaptive/error-bounded tessellation/dicing controls, displacement bounds, and promotion criteria beyond the current bounded uniform CPU subdivision control.",
         "Specify readable texture residency, generated-normal/tangent policy, BVH rebuild/refit semantics, and backend capability grades."
       ]
     },

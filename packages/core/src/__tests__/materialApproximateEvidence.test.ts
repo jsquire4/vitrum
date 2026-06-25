@@ -309,7 +309,7 @@ const WALKAROUND_VOLUME_SCATTERING = evidence(
 
 const SHARED_VERTEX_DISPLACEMENT = evidence(
   'shared-vertex-displacement',
-  'CPU-readable displacement maps become vertex-level geometry before BVH build; no tessellation/microdisplacement',
+  'CPU-readable displacement maps become shared-BVH geometry before BVH build; bounded uniform microdisplacement is opt-in, adaptive/error-bounded microgeometry is not contracted',
   [
     'packages/shared-bvh/src/__tests__/scenePack.test.ts',
     'packages/walkaround-hybrid/src/restir/__tests__/bvhCoreMaterialResolver.test.ts',
@@ -327,7 +327,7 @@ const SHARED_VERTEX_DISPLACEMENT = evidence(
       path: 'packages/shared-bvh/src/vertexDisplacement.ts',
       includes: [
         'maybeDisplaceMeshPositions',
-        'no tessellation/microdisplacement is synthesized',
+        'maybeMicrodisplaceMeshGeometry',
       ],
     },
   ],
@@ -528,12 +528,12 @@ const MATERIAL_APPROXIMATE_EVIDENCE: Record<BackendWithApproximateEvidence, Reco
       'scatteringAnisotropy',
       'scatteringCoefficientRGB',
     ], WALKAROUND_VOLUME_SCATTERING),
-    ...group(['displacementMap', 'displacementScale', 'displacementBias'], SHARED_VERTEX_DISPLACEMENT),
+    ...group(['displacementMap', 'displacementScale', 'displacementBias', 'displacementSubdivisions'], SHARED_VERTEX_DISPLACEMENT),
   },
   'pt-webgl2': {
     shadingModel: PT_WEBGL2_UNLIT,
     ...group(['thickness', 'thicknessMap'], PT_WEBGL2_THICKNESS),
-    ...group(['displacementMap', 'displacementScale', 'displacementBias'], SHARED_VERTEX_DISPLACEMENT),
+    ...group(['displacementMap', 'displacementScale', 'displacementBias', 'displacementSubdivisions'], SHARED_VERTEX_DISPLACEMENT),
     scatteringCoefficientRGB: PT_WEBGL2_SCATTER_RGB,
   },
   'pt-webgpu': {
@@ -546,7 +546,7 @@ const MATERIAL_APPROXIMATE_EVIDENCE: Record<BackendWithApproximateEvidence, Reco
       'specularIntensityMap', 'specularIntensity', 'specularColor',
       'anisotropy', 'anisotropyRotation',
     ], PT_WEBGPU_RICH_LOBES),
-    ...group(['displacementMap', 'displacementScale', 'displacementBias'], SHARED_VERTEX_DISPLACEMENT),
+    ...group(['displacementMap', 'displacementScale', 'displacementBias', 'displacementSubdivisions'], SHARED_VERTEX_DISPLACEMENT),
   },
 };
 

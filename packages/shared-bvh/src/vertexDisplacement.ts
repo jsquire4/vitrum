@@ -10,6 +10,20 @@ interface RawHeightPixels {
 
 type DisplacementWarningSink = (warning: string) => void;
 
+const MAX_DISPLACEMENT_SUBDIVISIONS = 4;
+const MAX_MICRODISPLACED_TRIANGLES = 262_144;
+
+export interface MicrodisplacedMeshGeometry {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly indices: Uint32Array;
+  readonly uvs?: Float32Array;
+  readonly uv1?: Float32Array;
+  readonly tangents?: Float32Array;
+  readonly colors?: Float32Array;
+  readonly subdivisions: number;
+}
+
 function halfToFloat(h: number): number {
   const s = (h & 0x8000) >> 15;
   const e = (h & 0x7c00) >> 10;
@@ -104,12 +118,12 @@ function readHeightPixels(
 ): RawHeightPixels | null {
   const payload = handlePayload(ref.handle);
   if (payload == null) {
-    warn(`${warningPrefix(primitiveId)} handle is not CPU-readable (${textureHandleType(ref.handle)}); vertex displacement skipped.`);
+    warn(`${warningPrefix(primitiveId)} handle is not CPU-readable (${textureHandleType(ref.handle)}); displacement skipped.`);
     return null;
   }
   const { width, height, data, hint } = payload;
   if (width <= 0 || height <= 0 || data == null || typeof data.length !== 'number') {
-    warn(`${warningPrefix(primitiveId)} handle is missing positive width/height/data; vertex displacement skipped.`);
+    warn(`${warningPrefix(primitiveId)} handle is missing positive width/height/data; displacement skipped.`);
     return null;
   }
   const pixelCount = width * height;
@@ -118,7 +132,7 @@ function readHeightPixels(
   if (![1, 2, 3, 4].includes(channels) || !Number.isInteger(channels)) {
     warn(
       `${warningPrefix(primitiveId)} has ${data.length} values for ${width}x${height} pixels; ` +
-      'expected 1, 2, 3, or 4 channels. Vertex displacement skipped.',
+      'expected 1, 2, 3, or 4 channels. Displacement skipped.',
     );
     return null;
   }
@@ -199,9 +213,8 @@ function normalize3(x: number, y: number, z: number): readonly [number, number, 
 }
 
 /**
- * Apply CPU-readable vertex displacement to a mesh-like primitive's local
- * positions. This is real geometry/BVH displacement, but it is intentionally
- * vertex-only: no tessellation/microdisplacement is synthesized.
+ * Apply CPU-readable displacement to authored mesh vertices only. For opt-in
+ * diced geometry, use {@link maybeMicrodisplaceMeshGeometry}.
  */
 export function maybeDisplaceMeshPositions(
   input: {
@@ -224,7 +237,7 @@ export function maybeDisplaceMeshPositions(
   }
   const uvSource = texCoord === 1 ? input.uv1 : input.uvs;
   if (uvSource == null || uvSource.length === 0) {
-    warn(`${warningPrefix(input.primitiveId)} requests TEXCOORD_${texCoord}, but that UV channel is absent; vertex displacement skipped.`);
+    warn(`${warningPrefix(input.primitiveId)} requests TEXCOORD_${texCoord}, but that UV channel is absent; displacement skipped.`);
     return null;
   }
   const pixels = readHeightPixels(ref, input.primitiveId, warn);
@@ -251,4 +264,281 @@ export function maybeDisplaceMeshPositions(
     out[i * 3 + 2] = pz + nz * amount;
   }
   return out;
+}
+
+
+function resolveDisplacementSubdivisions(
+  material: MaterialSpec,
+  primitiveId: string,
+  warn: DisplacementWarningSink,
+): number {
+  const raw = material.displacementSubdivisions;
+  if (raw == null || raw <= 0) return 0;
+  if (!Number.isFinite(raw)) {
+    warn(`${warningPrefix(primitiveId)} displacementSubdivisions is non-finite; microdisplacement disabled.`);
+    return 0;
+  }
+  const rounded = Math.floor(raw);
+  if (rounded < 1) return 0;
+  if (rounded !== raw) {
+    warn(`${warningPrefix(primitiveId)} displacementSubdivisions=${raw} is not an integer; using ${rounded}.`);
+  }
+  if (rounded > MAX_DISPLACEMENT_SUBDIVISIONS) {
+    warn(
+      `${warningPrefix(primitiveId)} displacementSubdivisions=${rounded} exceeds the shared-BVH cap ` +
+      `${MAX_DISPLACEMENT_SUBDIVISIONS}; using ${MAX_DISPLACEMENT_SUBDIVISIONS}.`,
+    );
+    return MAX_DISPLACEMENT_SUBDIVISIONS;
+  }
+  return rounded;
+}
+
+function generatedTriangleList(vertexCount: number): Uint32Array {
+  const indices = new Uint32Array(vertexCount);
+  for (let i = 0; i < vertexCount; i += 1) indices[i] = i;
+  return indices;
+}
+
+function lerpScalar(
+  values: Float32Array,
+  stride: number,
+  ia: number,
+  ib: number,
+  ic: number,
+  component: number,
+  wa: number,
+  wb: number,
+  wc: number,
+  fallback: number,
+): number {
+  return (values[ia * stride + component] ?? fallback) * wa +
+    (values[ib * stride + component] ?? fallback) * wb +
+    (values[ic * stride + component] ?? fallback) * wc;
+}
+
+function accumulateFaceNormal(
+  positions: readonly number[],
+  normals: Float64Array,
+  ia: number,
+  ib: number,
+  ic: number,
+): void {
+  const ax = positions[ia * 3] ?? 0;
+  const ay = positions[ia * 3 + 1] ?? 0;
+  const az = positions[ia * 3 + 2] ?? 0;
+  const bx = positions[ib * 3] ?? 0;
+  const by = positions[ib * 3 + 1] ?? 0;
+  const bz = positions[ib * 3 + 2] ?? 0;
+  const cx = positions[ic * 3] ?? 0;
+  const cy = positions[ic * 3 + 1] ?? 0;
+  const cz = positions[ic * 3 + 2] ?? 0;
+  const abx = bx - ax;
+  const aby = by - ay;
+  const abz = bz - az;
+  const acx = cx - ax;
+  const acy = cy - ay;
+  const acz = cz - az;
+  const nx = aby * acz - abz * acy;
+  const ny = abz * acx - abx * acz;
+  const nz = abx * acy - aby * acx;
+  if (!Number.isFinite(nx) || !Number.isFinite(ny) || !Number.isFinite(nz)) return;
+  for (const i of [ia, ib, ic]) {
+    normals[i * 3] = (normals[i * 3] ?? 0) + nx;
+    normals[i * 3 + 1] = (normals[i * 3 + 1] ?? 0) + ny;
+    normals[i * 3 + 2] = (normals[i * 3 + 2] ?? 0) + nz;
+  }
+}
+
+/**
+ * Dice triangle-list geometry and apply CPU-readable displacement at generated
+ * vertices before BVH construction. This is intentionally uniform and bounded:
+ * it is the first real microgeometry contract, not an adaptive micropolygon
+ * renderer. Returns null when `displacementSubdivisions` is absent/zero or when
+ * the requested map/UVs/cap cannot be honored, allowing callers to fall back to
+ * the legacy vertex-only path.
+ */
+export function maybeMicrodisplaceMeshGeometry(input: {
+  readonly primitiveId: string;
+  readonly material: MaterialSpec;
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly indices?: Uint32Array | Uint16Array;
+  readonly uvs?: Float32Array;
+  readonly uv1?: Float32Array;
+  readonly tangents?: Float32Array;
+  readonly colors?: Float32Array;
+  readonly onWarning?: DisplacementWarningSink;
+}): MicrodisplacedMeshGeometry | null {
+  const ref = input.material.displacementMap;
+  if (ref == null) return null;
+  const warn = input.onWarning ?? (() => {});
+  const subdivisions = resolveDisplacementSubdivisions(input.material, input.primitiveId, warn);
+  if (subdivisions <= 0) return null;
+  const texCoord = ref.texCoord ?? 0;
+  if (texCoord !== 0 && texCoord !== 1) {
+    warn(`${warningPrefix(input.primitiveId)} requests TEXCOORD_${texCoord}; microdisplacement supports TEXCOORD_0/1 only. Falling back to vertex displacement.`);
+    return null;
+  }
+  const uvSource = texCoord === 1 ? input.uv1 : input.uvs;
+  if (uvSource == null || uvSource.length === 0) {
+    warn(`${warningPrefix(input.primitiveId)} requests TEXCOORD_${texCoord}, but that UV channel is absent; microdisplacement disabled.`);
+    return null;
+  }
+  const pixels = readHeightPixels(ref, input.primitiveId, warn);
+  if (pixels == null) return null;
+
+  const vertexCount = Math.floor(input.positions.length / 3);
+  const sourceIndices = input.indices ?? generatedTriangleList(vertexCount);
+  const sourceTriCount = Math.floor(sourceIndices.length / 3);
+  const steps = 1 << subdivisions;
+  const generatedTriCount = sourceTriCount * steps * steps;
+  if (generatedTriCount > MAX_MICRODISPLACED_TRIANGLES) {
+    warn(
+      `${warningPrefix(input.primitiveId)} displacementSubdivisions=${subdivisions} would generate ` +
+      `${generatedTriCount} triangles, above the shared-BVH safety cap ${MAX_MICRODISPLACED_TRIANGLES}; ` +
+      'falling back to vertex displacement.',
+    );
+    return null;
+  }
+
+  const outPositions: number[] = [];
+  const outNormalFallback: number[] = [];
+  const outUvs: number[] | undefined = input.uvs != null ? [] : undefined;
+  const outUv1: number[] | undefined = input.uv1 != null ? [] : undefined;
+  const hasTangents = input.tangents != null && input.tangents.length >= vertexCount * 4;
+  const outTangents: number[] | undefined = hasTangents ? [] : undefined;
+  const colorStride = input.colors != null && input.colors.length >= vertexCount * 4
+    ? 4
+    : input.colors != null && input.colors.length >= vertexCount * 3
+      ? 3
+      : 0;
+  const outColors: number[] | undefined = colorStride > 0 ? [] : undefined;
+  const outIndices: number[] = [];
+  const scale = finiteOr(input.material.displacementScale, 1);
+  const bias = finiteOr(input.material.displacementBias, 0);
+
+  const pushVertex = (
+    ia: number,
+    ib: number,
+    ic: number,
+    wa: number,
+    wb: number,
+    wc: number,
+  ): number => {
+    const px = lerpScalar(input.positions, 3, ia, ib, ic, 0, wa, wb, wc, 0);
+    const py = lerpScalar(input.positions, 3, ia, ib, ic, 1, wa, wb, wc, 0);
+    const pz = lerpScalar(input.positions, 3, ia, ib, ic, 2, wa, wb, wc, 0);
+    const [nx, ny, nz] = normalize3(
+      lerpScalar(input.normals, 3, ia, ib, ic, 0, wa, wb, wc, 0),
+      lerpScalar(input.normals, 3, ia, ib, ic, 1, wa, wb, wc, 1),
+      lerpScalar(input.normals, 3, ia, ib, ic, 2, wa, wb, wc, 0),
+    );
+    const du = lerpScalar(uvSource, 2, ia, ib, ic, 0, wa, wb, wc, 0);
+    const dv = lerpScalar(uvSource, 2, ia, ib, ic, 1, wa, wb, wc, 0);
+    const amount = sampleHeight(pixels, du, dv, ref) * scale + bias;
+    const outIndex = Math.floor(outPositions.length / 3);
+    outPositions.push(px + nx * amount, py + ny * amount, pz + nz * amount);
+    outNormalFallback.push(nx, ny, nz);
+    if (outUvs != null) {
+      outUvs.push(
+        lerpScalar(input.uvs!, 2, ia, ib, ic, 0, wa, wb, wc, 0),
+        lerpScalar(input.uvs!, 2, ia, ib, ic, 1, wa, wb, wc, 0),
+      );
+    }
+    if (outUv1 != null) {
+      outUv1.push(
+        lerpScalar(input.uv1!, 2, ia, ib, ic, 0, wa, wb, wc, 0),
+        lerpScalar(input.uv1!, 2, ia, ib, ic, 1, wa, wb, wc, 0),
+      );
+    }
+    if (outTangents != null) {
+      const [tx, ty, tz] = normalize3(
+        lerpScalar(input.tangents!, 4, ia, ib, ic, 0, wa, wb, wc, 1),
+        lerpScalar(input.tangents!, 4, ia, ib, ic, 1, wa, wb, wc, 0),
+        lerpScalar(input.tangents!, 4, ia, ib, ic, 2, wa, wb, wc, 0),
+      );
+      const handedness = lerpScalar(input.tangents!, 4, ia, ib, ic, 3, wa, wb, wc, 1) < 0 ? -1 : 1;
+      outTangents.push(tx, ty, tz, handedness);
+    }
+    if (outColors != null) {
+      outColors.push(
+        lerpScalar(input.colors!, colorStride, ia, ib, ic, 0, wa, wb, wc, 1),
+        lerpScalar(input.colors!, colorStride, ia, ib, ic, 1, wa, wb, wc, 1),
+        lerpScalar(input.colors!, colorStride, ia, ib, ic, 2, wa, wb, wc, 1),
+      );
+      if (colorStride === 4) {
+        outColors.push(lerpScalar(input.colors!, 4, ia, ib, ic, 3, wa, wb, wc, 1));
+      }
+    }
+    return outIndex;
+  };
+
+  for (let tri = 0; tri < sourceTriCount; tri += 1) {
+    const ia = sourceIndices[tri * 3] ?? 0;
+    const ib = sourceIndices[tri * 3 + 1] ?? 0;
+    const ic = sourceIndices[tri * 3 + 2] ?? 0;
+    if (ia >= vertexCount || ib >= vertexCount || ic >= vertexCount) {
+      warn(
+        `${warningPrefix(input.primitiveId)} triangle ${tri} references an out-of-range vertex index ` +
+        `(i0=${ia}, i1=${ib}, i2=${ic}; vertexCount=${vertexCount}); microdisplacement disabled.`,
+      );
+      return null;
+    }
+    const rows: number[][] = [];
+    for (let row = 0; row <= steps; row += 1) {
+      const cells = steps - row;
+      rows[row] = [];
+      for (let col = 0; col <= cells; col += 1) {
+        const wb = row / steps;
+        const wc = col / steps;
+        const wa = 1 - wb - wc;
+        rows[row]![col] = pushVertex(ia, ib, ic, wa, wb, wc);
+      }
+    }
+    for (let row = 0; row < steps; row += 1) {
+      for (let col = 0; col < steps - row; col += 1) {
+        const v0 = rows[row]![col]!;
+        const v1 = rows[row + 1]![col]!;
+        const v2 = rows[row]![col + 1]!;
+        outIndices.push(v0, v1, v2);
+        if (col < steps - row - 1) {
+          const v3 = rows[row + 1]![col + 1]!;
+          outIndices.push(v1, v3, v2);
+        }
+      }
+    }
+  }
+
+  const normalAccum = new Float64Array(outPositions.length);
+  for (let t = 0; t + 2 < outIndices.length; t += 3) {
+    accumulateFaceNormal(outPositions, normalAccum, outIndices[t]!, outIndices[t + 1]!, outIndices[t + 2]!);
+  }
+  const outNormals = new Float32Array(outNormalFallback.length);
+  for (let i = 0; i < outNormals.length; i += 3) {
+    const [nx, ny, nz] = normalize3(normalAccum[i] ?? 0, normalAccum[i + 1] ?? 0, normalAccum[i + 2] ?? 0);
+    const fallbackZero = nx === 0 && ny === 1 && nz === 0 &&
+      Math.abs(normalAccum[i] ?? 0) <= 1e-12 &&
+      Math.abs(normalAccum[i + 1] ?? 0) <= 1e-12 &&
+      Math.abs(normalAccum[i + 2] ?? 0) <= 1e-12;
+    if (fallbackZero) {
+      outNormals[i] = outNormalFallback[i] ?? 0;
+      outNormals[i + 1] = outNormalFallback[i + 1] ?? 1;
+      outNormals[i + 2] = outNormalFallback[i + 2] ?? 0;
+    } else {
+      outNormals[i] = nx;
+      outNormals[i + 1] = ny;
+      outNormals[i + 2] = nz;
+    }
+  }
+
+  return {
+    positions: new Float32Array(outPositions),
+    normals: outNormals,
+    indices: new Uint32Array(outIndices),
+    ...(outUvs != null ? { uvs: new Float32Array(outUvs) } : {}),
+    ...(outUv1 != null ? { uv1: new Float32Array(outUv1) } : {}),
+    ...(outTangents != null ? { tangents: new Float32Array(outTangents) } : {}),
+    ...(outColors != null ? { colors: new Float32Array(outColors) } : {}),
+    subdivisions,
+  };
 }

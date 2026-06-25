@@ -42,6 +42,7 @@ const DISPLACEMENT_FIELDS = [
   'displacementMap',
   'displacementScale',
   'displacementBias',
+  'displacementSubdivisions',
 ] as const;
 
 const WALKAROUND_PERMANENT_UNSUPPORTED_OPTICAL_FIELDS = [
@@ -108,7 +109,7 @@ describe('BACKEND_PROMISE_LEDGER incremental patch semantics', () => {
 // ── Road-to-100 future-contract boundaries ───────────────────────────────────
 
 describe('BACKEND_PROMISE_LEDGER Road-to-100 future-contract boundaries', () => {
-  it('displacement rows stay approximate on every backend until microdisplacement is contracted', () => {
+  it('displacement rows stay approximate until adaptive/error-bounded microgeometry is contracted', () => {
     for (const [backend, record] of Object.entries(BACKEND_PROMISE_LEDGER)) {
       for (const field of DISPLACEMENT_FIELDS) {
         expect(record.supportDetails.materials?.[field], `${backend}.${field}`).toBe('approximate');

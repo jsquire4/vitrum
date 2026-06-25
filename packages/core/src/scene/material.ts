@@ -225,17 +225,22 @@ export interface MaterialSpec {
    *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and walkaround-hybrid's
    *  atlas-backed visible shade path. */
   readonly bumpScale?: number;
-  /** Vertex displacement height map.
-   *  CPU-readable handles are applied as vertex displacement by shipping renderers
-   *  before shared BVH construction. This is vertex-level geometry displacement,
-   *  not tessellated microdisplacement. */
+  /** Displacement height map.
+   *  CPU-readable handles are applied before shared BVH construction. By default
+   *  this moves authored vertices only; set `displacementSubdivisions` to opt in
+   *  to bounded CPU microdisplacement/dicing before BVH build. */
   readonly displacementMap?: TextureRef;
   /** Displacement amplitude scale. Default 1.
-   *  Consumed with `displacementMap` by the shared vertex-displacement packers. */
+   *  Consumed with `displacementMap` by the shared displacement packers. */
   readonly displacementScale?: number;
   /** Displacement bias (shifts the zero point). Default 0.
-   *  Consumed with `displacementMap` by the shared vertex-displacement packers. */
+   *  Consumed with `displacementMap` by the shared displacement packers. */
   readonly displacementBias?: number;
+  /** Uniform triangle subdivision levels for CPU microdisplacement. Default 0
+   *  preserves vertex-only displacement. Shipping shared-BVH packers clamp this
+   *  to a small bounded range and warn/fallback when the diced mesh would exceed
+   *  their safety budget. */
+  readonly displacementSubdivisions?: number;
   /** Baked diffuse irradiance / light map (additive to emissive).
    *  Consumed by pt-webgl2 (D3), pt-webgpu (D3), and approximately by
    *  walkaround-hybrid's atlas-backed camera-visible shade path. */
@@ -450,6 +455,7 @@ export type MaterialMapFields = Pick<
   | 'displacementMap'
   | 'displacementScale'
   | 'displacementBias'
+  | 'displacementSubdivisions'
   | 'lightMap'
   | 'lightMapIntensity'
 >;

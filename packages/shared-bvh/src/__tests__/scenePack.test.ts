@@ -77,6 +77,41 @@ function displacedTriScene(): Scene {
   };
 }
 
+function microDisplacedTriScene(subdivisions = 1): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'micro-displaced',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        uv1: new Float32Array([0, 0, 2, 0, 0, 2]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          displacementMap: {
+            handle: {
+              width: 2,
+              height: 2,
+              data: new Float32Array([0, 1, 1, 0]),
+              __vitrum_hint__: { channels: 1, dataType: 'float32', colorSpace: 'linear' },
+            },
+            wrapS: 'clamp-to-edge',
+            wrapT: 'clamp-to-edge',
+          },
+          displacementScale: 1,
+          displacementBias: 0,
+          displacementSubdivisions: subdivisions,
+        },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function boxMesh(id: string, min: Vec3, max: Vec3, transform?: Mat4): Scene['primitives'][number] {
   const [x0, y0, z0] = min;
   const [x1, y1, z1] = max;
@@ -204,6 +239,32 @@ describe('packSceneFromCore (SP-*)', () => {
       0, 1, expect.closeTo(0.15), 0,
     ]);
     expect(packed.warnings).toEqual([]);
+  });
+
+  it('microdisplaces CPU-readable height maps by dicing before local BLAS/TLAS packing', () => {
+    const packed = packSceneFromCore(microDisplacedTriScene(1), { tlas: true, resolveMaterialId: () => 0 });
+
+    expect(packed.triangleCount).toBe(4);
+    expect(packed.primitiveTlasBindings[0]?.vertexCount).toBe(6);
+    expect(packed.primitiveTlasBindings[0]?.triCount).toBe(4);
+    expect(packed.primitiveTlasBindings[0]?.localAabbMax[2]).toBeCloseTo(1);
+    const zValues = Array.from({ length: Math.floor(packed.positions.length / 4) }, (_, i) => packed.positions[i * 4 + 2] ?? 0);
+    expect(zValues.some((z) => Math.abs(z - 0.5) < 1e-6)).toBe(true);
+    expect(packed.warnings).toEqual([]);
+  });
+
+  it('microdisplaces CPU-readable height maps before merged world-space BVH packing and UV1 merge', () => {
+    const scene = microDisplacedTriScene(1);
+    const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
+
+    expect(merged.vertexCount).toBe(6);
+    expect(merged.triangleCount).toBe(4);
+    expect(merged.boundingBox.max[2]).toBeCloseTo(1);
+    const uv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount);
+    expect(uv1).toBeDefined();
+    expect(uv1).toHaveLength(12);
+    expect(Array.from(uv1!).some((v) => Math.abs(v - 1) < 1e-6)).toBe(true);
+    expect(merged.warnings).toEqual([]);
   });
 
   it('packs authored tangent.xyzw beside positions/normals/uvs and defaults missing tangents to zero', () => {
@@ -771,6 +832,24 @@ describe('packSceneFromCore (SP-*)', () => {
       10,
     );
     expect(hits).toContain(0);
+  });
+
+  it('rebuildPrimitiveBlas splices opt-in microdisplacement topology and matches a full repack', () => {
+    const baseScene = microDisplacedTriScene(0);
+    const nextScene = microDisplacedTriScene(1);
+    const opts = { tlas: true, resolveMaterialId: () => 0 };
+    const packed = packSceneFromCore(baseScene, opts);
+
+    const rebuilt = rebuildPrimitiveBlas(nextScene, 'micro-displaced', packed, opts);
+    const full = packSceneFromCore(nextScene, opts);
+
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.strategy).toBe('splice');
+    expect(rebuilt.pack.triangleCount).toBe(full.triangleCount);
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.vertexCount).toBe(full.primitiveTlasBindings[0]?.vertexCount);
+    expect(Array.from(rebuilt.pack.positions)).toEqual(Array.from(full.positions));
+    expect(Array.from(rebuilt.pack.indices)).toEqual(Array.from(full.indices));
   });
 
   it('slice-2 resize rebases DOWNSTREAM offsets + leaf tri-offsets correctly', () => {

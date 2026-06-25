@@ -294,7 +294,7 @@ export const MATERIAL_SPEC_FIELDS = [
   'clearcoatMap', 'clearcoatRoughnessMap', 'clearcoatNormalMap', 'clearcoatNormalScale',
   'sheenColorMap', 'sheenRoughnessMap', 'iridescenceMap', 'iridescenceThicknessMap',
   'anisotropyMap', 'specularColorMap', 'specularIntensityMap',
-  'bumpMap', 'bumpScale', 'displacementMap', 'displacementScale', 'displacementBias',
+  'bumpMap', 'bumpScale', 'displacementMap', 'displacementScale', 'displacementBias', 'displacementSubdivisions',
   'lightMap', 'lightMapIntensity',
   // Disney BSDF extensions
   'sheen', 'sheenColor', 'sheenRoughness', 'clearcoat', 'clearcoatRoughness',
@@ -444,12 +444,14 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   // than native.
   bumpMap: 'approximate',
   bumpScale: 'approximate',
-  // CPU-readable displacement maps are applied as vertex displacement before the
-  // shared merged BVH is built. This is real geometry for existing vertices, but
-  // no tessellation/microdisplacement is synthesized, so the row is approximate.
+  // CPU-readable displacement maps are applied before the shared merged BVH is
+  // built. Authored vertices move by default; opt-in uniform dicing via
+  // displacementSubdivisions adds bounded CPU microdisplacement, but the row
+  // remains approximate until adaptive/error-bounded microgeometry is contracted.
   displacementMap: 'approximate',
   displacementScale: 'approximate',
   displacementBias: 'approximate',
+  displacementSubdivisions: 'approximate',
   lightMap: 'approximate',
   lightMapIntensity: 'approximate',
   // Scalar sheen rides material atlas metadata and adds a Charlie/Neubelt-
@@ -559,12 +561,14 @@ const PT_WEBGL2_MATERIALS: MaterialSupportMatrix = Object.freeze({
   specularIntensityMap: 'native',
   bumpMap: 'native',
   bumpScale: 'native',
-  // CPU-readable displacement maps run through shared-bvh vertex displacement
-  // before the WebGL2 merged BVH/material textures are uploaded. Vertex-only:
-  // no tessellation/microdisplacement.
+  // CPU-readable displacement maps run through shared-bvh geometry expansion
+  // before the WebGL2 merged BVH/material textures are uploaded. Authored
+  // vertices move by default; displacementSubdivisions adds bounded uniform CPU
+  // microdisplacement, but not adaptive/error-bounded microgeometry.
   displacementMap: 'approximate',
   displacementScale: 'approximate',
   displacementBias: 'approximate',
+  displacementSubdivisions: 'approximate',
   lightMap: 'native',
   lightMapIntensity: 'native',
   sheen: 'native',
@@ -680,11 +684,13 @@ const PT_WEBGPU_MATERIALS: MaterialSupportMatrix = Object.freeze({
   bumpMap: 'native',
   bumpScale: 'native',
   // Full-tier packSceneFromCore and merged-mode paths apply CPU-readable
-  // displacement maps before BLAS/BVH construction. Vertex-only, not native
-  // microdisplacement/tessellation.
+  // displacement maps before BLAS/BVH construction. Authored vertices move by
+  // default; displacementSubdivisions adds bounded uniform CPU microdisplacement,
+  // but not adaptive/error-bounded microgeometry.
   displacementMap: 'approximate',
   displacementScale: 'approximate',
   displacementBias: 'approximate',
+  displacementSubdivisions: 'approximate',
   lightMap: 'native',
   lightMapIntensity: 'native',
   sheen: 'native',

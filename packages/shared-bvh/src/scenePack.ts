@@ -11,7 +11,7 @@ import { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.j
 import { buildTlas, refitTlas } from './tlas.js';
 import { invertMat4 as _invertMat4 } from './mathUtils.js';
 import { rebaseLeafTriOffset as _rebaseLeafTriOffset, copyVec4Strided as _copyVec4Strided } from './splicePack.js';
-import { maybeDisplaceMeshPositions } from './vertexDisplacement.js';
+import { maybeDisplaceMeshPositions, maybeMicrodisplaceMeshGeometry } from './vertexDisplacement.js';
 
 // ── Back-compat re-export from extracted module ───────────────────────────────
 // invertMat4 was previously defined in this file; now canonical in mathUtils.
@@ -276,14 +276,32 @@ function packOneMeshLikePrimitive(
   matId: number,
 ): PackOneMeshLikeResult {
   const warnings: string[] = [];
-  const basePositions = primitive.positions;
+  const microdisplaced = maybeMicrodisplaceMeshGeometry({
+    primitiveId: primitive.id,
+    material: primitive.material,
+    positions: primitive.positions,
+    normals: primitive.normals,
+    ...(primitive.indices != null ? { indices: primitive.indices } : {}),
+    ...(primitive.uvs != null ? { uvs: primitive.uvs } : {}),
+    ...(primitive.uv1 != null ? { uv1: primitive.uv1 } : {}),
+    ...(primitive.tangents != null ? { tangents: primitive.tangents } : {}),
+    ...(primitive.colors != null ? { colors: primitive.colors } : {}),
+    onWarning: (warning) => warnings.push(warning),
+  });
+  const basePositions = microdisplaced?.positions ?? primitive.positions;
+  const baseNormals = microdisplaced?.normals ?? primitive.normals;
+  const baseIndicesSource = microdisplaced?.indices ?? primitive.indices;
+  const baseUvs = microdisplaced?.uvs ?? primitive.uvs;
+  const baseUv1 = microdisplaced?.uv1 ?? primitive.uv1;
+  const baseTangents = microdisplaced?.tangents ?? primitive.tangents;
+  const baseColors = microdisplaced?.colors ?? primitive.colors;
   const vertexCount = Math.floor(basePositions.length / 3);
   if (vertexCount < 3) {
     warnings.push(`Primitive "${primitive.id}" has fewer than 3 vertices; skipping.`);
     return { slice: null, warnings };
   }
   const baseIndices =
-    primitive.indices ??
+    baseIndicesSource ??
     (() => {
       const generated = new Uint32Array(vertexCount);
       for (let i = 0; i < generated.length; i += 1) generated[i] = i;
@@ -302,10 +320,7 @@ function packOneMeshLikePrimitive(
   // the vertex loop below — the renderer interpolates these by barycentrics at
   // the hit to drive baseColor/normal/etc. texture sampling.
   const localUvs = new Float32Array(vertexCount * VERTEX_STRIDE_F32);
-  const baseUvs = primitive.uvs;
-  const baseUv1 = primitive.uv1;
   const localTangents = new Float32Array(vertexCount * VERTEX_STRIDE_F32);
-  const baseTangents = primitive.tangents;
   const hasCompleteTangents = baseTangents != null && baseTangents.length >= vertexCount * 4;
   if (baseTangents != null && !hasCompleteTangents) {
     warnings.push(
@@ -314,7 +329,6 @@ function packOneMeshLikePrimitive(
     );
   }
   const localColors = new Float32Array(vertexCount * VERTEX_STRIDE_F32);
-  const baseColors = primitive.colors;
   const hasRgbaColors = baseColors != null && baseColors.length >= vertexCount * 4;
   const hasRgbColors = baseColors != null && !hasRgbaColors && baseColors.length >= vertexCount * 3;
   if (baseColors != null && !hasRgbaColors && !hasRgbColors) {
@@ -323,23 +337,25 @@ function packOneMeshLikePrimitive(
       `expected at least ${vertexCount * 3}. Ignoring authored vertex colors.`,
     );
   }
-  const sourcePositions = maybeDisplaceMeshPositions({
-    primitiveId: primitive.id,
-    material: primitive.material,
-    positions: basePositions,
-    normals: primitive.normals,
-    ...(baseUvs != null ? { uvs: baseUvs } : {}),
-    ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
-    onWarning: (warning) => warnings.push(warning),
-  }) ?? basePositions;
+  const sourcePositions = microdisplaced == null
+    ? maybeDisplaceMeshPositions({
+        primitiveId: primitive.id,
+        material: primitive.material,
+        positions: basePositions,
+        normals: baseNormals,
+        ...(baseUvs != null ? { uvs: baseUvs } : {}),
+        ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
+        onWarning: (warning) => warnings.push(warning),
+      }) ?? basePositions
+    : basePositions;
   for (let i = 0; i < vertexCount; i += 1) {
     localPositions[i * VERTEX_STRIDE_F32] = sourcePositions[i * 3] ?? 0;
     localPositions[i * VERTEX_STRIDE_F32 + 1] = sourcePositions[i * 3 + 1] ?? 0;
     localPositions[i * VERTEX_STRIDE_F32 + 2] = sourcePositions[i * 3 + 2] ?? 0;
     localPositions[i * VERTEX_STRIDE_F32 + 3] = 0;
-    localNormals[i * VERTEX_STRIDE_F32] = primitive.normals[i * 3] ?? 0;
-    localNormals[i * VERTEX_STRIDE_F32 + 1] = primitive.normals[i * 3 + 1] ?? 1;
-    localNormals[i * VERTEX_STRIDE_F32 + 2] = primitive.normals[i * 3 + 2] ?? 0;
+    localNormals[i * VERTEX_STRIDE_F32] = baseNormals[i * 3] ?? 0;
+    localNormals[i * VERTEX_STRIDE_F32 + 1] = baseNormals[i * 3 + 1] ?? 1;
+    localNormals[i * VERTEX_STRIDE_F32 + 2] = baseNormals[i * 3 + 2] ?? 0;
     localNormals[i * VERTEX_STRIDE_F32 + 3] = 0;
     if (baseUvs != null) {
       localUvs[i * VERTEX_STRIDE_F32] = baseUvs[i * 2] ?? 0;

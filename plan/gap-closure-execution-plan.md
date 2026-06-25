@@ -1193,7 +1193,7 @@ source-only classifications found no bounded implementation row hiding in the
 seven future-contract tails. Each row would require either a new public core
 contract, a new transport/physics program, or both:
 
-- real displacement/microdisplacement,
+- adaptive/error-bounded displacement microgeometry beyond bounded uniform CPU subdivision,
 - true transparent layered GI transport,
 - walkaround spectral/thin-film/layered/volumetric transport,
 - native point/line primitives,
@@ -1531,7 +1531,7 @@ These need a call, not blind implementation.
 | GRIS default flip | Keep biased realtime default until validation says otherwise | Unbiased path has cost; decision should be evidence-based. |
 | pt-webgl2 caustic naming | Keep approximate wording unless true MNEE/SPPM parity lands | Avoid claiming algorithmic equivalence. |
 | Walkaround transparent transport | Keep approximate/unsupported for true layered transport | OIT is not full reservoir/GI participation. |
-| Displacement support | Keep approximate vertex-displacement wording unless tessellation/microdisplacement lands | CPU-readable maps are applied before BVH construction, but no new geometry is synthesized. |
+| Displacement support | Keep approximate wording until adaptive/error-bounded microgeometry lands | CPU-readable maps are applied before BVH construction; `displacementSubdivisions` now synthesizes bounded uniform CPU microdisplacement, but not adaptive/error-bounded microgeometry. |
 | Native point/line primitives | Keep generated-mesh fallback | Good enough for arbitrary glTF routing; native contract is a new feature. |
 | Arbitrary UV arrays | Keep narrow remap + diagnostics | Direct core PT packers now fail closed on `texCoord > 1`; native array support still touches core/backend contracts. |
 | Instanced skinned/morphed glTF | Keep fallback-expanded primitives; do not claim native instanced skinning | Arbitrary glTF is renderable through generated skinned/morphed primitives today; a first-class instanced-skinned primitive remains a new performance/core-contract feature. |

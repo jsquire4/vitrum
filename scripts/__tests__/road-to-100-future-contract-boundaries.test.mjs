@@ -57,8 +57,8 @@ test('future-contract rows stay bounded as decision/API work', () => {
 
 test('future-contract boundary text pins the current truthful API surface', () => {
   const displacement = futureRow('FC-DISPLACEMENT-MICROTESSELLATION');
-  assert.match(displacement.currentContract, /consumed approximately/);
-  assert.match(displacement.currentContract, /no tessellation or microgeometry synthesis/);
+  assert.match(displacement.currentContract, /bounded uniform CPU microdisplacement/);
+  assert.match(displacement.currentContract, /adaptive\/error-bounded microgeometry is not promised/);
   assert.deepEqual(sourcePaths(displacement), [
     'packages/core/src/engine/promiseLedger.ts',
     'packages/core/src/__tests__/ledgerVsCapabilities.test.ts',

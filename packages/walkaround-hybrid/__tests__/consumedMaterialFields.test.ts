@@ -173,7 +173,7 @@ describe('CONSUMED_MATERIAL_FIELDS', () => {
       'baseColorMap', 'roughnessMap', 'metallicMap',
       'aoMap', 'aoMapIntensity', 'alphaMap', 'emissiveMap', 'transmissionMap',
       'thicknessMap',
-      'displacementMap', 'displacementScale', 'displacementBias',
+      'displacementMap', 'displacementScale', 'displacementBias', 'displacementSubdivisions',
       'normalMap', 'normalScale', 'bumpMap', 'bumpScale', 'lightMap', 'lightMapIntensity',
     ]) {
       expect(CONSUMED_MATERIAL_FIELDS.has(field)).toBe(true);

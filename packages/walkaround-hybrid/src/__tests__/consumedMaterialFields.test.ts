@@ -139,7 +139,7 @@ describe('CONSUMED_MATERIAL_FIELDS allowlist', () => {
       'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'transmission',
       'attenuationColor', 'attenuationDistance', 'thickness', 'thicknessMap', 'ior', 'extensions',
       'baseColorMap', 'normalMap', 'normalScale', 'roughnessMap', 'metallicMap', 'aoMap', 'aoMapIntensity', 'alphaMap',
-      'bumpMap', 'bumpScale', 'displacementMap', 'displacementScale', 'displacementBias',
+      'bumpMap', 'bumpScale', 'displacementMap', 'displacementScale', 'displacementBias', 'displacementSubdivisions',
       'emissiveMap', 'transmissionMap', 'lightMap', 'lightMapIntensity', 'envMapIntensity',
       'specularColor', 'specularIntensity', 'clearcoat', 'clearcoatRoughness',
       'sheen', 'sheenColor', 'sheenRoughness',

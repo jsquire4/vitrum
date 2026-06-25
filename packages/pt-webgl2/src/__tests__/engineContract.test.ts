@@ -484,7 +484,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(structured.some((w) =>
         w.code === 'pt-webgl2.vertex-displacement-warning' &&
         w.message.includes('displacementMap') &&
-        w.message.includes('vertex displacement skipped') &&
+        w.message.includes('displacement skipped') &&
         w.details?.source === 'mergeWorldSpaceFromCore'
       )).toBe(true);
     } finally {

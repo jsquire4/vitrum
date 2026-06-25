@@ -37,7 +37,7 @@
 import type { Mat4, MaterialSpec, Scene, SceneNodeId, ScenePrimitive, TextureRef } from '@vitrum/core';
 import type { PlainAabb } from './aabb.js';
 import { buildArrayBvh } from './buildArrayBvh.js';
-import { maybeDisplaceMeshPositions } from './vertexDisplacement.js';
+import { maybeDisplaceMeshPositions, maybeMicrodisplaceMeshGeometry } from './vertexDisplacement.js';
 
 const IDENTITY_MAT4: readonly number[] = [
   1, 0, 0, 0,
@@ -576,7 +576,7 @@ export function materialSig(m: MaterialSpec): string {
     `coatSheen=${finiteSig(m.clearcoat, 0)},${finiteSig(m.clearcoatRoughness, 0)},${finiteSig(m.sheen, 0)},${vecSig(m.sheenColor, [0, 0, 0], 3)},${finiteSig(m.sheenRoughness, 0)}`,
     `aniso=${finiteSig(m.anisotropy, 0)},${finiteSig(m.anisotropyRotation, 0)}`,
     `iridescence=${finiteSig(m.iridescence, 0)},${finiteSig(m.iridescenceIor, 1.3)},${vecSig(m.iridescenceThicknessRange, [100, 400], 2)}`,
-    `reservedDisp=${textureRefSig(m.displacementMap)},${finiteSig(m.displacementScale, 1)},${finiteSig(m.displacementBias, 0)}`,
+    `reservedDisp=${textureRefSig(m.displacementMap)},${finiteSig(m.displacementScale, 1)},${finiteSig(m.displacementBias, 0)},${finiteSig(m.displacementSubdivisions, 0)}`,
     `volume=${finiteSig(m.scatteringCoefficient, 0)},${finiteSig(m.scatteringAnisotropy, 0)},${vecSig(m.scatteringCoefficientRGB, [0, 0, 0], 3)}`,
     `spectral=${stableJsonSig(m.spectralAttenuation)},${finiteSig(m.dispersionAbbeNumber, 0)}`,
     `layers=${stableJsonSig(m.frontLayer)},${stableJsonSig(m.backLayer)},${stableJsonSig(m.thinFilmStack)}`,
@@ -731,12 +731,25 @@ export function mergeWorldSpaceFromCore(
         ? primitive.instances
         : [primitive.transform];
 
-    const basePositions = primitive.positions;
-    const baseNormals = primitive.normals;
-    const baseTangents = primitive.tangents;
-    const baseColors = primitive.colors;
-    const baseUvs = primitive.uvs; // optional; (0,0) per vertex when absent
-    const baseUv1 = primitive.uv1;
+    const microdisplaced = maybeMicrodisplaceMeshGeometry({
+      primitiveId: primitive.id,
+      material: primitive.material,
+      positions: primitive.positions,
+      normals: primitive.normals,
+      ...(primitive.indices != null ? { indices: primitive.indices } : {}),
+      ...(primitive.uvs != null ? { uvs: primitive.uvs } : {}),
+      ...(primitive.uv1 != null ? { uv1: primitive.uv1 } : {}),
+      ...(primitive.tangents != null ? { tangents: primitive.tangents } : {}),
+      ...(primitive.colors != null ? { colors: primitive.colors } : {}),
+      onWarning: warn,
+    });
+    const basePositions = microdisplaced?.positions ?? primitive.positions;
+    const baseNormals = microdisplaced?.normals ?? primitive.normals;
+    const baseTangents = microdisplaced?.tangents ?? primitive.tangents;
+    const baseColors = microdisplaced?.colors ?? primitive.colors;
+    const baseUvs = microdisplaced?.uvs ?? primitive.uvs; // optional; (0,0) per vertex when absent
+    const baseUv1 = microdisplaced?.uv1 ?? primitive.uv1;
+    const baseIndicesSource = microdisplaced?.indices ?? primitive.indices;
     const localVertexCount = Math.floor(basePositions.length / 3);
     const hasCompleteTangents = baseTangents != null && baseTangents.length >= localVertexCount * 4;
     const colorStride = baseColors != null && baseColors.length >= localVertexCount * 4
@@ -745,20 +758,22 @@ export function mergeWorldSpaceFromCore(
         ? 3
         : 0;
     if (localVertexCount < 3) continue;
-    const sourcePositions = maybeDisplaceMeshPositions({
-      primitiveId: primitive.id,
-      material: primitive.material,
-      positions: basePositions,
-      normals: baseNormals,
-      ...(baseUvs != null ? { uvs: baseUvs } : {}),
-      ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
-      onWarning: warn,
-    }) ?? basePositions;
+    const sourcePositions = microdisplaced == null
+      ? maybeDisplaceMeshPositions({
+          primitiveId: primitive.id,
+          material: primitive.material,
+          positions: basePositions,
+          normals: baseNormals,
+          ...(baseUvs != null ? { uvs: baseUvs } : {}),
+          ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
+          onWarning: warn,
+        }) ?? basePositions
+      : basePositions;
 
     // Sequential index when the primitive carries none (triangle-list), matching
     // `packOneMeshLikePrimitive` / SGG's index synthesis.
     const baseIndices: ArrayLike<number> =
-      primitive.indices ??
+      baseIndicesSource ??
       (() => {
         const gen = new Uint32Array(localVertexCount);
         for (let i = 0; i < localVertexCount; i += 1) gen[i] = i;
@@ -982,7 +997,7 @@ export function mergeUv1FromCore(
   totalVertexCount: number,
 ): Float32Array | undefined {
   const meshLike = scene.primitives.filter(
-    (p): p is Extract<typeof p, { positions: Float32Array; uv1?: Float32Array }> =>
+    (p): p is Extract<ScenePrimitive, { kind: 'mesh' | 'instanced-mesh' | 'skinned-mesh' }> =>
       p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh',
   );
 
@@ -998,6 +1013,18 @@ export function mergeUv1FromCore(
     const localTriCount = Math.floor((prim.indices?.length ?? localVertexCount) / 3);
     if (localTriCount === 0) continue;
 
+    const microdisplaced = maybeMicrodisplaceMeshGeometry({
+      primitiveId: prim.id,
+      material: prim.material,
+      positions: prim.positions,
+      normals: prim.normals,
+      ...(prim.indices != null ? { indices: prim.indices } : {}),
+      ...(prim.uvs != null ? { uvs: prim.uvs } : {}),
+      ...(prim.uv1 != null ? { uv1: prim.uv1 } : {}),
+      ...(prim.tangents != null ? { tangents: prim.tangents } : {}),
+      ...(prim.colors != null ? { colors: prim.colors } : {}),
+    });
+    const srcUv1 = microdisplaced?.uv1 ?? prim.uv1;
     const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
 
     for (let inst = 0; inst < instanceCount; inst += 1) {
@@ -1005,13 +1032,12 @@ export function mergeUv1FromCore(
       if (range == null) break;
       rangeIdx += 1;
 
-      const src = prim.uv1;
-      if (src == null) continue;
+      if (srcUv1 == null) continue;
 
       const { vertexStart, vertexCount } = range;
       for (let v = 0; v < vertexCount; v += 1) {
-        out[(vertexStart + v) * 2] = src[v * 2] ?? 0;
-        out[(vertexStart + v) * 2 + 1] = src[v * 2 + 1] ?? 0;
+        out[(vertexStart + v) * 2] = srcUv1[v * 2] ?? 0;
+        out[(vertexStart + v) * 2 + 1] = srcUv1[v * 2 + 1] ?? 0;
       }
     }
   }

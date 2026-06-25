@@ -396,7 +396,7 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(structured.some((w) =>
       w.code === 'pt-webgpu.scene-pack-warning' &&
       w.message.includes('displacementMap') &&
-      w.message.includes('vertex displacement skipped') &&
+      w.message.includes('displacement skipped') &&
       typeof w.details?.warning === 'string' &&
       w.details.warning.includes('Primitive "m" displacementMap')
     )).toBe(true);
