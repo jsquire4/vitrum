@@ -659,6 +659,49 @@
           "includes": [
             "displacement rows stay approximate until adaptive/error-bounded microgeometry is contracted"
           ]
+        },
+        {
+          "path": "packages/shared-bvh/src/vertexDisplacement.ts",
+          "includes": [
+            "function textureRefSourcePath(ref: TextureRef | undefined)",
+            "function warningPrefix(primitiveId: string, ref?: TextureRef)",
+            "sourcePath !== undefined ? ` at ${sourcePath}` : ''"
+          ]
+        },
+        {
+          "path": "packages/shared-bvh/src/__tests__/scenePack.test.ts",
+          "includes": [
+            "Symbol('vitrum.gltf.textureRefSource')",
+            "displacementMap at materials[0].extensions.VITRUM_displacement.displacementTexture"
+          ]
+        },
+        {
+          "path": "packages/pt-webgpu/src/index.ts",
+          "includes": [
+            "function displacementWarningDetails(warning: string)",
+            "details.sourcePath = match[1]"
+          ]
+        },
+        {
+          "path": "packages/pt-webgpu/src/__tests__/liteTierCapabilities.test.ts",
+          "includes": [
+            "materials[0].extensions.VITRUM_displacement.displacementTexture",
+            "w.details.sourcePath === 'materials[0].extensions.VITRUM_displacement.displacementTexture'"
+          ]
+        },
+        {
+          "path": "packages/pt-webgl2/src/scene/uploadSceneTextures.ts",
+          "includes": [
+            "function vertexDisplacementWarningDetails(message: string)",
+            "details.sourcePath = match[1]"
+          ]
+        },
+        {
+          "path": "packages/pt-webgl2/src/__tests__/engineContract.test.ts",
+          "includes": [
+            "materials[0].extensions.VITRUM_displacement.displacementTexture",
+            "w.details?.sourcePath === 'materials[0].extensions.VITRUM_displacement.displacementTexture'"
+          ]
         }
       ],
       "decisionBlockers": [

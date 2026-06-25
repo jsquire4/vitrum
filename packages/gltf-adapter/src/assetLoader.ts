@@ -36,7 +36,12 @@ import {
   type GltfAssetResourceKind,
   type GltfResourceDecodeFailureReason,
 } from './errors.js';
-import { collectGltfSceneReachability } from './sceneScope.js';
+import { resolveGltfMaterialAnimationPointer } from './materialPointerAnimation.js';
+import {
+  collectGltfSceneReachability,
+  collectPrimitiveMaterialIndices,
+  gltfPrimitiveKey,
+} from './sceneScope.js';
 
 export type GltfAssetInput = string | URL | ArrayBuffer | GltfJson;
 
@@ -187,7 +192,9 @@ export async function loadGltfAsset(
     ...(options.pointLineFallbackRadius !== undefined ? { pointLineFallbackRadius: options.pointLineFallbackRadius } : {}),
   };
   const sceneResult = await gltfToScene(parsed.gltf, sceneOptions);
-  const canBakeLiteVertexColors = (sceneResult.materialVariantBindings?.length ?? 0) === 0;
+  const canBakeLiteVertexColors =
+    (sceneResult.materialVariantBindings?.length ?? 0) === 0 &&
+    !hasReachableMaterialPointerAnimationForColoredPrimitive(parsed.gltf, sceneReachability);
   const scene = canBakeLiteVertexColors
     ? bakePtWebgpuLiteCompatibleVertexColors(sceneResult.scene)
     : sceneResult.scene;
@@ -355,6 +362,38 @@ function sceneHasOnlyPtWebgpuLiteBakeableVertexColors(scene: Scene): boolean {
     }
   }
   return true;
+}
+
+function hasReachableMaterialPointerAnimationForColoredPrimitive(
+  gltf: GltfJson,
+  reachability: ReturnType<typeof collectGltfSceneReachability>,
+): boolean {
+  const coloredMaterialIndices = new Set<number>();
+  for (const meshIndex of reachability.meshIndices) {
+    const mesh = gltf.meshes?.[meshIndex];
+    if (mesh == null) continue;
+    for (const [primitiveIndex, primitive] of (mesh.primitives ?? []).entries()) {
+      if (!reachability.primitiveKeys.has(gltfPrimitiveKey(meshIndex, primitiveIndex))) continue;
+      if (primitive.attributes?.COLOR_0 === undefined) continue;
+      for (const materialIndex of collectPrimitiveMaterialIndices(primitive)) {
+        coloredMaterialIndices.add(materialIndex);
+      }
+    }
+  }
+  if (coloredMaterialIndices.size === 0) return false;
+
+  for (const animation of gltf.animations ?? []) {
+    for (const channel of animation.channels ?? []) {
+      if (channel.target.path !== 'pointer') continue;
+      const pointerTarget = resolveGltfMaterialAnimationPointer(
+        channel.target.extensions?.KHR_animation_pointer?.pointer,
+      );
+      if (pointerTarget !== undefined && coloredMaterialIndices.has(pointerTarget.materialIndex)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 function bakePtWebgpuLiteCompatibleVertexColors(scene: Scene): Scene {

@@ -774,13 +774,14 @@ A full line-by-line re-read of all 12 packages found that several bucket entries
 the gap, plus new fidelity items. **Bugs/broken-surface findings went to `items_to_fix.md`
 Section H** (H1–H38, ✅/◻ legend there); this addendum only adjusts THIS doc's picture:
 
-- **"Foundations + default render paths ~90%" needs a caveat: pt-webgl2 is NOT at RC level.**
-  ✅ Its entire analytic-light system is inert (`lights.count` never uploaded — items H1),
-  `spectral` renders black (H2), directly-visible env never accumulates (H3), and `bdpt` is
-  never driven (H5). As shipped it is an emissive-geometry-lit RGB tracer (~60-70%); the
-  fork-vs-native A/Bs passed because they exercised exactly the paths that work
-  (emissive-fold Cornell, glass, IBL-indirect, textures). Treat pt-webgl2's
-  release-candidate label as suspended until H1–H5 land.
+- **Superseded pt-webgl2 H1-H5 caveat reconciled:** the 2026-06-09 finding that
+  pt-webgl2 analytic lights, spectral CMF uploads, directly-visible environment, and BDPT
+  host driving were inert is now historical. Current source uploads `lights.count` through
+  `GlProgram.setUint`, uploads `backgroundAlpha`, uploads spectral CMF/CDF/integral uniforms
+  when `spectral` is enabled, and drives `BdptSubpathBuilder.build()` before the eye pass;
+  `uploadGapGuard.test.ts` and `bdptDriver.test.ts` pin those seams. Remaining pt-webgl2
+  distance is browser/WebGL2 runtime A/B and fidelity promotion, not those H1-H5
+  implementation blockers.
 - **B1 is DONE (Wave A):** the pre-Wave-A claim that metals were excluded from direct
   light is stale. Current `shade.wgsl.ts:252` (`lo_analyticNEE`) gates only on `isGlass`;
   `shade.wgsl.ts:333` (`lo_direct`) gates only on `isGlass` — metals receive both analytic
@@ -1932,7 +1933,7 @@ GPU/browser harness.
 |----------|--------|
 | `BACKEND_PROMISE_LEDGER` | Sole truth; READMEs cite ledger not prose |
 | `plan/renderer-fidelity-matrix.md` | ✅ Reconciled: tracks pt-webgl2 + pt-webgpu; former `pt-webgl` column is historical only |
-| `items_to_fix.md` §H | Close items as fixed or strike |
+| `items_to_fix.md` §H | ✅ Reconciled: historical provenance only; future live bugs require source verification and queue promotion |
 | ~~H30~~ ✅ CLOSED | Canvas backing store sizing is now applied before engine construction; `attachVitrumLoop.test.ts` pins CSS×DPR sizing |
 | ~~H57~~ ✅ CLOSED | `examples/gltf-viewer/` added; `examples/README.md` lists the glTF path and debug capture fields. |
 

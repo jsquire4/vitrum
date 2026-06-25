@@ -62,6 +62,12 @@ test('future-contract boundary text pins the current truthful API surface', () =
   assert.deepEqual(sourcePaths(displacement), [
     'packages/core/src/engine/promiseLedger.ts',
     'packages/core/src/__tests__/ledgerVsCapabilities.test.ts',
+    'packages/shared-bvh/src/vertexDisplacement.ts',
+    'packages/shared-bvh/src/__tests__/scenePack.test.ts',
+    'packages/pt-webgpu/src/index.ts',
+    'packages/pt-webgpu/src/__tests__/liteTierCapabilities.test.ts',
+    'packages/pt-webgl2/src/scene/uploadSceneTextures.ts',
+    'packages/pt-webgl2/src/__tests__/engineContract.test.ts',
   ]);
 
   const transparentTransport = futureRow('FC-TRANSPARENT-GI-TRANSPORT');

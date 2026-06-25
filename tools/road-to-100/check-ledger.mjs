@@ -287,6 +287,9 @@ for (const [docName, docText] of [
     "vertex-count / index changes still force full `setScene()` on PT backends",
     "GLASS remains smoke-only",
     "GLASS is smoke-only",
+    "pt-webgl2 is NOT at RC level",
+    "release-candidate label as suspended until H1",
+    "| `items_to_fix.md` §H | Close items as fixed or strike |",
   ]) {
     if (docText.includes(stalePhrase)) {
       fail(`${docName} contains stale hard-coded count claim: ${stalePhrase}`);
