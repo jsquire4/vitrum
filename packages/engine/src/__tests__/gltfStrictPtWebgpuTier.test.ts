@@ -233,6 +233,7 @@ vi.mock('@vitrum/gltf-adapter', () => ({
     readonly compatibilityMode?: string;
     readonly label?: string;
     readonly failures: readonly string[];
+    readonly failureDetails: readonly object[];
 
     constructor(init: {
       readonly code: string;
@@ -243,6 +244,7 @@ vi.mock('@vitrum/gltf-adapter', () => ({
       readonly compatibilityMode?: string;
       readonly label?: string;
       readonly failures?: readonly string[];
+      readonly failureDetails?: readonly object[];
     }) {
       super(init.message);
       this.name = 'GltfCompatibilityError';
@@ -253,6 +255,7 @@ vi.mock('@vitrum/gltf-adapter', () => ({
       if (init.compatibilityMode !== undefined) this.compatibilityMode = init.compatibilityMode;
       if (init.label !== undefined) this.label = init.label;
       this.failures = [...(init.failures ?? [])];
+      this.failureDetails = [...(init.failureDetails ?? [])];
     }
   },
   loadGltfForEngine: mocks.loadGltfForEngine,
@@ -370,6 +373,40 @@ describe('loadGltfWithEngine strict pt-webgpu tier guard', () => {
 	      code: 'GLTF_COMPATIBILITY_REJECTED',
 	      backend: 'pt-webgpu',
 	      failures: ['runtime:pt-webgpu=unsupported at adapterProfile.ptWebgpuTier'],
+	      failureDetails: [
+	        expect.objectContaining({
+	          source: 'compatibility-issue',
+	          category: 'runtime',
+	          name: 'pt-webgpu',
+	          support: 'unsupported',
+	          path: 'adapterProfile.ptWebgpuTier',
+	        }),
+	      ],
+	    });
+
+	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);
+	    expect(mocks.createEngine).not.toHaveBeenCalled();
+	  });
+
+	  it('reports structured runtime compatibility failure details for pt-webgpu lite rows', async () => {
+	    await expect(
+	      loadGltfWithEngine('asset.glb', { compatibilityMode: 'reject-unsupported' }),
+	    ).rejects.toMatchObject({
+	      code: 'GLTF_COMPATIBILITY_REJECTED',
+	      backend: 'pt-webgpu',
+	      profileId: 'pt-webgpu-lite',
+	      failures: [
+	        'material:baseColorMap=unsupported at materials[0].pbrMetallicRoughness.baseColorTexture',
+	      ],
+	      failureDetails: [
+	        expect.objectContaining({
+	          source: 'compatibility-issue',
+	          category: 'material',
+	          name: 'baseColorMap',
+	          support: 'unsupported',
+	          path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
+	        }),
+	      ],
 	    });
 
 	    expect(mocks.probeAdapterProfile).toHaveBeenCalledTimes(1);

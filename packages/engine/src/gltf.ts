@@ -18,6 +18,7 @@ import type {
   GltfTextureDecodePolicyContext,
   GltfSceneController,
   DecodeSceneTextureDiagnostic,
+  GltfCompatibilityFailureDetail,
   GltfTextureDecodeReport,
   LoadGltfForEngineOptions,
 } from '@vitrum/gltf-adapter';
@@ -356,6 +357,12 @@ function validatePtWebgpuRuntimeUnavailable(
   compatibilityMode: GltfCompatibilityMode,
 ): void {
   if (compatibilityMode === 'best-effort') return;
+  const failure = runtimeCompatibilityFailure(
+    'pt-webgpu',
+    'unsupported',
+    'adapterProfile.ptWebgpuTier',
+    'Selected pt-webgpu runtime profile resolved to no supported trace tier.',
+  );
   throw new GltfCompatibilityError({
     code: 'GLTF_COMPATIBILITY_REJECTED',
     message:
@@ -367,7 +374,8 @@ function validatePtWebgpuRuntimeUnavailable(
     runtimeProfile: 'pt-webgpu-lite',
     compatibilityMode,
     label: 'Selected backend',
-    failures: ['runtime:pt-webgpu=unsupported at adapterProfile.ptWebgpuTier'],
+    failures: [failure.message],
+    failureDetails: [failure.detail],
   });
 }
 
@@ -386,21 +394,22 @@ function validatePtWebgpuRuntimeProfile(
     );
     const rejectedIssues = rejectedIssuesForMode(effectiveIssues, compatibilityMode);
     if (rejectedIssues.length === 0) return;
-    const failures = rejectedIssues.map(formatRuntimeCompatibilityIssue);
+    const failures = rejectedIssues.map(compatibilityIssueFailure);
 
     throw new GltfCompatibilityError({
       code: 'GLTF_COMPATIBILITY_REJECTED',
       message:
         `[vitrum/engine/gltf] Selected backend "pt-webgpu" resolves to ` +
         `"${traceTier}" trace tier, which does not satisfy ` +
-        `${compatibilityMode}: ${failures.join(', ')}. ` +
+        `${compatibilityMode}: ${failures.map((failure) => failure.message).join(', ')}. ` +
         `Use compatibilityMode:"best-effort", select "pt-webgl2", or run on a full-tier WebGPU adapter.`,
       backend: 'pt-webgpu',
       profileId,
       runtimeProfile: profileId,
       compatibilityMode,
       label: 'Selected backend',
-      failures,
+      failures: failures.map((failure) => failure.message),
+      failureDetails: failures.map((failure) => failure.detail),
     });
   }
 
@@ -429,8 +438,42 @@ function rejectedIssuesForMode(
   return issues.filter((issue) => issue.support !== 'native');
 }
 
-function formatRuntimeCompatibilityIssue(issue: GltfCompatibilityIssue): string {
-  return `${issue.category}:${issue.name}=${issue.support} at ${issue.path}`;
+interface RuntimeCompatibilityFailure {
+  readonly message: string;
+  readonly detail: GltfCompatibilityFailureDetail;
+}
+
+function compatibilityIssueFailure(issue: GltfCompatibilityIssue): RuntimeCompatibilityFailure {
+  return {
+    message: `${issue.category}:${issue.name}=${issue.support} at ${issue.path}`,
+    detail: {
+      source: 'compatibility-issue',
+      category: issue.category,
+      name: issue.name,
+      support: issue.support,
+      path: issue.path,
+      message: issue.message,
+    },
+  };
+}
+
+function runtimeCompatibilityFailure(
+  name: string,
+  support: string,
+  path: string,
+  message: string,
+): RuntimeCompatibilityFailure {
+  return {
+    message: `runtime:${name}=${support} at ${path}`,
+    detail: {
+      source: 'compatibility-issue',
+      category: 'runtime',
+      name,
+      support,
+      path,
+      message,
+    },
+  };
 }
 
 function backendFromProfileId(profileId: GltfBackendProfileId): CreateEngineBackendId {

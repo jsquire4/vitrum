@@ -44,6 +44,7 @@ export type {
   GltfAssetResourceKind,
   GltfCompatibilityErrorCode,
   GltfCompatibilityErrorInit,
+  GltfCompatibilityFailureDetail,
   GltfParseFailedInit,
   GltfParseFailureReason,
   GltfParseFormat,
