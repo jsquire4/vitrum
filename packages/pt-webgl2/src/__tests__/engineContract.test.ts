@@ -468,13 +468,17 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       });
       const base = triScene();
       const prim = base.primitives[0] as MeshPrimitive;
+      const displacementMap = { handle: { id: 'height' } };
+      Object.defineProperty(displacementMap, Symbol('vitrum.gltf.textureRefSource'), {
+        value: { path: 'materials[0].extensions.VITRUM_displacement.displacementTexture' },
+      });
       const scene: Scene = {
         ...base,
         primitives: [{
           ...prim,
           material: {
             ...prim.material,
-            displacementMap: { handle: { id: 'height' } },
+            displacementMap,
             displacementScale: 0.2,
             displacementBias: -0.1,
           },
@@ -485,7 +489,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         w.code === 'pt-webgl2.vertex-displacement-warning' &&
         w.message.includes('displacementMap') &&
         w.message.includes('displacement skipped') &&
-        w.details?.source === 'mergeWorldSpaceFromCore'
+        w.details?.source === 'mergeWorldSpaceFromCore' &&
+        w.details?.sourcePath === 'materials[0].extensions.VITRUM_displacement.displacementTexture'
       )).toBe(true);
     } finally {
       warn.mockRestore();

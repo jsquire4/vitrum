@@ -368,6 +368,10 @@ describe('H12: lite-tier capabilities truth', () => {
       onWarning: (w) => structured.push(w),
     });
     warn.mockClear();
+    const displacementMap = { handle: { id: 'height' } };
+    Object.defineProperty(displacementMap, Symbol('vitrum.gltf.textureRefSource'), {
+      value: { path: 'materials[0].extensions.VITRUM_displacement.displacementTexture' },
+    });
     const scene: Scene = {
       primitives: [
         {
@@ -379,7 +383,7 @@ describe('H12: lite-tier capabilities truth', () => {
             baseColor: [0.8, 0.2, 0.1],
             roughness: 0.3,
             metallic: 0,
-            displacementMap: { handle: { id: 'height' } },
+            displacementMap,
             displacementScale: 0.2,
             displacementBias: -0.1,
           },
@@ -398,7 +402,8 @@ describe('H12: lite-tier capabilities truth', () => {
       w.message.includes('displacementMap') &&
       w.message.includes('displacement skipped') &&
       typeof w.details?.warning === 'string' &&
-      w.details.warning.includes('Primitive "m" displacementMap')
+      w.details.warning.includes('Primitive "m" displacementMap') &&
+      w.details.sourcePath === 'materials[0].extensions.VITRUM_displacement.displacementTexture'
     )).toBe(true);
     engine.dispose();
     warn.mockRestore();

@@ -126,6 +126,13 @@ interface UnsupportedMaterialFieldUse {
   readonly fields: readonly string[];
 }
 
+function displacementWarningDetails(warning: string): Readonly<Record<string, unknown>> {
+  const details: Record<string, unknown> = { warning };
+  const match = / displacementMap at (.+?)(?: handle | requests | has | displacementSubdivisions| triangle )/.exec(warning);
+  if (match?.[1] !== undefined) details.sourcePath = match[1];
+  return details;
+}
+
 function collectPrimitiveMaterialFieldUses(
   scene: Scene,
   unsupportedFields: readonly (keyof MaterialSpec)[],
@@ -1334,7 +1341,7 @@ class PTEngineWebGPU implements Engine {
         phase: 'setScene',
         method: 'setScene',
         message: `[vitrum/pt-webgpu] ${warning}`,
-        details: { warning },
+        details: displacementWarningDetails(warning),
       });
     }
     this.#geoPack = scenePackResultFromPacked(packed);
@@ -1385,7 +1392,7 @@ class PTEngineWebGPU implements Engine {
         phase: 'setScene',
         method: 'setScene',
         message: `[vitrum/pt-webgpu] ${warning}`,
-        details: { warning },
+        details: displacementWarningDetails(warning),
       });
     }
     this.reset();

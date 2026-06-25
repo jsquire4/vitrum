@@ -88,6 +88,16 @@ interface GeometryBuildInputs {
   readonly attrData: ReturnType<typeof packAttributesArray>;
 }
 
+function vertexDisplacementWarningDetails(message: string): Readonly<Record<string, unknown>> {
+  const details: Record<string, unknown> = {
+    source: 'mergeWorldSpaceFromCore',
+    warning: message,
+  };
+  const match = / displacementMap at (.+?)(?: handle | requests | has | displacementSubdivisions| triangle )/.exec(message);
+  if (match?.[1] !== undefined) details.sourcePath = match[1];
+  return details;
+}
+
 function buildGeometryInputs(
   scene: Scene,
   warningOptions: {
@@ -108,7 +118,7 @@ function buildGeometryInputs(
         backend: 'pt-webgl2',
         phase: warningOptions.warningPhase,
         method: warningOptions.warningMethod,
-        details: { source: 'mergeWorldSpaceFromCore' },
+        details: vertexDisplacementWarningDetails(message),
       });
     },
   });
