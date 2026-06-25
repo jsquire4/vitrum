@@ -235,6 +235,42 @@ function makeInlineTriangleGltf(): { gltf: GltfJson; buffers: Map<number, ArrayB
   };
 }
 
+function addPlainGpuInstancing(
+  gltf: GltfJson,
+  buffers: Map<number, ArrayBuffer>,
+): void {
+  const instanceTranslations = f32Buffer([
+    0, 0, 0,
+    2, 0, 0,
+  ]);
+  const instanceAccessor = gltf.accessors?.length ?? 0;
+  const instanceBufferView = gltf.bufferViews?.length ?? 0;
+  const instanceBuffer = gltf.buffers?.length ?? 0;
+  gltf.extensionsUsed = ['EXT_mesh_gpu_instancing'];
+  gltf.extensionsRequired = ['EXT_mesh_gpu_instancing'];
+  gltf.nodes![0] = {
+    ...gltf.nodes![0]!,
+    extensions: {
+      EXT_mesh_gpu_instancing: {
+        attributes: { TRANSLATION: instanceAccessor },
+      },
+    },
+  };
+  gltf.accessors = [
+    ...(gltf.accessors ?? []),
+    { bufferView: instanceBufferView, componentType: 5126, count: 2, type: 'VEC3' },
+  ];
+  gltf.bufferViews = [
+    ...(gltf.bufferViews ?? []),
+    { buffer: instanceBuffer, byteOffset: 0, byteLength: instanceTranslations.byteLength },
+  ];
+  gltf.buffers = [
+    ...(gltf.buffers ?? []),
+    { byteLength: instanceTranslations.byteLength },
+  ];
+  buffers.set(instanceBuffer, instanceTranslations);
+}
+
 function addMorphedGpuInstancing(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
@@ -7263,6 +7299,28 @@ describe('loadGltfForEngine', () => {
     expect(setScene).toHaveBeenCalledTimes(1);
     expect(result.asset.scene.primitives).toHaveLength(2);
     expect(result.asset.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'fallback-expanded-gpu-instancing' }),
+    ]));
+  });
+
+  it('allows native EXT_mesh_gpu_instancing in reject-degraded mode before constructing an engine', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    addPlainGpuInstancing(gltf, buffers);
+    const setScene = vi.fn();
+    const createEngine = vi.fn(async () => ({ setScene }));
+
+    const result = await loadGltfForEngine(gltf, {
+      buffers,
+      backend: 'pt-webgl2',
+      compatibilityMode: 'reject-degraded',
+      createEngine,
+    });
+
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(setScene).toHaveBeenCalledTimes(1);
+    expect(result.asset.scene.primitives).toHaveLength(1);
+    expect(result.asset.scene.primitives[0]?.kind).toBe('instanced-mesh');
+    expect(result.asset.diagnostics).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'fallback-expanded-gpu-instancing' }),
     ]));
   });
