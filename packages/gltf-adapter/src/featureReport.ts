@@ -2780,13 +2780,13 @@ function analyzeUnrepresentableMaterialUvSets(
         usedMaterials.add(materialIndex);
         const uvSets = materialUvSets.get(materialIndex);
         if (uvSets === undefined) continue;
-        const highUvSets = [...uvSets].filter((uvSet) => uvSet > 1);
+        const sortedUvSets = [...uvSets].sort((a, b) => a - b);
+        const highUvSets = sortedUvSets.filter((uvSet) => uvSet > 1);
         if (highUvSets.length === 0) continue;
-        const canRemap =
-          highUvSets.length === 1 &&
-          !uvSets.has(1) &&
-          primitive.attributes?.[`TEXCOORD_${highUvSets[0]}`] !== undefined;
-        if (!canRemap) {
+        const canProjectIntoCoreLanes =
+          sortedUvSets.length <= 2 &&
+          highUvSets.every((uvSet) => primitive.attributes?.[`TEXCOORD_${uvSet}`] !== undefined);
+        if (!canProjectIntoCoreLanes) {
           for (const uvSet of highUvSets) unrepresentable.add(uvSet);
         }
       }
@@ -2816,8 +2816,13 @@ function primitiveMorphTexcoordIsRepresentable(
     const material = gltf.materials?.[materialIndex];
     if (material == null) continue;
     const uvSets = materialTextureUvSets(material);
-    const highUvSets = [...uvSets].filter((uvSet) => uvSet > 1);
-    if (highUvSets.length === 1 && highUvSets[0] === uvIndex && !uvSets.has(1)) {
+    const sortedUvSets = [...uvSets].sort((a, b) => a - b);
+    const highUvSets = sortedUvSets.filter((uvSet) => uvSet > 1);
+    const canProjectIntoCoreLanes =
+      sortedUvSets.includes(uvIndex) &&
+      sortedUvSets.length <= 2 &&
+      highUvSets.every((uvSet) => primitive.attributes?.[`TEXCOORD_${uvSet}`] !== undefined);
+    if (canProjectIntoCoreLanes) {
       return true;
     }
   }

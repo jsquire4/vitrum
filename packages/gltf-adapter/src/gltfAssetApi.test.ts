@@ -4098,6 +4098,50 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_2')).toBe(false);
   });
 
+  it('does not reject two material UV sets that can be projected into core uv0 and uv1', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0] = {
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0, texCoord: 2 },
+      },
+      normalTexture: { index: 0, texCoord: 3 },
+    };
+    gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = 1;
+    gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_3 = 1;
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.uvSets).toEqual([2, 3]);
+    expect(report.materials.unrepresentableUvSets).toEqual([]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgpu');
+    expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_2')).toBe(false);
+    expect(compatibility.issues.some((issue) => issue.name === 'TEXCOORD_3')).toBe(false);
+  });
+
+  it('still rejects material UV routing that needs more than two core UV lanes', () => {
+    const gltf = makeExternalTexturedGltf();
+    gltf.materials![0] = {
+      pbrMetallicRoughness: {
+        baseColorTexture: { index: 0, texCoord: 0 },
+        metallicRoughnessTexture: { index: 0, texCoord: 1 },
+      },
+      normalTexture: { index: 0, texCoord: 2 },
+    };
+    gltf.meshes![0]!.primitives[0]!.attributes.TEXCOORD_2 = 1;
+
+    const report = analyzeGltfAsset(gltf);
+    expect(report.materials.uvSets).toEqual([0, 1, 2]);
+    expect(report.materials.unrepresentableUvSets).toEqual([2]);
+
+    const compatibility = evaluateGltfBackendCompatibility(report, 'walkaround-hybrid');
+    const uvIssue = compatibility.issues.find((issue) => issue.name === 'TEXCOORD_2');
+    expect(uvIssue).toEqual(expect.objectContaining({
+      category: 'material',
+      support: 'unsupported',
+      path: 'materials[0].normalTexture.texCoord',
+    }));
+  });
+
   it('does not reject a variant material high UV set that can be remapped on its mapped primitive', () => {
     const gltf = makeExternalTexturedGltf();
     gltf.extensionsUsed = ['KHR_materials_variants'];

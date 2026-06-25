@@ -388,6 +388,7 @@ export interface GltfMaterialVariantPrimitivePatch {
   readonly materialIndex?: number;
   readonly materialRouting?: MaterialSpec;
   readonly droppedTextureFields?: readonly MaterialTextureRefField[];
+  readonly uvs?: Float32Array | undefined;
   readonly uv1?: Float32Array | undefined;
   readonly tangents?: Float32Array | undefined;
 }
@@ -936,6 +937,7 @@ export async function gltfToScene(
             `${primitivePath}.attributes.TEXCOORD_1`,
           )
         : undefined;
+      let primitiveUvs = uvs;
       let primitiveUv1 = uv1;
 
       // Tangents — optional (xyzw per vertex).
@@ -1181,6 +1183,7 @@ export async function gltfToScene(
         buffers,
         prim,
         material,
+        uvs,
         uv1,
         vertexCount,
         warnings,
@@ -1189,13 +1192,14 @@ export async function gltfToScene(
         mesh.name ?? node.mesh,
         onAccessorDiagnostic,
       );
+      uvs = uvResolvedMaterial.uvs;
       uv1 = uvResolvedMaterial.uv1;
 
-      // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT/TEXCOORD_0 plus the
-      // glTF UV semantic currently carried in core uv1 + node/mesh weights.
+      // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT plus the
+      // glTF UV semantics currently carried in core uvs/uv1 + node/mesh weights.
       let morph = _extractMorphTargets(
         gltf, buffers, prim.targets, node.weights ?? mesh.weights,
-        positions.length / 3, uvs, uv1, uvResolvedMaterial.uv1SourceTexCoord,
+        positions.length / 3, uvs, uvResolvedMaterial.uvSourceTexCoord, uv1, uvResolvedMaterial.uv1SourceTexCoord,
         `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics, onAccessorDiagnostic,
       );
       if (usesPointLineFallback) {
@@ -1229,6 +1233,7 @@ export async function gltfToScene(
         });
         uvs = remapVec2Attribute(uvs, fallback.sourceVertices);
         uv1 = remapVec2Attribute(uv1, fallback.sourceVertices);
+        primitiveUvs = remapVec2Attribute(primitiveUvs, fallback.sourceVertices);
         primitiveUv1 = remapVec2Attribute(primitiveUv1, fallback.sourceVertices);
         colors = remapVertexColors(colors, originalVertexCount, fallback.sourceVertices);
         tangents = undefined;
@@ -1282,7 +1287,7 @@ export async function gltfToScene(
             prim.material,
             positions,
             normals,
-            uvs,
+            primitiveUvs,
             primitiveUv1,
             indices,
             tangents,
@@ -1300,7 +1305,7 @@ export async function gltfToScene(
             prim.material,
             positions,
             normals,
-            uvs,
+            primitiveUvs,
             primitiveUv1,
             indices,
             tangents,
@@ -1618,6 +1623,7 @@ function _buildPrimitiveMaterialVariantPatch(
     buffers,
     primitive,
     material,
+    uvs,
     primitiveUv1,
     positions.length / 3,
     warnings,
@@ -1629,7 +1635,7 @@ function _buildPrimitiveMaterialVariantPatch(
   const finalTangents = authoredTangents ?? _maybeGenerateTangents(
     positions,
     normals,
-    uvs,
+    uvResolved.uvs,
     uvResolved.uv1,
     indices,
     uvResolved.material,
@@ -1641,6 +1647,7 @@ function _buildPrimitiveMaterialVariantPatch(
   return {
     ...(materialIndex !== undefined ? { materialIndex } : {}),
     materialRouting: uvResolved.material,
+    uvs: uvResolved.uvs,
     ...(uvResolved.droppedTextureFields != null && uvResolved.droppedTextureFields.length > 0
       ? { droppedTextureFields: uvResolved.droppedTextureFields }
       : {}),
@@ -2133,10 +2140,17 @@ function _extractSkinData(
 interface PrimitiveUvMaterialResolution {
   readonly material: MaterialSpec;
   readonly droppedTextureFields?: readonly MaterialTextureRefField[];
+  readonly uvs?: Float32Array;
+  /** glTF TEXCOORD_N semantic assigned to core `uvs`.
+   *  Usually 0, but material-visible UV sets can be losslessly projected into
+   *  the two renderable core UV lanes on a per-primitive basis. Morph-target UV
+   *  deltas must follow this same source. */
+  readonly uvSourceTexCoord?: number;
   readonly uv1?: Float32Array;
   /** glTF TEXCOORD_N semantic assigned to core `uv1`.
-   *  Usually 1, but a single high material UV set can be losslessly remapped
-   *  into core uv1. Morph-target UV deltas must follow this same source. */
+   *  Usually 1, but material-visible UV sets can be losslessly projected into
+   *  the two renderable core UV lanes on a per-primitive basis. Morph-target UV
+   *  deltas must follow this same source. */
   readonly uv1SourceTexCoord?: number;
 }
 
@@ -2164,11 +2178,28 @@ function _cloneMaterialWithoutTextureRefs(
   return next as unknown as MaterialSpec;
 }
 
+function uvLaneResult(
+  material: MaterialSpec,
+  uvs: Float32Array | undefined,
+  uvSourceTexCoord: number | undefined,
+  uv1: Float32Array | undefined,
+  uv1SourceTexCoord: number | undefined,
+  droppedTextureFields?: readonly MaterialTextureRefField[],
+): PrimitiveUvMaterialResolution {
+  return {
+    material,
+    ...(droppedTextureFields != null && droppedTextureFields.length > 0 ? { droppedTextureFields } : {}),
+    ...(uvs != null ? { uvs, uvSourceTexCoord: uvSourceTexCoord ?? 0 } : {}),
+    ...(uv1 != null ? { uv1, uv1SourceTexCoord: uv1SourceTexCoord ?? 1 } : {}),
+  };
+}
+
 function _resolvePrimitiveUvMaterial(
   gltf: GltfJson,
   buffers: Map<number, ArrayBuffer>,
   primitive: GltfPrimitive,
   material: MaterialSpec,
+  uvs: Float32Array | undefined,
   uv1: Float32Array | undefined,
   vertexCount: number,
   warnings: string[],
@@ -2177,31 +2208,35 @@ function _resolvePrimitiveUvMaterial(
   meshName: string | number,
   onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void,
 ): PrimitiveUvMaterialResolution {
-  const highFields: { field: MaterialTextureRefField; ref: TextureRef; texCoord: number }[] = [];
-  const highTexCoords = new Set<number>();
-  let usesUv1 = false;
+  const textureFields: { field: MaterialTextureRefField; ref: TextureRef; texCoord: number }[] = [];
+  const materialUvSets = new Set<number>();
 
   for (const field of MATERIAL_TEXTURE_REF_FIELDS) {
     const ref = material[field];
     if (!_isTextureRef(ref)) continue;
     const texCoord = Math.max(0, Math.floor(ref.texCoord ?? 0));
-    if (texCoord === 1) {
-      usesUv1 = true;
-    } else if (texCoord > 1) {
-      highFields.push({ field, ref, texCoord });
-      highTexCoords.add(texCoord);
-    }
+    textureFields.push({ field, ref, texCoord });
+    materialUvSets.add(texCoord);
   }
 
+  if (textureFields.length === 0) {
+    return uvLaneResult(material, uvs, 0, uv1, 1);
+  }
+
+  const highFields = textureFields.filter(({ texCoord }) => texCoord > 1);
   if (highFields.length === 0) {
-    return { material, ...(uv1 ? { uv1, uv1SourceTexCoord: 1 } : {}) };
+    return uvLaneResult(material, uvs, 0, uv1, 1);
   }
 
-  if (highTexCoords.size === 1 && !usesUv1) {
-    const texCoord = [...highTexCoords][0]!;
+  const sourceUvs = new Map<number, Float32Array | undefined>([
+    [0, uvs],
+    [1, uv1],
+  ]);
+  const readUvSource = (texCoord: number): Float32Array | undefined => {
+    if (sourceUvs.has(texCoord)) return sourceUvs.get(texCoord);
     const attrName = `TEXCOORD_${texCoord}`;
     const attrIndex = primitive.attributes[attrName];
-    const remapUv = _validatePrimitiveAttributeAccessor(
+    const source = _validatePrimitiveAttributeAccessor(
       gltf,
       attrIndex,
       ['VEC2'],
@@ -2224,22 +2259,75 @@ function _resolvePrimitiveUvMaterial(
           `${primitivePath}.attributes.${attrName}`,
         )
       : undefined;
-    if (remapUv !== undefined) {
-      let remapped = material;
-      for (const { field, ref } of highFields) {
-        remapped = _cloneMaterialWithTextureRef(remapped, field, { ...ref, texCoord: 1 });
-      }
-      return { material: remapped, uv1: remapUv, uv1SourceTexCoord: texCoord };
+    sourceUvs.set(texCoord, source);
+    return source;
+  };
+
+  const requestedTexCoords = [...materialUvSets].sort((a, b) => a - b);
+  const highTexCoords = requestedTexCoords.filter((texCoord) => texCoord > 1);
+  const missingHighTexCoords = new Set<number>();
+  if (requestedTexCoords.length <= 2) {
+    for (const texCoord of highTexCoords) {
+      if (readUvSource(texCoord) === undefined) missingHighTexCoords.add(texCoord);
     }
+  }
+
+  if (requestedTexCoords.length <= 2 && missingHighTexCoords.size === 0) {
+    const assigned = new Map<number, 0 | 1>();
+    const usedLanes = new Set<0 | 1>();
+    if (requestedTexCoords.length === 1 && (requestedTexCoords[0] ?? 0) > 1) {
+      // Preserve the historical single-high-UV bridge: one TEXCOORD_N>1 is
+      // routed through uv1 so UV0 remains the authored TEXCOORD_0 lane.
+      assigned.set(requestedTexCoords[0]!, 1);
+      usedLanes.add(1);
+    }
+    for (const texCoord of requestedTexCoords) {
+      if (texCoord === 0) {
+        assigned.set(texCoord, 0);
+        usedLanes.add(0);
+      }
+    }
+    for (const texCoord of requestedTexCoords) {
+      if (texCoord === 1 && !usedLanes.has(1)) {
+        assigned.set(texCoord, 1);
+        usedLanes.add(1);
+      }
+    }
+    for (const texCoord of requestedTexCoords) {
+      if (assigned.has(texCoord)) continue;
+      const lane: 0 | 1 = usedLanes.has(0) ? 1 : 0;
+      assigned.set(texCoord, lane);
+      usedLanes.add(lane);
+    }
+
+    let remapped = material;
+    for (const { field, ref, texCoord } of textureFields) {
+      const lane = assigned.get(texCoord) ?? 0;
+      if (lane !== (ref.texCoord ?? 0)) {
+        remapped = _cloneMaterialWithTextureRef(remapped, field, { ...ref, texCoord: lane });
+      }
+    }
+
+    let uv0Source: number | undefined;
+    let uv1Source: number | undefined;
+    for (const [source, lane] of assigned) {
+      if (lane === 0) uv0Source = source;
+      else uv1Source = source;
+    }
+    return uvLaneResult(
+      remapped,
+      uv0Source !== undefined ? readUvSource(uv0Source) : undefined,
+      uv0Source,
+      uv1Source !== undefined ? readUvSource(uv1Source) : undefined,
+      uv1Source,
+    );
   }
 
   const dropFields = highFields.map(({ field }) => field);
   const dropped = _cloneMaterialWithoutTextureRefs(material, dropFields);
-  const conflictReason = highTexCoords.size > 1
-    ? `material references multiple high UV sets (${[...highTexCoords].sort((a, b) => a - b).map((n) => `TEXCOORD_${n}`).join(', ')})`
-    : usesUv1
-      ? 'material already references TEXCOORD_1, so the high UV set cannot be losslessly remapped into uv1'
-      : `primitive has no readable TEXCOORD_${[...highTexCoords][0] ?? '?'} accessor`;
+  const conflictReason = requestedTexCoords.length > 2
+    ? `material references more than two material-visible UV sets (${requestedTexCoords.map((n) => `TEXCOORD_${n}`).join(', ')}), but the core Scene contract can route at most two renderable UV lanes per primitive`
+    : `primitive has no readable ${[...missingHighTexCoords].sort((a, b) => a - b).map((n) => `TEXCOORD_${n}`).join(' / ')} accessor`;
 
   for (const { field, ref, texCoord } of highFields) {
     const source = gltfTextureRefSource(ref);
@@ -2253,11 +2341,7 @@ function _resolvePrimitiveUvMaterial(
         'for this primitive instead of being sampled with the wrong UV channel.',
     });
   }
-  return {
-    material: dropped,
-    droppedTextureFields: dropFields,
-    ...(uv1 ? { uv1, uv1SourceTexCoord: 1 } : {}),
-  };
+  return uvLaneResult(dropped, uvs, 0, uv1, 1, dropFields);
 }
 
 function remapVec2Attribute(
@@ -2425,11 +2509,13 @@ interface MorphData {
    *  base VEC4 tangent handedness). Present only when at least one target
    *  carries TANGENT; targets without one get zeros. */
   morphTargetTangents?: Float32Array[];
-  /** Per-target TEXCOORD_0 deltas. Present only when at least one target
-   *  carries TEXCOORD_0 and the primitive has a base UV0 stream. */
+  /** Per-target deltas for the glTF TEXCOORD_N semantic assigned to core uvs.
+   *  Usually TEXCOORD_0, or whichever material-visible UV set was projected
+   *  into core uvs for this primitive. */
   morphTargetUvs?: Float32Array[];
   /** Per-target deltas for the glTF TEXCOORD_N semantic assigned to core uv1.
-   *  Usually TEXCOORD_1, or a remapped single high UV set such as TEXCOORD_2. */
+   *  Usually TEXCOORD_1, or whichever material-visible UV set was projected
+   *  into core uv1 for this primitive. */
   morphTargetUv1s?: Float32Array[];
   /** Initial per-target weights from `node.weights ?? mesh.weights` (zeros
    *  when neither is authored). */
@@ -2456,6 +2542,7 @@ function _extractMorphTargets(
   authoredWeights: number[] | undefined,
   vertexCount: number,
   baseUvs: Float32Array | undefined,
+  uvSourceTexCoord: number | undefined,
   baseUv1: Float32Array | undefined,
   uv1SourceTexCoord: number | undefined,
   meshLabel: string,
@@ -2546,21 +2633,22 @@ function _extractMorphTargets(
     if (tanDelta) anyTangents = true;
     tangentDeltas.push(tanDelta ?? null);
 
+    const uvTargetSemantic = uvSourceTexCoord != null ? `TEXCOORD_${uvSourceTexCoord}` : 'TEXCOORD_0';
     let uvDelta = _tryUnpackFloat(
-      gltf, buffers, target['TEXCOORD_0'],
-      `morph target ${t} TEXCOORD_0 for "${meshLabel}"`, warnings, onAccessorDiagnostic,
+      gltf, buffers, target[uvTargetSemantic],
+      `morph target ${t} ${uvTargetSemantic} for "${meshLabel}"`, warnings, onAccessorDiagnostic,
       diagnostics,
       'unreadable-optional-attribute',
-      `${primitivePath}.targets[${t}].TEXCOORD_0`,
+      `${primitivePath}.targets[${t}].${uvTargetSemantic}`,
     );
     if (uvDelta && baseUvs == null) {
       emitImportDiagnostic(warnings, diagnostics, {
         severity: 'warning',
         code: 'ignored-morph-target-texcoord',
-        path: `${primitivePath}.targets[${t}].TEXCOORD_0`,
+        path: `${primitivePath}.targets[${t}].${uvTargetSemantic}`,
         message:
-          `[vitrum/gltf-adapter] Morph target ${t} TEXCOORD_0 delta in mesh ` +
-          `"${meshLabel}" is ignored because the primitive has no base TEXCOORD_0 stream.`,
+          `[vitrum/gltf-adapter] Morph target ${t} ${uvTargetSemantic} delta in mesh ` +
+          `"${meshLabel}" is ignored because the primitive has no matching base ${uvTargetSemantic} stream.`,
       });
       uvDelta = undefined;
     }
@@ -2568,9 +2656,9 @@ function _extractMorphTargets(
       emitImportDiagnostic(warnings, diagnostics, {
         severity: 'warning',
         code: 'invalid-morph-target-delta-length',
-        path: `${primitivePath}.targets[${t}].TEXCOORD_0`,
+        path: `${primitivePath}.targets[${t}].${uvTargetSemantic}`,
         message:
-          `[vitrum/gltf-adapter] Morph target ${t} TEXCOORD_0 delta length ${uvDelta.length} ` +
+          `[vitrum/gltf-adapter] Morph target ${t} ${uvTargetSemantic} delta length ${uvDelta.length} ` +
           `!= ${vertexCount * 2} for "${meshLabel}". Using zero deltas for this target.`,
       });
       uvDelta = undefined;
@@ -2612,7 +2700,7 @@ function _extractMorphTargets(
     uv1Deltas.push(uv1Delta ?? null);
 
     for (const attr of Object.keys(target)) {
-      if (attr !== 'POSITION' && attr !== 'NORMAL' && attr !== 'TANGENT' && attr !== 'TEXCOORD_0' && attr !== uv1TargetSemantic) {
+      if (attr !== 'POSITION' && attr !== 'NORMAL' && attr !== 'TANGENT' && attr !== uvTargetSemantic && attr !== uv1TargetSemantic) {
         if (/^TEXCOORD_\d+$/.test(attr)) {
           emitImportDiagnostic(warnings, diagnostics, {
             severity: 'warning',
@@ -2621,7 +2709,7 @@ function _extractMorphTargets(
             message:
               `[vitrum/gltf-adapter] Morph target ${t} attribute "${attr}" in mesh ` +
               `"${meshLabel}" is ignored because @vitrum/core carries morph UV deltas only for ` +
-              `TEXCOORD_0 and ${uv1TargetSemantic} on this primitive.`,
+              `${uvTargetSemantic} and ${uv1TargetSemantic} on this primitive.`,
           });
         } else {
           emitImportDiagnostic(warnings, diagnostics, {

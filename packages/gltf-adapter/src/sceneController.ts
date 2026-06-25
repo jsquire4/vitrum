@@ -1400,6 +1400,7 @@ function scenePrimitivePatchForMaterialVariant(
 ): Partial<ScenePrimitive> {
   return {
     material: materialReplacementPatch(material),
+    uvs: patch.uvs,
     uv1: patch.uv1,
     tangents: patch.tangents,
   } as unknown as Partial<ScenePrimitive>;

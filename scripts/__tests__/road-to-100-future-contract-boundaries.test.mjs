@@ -89,8 +89,8 @@ test('future-contract boundary text pins the current truthful API surface', () =
   ]);
 
   const uvArrays = futureRow('FC-ARBITRARY-UV-ARRAYS');
-  assert.match(uvArrays.currentContract, /Single high TEXCOORD_N lossless remap/);
-  assert.match(uvArrays.currentContract, /true arbitrary UV arrays require a new core\/backend contract/);
+  assert.match(uvArrays.currentContract, /project up to two material-visible UV sets/);
+  assert.match(uvArrays.currentContract, /native arbitrary UV arrays require a new core\/backend contract/);
   assert.deepEqual(sourcePaths(uvArrays), [
     'packages/gltf-adapter/src/gltfToScene.ts',
     'packages/core/src/scene/material.ts',

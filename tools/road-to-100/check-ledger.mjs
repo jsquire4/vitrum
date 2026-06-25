@@ -1903,7 +1903,7 @@ const walkaroundBvhCoreMaterialResolverTest = await readText("packages/walkaroun
 for (const needle of [
   "routes scene-pack vertex-displacement skips through structured warnings in %s mode",
   "walkaround-hybrid.vertex-displacement-skipped",
-  "fallback: 'vertex displacement skipped'",
+  "fallback: 'displacement skipped'",
 ]) {
   if (!walkaroundBvhCoreMaterialResolverTest.includes(needle)) {
     fail(`walkaround BVH core tests must pin structured displacement warning surfacing: ${needle}`);

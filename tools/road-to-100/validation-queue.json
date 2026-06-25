@@ -755,13 +755,13 @@
       "title": "arbitrary multi-UV arrays",
       "status": "future-contract",
       "codeNowBounded": false,
-      "currentContract": "Single high TEXCOORD_N lossless remap is implemented; direct core PT backend packers warn/drop texCoord > 1 maps; true arbitrary UV arrays require a new core/backend contract.",
+      "currentContract": "glTF import can project up to two material-visible UV sets, including high TEXCOORD_N, into the existing core uv0/uv1 lanes per primitive; direct core PT backend packers still warn/drop texCoord > 1 maps; native arbitrary UV arrays require a new core/backend contract.",
       "sourceEvidence": [
         {
           "path": "packages/gltf-adapter/src/gltfToScene.ts",
           "includes": [
-            "highTexCoords.size === 1 && !usesUv1",
-            "_cloneMaterialWithTextureRef(remapped, field, { ...ref, texCoord: 1 })",
+            "material-visible UV sets can be losslessly projected",
+            "requestedTexCoords.length <= 2",
             "ignored-material-texcoord"
           ]
         },
