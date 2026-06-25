@@ -291,7 +291,7 @@ struct DdgiTraceParams {
 // never updated). Sampler removed on both sides.
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
 
-const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 56u;
+const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 62u;
 const DDGI_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const DDGI_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const DDGI_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -323,6 +323,10 @@ const DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
 const DDGI_MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: u32 = 53u;
 const DDGI_MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: u32 = 54u;
 const DDGI_MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET: u32 = 55u;
+const DDGI_MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET: u32 = 56u;
+const DDGI_MATERIAL_MAP_FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET: u32 = 58u;
+const DDGI_MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET: u32 = 59u;
+const DDGI_MATERIAL_MAP_BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET: u32 = 61u;
 
 fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(ddgiMaterialMapMeta);
@@ -1063,14 +1067,30 @@ fn ddgiApplyNormalMapAtOffsetForHit(
   return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
 }
 
+fn ddgiApplyFaceLayerNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
+  let isFrontFace = hit.side >= 0.0;
+  let normalMapOffset = select(
+    DDGI_MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET,
+    DDGI_MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET,
+    isFrontFace,
+  );
+  let normalScaleOffset = select(
+    DDGI_MATERIAL_MAP_BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET,
+    DDGI_MATERIAL_MAP_FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET,
+    isFrontFace,
+  );
+  return ddgiApplyNormalMapAtOffsetForHit(hit, frameNormal, fallbackNormal, normalMapOffset, normalScaleOffset);
+}
+
 fn ddgiApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
-  return ddgiApplyNormalMapAtOffsetForHit(
+  let baseMapped = ddgiApplyNormalMapAtOffsetForHit(
     hit,
     baseNormal,
     baseNormal,
     DDGI_MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
     DDGI_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET,
   );
+  return ddgiApplyFaceLayerNormalMapForHit(hit, baseNormal, baseMapped);
 }
 
 fn ddgiApplyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {

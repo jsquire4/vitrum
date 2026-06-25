@@ -337,7 +337,7 @@ struct RCLightBuffer {
 @group(0) @binding(19) var                      rc_geom_tangent:          texture_2d<f32>;
 @group(0) @binding(20) var                      rc_geom_vertex_color:     texture_2d<f32>;
 
-const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 56u;
+const RC_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 62u;
 const RC_MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const RC_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const RC_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -364,6 +364,10 @@ const RC_MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: u32 = 44u;
 const RC_MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
 const RC_MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
 const RC_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
+const RC_MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET: u32 = 56u;
+const RC_MATERIAL_MAP_FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET: u32 = 58u;
+const RC_MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET: u32 = 59u;
+const RC_MATERIAL_MAP_BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET: u32 = 61u;
 const RC_PI: f32 = 3.14159265;
 const RC_INV_PI: f32 = 0.31830988618;
 
@@ -894,14 +898,30 @@ fn rcApplyNormalMapAtOffsetForHit(
   return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
 }
 
+fn rcApplyFaceLayerNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
+  let isFrontFace = hit.side >= 0.0;
+  let normalMapOffset = select(
+    RC_MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET,
+    RC_MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET,
+    isFrontFace,
+  );
+  let normalScaleOffset = select(
+    RC_MATERIAL_MAP_BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET,
+    RC_MATERIAL_MAP_FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET,
+    isFrontFace,
+  );
+  return rcApplyNormalMapAtOffsetForHit(hit, frameNormal, fallbackNormal, normalMapOffset, normalScaleOffset);
+}
+
 fn rcApplyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
-  return rcApplyNormalMapAtOffsetForHit(
+  let baseMapped = rcApplyNormalMapAtOffsetForHit(
     hit,
     baseNormal,
     baseNormal,
     RC_MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
     RC_MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET,
   );
+  return rcApplyFaceLayerNormalMapForHit(hit, baseNormal, baseMapped);
 }
 
 fn rcApplyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {

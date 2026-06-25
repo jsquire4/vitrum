@@ -261,7 +261,7 @@ const WALKAROUND_FACE_LAYERS = evidence(
     {
       path: 'packages/walkaround-hybrid/src/__tests__/materialTextureAtlas.test.ts',
       includes: [
-        'packs frontLayer/backLayer transmission and roughness metadata',
+        'packs frontLayer/backLayer transmission, roughness, and layer-local normal maps',
       ],
     },
     {

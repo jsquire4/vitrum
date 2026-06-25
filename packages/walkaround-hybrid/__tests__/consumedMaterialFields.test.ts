@@ -2,9 +2,8 @@
  * Tests for the material-field consumption warning (Wave 2, §3 item 1).
  *
  * Pins:
- *   (a) A scene supplying baseColorMap + normalMap + frontLayer.normalMap warns
- *       only for the layer-local normal map because frontLayer transmission and
- *       roughness now have walkaround paths.
+ *   (a) A scene supplying baseColorMap + normalMap + frontLayer.normalMap does
+ *       not warn because layer-local normal maps now have walkaround paths.
  *   (b) A scene using only consumed fields (baseColor, roughness, metallic,
  *       emissive, emissiveIntensity, shadingModel, transmission, attenuationColor,
  *       attenuationDistance, thickness, ior, extensions) produces no warning.
@@ -97,7 +96,7 @@ describe('collectUnconsumedMaterialFields', () => {
     expect(result).not.toContain('iridescence');
   });
 
-  it('(pin a) names frontLayer.normalMap while baseColorMap + normalMap + iridescence are consumed', () => {
+  it('(pin a) treats frontLayer.normalMap as consumed with baseColorMap + normalMap + iridescence', () => {
     const mat: Record<string, unknown> = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
@@ -108,8 +107,7 @@ describe('collectUnconsumedMaterialFields', () => {
       frontLayer: { transmission: [1, 0.5, 0.25], normalMap: { handle: stubTextureRef() } },
     };
     const result = collectUnconsumedMaterialFields(primitivesWithMaterial(mat));
-    // Result is sorted alphabetically.
-    expect(result).toEqual(['frontLayer.normalMap']);
+    expect(result).toEqual([]);
   });
 
   it('does not warn for consumed frontLayer/backLayer transmission and roughness', () => {

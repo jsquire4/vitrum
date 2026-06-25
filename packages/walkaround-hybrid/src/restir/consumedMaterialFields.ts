@@ -142,11 +142,11 @@
  *                           scalar iridescence from the red channel.
  *  iridescenceThicknessMap readable linear thickness maps select thickness
  *                           from the green channel.
- *  frontLayer             material atlas stores per-face transmission plus a
- *                           roughness override. Shade, transparent-OIT, ReSTIR-DI
- *                           p-hat/reuse, ReSTIR-GI suffix/receiver targets, and
- *                           DDGI probe-hit material all apply the selected face
- *                           layer. Layer-local normal maps remain diagnosed.
+ *  frontLayer             material atlas stores per-face transmission, roughness
+ *                           override, and layer-local normal maps. Shade,
+ *                           transparent-OIT, ReSTIR-DI p-hat/reuse, ReSTIR-GI
+ *                           suffix/receiver targets, RC probe rays, and DDGI
+ *                           probe-hit material all apply the selected face layer.
  *  backLayer              same per-face material atlas path as frontLayer.
  *
  * Everything else — TextureRef maps other than baseColorMap / normalMap /
@@ -154,8 +154,8 @@
  * transmissionMap / thicknessMap / lightMap / specular maps / clearcoat maps /
  * sheen maps / anisotropyMap / iridescence maps / bumpMap / displacementMap,
  * scalar displacement controls other than displacementScale /
- * displacementBias / displacementSubdivisions, layer-local normal maps,
- * spectral curves, thin-film stacks, and unlisted future maps/extension families
+ * displacementBias / displacementSubdivisions, spectral curves, thin-film stacks,
+ * and unlisted future maps/extension families
  * — is rejected by the
  * warning/truthfulness surface rather than silently rendered as native.
  */
@@ -196,7 +196,11 @@ export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
   'iridescenceMap',
   'iridescenceThicknessMap',
   'frontLayer',
+  'frontLayer.normalMap',
+  'frontLayer.normalScale',
   'backLayer',
+  'backLayer.normalMap',
+  'backLayer.normalScale',
   'alphaMode',
   'alphaCutoff',
   'opacity',
@@ -295,26 +299,6 @@ function materialBearingPrimitiveKind(kind: string): boolean {
   );
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function collectUnsupportedFaceLayerSubfields(
-  material: Record<string, unknown>,
-  supplied: Set<string>,
-): void {
-  for (const layerKey of ['frontLayer', 'backLayer'] as const) {
-    const layer = material[layerKey];
-    if (!isRecord(layer)) continue;
-    if (layer.normalMap !== undefined && layer.normalMap !== null) {
-      supplied.add(`${layerKey}.normalMap`);
-    }
-    if (layer.normalScale !== undefined && layer.normalScale !== null) {
-      supplied.add(`${layerKey}.normalScale`);
-    }
-  }
-}
-
 /**
  * Scan one material and return the fields that are present but NOT in
  * {@link CONSUMED_MATERIAL_FIELDS}. The check is per-field-key; a field counts
@@ -332,7 +316,6 @@ export function collectUnconsumedMaterialFieldsForMaterial(
       supplied.add(key);
     }
   }
-  collectUnsupportedFaceLayerSubfields(material, supplied);
   return Array.from(supplied).sort();
 }
 
@@ -346,10 +329,6 @@ export type UnconsumedMaterialFieldCategory =
 const UNCONSUMED_MATERIAL_FIELD_CATEGORIES: Readonly<Record<string, UnconsumedMaterialFieldCategory>> = {
   spectralAttenuation: 'spectral',
   dispersionAbbeNumber: 'spectral',
-  'frontLayer.normalMap': 'layered',
-  'frontLayer.normalScale': 'layered',
-  'backLayer.normalMap': 'layered',
-  'backLayer.normalScale': 'layered',
   thinFilmStack: 'layered',
 };
 

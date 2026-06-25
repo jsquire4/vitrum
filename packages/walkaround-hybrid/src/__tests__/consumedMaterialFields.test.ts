@@ -104,8 +104,8 @@ function consumedOnlyScene(): Scene {
   };
 }
 
-/** A scene whose material has `baseColorMap` (consumed) + layer-local normalMap (unconsumed). */
-function unconsumedFieldsScene(): Scene {
+/** A scene whose material has `baseColorMap` plus a consumed layer-local normalMap. */
+function layerNormalMapScene(): Scene {
   return {
     primitives: [
       {
@@ -185,13 +185,11 @@ describe('collectUnconsumedMaterialFields', () => {
     )).toEqual([]);
   });
 
-  it('returns sorted list of unconsumed fields', () => {
-    const scene = unconsumedFieldsScene();
-    const result = collectUnconsumedMaterialFields(
+  it('does not report layer-local normal maps as unconsumed', () => {
+    const scene = layerNormalMapScene();
+    expect(collectUnconsumedMaterialFields(
       scene.primitives as unknown as ReadonlyArray<PrimLike>,
-    );
-    // both fields are present, result is alphabetically sorted
-    expect(result).toEqual(['frontLayer.normalMap']);
+    )).toEqual([]);
   });
 
   it('reports material drops on analytic primitives', () => {
@@ -249,9 +247,8 @@ describe('collectUnconsumedMaterialFields', () => {
       { id: 'pane-a', kind: 'mesh', material: { baseColor: [1, 0, 0], frontLayer: { transmission: [1, 1, 1], normalMap: { handle: 'normal' } } } },
       { id: 'pane-b', kind: 'mesh', material: { baseColor: [0, 1, 0], thinFilmStack: { layers: [] }, anisotropy: 0.5 } },
     ];
-    expect(collectUnconsumedMaterialFields(prims)).toEqual(['frontLayer.normalMap', 'thinFilmStack']);
+    expect(collectUnconsumedMaterialFields(prims)).toEqual(['thinFilmStack']);
     expect(collectUnconsumedMaterialPrimitiveFields(prims)).toEqual([
-      { primitiveId: 'pane-a', fields: ['frontLayer.normalMap'] },
       { primitiveId: 'pane-b', fields: ['thinFilmStack'] },
     ]);
   });
@@ -518,25 +515,19 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
-  it('warns only for frontLayer.normalMap when baseColorMap is also supplied', () => {
+  it('does not warn for layer-local normal maps when baseColorMap is also supplied', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({
       ...makeOpts(),
       onWarning: (w) => structured.push(w),
     });
     try {
-      engine.setScene(unconsumedFieldsScene());
+      engine.setScene(layerNormalMapScene());
       const warnMessages = warnSpy.mock.calls.flat().map(String);
-      const materialWarn = warnMessages.find((m) => m.includes('not consumed'));
-      expect(materialWarn).toBeDefined();
-      expect(materialWarn).not.toContain('baseColorMap');
-      expect(materialWarn).toContain('frontLayer.normalMap');
+      expect(warnMessages.some((m) => m.includes('not consumed'))).toBe(false);
       expect(structured.some((w) =>
-        w.code === 'walkaround-hybrid.unconsumed-material-fields' &&
-        Array.isArray(w.details?.fields) &&
-        !w.details.fields.includes('baseColorMap') &&
-        w.details.fields.includes('frontLayer.normalMap'),
-      )).toBe(true);
+        w.code === 'walkaround-hybrid.unconsumed-material-fields',
+      )).toBe(false);
     } finally {
       engine.dispose();
     }
@@ -630,9 +621,23 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
 
   it('warns only once per distinct field set across repeated setScene calls', () => {
     const engine = new HybridEngine(makeOpts());
+    const baseScene = consumedOnlyScene();
+    const basePrim = baseScene.primitives[0]!;
+    const unsupportedScene: Scene = {
+      ...baseScene,
+      primitives: [
+        {
+          ...basePrim,
+          material: {
+            ...basePrim.material,
+            thinFilmStack: { layers: [] },
+          },
+        } as unknown as ScenePrimitive,
+      ],
+    };
     try {
-      engine.setScene(unconsumedFieldsScene());
-      engine.setScene(unconsumedFieldsScene()); // same field set — should NOT warn again
+      engine.setScene(unsupportedScene);
+      engine.setScene(unsupportedScene); // same field set — should NOT warn again
       const materialWarns = warnSpy.mock.calls.flat().map(String).filter((m) => m.includes('not consumed'));
       expect(materialWarns).toHaveLength(1);
     } finally {

@@ -1029,19 +1029,46 @@ describe('walkaround materialTextureAtlas', () => {
       .toBe(0);
   });
 
-  it('packs frontLayer/backLayer transmission and roughness metadata', () => {
+  it('packs frontLayer/backLayer transmission, roughness, and layer-local normal maps', () => {
+    const frontNormal = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 128, 255, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
+    const backNormal = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([64, 192, 255, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8', colorSpace: 'linear' },
+    };
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
       roughness: 0.8,
       metallic: 0,
-      frontLayer: { transmission: [1, 0.5, -2], roughness: 0.25 },
-      backLayer: { transmission: [0.25, 2, 0.75] },
+      frontLayer: {
+        transmission: [1, 0.5, -2],
+        roughness: 0.25,
+        normalMap: { handle: frontNormal, texCoord: 1, wrapS: 'clamp-to-edge' },
+        normalScale: 0.4,
+      },
+      backLayer: {
+        transmission: [0.25, 2, 0.75],
+        normalMap: { handle: backNormal, wrapT: 'mirrored-repeat' },
+        normalScale: 0.75,
+      },
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
     const front = MATERIAL_MAP_META_TEXEL_OFFSETS.FRONT_LAYER * 4;
     const back = MATERIAL_MAP_META_TEXEL_OFFSETS.BACK_LAYER * 4;
+    const frontNormalMeta = MATERIAL_MAP_META_TEXEL_OFFSETS.FRONT_LAYER_NORMAL * 4;
+    const frontNormalScale = MATERIAL_MAP_META_TEXEL_OFFSETS.FRONT_LAYER_NORMAL_SCALE * 4;
+    const backNormalMeta = MATERIAL_MAP_META_TEXEL_OFFSETS.BACK_LAYER_NORMAL * 4;
+    const backNormalScale = MATERIAL_MAP_META_TEXEL_OFFSETS.BACK_LAYER_NORMAL_SCALE * 4;
 
+    expect(atlas.readableNormalLayerCount).toBe(2);
+    expect(atlas.atlasLayerCount).toBe(2);
     expect(atlas.baseColorMetaData[front]).toBe(1);
     expect(atlas.baseColorMetaData[front + 1]).toBe(0.5);
     expect(atlas.baseColorMetaData[front + 2]).toBe(0);
@@ -1050,6 +1077,12 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[back + 1]).toBe(1);
     expect(atlas.baseColorMetaData[back + 2]).toBe(0.75);
     expect(atlas.baseColorMetaData[back + 3]).toBe(-1);
+    expect(atlas.baseColorMetaData[frontNormalMeta]).toBe(0);
+    expect(atlas.baseColorMetaData[frontNormalMeta + 1]).toBe(1 + 16);
+    expect(atlas.baseColorMetaData[frontNormalScale]).toBeCloseTo(0.4, 5);
+    expect(atlas.baseColorMetaData[backNormalMeta]).toBe(1);
+    expect(atlas.baseColorMetaData[backNormalMeta + 1]).toBe(2 * 4);
+    expect(atlas.baseColorMetaData[backNormalScale]).toBeCloseTo(0.75, 5);
   });
 
   it('packs volume scattering sigmaS and anisotropy metadata', () => {
@@ -1173,6 +1206,9 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleVolumeScatteringControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyVolumeScatteringApproximation(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyThicknessMapToBeerTint(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn applyFaceLayerNormalMapForHit(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET');
+    expect(MATERIAL_ATLAS_WGSL).toContain('MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyBumpMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('let bumpTexelStep = vec2f(');

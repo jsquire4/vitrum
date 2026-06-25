@@ -75,8 +75,8 @@ function parseStringSupportObject(source, name) {
   const block = extractFrozenObjectBlock(source, name);
   /** @type {Map<string, string>} */
   const rows = new Map();
-  for (const match of block.matchAll(/^\s{2}([A-Za-z0-9_]+): '([^']+)'/gm)) {
-    rows.set(match[1], match[2]);
+  for (const match of block.matchAll(/^\s{2}(?:'([^']+)'|([A-Za-z0-9_]+)): '([^']+)'/gm)) {
+    rows.set(match[1] ?? match[2], match[3]);
   }
   if (rows.size === 0) fail(`${name} parsed zero support rows`);
   return rows;
@@ -434,8 +434,9 @@ for (const [field, support] of walkaroundMaterialRows) {
 }
 
 for (const field of walkaroundConsumedFields) {
-  if (!walkaroundMaterialRows.has(field)) {
-    fail(`CONSUMED_MATERIAL_FIELDS contains ${field}, but WALKAROUND_MATERIALS has no row for it`);
+  const supportField = field.includes('.') ? field.slice(0, field.indexOf('.')) : field;
+  if (!walkaroundMaterialRows.has(supportField)) {
+    fail(`CONSUMED_MATERIAL_FIELDS contains ${field}, but WALKAROUND_MATERIALS has no row for ${supportField}`);
   }
 }
 

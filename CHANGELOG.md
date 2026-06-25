@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed (walkaround layer-local normal maps, 2026-06-25)
+
+- **Walkaround face-layer normal maps now flow through the material atlas:** `@vitrum/walkaround-hybrid` packs `frontLayer.normalMap` / `backLayer.normalMap` and their normal scales into per-triangle material metadata, applies the selected face map through the same tangent-frame helper as top-level normal maps, and keeps DDGI plus RC copied material-atlas shaders on the enlarged stride. The unconsumed-field warning no longer reports these layer-local normal fields; full layered-BSDF multiple scattering and TMM thin-film stacks remain outside the walkaround model.
+
 ### Fixed (glTF instanced skinned/morphed fallback expansion, 2026-06-20)
 
 - **`EXT_mesh_gpu_instancing` on skinned or morphed glTF primitives now imports as renderable expanded primitives:** when the core scene contract cannot represent a native instanced skinned/morphed primitive, `gltfToScene()` now creates one skinned/morphed primitive per authored GPU-instance transform, reports `fallback-expanded-gpu-instancing`, preserves material/variant/animation provenance for each generated primitive id, and the scene controller keeps each instance-local transform intact when the node or an ancestor animates. Compatibility reports this combined case as `fallback-generated-mesh`; `reject-unsupported` accepts it and `reject-degraded` rejects it before engine construction. Native instanced skinned/morphed primitives remain future performance-oriented core/backend work, not an arbitrary-glTF correctness blocker.

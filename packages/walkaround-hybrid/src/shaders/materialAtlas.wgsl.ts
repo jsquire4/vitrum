@@ -12,7 +12,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 56u;
+const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 62u;
 const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
 const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
 const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
@@ -48,6 +48,10 @@ const MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: u32 = 52u;
 const MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: u32 = 53u;
 const MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: u32 = 54u;
 const MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET: u32 = 55u;
+const MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET: u32 = 56u;
+const MATERIAL_MAP_FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET: u32 = 58u;
+const MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET: u32 = 59u;
+const MATERIAL_MAP_BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET: u32 = 61u;
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -708,14 +712,30 @@ fn applyNormalMapAtOffsetForHit(
   return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
 }
 
+fn applyFaceLayerNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
+  let isFrontFace = hit.side >= 0.0;
+  let normalMapOffset = select(
+    MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET,
+    MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET,
+    isFrontFace,
+  );
+  let normalScaleOffset = select(
+    MATERIAL_MAP_BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET,
+    MATERIAL_MAP_FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET,
+    isFrontFace,
+  );
+  return applyNormalMapAtOffsetForHit(hit, frameNormal, fallbackNormal, normalMapOffset, normalScaleOffset);
+}
+
 fn applyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
-  return applyNormalMapAtOffsetForHit(
+  let baseMapped = applyNormalMapAtOffsetForHit(
     hit,
     baseNormal,
     baseNormal,
     MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
     MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET,
   );
+  return applyFaceLayerNormalMapForHit(hit, baseNormal, baseMapped);
 }
 
 fn applyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {

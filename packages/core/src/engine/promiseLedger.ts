@@ -493,9 +493,9 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   scatteringAnisotropy: 'approximate',
   scatteringCoefficientRGB: 'approximate',
   // Per-face absorption layers ride the walkaround material atlas. Transmission
-  // attenuates final bulk radiance and roughness overrides the selected face in
-  // shade/OIT/ReSTIR/DDGI material payloads; layer-local normal maps and full
-  // layered-BSDF multiple scattering remain out of model.
+  // attenuates final bulk radiance, roughness overrides the selected face, and
+  // layer-local normal maps perturb the selected face in shade/OIT/ReSTIR/DDGI/RC;
+  // full layered-BSDF multiple scattering remains out of model.
   frontLayer: 'approximate',
   backLayer: 'approximate',
   thinFilmStack: 'unsupported',

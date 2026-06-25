@@ -7,7 +7,7 @@ import type {
 } from '@vitrum/core';
 
 export const BASE_COLOR_MAP_META_TEX_WIDTH = 4096;
-export const MATERIAL_MAP_META_TEXELS_PER_TRI = 56;
+export const MATERIAL_MAP_META_TEXELS_PER_TRI = 62;
 export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   BASE_COLOR: 0,
   ROUGHNESS: 2,
@@ -44,6 +44,10 @@ export const MATERIAL_MAP_META_TEXEL_OFFSETS = {
   FRONT_LAYER: 53,
   BACK_LAYER: 54,
   VOLUME_SCATTERING: 55,
+  FRONT_LAYER_NORMAL: 56,
+  FRONT_LAYER_NORMAL_SCALE: 58,
+  BACK_LAYER_NORMAL: 59,
+  BACK_LAYER_NORMAL_SCALE: 61,
 } as const;
 
 export type AtlasMapField =
@@ -67,7 +71,9 @@ export type AtlasMapField =
   | 'iridescenceMap'
   | 'iridescenceThicknessMap'
   | 'thicknessMap'
-  | 'bumpMap';
+  | 'bumpMap'
+  | 'frontLayer.normalMap'
+  | 'backLayer.normalMap';
 export type AtlasColorSpace = 'srgb' | 'linear';
 
 export interface MaterialTextureAtlasDiagnostic {
@@ -121,6 +127,8 @@ const ATLAS_MAP_FIELDS: readonly { readonly field: AtlasMapField; readonly color
   { field: 'iridescenceThicknessMap', colorSpace: 'linear' },
   { field: 'thicknessMap', colorSpace: 'linear' },
   { field: 'bumpMap', colorSpace: 'linear' },
+  { field: 'frontLayer.normalMap', colorSpace: 'linear' },
+  { field: 'backLayer.normalMap', colorSpace: 'linear' },
 ];
 
 const FILTER_MODE_INDEX: Readonly<Record<TextureFilterMode, number>> = {
@@ -485,6 +493,22 @@ export function packMaterialTextureAtlas(
     iridescenceThicknessMap: new Set<number>(),
     thicknessMap: new Set<number>(),
     bumpMap: new Set<number>(),
+    'frontLayer.normalMap': new Set<number>(),
+    'backLayer.normalMap': new Set<number>(),
+  };
+
+  const materialTextureRefForField = (
+    material: MaterialSpec | undefined,
+    field: AtlasMapField,
+  ): TextureRef | null => {
+    if (field === 'frontLayer.normalMap') {
+      return asTextureRef(material?.frontLayer?.normalMap);
+    }
+    if (field === 'backLayer.normalMap') {
+      return asTextureRef(material?.backLayer?.normalMap);
+    }
+    const topLevelField = field as Exclude<AtlasMapField, 'frontLayer.normalMap' | 'backLayer.normalMap'>;
+    return asTextureRef(material?.[topLevelField]);
   };
 
   const collect = (
@@ -493,7 +517,7 @@ export function packMaterialTextureAtlas(
     field: AtlasMapField,
     colorSpace: AtlasColorSpace,
   ): void => {
-    const ref = asTextureRef(material[field]);
+    const ref = materialTextureRefForField(material, field);
     if (ref?.handle == null) return;
     const texCoord = ref.texCoord ?? 0;
     if (texCoord !== 0 && texCoord !== 1) {
@@ -679,7 +703,7 @@ export function packMaterialTextureAtlas(
     colorSpace: AtlasColorSpace,
     texel: number,
   ): void => {
-    const ref = asTextureRef(mat?.[field]);
+    const ref = materialTextureRefForField(mat, field);
     if (ref?.handle == null) {
       writeDisabledMeta(baseColorMetaData, texel);
       return;
@@ -716,6 +740,19 @@ export function packMaterialTextureAtlas(
     const b = texel * 4;
     baseColorMetaData[b] = Number.isFinite(mat?.normalScale)
       ? Math.max(0, mat?.normalScale ?? 1)
+      : 1;
+    baseColorMetaData[b + 1] = 0;
+    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 3] = 0;
+  };
+
+  const writeFaceLayerNormalScaleMeta = (
+    layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
+    texel: number,
+  ): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = Number.isFinite(layer?.normalScale)
+      ? Math.max(0, layer?.normalScale ?? 1)
       : 1;
     baseColorMetaData[b + 1] = 0;
     baseColorMetaData[b + 2] = 0;
@@ -875,6 +912,10 @@ export function packMaterialTextureAtlas(
     writeFaceLayerMeta(mat?.frontLayer, baseTexel + offsets.FRONT_LAYER);
     writeFaceLayerMeta(mat?.backLayer, baseTexel + offsets.BACK_LAYER);
     writeVolumeScatteringMeta(mat, baseTexel + offsets.VOLUME_SCATTERING);
+    writeMapMeta(mat, 'frontLayer.normalMap', 'linear', baseTexel + offsets.FRONT_LAYER_NORMAL);
+    writeFaceLayerNormalScaleMeta(mat?.frontLayer, baseTexel + offsets.FRONT_LAYER_NORMAL_SCALE);
+    writeMapMeta(mat, 'backLayer.normalMap', 'linear', baseTexel + offsets.BACK_LAYER_NORMAL);
+    writeFaceLayerNormalScaleMeta(mat?.backLayer, baseTexel + offsets.BACK_LAYER_NORMAL_SCALE);
   }
 
   return {
@@ -885,7 +926,11 @@ export function packMaterialTextureAtlas(
     baseColorMetaWidth,
     baseColorMetaHeight,
     readableBaseColorLayerCount: fieldLayers.baseColorMap.size,
-    readableNormalLayerCount: fieldLayers.normalMap.size,
+    readableNormalLayerCount: new Set<number>([
+      ...fieldLayers.normalMap,
+      ...fieldLayers['frontLayer.normalMap'],
+      ...fieldLayers['backLayer.normalMap'],
+    ]).size,
     readableRoughnessLayerCount: fieldLayers.roughnessMap.size,
     readableMetallicLayerCount: fieldLayers.metallicMap.size,
     readableAoLayerCount: fieldLayers.aoMap.size,
