@@ -8,6 +8,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checkerPath = join(repoRoot, 'tools', 'renderer-fidelity-proof', 'check-proofs.mjs');
 const promotionStatusPath = join(repoRoot, 'tools', 'renderer-fidelity-proof', 'promotion-status.json');
 const queuePath = join(repoRoot, 'tools', 'road-to-100', 'validation-queue.json');
+const validationQueueCheckerPath = join(repoRoot, 'tools', 'road-to-100', 'check-validation-queue.mjs');
 
 test('renderer fidelity promotion status stays partial while pt-webgl2 browser proof is host-blocked', async () => {
   const status = JSON.parse(await readFile(promotionStatusPath, 'utf8'));
@@ -48,6 +49,7 @@ test('renderer fidelity promotion status stays partial while pt-webgl2 browser p
 
 test('renderer fidelity checker fail-closes browser promotion and source-only pt-webgl2 proofs', async () => {
   const checker = await readFile(checkerPath, 'utf8');
+  const validationQueueChecker = await readFile(validationQueueCheckerPath, 'utf8');
 
   assert.match(checker, /must stay PASS-PARTIAL until pt-webgl2 browser promotion evidence lands/);
   assert.match(checker, /ptWebgl2\.browserPromotionReady must remain false while browser capture is blocked/);
@@ -57,6 +59,10 @@ test('renderer fidelity checker fail-closes browser promotion and source-only pt
   assert.match(checker, /ptWebgl2\.requiredEvidence must name browser\/real-adapter reference A\/B/);
   assert.match(checker, /pt-webgl2 must not be marked supported while/);
   assert.match(checker, /PT_WEBGL2_MATERIAL_FURNACE_PROOFS/);
+  assert.match(validationQueueChecker, /REQUIRED_RENDERER_FIDELITY_SOURCE_STATUS_PATHS/);
+  assert.match(validationQueueChecker, /vitrum\.renderer-fidelity\.promotion-provenance\.v1/);
+  assert.match(validationQueueChecker, /rendererPromotionProvenance/);
+  assert.match(validationQueueChecker, /sourceStatusSha256/);
 });
 
 test('Road renderer fidelity row cites the promotion guard artifact', async () => {

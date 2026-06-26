@@ -271,6 +271,18 @@ const REQUIRED_RENDERER_FIDELITY_ARTIFACT_PATHS = [
   "packages/pt-webgl2/src/glsl/shader/sampling/light_sampling_functions.glsl.js",
 ];
 
+const REQUIRED_RENDERER_FIDELITY_SOURCE_STATUS_PATHS = [
+  "tools/gltf-browser-proof/pt-webgl2-real-status.json",
+  "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json",
+  "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-spectral-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-light-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-caustic-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
+  "tools/radiometric-ab/pt-promotion-status.json",
+  "tools/radiometric-ab/results-bdpt.json",
+];
+
 const REQUIRED_WALKAROUND_AB_ARTIFACT_PATHS = [
   "tools/radiometric-ab/check-results.mjs",
   "tools/radiometric-ab/proofs.mjs",
@@ -964,6 +976,50 @@ const rendererBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2
 const rendererCanvasBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json");
 const rendererPtPromotionStatus = await readJson("tools/radiometric-ab/pt-promotion-status.json");
 const rendererBdptResult = await readJson("tools/radiometric-ab/results-bdpt.json");
+const rendererPromotionProvenance = rendererPromotionStatus.provenance;
+if (rendererPromotionProvenance == null || typeof rendererPromotionProvenance !== "object") {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion summary must include provenance");
+}
+const rendererPromotionProvenanceRecord = /** @type {{ schema?: unknown, checkerPath?: unknown, checkerSha256?: unknown, statusPath?: unknown, sourceStatuses?: unknown, sourceStatusSha256?: unknown, generatedBy?: unknown }} */ (rendererPromotionProvenance);
+if (
+  rendererPromotionProvenanceRecord.schema !== "vitrum.renderer-fidelity.promotion-provenance.v1" ||
+  rendererPromotionProvenanceRecord.checkerPath !== "tools/renderer-fidelity-proof/check-proofs.mjs" ||
+  rendererPromotionProvenanceRecord.statusPath !== "tools/renderer-fidelity-proof/promotion-status.json" ||
+  rendererPromotionProvenanceRecord.generatedBy !== "vitrum renderer fidelity proof ledger"
+) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion provenance must pin schema/checker/status/generator");
+}
+if (typeof rendererPromotionProvenanceRecord.checkerSha256 !== "string" || !/^[0-9a-f]{64}$/.test(rendererPromotionProvenanceRecord.checkerSha256)) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion provenance checkerSha256 must be a lowercase SHA-256 digest");
+}
+if (
+  JSON.stringify(rendererPromotionProvenanceRecord.sourceStatuses ?? []) !==
+  JSON.stringify(rendererPromotionStatus.sourceStatuses ?? [])
+) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion provenance sourceStatuses must match promotion-status sourceStatuses");
+}
+if (
+  JSON.stringify(rendererPromotionProvenanceRecord.sourceStatuses ?? []) !==
+  JSON.stringify(REQUIRED_RENDERER_FIDELITY_SOURCE_STATUS_PATHS)
+) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion provenance must pin every renderer fidelity source status");
+}
+const rendererPromotionSourceDigests = rendererPromotionProvenanceRecord.sourceStatusSha256;
+if (!Array.isArray(rendererPromotionSourceDigests) || rendererPromotionSourceDigests.length !== REQUIRED_RENDERER_FIDELITY_SOURCE_STATUS_PATHS.length) {
+  fail("VQ-RENDERER-FIDELITY-PROOF promotion provenance must hash every renderer fidelity source status");
+}
+for (const [index, path] of REQUIRED_RENDERER_FIDELITY_SOURCE_STATUS_PATHS.entries()) {
+  const digest = rendererPromotionSourceDigests[index];
+  if (
+    digest == null ||
+    typeof digest !== "object" ||
+    digest.path !== path ||
+    typeof digest.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(digest.sha256)
+  ) {
+    fail(`VQ-RENDERER-FIDELITY-PROOF promotion provenance sourceStatusSha256[${index}] must pin ${path}`);
+  }
+}
 if (
   rendererPromotionStatus.verdict !== "PASS-PARTIAL" ||
   rendererPromotionStatus.ptWebgl2?.browserPromotionReady !== false ||
