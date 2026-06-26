@@ -13,6 +13,7 @@ const ptBdptHarnessPath = join(repoRoot, 'tools', 'radiometric-ab', 'ab-bdpt.mjs
 const radiometricProofsPath = join(repoRoot, 'tools', 'radiometric-ab', 'proofs.mjs');
 const radiometricCheckerPath = join(repoRoot, 'tools', 'radiometric-ab', 'check-results.mjs');
 const radiometricProvenancePath = join(repoRoot, 'tools', 'radiometric-ab', 'resultProvenance.mjs');
+const validationQueueCheckerPath = join(repoRoot, 'tools', 'road-to-100', 'check-validation-queue.mjs');
 const ptWebgpuIndexPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'index.ts');
 const ptWebgpuKernelPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'wgsl', 'pathTrace', 'kernel.wgsl.ts');
 
@@ -89,6 +90,19 @@ test('walkaround A/B wrapper fails closed on missing or incomplete result artifa
   assert.match(runner, /verdict: 'FAIL'/);
 });
 
+
+test('Road checker pins radiometric promotion provenance blocks', async () => {
+  const validationQueueChecker = await readFile(validationQueueCheckerPath, 'utf8');
+
+  assert.match(validationQueueChecker, /REQUIRED_PT_RADIOMETRIC_PROMOTION_SOURCE_STATUS_PATHS/);
+  assert.match(validationQueueChecker, /vitrum\.pt-radiometric-ab\.promotion-provenance\.v1/);
+  assert.match(validationQueueChecker, /ptRadiometricPromotionProvenance/);
+  assert.match(validationQueueChecker, /REQUIRED_WALKAROUND_PROMOTION_SOURCE_STATUS_PATHS/);
+  assert.match(validationQueueChecker, /REQUIRED_WALKAROUND_PROMOTION_SOURCE_RESULT_PATHS/);
+  assert.match(validationQueueChecker, /vitrum\.walkaround-ab\.promotion-provenance\.v1/);
+  assert.match(validationQueueChecker, /walkaroundPromotionProvenance/);
+  assert.match(validationQueueChecker, /assertSha256DigestRows/);
+});
 test('pt radiometric wrapper refreshes promotion status after complete recapture', async () => {
   const runner = await readFile(ptRunnerPath, 'utf8');
   assert.match(runner, /pt-promotion-status\.json/);

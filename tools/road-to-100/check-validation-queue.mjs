@@ -334,6 +334,27 @@ const REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS = [
   "packages/shared-samplers/__tests__/bdptVeachFull.test.ts",
 ];
 
+const REQUIRED_PT_RADIOMETRIC_PROMOTION_SOURCE_STATUS_PATHS = [
+  "tools/radiometric-ab/pt-ab-host-status.json",
+  "tools/radiometric-ab/results-sppm.json",
+  "tools/radiometric-ab/results-bdpt.json",
+  "tools/radiometric-ab/results-restir-pt.json",
+  "tools/radiometric-ab/results-restir-pt-specialty.json",
+  "tools/radiometric-ab/results-restir-pt-glossy-research.json",
+  "tools/radiometric-ab/results-sobol.json",
+];
+
+const REQUIRED_WALKAROUND_PROMOTION_SOURCE_STATUS_PATHS = [
+  "tools/radiometric-ab/walkaround-ab-host-status.json",
+  "tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json",
+  "tools/radiometric-ab/walkaround-ab-all-spp64-status.json",
+];
+
+const REQUIRED_WALKAROUND_PROMOTION_SOURCE_RESULT_PATHS = [
+  "tools/radiometric-ab/walkaround-ab-results.json",
+  "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
+  "tools/radiometric-ab/walkaround-ab-all-spp64.json",
+];
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -454,6 +475,30 @@ function assertRowCitesPaths(row, paths, label) {
   const cited = new Set(row.proofArtifacts.map((artifact) => artifact?.path));
   for (const path of paths) {
     if (!cited.has(path)) fail(`${label} proofArtifacts must cite ${path}`);
+  }
+}
+
+/**
+ * @param {unknown} value
+ * @param {readonly string[]} expectedPaths
+ * @param {string} label
+ */
+function assertSha256DigestRows(value, expectedPaths, label) {
+  if (!Array.isArray(value) || value.length !== expectedPaths.length) {
+    fail(`${label} must hash every expected source artifact`);
+  }
+  for (const [index, path] of expectedPaths.entries()) {
+    const entry = value[index];
+    const record = /** @type {{ path?: unknown, sha256?: unknown }} */ (entry);
+    if (
+      entry == null ||
+      typeof entry !== "object" ||
+      record.path !== path ||
+      typeof record.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(record.sha256)
+    ) {
+      fail(`${label}[${index}] must pin ${path}`);
+    }
   }
 }
 
@@ -1773,6 +1818,45 @@ for (const path of REQUIRED_RADIOMETRIC_PT_ARTIFACT_PATHS) {
 }
 const ptRadiometricHostStatus = await readJson("tools/radiometric-ab/pt-ab-host-status.json");
 const ptRadiometricPromotionStatus = await readJson("tools/radiometric-ab/pt-promotion-status.json");
+const ptRadiometricPromotionProvenance = ptRadiometricPromotionStatus.provenance;
+if (ptRadiometricPromotionProvenance == null || typeof ptRadiometricPromotionProvenance !== "object") {
+  fail("VQ-RADIOMETRIC-PT promotion status must include provenance");
+}
+const ptRadiometricPromotionProvenanceRecord = /** @type {{ schema?: unknown, wrapperPath?: unknown, wrapperSha256?: unknown, helperPath?: unknown, helperSha256?: unknown, statusPath?: unknown, sourceStatusPaths?: unknown, sourceStatusSha256?: unknown, generatedBy?: unknown }} */ (ptRadiometricPromotionProvenance);
+if (
+  ptRadiometricPromotionProvenanceRecord.schema !== "vitrum.pt-radiometric-ab.promotion-provenance.v1" ||
+  ptRadiometricPromotionProvenanceRecord.wrapperPath !== "tools/radiometric-ab/run-pt-ab.mjs" ||
+  ptRadiometricPromotionProvenanceRecord.helperPath !== "tools/radiometric-ab/resultProvenance.mjs" ||
+  ptRadiometricPromotionProvenanceRecord.statusPath !== "tools/radiometric-ab/pt-promotion-status.json" ||
+  ptRadiometricPromotionProvenanceRecord.generatedBy !== "vitrum pt radiometric A/B promotion wrapper"
+) {
+  fail("VQ-RADIOMETRIC-PT promotion provenance must pin schema/wrapper/helper/status/generator");
+}
+if (
+  typeof ptRadiometricPromotionProvenanceRecord.wrapperSha256 !== "string" ||
+  !/^[0-9a-f]{64}$/.test(ptRadiometricPromotionProvenanceRecord.wrapperSha256) ||
+  typeof ptRadiometricPromotionProvenanceRecord.helperSha256 !== "string" ||
+  !/^[0-9a-f]{64}$/.test(ptRadiometricPromotionProvenanceRecord.helperSha256)
+) {
+  fail("VQ-RADIOMETRIC-PT promotion provenance wrapper/helper hashes must be lowercase SHA-256 digests");
+}
+if (
+  JSON.stringify(ptRadiometricPromotionStatus.sourceStatuses ?? []) !==
+  JSON.stringify(REQUIRED_PT_RADIOMETRIC_PROMOTION_SOURCE_STATUS_PATHS)
+) {
+  fail("VQ-RADIOMETRIC-PT promotion status must pin every PT radiometric source status");
+}
+if (
+  JSON.stringify(ptRadiometricPromotionProvenanceRecord.sourceStatusPaths ?? []) !==
+  JSON.stringify(ptRadiometricPromotionStatus.sourceStatuses ?? [])
+) {
+  fail("VQ-RADIOMETRIC-PT promotion provenance sourceStatusPaths must match promotion sourceStatuses");
+}
+assertSha256DigestRows(
+  ptRadiometricPromotionProvenanceRecord.sourceStatusSha256,
+  REQUIRED_PT_RADIOMETRIC_PROMOTION_SOURCE_STATUS_PATHS,
+  "VQ-RADIOMETRIC-PT promotion provenance sourceStatusSha256",
+);
 if (ptRadiometricHostStatus.harness !== "pt-radiometric-ab") {
   fail("VQ-RADIOMETRIC-PT host status must pin harness=pt-radiometric-ab");
 }
@@ -2059,6 +2143,58 @@ if (walkaroundAbResults.glossy?.promotion?.blocker !== "ddgi-irradiance-cache-no
 const walkaroundAllSpp64Status = await readJson("tools/radiometric-ab/walkaround-ab-all-spp64-status.json");
 const walkaroundAllSpp64Results = await readJson("tools/radiometric-ab/walkaround-ab-all-spp64.json");
 const walkaroundPromotionStatus = await readJson("tools/radiometric-ab/walkaround-ab-promotion-status.json");
+const walkaroundPromotionProvenance = walkaroundPromotionStatus.provenance;
+if (walkaroundPromotionProvenance == null || typeof walkaroundPromotionProvenance !== "object") {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB promotion status must include provenance");
+}
+const walkaroundPromotionProvenanceRecord = /** @type {{ schema?: unknown, wrapperPath?: unknown, wrapperSha256?: unknown, harnessPath?: unknown, harnessSha256?: unknown, helperPath?: unknown, helperSha256?: unknown, statusPath?: unknown, sourceStatusPaths?: unknown, sourceStatusSha256?: unknown, sourceResultPaths?: unknown, sourceResultSha256?: unknown, generatedBy?: unknown }} */ (walkaroundPromotionProvenance);
+if (
+  walkaroundPromotionProvenanceRecord.schema !== "vitrum.walkaround-ab.promotion-provenance.v1" ||
+  walkaroundPromotionProvenanceRecord.wrapperPath !== "tools/radiometric-ab/run-walkaround-ab.mjs" ||
+  walkaroundPromotionProvenanceRecord.harnessPath !== "tools/radiometric-ab/walkaround-ab.mjs" ||
+  walkaroundPromotionProvenanceRecord.helperPath !== "tools/radiometric-ab/resultProvenance.mjs" ||
+  walkaroundPromotionProvenanceRecord.statusPath !== "tools/radiometric-ab/walkaround-ab-promotion-status.json" ||
+  walkaroundPromotionProvenanceRecord.generatedBy !== "vitrum walkaround radiometric A/B promotion wrapper"
+) {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance must pin schema/wrapper/harness/helper/status/generator");
+}
+for (const [field, value] of [
+  ["wrapperSha256", walkaroundPromotionProvenanceRecord.wrapperSha256],
+  ["harnessSha256", walkaroundPromotionProvenanceRecord.harnessSha256],
+  ["helperSha256", walkaroundPromotionProvenanceRecord.helperSha256],
+]) {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    fail(`VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance ${field} must be a lowercase SHA-256 digest`);
+  }
+}
+if (
+  JSON.stringify(walkaroundPromotionStatus.sourceStatuses ?? []) !==
+  JSON.stringify(REQUIRED_WALKAROUND_PROMOTION_SOURCE_STATUS_PATHS)
+) {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB promotion status must pin every walkaround source status");
+}
+if (
+  JSON.stringify(walkaroundPromotionProvenanceRecord.sourceStatusPaths ?? []) !==
+  JSON.stringify(walkaroundPromotionStatus.sourceStatuses ?? [])
+) {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceStatusPaths must match promotion sourceStatuses");
+}
+if (
+  JSON.stringify(walkaroundPromotionProvenanceRecord.sourceResultPaths ?? []) !==
+  JSON.stringify(REQUIRED_WALKAROUND_PROMOTION_SOURCE_RESULT_PATHS)
+) {
+  fail("VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance must pin every walkaround source result");
+}
+assertSha256DigestRows(
+  walkaroundPromotionProvenanceRecord.sourceStatusSha256,
+  REQUIRED_WALKAROUND_PROMOTION_SOURCE_STATUS_PATHS,
+  "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceStatusSha256",
+);
+assertSha256DigestRows(
+  walkaroundPromotionProvenanceRecord.sourceResultSha256,
+  REQUIRED_WALKAROUND_PROMOTION_SOURCE_RESULT_PATHS,
+  "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceResultSha256",
+);
 if (walkaroundAllSpp64Status.verdict !== "PASS-PARTIAL") {
   fail("walkaround all-spp64 status must pin PASS-PARTIAL");
 }
