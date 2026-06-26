@@ -1,6 +1,6 @@
 {
   "schema": "vitrum.learned-systems.status.v1",
-  "generatedAt": "2026-06-24T18:51:48.716Z",
+  "generatedAt": "2026-06-26T03:15:51.989Z",
   "verdict": "PASS",
   "productionPosture": "provisioning-needed",
   "neuralDenoiser": {
@@ -94,6 +94,170 @@
       "requiresArtifactFiles": true
     },
     "remaining": "Run favorable-scene A/B and convergence/instability checks before production promotion."
+  },
+  "provenance": {
+    "schema": "vitrum.learned-systems.status-provenance.v1",
+    "checkerPath": "tools/learned-systems/check-status.mjs",
+    "checkerSha256": "1ea5b7658129cf1cbd80d7497ba3d1e32e9cf8c9cd0e8abb3a2af2dee6c0b96d",
+    "statusPath": "tools/learned-systems/learned-systems-status.json",
+    "sourceFiles": [
+      {
+        "path": "HARDWARE-VALIDATION-NEEDS.md",
+        "sha256": "6c2b0879627088b35b06e1bb8a83eac93338d29850b8db6bb5dbfb73048fd4c4"
+      },
+      {
+        "path": "README.md",
+        "sha256": "e93cac3d1a67aa07fdf774b4efb66f1ae3268f772d98b8c2535090f7dc76cddc"
+      },
+      {
+        "path": "packages/walkaround-hybrid/README.md",
+        "sha256": "9b0a46a866ab05aa4cab1eaa1c2082c21c434a9e18f7447336ef9cddd29eedc4"
+      },
+      {
+        "path": "packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts",
+        "sha256": "6e5024ecaa6db35ec2fe4f6ccc1c72091acea9a05bea4e73e1babdf0d8b1bf07"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/HybridEngine.ts",
+        "sha256": "af5b87a6b3166a9e9a3a920bd0600414e74715da84e1caa07da84d9a9f6d0880"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/HybridEngineConfig.ts",
+        "sha256": "697c87fe8900f1e5729376c925595d8f8274dc0473e98b24f09b8cd628ac66c9"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/HybridEngineOptions.ts",
+        "sha256": "dc70ee4cf3e596cadadf521c4f65499268eace54452a4cba49f41489342ec574"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/__tests__/capabilitiesPartition.test.ts",
+        "sha256": "c98ed48ce56852f720f93fff460f15e86d825ea43eaffa4687525efdeb704577"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/__tests__/grisVariantPin.test.ts",
+        "sha256": "99a989b9ab9075f831bb382908dca8b6f515a2b4cdc4e80e453a6ec7ee8cebb6"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/__tests__/hybridLiteTier.test.ts",
+        "sha256": "2e5cccff954cf17b93d30ea1177ec87b1c0df39af2d7c74da9f98ff7febb4ce1"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/__tests__/learnedSystemConfig.test.ts",
+        "sha256": "7b1b6d69760aaa18b64749efb13e5553e03fe734aa19d734fa748b7cd503ab32"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/neural/nrc/__tests__/nrcGateBitIdentity.test.ts",
+        "sha256": "ef4889672379ee8a61940edd61eea8bb9b2d53e47f93c9af765efa23350a4afa"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/neural/weights.ts",
+        "sha256": "a2622873deb064bc41f2308dc91128c3fd49a7667a0cc26f2c5c9b229e1331b4"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
+        "sha256": "15e11127e57485111a26e7e3e5b54f8b52c86603a66ada5fe7c0b3a0445c63e4"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts",
+        "sha256": "dc7e948f0219bf3ae23d748a73f8a3b9bae80c48f47924845ce04db1c417af97"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcStructuralGate.test.ts",
+        "sha256": "235c97da2beb85bc46a87e49dae0d6f772ad700a243c448456ac6bfe02a71044"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCompilerGate.test.ts",
+        "sha256": "798c82176abdc936613c24a968d533d457a43d9641ff1cc163832bcffc9ac3a0"
+      },
+      {
+        "path": "packages/walkaround-hybrid/src/pipeline/__tests__/ppgCoordinatorDiagnostics.test.ts",
+        "sha256": "da9243ef1d978e1299b47904569dd70c0f2d608c625158214916324b7bf20362"
+      },
+      {
+        "path": "plan/library-architecture.md",
+        "sha256": "46a55c39945ffdf9f4d4970b2fea7d4632ec1bc8772702b05e936408855599dc"
+      },
+      {
+        "path": "scripts/__tests__/learned-systems-quality-manifest.test.mjs",
+        "sha256": "b821f0ebd16b043c04d4e19598146e6e6af3391795aadf74a7e135ec99f1ea1d"
+      },
+      {
+        "path": "tools/learned-systems/qualityManifestValidator.mjs",
+        "sha256": "4c18270f35f92f2f50530a6d8d9e54b380b0717311e064346684bb18b52d74e9"
+      },
+      {
+        "path": "tools/neural-denoiser-training/README.md",
+        "sha256": "465b10e220ec8dff329f1bcc2f4a802f92a27f4ad0acee8e0f4bb013aa5493fb"
+      },
+      {
+        "path": "tools/neural-denoiser-training/capture-dataset.mjs",
+        "sha256": "51970b7984cbfa85a673130e5d775b78a9dda82f0e187ac7d5b885ddd9967863"
+      },
+      {
+        "path": "tools/neural-denoiser-training/checkpoints/manifest.json",
+        "sha256": "7eb8d4aaab17c74d151935497a45e19248dcd96aaf1466e3aefce59dd0085a41"
+      },
+      {
+        "path": "tools/neural-denoiser-training/checkpoints/starter-v1.vitrum-model",
+        "sha256": "9fbf951ac6d0960436243f9326339108b96410afc4b5d9efcd39c8784161f13f"
+      },
+      {
+        "path": "tools/neural-denoiser-training/checkpoints/v2-random.vitrum-model",
+        "sha256": "6f59e32b8f84f05e90f4afdfa025a98ef97ae60f163a1a4a9f7703ac4fa3d9cb"
+      },
+      {
+        "path": "tools/neural-denoiser-training/dataset_spec.md",
+        "sha256": "9bf5612c6528ba39b10266910b74d0a39a8fa5d97681ba0a839cf14e2adaa965"
+      },
+      {
+        "path": "tools/neural-denoiser-training/export_weights.py",
+        "sha256": "2c8064675532fde1085d57ecd552262f83833bcb8429046aa326db0a2a06c15c"
+      },
+      {
+        "path": "tools/neural-denoiser-training/train.py",
+        "sha256": "ae5b8cf73df6fdfa5f3035845f6efee3110c5323b51fc3194948a8ef64af1068"
+      }
+    ],
+    "checkpointFiles": [
+      {
+        "path": "tools/neural-denoiser-training/checkpoints/starter-v1.vitrum-model",
+        "role": "research",
+        "productionDefaultEligible": false,
+        "sizeBytes": 2140724,
+        "manifestSha256": "9fbf951ac6d0960436243f9326339108b96410afc4b5d9efcd39c8784161f13f",
+        "actualSha256": "9fbf951ac6d0960436243f9326339108b96410afc4b5d9efcd39c8784161f13f"
+      },
+      {
+        "path": "tools/neural-denoiser-training/checkpoints/v2-random.vitrum-model",
+        "role": "research",
+        "productionDefaultEligible": false,
+        "sizeBytes": 2140724,
+        "manifestSha256": "6f59e32b8f84f05e90f4afdfa025a98ef97ae60f163a1a4a9f7703ac4fa3d9cb",
+        "actualSha256": "6f59e32b8f84f05e90f4afdfa025a98ef97ae60f163a1a4a9f7703ac4fa3d9cb"
+      }
+    ],
+    "qualityEvidenceManifests": [
+      {
+        "path": "tools/learned-systems/gris-unbiasedness-ab.json",
+        "exists": false,
+        "sha256": null
+      },
+      {
+        "path": "tools/learned-systems/nrc-quality-convergence.json",
+        "exists": false,
+        "sha256": null
+      },
+      {
+        "path": "tools/learned-systems/ppg-favorable-scene-ab.json",
+        "exists": false,
+        "sha256": null
+      },
+      {
+        "path": "tools/neural-denoiser-training/quality-ab-production.json",
+        "exists": false,
+        "sha256": null
+      }
+    ]
   },
   "guardrails": [
     "Research checkpoints are loader/runtime validation assets only.",

@@ -37,10 +37,13 @@ import {
  */
 
 const EXPECTED_PARAM_COUNT = 535107;
+const CHECKER_PATH = "tools/learned-systems/check-status.mjs";
 const CHECKPOINT_MANIFEST_PATH = "tools/neural-denoiser-training/checkpoints/manifest.json";
 const QUALITY_MANIFEST_PATH = "tools/neural-denoiser-training/quality-ab-production.json";
 const STATUS_PATH = "tools/learned-systems/learned-systems-status.json";
 const WRITE_STATUS = Deno.args.includes("--write-status");
+/** @type {Set<string>} */
+const PROVENANCE_SOURCE_PATHS = new Set();
 const REQUIRED_RESEARCH_CHECKPOINTS = [
   {
     name: "starter-v1.vitrum-model",
@@ -105,6 +108,7 @@ function fail(message) {
 
 /** @param {string} path */
 async function readText(path) {
+  if (path !== STATUS_PATH) PROVENANCE_SOURCE_PATHS.add(path);
   return await Deno.readTextFile(repoUrl(path));
 }
 
@@ -116,6 +120,11 @@ async function sha256Hex(bytes) {
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/** @param {string} path */
+async function sha256File(path) {
+  return sha256Hex(await Deno.readFile(repoUrl(path)));
 }
 
 /** @param {string} path */
@@ -135,6 +144,7 @@ function checkpointParamCount(weights) {
 
 /** @param {string} path */
 async function readCheckpointBytes(path) {
+  PROVENANCE_SOURCE_PATHS.add(path);
   const bytes = await Deno.readFile(repoUrl(path));
   return bytes;
 }
@@ -320,9 +330,54 @@ function artifactPathExists(path) {
 
 /** @param {string} path */
 function artifactPathText(path) {
+  PROVENANCE_SOURCE_PATHS.add(path);
   return Deno.readTextFileSync(repoUrl(path));
 }
 
+/** @param {string} path */
+async function evidenceManifestState(path) {
+  try {
+    const stat = await Deno.stat(repoUrl(path));
+    if (!stat.isFile) return { path, exists: false, sha256: null };
+    return { path, exists: true, sha256: await sha256File(path) };
+  } catch {
+    return { path, exists: false, sha256: null };
+  }
+}
+
+/** @param {CheckpointManifest} checkpointManifest */
+async function buildStatusProvenance(checkpointManifest) {
+  const learnedQualityManifests = Object.values(learnedPromotionQualityRequirements())
+    .map((requirement) => requirement.manifestPath);
+  const sourcePaths = Array.from(PROVENANCE_SOURCE_PATHS)
+    .filter((sourcePath) => sourcePath !== STATUS_PATH)
+    .sort();
+  return {
+    schema: "vitrum.learned-systems.status-provenance.v1",
+    checkerPath: CHECKER_PATH,
+    checkerSha256: await sha256File(CHECKER_PATH),
+    statusPath: STATUS_PATH,
+    sourceFiles: await Promise.all(
+      sourcePaths.map(async (sourcePath) => ({ path: sourcePath, sha256: await sha256File(sourcePath) })),
+    ),
+    checkpointFiles: await Promise.all(checkpointManifest.checkpoints.map(async (entry) => {
+      const checkpointPath = `tools/neural-denoiser-training/checkpoints/${entry.name}`;
+      return {
+        path: checkpointPath,
+        role: entry.role,
+        productionDefaultEligible: entry.productionDefaultEligible === true,
+        sizeBytes: entry.sizeBytes,
+        manifestSha256: entry.sha256,
+        actualSha256: await sha256File(checkpointPath),
+      };
+    })),
+    qualityEvidenceManifests: await Promise.all(
+      Array.from(new Set([QUALITY_MANIFEST_PATH, ...learnedQualityManifests]))
+        .sort()
+        .map(evidenceManifestState),
+    ),
+  };
+}
 /**
  * @param {CheckpointManifest} checkpointManifest
  * @param {number} researchCount
@@ -385,6 +440,7 @@ async function maybeWriteStatus(checkpointManifest, researchCount, productionCou
       remaining:
         "Run favorable-scene A/B and convergence/instability checks before production promotion.",
     },
+    provenance: await buildStatusProvenance(checkpointManifest),
     guardrails: [
       "Research checkpoints are loader/runtime validation assets only.",
       "Neural, NRC, PPG, and GRIS learned/reuse paths remain opt-in unless future quality evidence promotes them.",
@@ -418,6 +474,10 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
   if (record.verdict !== "PASS") fail(`${STATUS_PATH} verdict must be PASS`);
   if (record.productionPosture !== expectedPosture) {
     fail(`${STATUS_PATH} productionPosture must be ${expectedPosture}`);
+  }
+  const expectedProvenance = await buildStatusProvenance(checkpointManifest);
+  if (JSON.stringify(record.provenance) !== JSON.stringify(expectedProvenance)) {
+    fail(`${STATUS_PATH} provenance drifted; regenerate with npm run learned-systems-status`);
   }
   const neural = record.neuralDenoiser;
   if (neural == null || typeof neural !== "object") {
