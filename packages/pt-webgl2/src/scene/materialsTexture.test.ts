@@ -5,7 +5,7 @@
 // `material_struct.glsl.js`). Any divergence here is a real render bug.
 
 import { describe, it, expect, vi } from 'vitest';
-import type { MaterialSpec } from '@vitrum/core';
+import type { EngineWarning, MaterialSpec } from '@vitrum/core';
 import { evaluateSpectrum } from '@vitrum/shared-samplers';
 import {
   MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
@@ -43,11 +43,37 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const data = packMaterialsTexture([material], new Map<unknown, number>([[handle, 7]])).data;
+      const structured: EngineWarning[] = [];
+      const data = packMaterialsTexture([material], new Map<unknown, number>([[handle, 7]]), {
+        onWarning: (warning) => structured.push(warning),
+      }).data;
       expect(data[texel(0, 0, 3)]).toBe(-1);
       expect(data[texel(0, 4, 0)]).toBe(-1);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('baseColorMap: texCoord 2 is unsupported'));
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('normalMap: texCoord 3 is unsupported'));
+      expect(structured).toEqual([
+        expect.objectContaining({
+          code: 'pt-webgl2.material-texture-unsupported-texcoord',
+          backend: 'pt-webgl2',
+          phase: 'setScene',
+          method: 'setScene',
+          details: expect.objectContaining({
+            materialIndex: 0,
+            field: 'baseColorMap',
+            texCoord: 2,
+            supportedTexCoords: [0, 1],
+            fallback: 'map-ignored',
+          }),
+        }),
+        expect.objectContaining({
+          code: 'pt-webgl2.material-texture-unsupported-texcoord',
+          details: expect.objectContaining({
+            materialIndex: 0,
+            field: 'normalMap',
+            texCoord: 3,
+          }),
+        }),
+      ]);
     } finally {
       warn.mockRestore();
     }

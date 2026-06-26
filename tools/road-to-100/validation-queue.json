@@ -723,6 +723,26 @@
           ]
         },
         {
+          "path": "packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts",
+          "includes": [
+            "collectApproximateAlphaBlendPrimitiveIds"
+          ]
+        },
+        {
+          "path": "packages/walkaround-hybrid/src/HybridEngine.ts",
+          "includes": [
+            "code: 'walkaround-hybrid.alpha-blend-approximation'",
+            "ReSTIR/GI participation remains approximate"
+          ]
+        },
+        {
+          "path": "packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts",
+          "includes": [
+            "walkaround-hybrid.alpha-blend-approximation",
+            "emits a structured warning for residual alpha blend approximation"
+          ]
+        },
+        {
           "path": "packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts",
           "includes": [
             "keeps fractional alpha-blend surfaces out of ReSTIR primary and reconnection vertices",
@@ -800,6 +820,27 @@
           ]
         },
         {
+          "path": "packages/gltf-adapter/src/gltfToScene.ts",
+          "includes": [
+            "importing glTF POINTS/LINES/LINE_LOOP/LINE_STRIP primitive modes",
+            "fallback for point/line modes"
+          ]
+        },
+        {
+          "path": "packages/gltf-adapter/src/featureReport.ts",
+          "includes": [
+            "support: 'fallback-generated-mesh'",
+            "because @vitrum/core has no native point/line primitive contract."
+          ]
+        },
+        {
+          "path": "packages/gltf-adapter/src/gltfPointLinePrimitivePolicy.test.ts",
+          "includes": [
+            "reports each point/line topology as fallback-generated mesh compatibility",
+            "support: 'fallback-generated-mesh'"
+          ]
+        },
+        {
           "path": "packages/gltf-adapter/README.md",
           "includes": [
             "Point/line modes (POINTS, LINES, LINE_LOOP, LINE_STRIP)",
@@ -828,9 +869,53 @@
           ]
         },
         {
+          "path": "packages/gltf-adapter/src/featureReport.ts",
+          "includes": [
+            "contract carries only UV sets 0 and 1 (`uvs` / `uv1`)",
+            "cannot be losslessly remapped into the uv1 lane"
+          ]
+        },
+        {
           "path": "packages/core/src/scene/material.ts",
           "includes": [
             "readonly texCoord?: number"
+          ]
+        },
+        {
+          "path": "packages/pt-webgpu/src/scene/materialTextures.ts",
+          "includes": [
+            "code: 'pt-webgpu.material-texture-unsupported-texcoord'",
+            "supportedTexCoords: [0, 1]",
+            "fallback: 'map-ignored'"
+          ]
+        },
+        {
+          "path": "packages/pt-webgpu/src/__tests__/materialTextures.test.ts",
+          "includes": [
+            "texCoord 2 is unsupported",
+            "code: 'pt-webgpu.material-texture-unsupported-texcoord'"
+          ]
+        },
+        {
+          "path": "packages/pt-webgl2/src/scene/materialsTexture.ts",
+          "includes": [
+            "code: 'pt-webgl2.material-texture-unsupported-texcoord'",
+            "supportedTexCoords: [0, 1]",
+            "fallback: 'map-ignored'"
+          ]
+        },
+        {
+          "path": "packages/pt-webgl2/src/scene/materialsTexture.test.ts",
+          "includes": [
+            "baseColorMap: texCoord 2 is unsupported",
+            "code: 'pt-webgl2.material-texture-unsupported-texcoord'"
+          ]
+        },
+        {
+          "path": "packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts",
+          "includes": [
+            "code: 'unsupported-material-texture-texcoord'",
+            "walkaround material atlas supports UV sets 0 and 1 only"
           ]
         }
       ],
@@ -879,7 +964,7 @@
       "title": "full-path analytic adjoint parity",
       "status": "future-contract",
       "codeNowBounded": false,
-      "currentContract": "pt-webgpu supports scoped direct-light path replay for bounded material/emitter domains and finite-difference fallback diagnostics for transport, visibility, displacement geometry, unsupported render regimes, indirect paths, and full-path parity cases.",
+      "currentContract": "pt-webgpu supports scoped direct-light path replay for bounded material/emitter domains and finite-difference fallback diagnostics for transport, visibility, displacement geometry, unsupported render regimes, environment escape, non-delta light selection, indirect paths, and full-path parity cases.",
       "sourceEvidence": [
         {
           "path": "packages/pt-webgpu/src/inverse/inverseSession.ts",
@@ -897,7 +982,8 @@
             "path-replay-unsupported-transport",
             "path-replay-unsupported-visibility",
             "path-replay-unsupported-geometry",
-            "path-replay-unsupported-light-selection"
+            "path-replay-unsupported-light-selection",
+            "path-replay-unsupported-environment"
           ]
         }
       ],

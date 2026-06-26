@@ -136,7 +136,7 @@ describe('collectMaterialTextures (P2 host)', () => {
     const tex = { id: 'A' };
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const { sources, sourceInfos, descriptors } = collectMaterialTextures([
+      const { sources, sourceInfos, descriptors, unsupportedTexCoordWarnings } = collectMaterialTextures([
         mat({ baseColorMap: { handle: tex, texCoord: 1 } }),
         mat({ baseColorMap: { handle: tex, texCoord: 2 } }),
         mat({}), // no map
@@ -154,6 +154,19 @@ describe('collectMaterialTextures (P2 host)', () => {
       expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE]).toBe(-1);
       expect(descriptors[2 * MATERIAL_TEX_FLOAT_STRIDE]).toBe(-1);
       expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 7]).toBe(0);
+      expect(unsupportedTexCoordWarnings).toHaveLength(1);
+      expect(unsupportedTexCoordWarnings[0]).toMatchObject({
+        code: 'pt-webgpu.material-texture-unsupported-texcoord',
+        backend: 'pt-webgpu',
+        phase: 'setScene',
+        method: 'setScene',
+        details: {
+          materialIndex: 1,
+          field: 'baseColorMap',
+          texCoord: 2,
+          fallback: 'map-ignored',
+        },
+      });
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('texCoord 2 is unsupported'));
     } finally {
       warn.mockRestore();

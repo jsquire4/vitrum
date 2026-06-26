@@ -121,7 +121,7 @@ export interface GltfSceneControllerDiagnostic {
   readonly code: GltfSceneControllerDiagnosticCode;
   readonly path: string;
   readonly message: string;
-  readonly caller: 'applyAnimation' | 'blend' | 'setVariant';
+  readonly caller: 'applyAnimation' | 'blend' | 'setVariant' | 'resetPose';
   readonly primitiveId?: string;
   readonly nodeIndex?: number;
   readonly jointNodeIndex?: number;
@@ -627,13 +627,33 @@ export class GltfSceneController {
         }))
         .filter((entry) => entry.changed);
       if (patches.length === 0) return;
+      const frame: GltfSceneControllerDiagnosticFrame = {
+        warnings: [],
+        diagnostics: [],
+        caller: 'resetPose',
+      };
+      let attemptedPrimitiveId: string | undefined;
       try {
         for (const { id, patch } of patches) {
+          attemptedPrimitiveId = id;
           target.updatePrimitive(id, patch);
         }
         resetAfterIncrementalPrimitivePatch(target);
         return;
-      } catch {
+      } catch (err) {
+        const message = errorMessage(err);
+        emitControllerDiagnostic(frame, {
+          code: 'controller-update-primitive-failed',
+          path: attemptedPrimitiveId
+            ? `scene.primitives["${attemptedPrimitiveId}"]`
+            : 'scene.primitives',
+          message:
+            `[vitrum/gltf-adapter] GltfSceneController.resetPose: ` +
+            `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
+          ...(attemptedPrimitiveId !== undefined ? { primitiveId: attemptedPrimitiveId } : {}),
+        });
+        this.#warnings.push(...frame.warnings);
+        this.#diagnostics.push(...frame.diagnostics);
         target.setScene(this.#scene);
         return;
       }

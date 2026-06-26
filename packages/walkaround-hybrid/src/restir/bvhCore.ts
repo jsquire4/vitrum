@@ -121,25 +121,43 @@ function warnCoreBvh(options: Pick<CoreBvhBuildOptions, 'onWarning'>, warning: E
   console.warn(warning.message);
 }
 
+function vertexDisplacementWarningDetails(warning: string): Readonly<Record<string, unknown>> | null {
+  if (!warning.includes('displacementMap')) return null;
+  const details: Record<string, unknown> = {
+    warning,
+    source: 'shared-bvh',
+    fallback: 'displacement warning retained',
+  };
+  const match = / displacementMap at (.+?)(?: handle | requests | has | displacementSubdivisions| triangle )/.exec(warning);
+  if (match?.[1] !== undefined) details.sourcePath = match[1];
+  if (/displacement skipped/i.test(warning) || warning.includes('Skipped.')) {
+    details.fallback = 'displacement skipped';
+  } else if (warning.includes('microdisplacement disabled')) {
+    details.fallback = 'microdisplacement disabled';
+  } else if (warning.includes('Falling back to vertex displacement')) {
+    details.fallback = 'microdisplacement fallback to vertex displacement';
+  }
+  return details;
+}
+
 function warnScenePackWarnings(
   options: CoreBvhBuildOptions,
   warnings: readonly string[],
 ): void {
   for (const warning of warnings) {
-    const isVertexDisplacementSkip = warning.includes('displacementMap') &&
-      warning.includes('displacement skipped');
+    const displacementDetails = vertexDisplacementWarningDetails(warning);
     warnCoreBvh(options, {
-      code: isVertexDisplacementSkip
+      code: displacementDetails != null
         ? 'walkaround-hybrid.vertex-displacement-skipped'
         : 'walkaround-hybrid.scene-pack-warning',
       backend: 'walkaround-hybrid',
       phase: options.warningPhase ?? 'setScene',
       method: options.warningMethod ?? 'buildReSTIRSceneBVHForCoreScene',
       message: `[vitrum/walkaround-hybrid] ${warning}`,
-      details: {
+      details: displacementDetails ?? {
         warning,
         source: 'shared-bvh',
-        fallback: isVertexDisplacementSkip ? 'displacement skipped' : 'scene pack warning retained',
+        fallback: 'scene pack warning retained',
       },
     });
   }

@@ -75,6 +75,9 @@ test('future-contract boundary text pins the current truthful API surface', () =
   assert.match(transparentTransport.currentContract, /not full ReSTIR\/GI transport vertices/);
   assert.deepEqual(sourcePaths(transparentTransport), [
     'packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts',
+    'packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts',
+    'packages/walkaround-hybrid/src/HybridEngine.ts',
+    'packages/walkaround-hybrid/src/__tests__/consumedMaterialFields.test.ts',
     'packages/walkaround-hybrid/src/__tests__/transparentAlphaTransportContract.test.ts',
   ]);
 
@@ -93,6 +96,9 @@ test('future-contract boundary text pins the current truthful API surface', () =
   assert.match(pointLine.currentContract, /generated mesh fallbacks/);
   assert.deepEqual(sourcePaths(pointLine), [
     'packages/gltf-adapter/src/primitiveModeFallback.ts',
+    'packages/gltf-adapter/src/gltfToScene.ts',
+    'packages/gltf-adapter/src/featureReport.ts',
+    'packages/gltf-adapter/src/gltfPointLinePrimitivePolicy.test.ts',
     'packages/gltf-adapter/README.md',
   ]);
 
@@ -101,7 +107,13 @@ test('future-contract boundary text pins the current truthful API surface', () =
   assert.match(uvArrays.currentContract, /native arbitrary UV arrays require a new core\/backend contract/);
   assert.deepEqual(sourcePaths(uvArrays), [
     'packages/gltf-adapter/src/gltfToScene.ts',
+    'packages/gltf-adapter/src/featureReport.ts',
     'packages/core/src/scene/material.ts',
+    'packages/pt-webgpu/src/scene/materialTextures.ts',
+    'packages/pt-webgpu/src/__tests__/materialTextures.test.ts',
+    'packages/pt-webgl2/src/scene/materialsTexture.ts',
+    'packages/pt-webgl2/src/scene/materialsTexture.test.ts',
+    'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
   ]);
 
   const instancedSkinning = futureRow('FC-NATIVE-INSTANCED-SKINNED-MORPHED');
@@ -116,6 +128,8 @@ test('future-contract boundary text pins the current truthful API surface', () =
   const adjoint = futureRow('FC-ADJOINT-FULL-PATH-PARITY');
   assert.match(adjoint.currentContract, /scoped direct-light path replay/);
   assert.match(adjoint.currentContract, /finite-difference fallback diagnostics/);
+  assert.match(adjoint.currentContract, /environment escape/);
+  assert.match(adjoint.currentContract, /non-delta light selection/);
   assert.match(adjoint.currentContract, /indirect paths, and full-path parity cases/);
   assert.deepEqual(sourcePaths(adjoint), [
     'packages/pt-webgpu/src/inverse/inverseSession.ts',

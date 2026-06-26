@@ -14,6 +14,7 @@
 // CREDITS.md attributes the absorbed fork.
 
 import type {
+  EngineWarning,
   MaterialSpec,
   TextureFilterMode,
   TextureMipFilterMode,
@@ -217,6 +218,14 @@ function layerMapFor(
 }
 
 type TextureRefLike = { handle?: unknown; texCoord?: number };
+
+interface PackMaterialsTextureOptions {
+  readonly vertexColorMaterialIds?: ReadonlySet<number>;
+  readonly onWarning?: (warning: EngineWarning) => void;
+  readonly warningPhase?: string;
+  readonly warningMethod?: string;
+}
+
 type UnsupportedTexCoordWarner = (
   materialIndex: number,
   field: string,
@@ -233,7 +242,32 @@ function safeTexCoord(ref: TextureRefLike | undefined): number {
   return isUnsupportedTexCoord(ref) ? 0 : (ref?.texCoord ?? 0);
 }
 
-function createUnsupportedTexCoordWarner(): UnsupportedTexCoordWarner {
+function unsupportedTexCoordWarning(
+  materialIndex: number,
+  field: string,
+  texCoord: number,
+  options: PackMaterialsTextureOptions,
+): EngineWarning {
+  const message =
+    `[vitrum/pt-webgl2] ignoring material ${materialIndex} ${field}: texCoord ${texCoord} ` +
+    `is unsupported; only texCoord 0 and 1 are renderable by this backend.`;
+  return {
+    code: 'pt-webgl2.material-texture-unsupported-texcoord',
+    backend: 'pt-webgl2',
+    phase: options.warningPhase ?? 'setScene',
+    method: options.warningMethod ?? 'setScene',
+    message,
+    details: {
+      materialIndex,
+      field,
+      texCoord,
+      supportedTexCoords: [0, 1],
+      fallback: 'map-ignored',
+    },
+  };
+}
+
+function createUnsupportedTexCoordWarner(options: PackMaterialsTextureOptions): UnsupportedTexCoordWarner {
   const warned = new Set<string>();
   return (materialIndex, field, ref): boolean => {
     if (!isUnsupportedTexCoord(ref)) return false;
@@ -241,10 +275,9 @@ function createUnsupportedTexCoordWarner(): UnsupportedTexCoordWarner {
     const key = `${materialIndex}:${field}:${texCoord}`;
     if (!warned.has(key)) {
       warned.add(key);
-      console.warn(
-        `[pt-webgl2] ignoring material ${materialIndex} ${field}: texCoord ${texCoord} ` +
-          `is unsupported; only texCoord 0 and 1 are renderable by this backend.`,
-      );
+      const warning = unsupportedTexCoordWarning(materialIndex, field, texCoord, options);
+      options.onWarning?.(warning);
+      console.warn(warning.message.replace('[vitrum/pt-webgl2] ', '[pt-webgl2] '));
     }
     return true;
   };
@@ -813,13 +846,13 @@ function packSpectralReflectance(
 export function packMaterialsTexture(
   materials: readonly MaterialSpec[],
   layerOf?: TextureLayerLookup,
-  options: { readonly vertexColorMaterialIds?: ReadonlySet<number> } = {},
+  options: PackMaterialsTextureOptions = {},
 ): MaterialsTextureData {
   const materialCount = materials.length;
   const pixelCount = materialCount * MATERIAL_PIXELS;
   const dim = squareDim(pixelCount);
   const data = new Float32Array(dim * dim * 4);
-  const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner();
+  const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner(options);
 
   let index = 0;
   for (let i = 0; i < materialCount; i += 1) {

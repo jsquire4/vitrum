@@ -9,6 +9,7 @@
 // a textureless scene stays byte-identical to the pre-P2 parametric path.
 
 import type {
+  EngineWarning,
   MaterialSpec,
   TextureFilterMode,
   TextureMipFilterMode,
@@ -189,7 +190,33 @@ function safeTexCoord(ref: TextureRef | undefined): number {
   return isUnsupportedTexCoord(ref) ? 0 : (ref?.texCoord ?? 0);
 }
 
-function createUnsupportedTexCoordWarner(): (
+function unsupportedTexCoordWarning(
+  materialIndex: number,
+  field: string,
+  texCoord: number,
+): EngineWarning {
+  const message =
+    `[vitrum/pt-webgpu] ignoring material ${materialIndex} ${field}: texCoord ${texCoord} ` +
+    `is unsupported; only texCoord 0 and 1 are renderable by this backend.`;
+  return {
+    code: 'pt-webgpu.material-texture-unsupported-texcoord',
+    backend: 'pt-webgpu',
+    phase: 'setScene',
+    method: 'setScene',
+    message,
+    details: {
+      materialIndex,
+      field,
+      texCoord,
+      supportedTexCoords: [0, 1],
+      fallback: 'map-ignored',
+    },
+  };
+}
+
+function createUnsupportedTexCoordWarner(
+  structuredWarnings: EngineWarning[],
+): (
   materialIndex: number,
   field: string,
   ref: TextureRef | undefined,
@@ -201,10 +228,9 @@ function createUnsupportedTexCoordWarner(): (
     const key = `${materialIndex}:${field}:${texCoord}`;
     if (!warned.has(key)) {
       warned.add(key);
-      console.warn(
-        `[pt-webgpu] ignoring material ${materialIndex} ${field}: texCoord ${texCoord} ` +
-          `is unsupported; only texCoord 0 and 1 are renderable by this backend.`,
-      );
+      const warning = unsupportedTexCoordWarning(materialIndex, field, texCoord);
+      structuredWarnings.push(warning);
+      console.warn(warning.message.replace('[vitrum/pt-webgpu] ', '[pt-webgpu] '));
     }
     return true;
   };
@@ -222,6 +248,8 @@ export interface CollectedTextures {
   readonly linearSourceInfos: readonly MaterialTextureLayerInfo[];
   /** Per-material descriptor floats (MATERIAL_TEX_FLOAT_STRIDE per material). */
   readonly descriptors: Float32Array;
+  /** Structured diagnostics for maps dropped because they target texCoord > 1. */
+  readonly unsupportedTexCoordWarnings: readonly EngineWarning[];
 }
 
 export type MaterialTextureColorSpace = 'srgb' | 'linear';
@@ -413,7 +441,8 @@ export function applyMaterialTextureUvFitScales(
 export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>): CollectedTextures {
   const sources: unknown[] = [];
   const linearSources: unknown[] = [];
-  const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner();
+  const unsupportedTexCoordWarnings: EngineWarning[] = [];
+  const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner(unsupportedTexCoordWarnings);
   const makeIndexer = (list: unknown[], colorSpace: MaterialTextureColorSpace) => {
     const handleToIdx = new Map<unknown, number>();
     const usesByLayer: MaterialTextureLayerUse[][] = [];
@@ -627,5 +656,6 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     sourceInfos: sRgbIndexer.infos(),
     linearSourceInfos: linearIndexer.infos(),
     descriptors,
+    unsupportedTexCoordWarnings,
   };
 }

@@ -356,7 +356,10 @@ export function buildSceneTextures(
   //      atlas maps turn each material's `<map>` ref into the GLSL's layer index
   //      without confusing sRGB color maps and linear data maps sharing a handle.
   const vertexColorMaterialIds = collectVertexColorMaterialIds(skinnedScene, merged);
-  const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOfByColorSpace, { vertexColorMaterialIds });
+  const materialsData = packMaterialsTexture(merged.materials, atlas?.layerOfByColorSpace, {
+    vertexColorMaterialIds,
+    ...warningOptions,
+  });
   const materials = uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials');
 
   // (5) lights (6px/light) — driven from the original scene's emitters.

@@ -948,7 +948,10 @@ export function buildPackedScene(
   const texCollection = collectMaterialTextures(materialSpecs);
   const emitArrays = packEmitterArrays(scene);
   const environment = environmentParams(scene);
-  const structuredWarnings = structuredEnvironmentWarnings(scene, environment, options);
+  const structuredWarnings = [
+    ...structuredEnvironmentWarnings(scene, environment, options),
+    ...texCollection.unsupportedTexCoordWarnings,
+  ];
   const sceneBounds = sceneCenterRadiusFromPack(geo);
   warnings.push(...environment.warnings);
   warnings.push(...emitArrays.warnings);

@@ -53,6 +53,28 @@ function oneMeshSceneWithBumpSamplerPolicy(): Scene {
   };
 }
 
+
+function oneMeshSceneWithHighUvBaseColorTexture(): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'mesh-a',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap: { handle: { image: { width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) } }, texCoord: 3 },
+        },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function makeDevice(): GPUDevice {
   return {
     queue: {
@@ -79,6 +101,32 @@ function makeDevice(): GPUDevice {
 }
 
 describe('uploadPackedScene warning propagation', () => {
+
+  it('surfaces direct-core high-UV material map drops as structured warnings', () => {
+    installGpuConstStubs();
+    const device = makeDevice();
+    const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithHighUvBaseColorTexture()));
+      expect(uploaded.structuredWarnings).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'pt-webgpu.material-texture-unsupported-texcoord',
+          backend: 'pt-webgpu',
+          phase: 'setScene',
+          method: 'setScene',
+          details: expect.objectContaining({
+            materialIndex: 0,
+            field: 'baseColorMap',
+            texCoord: 3,
+            supportedTexCoords: [0, 1],
+            fallback: 'map-ignored',
+          }),
+        }),
+      ]));
+    } finally {
+      consoleWarn.mockRestore();
+    }
+  });
   it('routes material texture upload warnings through UploadedSceneBuffers warnings', () => {
     installGpuConstStubs();
     const device = makeDevice();

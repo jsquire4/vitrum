@@ -58,6 +58,15 @@ function expectOnlyMaterialSlotEmissive(
   expect(matchedRows).toBeGreaterThan(0);
 }
 
+
+function withTextureSourcePath<T extends MaterialSpec['displacementMap']>(ref: T, sourcePath: string): T {
+  Object.defineProperty(ref as object, Symbol('vitrum.gltf.textureRefSource'), {
+    value: { path: sourcePath },
+    enumerable: false,
+  });
+  return ref;
+}
+
 function scene(primitives: MeshPrimitive[]): Scene {
   return {
     primitives,
@@ -196,6 +205,79 @@ describe('ReSTIR bvhCore material resolver', () => {
           warning: expect.stringContaining('Primitive "panel" displacementMap'),
         }),
       }));
+      warnSpy.mockRestore();
+    },
+  );
+
+
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'preserves source-path details for capitalized displacement skips in %s mode',
+    (bvhMode) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const warnings: EngineWarning[] = [];
+      const sourceScene = scene([
+        triangle('panel-high-uv', 0, {
+          ...material([1, 1, 1]),
+          displacementMap: withTextureSourcePath({
+            handle: { id: 'height' },
+            texCoord: 2,
+          }, 'materials[0].extensions.VITRUM_displacement.displacementTexture'),
+          displacementScale: 0.25,
+        }),
+      ]);
+
+      buildReSTIRSceneBVHForCoreScene(sourceScene, {
+        bvhMode,
+        onWarning: (warning) => warnings.push(warning),
+        warningPhase: 'setScene',
+        warningMethod: 'setScene',
+      });
+
+      expect(warnings).toContainEqual(expect.objectContaining({
+        code: 'walkaround-hybrid.vertex-displacement-skipped',
+        details: expect.objectContaining({
+          source: 'shared-bvh',
+          fallback: 'displacement skipped',
+          sourcePath: 'materials[0].extensions.VITRUM_displacement.displacementTexture',
+          warning: expect.stringContaining('requests TEXCOORD_2'),
+        }),
+      }));
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
+    },
+  );
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'classifies microdisplacement fallback warnings in %s mode',
+    (bvhMode) => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const warnings: EngineWarning[] = [];
+      const sourceScene = scene([
+        triangle('panel-micro-high-uv', 0, {
+          ...material([1, 1, 1]),
+          displacementMap: { handle: { id: 'height' }, texCoord: 2 },
+          displacementScale: 0.25,
+          displacementSubdivisions: 1,
+        }),
+      ]);
+
+      buildReSTIRSceneBVHForCoreScene(sourceScene, {
+        bvhMode,
+        onWarning: (warning) => warnings.push(warning),
+        warningPhase: 'setScene',
+        warningMethod: 'setScene',
+      });
+
+      expect(warnings).toContainEqual(expect.objectContaining({
+        code: 'walkaround-hybrid.vertex-displacement-skipped',
+        details: expect.objectContaining({
+          source: 'shared-bvh',
+          fallback: 'microdisplacement fallback to vertex displacement',
+          warning: expect.stringContaining('Falling back to vertex displacement'),
+        }),
+      }));
+      expect(warnSpy).not.toHaveBeenCalled();
       warnSpy.mockRestore();
     },
   );

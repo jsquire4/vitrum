@@ -700,6 +700,39 @@ describe('GltfSceneController', () => {
     expect((controller.scene.primitives[0] as { transform: Float32Array }).transform[12]).toBeCloseTo(0);
   });
 
+
+  it('resetPose emits diagnostics when updatePrimitive fallback is required', async () => {
+    const { gltf, buffers } = animatedHierarchyGltf();
+    const result = await gltfToScene(gltf, { buffers });
+    const setScene = vi.fn();
+    const updatePrimitive = vi.fn(() => {
+      throw new Error('reset patch rejected');
+    });
+    const reset = vi.fn();
+    const engine: GltfScenePatchTarget = { setScene, updatePrimitive, reset };
+    const controller = createGltfSceneController({ gltf, ...result });
+
+    controller.play('parent-slide', { time: 0.5, engine });
+    setScene.mockClear();
+    updatePrimitive.mockClear();
+    reset.mockClear();
+
+    controller.resetPose({ engine });
+
+    expect(updatePrimitive).toHaveBeenCalledTimes(1);
+    expect(reset).not.toHaveBeenCalled();
+    expect(setScene).toHaveBeenCalledTimes(1);
+    expect(controller.warnings.some((w) => w.includes('reset patch rejected'))).toBe(true);
+    expect(controller.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'controller-update-primitive-failed',
+        caller: 'resetPose',
+        primitiveId: 'gltf-prim-0',
+        path: 'scene.primitives["gltf-prim-0"]',
+      }),
+    ]));
+  });
+
   it('updates camera metadata when an authored camera ancestor is animated', async () => {
     const { gltf, buffers } = animatedCameraGltf();
     const result = await gltfToScene(gltf, { buffers });
