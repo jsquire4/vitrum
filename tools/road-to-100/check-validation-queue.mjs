@@ -369,6 +369,12 @@ const REQUIRED_WALKAROUND_PROMOTION_SOURCE_RESULT_PATHS = [
   "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
   "tools/radiometric-ab/walkaround-ab-all-spp64.json",
 ];
+
+const REQUIRED_CWBVH_PROMOTION_SOURCE_STATUS_PATHS = [
+  "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
+  "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json",
+];
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -1352,6 +1358,99 @@ const cwbvhPromotionStatus = await readJson("tools/behavioral-gate/cwbvh-default
 const cwbvhRepeatStatus = await readJson("tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json");
 const cwbvhRepeatRecords = await readJson("tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json");
 const cwbvhRepeatHarness = await readText("tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs");
+const cwbvhPromotionProvenance = cwbvhPromotionStatus.provenance;
+if (cwbvhPromotionProvenance == null || typeof cwbvhPromotionProvenance !== "object") {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary must include provenance");
+}
+const cwbvhPromotionProvenanceRecord = /** @type {{ schema?: unknown, checkerPath?: unknown, checkerSha256?: unknown, sourceGuardPath?: unknown, sourceGuardSha256?: unknown, repeatHarnessPath?: unknown, repeatHarnessSha256?: unknown, repeatStatusPath?: unknown, repeatStatusSha256?: unknown, repeatRecordsPath?: unknown, repeatRecordsSha256?: unknown, sourceStatuses?: unknown }} */ (cwbvhPromotionProvenance);
+if (
+  cwbvhPromotionProvenanceRecord.schema !== "vitrum.cwbvh-default-promotion.provenance.v1" ||
+  cwbvhPromotionProvenanceRecord.checkerPath !== "tools/behavioral-gate/check-cwbvh-default-promotion-status.mjs" ||
+  cwbvhPromotionProvenanceRecord.sourceGuardPath !== "packages/pt-webgpu/src/index.ts" ||
+  cwbvhPromotionProvenanceRecord.repeatHarnessPath !== "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs" ||
+  cwbvhPromotionProvenanceRecord.repeatStatusPath !== "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json" ||
+  cwbvhPromotionProvenanceRecord.repeatRecordsPath !== "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json"
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary provenance must pin schema/checker/source/repeat artifact paths");
+}
+await assertFileSha256(
+  "tools/behavioral-gate/check-cwbvh-default-promotion-status.mjs",
+  cwbvhPromotionProvenanceRecord.checkerSha256,
+  "VQ-CWBVH-DEFAULT-PROMOTION summary provenance checkerSha256",
+);
+await assertFileSha256(
+  "packages/pt-webgpu/src/index.ts",
+  cwbvhPromotionProvenanceRecord.sourceGuardSha256,
+  "VQ-CWBVH-DEFAULT-PROMOTION summary provenance sourceGuardSha256",
+);
+await assertFileSha256(
+  "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
+  cwbvhPromotionProvenanceRecord.repeatHarnessSha256,
+  "VQ-CWBVH-DEFAULT-PROMOTION summary provenance repeatHarnessSha256",
+);
+await assertFileSha256(
+  "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json",
+  cwbvhPromotionProvenanceRecord.repeatStatusSha256,
+  "VQ-CWBVH-DEFAULT-PROMOTION summary provenance repeatStatusSha256",
+);
+await assertFileSha256(
+  "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
+  cwbvhPromotionProvenanceRecord.repeatRecordsSha256,
+  "VQ-CWBVH-DEFAULT-PROMOTION summary provenance repeatRecordsSha256",
+);
+if (
+  JSON.stringify(cwbvhPromotionStatus.sourceStatuses ?? []) !==
+  JSON.stringify(REQUIRED_CWBVH_PROMOTION_SOURCE_STATUS_PATHS)
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION summary must pin every CWBVH source status");
+}
+assertSha256DigestRows(
+  cwbvhPromotionProvenanceRecord.sourceStatuses,
+  REQUIRED_CWBVH_PROMOTION_SOURCE_STATUS_PATHS,
+  "VQ-CWBVH-DEFAULT-PROMOTION summary provenance sourceStatuses",
+);
+const cwbvhPromotionSourceStatusRows = /** @type {Array<{ path: string, sha256: unknown }>} */ (cwbvhPromotionProvenanceRecord.sourceStatuses);
+for (const row of cwbvhPromotionSourceStatusRows) {
+  await assertFileSha256(row.path, row.sha256, "VQ-CWBVH-DEFAULT-PROMOTION summary provenance " + row.path);
+}
+const cwbvhRepeatStatusProvenance = cwbvhRepeatStatus.provenance;
+if (cwbvhRepeatStatusProvenance == null || typeof cwbvhRepeatStatusProvenance !== "object") {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat status must include provenance");
+}
+const cwbvhRepeatStatusProvenanceRecord = /** @type {{ schema?: unknown, harnessPath?: unknown, harnessSha256?: unknown, recordsPath?: unknown, recordsSha256?: unknown }} */ (cwbvhRepeatStatusProvenance);
+if (
+  cwbvhRepeatStatusProvenanceRecord.schema !== "vitrum.cwbvh-default-promotion.repeat-status-provenance.v1" ||
+  cwbvhRepeatStatusProvenanceRecord.harnessPath !== "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs" ||
+  cwbvhRepeatStatusProvenanceRecord.recordsPath !== "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json"
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat status provenance must pin schema/harness/records paths");
+}
+await assertFileSha256(
+  "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
+  cwbvhRepeatStatusProvenanceRecord.harnessSha256,
+  "VQ-CWBVH-DEFAULT-PROMOTION repeat status provenance harnessSha256",
+);
+await assertFileSha256(
+  "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
+  cwbvhRepeatStatusProvenanceRecord.recordsSha256,
+  "VQ-CWBVH-DEFAULT-PROMOTION repeat status provenance recordsSha256",
+);
+const cwbvhRepeatRecordsProvenance = cwbvhRepeatRecords.provenance;
+if (cwbvhRepeatRecordsProvenance == null || typeof cwbvhRepeatRecordsProvenance !== "object") {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat records must include provenance");
+}
+const cwbvhRepeatRecordsProvenanceRecord = /** @type {{ schema?: unknown, harnessPath?: unknown, harnessSha256?: unknown }} */ (cwbvhRepeatRecordsProvenance);
+if (
+  cwbvhRepeatRecordsProvenanceRecord.schema !== "vitrum.cwbvh-default-promotion.repeat-records-provenance.v1" ||
+  cwbvhRepeatRecordsProvenanceRecord.harnessPath !== "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs"
+) {
+  fail("VQ-CWBVH-DEFAULT-PROMOTION repeat records provenance must pin schema/harness path");
+}
+await assertFileSha256(
+  "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
+  cwbvhRepeatRecordsProvenanceRecord.harnessSha256,
+  "VQ-CWBVH-DEFAULT-PROMOTION repeat records provenance harnessSha256",
+);
 for (const needle of [
   "cwbvh-default-promotion-repeat-proof",
   "MIN_REPEAT_COUNT_PER_WORKLOAD = 5",

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const validationQueueCheckerPath = resolve(repoRoot, 'tools', 'road-to-100', 'check-validation-queue.mjs');
 const {
   buildCwbvhRepeatCampaignSummary,
   CWBVH_REPEAT_FILTERS,
@@ -186,6 +187,18 @@ test('CWBVH committed repeat status is derived from raw repeat records', async (
   assert.notDeepEqual(tamperedSummary.workloads, repeatStatus.workloads);
 });
 
+test('Road checker pins CWBVH promotion provenance blocks', async () => {
+  const validationQueueChecker = await readFile(validationQueueCheckerPath, 'utf8');
+
+  assert.match(validationQueueChecker, /REQUIRED_CWBVH_PROMOTION_SOURCE_STATUS_PATHS/);
+  assert.match(validationQueueChecker, /vitrum\.cwbvh-default-promotion\.provenance\.v1/);
+  assert.match(validationQueueChecker, /repeat-status-provenance\.v1/);
+  assert.match(validationQueueChecker, /repeat-records-provenance\.v1/);
+  assert.match(validationQueueChecker, /cwbvhPromotionProvenance/);
+  assert.match(validationQueueChecker, /cwbvhRepeatStatusProvenance/);
+  assert.match(validationQueueChecker, /cwbvhRepeatRecordsProvenance/);
+  assert.match(validationQueueChecker, /assertSha256DigestRows/);
+});
 function makeRecords(ratioFor, runCount) {
   const records = [];
   for (let runIndex = 0; runIndex < runCount; runIndex += 1) {
