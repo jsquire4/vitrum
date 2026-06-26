@@ -135,5 +135,12 @@
       "slowOrNeutralSampleCount": 5
     }
   ],
-  "failures": []
+  "failures": [],
+  "provenance": {
+    "schema": "vitrum.cwbvh-default-promotion.repeat-status-provenance.v1",
+    "harnessPath": "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
+    "harnessSha256": "6e7676adc738a3ac07055ccfb4f42b09eb4e48936e60802a9839f32ea267a929",
+    "recordsPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
+    "recordsSha256": "3088faa50564d25c58c7d2491639853f8e89519536cfad8bae0c55fdb7b98c6d"
+  }
 }

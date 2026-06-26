@@ -8,6 +8,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const CWBVH_REPEAT_FILTERS = [
@@ -34,6 +35,7 @@ export const DEFAULT_REPEAT_DZN_TIMEOUT_MS = 900_000;
 const DEFAULT_WARMUP_COUNT = 1;
 const DEFAULT_OUTPUT = 'tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json';
 const DEFAULT_RECORDS_OUTPUT = 'tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json';
+const REPEAT_HARNESS_PATH = 'tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 export function summarizeCwbvhRepeatEvidence(records, options = {}) {
@@ -239,6 +241,29 @@ function writeJson(path, data) {
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
 }
 
+function sha256File(path) {
+  return createHash('sha256').update(readFileSync(resolve(repoRoot, path))).digest('hex');
+}
+
+function repeatRecordsProvenance() {
+  return {
+    schema: 'vitrum.cwbvh-default-promotion.repeat-records-provenance.v1',
+    harnessPath: REPEAT_HARNESS_PATH,
+    harnessSha256: sha256File(REPEAT_HARNESS_PATH),
+  };
+}
+
+function repeatStatusProvenance(recordsPath) {
+  const recordsDisplayPath = displayPathForSummary(recordsPath);
+  return {
+    schema: 'vitrum.cwbvh-default-promotion.repeat-status-provenance.v1',
+    harnessPath: REPEAT_HARNESS_PATH,
+    harnessSha256: sha256File(REPEAT_HARNESS_PATH),
+    recordsPath: recordsDisplayPath,
+    recordsSha256: sha256File(recordsDisplayPath),
+  };
+}
+
 function displayPathForSummary(path) {
   const rel = relative(repoRoot, path).replaceAll('\\', '/');
   return rel.startsWith('..') ? path : rel;
@@ -268,7 +293,9 @@ function writeCampaignProgress({
     campaignStatus,
     failure,
     records,
+    provenance: repeatRecordsProvenance(),
   });
+  summary.provenance = repeatStatusProvenance(recordsPath);
   writeJson(outputPath, summary);
   return summary;
 }

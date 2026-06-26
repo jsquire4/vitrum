@@ -67,5 +67,32 @@
     "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
     "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
     "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json"
-  ]
+  ],
+  "provenance": {
+    "schema": "vitrum.cwbvh-default-promotion.provenance.v1",
+    "checkerPath": "tools/behavioral-gate/check-cwbvh-default-promotion-status.mjs",
+    "checkerSha256": "d0e8f318c988eb908f005af2ae7d1f063d5b0015ba639a703602fb35e2f97a11",
+    "sourceGuardPath": "packages/pt-webgpu/src/index.ts",
+    "sourceGuardSha256": "e0e1075e58f80d434dfdf2c7a8edf2d13eab81417e5f863a79c5e7fe99b26f89",
+    "repeatHarnessPath": "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
+    "repeatHarnessSha256": "6e7676adc738a3ac07055ccfb4f42b09eb4e48936e60802a9839f32ea267a929",
+    "repeatStatusPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json",
+    "repeatStatusSha256": "c8b9e59432be6bf980b8a0a72b3cb1c2b3fbf76849624e27574430e62fcf8e2c",
+    "repeatRecordsPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
+    "repeatRecordsSha256": "3088faa50564d25c58c7d2491639853f8e89519536cfad8bae0c55fdb7b98c6d",
+    "sourceStatuses": [
+      {
+        "path": "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
+        "sha256": "4419a4a9738f4bcfdf3b4267474d2a4ac660810a9ccea2bd2a9c3d8a32413c4a"
+      },
+      {
+        "path": "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-complex-parity-status.json",
+        "sha256": "7b52177acc4bd05c67c998b31dc4898f62d77d182a77d95835f7c8b258ea6c21"
+      },
+      {
+        "path": "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-broader-status.json",
+        "sha256": "87988ef8772d90fc2a366de9df7d055676a9cc24d5ddf968fff325a432365f3c"
+      }
+    ]
+  }
 }

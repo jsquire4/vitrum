@@ -1,6 +1,8 @@
 #!/usr/bin/env -S deno run --sloppy-imports --allow-read
 // @ts-check
 
+const CHECKER_PATH = "tools/behavioral-gate/check-cwbvh-default-promotion-status.mjs";
+
 const STATUS_FILES = [
   {
     path: "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",
@@ -40,6 +42,62 @@ const REQUIRED_ADAPTER_SCOPE = "browser/real-adapter";
 /** @param {string} message @returns {never} */
 function fail(message) {
   throw new Error(`[cwbvh-default-promotion-proof-check] ${message}`);
+}
+/** @param {Uint8Array} bytes */
+async function sha256Hex(bytes) {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", copy.buffer);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** @param {string} path */
+async function sha256File(path) {
+  return sha256Hex(await Deno.readFile(path));
+}
+
+async function expectedSummaryProvenance() {
+  return {
+    schema: "vitrum.cwbvh-default-promotion.provenance.v1",
+    checkerPath: CHECKER_PATH,
+    checkerSha256: await sha256File(CHECKER_PATH),
+    sourceGuardPath: SOURCE_GUARD,
+    sourceGuardSha256: await sha256File(SOURCE_GUARD),
+    repeatHarnessPath: REPEAT_HARNESS,
+    repeatHarnessSha256: await sha256File(REPEAT_HARNESS),
+    repeatStatusPath: REPEAT_STATUS,
+    repeatStatusSha256: await sha256File(REPEAT_STATUS),
+    repeatRecordsPath: REPEAT_RECORDS,
+    repeatRecordsSha256: await sha256File(REPEAT_RECORDS),
+    sourceStatuses: await Promise.all(
+      STATUS_FILES.map(async (entry) => ({ path: entry.path, sha256: await sha256File(entry.path) })),
+    ),
+  };
+}
+
+async function expectedRepeatRecordsProvenance() {
+  return {
+    schema: "vitrum.cwbvh-default-promotion.repeat-records-provenance.v1",
+    harnessPath: REPEAT_HARNESS,
+    harnessSha256: await sha256File(REPEAT_HARNESS),
+  };
+}
+
+async function expectedRepeatStatusProvenance() {
+  return {
+    schema: "vitrum.cwbvh-default-promotion.repeat-status-provenance.v1",
+    harnessPath: REPEAT_HARNESS,
+    harnessSha256: await sha256File(REPEAT_HARNESS),
+    recordsPath: REPEAT_RECORDS,
+    recordsSha256: await sha256File(REPEAT_RECORDS),
+  };
+}
+
+/** @param {unknown} actual @param {unknown} expected @param {string} label */
+function assertObjectMatches(actual, expected, label) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    fail(`${label}: provenance drifted; regenerate from current source and committed evidence`);
+  }
 }
 
 /** @param {unknown} value @param {string} label */
@@ -100,6 +158,10 @@ function assertRepeatHarness(source) {
     "campaignStatus",
     "insufficient-samples",
     "DEFAULT_REPEAT_DZN_TIMEOUT_MS = 900_000",
+    "createHash('sha256')",
+    "repeat-records-provenance.v1",
+    "repeat-status-provenance.v1",
+    "recordsSha256",
     "--dzn-timeout-ms",
     "VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS: String(dznTimeoutMs)",
     "recordsPath",
@@ -244,6 +306,7 @@ async function assertSummaryStatus(perfRows, slowOrNeutral, fast, classification
   if (JSON.stringify(status.sourceStatuses) !== JSON.stringify(expectedSources)) {
     fail(`${SUMMARY_STATUS}: sourceStatuses do not match checker inputs`);
   }
+  assertObjectMatches(status.provenance, await expectedSummaryProvenance(), SUMMARY_STATUS);
 }
 
 async function assertRepeatCaptureStatus() {
@@ -280,6 +343,8 @@ async function assertRepeatCaptureStatus() {
   ) {
     fail(`${REPEAT_RECORDS}: must preserve the completed five-sample dzn repeat records plus one warmup per shard`);
   }
+  assertObjectMatches(records.provenance, await expectedRepeatRecordsProvenance(), REPEAT_RECORDS);
+  assertObjectMatches(status.provenance, await expectedRepeatStatusProvenance(), REPEAT_STATUS);
   const recomputed = summarizeRepeatRecords(allRecords, status.warmupDiscardedPerWorkload);
   if (JSON.stringify(status.workloads) !== JSON.stringify(recomputed.workloads)) {
     fail(`${REPEAT_STATUS}: workloads must match ${REPEAT_RECORDS}`);
