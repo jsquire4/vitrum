@@ -13,6 +13,7 @@ const ptBdptHarnessPath = join(repoRoot, 'tools', 'radiometric-ab', 'ab-bdpt.mjs
 const radiometricProofsPath = join(repoRoot, 'tools', 'radiometric-ab', 'proofs.mjs');
 const radiometricCheckerPath = join(repoRoot, 'tools', 'radiometric-ab', 'check-results.mjs');
 const ptWebgpuIndexPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'index.ts');
+const ptWebgpuKernelPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'wgsl', 'pathTrace', 'kernel.wgsl.ts');
 
 test('radiometric varianceROI fails closed when capture count is too low', async () => {
   const varianceROI = await loadVarianceROI();
@@ -114,6 +115,7 @@ test('pt BDPT radiometric proof keeps multi-vertex mode research-only', async ()
   const proofs = await readFile(radiometricProofsPath, 'utf8');
   const checker = await readFile(radiometricCheckerPath, 'utf8');
   const ptWebgpuIndex = await readFile(ptWebgpuIndexPath, 'utf8');
+  const ptWebgpuKernel = await readFile(ptWebgpuKernelPath, 'utf8');
 
   assert.match(harness, /CONTROL_MAX_LIGHT_BOUNCES = \[1, 2, 3\]/);
   assert.match(harness, /experimentalMultiVertex: true/);
@@ -123,6 +125,9 @@ test('pt BDPT radiometric proof keeps multi-vertex mode research-only', async ()
 
   assert.match(proofs, /export const BDPT_MULTIVERTEX_RESEARCH_PROOF/);
   assert.match(proofs, /warningCode: "pt-webgpu\.bdpt-multivertex-research-mode"/);
+  assert.match(proofs, /shaderSourcePath: "packages\/pt-webgpu\/src\/wgsl\/pathTrace\/kernel\.wgsl\.ts"/);
+  assert.match(proofs, /"for \(var lvi = 1u; lvi < maxLv; lvi\+\+\)"/);
+  assert.match(proofs, /"radiance = radiance \+ evaluateBdptConnection\("/);
   assert.match(proofs, /minFindingGlobalRelErr: 0\.10/);
 
   assert.match(checker, /function checkBdptMultiVertexResearch/);
@@ -130,11 +135,15 @@ test('pt BDPT radiometric proof keeps multi-vertex mode research-only', async ()
   assert.match(checker, /result must carry researchFindings\.bdptMultiVertex metadata/);
   assert.match(checker, /firstFindingGlobalRelErr differs from control run/);
   assert.match(checker, /source warning missing/);
+  assert.match(checker, /shader source missing/);
   assert.match(checker, /promotionReady: false/);
 
   assert.match(ptWebgpuIndex, /bdptOptions\.maxLightBounces > 1 activates the multi-vertex BDPT research path/);
   assert.match(ptWebgpuIndex, /promotionReady: false/);
   assert.match(ptWebgpuIndex, /currentEstimator: 'additive-sidecar-not-weighted-against-eye-path'/);
+
+  assert.match(ptWebgpuKernel, /for \(var lvi = 1u; lvi < maxLv; lvi\+\+\) \{/);
+  assert.match(ptWebgpuKernel, /radiance = radiance \+ evaluateBdptConnection\(/);
 });
 
 async function loadVarianceROI() {

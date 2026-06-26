@@ -160,6 +160,12 @@ export const RESTIR_PT_GLOSSY_RESEARCH_PROOF = {
 export const BDPT_MULTIVERTEX_RESEARCH_PROOF = {
   resultPath: "tools/radiometric-ab/results-bdpt.json",
   sourcePath: "packages/pt-webgpu/src/index.ts",
+  shaderSourcePath: "packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts",
+  shaderNeedles: [
+    "if (params.bdptEnabled != 0u)",
+    "for (var lvi = 1u; lvi < maxLv; lvi++)",
+    "radiance = radiance + evaluateBdptConnection(",
+  ],
   warningCode: "pt-webgpu.bdpt-multivertex-research-mode",
   currentEstimator: "additive-sidecar-not-weighted-against-eye-path",
   blocker: "not-weighted-against-regular-eye-path-strategy",

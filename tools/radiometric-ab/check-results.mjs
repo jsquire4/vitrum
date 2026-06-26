@@ -296,6 +296,22 @@ async function checkBdptMultiVertexResearch(proof) {
       fail(`bdpt multi-vertex: source warning missing ${needle}`);
     }
   }
+  if (typeof proof.shaderSourcePath !== "string" || proof.shaderSourcePath.length === 0) {
+    fail("bdpt multi-vertex: proof metadata must name the shader source path");
+  }
+  const shaderNeedles = proof.shaderNeedles;
+  if (!Array.isArray(shaderNeedles) || shaderNeedles.length === 0) {
+    fail("bdpt multi-vertex: proof metadata must include shader needles");
+  }
+  const shaderSource = await Deno.readTextFile(new URL(`../../${proof.shaderSourcePath}`, import.meta.url));
+  for (const needle of shaderNeedles) {
+    if (typeof needle !== "string" || needle.length === 0) {
+      fail("bdpt multi-vertex: shader needle must be a non-empty string");
+    }
+    if (!shaderSource.includes(needle)) {
+      fail(`bdpt multi-vertex: shader source missing ${needle}`);
+    }
+  }
 }
 
 /**
