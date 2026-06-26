@@ -196,4 +196,5 @@ test('committed road unresolved rows carry enforced execution metadata', async (
   assert.match(checkerSource, /ALLOWED_EXECUTION_SCOPES/);
   assert.match(checkerSource, /function assertUnresolvedExecutionMetadata/);
   assert.match(checkerSource, /assertUnresolvedExecutionMetadata\(row\)/);
+  assert.match(checkerSource, /contains unexpected id/);
 });

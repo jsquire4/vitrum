@@ -379,6 +379,9 @@ function assertRequiredIds(rows, requiredIds, label) {
   for (const id of requiredIds) {
     if (!ids.has(id)) fail(`${label} missing ${id}`);
   }
+  for (const id of ids) {
+    if (!requiredIds.includes(id)) fail(`${label} contains unexpected id ${id}`);
+  }
   if (ids.size !== rows.length) fail(`${label} contains duplicate or invalid ids`);
 }
 
