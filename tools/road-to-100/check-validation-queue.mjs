@@ -1349,6 +1349,60 @@ if (learnedSystemsStatus.schema !== "vitrum.learned-systems.status.v1") {
 if (learnedSystemsStatus.verdict !== "PASS") {
   fail("learned systems status must pin verdict PASS");
 }
+const learnedProvenance = learnedSystemsStatus.provenance;
+if (
+  learnedProvenance == null ||
+  learnedProvenance.schema !== "vitrum.learned-systems.status-provenance.v1" ||
+  learnedProvenance.checkerPath !== "tools/learned-systems/check-status.mjs" ||
+  learnedProvenance.statusPath !== "tools/learned-systems/learned-systems-status.json"
+) {
+  fail("learned systems status must pin status-provenance metadata");
+}
+if (typeof learnedProvenance.checkerSha256 !== "string" || learnedProvenance.checkerSha256.length !== 64) {
+  fail("learned systems status provenance must pin checkerSha256");
+}
+const learnedProvenanceSourcePaths = new Set(
+  Array.isArray(learnedProvenance.sourceFiles)
+    ? learnedProvenance.sourceFiles.map((entry) => entry?.path)
+    : [],
+);
+for (const path of [
+  "tools/learned-systems/qualityManifestValidator.mjs",
+  "tools/neural-denoiser-training/checkpoints/manifest.json",
+  "packages/walkaround-hybrid/src/HybridEngineConfig.ts",
+  "packages/walkaround-hybrid/src/neural/weights.ts",
+  "scripts/__tests__/learned-systems-quality-manifest.test.mjs",
+]) {
+  if (!learnedProvenanceSourcePaths.has(path)) {
+    fail("learned systems status provenance must cite " + path);
+  }
+}
+if (
+  !Array.isArray(learnedProvenance.checkpointFiles) ||
+  learnedProvenance.checkpointFiles.length !== (learnedCheckpointManifest.checkpoints ?? []).length
+) {
+  fail("learned systems status provenance must cover every checkpoint file");
+}
+for (const checkpoint of learnedProvenance.checkpointFiles) {
+  if (checkpoint?.manifestSha256 !== checkpoint?.actualSha256) {
+    fail("learned systems checkpoint provenance hash mismatch for " + String(checkpoint?.path));
+  }
+}
+const learnedQualityEvidencePaths = new Set(
+  Array.isArray(learnedProvenance.qualityEvidenceManifests)
+    ? learnedProvenance.qualityEvidenceManifests.map((entry) => entry?.path)
+    : [],
+);
+for (const path of [
+  "tools/neural-denoiser-training/quality-ab-production.json",
+  "tools/learned-systems/nrc-quality-convergence.json",
+  "tools/learned-systems/gris-unbiasedness-ab.json",
+  "tools/learned-systems/ppg-favorable-scene-ab.json",
+]) {
+  if (!learnedQualityEvidencePaths.has(path)) {
+    fail("learned systems status provenance must list quality evidence manifest " + path);
+  }
+}
 const qualityRequirements = learnedSystemsStatus.neuralDenoiser?.qualityManifestRequirements;
 const expectedQualityRequirements = {
   manifestPath: "tools/neural-denoiser-training/quality-ab-production.json",
