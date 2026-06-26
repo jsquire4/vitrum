@@ -6,6 +6,8 @@ export const MIN_PRODUCTION_NEURAL_CLEAN_REFERENCE_SPP = 4096;
 export const PRODUCTION_NEURAL_DATASET_MANIFEST_SCHEMA =
   "vitrum.neural-denoiser.dataset.v1";
 
+/** @typedef {"file" | "file-or-directory" | "glob-or-file-or-directory"} ArtifactKind */
+
 /**
  * @typedef {{
  *   name: string,
@@ -24,7 +26,7 @@ export const PRODUCTION_NEURAL_DATASET_MANIFEST_SCHEMA =
  *   productionCheckpoint: string | null,
  *   productionLike?: string[],
  *   expectedParamCount: number,
- *   artifactExists?: (path: string) => boolean,
+ *   artifactExists?: (path: string, kind?: ArtifactKind) => boolean,
  *   artifactText?: (path: string) => string,
  *   fail?: (message: string) => void,
  * }} ProductionQualityValidationInput
@@ -102,16 +104,18 @@ export function validateProductionQualityManifest(input) {
     fail("production neural quality manifest must include reproducibility artifact paths");
   }
   const artifactRecord = /** @type {Record<string, any>} */ (artifacts);
-  for (const field of [
-    "datasetManifestPath",
-    "resultSummaryPath",
-    "candidateOutputsPath",
-    "referenceOutputsPath",
-  ]) {
+  /** @type {{ field: string, kind: ArtifactKind }[]} */
+  const reproducibilityArtifacts = [
+    { field: "datasetManifestPath", kind: "file" },
+    { field: "resultSummaryPath", kind: "file" },
+    { field: "candidateOutputsPath", kind: "file-or-directory" },
+    { field: "referenceOutputsPath", kind: "file-or-directory" },
+  ];
+  for (const { field, kind } of reproducibilityArtifacts) {
     if (typeof artifactRecord[field] !== "string" || artifactRecord[field].length === 0) {
       fail(`production neural quality manifest artifacts.${field} must be a non-empty string`);
     }
-    if (artifactExists != null && !artifactExists(artifactRecord[field])) {
+    if (artifactExists != null && !artifactExists(artifactRecord[field], kind)) {
       fail(`production neural quality manifest artifacts.${field} must point at an existing artifact`);
     }
   }
@@ -208,7 +212,7 @@ export function validateProductionQualityManifest(input) {
  * @param {unknown} datasetManifest
  * @param {Record<string, any>} expectedDataset
  * @param {(message: string) => void} fail
- * @param {((path: string) => boolean) | undefined} artifactExists
+ * @param {((path: string, kind?: ArtifactKind) => boolean) | undefined} artifactExists
  */
 export function validateProductionDatasetManifest(
   datasetManifest,
@@ -272,6 +276,13 @@ export function validateProductionDatasetManifest(
       );
     }
     sampleTotal += sceneRecord.sampleCount;
+    /** @type {Record<string, ArtifactKind>} */
+    const sceneArtifactKinds = {
+      noisyPath: "file-or-directory",
+      cleanPath: "file-or-directory",
+      albedoPath: "glob-or-file-or-directory",
+      normalPath: "glob-or-file-or-directory",
+    };
     for (const field of ["noisyPath", "cleanPath", "albedoPath", "normalPath"]) {
       if (typeof sceneRecord[field] !== "string" || sceneRecord[field].length === 0) {
         fail(
@@ -279,7 +290,7 @@ export function validateProductionDatasetManifest(
             `${field} must be a non-empty string`,
         );
       }
-      if (artifactExists != null && !artifactExists(sceneRecord[field])) {
+      if (artifactExists != null && !artifactExists(sceneRecord[field], sceneArtifactKinds[field])) {
         fail(
           `production neural dataset manifest scene ${sceneRecord.id} ` +
             `${field} must point at an existing artifact`,

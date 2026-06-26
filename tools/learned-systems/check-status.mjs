@@ -318,14 +318,75 @@ async function assertNoSilentProductionCheckpoint(manifest) {
   }
 }
 
-/** @param {string} path */
-function artifactPathExists(path) {
+/**
+ * @param {string} path
+ * @param {"file" | "file-or-directory" | "glob-or-file-or-directory"} [kind]
+ * @returns {boolean}
+ */
+function artifactPathExists(path, kind = "file-or-directory") {
+  if (kind === "glob-or-file-or-directory" && /[*?]/.test(path)) {
+    return globArtifactPathExists(path);
+  }
   try {
     const stat = Deno.statSync(repoUrl(path));
+    if (kind === "file") return stat.isFile;
     return stat.isFile || stat.isDirectory;
   } catch {
     return false;
   }
+}
+
+/**
+ * @param {string} path
+ * @returns {boolean}
+ */
+function globArtifactPathExists(path) {
+  const normalizedPath = normalizeArtifactPath(path);
+  const wildcardIndex = normalizedPath.search(/[*?]/);
+  if (wildcardIndex < 0) return artifactPathExists(normalizedPath, "file-or-directory");
+  const baseEnd = normalizedPath.lastIndexOf("/", wildcardIndex);
+  const basePath = baseEnd >= 0 ? normalizedPath.slice(0, baseEnd) : ".";
+  const relativePattern = baseEnd >= 0 ? normalizedPath.slice(baseEnd + 1) : normalizedPath;
+  const matcher = globPatternToRegExp(relativePattern);
+  try {
+    return walkGlobBase(repoUrl(basePath), "", matcher);
+  } catch {
+    return false;
+  }
+}
+
+/** @param {string} path */
+function normalizeArtifactPath(path) {
+  return path.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+
+/** @param {string} pattern */
+function globPatternToRegExp(pattern) {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]");
+  return new RegExp(`^${escaped}$`);
+}
+
+/**
+ * @param {URL} baseUrl
+ * @param {string} relativePrefix
+ * @param {RegExp} matcher
+ * @returns {boolean}
+ */
+function walkGlobBase(baseUrl, relativePrefix, matcher) {
+  for (const entry of Deno.readDirSync(baseUrl)) {
+    const relativePath = relativePrefix.length > 0
+      ? `${relativePrefix}/${entry.name}`
+      : entry.name;
+    if (entry.isFile && matcher.test(relativePath)) return true;
+    if (entry.isDirectory) {
+      const childUrl = new URL(`${entry.name}/`, baseUrl);
+      if (walkGlobBase(childUrl, relativePath, matcher)) return true;
+    }
+  }
+  return false;
 }
 
 /** @param {string} path */

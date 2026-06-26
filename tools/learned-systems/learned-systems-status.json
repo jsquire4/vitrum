@@ -1,6 +1,6 @@
 {
   "schema": "vitrum.learned-systems.status.v1",
-  "generatedAt": "2026-06-26T03:15:51.989Z",
+  "generatedAt": "2026-06-26T07:27:12.671Z",
   "verdict": "PASS",
   "productionPosture": "provisioning-needed",
   "neuralDenoiser": {
@@ -98,7 +98,7 @@
   "provenance": {
     "schema": "vitrum.learned-systems.status-provenance.v1",
     "checkerPath": "tools/learned-systems/check-status.mjs",
-    "checkerSha256": "1ea5b7658129cf1cbd80d7497ba3d1e32e9cf8c9cd0e8abb3a2af2dee6c0b96d",
+    "checkerSha256": "43e38ddc3a9d2ba605a939719f3ccefc49c5c8ccdd997ee6d527cad012f0a6bd",
     "statusPath": "tools/learned-systems/learned-systems-status.json",
     "sourceFiles": [
       {
@@ -179,11 +179,11 @@
       },
       {
         "path": "scripts/__tests__/learned-systems-quality-manifest.test.mjs",
-        "sha256": "b821f0ebd16b043c04d4e19598146e6e6af3391795aadf74a7e135ec99f1ea1d"
+        "sha256": "04eae32d6669ba5edaf7fa8b320852b80eb4533fb6e31c545ca0402c6eb228d3"
       },
       {
         "path": "tools/learned-systems/qualityManifestValidator.mjs",
-        "sha256": "4c18270f35f92f2f50530a6d8d9e54b380b0717311e064346684bb18b52d74e9"
+        "sha256": "ef5700b1f342002041d66d811923bc5ceacbbe33a30b94bbcdfff640d1931f09"
       },
       {
         "path": "tools/neural-denoiser-training/README.md",

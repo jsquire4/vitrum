@@ -223,6 +223,41 @@ test('production neural quality manifest validates dataset manifest artifact con
   assert.doesNotThrow(() => validateWithDatasetManifest(manifest, validDatasetManifest(manifest)));
 });
 
+test('production neural quality manifest classifies artifact paths for the live checker', () => {
+  const manifest = validQualityManifest();
+  const datasetManifest = validDatasetManifest(manifest);
+  const checks = [];
+
+  validateProductionQualityManifest({
+    qualityManifest: manifest,
+    productionEntries: [PRODUCTION_ENTRY],
+    productionCheckpoint: PRODUCTION_ENTRY.name,
+    productionLike: [PRODUCTION_ENTRY.name],
+    expectedParamCount: EXPECTED_PARAM_COUNT,
+    artifactExists: (artifactPath, kind) => {
+      checks.push([artifactPath, kind]);
+      return true;
+    },
+    artifactText: (artifactPath) => {
+      assert.equal(artifactPath, manifest.artifacts.datasetManifestPath);
+      return JSON.stringify(datasetManifest);
+    },
+  });
+
+  assert.deepEqual(checks.slice(0, 4), [
+    [manifest.artifacts.datasetManifestPath, 'file'],
+    [manifest.artifacts.resultSummaryPath, 'file'],
+    [manifest.artifacts.candidateOutputsPath, 'file-or-directory'],
+    [manifest.artifacts.referenceOutputsPath, 'file-or-directory'],
+  ]);
+  assert.ok(checks.some(([artifactPath, kind]) =>
+    artifactPath.endsWith('*_albedo.png') && kind === 'glob-or-file-or-directory'
+  ));
+  assert.ok(checks.some(([artifactPath, kind]) =>
+    artifactPath.endsWith('*_normal.png') && kind === 'glob-or-file-or-directory'
+  ));
+});
+
 test('production neural quality manifest rejects missing per-scene dataset artifacts', () => {
   const manifest = validQualityManifest();
   const datasetManifest = validDatasetManifest(manifest);
