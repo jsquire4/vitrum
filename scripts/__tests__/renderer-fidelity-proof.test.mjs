@@ -63,6 +63,9 @@ test('renderer fidelity checker fail-closes browser promotion and source-only pt
   assert.match(validationQueueChecker, /vitrum\.renderer-fidelity\.promotion-provenance\.v1/);
   assert.match(validationQueueChecker, /rendererPromotionProvenance/);
   assert.match(validationQueueChecker, /sourceStatusSha256/);
+  assert.match(validationQueueChecker, /assertFileSha256/);
+  assert.match(validationQueueChecker, /promotion provenance checkerSha256/);
+  assert.match(validationQueueChecker, /promotion provenance sourceStatusSha256/);
 });
 
 test('Road renderer fidelity row cites the promotion guard artifact', async () => {

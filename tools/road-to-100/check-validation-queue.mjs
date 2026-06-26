@@ -1124,6 +1124,11 @@ if (
 if (typeof rendererPromotionProvenanceRecord.checkerSha256 !== "string" || !/^[0-9a-f]{64}$/.test(rendererPromotionProvenanceRecord.checkerSha256)) {
   fail("VQ-RENDERER-FIDELITY-PROOF promotion provenance checkerSha256 must be a lowercase SHA-256 digest");
 }
+await assertFileSha256(
+  "tools/renderer-fidelity-proof/check-proofs.mjs",
+  rendererPromotionProvenanceRecord.checkerSha256,
+  "VQ-RENDERER-FIDELITY-PROOF promotion provenance checkerSha256",
+);
 if (
   JSON.stringify(rendererPromotionProvenanceRecord.sourceStatuses ?? []) !==
   JSON.stringify(rendererPromotionStatus.sourceStatuses ?? [])
@@ -1151,6 +1156,11 @@ for (const [index, path] of REQUIRED_RENDERER_FIDELITY_SOURCE_STATUS_PATHS.entri
   ) {
     fail(`VQ-RENDERER-FIDELITY-PROOF promotion provenance sourceStatusSha256[${index}] must pin ${path}`);
   }
+  await assertFileSha256(
+    path,
+    digest.sha256,
+    `VQ-RENDERER-FIDELITY-PROOF promotion provenance sourceStatusSha256 ${path}`,
+  );
 }
 if (
   rendererPromotionStatus.verdict !== "PASS-PARTIAL" ||
