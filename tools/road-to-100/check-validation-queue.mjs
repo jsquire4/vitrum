@@ -2701,8 +2701,47 @@ for (const needle of [
     fail(`VQ-WALKAROUND-RADIOMETRIC-AB remaining text must include ${needle}`);
   }
 }
+/**
+ * @param {any} status
+ * @param {{ label: string, selectedCases: null | string, resultFile: string, renderConfig: Record<string, unknown>, caseVerdicts: Record<string, string> }} expected
+ */
+function assertWalkaroundStatusCapture(status, expected) {
+  if (status.harness !== "walkaround-ab") fail(`walkaround status capture ${expected.label} must pin harness=walkaround-ab`);
+  if (status.command !== "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/walkaround-ab.mjs") {
+    fail(`walkaround status capture ${expected.label} must pin the native WebGPU harness command`);
+  }
+  if ((status.selectedCases ?? null) !== expected.selectedCases) {
+    fail(`walkaround status capture ${expected.label} must pin selectedCases=${expected.selectedCases}`);
+  }
+  if (status.timeoutMs !== 180000 || status.icd !== "/usr/share/vulkan/icd.d/lvp_icd.json") {
+    fail(`walkaround status capture ${expected.label} must pin timeoutMs=180000 and lavapipe ICD`);
+  }
+  if (status.exitStatus !== 0 || status.signal !== null) {
+    fail(`walkaround status capture ${expected.label} must pin exitStatus=0/signal=null`);
+  }
+  if (status.resultFile !== expected.resultFile) {
+    fail(`walkaround status capture ${expected.label} must pin resultFile ${expected.resultFile}`);
+  }
+  if (JSON.stringify(status.renderConfig) !== JSON.stringify(expected.renderConfig)) {
+    fail(`walkaround status capture ${expected.label} must pin renderConfig ${JSON.stringify(expected.renderConfig)}`);
+  }
+  if (JSON.stringify(status.caseVerdicts) !== JSON.stringify(expected.caseVerdicts)) {
+    fail(`walkaround status capture ${expected.label} must pin caseVerdicts from the committed result snapshot`);
+  }
+  const nextSteps = /** @type {unknown[]} */ (status.nextSteps ?? []);
+  if (!nextSteps.some((step) => String(step).includes("Do not promote")) || !nextSteps.some((step) => String(step).includes("browser/real-adapter"))) {
+    fail(`walkaround status capture ${expected.label} must preserve do-not-promote/browser-real-adapter next steps`);
+  }
+}
 const walkaroundAbHostStatus = await readJson("tools/radiometric-ab/walkaround-ab-host-status.json");
 const walkaroundAbResults = await readJson("tools/radiometric-ab/walkaround-ab-results.json");
+assertWalkaroundStatusCapture(walkaroundAbHostStatus, {
+  label: "baseline",
+  selectedCases: null,
+  resultFile: "tools/radiometric-ab/walkaround-ab-results.json",
+  renderConfig: { width: "128", height: "128", spp: "16", qualityProfile: null },
+  caseVerdicts: { a8: "NEGLIGIBLE", sun: "PASS", glass: "PASS", glossy: "FINDING" },
+});
 if (walkaroundAbHostStatus.verdict !== "PASS-PARTIAL") {
   fail("VQ-WALKAROUND-RADIOMETRIC-AB host status must pin PASS-PARTIAL");
 }
@@ -2722,8 +2761,31 @@ if (walkaroundAbResults.glossy?.promotion?.defaultReady !== false) {
 if (walkaroundAbResults.glossy?.promotion?.blocker !== "ddgi-irradiance-cache-not-ggx-filtered-radiance") {
   fail("walkaround A/B GLOSSY finding must pin the GGX-filtered radiance blocker");
 }
+const walkaroundGlossySpp64Status = await readJson("tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json");
+const walkaroundGlossySpp64Results = await readJson("tools/radiometric-ab/walkaround-ab-glossy-spp64.json");
+assertWalkaroundStatusCapture(walkaroundGlossySpp64Status, {
+  label: "glossy-spp64",
+  selectedCases: "glossy",
+  resultFile: "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
+  renderConfig: { width: "128", height: "128", spp: "64", qualityProfile: "glossy-spp64" },
+  caseVerdicts: { glossy: "FINDING" },
+});
+if (walkaroundGlossySpp64Results.glossy?.verdict !== "FINDING") fail("walkaround glossy-spp64 GLOSSY verdict must stay FINDING");
+if (walkaroundGlossySpp64Results.glossy?.promotion?.defaultReady !== false) {
+  fail("walkaround glossy-spp64 GLOSSY finding must pin promotion.defaultReady=false");
+}
+if (walkaroundGlossySpp64Results.glossy?.promotion?.blocker !== "ddgi-irradiance-cache-not-ggx-filtered-radiance") {
+  fail("walkaround glossy-spp64 GLOSSY finding must pin the GGX-filtered radiance blocker");
+}
 const walkaroundAllSpp64Status = await readJson("tools/radiometric-ab/walkaround-ab-all-spp64-status.json");
 const walkaroundAllSpp64Results = await readJson("tools/radiometric-ab/walkaround-ab-all-spp64.json");
+assertWalkaroundStatusCapture(walkaroundAllSpp64Status, {
+  label: "all-spp64",
+  selectedCases: null,
+  resultFile: "tools/radiometric-ab/walkaround-ab-all-spp64.json",
+  renderConfig: { width: "128", height: "128", spp: "64", qualityProfile: "all-spp64" },
+  caseVerdicts: { a8: "NEGLIGIBLE", sun: "PASS", glass: "PASS", glossy: "FINDING" },
+});
 const walkaroundPromotionStatus = await readJson("tools/radiometric-ab/walkaround-ab-promotion-status.json");
 const walkaroundPromotionProvenance = walkaroundPromotionStatus.provenance;
 if (walkaroundPromotionProvenance == null || typeof walkaroundPromotionProvenance !== "object") {
