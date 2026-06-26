@@ -214,4 +214,10 @@ test('committed road unresolved rows carry enforced execution metadata', async (
   assert.match(checkerSource, /baseGoldenPath/);
   assert.match(checkerSource, /dznFullGoldenPath/);
   assert.match(checkerSource, /requiredExtensions must pin/);
+  assert.match(checkerSource, /REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST/);
+  assert.match(checkerSource, /REQUIRED_GLTF_TOPOLOGY_MANIFEST_ROWS/);
+  assert.match(checkerSource, /function assertGltfMaterialSweepManifestCoverage/);
+  assert.match(checkerSource, /function assertGltfTopologyManifestCoverage/);
+  assert.match(checkerSource, /material manifest must pin materialMapCount=18/);
+  assert.match(checkerSource, /manifest must pin samplesPerPixel=8/);
 });

@@ -202,6 +202,47 @@ const REQUIRED_GLTF_MATERIAL_TOPOLOGY_ARTIFACT_PATHS = [
   "packages/gltf-adapter/src/gltfAssetApi.test.ts",
 ];
 
+const REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST = {
+  kind: `vitrum-gltf-material-sweep-behavioral-goldens`,
+  backend: `pt-webgpu`,
+  adapter: `lavapipe`,
+  resolution: [64, 64],
+  samplesPerPixel: 8,
+  traceTier: `auto`,
+  fixture: `synthetic-material-sweep`,
+  label: `pt/gltf-material-sweep`,
+  goldenPath: `tools/reference-renders/gltf-material-sweep-behavioral/pt-gltf-material-sweep.png`,
+  dznStatusPath: `tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json`,
+  thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  materialMapCount: 18,
+  compareFullTierDznCommand: `npm run behavioral-gate:dzn -- --filter gltf-material-sweep --require-full-tier`,
+};
+
+const REQUIRED_GLTF_TOPOLOGY_MANIFEST_ROWS = [
+  {
+    kind: `vitrum-gltf-point-line-behavioral-goldens`,
+    id: `point-line-fallback`,
+    label: `pt/gltf-point-line-fallback`,
+    fixture: `synthetic-points-lines-loop-strip`,
+    sourceModes: [`POINTS`, `LINES`, `LINE_LOOP`, `LINE_STRIP`],
+    proof: `fallback-generated-mesh`,
+    goldenPath: `tools/reference-renders/gltf-point-line-behavioral/pt-gltf-point-line-fallback.png`,
+    manifestPath: `tools/reference-renders/gltf-point-line-behavioral/manifest.json`,
+    thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  },
+  {
+    kind: `vitrum-gltf-triangle-topology-behavioral-goldens`,
+    id: `triangle-strip-fan`,
+    label: `pt/gltf-triangle-strip-fan`,
+    fixture: `synthetic-triangle-strip-fan`,
+    sourceModes: [`TRIANGLE_STRIP`, `TRIANGLE_FAN`],
+    proof: `adapter-generated-triangle-list`,
+    goldenPath: `tools/reference-renders/gltf-triangle-topology-behavioral/pt-gltf-triangle-strip-fan.png`,
+    manifestPath: `tools/reference-renders/gltf-triangle-topology-behavioral/manifest.json`,
+    thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  },
+];
+
 const REQUIRED_WALKAROUND_BEHAVIORAL_ROWS = [
   {
     statusPath: "tools/behavioral-gate/behavioral-gate-dzn-wh-default-status.json",
@@ -818,6 +859,65 @@ function assertRealGltfManifestCoverage(manifest, expected) {
     if (!sameJson(asset.thresholds, required.thresholds)) {
       fail(expected.label + ` manifest assets[` + index + `] thresholds must pin ` + required.assetId);
     }
+  }
+}
+
+/**
+ * @param {unknown} manifest
+ */
+function assertGltfMaterialSweepManifestCoverage(manifest) {
+  if (manifest == null || typeof manifest !== `object`) fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest must be an object`);
+  const record = /** @type {{ kind?: unknown, backend?: unknown, adapter?: unknown, resolution?: unknown, samplesPerPixel?: unknown, traceTier?: unknown, fixture?: unknown, label?: unknown, goldenPath?: unknown, dznStatusPath?: unknown, thresholds?: unknown, materialMapCount?: unknown, commands?: { compareFullTierDzn?: unknown } }} */ (manifest);
+  if (record.kind !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.kind || record.backend !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.backend || record.adapter !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.adapter) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest must pin kind/backend/adapter`);
+  }
+  if (record.traceTier !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.traceTier || record.fixture !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.fixture || record.label !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.label) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest must pin traceTier/fixture/label`);
+  }
+  if (record.goldenPath !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.goldenPath || record.dznStatusPath !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.dznStatusPath) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest must pin goldenPath and dznStatusPath`);
+  }
+  if (!sameJson(record.resolution, REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.resolution)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest must pin 64x64 resolution`);
+  }
+  if (record.samplesPerPixel !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.samplesPerPixel) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest must pin samplesPerPixel=8`);
+  }
+  if (record.materialMapCount !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.materialMapCount) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest must pin materialMapCount=18`);
+  }
+  if (!sameJson(record.thresholds, REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.thresholds)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest thresholds must stay pinned`);
+  }
+  if (record.commands?.compareFullTierDzn !== REQUIRED_GLTF_MATERIAL_SWEEP_MANIFEST.compareFullTierDznCommand) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY material manifest must pin the dzn full-tier compare command`);
+  }
+}
+
+/**
+ * @param {unknown} manifest
+ * @param {{ kind: string, id: string, label: string, fixture: string, sourceModes: string[], proof: string, goldenPath: string, manifestPath: string, thresholds: { maxRmse: number, maxMeanAbs: number, maxAbs: number } }} expected
+ */
+function assertGltfTopologyManifestCoverage(manifest, expected) {
+  if (manifest == null || typeof manifest !== `object`) fail(`VQ-GLTF-MATERIAL-TOPOLOGY topology manifest must be an object`);
+  const record = /** @type {{ kind?: unknown, id?: unknown, label?: unknown, fixture?: unknown, sourceModes?: unknown, proof?: unknown, resolution?: unknown, samplesPerPixel?: unknown, goldenPath?: unknown, thresholds?: unknown }} */ (manifest);
+  if (record.kind !== expected.kind || record.id !== expected.id || record.label !== expected.label || record.fixture !== expected.fixture) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY ` + expected.id + ` manifest must pin kind/id/label/fixture`);
+  }
+  if (record.proof !== expected.proof || record.goldenPath !== expected.goldenPath) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY ` + expected.id + ` manifest must pin proof and goldenPath`);
+  }
+  if (!sameJson(record.sourceModes, expected.sourceModes)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY ` + expected.id + ` manifest sourceModes must stay pinned`);
+  }
+  if (!sameJson(record.resolution, [64, 64])) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY ` + expected.id + ` manifest must pin 64x64 resolution`);
+  }
+  if (record.samplesPerPixel !== 8) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY ` + expected.id + ` manifest must pin samplesPerPixel=8`);
+  }
+  if (!sameJson(record.thresholds, expected.thresholds)) {
+    fail(`VQ-GLTF-MATERIAL-TOPOLOGY ` + expected.id + ` manifest thresholds must stay pinned`);
   }
 }
 const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await Promise.all([
@@ -2783,6 +2883,11 @@ for (const needle of [
     fail(`VQ-GLTF-MATERIAL-TOPOLOGY gltfAssetApi test source is stale: missing ${needle}`);
   }
 }
+assertGltfMaterialSweepManifestCoverage(await readJson(`tools/reference-renders/gltf-material-sweep-behavioral/manifest.json`));
+for (const expected of REQUIRED_GLTF_TOPOLOGY_MANIFEST_ROWS) {
+  assertGltfTopologyManifestCoverage(await readJson(expected.manifestPath), expected);
+}
+
 const materialSweepStatus = await readJson("tools/behavioral-gate/behavioral-gate-dzn-gltf-material-sweep-status.json");
 if (materialSweepStatus.verdict !== "PASS" || materialSweepStatus.exitStatus !== 0) {
   fail("VQ-GLTF-MATERIAL-TOPOLOGY material sweep dzn status must pin PASS/exitStatus=0");
