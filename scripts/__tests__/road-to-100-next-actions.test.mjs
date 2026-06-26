@@ -220,4 +220,9 @@ test('committed road unresolved rows carry enforced execution metadata', async (
   assert.match(checkerSource, /function assertGltfTopologyManifestCoverage/);
   assert.match(checkerSource, /material manifest must pin materialMapCount=18/);
   assert.match(checkerSource, /manifest must pin samplesPerPixel=8/);
+  assert.match(checkerSource, /REQUIRED_GLTF_BROWSER_MANIFEST/);
+  assert.match(checkerSource, /REQUIRED_GLTF_BROWSER_MANIFEST_ROWS/);
+  assert.match(checkerSource, /function assertGltfBrowserManifestCoverage/);
+  assert.match(checkerSource, /manifest must pin samplesPerPixel=1/);
+  assert.match(checkerSource, /requiredHooks must pin/);
 });

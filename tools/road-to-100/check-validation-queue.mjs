@@ -180,6 +180,50 @@ const REQUIRED_GLTF_BROWSER_PROVENANCE_GOLDEN_FILES = [
     path: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png",
   },
 ];
+const REQUIRED_GLTF_BROWSER_MANIFEST = {
+  kind: `vitrum-browser-gltf-pt-webgl2-goldens`,
+  backend: `pt-webgl2`,
+  browserHarness: `tools/gltf-browser-proof/capture-pt-webgl2-real.mjs`,
+  resolution: [64, 64],
+  samplesPerPixel: 1,
+  updateCommand: `node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs --update-golden`,
+  checkCommand: `node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs`,
+  residualQueue: [`Browser PNG readback/golden capture for all three rows on a host that can read WebGL2 canvases.`],
+};
+
+const REQUIRED_GLTF_BROWSER_MANIFEST_ROWS = [
+  {
+    assetId: `box-textured-glb`,
+    label: `browser/pt-webgl2-gltf-real-box-textured`,
+    kind: `textured-glb`,
+    minTextures: 1,
+    requiredExtensions: [],
+    requiredHooks: [],
+    goldenPath: `tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png`,
+    thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  },
+  {
+    assetId: `cesium-milk-truck-draco`,
+    label: `browser/pt-webgl2-gltf-real-draco`,
+    kind: `draco`,
+    minTextures: 0,
+    requiredExtensions: [`KHR_draco_mesh_compression`],
+    requiredHooks: [`draco`],
+    goldenPath: `tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png`,
+    thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  },
+  {
+    assetId: `meshopt-cube-real`,
+    label: `browser/pt-webgl2-gltf-real-meshopt`,
+    kind: `meshopt`,
+    minTextures: 0,
+    requiredExtensions: [`KHR_meshopt_compression`],
+    requiredHooks: [`meshopt`],
+    goldenPath: `tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png`,
+    thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  },
+];
+
 const REQUIRED_GLTF_MATERIAL_TOPOLOGY_ARTIFACT_PATHS = [
   "tools/gltf-material-sweep/check-proofs.mjs",
   "tools/gltf-material-sweep/proofs.mjs",
@@ -749,6 +793,55 @@ function sameJson(actual, expected) {
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
+/**
+ * @param {unknown} manifest
+ */
+function assertGltfBrowserManifestCoverage(manifest) {
+  if (manifest == null || typeof manifest !== `object`) fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest must be an object`);
+  const record = /** @type {{ kind?: unknown, backend?: unknown, browserHarness?: unknown, resolution?: unknown, samplesPerPixel?: unknown, updateCommand?: unknown, checkCommand?: unknown, assets?: unknown, residualQueue?: unknown }} */ (manifest);
+  if (record.kind !== REQUIRED_GLTF_BROWSER_MANIFEST.kind || record.backend !== REQUIRED_GLTF_BROWSER_MANIFEST.backend) {
+    fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest must pin kind/backend`);
+  }
+  if (record.browserHarness !== REQUIRED_GLTF_BROWSER_MANIFEST.browserHarness) {
+    fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest must pin the browser capture harness path`);
+  }
+  if (!sameJson(record.resolution, REQUIRED_GLTF_BROWSER_MANIFEST.resolution)) {
+    fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest must pin 64x64 resolution`);
+  }
+  if (record.samplesPerPixel !== REQUIRED_GLTF_BROWSER_MANIFEST.samplesPerPixel) {
+    fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest must pin samplesPerPixel=1`);
+  }
+  if (record.updateCommand !== REQUIRED_GLTF_BROWSER_MANIFEST.updateCommand || record.checkCommand !== REQUIRED_GLTF_BROWSER_MANIFEST.checkCommand) {
+    fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest must pin browser update/check commands`);
+  }
+  if (!sameJson(record.residualQueue, REQUIRED_GLTF_BROWSER_MANIFEST.residualQueue)) {
+    fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest must pin the host-blocked residual queue`);
+  }
+  if (!Array.isArray(record.assets) || record.assets.length !== REQUIRED_GLTF_BROWSER_MANIFEST_ROWS.length) {
+    fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest must pin the three browser real-asset rows`);
+  }
+  for (const [index, expected] of REQUIRED_GLTF_BROWSER_MANIFEST_ROWS.entries()) {
+    const asset = /** @type {{ assetId?: unknown, label?: unknown, kind?: unknown, minTextures?: unknown, requiredExtensions?: unknown, requiredHooks?: unknown, goldenPath?: unknown, thresholds?: unknown }} */ (record.assets[index]);
+    if (asset == null || typeof asset !== `object`) {
+      fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest assets[` + index + `] must be an object`);
+    }
+    if (asset.assetId !== expected.assetId || asset.label !== expected.label || asset.kind !== expected.kind) {
+      fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest assets[` + index + `] must pin assetId/label/kind for ` + expected.assetId);
+    }
+    if (asset.minTextures !== expected.minTextures || asset.goldenPath !== expected.goldenPath) {
+      fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest assets[` + index + `] must pin minTextures and goldenPath for ` + expected.assetId);
+    }
+    if (!sameJson(asset.requiredExtensions ?? [], expected.requiredExtensions)) {
+      fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest assets[` + index + `] requiredExtensions must pin ` + expected.assetId);
+    }
+    if (!sameJson(asset.requiredHooks ?? [], expected.requiredHooks)) {
+      fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest assets[` + index + `] requiredHooks must pin ` + expected.assetId);
+    }
+    if (!sameJson(asset.thresholds, expected.thresholds)) {
+      fail(`VQ-GLTF-BROWSER-PTWEBGL2 manifest assets[` + index + `] thresholds must pin ` + expected.assetId);
+    }
+  }
+}
 /**
  * @param {unknown} artifact
  * @param {string} ownerId
@@ -2214,6 +2307,7 @@ if (gltfBrowserCanvasStatusArtifact.json?.["hostBlockClasses.0"] !== "browser-ca
 if (gltfBrowserCanvasStatusArtifact.json?.assetCount !== 3) {
   fail("VQ-GLTF-BROWSER-PTWEBGL2 canvas-first artifact must pin the three-asset real-glTF sweep");
 }
+assertGltfBrowserManifestCoverage(await readJson(`tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json`));
 const gltfBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-status.json");
 const gltfBrowserCanvasStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json");
 await assertGltfBrowserStatusProvenance(gltfBrowserStatus, "VQ-GLTF-BROWSER-PTWEBGL2 engine-first status");
