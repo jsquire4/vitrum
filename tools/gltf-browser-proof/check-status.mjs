@@ -13,6 +13,8 @@ const statusUrl = resolveInputUrl(readFlagValue("--status"), "./pt-webgl2-real-s
 const manifestUrl = resolveInputUrl(readFlagValue("--manifest"), "../reference-renders/gltf-real-browser-pt-webgl2/manifest.json");
 const requirePass = Deno.args.includes("--require-pass");
 
+const ALLOWED_CAPTURE_MODES = new Set(["engine-first", "engine-fallback", "canvas-first", "canvas-only"]);
+
 const REQUIRED_BROWSER_ASSETS = [
   {
     assetId: "box-textured-glb",
@@ -115,6 +117,7 @@ for (const asset of manifest.assets) {
 }
 
 if (status.verdict === "HOST-BLOCKED") {
+  assertCaptureModeConsistency(status, statusAssets);
   for (const row of statusAssets) {
     if (row.verdict !== "HOST-BLOCKED" && row.verdict !== "PASS") fail(`${row.assetId}: unexpected verdict ${row.verdict}`);
     assertNoStaleBrowserBuildWarnings(row);
@@ -272,6 +275,20 @@ function assertHostReadbackProbe(probe, label) {
   }
 }
 
+/** @param {Record<string, any>} status @param {Record<string, any>[]} statusAssets */
+function assertCaptureModeConsistency(status, statusAssets) {
+  if (status.captureMode != null) {
+    if (!ALLOWED_CAPTURE_MODES.has(status.captureMode)) {
+      fail(`top-level captureMode must be one of ${[...ALLOWED_CAPTURE_MODES].join(", ")}, got ${status.captureMode}`);
+    }
+    for (const row of statusAssets) {
+      if (row.verdict === "HOST-BLOCKED" && row.captureMode !== status.captureMode) {
+        fail(`${row.assetId}: row captureMode ${row.captureMode ?? "<missing>"} must match top-level captureMode ${status.captureMode}`);
+      }
+    }
+  }
+}
+
 /** @param {Record<string, any>} status */
 function assertTopLevelHostBlockClasses(status, statusAssets) {
   const expected = Array.from(new Set(
@@ -321,6 +338,9 @@ function assertHostBlockedPageDiagnostics(row) {
 
 /** @param {Record<string, any>} row */
 function assertHostBlockedCaptureAttempts(row) {
+  if (!ALLOWED_CAPTURE_MODES.has(row.captureMode)) {
+    fail(`${row.assetId}: HOST-BLOCKED row captureMode must be one of ${[...ALLOWED_CAPTURE_MODES].join(", ")}, got ${row.captureMode ?? "<missing>"}`);
+  }
   const attempts = row.captureAttempts;
   if (!Array.isArray(attempts) || attempts.length === 0) {
     fail(`${row.assetId}: HOST-BLOCKED status must include captureAttempts[]`);

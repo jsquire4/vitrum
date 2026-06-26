@@ -81,6 +81,10 @@ test('gltf browser capture harness orders engine and browser readbacks by mode',
   assert.match(source, /String\(rawValue \?\? 'engine-first'\)/);
   assert.match(source, /normalized === 'canvas-only'/);
   assert.match(source, /normalized === 'canvas-first'/);
+  const checker = await readFile(checkScript, 'utf8');
+  assert.match(checker, /ALLOWED_CAPTURE_MODES/);
+  assert.match(checker, /assertCaptureModeConsistency/);
+  assert.match(checker, /row captureMode/);
   assert.match(source, /isEngineReadbackHostBlock\(error\)/);
   assert.match(source, /hostBlockHint = 'engine-readback'/);
   assert.match(source, /snapshotPageDiagnostics\(page, 'pre-capture'\)/);
@@ -189,6 +193,40 @@ test('gltf browser proof package scripts check both committed host-block artifac
   assert.match(check, /pt-webgl2-real-canvas-first-status\.json/);
   assert.match(required, /tools\/gltf-browser-proof\/check-status\.mjs --require-pass/);
   assert.match(required, /pt-webgl2-real-canvas-first-status\.json --require-pass/);
+});
+
+test('gltf browser proof checker rejects top-level and row captureMode drift', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'vitrum-gltf-browser-proof-'));
+  const statusPath = join(dir, 'host-blocked-capture-mode-drift.json');
+  await writeFile(statusPath, `${JSON.stringify({
+    generatedAt: '2026-06-22T00:00:00.000Z',
+    harness: 'gltf-browser-proof:pt-webgl2-real',
+    verdict: 'HOST-BLOCKED',
+    backend: 'pt-webgl2',
+    captureMode: 'engine-first',
+    hostBlockClasses: ['browser-canvas-readback-timeout'],
+    assets: [
+      canvasFirstHostBlockedRow('box-textured-glb', 'textured-glb', {
+        textureDecodeReport: { mapCount: 1 },
+      }),
+      canvasFirstHostBlockedRow('cesium-milk-truck-draco', 'draco', {
+        extensionsUsed: ['KHR_draco_mesh_compression'],
+        extensionsRequired: ['KHR_draco_mesh_compression'],
+        browserDecodeHooks: { requested: ['draco'], draco: true, meshopt: false },
+      }),
+      canvasFirstHostBlockedRow('meshopt-cube-real', 'meshopt', {
+        extensionsUsed: ['KHR_meshopt_compression'],
+        extensionsRequired: ['KHR_meshopt_compression'],
+        browserDecodeHooks: { requested: ['meshopt'], draco: false, meshopt: true },
+      }),
+    ],
+    assetCount: 3,
+  }, null, 2)}\n`);
+
+  const result = await runChecker(['--status', pathToFileURL(statusPath).href]);
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /box-textured-glb: row captureMode canvas-first must match top-level captureMode engine-first/);
 });
 
 test('gltf browser proof checker requires structured host-blocked capture attempts', async () => {
