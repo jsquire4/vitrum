@@ -136,6 +136,20 @@ const REQUIRED_GLTF_REAL_ARTIFACT_PATHS = [
   "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-meshopt.png",
 ];
 
+const REQUIRED_GLTF_BROWSER_PROVENANCE_GOLDEN_FILES = [
+  {
+    assetId: "box-textured-glb",
+    path: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png",
+  },
+  {
+    assetId: "cesium-milk-truck-draco",
+    path: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png",
+  },
+  {
+    assetId: "meshopt-cube-real",
+    path: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png",
+  },
+];
 const REQUIRED_GLTF_MATERIAL_TOPOLOGY_ARTIFACT_PATHS = [
   "tools/gltf-material-sweep/check-proofs.mjs",
   "tools/gltf-material-sweep/proofs.mjs",
@@ -436,6 +450,59 @@ async function assertPngIdentity(artifact, ownerId, path, bytes) {
   const actualSha256 = await sha256Hex(bytes);
   if (actualSha256 !== expectedSha256) {
     fail(`${ownerId}: ${path} PNG SHA-256 ${actualSha256} differs from artifact ${expectedSha256}`);
+  }
+}
+
+/**
+ * @param {string} path
+ * @param {unknown} expectedSha256
+ * @param {string} label
+ */
+async function assertFileSha256(path, expectedSha256, label) {
+  if (typeof expectedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    fail(`${label} must be a lowercase SHA-256 digest`);
+  }
+  const actualSha256 = await sha256Hex(await Deno.readFile(repoUrl(path)));
+  if (actualSha256 !== expectedSha256) {
+    fail(`${label} ${expectedSha256} differs from current ${path} SHA-256 ${actualSha256}`);
+  }
+}
+
+/**
+ * @param {unknown} status
+ * @param {string} label
+ */
+async function assertGltfBrowserStatusProvenance(status, label) {
+  if (status == null || typeof status !== "object") fail(`${label} must be an object`);
+  const statusRecord = /** @type {{ provenance?: unknown }} */ (status);
+  const provenance = statusRecord.provenance;
+  if (provenance == null || typeof provenance !== "object") {
+    fail(`${label} must include status provenance`);
+  }
+  const record = /** @type {{ schema?: unknown, checkerPath?: unknown, checkerSha256?: unknown, captureHarnessPath?: unknown, captureHarnessSha256?: unknown, manifestPath?: unknown, manifestSha256?: unknown, goldenFiles?: unknown }} */ (provenance);
+  if (
+    record.schema !== "vitrum.gltf-browser-proof.status-provenance.v1" ||
+    record.checkerPath !== "tools/gltf-browser-proof/check-status.mjs" ||
+    record.captureHarnessPath !== "tools/gltf-browser-proof/capture-pt-webgl2-real.mjs" ||
+    record.manifestPath !== "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json"
+  ) {
+    fail(`${label} provenance must pin schema/checker/capture-harness/manifest paths`);
+  }
+  await assertFileSha256(record.checkerPath, record.checkerSha256, `${label} provenance checkerSha256`);
+  await assertFileSha256(record.captureHarnessPath, record.captureHarnessSha256, `${label} provenance captureHarnessSha256`);
+  await assertFileSha256(record.manifestPath, record.manifestSha256, `${label} provenance manifestSha256`);
+  const goldenFiles = record.goldenFiles;
+  if (!Array.isArray(goldenFiles) || goldenFiles.length !== REQUIRED_GLTF_BROWSER_PROVENANCE_GOLDEN_FILES.length) {
+    fail(`${label} provenance must pin every browser proof golden path`);
+  }
+  for (const [index, expected] of REQUIRED_GLTF_BROWSER_PROVENANCE_GOLDEN_FILES.entries()) {
+    const actual = /** @type {{ assetId?: unknown, path?: unknown, exists?: unknown, sha256?: unknown }} */ (goldenFiles[index]);
+    if (actual == null || typeof actual !== "object" || actual.assetId !== expected.assetId || actual.path !== expected.path) {
+      fail(`${label} provenance goldenFiles[${index}] must pin ${expected.assetId}`);
+    }
+    if (actual.exists !== false || actual.sha256 !== null) {
+      fail(`${label} provenance goldenFiles[${index}] must preserve the current host-blocked missing-golden boundary`);
+    }
   }
 }
 
@@ -1790,6 +1857,8 @@ if (gltfBrowserCanvasStatusArtifact.json?.assetCount !== 3) {
 }
 const gltfBrowserStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-status.json");
 const gltfBrowserCanvasStatus = await readJson("tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json");
+await assertGltfBrowserStatusProvenance(gltfBrowserStatus, "VQ-GLTF-BROWSER-PTWEBGL2 engine-first status");
+await assertGltfBrowserStatusProvenance(gltfBrowserCanvasStatus, "VQ-GLTF-BROWSER-PTWEBGL2 canvas-first status");
 if (gltfBrowserStatus.verdict !== "HOST-BLOCKED" || gltfBrowserStatus.captureMode !== "engine-first") {
   fail("VQ-GLTF-BROWSER-PTWEBGL2 engine-first status must remain a bounded HOST-BLOCKED artifact");
 }
