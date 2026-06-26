@@ -105,6 +105,10 @@ test('Road checker pins radiometric promotion provenance blocks', async () => {
   assert.match(validationQueueChecker, /assertFileSha256/);
   assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT promotion provenance wrapperSha256/);
   assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT promotion provenance sourceStatusSha256/);
+  assert.match(validationQueueChecker, /function assertPtRadiometricHostStatusCapture/);
+  assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT host status must pin the native WebGPU PT A\/B command/);
+  assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT host status provenance resultSha256/);
+  assert.match(validationQueueChecker, /vitrum\.pt-radiometric-ab\.status-provenance\.v1/);
   assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance wrapperSha256/);
   assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceStatusSha256/);
   assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceResultSha256/);

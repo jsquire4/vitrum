@@ -2529,6 +2529,63 @@ const expectedPtRadiometricCases = [
   ["restir-pt", "tools/radiometric-ab/ab-restir-pt.mjs", "tools/radiometric-ab/results-restir-pt.json"],
   ["sobol", "tools/radiometric-ab/ab-sobol.mjs", "tools/radiometric-ab/results-sobol.json"],
 ];
+/**
+ * @param {any} status
+ * @param {string[][]} expectedCases
+ */
+async function assertPtRadiometricHostStatusCapture(status, expectedCases) {
+  const expectedIds = expectedCases.map((row) => row[0]);
+  const expectedResultFiles = expectedCases.map((row) => row[2]);
+  if (status.harness !== "pt-radiometric-ab") fail("VQ-RADIOMETRIC-PT host status must pin harness=pt-radiometric-ab");
+  if (status.command !== "deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write tools/radiometric-ab/ab-*.mjs") {
+    fail("VQ-RADIOMETRIC-PT host status must pin the native WebGPU PT A/B command");
+  }
+  if (status.timeoutMs !== 900000 || status.icd !== null) {
+    fail("VQ-RADIOMETRIC-PT host status must pin timeoutMs=900000 and icd=null");
+  }
+  if (JSON.stringify(status.selectedCases) !== JSON.stringify(expectedIds)) {
+    fail("VQ-RADIOMETRIC-PT host status must preserve the complete four-case selectedCases list");
+  }
+  if (JSON.stringify(status.preservedResultFiles) !== JSON.stringify(expectedResultFiles)) {
+    fail("VQ-RADIOMETRIC-PT host status must preserve all four result files");
+  }
+  if (!Array.isArray(status.nextSteps) || status.nextSteps.length !== 0) {
+    fail("VQ-RADIOMETRIC-PT full PASS host status must not carry host-blocked nextSteps");
+  }
+  const provenance = status.provenance;
+  if (
+    provenance == null ||
+    provenance.schema !== "vitrum.pt-radiometric-ab.status-provenance.v1" ||
+    provenance.wrapperPath !== "tools/radiometric-ab/run-pt-ab.mjs" ||
+    provenance.helperPath !== "tools/radiometric-ab/resultProvenance.mjs" ||
+    provenance.statusPath !== "tools/radiometric-ab/pt-ab-host-status.json" ||
+    provenance.generatedBy !== "vitrum pt radiometric A/B wrapper"
+  ) {
+    fail("VQ-RADIOMETRIC-PT host status must pin status-provenance metadata");
+  }
+  for (const [field, sourcePath] of [
+    ["wrapperSha256", "tools/radiometric-ab/run-pt-ab.mjs"],
+    ["helperSha256", "tools/radiometric-ab/resultProvenance.mjs"],
+  ]) {
+    const sha256 = provenance[field];
+    if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) {
+      fail(`VQ-RADIOMETRIC-PT host status provenance ${field} must be a lowercase SHA-256 digest`);
+    }
+    await assertFileSha256(sourcePath, sha256, `VQ-RADIOMETRIC-PT host status provenance ${field}`);
+  }
+  if (JSON.stringify(provenance.resultPaths ?? []) !== JSON.stringify(expectedResultFiles)) {
+    fail("VQ-RADIOMETRIC-PT host status provenance must pin every preserved result path");
+  }
+  assertSha256DigestRows(
+    provenance.resultSha256,
+    expectedResultFiles,
+    "VQ-RADIOMETRIC-PT host status provenance resultSha256",
+  );
+  for (const row of /** @type {Array<{ path: string, sha256: unknown }>} */ (provenance.resultSha256)) {
+    await assertFileSha256(row.path, row.sha256, "VQ-RADIOMETRIC-PT host status provenance resultSha256 " + row.path);
+  }
+}
+await assertPtRadiometricHostStatusCapture(ptRadiometricHostStatus, expectedPtRadiometricCases);
 if (JSON.stringify(ptRadiometricHostStatus.selectedCases) !== JSON.stringify(expectedPtRadiometricCases.map((row) => row[0]))) {
   fail("VQ-RADIOMETRIC-PT host status must preserve the complete four-case selectedCases list");
 }
