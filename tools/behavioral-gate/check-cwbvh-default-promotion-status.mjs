@@ -49,6 +49,22 @@ function requireFinite(value, label) {
   return n;
 }
 
+/** @param {number[]} values */
+function mean(values) {
+  if (values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+/** @param {number[]} values */
+function median(values) {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
 /** @param {unknown} value */
 function isCompletedDznRepeatRecord(value) {
   if (value == null || typeof value !== "object") return false;
@@ -264,6 +280,75 @@ async function assertRepeatCaptureStatus() {
   ) {
     fail(`${REPEAT_RECORDS}: must preserve the completed five-sample dzn repeat records plus one warmup per shard`);
   }
+  const recomputed = summarizeRepeatRecords(allRecords, status.warmupDiscardedPerWorkload);
+  if (JSON.stringify(status.workloads) !== JSON.stringify(recomputed.workloads)) {
+    fail(`${REPEAT_STATUS}: workloads must match ${REPEAT_RECORDS}`);
+  }
+  if (
+    status.sampleCountPerWorkload !== recomputed.sampleCountPerWorkload ||
+    status.allWorkloadsHaveAnySamples !== recomputed.allWorkloadsHaveAnySamples ||
+    status.allWorkloadsHaveRequiredRepeats !== recomputed.allWorkloadsHaveRequiredRepeats ||
+    status.classification !== recomputed.classification
+  ) {
+    fail(`${REPEAT_STATUS}: aggregate repeat fields must match ${REPEAT_RECORDS}`);
+  }
+}
+
+/**
+ * @param {Array<Record<string, any>>} records
+ * @param {number} warmupCount
+ */
+function summarizeRepeatRecords(records, warmupCount) {
+  const expectedLabels = STATUS_FILES.flatMap((entry) => entry.labels);
+  /** @type {Map<string, number[]>} */
+  const byLabel = new Map(expectedLabels.map((label) => [label, []]));
+  /** @type {Map<string, number>} */
+  const runCountByLabel = new Map(expectedLabels.map((label) => [label, 0]));
+  for (const record of records) {
+    const expected = STATUS_FILES.find((entry) => entry.filter === record?.filter);
+    if (expected == null) fail(`${REPEAT_RECORDS}: unexpected filter ${record?.filter}`);
+    const recordStatus = record.status;
+    assertStatusHeader(recordStatus, expected);
+    if (recordStatus.timeoutMs !== 900000) fail(`${REPEAT_RECORDS}: ${record.filter} timeoutMs must be 900000`);
+    const configs = /** @type {Array<Record<string, any>>} */ (recordStatus.configs ?? []);
+    for (const label of expected.labels) {
+      const row = configs.find((entry) => entry.label === label);
+      if (row == null) fail(`${REPEAT_RECORDS}: ${record.filter} missing ${label}`);
+      const { ratio } = assertCwbvhRow(row, REPEAT_RECORDS);
+      runCountByLabel.set(label, (runCountByLabel.get(label) ?? 0) + 1);
+      if (record.runIndex >= warmupCount) byLabel.get(label)?.push(ratio);
+    }
+  }
+  const workloads = expectedLabels.map((label) => {
+    const ratios = byLabel.get(label) ?? [];
+    return {
+      label,
+      totalRunCount: runCountByLabel.get(label) ?? 0,
+      sampleCount: ratios.length,
+      ratios,
+      minRatio: ratios.length ? Math.min(...ratios) : null,
+      medianRatio: median(ratios),
+      meanRatio: mean(ratios),
+      maxRatio: ratios.length ? Math.max(...ratios) : null,
+      fastSampleCount: ratios.filter((ratio) => ratio < MIN_FAST_RATIO).length,
+      slowOrNeutralSampleCount: ratios.filter((ratio) => ratio >= MIN_SLOW_OR_NEUTRAL_RATIO).length,
+    };
+  });
+  const sampleCountPerWorkload = Math.min(...workloads.map((row) => row.sampleCount));
+  const allWorkloadsHaveAnySamples = sampleCountPerWorkload > 0;
+  const allWorkloadsHaveRequiredRepeats = sampleCountPerWorkload >= MIN_REPEAT_COUNT_PER_WORKLOAD;
+  const allMedianFast = allWorkloadsHaveAnySamples && workloads.every((row) => Number(row.medianRatio) < MIN_FAST_RATIO);
+  const allMedianSlowOrNeutral = allWorkloadsHaveAnySamples && workloads.every((row) => Number(row.medianRatio) >= MIN_SLOW_OR_NEUTRAL_RATIO);
+  const classification = !allWorkloadsHaveAnySamples
+    ? "insufficient-samples"
+    : (allMedianFast ? "uniform-faster" : (allMedianSlowOrNeutral ? "uniform-slower" : "mixed"));
+  return {
+    workloads,
+    sampleCountPerWorkload,
+    allWorkloadsHaveAnySamples,
+    allWorkloadsHaveRequiredRepeats,
+    classification,
+  };
 }
 
 const source = await Deno.readTextFile(SOURCE_GUARD);

@@ -158,6 +158,34 @@ test('CWBVH default-promotion summary cites the completed repeat evidence withou
   assert.match(summary.repeatEvidence.residual, /one material-lobe-map fast outlier/);
 });
 
+test('CWBVH committed repeat status is derived from raw repeat records', async () => {
+  const repeatStatus = JSON.parse(await readFile(
+    resolve(repoRoot, 'tools', 'behavioral-gate', 'cwbvh-default-promotion-repeat-status.json'),
+    'utf8',
+  ));
+  const repeatRecords = JSON.parse(await readFile(
+    resolve(repoRoot, 'tools', 'behavioral-gate', 'cwbvh-default-promotion-repeat-records.json'),
+    'utf8',
+  ));
+  const recomputed = summarizeCwbvhRepeatEvidence(repeatRecords.records, {
+    warmupCount: repeatStatus.warmupDiscardedPerWorkload,
+  });
+
+  assert.deepEqual(repeatStatus.workloads, recomputed.workloads);
+  assert.equal(repeatStatus.classification, recomputed.classification);
+  assert.equal(repeatStatus.sampleCountPerWorkload, recomputed.sampleCountPerWorkload);
+
+  const tamperedRecords = structuredClone(repeatRecords.records);
+  const sample = tamperedRecords.find((record) => record.phase === 'sample' && record.filter === 'cwbvh-broader');
+  const row = sample.status.configs.find((entry) => entry.label === 'pt/cwbvh-broader-material-lobe-maps');
+  row.cwbvhRenderMsRatio = 0.5;
+  const tamperedSummary = summarizeCwbvhRepeatEvidence(tamperedRecords, {
+    warmupCount: repeatStatus.warmupDiscardedPerWorkload,
+  });
+
+  assert.notDeepEqual(tamperedSummary.workloads, repeatStatus.workloads);
+});
+
 function makeRecords(ratioFor, runCount) {
   const records = [];
   for (let runIndex = 0; runIndex < runCount; runIndex += 1) {
