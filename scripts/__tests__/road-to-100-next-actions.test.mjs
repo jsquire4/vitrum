@@ -197,4 +197,16 @@ test('committed road unresolved rows carry enforced execution metadata', async (
   assert.match(checkerSource, /function assertUnresolvedExecutionMetadata/);
   assert.match(checkerSource, /assertUnresolvedExecutionMetadata\(row\)/);
   assert.match(checkerSource, /contains unexpected id/);
+
+  const pngArtifacts = queue.validationQueue.flatMap((row) => row.proofArtifacts ?? [])
+    .filter((artifact) => artifact.type === 'png' || artifact.path?.endsWith?.('.png'));
+  assert.ok(pngArtifacts.length >= 40, 'Road validation queue should pin the committed PNG proof set');
+  for (const artifact of pngArtifacts) {
+    assert.match(artifact.sha256, /^[0-9a-f]{64}$/, artifact.path + ' should pin sha256');
+    assert.ok(Number.isInteger(artifact.width) && artifact.width > 0, artifact.path + ' should pin width');
+    assert.ok(Number.isInteger(artifact.height) && artifact.height > 0, artifact.path + ' should pin height');
+  }
+  assert.match(checkerSource, /function assertPngIdentity/);
+  assert.match(checkerSource, /sha256Hex/);
+  assert.match(checkerSource, /PNG SHA-256/);
 });

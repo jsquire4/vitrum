@@ -361,6 +361,51 @@ async function assertFile(path) {
   if (stat.size <= 0) fail(`${path} is empty`);
 }
 
+/** @param {Uint8Array} bytes @param {number} offset */
+function readPngU32(bytes, offset) {
+  return bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3];
+}
+
+/** @param {Uint8Array} bytes */
+async function sha256Hex(bytes) {
+  const owned = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(owned).set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", owned);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * @param {{ sha256?: unknown, width?: unknown, height?: unknown }} artifact
+ * @param {string} ownerId
+ * @param {string} path
+ * @param {Uint8Array} bytes
+ */
+async function assertPngIdentity(artifact, ownerId, path, bytes) {
+  const expectedWidth = Number(artifact.width);
+  const expectedHeight = Number(artifact.height);
+  const expectedSha256 = artifact.sha256;
+  if (!Number.isInteger(expectedWidth) || expectedWidth <= 0) {
+    fail(`${ownerId}: ${path} PNG artifact must declare a positive integer width`);
+  }
+  if (!Number.isInteger(expectedHeight) || expectedHeight <= 0) {
+    fail(`${ownerId}: ${path} PNG artifact must declare a positive integer height`);
+  }
+  if (typeof expectedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    fail(`${ownerId}: ${path} PNG artifact must declare a lowercase SHA-256 digest`);
+  }
+  const width = readPngU32(bytes, 16);
+  const height = readPngU32(bytes, 20);
+  if (width !== expectedWidth || height !== expectedHeight) {
+    fail(`${ownerId}: ${path} PNG dimensions ${width}x${height} differ from artifact ${expectedWidth}x${expectedHeight}`);
+  }
+  const actualSha256 = await sha256Hex(bytes);
+  if (actualSha256 !== expectedSha256) {
+    fail(`${ownerId}: ${path} PNG SHA-256 ${actualSha256} differs from artifact ${expectedSha256}`);
+  }
+}
+
 /**
  * @param {unknown} value
  * @param {string} label
@@ -487,26 +532,29 @@ function getJsonPath(object, path) {
  */
 async function assertArtifact(artifact, ownerId) {
   if (artifact == null || typeof artifact !== "object") fail(`${ownerId}: artifact must be an object`);
-  const path = artifact.path;
+  const artifactRecord = /** @type {{ path?: unknown, type?: unknown, json?: unknown, sha256?: unknown, width?: unknown, height?: unknown }} */ (artifact);
+  const path = artifactRecord.path;
   assertNonEmptyString(path, `${ownerId}: artifact.path`);
-  await assertFile(path);
+  const artifactPath = /** @type {string} */ (path);
+  await assertFile(artifactPath);
 
-  if (artifact.type === "png" || String(path).endsWith(".png")) {
-    const bytes = await Deno.readFile(repoUrl(path));
-    if (bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
-      fail(`${ownerId}: ${path} is not a PNG`);
+  if (artifactRecord.type === "png" || artifactPath.endsWith(".png")) {
+    const bytes = await Deno.readFile(repoUrl(artifactPath));
+    if (bytes.length <= 24 || bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+      fail(`${ownerId}: ${artifactPath} is not a PNG`);
     }
+    await assertPngIdentity(artifactRecord, ownerId, artifactPath, bytes);
   }
 
-  if (artifact.json != null) {
-    if (typeof artifact.json !== "object" || Array.isArray(artifact.json)) {
-      fail(`${ownerId}: ${path} json expectations must be an object`);
+  if (artifactRecord.json != null) {
+    if (typeof artifactRecord.json !== "object" || Array.isArray(artifactRecord.json)) {
+      fail(`${ownerId}: ${artifactPath} json expectations must be an object`);
     }
-    const json = await readJson(path);
-    for (const [jsonPath, expected] of Object.entries(artifact.json)) {
+    const json = await readJson(artifactPath);
+    for (const [jsonPath, expected] of Object.entries(artifactRecord.json)) {
       const actual = getJsonPath(json, jsonPath);
       if (actual !== expected) {
-        fail(`${ownerId}: ${path} ${jsonPath} expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
+        fail(`${ownerId}: ${artifactPath} ${jsonPath} expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
       }
     }
   }
