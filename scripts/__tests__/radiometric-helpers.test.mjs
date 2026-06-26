@@ -12,6 +12,7 @@ const ptRunnerPath = join(repoRoot, 'tools', 'radiometric-ab', 'run-pt-ab.mjs');
 const ptBdptHarnessPath = join(repoRoot, 'tools', 'radiometric-ab', 'ab-bdpt.mjs');
 const radiometricProofsPath = join(repoRoot, 'tools', 'radiometric-ab', 'proofs.mjs');
 const radiometricCheckerPath = join(repoRoot, 'tools', 'radiometric-ab', 'check-results.mjs');
+const radiometricProvenancePath = join(repoRoot, 'tools', 'radiometric-ab', 'resultProvenance.mjs');
 const ptWebgpuIndexPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'index.ts');
 const ptWebgpuKernelPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'wgsl', 'pathTrace', 'kernel.wgsl.ts');
 
@@ -98,6 +99,10 @@ test('pt radiometric wrapper refreshes promotion status after complete recapture
   assert.match(runner, /safeDefaultProofs/);
   assert.match(runner, /researchFindings/);
   assert.match(runner, /sourceStatuses: SOURCE_STATUS_PATHS/);
+  assert.match(runner, /ptRadiometricStatusProvenance/);
+  assert.match(runner, /ptRadiometricPromotionProvenance/);
+  assert.match(runner, /status\.provenance = await ptRadiometricStatusProvenance/);
+  assert.match(runner, /provenance: await ptRadiometricPromotionProvenance/);
 });
 
 test('pt radiometric wrapper fails closed on missing or incomplete result artifacts', async () => {
@@ -114,6 +119,7 @@ test('pt BDPT radiometric proof keeps multi-vertex mode research-only', async ()
   const harness = await readFile(ptBdptHarnessPath, 'utf8');
   const proofs = await readFile(radiometricProofsPath, 'utf8');
   const checker = await readFile(radiometricCheckerPath, 'utf8');
+  const provenance = await readFile(radiometricProvenancePath, 'utf8');
   const ptWebgpuIndex = await readFile(ptWebgpuIndexPath, 'utf8');
   const ptWebgpuKernel = await readFile(ptWebgpuKernelPath, 'utf8');
 
@@ -137,6 +143,15 @@ test('pt BDPT radiometric proof keeps multi-vertex mode research-only', async ()
   assert.match(checker, /source warning missing/);
   assert.match(checker, /shader source missing/);
   assert.match(checker, /promotionReady: false/);
+  assert.match(checker, /ptRadiometricStatusProvenance/);
+  assert.match(checker, /ptRadiometricPromotionProvenance/);
+  assert.match(checker, /pt-radiometric-ab: status provenance differs from current wrapper\/result identity/);
+  assert.match(checker, /pt-radiometric-promotion: provenance differs from current source artifact identity/);
+
+  assert.match(provenance, /PT_RADIOMETRIC_STATUS_PROVENANCE_SCHEMA/);
+  assert.match(provenance, /PT_RADIOMETRIC_PROMOTION_PROVENANCE_SCHEMA/);
+  assert.match(provenance, /ptRadiometricStatusProvenance/);
+  assert.match(provenance, /ptRadiometricPromotionProvenance/);
 
   assert.match(ptWebgpuIndex, /bdptOptions\.maxLightBounces > 1 activates the multi-vertex BDPT research path/);
   assert.match(ptWebgpuIndex, /promotionReady: false/);
