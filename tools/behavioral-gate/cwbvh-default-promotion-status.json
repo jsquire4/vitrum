@@ -71,15 +71,15 @@
   "provenance": {
     "schema": "vitrum.cwbvh-default-promotion.provenance.v1",
     "checkerPath": "tools/behavioral-gate/check-cwbvh-default-promotion-status.mjs",
-    "checkerSha256": "d0e8f318c988eb908f005af2ae7d1f063d5b0015ba639a703602fb35e2f97a11",
+    "checkerSha256": "a15845b2871ea2fdc3a0add18d30c405ed9123305d1c45861af22ebce9ab15ba",
     "sourceGuardPath": "packages/pt-webgpu/src/index.ts",
     "sourceGuardSha256": "e0e1075e58f80d434dfdf2c7a8edf2d13eab81417e5f863a79c5e7fe99b26f89",
     "repeatHarnessPath": "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
-    "repeatHarnessSha256": "6e7676adc738a3ac07055ccfb4f42b09eb4e48936e60802a9839f32ea267a929",
+    "repeatHarnessSha256": "d83eea69b1d7d0d0c651e39cae010350d41e3a659f762d032505a2d5008cbc87",
     "repeatStatusPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json",
-    "repeatStatusSha256": "c8b9e59432be6bf980b8a0a72b3cb1c2b3fbf76849624e27574430e62fcf8e2c",
+    "repeatStatusSha256": "59daadd9544d4ad75af3c9488549b7abc54f45c9ecf7621ee09a838c9a608d33",
     "repeatRecordsPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json",
-    "repeatRecordsSha256": "3088faa50564d25c58c7d2491639853f8e89519536cfad8bae0c55fdb7b98c6d",
+    "repeatRecordsSha256": "f5028c0081fb177bf9a483928fd5db4f6d156756af939ad512f44b2c7c787f7e",
     "sourceStatuses": [
       {
         "path": "tools/behavioral-gate/behavioral-gate-dzn-cwbvh-binary-parity-status.json",

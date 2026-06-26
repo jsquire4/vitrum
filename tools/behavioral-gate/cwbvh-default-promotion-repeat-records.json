@@ -1700,6 +1700,6 @@
   "provenance": {
     "schema": "vitrum.cwbvh-default-promotion.repeat-records-provenance.v1",
     "harnessPath": "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
-    "harnessSha256": "6e7676adc738a3ac07055ccfb4f42b09eb4e48936e60802a9839f32ea267a929"
+    "harnessSha256": "d83eea69b1d7d0d0c651e39cae010350d41e3a659f762d032505a2d5008cbc87"
   }
 }

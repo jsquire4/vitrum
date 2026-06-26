@@ -75,6 +75,19 @@ test('CWBVH repeat evidence reports insufficient samples when only warmup rows e
   assert.equal(summary.allWorkloadsHaveRequiredRepeats, false);
 });
 
+test('CWBVH repeat evidence rejects phase/run-index mismatches', () => {
+  const records = makeRecords(() => ({ ratio: 0.8 }), MIN_REPEAT_COUNT_PER_WORKLOAD + 1);
+  records[0].phase = 'sample';
+
+  const summary = summarizeCwbvhRepeatEvidence(records, { warmupCount: 1 });
+
+  assert.equal(summary.verdict, 'PASS-PARTIAL');
+  assert.equal(summary.promotion.defaultReady, false);
+  assert.equal(summary.failures.length, 1);
+  assert.equal(summary.failures[0].reason, 'phase-mismatch');
+  assert.equal(summary.failures[0].expectedPhase, 'warmup');
+});
+
 test('CWBVH repeat evidence records invalid shard rows as failures', () => {
   const records = makeRecords(() => ({ ratio: 0.8 }), MIN_REPEAT_COUNT_PER_WORKLOAD + 1);
   records[0].status.verdict = 'FAIL';
@@ -198,6 +211,11 @@ test('Road checker pins CWBVH promotion provenance blocks', async () => {
   assert.match(validationQueueChecker, /cwbvhRepeatStatusProvenance/);
   assert.match(validationQueueChecker, /cwbvhRepeatRecordsProvenance/);
   assert.match(validationQueueChecker, /assertSha256DigestRows/);
+  const checker = await readFile(
+    resolve(repoRoot, 'tools', 'behavioral-gate', 'check-cwbvh-default-promotion-status.mjs'),
+    'utf8',
+  );
+  assert.match(checker, /runIndex .* must be phase/);
 });
 function makeRecords(ratioFor, runCount) {
   const records = [];

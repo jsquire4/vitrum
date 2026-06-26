@@ -54,6 +54,21 @@ export function summarizeCwbvhRepeatEvidence(records, options = {}) {
       failures.push({ runIndex, filter, reason: 'unexpected-filter' });
       continue;
     }
+    if (!Number.isInteger(runIndex) || runIndex < 0) {
+      failures.push({ runIndex, filter, reason: 'invalid-run-index' });
+      continue;
+    }
+    const expectedPhase = runIndex < warmupCount ? 'warmup' : 'sample';
+    if (record?.phase !== expectedPhase) {
+      failures.push({
+        runIndex,
+        filter,
+        phase: record?.phase ?? null,
+        expectedPhase,
+        reason: 'phase-mismatch',
+      });
+      continue;
+    }
     if (status?.verdict !== 'PASS' || status?.goldenVariant !== 'dzn-full' || status?.summary?.failures !== 0) {
       failures.push({ runIndex, filter, reason: 'status-not-pass' });
       continue;

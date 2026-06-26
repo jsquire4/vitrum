@@ -157,6 +157,8 @@ function assertRepeatHarness(source) {
     "cwbvh-default-promotion-repeat-records",
     "campaignStatus",
     "insufficient-samples",
+    "phase-mismatch",
+    "invalid-run-index",
     "DEFAULT_REPEAT_DZN_TIMEOUT_MS = 900_000",
     "createHash('sha256')",
     "repeat-records-provenance.v1",
@@ -343,6 +345,16 @@ async function assertRepeatCaptureStatus() {
   ) {
     fail(`${REPEAT_RECORDS}: must preserve the completed five-sample dzn repeat records plus one warmup per shard`);
   }
+  for (const record of allRecords) {
+    const runIndex = Number(record?.runIndex);
+    if (!Number.isInteger(runIndex) || runIndex < 0) {
+      fail(`${REPEAT_RECORDS}: repeat record has invalid runIndex ${record?.runIndex}`);
+    }
+    const expectedPhase = runIndex < status.warmupDiscardedPerWorkload ? "warmup" : "sample";
+    if (record.phase !== expectedPhase) {
+      fail(`${REPEAT_RECORDS}: runIndex ${runIndex} must be phase ${expectedPhase}, got ${record.phase}`);
+    }
+  }
   assertObjectMatches(records.provenance, await expectedRepeatRecordsProvenance(), REPEAT_RECORDS);
   assertObjectMatches(status.provenance, await expectedRepeatStatusProvenance(), REPEAT_STATUS);
   const recomputed = summarizeRepeatRecords(allRecords, status.warmupDiscardedPerWorkload);
@@ -370,6 +382,12 @@ function summarizeRepeatRecords(records, warmupCount) {
   /** @type {Map<string, number>} */
   const runCountByLabel = new Map(expectedLabels.map((label) => [label, 0]));
   for (const record of records) {
+    const runIndex = Number(record?.runIndex);
+    if (!Number.isInteger(runIndex) || runIndex < 0) fail(`${REPEAT_RECORDS}: invalid runIndex ${record?.runIndex}`);
+    const expectedPhase = runIndex < warmupCount ? "warmup" : "sample";
+    if (record.phase !== expectedPhase) {
+      fail(`${REPEAT_RECORDS}: runIndex ${runIndex} must be phase ${expectedPhase}, got ${record.phase}`);
+    }
     const expected = STATUS_FILES.find((entry) => entry.filter === record?.filter);
     if (expected == null) fail(`${REPEAT_RECORDS}: unexpected filter ${record?.filter}`);
     const recordStatus = record.status;
