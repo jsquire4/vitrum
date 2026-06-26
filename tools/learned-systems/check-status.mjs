@@ -484,6 +484,13 @@ async function assertCommittedStatusArtifact(checkpointManifest, researchCount, 
     if (JSON.stringify(sectionRecord.qualityManifestRequirements) !== JSON.stringify(expectedRequirements)) {
       fail(STATUS_PATH + " " + key + ".qualityManifestRequirements must match the learned-system promotion evidence contract");
     }
+    if (artifactPathExists(expectedRequirements.manifestPath)) {
+      fail(
+        STATUS_PATH + " " + key + ".qualityManifest is null while " +
+          expectedRequirements.manifestPath +
+          " exists; validate the manifest and update the status artifact before it can count",
+      );
+    }
   }
   if (record.nrc?.estimator !== "biased") {
     fail(STATUS_PATH + " nrc.estimator must be biased");
@@ -631,6 +638,10 @@ async function assertBehavioralProofCoverage() {
         "keeps denoiser:'auto' on the non-learned default when no host model assets exist",
         "resolves denoiser:'auto' to neural only when full-tier host production weights exist",
         "does not auto-select neural for shape-valid non-production weights",
+        "requires production checkpoint thresholds before auto-selecting neural",
+        "trainingSamples>=500",
+        "cleanSpp>=4096",
+        "qualityReport.reportPath",
         "does not auto-select neural on tier:'lite', even when host weights exist",
         "rejects denoiser:'auto' host weights that do not match the U-Net checkpoint contract",
         "rejects denoiser:'neural' host weights that do not match the U-Net checkpoint contract",
@@ -649,6 +660,7 @@ async function assertBehavioralProofCoverage() {
         "resolves denoiser:'auto' to the default when no host model assets exist",
         "resolves denoiser:'auto' to neural only when full-tier production host weights are supplied",
         "keeps denoiser:'auto' off neural for shape-valid non-production weights",
+        "expect(engine.capabilities.supportDetails?.denoisers.neural).toBe('approximate')",
         "resolves denoiser:'auto' away from neural on lite even if weights are present",
         "declares opt-in learned/research paths as experimental features",
         "walkaround-hybrid.nrc-experimental-biased",
