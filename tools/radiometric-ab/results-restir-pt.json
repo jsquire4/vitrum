@@ -36,7 +36,7 @@
     "resultPath": "tools/radiometric-ab/results-restir-pt.json",
     "scriptSha256": "92a3d3fcb9e6ad1a9ea2a2426ca837f5c4d12206061c1099e7297c5253ac4e88",
     "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
-    "helperSha256": "e3f7ec361f6b3f8786d9b644c6459c1c4b79b98971a54527d0b52174964722e0",
+    "helperSha256": "9df952ff39a0ece67802a4aa5f698e13883ee30204072bf975c6c8fd95725f96",
     "generatedBy": "vitrum radiometric A/B harness"
   }
 }

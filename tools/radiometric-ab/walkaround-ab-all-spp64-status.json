@@ -28,5 +28,17 @@
   "nextSteps": [
     "Do not promote partial/weak walkaround rows from this proof alone (glossy:FINDING).",
     "Use higher-SPP, HDR, browser/real-adapter, or case-specific reference captures before promotion."
-  ]
+  ],
+  "provenance": {
+    "schema": "vitrum.walkaround-ab.status-provenance.v1",
+    "wrapperPath": "tools/radiometric-ab/run-walkaround-ab.mjs",
+    "wrapperSha256": "9ca50bdc08134924bc6ac265548eac0dda78e7e0202161b5e98a562811bbf68d",
+    "harnessPath": "tools/radiometric-ab/walkaround-ab.mjs",
+    "harnessSha256": "8d1d4de6dbc84f8f8126591da02d2ad2d25ec4bac3820628be6bf0028ece0dbe",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "9df952ff39a0ece67802a4aa5f698e13883ee30204072bf975c6c8fd95725f96",
+    "statusPath": "tools/radiometric-ab/walkaround-ab-all-spp64-status.json",
+    "resultPath": "tools/radiometric-ab/walkaround-ab-all-spp64.json",
+    "generatedBy": "vitrum walkaround radiometric A/B wrapper"
+  }
 }

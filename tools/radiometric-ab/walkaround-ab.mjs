@@ -875,7 +875,9 @@ for (const caseName of selectedCases) {
 }
 
 console.log("\n=== SUMMARY ===");
-for (const r of Object.values(results)) {
+for (const caseName of Object.keys(CASE_RUNNERS)) {
+  const r = results[caseName];
+  if (r == null) continue;
   console.log(`  ${r.id.padEnd(8)} ${r.verdict ?? r.error ?? "?"}${r.delta ? `  globalDelta=${r.delta.overall?.toFixed(4)}` : ""}`);
 }
 

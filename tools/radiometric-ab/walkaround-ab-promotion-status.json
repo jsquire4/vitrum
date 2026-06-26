@@ -81,5 +81,54 @@
     "tools/radiometric-ab/walkaround-ab-host-status.json",
     "tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json",
     "tools/radiometric-ab/walkaround-ab-all-spp64-status.json"
-  ]
+  ],
+  "provenance": {
+    "schema": "vitrum.walkaround-ab.promotion-provenance.v1",
+    "wrapperPath": "tools/radiometric-ab/run-walkaround-ab.mjs",
+    "wrapperSha256": "9ca50bdc08134924bc6ac265548eac0dda78e7e0202161b5e98a562811bbf68d",
+    "harnessPath": "tools/radiometric-ab/walkaround-ab.mjs",
+    "harnessSha256": "8d1d4de6dbc84f8f8126591da02d2ad2d25ec4bac3820628be6bf0028ece0dbe",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "9df952ff39a0ece67802a4aa5f698e13883ee30204072bf975c6c8fd95725f96",
+    "statusPath": "tools/radiometric-ab/walkaround-ab-promotion-status.json",
+    "sourceStatusPaths": [
+      "tools/radiometric-ab/walkaround-ab-host-status.json",
+      "tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json",
+      "tools/radiometric-ab/walkaround-ab-all-spp64-status.json"
+    ],
+    "sourceStatusSha256": [
+      {
+        "path": "tools/radiometric-ab/walkaround-ab-host-status.json",
+        "sha256": "d782db5d9527cc1fae083741224c848dcbfad002a1799e9e25a0313e9bcd8570"
+      },
+      {
+        "path": "tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json",
+        "sha256": "39e97e61a4f026a27a16137481c60e8ce0e6e102c6500fee1dbe36d84fecd66c"
+      },
+      {
+        "path": "tools/radiometric-ab/walkaround-ab-all-spp64-status.json",
+        "sha256": "b866f0dd9c5363fe904194980a17e1ee767e1eb24d7a9d3f09f0884fa66bbd35"
+      }
+    ],
+    "sourceResultPaths": [
+      "tools/radiometric-ab/walkaround-ab-results.json",
+      "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
+      "tools/radiometric-ab/walkaround-ab-all-spp64.json"
+    ],
+    "sourceResultSha256": [
+      {
+        "path": "tools/radiometric-ab/walkaround-ab-results.json",
+        "sha256": "a84756bc23160195f1245a5c34694c0dbf161c80f580ba936f09db7eed07e153"
+      },
+      {
+        "path": "tools/radiometric-ab/walkaround-ab-glossy-spp64.json",
+        "sha256": "4ff715eeb384e5a94369439a4e299857a3cb780b762f2e99ff377e17b99ea691"
+      },
+      {
+        "path": "tools/radiometric-ab/walkaround-ab-all-spp64.json",
+        "sha256": "7e5dd038f5b2c3d8191fb979420bba75594aa37072e82c925fcd6adb01b93e96"
+      }
+    ],
+    "generatedBy": "vitrum walkaround radiometric A/B promotion wrapper"
+  }
 }

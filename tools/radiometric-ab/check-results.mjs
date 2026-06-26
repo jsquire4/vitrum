@@ -15,7 +15,12 @@ import {
   WALKAROUND_ALL_SPP64_STATUS_PROOF,
   WALKAROUND_GLOSSY_SPP64_STATUS_PROOF,
 } from "./proofs.mjs";
-import { radiometricResultProvenance } from "./resultProvenance.mjs";
+import {
+  radiometricResultProvenance,
+  walkaroundPromotionProvenance,
+  walkaroundResultProvenance,
+  walkaroundStatusProvenance,
+} from "./resultProvenance.mjs";
 
 const REQUIRED_RADIOMETRIC_AB_ROWS = [
   {
@@ -79,6 +84,7 @@ const REQUIRED_RESTIR_PT_SPECIALTY = {
 };
 
 const WALKAROUND_AB_CASE_IDS = ["a8", "sun", "glass", "glossy"];
+const REPO_ROOT_URL = new URL("../../", import.meta.url).href;
 
 /** @param {string} message */
 function fail(message) {
@@ -822,6 +828,52 @@ async function checkPtRadiometricPromotionStatus(proof) {
   }
 }
 
+/**
+ * @param {any} result
+ * @param {string} resultPath
+ * @param {string} label
+ */
+async function assertWalkaroundResultProvenance(result, resultPath, label) {
+  const expected = await walkaroundResultProvenance(REPO_ROOT_URL, resultPath);
+  if (!sameJson(result.provenance, expected)) {
+    fail(`${label}: result provenance differs from current wrapper/harness/helper identity`);
+  }
+}
+
+/**
+ * @param {any} status
+ * @param {string} statusPath
+ * @param {string} resultPath
+ * @param {string} label
+ */
+async function assertWalkaroundStatusProvenance(status, statusPath, resultPath, label) {
+  const expected = await walkaroundStatusProvenance(REPO_ROOT_URL, statusPath, resultPath);
+  if (!sameJson(status.provenance, expected)) {
+    fail(`${label}: status provenance differs from current wrapper/harness/helper identity`);
+  }
+}
+
+/**
+ * @param {any} status
+ * @param {any} proof
+ */
+async function assertWalkaroundPromotionProvenance(status, proof) {
+  const sourceResultPaths = [
+    WALKAROUND_AB_RESULT_PROOF.resultPath,
+    WALKAROUND_GLOSSY_SPP64_STATUS_PROOF.preservedResultFile,
+    WALKAROUND_ALL_SPP64_STATUS_PROOF.preservedResultFile,
+  ];
+  const expected = await walkaroundPromotionProvenance(
+    REPO_ROOT_URL,
+    proof.statusPath,
+    proof.sourceStatuses,
+    sourceResultPaths,
+  );
+  if (!sameJson(status.provenance, expected)) {
+    fail("walkaround promotion status: provenance differs from current source artifact identity");
+  }
+}
+
 /** @param {any} proof */
 async function checkWalkaroundHostStatus(proof) {
   const statusUrl = new URL(`../../${proof.statusPath}`, import.meta.url);
@@ -838,6 +890,10 @@ async function checkWalkaroundHostStatus(proof) {
   const preservedStat = await Deno.stat(preservedUrl);
   if (!preservedStat.isFile || preservedStat.size <= 2) fail("walkaround-ab: preserved result file is missing or empty");
   const preservedResult = JSON.parse(await Deno.readTextFile(preservedUrl));
+  if (status.verdict !== "HOST-BLOCKED" && status.verdict !== "FAIL") {
+    await assertWalkaroundStatusProvenance(status, proof.statusPath, resultFile, "walkaround-ab");
+    await assertWalkaroundResultProvenance(preservedResult, resultFile, "walkaround-ab");
+  }
   if (status.verdict === "HOST-BLOCKED") {
     if (!proof.blockedReasonCodes.includes(status.reason?.code)) {
       fail(`walkaround-ab: blocked reason code ${status.reason?.code} is not allowed`);
@@ -901,6 +957,10 @@ async function checkWalkaroundGlossySpp64Status(proof) {
   }
   const resultUrl = new URL(`../../${resultFile}`, import.meta.url);
   const result = JSON.parse(await Deno.readTextFile(resultUrl));
+  if (status.verdict !== "HOST-BLOCKED" && status.verdict !== "FAIL") {
+    await assertWalkaroundStatusProvenance(status, proof.statusPath, resultFile, "walkaround glossy-spp64");
+    await assertWalkaroundResultProvenance(result, resultFile, "walkaround glossy-spp64");
+  }
   const glossy = result.glossy;
   if (glossy?.qualityProfile !== proof.expectedRenderConfig.qualityProfile) {
     fail("walkaround glossy-spp64: glossy result qualityProfile mismatch");
@@ -950,7 +1010,10 @@ async function checkWalkaroundAllSpp64Status(proof) {
     }
     return;
   }
-  assertWalkaroundFullFreshStatus(status, JSON.parse(await Deno.readTextFile(new URL(`../../${resultFile}`, import.meta.url))));
+  const fullFreshResult = JSON.parse(await Deno.readTextFile(new URL(`../../${resultFile}`, import.meta.url)));
+  await assertWalkaroundStatusProvenance(status, proof.statusPath, resultFile, "walkaround all-spp64");
+  await assertWalkaroundResultProvenance(fullFreshResult, resultFile, "walkaround all-spp64");
+  assertWalkaroundFullFreshStatus(status, fullFreshResult);
   if (status.verdict === "PASS-PARTIAL" && status.reason?.code !== proof.partialReasonCode) {
     fail(`walkaround all-spp64: partial reason code ${status.reason?.code} differs from proofs.mjs`);
   }
@@ -985,7 +1048,7 @@ function assertWalkaroundFullFreshStatus(status, preservedResult) {
       );
     }
   }
-  const resultCaseIds = Object.keys(preservedResult).sort();
+  const resultCaseIds = Object.keys(preservedResult).filter((key) => key !== "provenance").sort();
   if (!sameJson(resultCaseIds, [...WALKAROUND_AB_CASE_IDS].sort())) {
     fail(`walkaround-ab: preserved result cases ${JSON.stringify(resultCaseIds)} differ from required full case set`);
   }
@@ -1213,6 +1276,7 @@ function checkWalkaroundGlossy(proof, result) {
 async function checkWalkaroundResults(proof) {
   const resultUrl = new URL(`../../${proof.resultPath}`, import.meta.url);
   const result = JSON.parse(await Deno.readTextFile(resultUrl));
+  await assertWalkaroundResultProvenance(result, proof.resultPath, "walkaround-ab");
   checkWalkaroundA8(proof.cases.a8, result.a8);
   checkWalkaroundSun(proof.cases.sun, result.sun);
   checkWalkaroundGlass(proof.cases.glass, result.glass);
@@ -1244,6 +1308,7 @@ async function checkWalkaroundPromotionStatus(proof) {
   if (!sameJson(status.sourceStatuses, proof.sourceStatuses)) {
     fail("walkaround promotion status: sourceStatuses mismatch");
   }
+  await assertWalkaroundPromotionProvenance(status, proof);
 
   const hostStatus = JSON.parse(await Deno.readTextFile(new URL(`../../${WALKAROUND_AB_HOST_STATUS_PROOF.statusPath}`, import.meta.url)));
   const hostResults = JSON.parse(await Deno.readTextFile(new URL(`../../${WALKAROUND_AB_RESULT_PROOF.resultPath}`, import.meta.url)));

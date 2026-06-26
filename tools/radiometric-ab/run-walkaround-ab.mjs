@@ -10,10 +10,16 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  walkaroundPromotionProvenance,
+  walkaroundResultProvenance,
+  walkaroundStatusProvenance,
+} from './resultProvenance.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
+const repoRootUrl = pathToFileURL(`${repoRoot}/`).href;
 const DEFAULT_TIMEOUT_MS = 180_000;
 const args = new Set(process.argv.slice(2));
 const glossySpp64 = args.has('--glossy-spp64');
@@ -38,7 +44,8 @@ const resultPath = resolveFromRepo(
       ? 'tools/radiometric-ab/walkaround-ab-all-spp64.json'
       : 'tools/radiometric-ab/walkaround-ab-results.json',
 );
-const promotionStatusPath = resolve(scriptDir, 'walkaround-ab-promotion-status.json');
+const DEFAULT_PROMOTION_STATUS_PATH = 'tools/radiometric-ab/walkaround-ab-promotion-status.json';
+const promotionStatusPath = resolve(repoRoot, DEFAULT_PROMOTION_STATUS_PATH);
 const DEFAULT_SOURCE_STATUS_PATHS = [
   'tools/radiometric-ab/walkaround-ab-host-status.json',
   'tools/radiometric-ab/walkaround-ab-glossy-spp64-status.json',
@@ -49,6 +56,11 @@ const DEFAULT_RESULT_PATHS = {
   glossySpp64: 'tools/radiometric-ab/walkaround-ab-glossy-spp64.json',
   allSpp64: 'tools/radiometric-ab/walkaround-ab-all-spp64.json',
 };
+const DEFAULT_RESULT_PATH_LIST = [
+  DEFAULT_RESULT_PATHS.baseline,
+  DEFAULT_RESULT_PATHS.glossySpp64,
+  DEFAULT_RESULT_PATHS.allSpp64,
+];
 const WALKAROUND_AB_CASE_IDS = ['a8', 'sun', 'glass', 'glossy'];
 const usingDefaultProofPaths =
   (process.env.VITRUM_WALKAROUND_AB_STATUS_PATH == null || process.env.VITRUM_WALKAROUND_AB_STATUS_PATH === '') &&
@@ -68,7 +80,7 @@ function readJson(relativePath) {
 }
 
 function resultVerdicts(result) {
-  return Object.fromEntries(['a8', 'sun', 'glass', 'glossy'].map((id) => [
+  return Object.fromEntries(WALKAROUND_AB_CASE_IDS.map((id) => [
     id,
     result[id]?.verdict ?? 'UNKNOWN',
   ]));
@@ -102,10 +114,16 @@ function glossyProfile(label, resultPath, qualityProfile, spp) {
   };
 }
 
-function buildPromotionStatus(generatedAt) {
+async function buildPromotionStatus(generatedAt) {
   const baseline = readJson(DEFAULT_RESULT_PATHS.baseline);
   const allSpp64 = readJson(DEFAULT_RESULT_PATHS.allSpp64);
   return {
+    provenance: await walkaroundPromotionProvenance(
+      repoRootUrl,
+      DEFAULT_PROMOTION_STATUS_PATH,
+      DEFAULT_SOURCE_STATUS_PATHS,
+      DEFAULT_RESULT_PATH_LIST,
+    ),
     generatedAt,
     harness: 'walkaround-ab-promotion-proof',
     verdict: 'PASS-PARTIAL',
@@ -135,7 +153,7 @@ function buildPromotionStatus(generatedAt) {
   };
 }
 
-function maybeWritePromotionStatus(generatedAt) {
+async function maybeWritePromotionStatus(generatedAt) {
   if (!usingDefaultProofPaths) return;
   const requiredFiles = [
     ...DEFAULT_SOURCE_STATUS_PATHS,
@@ -148,7 +166,7 @@ function maybeWritePromotionStatus(generatedAt) {
   const statuses = DEFAULT_SOURCE_STATUS_PATHS.map((path) => readJson(path));
   if (statuses.some((status) => status.verdict === 'HOST-BLOCKED' || status.verdict === 'FAIL')) return;
 
-  const promotionStatus = buildPromotionStatus(generatedAt);
+  const promotionStatus = await buildPromotionStatus(generatedAt);
   writeFileSync(promotionStatusPath, `${JSON.stringify(promotionStatus, null, 2)}\n`);
 }
 
@@ -192,6 +210,12 @@ function failClosedResultStatus(generatedAt, code, message) {
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
   console.error(`[walkaround-ab] FAIL status written to ${statusPath}: ${message}`);
   process.exit(1);
+}
+
+async function stampWalkaroundResultProvenance(payload) {
+  payload.provenance = await walkaroundResultProvenance(repoRootUrl, resultFile);
+  writeFileSync(resultPath, `${JSON.stringify(payload, null, 2)}\n`);
+  return payload;
 }
 
 function readWalkaroundResultsForStatus(generatedAt) {
@@ -269,6 +293,7 @@ if (result.stderr) process.stderr.write(result.stderr);
 const timedOut = result.error?.code === 'ETIMEDOUT';
 if (timedOut) {
   const status = {
+    provenance: await walkaroundStatusProvenance(repoRootUrl, repoRelative(statusPath), resultFile),
     generatedAt: new Date().toISOString(),
     harness: 'walkaround-ab',
     verdict: 'HOST-BLOCKED',
@@ -301,11 +326,13 @@ if (result.error) {
 }
 if (result.status === 0) {
   const generatedAt = new Date().toISOString();
-  const walkaroundResults = readWalkaroundResultsForStatus(generatedAt);
-  const caseVerdicts = Object.fromEntries(Object.entries(walkaroundResults).map(([key, value]) => [
-    key,
-    value?.verdict ?? 'UNKNOWN',
-  ]));
+  const walkaroundResults = await stampWalkaroundResultProvenance(readWalkaroundResultsForStatus(generatedAt));
+  const caseVerdicts = Object.fromEntries(WALKAROUND_AB_CASE_IDS
+    .filter((id) => walkaroundResults[id] != null)
+    .map((id) => [
+      id,
+      walkaroundResults[id]?.verdict ?? 'UNKNOWN',
+    ]));
   const partialVerdicts = new Set([
     'PASS-PARTIAL',
     'PASS-WEAK',
@@ -320,6 +347,7 @@ if (result.status === 0) {
     .map(([id, verdict]) => `${id}:${verdict}`);
   const partial = partialCaseIds.length > 0;
   const status = {
+    provenance: await walkaroundStatusProvenance(repoRootUrl, repoRelative(statusPath), resultFile),
     generatedAt,
     harness: 'walkaround-ab',
     verdict: partial ? 'PASS-PARTIAL' : 'PASS',
@@ -350,7 +378,7 @@ if (result.status === 0) {
       : [],
   };
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
-  maybeWritePromotionStatus(generatedAt);
+  await maybeWritePromotionStatus(generatedAt);
   process.exit(0);
 }
 
@@ -361,6 +389,7 @@ const knownDenoWgpuPanic =
 
 if (knownDenoWgpuPanic) {
   const status = {
+    provenance: await walkaroundStatusProvenance(repoRootUrl, repoRelative(statusPath), resultFile),
     generatedAt: new Date().toISOString(),
     harness: 'walkaround-ab',
     verdict: 'HOST-BLOCKED',

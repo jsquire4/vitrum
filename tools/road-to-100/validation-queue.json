@@ -158,6 +158,7 @@
         { "path": "tools/radiometric-ab/ab-restir-pt-specialty.mjs" },
         { "path": "tools/radiometric-ab/ab-sobol.mjs" },
         { "path": "tools/radiometric-ab/check-results.mjs" },
+        { "path": "tools/radiometric-ab/resultProvenance.mjs" },
         { "path": "tools/radiometric-ab/proofs.mjs" },
         {
           "path": "tools/radiometric-ab/pt-promotion-status.json",
@@ -227,6 +228,7 @@
       "rerunPolicy": "Do not rerun the WSL 64-SPP lanes just for a new timestamp; rerun after render-changing code or on browser/real-adapter reference hosts.",
       "proofArtifacts": [
         { "path": "tools/radiometric-ab/check-results.mjs" },
+        { "path": "tools/radiometric-ab/resultProvenance.mjs" },
         { "path": "tools/radiometric-ab/proofs.mjs" },
         { "path": "tools/radiometric-ab/README.md" },
         { "path": "tools/radiometric-ab/run-walkaround-ab.mjs" },
