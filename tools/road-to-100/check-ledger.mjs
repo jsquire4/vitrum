@@ -289,6 +289,8 @@ for (const [docName, docText] of [
     "GLASS is smoke-only",
     "pt-webgl2 is NOT at RC level",
     "release-candidate label as suspended until H1",
+    "These are plausible implementation gaps or truthfulness gaps. They are smaller",
+    "Compressed wide BVH / CWBVH traversal.",
     "| `items_to_fix.md` §H | Close items as fixed or strike |",
   ]) {
     if (docText.includes(stalePhrase)) {
@@ -296,6 +298,13 @@ for (const [docName, docText] of [
     }
   }
 }
+if (!gapExecutionPlan.includes("These were plausible implementation or truthfulness gaps in the moving\n2026-06-16 snapshot")) {
+  fail("gap-closure-execution-plan.md must label Cursor candidates as historical source-checked dispositions");
+}
+if (!gapExecutionPlan.includes("CWBVH default-promotion throughput evidence; opt-in traversal is implemented\n  and proof-guarded.")) {
+  fail("gap-closure-execution-plan.md must not reopen implemented CWBVH traversal as parked code work");
+}
+
 if (!roadmap.includes("renderer-fidelity-proof-check")) {
   fail("roadmap must point pt-webgpu fidelity-promotion claims at renderer-fidelity-proof-check");
 }

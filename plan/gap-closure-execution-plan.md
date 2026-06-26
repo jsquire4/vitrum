@@ -1328,8 +1328,9 @@ visibility/transport derivatives remain finite-difference/proof tails.
 - Production neural denoiser checkpoint and default-on `denoiser:'auto'`.
 - NRC default-on decision after quality/convergence A/B.
 - GRIS default flip after unbiasedness/error/perf evidence.
-- Low-discrepancy sampling / PMJ / Sobol convergence upgrade.
-- Compressed wide BVH / CWBVH traversal.
+- Low-discrepancy sampling / PMJ / Sobol default-promotion convergence evidence.
+- CWBVH default-promotion throughput evidence; opt-in traversal is implemented
+  and proof-guarded.
 - Wavefront path tracing.
 - Heterogeneous volumes / NanoVDB-class media.
 - Native point/line primitive contract.
@@ -1463,8 +1464,9 @@ post-contract work. Do not execute this appendix top-to-bottom.
 
 ### A1 — Promote To Active Queue If Still Open
 
-These are plausible implementation gaps or truthfulness gaps. They are smaller
-than the parked SOTA work and should be checked soon.
+These were plausible implementation or truthfulness gaps in the moving
+2026-06-16 snapshot. They are preserved here only as historical candidate
+provenance; the status below is the current source-checked disposition.
 
 Status 2026-06-17: **AUDITED/CLOSED.** Every A1 candidate has been revalidated
 against current source and classified below. No additional bounded
