@@ -37,6 +37,51 @@ function sameJson(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+function readPngU32(bytes, offset) {
+  return bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3];
+}
+
+async function sha256Hex(bytes) {
+  const owned = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(owned).set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", owned);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function expectedPngIdentity(proof, label) {
+  const width = Number(proof.width);
+  const height = Number(proof.height);
+  const sha256 = proof.sha256;
+  if (!Number.isInteger(width) || width <= 0) fail(`${label}: proof row must declare a positive integer width`);
+  if (!Number.isInteger(height) || height <= 0) fail(`${label}: proof row must declare a positive integer height`);
+  if (typeof sha256 !== "string" || !/^[0-9a-f]{64}$/.test(sha256)) {
+    fail(`${label}: proof row must declare a lowercase SHA-256 digest`);
+  }
+  return { width, height, sha256 };
+}
+
+async function assertPng(path, label, proof) {
+  const expected = expectedPngIdentity(proof, label);
+  const goldenUrl = new URL(`../../${path}`, import.meta.url);
+  const stat = await Deno.stat(goldenUrl);
+  if (!stat.isFile || stat.size <= 24) fail(`${label}: golden PNG is missing or empty`);
+  const bytes = await Deno.readFile(goldenUrl);
+  if (bytes[0] !== 0x89 || bytes[1] !== 0x50 || bytes[2] !== 0x4e || bytes[3] !== 0x47) {
+    fail(`${label}: golden file is not a PNG`);
+  }
+  const width = readPngU32(bytes, 16);
+  const height = readPngU32(bytes, 20);
+  if (width !== expected.width || height !== expected.height) {
+    fail(`${label}: golden PNG dimensions ${width}x${height} differ from proof ${expected.width}x${expected.height}`);
+  }
+  const actualSha256 = await sha256Hex(bytes);
+  if (actualSha256 !== expected.sha256) {
+    fail(`${label}: golden PNG SHA-256 ${actualSha256} differs from proof ${expected.sha256}`);
+  }
+}
+
 if (manifest.kind !== "vitrum-gltf-material-sweep-behavioral-goldens") {
   fail(`unexpected manifest kind ${manifest.kind}`);
 }
@@ -67,13 +112,7 @@ for (const field of REQUIRED_SWEEP_MAPS) {
   if (!FIELD_TEXTURE_INDEX.has(field)) fail(`FIELD_TEXTURE_INDEX is missing required material field ${field}`);
 }
 
-const goldenUrl = new URL(`../../${GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath}`, import.meta.url);
-const stat = await Deno.stat(goldenUrl);
-if (!stat.isFile || stat.size <= 8) fail("golden PNG is missing or empty");
-const header = await Deno.readFile(goldenUrl);
-if (header[0] !== 0x89 || header[1] !== 0x50 || header[2] !== 0x4e || header[3] !== 0x47) {
-  fail("golden file is not a PNG");
-}
+await assertPng(GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF.goldenPath, "material sweep golden", GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF);
 
 const dznStatusUrl = new URL(`../../${manifest.dznStatusPath}`, import.meta.url);
 const dznStatus = JSON.parse(await Deno.readTextFile(dznStatusUrl));

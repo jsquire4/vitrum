@@ -5,6 +5,9 @@ export const GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF = {
   fixture: "synthetic-material-sweep",
   label: "pt/gltf-material-sweep",
   goldenPath: "tools/reference-renders/gltf-material-sweep-behavioral/pt-gltf-material-sweep.png",
+  sha256: "3485384174ec9f9cd4cf77c18634ecbe950ac364f7b171943181b9430de5b7d2",
+  width: 64,
+  height: 64,
   thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
 };
 
