@@ -16,6 +16,8 @@ import {
   WALKAROUND_GLOSSY_SPP64_STATUS_PROOF,
 } from "./proofs.mjs";
 import {
+  ptRadiometricPromotionProvenance,
+  ptRadiometricStatusProvenance,
   radiometricResultProvenance,
   walkaroundPromotionProvenance,
   walkaroundResultProvenance,
@@ -632,6 +634,14 @@ async function checkPtRadiometricHostStatus(proof) {
   if (!sameJson(status.preservedResultFiles, proof.preservedResultFiles)) {
     fail("pt-radiometric-ab: preservedResultFiles must match proofs.mjs exactly");
   }
+  const expectedProvenance = await ptRadiometricStatusProvenance(
+    REPO_ROOT_URL,
+    proof.statusPath,
+    proof.preservedResultFiles,
+  );
+  if (!sameJson(status.provenance, expectedProvenance)) {
+    fail("pt-radiometric-ab: status provenance differs from current wrapper/result identity");
+  }
   /** @type {any[]} */
   const cases = status.cases ?? [];
   if (cases.length === 0) fail("pt-radiometric-ab: status must include at least one case");
@@ -698,6 +708,14 @@ async function checkPtRadiometricPromotionStatus(proof) {
   if (status.verdict !== proof.verdict) fail("pt-radiometric-promotion: verdict must stay PASS-PARTIAL");
   if (!sameJson(status.sourceStatuses, proof.sourceStatuses)) {
     fail("pt-radiometric-promotion: sourceStatuses mismatch");
+  }
+  const expectedProvenance = await ptRadiometricPromotionProvenance(
+    REPO_ROOT_URL,
+    proof.statusPath,
+    proof.sourceStatuses,
+  );
+  if (!sameJson(status.provenance, expectedProvenance)) {
+    fail("pt-radiometric-promotion: provenance differs from current source artifact identity");
   }
 
   const host = JSON.parse(await Deno.readTextFile(new URL(`../../${proof.hostStatusPath}`, import.meta.url)));

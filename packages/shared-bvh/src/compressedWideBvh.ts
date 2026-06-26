@@ -165,8 +165,9 @@ function collectWideChildren(bvhNodes: Float32Array, binaryRoot: number): number
 
 /**
  * Collapse the canonical binary BVH into a packed 8-wide, quantized-bounds CPU
- * representation. This is deliberately a build/oracle primitive: renderer
- * backends remain on the binary BVH until a WGSL traversal and A/B proof land.
+ * representation. This remains the shared build/oracle primitive for the
+ * pt-webgpu opt-in CWBVH traversal while default promotion waits on throughput
+ * evidence.
  */
 export function buildCompressedWideBvhFromArrayBvh(
   binary: CpuBvhBuildResult,

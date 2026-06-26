@@ -101,11 +101,11 @@
       },
       {
         "path": "tools/radiometric-ab/pt-promotion-status.json",
-        "sha256": "3c018f82c5b4c08175a0bf5178c2d1c2f8c94081fbb7084396f33c82352086e0"
+        "sha256": "8e5622710db3a7d1b0d5860d2886d4b450b174713db594e3083be33603789cdf"
       },
       {
         "path": "tools/radiometric-ab/results-bdpt.json",
-        "sha256": "1e6b50e416df04c6529228368f577fd463c7a4a0415c15c483edb73c0e210913"
+        "sha256": "07e7b95aeb57dfa3fb43f0abe363913aa35405c32c23af366a2d44405f260da9"
       }
     ],
     "generatedBy": "vitrum renderer fidelity proof ledger"

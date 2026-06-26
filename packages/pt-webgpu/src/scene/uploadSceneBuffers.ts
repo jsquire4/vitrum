@@ -742,13 +742,13 @@ function remapCwbvhTlasBlasRoots(
 }
 
 /**
- * Build the pt-webgpu CWBVH prototype forest beside the canonical binary BVH.
+ * Build the pt-webgpu CWBVH forest beside the canonical binary BVH.
  *
- * The renderer still traces the binary BVH today. This pack is deliberately
- * renderer-shaped, though: full-tier TLAS scenes concatenate one CWBVH tree per
- * BLAS subtree and remap `tlasBlasRoots` to wide-node roots, while merged/lite
+ * CWBVH traversal is opt-in rather than default-promoted. This pack is still
+ * renderer-shaped: full-tier TLAS scenes concatenate one CWBVH tree per BLAS
+ * subtree and remap `tlasBlasRoots` to wide-node roots, while merged/lite
  * scenes produce a single root-0 wide tree. Leaf metadata keeps the existing
- * global triangle offsets, so the future traversal can read the same `indices`,
+ * global triangle offsets, so the opt-in traversal can read the same `indices`,
  * `positions`, material ids, and cast/visibility payloads as the binary path.
  */
 function buildPackedCwbvhSceneData(pack: Pick<

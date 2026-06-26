@@ -187,7 +187,7 @@
     "harnessPath": "tools/radiometric-ab/walkaround-ab.mjs",
     "harnessSha256": "8d1d4de6dbc84f8f8126591da02d2ad2d25ec4bac3820628be6bf0028ece0dbe",
     "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
-    "helperSha256": "9df952ff39a0ece67802a4aa5f698e13883ee30204072bf975c6c8fd95725f96",
+    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
     "resultPath": "tools/radiometric-ab/walkaround-ab-all-spp64.json",
     "generatedBy": "vitrum walkaround radiometric A/B harness"
   }

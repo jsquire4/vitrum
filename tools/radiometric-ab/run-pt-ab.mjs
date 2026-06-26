@@ -11,10 +11,15 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import {
+  ptRadiometricPromotionProvenance,
+  ptRadiometricStatusProvenance,
+} from './resultProvenance.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
+const repoRootUrl = pathToFileURL(`${repoRoot}/`).href;
 const statusPath = resolve(scriptDir, 'pt-ab-host-status.json');
 const promotionStatusPath = resolve(scriptDir, 'pt-promotion-status.json');
 const DEFAULT_TIMEOUT_MS = 900_000;
@@ -129,7 +134,7 @@ function maxBy(values, getter) {
   return Math.max(...values.map(getter));
 }
 
-function buildPromotionStatus(hostStatus) {
+async function buildPromotionStatus(hostStatus) {
   const sppm = readJson('tools/radiometric-ab/results-sppm.json');
   const bdpt = readJson('tools/radiometric-ab/results-bdpt.json');
   const restirPt = readJson('tools/radiometric-ab/results-restir-pt.json');
@@ -243,14 +248,19 @@ function buildPromotionStatus(hostStatus) {
       },
     },
     sourceStatuses: SOURCE_STATUS_PATHS,
+    provenance: await ptRadiometricPromotionProvenance(
+      repoRootUrl,
+      'tools/radiometric-ab/pt-promotion-status.json',
+      SOURCE_STATUS_PATHS,
+    ),
   };
 }
 
-function maybeWritePromotionStatus(hostStatus) {
+async function maybeWritePromotionStatus(hostStatus) {
   const selectedAllCases = ALL_CASE_IDS.every((id) => hostStatus.selectedCases.includes(id))
     && hostStatus.selectedCases.length === ALL_CASE_IDS.length;
   if (hostStatus.verdict !== 'PASS' || !selectedAllCases) return;
-  const promotionStatus = buildPromotionStatus(hostStatus);
+  const promotionStatus = await buildPromotionStatus(hostStatus);
   writeFileSync(promotionStatusPath, `${JSON.stringify(promotionStatus, null, 2)}\n`);
 }
 
@@ -341,8 +351,14 @@ const status = {
     : [],
 };
 
+status.provenance = await ptRadiometricStatusProvenance(
+  repoRootUrl,
+  'tools/radiometric-ab/pt-ab-host-status.json',
+  status.preservedResultFiles,
+);
+
 writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
-maybeWritePromotionStatus(status);
+await maybeWritePromotionStatus(status);
 
 if (hasFail) process.exit(1);
 if (hasBlocked) process.exit(2);

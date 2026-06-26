@@ -80,5 +80,53 @@
     "tools/radiometric-ab/results-restir-pt-specialty.json",
     "tools/radiometric-ab/results-restir-pt-glossy-research.json",
     "tools/radiometric-ab/results-sobol.json"
-  ]
+  ],
+  "provenance": {
+    "schema": "vitrum.pt-radiometric-ab.promotion-provenance.v1",
+    "wrapperPath": "tools/radiometric-ab/run-pt-ab.mjs",
+    "wrapperSha256": "6eda36c676a2e12c645909c0a7e1c1b30b6b8e1e3976778f6eb0dca847b18b0a",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "cc87985755e7391d19fbf98e19dc218df7264beb9b218f0a7eacf819761642e3",
+    "statusPath": "tools/radiometric-ab/pt-promotion-status.json",
+    "sourceStatusPaths": [
+      "tools/radiometric-ab/pt-ab-host-status.json",
+      "tools/radiometric-ab/results-sppm.json",
+      "tools/radiometric-ab/results-bdpt.json",
+      "tools/radiometric-ab/results-restir-pt.json",
+      "tools/radiometric-ab/results-restir-pt-specialty.json",
+      "tools/radiometric-ab/results-restir-pt-glossy-research.json",
+      "tools/radiometric-ab/results-sobol.json"
+    ],
+    "sourceStatusSha256": [
+      {
+        "path": "tools/radiometric-ab/pt-ab-host-status.json",
+        "sha256": "1ca593301de4c9762e4d92653990a6fc75af03c5553f6f8f22e9fc1e91afc81d"
+      },
+      {
+        "path": "tools/radiometric-ab/results-sppm.json",
+        "sha256": "b858b8bdb89690b88aec7dc15779ee1c75ee9d2c5b3171046645fcd912acdfc1"
+      },
+      {
+        "path": "tools/radiometric-ab/results-bdpt.json",
+        "sha256": "07e7b95aeb57dfa3fb43f0abe363913aa35405c32c23af366a2d44405f260da9"
+      },
+      {
+        "path": "tools/radiometric-ab/results-restir-pt.json",
+        "sha256": "18245606a216bdaa24875f4f3af766451610b85e94c4785e1a51894cd3ec38b2"
+      },
+      {
+        "path": "tools/radiometric-ab/results-restir-pt-specialty.json",
+        "sha256": "12faba771e4b1b355643895033cec8be2a87dabbb091b3ae8e70b359a8ec3211"
+      },
+      {
+        "path": "tools/radiometric-ab/results-restir-pt-glossy-research.json",
+        "sha256": "a4e6f5b122232de83e029f0d4e442044d7937380bddf8a9c1b88cac9b9688eee"
+      },
+      {
+        "path": "tools/radiometric-ab/results-sobol.json",
+        "sha256": "a65b66bb528df41c5c423b1e9bc7135a1075ba017c589e34f2cccab704051f2c"
+      }
+    ],
+    "generatedBy": "vitrum pt radiometric A/B promotion wrapper"
+  }
 }

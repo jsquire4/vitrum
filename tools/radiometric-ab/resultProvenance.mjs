@@ -2,7 +2,10 @@
 // Shared provenance for committed radiometric A/B result snapshots.
 
 export const RADIOMETRIC_RESULT_PROVENANCE_SCHEMA = "vitrum.radiometric-ab.result-provenance.v1";
+export const PT_RADIOMETRIC_STATUS_PROVENANCE_SCHEMA = "vitrum.pt-radiometric-ab.status-provenance.v1";
+export const PT_RADIOMETRIC_PROMOTION_PROVENANCE_SCHEMA = "vitrum.pt-radiometric-ab.promotion-provenance.v1";
 export const RADIOMETRIC_RESULT_PROVENANCE_HELPER_PATH = "tools/radiometric-ab/resultProvenance.mjs";
+export const PT_RADIOMETRIC_AB_WRAPPER_PATH = "tools/radiometric-ab/run-pt-ab.mjs";
 export const WALKAROUND_RESULT_PROVENANCE_SCHEMA = "vitrum.walkaround-ab.result-provenance.v1";
 export const WALKAROUND_STATUS_PROVENANCE_SCHEMA = "vitrum.walkaround-ab.status-provenance.v1";
 export const WALKAROUND_PROMOTION_PROVENANCE_SCHEMA = "vitrum.walkaround-ab.promotion-provenance.v1";
@@ -57,6 +60,54 @@ export async function radiometricResultProvenance(scriptImportMetaUrl, scriptPat
     helperPath: RADIOMETRIC_RESULT_PROVENANCE_HELPER_PATH,
     helperSha256: await sha256FileUrl(new URL(import.meta.url)),
     generatedBy: "vitrum radiometric A/B harness",
+  };
+}
+
+/** @param {string} repoRootImportMetaUrl */
+async function ptRadiometricSourceIdentity(repoRootImportMetaUrl) {
+  return {
+    wrapperPath: PT_RADIOMETRIC_AB_WRAPPER_PATH,
+    wrapperSha256: await sha256RepoPath(repoRootImportMetaUrl, PT_RADIOMETRIC_AB_WRAPPER_PATH),
+    helperPath: RADIOMETRIC_RESULT_PROVENANCE_HELPER_PATH,
+    helperSha256: await sha256FileUrl(new URL(import.meta.url)),
+  };
+}
+
+/**
+ * @param {string} repoRootImportMetaUrl
+ * @param {string} statusPath
+ * @param {string[]} resultPaths
+ */
+export async function ptRadiometricStatusProvenance(repoRootImportMetaUrl, statusPath, resultPaths) {
+  return {
+    schema: PT_RADIOMETRIC_STATUS_PROVENANCE_SCHEMA,
+    ...(await ptRadiometricSourceIdentity(repoRootImportMetaUrl)),
+    statusPath,
+    resultPaths,
+    resultSha256: await Promise.all(resultPaths.map(async (path) => ({
+      path,
+      sha256: await sha256RepoPath(repoRootImportMetaUrl, path),
+    }))),
+    generatedBy: "vitrum pt radiometric A/B wrapper",
+  };
+}
+
+/**
+ * @param {string} repoRootImportMetaUrl
+ * @param {string} statusPath
+ * @param {string[]} sourceStatusPaths
+ */
+export async function ptRadiometricPromotionProvenance(repoRootImportMetaUrl, statusPath, sourceStatusPaths) {
+  return {
+    schema: PT_RADIOMETRIC_PROMOTION_PROVENANCE_SCHEMA,
+    ...(await ptRadiometricSourceIdentity(repoRootImportMetaUrl)),
+    statusPath,
+    sourceStatusPaths,
+    sourceStatusSha256: await Promise.all(sourceStatusPaths.map(async (path) => ({
+      path,
+      sha256: await sha256RepoPath(repoRootImportMetaUrl, path),
+    }))),
+    generatedBy: "vitrum pt radiometric A/B promotion wrapper",
   };
 }
 
