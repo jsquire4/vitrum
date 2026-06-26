@@ -432,6 +432,8 @@ const PT_WEBGL2_MATERIAL_FURNACE_PROOFS = [
   },
 ];
 
+const PT_WEBGL2_EXPECTED_BROWSER_CAPTURE_MODES = new Set(["engine-first", "canvas-first"]);
+
 /** @param {string} path */
 function repoUrl(path) {
   return new URL(`../../${path}`, import.meta.url);
@@ -711,13 +713,10 @@ async function assertPngHeader(path, label) {
  * @param {Record<string, any>} manifest
  */
 async function assertPtWebgl2BrowserPassStatus(status, manifest) {
+  assertPtWebgl2BrowserManifest(manifest);
   if (status.harness !== "gltf-browser-proof:pt-webgl2-real") fail("pt-webgl2 browser status harness mismatch");
   if (status.backend !== "pt-webgl2") fail("pt-webgl2 browser status backend mismatch");
-  if (manifest.kind !== "vitrum-browser-gltf-pt-webgl2-goldens") fail("pt-webgl2 browser manifest kind mismatch");
-  if (manifest.backend !== "pt-webgl2") fail("pt-webgl2 browser manifest backend mismatch");
-  if (!Array.isArray(manifest.assets) || manifest.assets.length !== 3) {
-    fail("pt-webgl2 browser manifest must contain textured, Draco, and meshopt rows");
-  }
+
   if (status.assetCount != null && status.assetCount !== manifest.assets.length) {
     fail("pt-webgl2 browser status assetCount differs from manifest assets");
   }
@@ -734,6 +733,127 @@ async function assertPtWebgl2BrowserPassStatus(status, manifest) {
   }
 }
 
+/**
+ * @param {Record<string, any>} manifest
+ */
+function assertPtWebgl2BrowserManifest(manifest) {
+  if (manifest.kind !== "vitrum-browser-gltf-pt-webgl2-goldens") fail("pt-webgl2 browser manifest kind mismatch");
+  if (manifest.backend !== "pt-webgl2") fail("pt-webgl2 browser manifest backend mismatch");
+  if (manifest.browserHarness !== "tools/gltf-browser-proof/capture-pt-webgl2-real.mjs") {
+    fail("pt-webgl2 browser manifest harness mismatch");
+  }
+  if (JSON.stringify(manifest.resolution) !== JSON.stringify([64, 64])) fail("pt-webgl2 browser manifest resolution mismatch");
+  if (manifest.samplesPerPixel !== 1) fail("pt-webgl2 browser manifest samplesPerPixel mismatch");
+  if (manifest.updateCommand !== "node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs --update-golden") {
+    fail("pt-webgl2 browser manifest updateCommand mismatch");
+  }
+  if (manifest.checkCommand !== "node tools/gltf-browser-proof/capture-pt-webgl2-real.mjs") {
+    fail("pt-webgl2 browser manifest checkCommand mismatch");
+  }
+  if (!Array.isArray(manifest.assets) || manifest.assets.length !== 3) {
+    fail("pt-webgl2 browser manifest must contain textured, Draco, and meshopt rows");
+  }
+  const expectedAssets = [
+    {
+      assetId: "box-textured-glb",
+      kind: "textured-glb",
+      minTextures: 1,
+      requiredExtensions: [],
+      requiredHooks: [],
+      goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png",
+    },
+    {
+      assetId: "cesium-milk-truck-draco",
+      kind: "draco",
+      minTextures: 0,
+      requiredExtensions: ["KHR_draco_mesh_compression"],
+      requiredHooks: ["draco"],
+      goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png",
+    },
+    {
+      assetId: "meshopt-cube-real",
+      kind: "meshopt",
+      minTextures: 0,
+      requiredExtensions: ["KHR_meshopt_compression"],
+      requiredHooks: ["meshopt"],
+      goldenPath: "tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png",
+    },
+  ];
+  const assetsById = byKey(manifest.assets, "assetId", "pt-webgl2 browser manifest");
+  for (const expected of expectedAssets) {
+    const asset = assetsById.get(expected.assetId);
+    if (!asset) fail(`pt-webgl2 browser manifest missing ${expected.assetId}`);
+    if (asset.kind !== expected.kind) fail(`${expected.assetId}: manifest kind mismatch`);
+    if (asset.minTextures !== expected.minTextures) fail(`${expected.assetId}: manifest minTextures mismatch`);
+    if (asset.goldenPath !== expected.goldenPath) fail(`${expected.assetId}: manifest goldenPath mismatch`);
+    if (JSON.stringify(asset.requiredExtensions ?? []) !== JSON.stringify(expected.requiredExtensions)) {
+      fail(`${expected.assetId}: manifest requiredExtensions mismatch`);
+    }
+    if (JSON.stringify(asset.requiredHooks ?? []) !== JSON.stringify(expected.requiredHooks)) {
+      fail(`${expected.assetId}: manifest requiredHooks mismatch`);
+    }
+    if (asset.thresholds?.maxRmse !== 8 || asset.thresholds?.maxMeanAbs !== 4 || asset.thresholds?.maxAbs !== 48) {
+      fail(`${expected.assetId}: manifest golden thresholds mismatch`);
+    }
+  }
+}
+
+/**
+ * @param {Record<string, any>} status
+ * @param {Record<string, any>} manifest
+ */
+function assertPtWebgl2BrowserHostBlockedStatus(status, manifest) {
+  if (status.harness !== "gltf-browser-proof:pt-webgl2-real") fail(`${status.captureMode}: browser status harness mismatch`);
+  if (status.backend !== "pt-webgl2") fail(`${status.captureMode}: browser status backend mismatch`);
+  if (!PT_WEBGL2_EXPECTED_BROWSER_CAPTURE_MODES.has(status.captureMode)) {
+    fail(`pt-webgl2 browser status has unexpected captureMode ${status.captureMode ?? "<missing>"}`);
+  }
+  if (status.verdict !== "HOST-BLOCKED") fail(`${status.captureMode}: browser status must be HOST-BLOCKED`);
+  const expectedHostBlockClass = status.captureMode === "engine-first"
+    ? "engine-readback-timeout"
+    : "browser-canvas-readback-timeout";
+  if (JSON.stringify(status.hostBlockClasses ?? []) !== JSON.stringify([expectedHostBlockClass])) {
+    fail(`${status.captureMode}: browser status hostBlockClasses mismatch`);
+  }
+  if (!Array.isArray(status.assets) || status.assets.length !== manifest.assets.length) {
+    fail(`${status.captureMode}: browser HOST-BLOCKED status must contain one row per manifest asset`);
+  }
+  const manifestAssets = byKey(manifest.assets, "assetId", "pt-webgl2 browser manifest");
+  const statusAssets = byKey(status.assets, "assetId", `${status.captureMode} browser status`);
+  for (const [assetId, manifestAsset] of manifestAssets) {
+    const row = statusAssets.get(assetId);
+    if (!row) fail(`${status.captureMode}: browser HOST-BLOCKED status missing ${assetId}`);
+    if (row.verdict !== "HOST-BLOCKED") fail(`${status.captureMode}/${assetId}: row verdict must be HOST-BLOCKED`);
+    if (row.harness !== "gltf-browser-proof:pt-webgl2-real") fail(`${status.captureMode}/${assetId}: row harness mismatch`);
+    if (row.backend !== "pt-webgl2") fail(`${status.captureMode}/${assetId}: row backend mismatch`);
+    if (row.captureMode !== status.captureMode) fail(`${status.captureMode}/${assetId}: row captureMode mismatch`);
+    if (row.kind !== manifestAsset.kind) fail(`${status.captureMode}/${assetId}: row kind mismatch`);
+    if (row.hostBlockClass !== expectedHostBlockClass) fail(`${status.captureMode}/${assetId}: row hostBlockClass mismatch`);
+    if (!(row.hostBlockMethods ?? []).length) fail(`${status.captureMode}/${assetId}: row must preserve hostBlockMethods`);
+    if (typeof row.hostBlockReason !== "string" || row.hostBlockReason.length === 0) {
+      fail(`${status.captureMode}/${assetId}: row must preserve hostBlockReason`);
+    }
+    if (row.telemetry?.backend !== "pt-webgl2") fail(`${status.captureMode}/${assetId}: telemetry backend mismatch`);
+    if (row.telemetry?.assetId !== assetId) fail(`${status.captureMode}/${assetId}: telemetry assetId mismatch`);
+    if (row.telemetry?.realAssetReady !== true) fail(`${status.captureMode}/${assetId}: telemetry must prove realAssetReady=true`);
+    if ((row.telemetry?.textureDecodeReport?.mapCount ?? 0) < (manifestAsset.minTextures ?? 0)) {
+      fail(`${status.captureMode}/${assetId}: telemetry textureDecodeReport.mapCount below manifest expectation`);
+    }
+    for (const ext of manifestAsset.requiredExtensions ?? []) {
+      if (!(row.telemetry?.extensionsUsed ?? []).includes(ext)) {
+        fail(`${status.captureMode}/${assetId}: telemetry missing required extension ${ext}`);
+      }
+    }
+    for (const hook of manifestAsset.requiredHooks ?? []) {
+      if (row.telemetry?.browserDecodeHooks?.[hook] !== true) {
+        fail(`${status.captureMode}/${assetId}: telemetry missing decode hook ${hook}`);
+      }
+    }
+  }
+  for (const assetId of statusAssets.keys()) {
+    if (!manifestAssets.has(assetId)) fail(`${status.captureMode}: browser HOST-BLOCKED status has unexpected asset ${assetId}`);
+  }
+}
 /**
  * @param {{
  *   feature: string,
@@ -885,6 +1005,7 @@ const gapExecutionPlan = await readText(GAP_EXECUTION_PLAN_PATH);
 const ptWebgl2BrowserStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_STATUS_PATH));
 const ptWebgl2BrowserCanvasFirstStatus = JSON.parse(await readText(PT_WEBGL2_BROWSER_CANVAS_FIRST_STATUS_PATH));
 const ptWebgl2BrowserManifest = JSON.parse(await readText(PT_WEBGL2_BROWSER_MANIFEST_PATH));
+assertPtWebgl2BrowserManifest(ptWebgl2BrowserManifest);
 
 if (!matrix.includes("| Feature | pt-webgl2 (WebGL2) | pt-webgpu full tier (WebGPU) |")) {
   fail("renderer fidelity matrix must label the pt-webgpu column as full-tier proof");
@@ -923,6 +1044,16 @@ const browserStatuses = [ptWebgl2BrowserStatus, ptWebgl2BrowserCanvasFirstStatus
 if (browserStatuses.some((status) => status.verdict === "HOST-BLOCKED")) {
   if (!browserStatuses.every((status) => status.verdict === "HOST-BLOCKED")) {
     fail("pt-webgl2 browser status artifacts must all pass before any promotion");
+  }
+  const captureModes = new Set(browserStatuses.map((status) => status.captureMode));
+  if (
+    captureModes.size !== PT_WEBGL2_EXPECTED_BROWSER_CAPTURE_MODES.size ||
+    ![...PT_WEBGL2_EXPECTED_BROWSER_CAPTURE_MODES].every((mode) => captureModes.has(mode))
+  ) {
+    fail("pt-webgl2 HOST-BLOCKED browser statuses must include engine-first and canvas-first capture modes");
+  }
+  for (const browserStatus of browserStatuses) {
+    assertPtWebgl2BrowserHostBlockedStatus(browserStatus, ptWebgl2BrowserManifest);
   }
   for (const row of featureRows(matrix)) {
     const columns = row.split(" | ");

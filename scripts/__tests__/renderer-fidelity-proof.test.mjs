@@ -7,6 +7,9 @@ import test from 'node:test';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const checkerPath = join(repoRoot, 'tools', 'renderer-fidelity-proof', 'check-proofs.mjs');
 const promotionStatusPath = join(repoRoot, 'tools', 'renderer-fidelity-proof', 'promotion-status.json');
+const ptWebgl2BrowserStatusPath = join(repoRoot, 'tools', 'gltf-browser-proof', 'pt-webgl2-real-status.json');
+const ptWebgl2CanvasFirstStatusPath = join(repoRoot, 'tools', 'gltf-browser-proof', 'pt-webgl2-real-canvas-first-status.json');
+const ptWebgl2BrowserManifestPath = join(repoRoot, 'tools', 'reference-renders', 'gltf-real-browser-pt-webgl2', 'manifest.json');
 const queuePath = join(repoRoot, 'tools', 'road-to-100', 'validation-queue.json');
 const validationQueueCheckerPath = join(repoRoot, 'tools', 'road-to-100', 'check-validation-queue.mjs');
 
@@ -66,6 +69,57 @@ test('renderer fidelity checker fail-closes browser promotion and source-only pt
   assert.match(validationQueueChecker, /assertFileSha256/);
   assert.match(validationQueueChecker, /promotion provenance checkerSha256/);
   assert.match(validationQueueChecker, /promotion provenance sourceStatusSha256/);
+  assert.match(checker, /PT_WEBGL2_EXPECTED_BROWSER_CAPTURE_MODES/);
+  assert.match(checker, /assertPtWebgl2BrowserHostBlockedStatus/);
+  assert.match(checker, /must contain one row per manifest asset/);
+  assert.match(checker, /telemetry must prove realAssetReady=true/);
+});
+
+test('renderer fidelity browser HOST-BLOCKED proof still covers textured, Draco, and meshopt assets', async () => {
+  const manifest = JSON.parse(await readFile(ptWebgl2BrowserManifestPath, 'utf8'));
+  const engineFirstStatus = JSON.parse(await readFile(ptWebgl2BrowserStatusPath, 'utf8'));
+  const canvasFirstStatus = JSON.parse(await readFile(ptWebgl2CanvasFirstStatusPath, 'utf8'));
+
+  assert.equal(manifest.kind, 'vitrum-browser-gltf-pt-webgl2-goldens');
+  assert.equal(manifest.backend, 'pt-webgl2');
+  assert.equal(manifest.browserHarness, 'tools/gltf-browser-proof/capture-pt-webgl2-real.mjs');
+  assert.deepEqual(manifest.resolution, [64, 64]);
+  assert.equal(manifest.samplesPerPixel, 1);
+  assert.deepEqual(
+    manifest.assets.map((asset) => [asset.assetId, asset.kind, asset.goldenPath]),
+    [
+      ['box-textured-glb', 'textured-glb', 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png'],
+      ['cesium-milk-truck-draco', 'draco', 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png'],
+      ['meshopt-cube-real', 'meshopt', 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png'],
+    ],
+  );
+
+  for (const [status, captureMode, hostBlockClass] of [
+    [engineFirstStatus, 'engine-first', 'engine-readback-timeout'],
+    [canvasFirstStatus, 'canvas-first', 'browser-canvas-readback-timeout'],
+  ]) {
+    assert.equal(status.verdict, 'HOST-BLOCKED');
+    assert.equal(status.backend, 'pt-webgl2');
+    assert.equal(status.captureMode, captureMode);
+    assert.deepEqual(status.hostBlockClasses, [hostBlockClass]);
+    assert.equal(status.assets.length, manifest.assets.length);
+    for (const asset of manifest.assets) {
+      const row = status.assets.find((candidate) => candidate.assetId === asset.assetId);
+      assert.ok(row, `${captureMode} should include ${asset.assetId}`);
+      assert.equal(row.verdict, 'HOST-BLOCKED');
+      assert.equal(row.captureMode, captureMode);
+      assert.equal(row.hostBlockClass, hostBlockClass);
+      assert.equal(row.telemetry.assetId, asset.assetId);
+      assert.equal(row.telemetry.backend, 'pt-webgl2');
+      assert.equal(row.telemetry.realAssetReady, true);
+      for (const ext of asset.requiredExtensions ?? []) {
+        assert.ok(row.telemetry.extensionsUsed.includes(ext), `${asset.assetId} should report ${ext}`);
+      }
+      for (const hook of asset.requiredHooks ?? []) {
+        assert.equal(row.telemetry.browserDecodeHooks[hook], true, `${asset.assetId} should report ${hook} hook`);
+      }
+    }
+  }
 });
 
 test('Road renderer fidelity row cites the promotion guard artifact', async () => {

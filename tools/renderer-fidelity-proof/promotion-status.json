@@ -57,7 +57,7 @@
   "provenance": {
     "schema": "vitrum.renderer-fidelity.promotion-provenance.v1",
     "checkerPath": "tools/renderer-fidelity-proof/check-proofs.mjs",
-    "checkerSha256": "1d77e59eaa2ec34d60674a4fc011d45d2a19e7f603111581f27ea411331898da",
+    "checkerSha256": "fdf6ff5547b22fd5685b79af6b0ab18bf04aeba49ba28ff3ec3842ea724919d5",
     "statusPath": "tools/renderer-fidelity-proof/promotion-status.json",
     "sourceStatuses": [
       "tools/gltf-browser-proof/pt-webgl2-real-status.json",
