@@ -794,6 +794,45 @@ function sameJson(actual, expected) {
 }
 
 /**
+ * @param {unknown} status
+ * @param {{ path: string, command: string, filter: string, label: string }} expected
+ */
+function assertFocusedDznGoldenStatus(status, expected) {
+  if (status == null || typeof status !== `object`) fail(expected.path + ` must be a status object`);
+  const record = /** @type {{ harness?: unknown, verdict?: unknown, command?: unknown, filter?: unknown, goldenVariant?: unknown, exitStatus?: unknown, signal?: unknown, summary?: { totalConfigs?: unknown, failures?: unknown, knownResiduals?: unknown }, configs?: unknown }} */ (status);
+  if (record.harness !== `behavioral-gate:dzn`) fail(expected.path + ` must pin behavioral-gate:dzn harness`);
+  if (record.verdict !== `PASS` || record.exitStatus !== 0 || record.signal !== null) {
+    fail(expected.path + ` must pin PASS/exitStatus=0/signal=null`);
+  }
+  if (record.command !== expected.command || record.filter !== expected.filter) {
+    fail(expected.path + ` must pin the focused dzn command/filter`);
+  }
+  if (record.goldenVariant !== `dzn-full`) fail(expected.path + ` must pin dzn-full goldenVariant`);
+  if (record.summary?.totalConfigs !== 1 || record.summary?.failures !== 0 || record.summary?.knownResiduals !== 0) {
+    fail(expected.path + ` must pin exactly one config with zero failures/residuals`);
+  }
+  if (!Array.isArray(record.configs) || record.configs.length !== 1) {
+    fail(expected.path + ` must contain exactly one config row`);
+  }
+  const config = /** @type {{ verdict?: unknown, label?: unknown, rawStatus?: unknown, tier?: unknown, luminance?: unknown, gpuErrors?: unknown, nan?: unknown, goldenStatus?: unknown, goldenVariant?: unknown, rmse?: unknown, meanAbs?: unknown, maxAbs?: unknown, thresholds?: unknown }} */ (record.configs[0]);
+  if (config.verdict !== `PASS` || config.rawStatus !== `OK` || config.label !== expected.label || config.tier !== `full`) {
+    fail(expected.path + ` must pin full-tier PASS/OK config ` + expected.label);
+  }
+  if (!(Number(config.luminance) > 0) || config.gpuErrors !== 0 || config.nan !== false) {
+    fail(expected.path + ` must pin positive luminance, gpuErrors=0, nan=false`);
+  }
+  if (config.goldenStatus !== `ok` || config.goldenVariant !== `dzn-full`) {
+    fail(expected.path + ` must pin goldenStatus=ok and dzn-full`);
+  }
+  if (config.rmse !== 0 || config.meanAbs !== 0 || config.maxAbs !== 0) {
+    fail(expected.path + ` committed dzn golden must stay exact-zero against its PNG`);
+  }
+  if (!sameJson(config.thresholds, { maxRmse: 8, maxMeanAbs: 4, maxAbs: 48 })) {
+    fail(expected.path + ` must pin the material-lobe golden thresholds`);
+  }
+}
+
+/**
  * @param {unknown} manifest
  */
 function assertGltfBrowserManifestCoverage(manifest) {
@@ -1264,17 +1303,21 @@ for (const needle of [
     fail(`VQ-PT-WEBGPU-RUNTIME-GOLDENS behavioral gate source is stale: missing ${needle}`);
   }
 }
-for (const [path, label] of [
-  ["tools/behavioral-gate/behavioral-gate-dzn-material-lobes-status.json", "pt/material-lobes"],
-  ["tools/behavioral-gate/behavioral-gate-dzn-material-lobe-maps-status.json", "pt/material-lobe-maps"],
+for (const expected of [
+  {
+    path: `tools/behavioral-gate/behavioral-gate-dzn-material-lobes-status.json`,
+    command: `npm run behavioral-gate:dzn -- --filter material-lobes --require-full-tier`,
+    filter: `material-lobes`,
+    label: `pt/material-lobes`,
+  },
+  {
+    path: `tools/behavioral-gate/behavioral-gate-dzn-material-lobe-maps-status.json`,
+    command: `npm run behavioral-gate:dzn -- --filter material-lobe-maps --require-full-tier`,
+    filter: `material-lobe-maps`,
+    label: `pt/material-lobe-maps`,
+  },
 ]) {
-  const status = await readJson(path);
-  if (status.verdict !== "PASS" || status.exitStatus !== 0) fail(`${path} must pin PASS/exitStatus=0`);
-  if (status.goldenVariant !== "dzn-full") fail(`${path} must pin dzn-full`);
-  const config = status.configs?.[0];
-  if (config?.label !== label || config?.goldenStatus !== "ok" || config?.tier !== "full") {
-    fail(`${path} must pin full-tier golden-ok config ${label}`);
-  }
+  assertFocusedDznGoldenStatus(await readJson(expected.path), expected);
 }
 
 const walkaroundBehavioralRow = queue.validationQueue.find((row) => row.id === "VQ-WALKAROUND-BEHAVIORAL-MATRIX");

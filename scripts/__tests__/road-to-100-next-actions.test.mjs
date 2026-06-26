@@ -225,4 +225,9 @@ test('committed road unresolved rows carry enforced execution metadata', async (
   assert.match(checkerSource, /function assertGltfBrowserManifestCoverage/);
   assert.match(checkerSource, /manifest must pin samplesPerPixel=1/);
   assert.match(checkerSource, /requiredHooks must pin/);
+  assert.match(checkerSource, /function assertFocusedDznGoldenStatus/);
+  assert.match(checkerSource, /must pin exactly one config with zero failures\/residuals/);
+  assert.match(checkerSource, /must pin positive luminance, gpuErrors=0, nan=false/);
+  assert.match(checkerSource, /committed dzn golden must stay exact-zero against its PNG/);
+  assert.match(checkerSource, /material-lobe golden thresholds/);
 });
