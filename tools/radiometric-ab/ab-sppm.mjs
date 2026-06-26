@@ -49,6 +49,7 @@ import {
   relativeError,
   W, H,
 } from "./helpers.mjs";
+import { radiometricResultProvenance } from "./resultProvenance.mjs";
 
 console.log("=== A/B #1: SPPM vs manifold-NEE caustic reference ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
@@ -134,6 +135,7 @@ console.log("");
 
 // ── Write results JSON ────────────────────────────────────────────────────────
 const results = {
+  provenance: await radiometricResultProvenance(import.meta.url, "tools/radiometric-ab/ab-sppm.mjs", "tools/radiometric-ab/results-sppm.json"),
   ab: "sppm-vs-manifold-nee",
   date: new Date().toISOString(),
   resolution: { W, H },

@@ -29,5 +29,14 @@
   "varRatio": 0.9402825600665269,
   "meanAgreement": true,
   "varianceNotWorse": true,
-  "verdict": "PASS"
+  "verdict": "PASS",
+  "provenance": {
+    "schema": "vitrum.radiometric-ab.result-provenance.v1",
+    "scriptPath": "tools/radiometric-ab/ab-restir-pt.mjs",
+    "resultPath": "tools/radiometric-ab/results-restir-pt.json",
+    "scriptSha256": "92a3d3fcb9e6ad1a9ea2a2426ca837f5c4d12206061c1099e7297c5253ac4e88",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "e3f7ec361f6b3f8786d9b644c6459c1c4b79b98971a54527d0b52174964722e0",
+    "generatedBy": "vitrum radiometric A/B harness"
+  }
 }

@@ -8,6 +8,7 @@ import {
   rmseROI,
   W,
 } from './helpers.mjs';
+import { radiometricResultProvenance } from './resultProvenance.mjs';
 
 const REF_FRAMES = 40;
 const CANDIDATE_FRAMES = 12;
@@ -177,6 +178,7 @@ async function main() {
 
   const verdict = scenes.every((scene) => scene.pass) ? 'PASS' : 'FAIL';
   const result = {
+    provenance: await radiometricResultProvenance(import.meta.url, 'tools/radiometric-ab/ab-sobol.mjs', 'tools/radiometric-ab/results-sobol.json'),
     ab: 'sobol-equal-frame-rmse',
     verdict,
     generatedAt: new Date().toISOString(),

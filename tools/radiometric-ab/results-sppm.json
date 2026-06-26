@@ -42,5 +42,14 @@
   ],
   "verdict": "PASS",
   "converging": true,
-  "inBallpark": true
+  "inBallpark": true,
+  "provenance": {
+    "schema": "vitrum.radiometric-ab.result-provenance.v1",
+    "scriptPath": "tools/radiometric-ab/ab-sppm.mjs",
+    "resultPath": "tools/radiometric-ab/results-sppm.json",
+    "scriptSha256": "08e668c31a7b60514c80bc6b722030d91012b0490e89ccd5eaf708e496f291de",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "e3f7ec361f6b3f8786d9b644c6459c1c4b79b98971a54527d0b52174964722e0",
+    "generatedBy": "vitrum radiometric A/B harness"
+  }
 }

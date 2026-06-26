@@ -114,5 +114,14 @@
       },
       "pass": true
     }
-  ]
+  ],
+  "provenance": {
+    "schema": "vitrum.radiometric-ab.result-provenance.v1",
+    "scriptPath": "tools/radiometric-ab/ab-sobol.mjs",
+    "resultPath": "tools/radiometric-ab/results-sobol.json",
+    "scriptSha256": "ec1981ebdcdd3d23258ba33101b43e50bc3c5c141a65c00fce4f87f414679f67",
+    "helperPath": "tools/radiometric-ab/resultProvenance.mjs",
+    "helperSha256": "e3f7ec361f6b3f8786d9b644c6459c1c4b79b98971a54527d0b52174964722e0",
+    "generatedBy": "vitrum radiometric A/B harness"
+  }
 }

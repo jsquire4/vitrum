@@ -15,6 +15,7 @@ import {
   WALKAROUND_ALL_SPP64_STATUS_PROOF,
   WALKAROUND_GLOSSY_SPP64_STATUS_PROOF,
 } from "./proofs.mjs";
+import { radiometricResultProvenance } from "./resultProvenance.mjs";
 
 const REQUIRED_RADIOMETRIC_AB_ROWS = [
   {
@@ -132,6 +133,10 @@ async function assertCommon(proof, result) {
   const scriptUrl = new URL(`../../${proof.scriptPath}`, import.meta.url);
   const scriptStat = await Deno.stat(scriptUrl);
   if (!scriptStat.isFile) fail(`${proof.id}: script path is missing`);
+  const expectedProvenance = await radiometricResultProvenance(scriptUrl.href, proof.scriptPath, proof.resultPath);
+  if (!sameJson(result.provenance, expectedProvenance)) {
+    fail(`${proof.id}: result provenance differs from current script/helper identity`);
+  }
 }
 
 /**
