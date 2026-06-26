@@ -2,11 +2,16 @@
 // Captures real glTF assets through the browser pt-webgl2 one-call path.
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { gltfBrowserProofStatusExitCode } from './status-exit-code.mjs';
+
+const CHECKER_PATH = 'tools/gltf-browser-proof/check-status.mjs';
+const CAPTURE_HARNESS_PATH = 'tools/gltf-browser-proof/capture-pt-webgl2-real.mjs';
+const MANIFEST_PATH = 'tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
@@ -948,8 +953,43 @@ async function withTimeout(promise, ms, message) {
 }
 
 async function writeStatus(status) {
+  const statusWithProvenance = {
+    ...status,
+    provenance: await buildStatusProvenance(),
+  };
   await mkdir(dirname(statusPath), { recursive: true });
-  await writeFile(statusPath, `${JSON.stringify(status, null, 2)}\n`);
+  await writeFile(statusPath, `${JSON.stringify(statusWithProvenance, null, 2)}\n`);
+}
+
+async function buildStatusProvenance() {
+  return {
+    schema: 'vitrum.gltf-browser-proof.status-provenance.v1',
+    checkerPath: CHECKER_PATH,
+    checkerSha256: await sha256RepoPath(CHECKER_PATH),
+    captureHarnessPath: CAPTURE_HARNESS_PATH,
+    captureHarnessSha256: await sha256RepoPath(CAPTURE_HARNESS_PATH),
+    manifestPath: MANIFEST_PATH,
+    manifestSha256: await sha256RepoPath(MANIFEST_PATH),
+    goldenFiles: await Promise.all(REAL_BROWSER_ASSETS.map(async (asset) => ({
+      assetId: asset.assetId,
+      ...(await repoFileState(asset.goldenPath)),
+    }))),
+  };
+}
+
+async function sha256RepoPath(path) {
+  const bytes = await readFile(resolve(repoRoot, path));
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+async function repoFileState(path) {
+  try {
+    const sha256 = await sha256RepoPath(path);
+    return { path, exists: true, sha256 };
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return { path, exists: false, sha256: null };
+    throw error;
+  }
 }
 
 function comparePixels(candidate, baseline) {

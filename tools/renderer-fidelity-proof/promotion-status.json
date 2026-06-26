@@ -73,11 +73,11 @@
     "sourceStatusSha256": [
       {
         "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json",
-        "sha256": "93baf7673d1374545d34aba4df7a78cab0fe02c990c901db69973cf7fac78d5c"
+        "sha256": "217b5b00dd90af93dcb16b3496348dd6466fd620e78a2ef7783d22ee071f13e2"
       },
       {
         "path": "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json",
-        "sha256": "cf0484d26324de6af6e11c2f79500fb0fc88e8e554c013f5f99c7c93f00948d7"
+        "sha256": "17fe7577f6e3a10b2d8991f823bc87e74feb587efc01a73f00cf47fd5a4c9347"
       },
       {
         "path": "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",

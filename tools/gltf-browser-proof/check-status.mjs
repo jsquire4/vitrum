@@ -2,6 +2,13 @@
 // @ts-check
 // Verifies committed browser pt-webgl2 real-glTF proof artifacts.
 
+const CHECKER_PATH = "tools/gltf-browser-proof/check-status.mjs";
+const CAPTURE_HARNESS_PATH = "tools/gltf-browser-proof/capture-pt-webgl2-real.mjs";
+const COMMITTED_STATUS_PATHS = new Set([
+  "tools/gltf-browser-proof/pt-webgl2-real-status.json",
+  "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json",
+]);
+
 const statusUrl = resolveInputUrl(readFlagValue("--status"), "./pt-webgl2-real-status.json");
 const manifestUrl = resolveInputUrl(readFlagValue("--manifest"), "../reference-renders/gltf-real-browser-pt-webgl2/manifest.json");
 const requirePass = Deno.args.includes("--require-pass");
@@ -46,6 +53,11 @@ function fail(message) {
 
 const status = JSON.parse(await Deno.readTextFile(statusUrl));
 const manifest = JSON.parse(await Deno.readTextFile(manifestUrl));
+const statusPath = repoRelativePath(statusUrl);
+
+if (COMMITTED_STATUS_PATHS.has(statusPath) || status.provenance != null) {
+  assertObjectMatches(status.provenance, await expectedStatusProvenance(), `${statusPath ?? statusUrl.href}: provenance`);
+}
 
 if (status.harness !== "gltf-browser-proof:pt-webgl2-real") fail("status harness mismatch");
 if (status.backend !== "pt-webgl2") fail("status backend mismatch");
@@ -150,6 +162,61 @@ if (status.verdict === "HOST-BLOCKED") {
   console.log("[gltf-browser-proof-check] PASS (pt-webgl2 browser real glTF proof)");
 } else {
   fail(`status verdict must be PASS or HOST-BLOCKED, got ${status.verdict}`);
+}
+
+/** @param {Uint8Array} bytes */
+async function sha256Hex(bytes) {
+  const owned = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(owned).set(bytes);
+  const digest = await crypto.subtle.digest("SHA-256", owned);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** @param {URL} url */
+async function sha256Url(url) {
+  return sha256Hex(await Deno.readFile(url));
+}
+
+/** @param {string} path */
+async function sha256RepoPath(path) {
+  return sha256Url(new URL(`../../${path}`, import.meta.url));
+}
+
+/** @param {string} path */
+async function repoFileState(path) {
+  const url = new URL(`../../${path}`, import.meta.url);
+  try {
+    const stat = await Deno.stat(url);
+    if (!stat.isFile) return { path, exists: false, sha256: null };
+    return { path, exists: true, sha256: await sha256Url(url) };
+  } catch {
+    return { path, exists: false, sha256: null };
+  }
+}
+
+async function expectedStatusProvenance() {
+  const manifestPath = repoRelativePath(manifestUrl);
+  if (manifestPath == null) fail("committed browser proof provenance requires a repo-local manifest path");
+  return {
+    schema: "vitrum.gltf-browser-proof.status-provenance.v1",
+    checkerPath: CHECKER_PATH,
+    checkerSha256: await sha256RepoPath(CHECKER_PATH),
+    captureHarnessPath: CAPTURE_HARNESS_PATH,
+    captureHarnessSha256: await sha256RepoPath(CAPTURE_HARNESS_PATH),
+    manifestPath,
+    manifestSha256: await sha256Url(manifestUrl),
+    goldenFiles: await Promise.all(REQUIRED_BROWSER_ASSETS.map(async (asset) => ({
+      assetId: asset.assetId,
+      ...(await repoFileState(asset.goldenPath)),
+    }))),
+  };
+}
+
+/** @param {unknown} actual @param {unknown} expected @param {string} label */
+function assertObjectMatches(actual, expected, label) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    fail(`${label} drifted; regenerate the browser proof status from current source/evidence`);
+  }
 }
 
 /** @param {Record<string, any>} probe */
@@ -481,4 +548,11 @@ function resolveInputUrl(value, fallback) {
   if (value == null || value.length === 0) return new URL(fallback, import.meta.url);
   if (/^[a-z][a-z0-9+.-]*:/i.test(value)) return new URL(value);
   return new URL(value, import.meta.url);
+}
+
+/** @param {URL} url */
+function repoRelativePath(url) {
+  const repoRoot = new URL("../../", import.meta.url);
+  if (!url.href.startsWith(repoRoot.href)) return null;
+  return decodeURIComponent(url.href.slice(repoRoot.href.length));
 }
