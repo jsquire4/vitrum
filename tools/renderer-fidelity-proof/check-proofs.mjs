@@ -12,6 +12,7 @@ const GAP_EXECUTION_PLAN_PATH = "plan/gap-closure-execution-plan.md";
 const PT_WEBGL2_BROWSER_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-status.json";
 const PT_WEBGL2_BROWSER_CANVAS_FIRST_STATUS_PATH = "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json";
 const PT_WEBGL2_BROWSER_MANIFEST_PATH = "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json";
+const CHECKER_PATH = "tools/renderer-fidelity-proof/check-proofs.mjs";
 const PROMOTION_STATUS_PATH = "tools/renderer-fidelity-proof/promotion-status.json";
 const PT_RADIOMETRIC_PROMOTION_STATUS_PATH = "tools/radiometric-ab/pt-promotion-status.json";
 const BDPT_RADIOMETRIC_RESULT_PATH = "tools/radiometric-ab/results-bdpt.json";
@@ -470,6 +471,27 @@ async function sha256Hex(bytes) {
     .join("");
 }
 
+/** @param {string} path */
+async function sha256RepoPath(path) {
+  return await sha256Hex(await Deno.readFile(repoUrl(path)));
+}
+
+/** @param {string[]} sourceStatuses */
+async function rendererFidelityPromotionProvenance(sourceStatuses) {
+  return {
+    schema: "vitrum.renderer-fidelity.promotion-provenance.v1",
+    checkerPath: CHECKER_PATH,
+    checkerSha256: await sha256RepoPath(CHECKER_PATH),
+    statusPath: PROMOTION_STATUS_PATH,
+    sourceStatuses,
+    sourceStatusSha256: await Promise.all(sourceStatuses.map(async (path) => ({
+      path,
+      sha256: await sha256RepoPath(path),
+    }))),
+    generatedBy: "vitrum renderer fidelity proof ledger",
+  };
+}
+
 /** @param {GoldenPngProof} proof */
 async function assertPng(proof) {
   const url = repoUrl(proof.path);
@@ -847,6 +869,10 @@ async function assertPromotionStatus(ptWebgl2BrowserStatuses) {
   ];
   if (JSON.stringify(status.sourceStatuses) !== JSON.stringify(expectedSourceStatuses)) {
     fail(`${PROMOTION_STATUS_PATH} sourceStatuses drifted`);
+  }
+  const expectedProvenance = await rendererFidelityPromotionProvenance(expectedSourceStatuses);
+  if (JSON.stringify(status.provenance) !== JSON.stringify(expectedProvenance)) {
+    fail(`${PROMOTION_STATUS_PATH} provenance differs from current checker/source artifact identity`);
   }
 }
 
