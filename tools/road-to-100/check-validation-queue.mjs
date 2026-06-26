@@ -136,6 +136,36 @@ const REQUIRED_GLTF_REAL_ARTIFACT_PATHS = [
   "tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-meshopt.png",
 ];
 
+const REQUIRED_GLTF_REAL_MANIFEST_ROWS = [
+  {
+    assetId: `box-textured-glb`,
+    label: `pt/gltf-real-box-textured`,
+    kind: `textured-glb`,
+    requiredExtensions: [],
+    baseGoldenPath: `tools/reference-renders/gltf-real-behavioral/pt-gltf-real-box-textured.png`,
+    dznFullGoldenPath: `tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-box-textured.png`,
+    thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  },
+  {
+    assetId: `cesium-milk-truck-draco`,
+    label: `pt/gltf-real-draco`,
+    kind: `draco`,
+    requiredExtensions: [`KHR_draco_mesh_compression`],
+    baseGoldenPath: `tools/reference-renders/gltf-real-behavioral/pt-gltf-real-draco.png`,
+    dznFullGoldenPath: `tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-draco.png`,
+    thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  },
+  {
+    assetId: `meshopt-cube-real`,
+    label: `pt/gltf-real-meshopt`,
+    kind: `meshopt`,
+    requiredExtensions: [`KHR_meshopt_compression`],
+    baseGoldenPath: `tools/reference-renders/gltf-real-behavioral/pt-gltf-real-meshopt.png`,
+    dznFullGoldenPath: `tools/reference-renders/gltf-real-behavioral-dzn-full/pt-gltf-real-meshopt.png`,
+    thresholds: { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 },
+  },
+];
+
 const REQUIRED_GLTF_BROWSER_PROVENANCE_GOLDEN_FILES = [
   {
     assetId: "box-textured-glb",
@@ -671,6 +701,14 @@ function getJsonPath(object, path) {
 }
 
 /**
+ * @param {unknown} actual
+ * @param {unknown} expected
+ */
+function sameJson(actual, expected) {
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
+/**
  * @param {unknown} artifact
  * @param {string} ownerId
  */
@@ -738,6 +776,50 @@ function assertMutationStatusCoverage(status, prefix, path) {
   }
 }
 
+/**
+ * @param {unknown} manifest
+ * @param {{ label: string, goldenVariant: string | null, goldenPathKey: string }} expected
+ */
+function assertRealGltfManifestCoverage(manifest, expected) {
+  if (manifest == null || typeof manifest !== `object`) fail(expected.label + ` manifest must be an object`);
+  const manifestRecord = /** @type {{ kind?: unknown, backend?: unknown, goldenVariant?: unknown, resolution?: unknown, samplesPerPixel?: unknown, assets?: unknown }} */ (manifest);
+  if (manifestRecord.kind !== `vitrum-real-gltf-behavioral-goldens`) {
+    fail(expected.label + ` manifest kind mismatch`);
+  }
+  if (manifestRecord.backend !== `pt-webgpu`) {
+    fail(expected.label + ` manifest must pin backend=pt-webgpu`);
+  }
+  if ((manifestRecord.goldenVariant ?? null) !== expected.goldenVariant) {
+    fail(expected.label + ` manifest goldenVariant mismatch`);
+  }
+  if (!sameJson(manifestRecord.resolution, [64, 64])) {
+    fail(expected.label + ` manifest must pin 64x64 resolution`);
+  }
+  if (manifestRecord.samplesPerPixel !== 8) {
+    fail(expected.label + ` manifest must pin samplesPerPixel=8`);
+  }
+  if (!Array.isArray(manifestRecord.assets) || manifestRecord.assets.length !== REQUIRED_GLTF_REAL_MANIFEST_ROWS.length) {
+    fail(expected.label + ` manifest must pin the three public real-asset rows`);
+  }
+  for (const [index, required] of REQUIRED_GLTF_REAL_MANIFEST_ROWS.entries()) {
+    const asset = /** @type {{ assetId?: unknown, label?: unknown, kind?: unknown, goldenPath?: unknown, requiredExtensions?: unknown, thresholds?: unknown }} */ (manifestRecord.assets[index]);
+    if (asset == null || typeof asset !== `object`) {
+      fail(expected.label + ` manifest assets[` + index + `] must be an object`);
+    }
+    if (asset.assetId !== required.assetId || asset.label !== required.label || asset.kind !== required.kind) {
+      fail(expected.label + ` manifest assets[` + index + `] must pin ` + required.assetId + `/` + required.label + `/` + required.kind);
+    }
+    if (asset.goldenPath !== required[expected.goldenPathKey]) {
+      fail(expected.label + ` manifest assets[` + index + `] must pin goldenPath ` + required[expected.goldenPathKey]);
+    }
+    if (!sameJson(asset.requiredExtensions ?? [], required.requiredExtensions)) {
+      fail(expected.label + ` manifest assets[` + index + `] requiredExtensions must pin ` + required.assetId);
+    }
+    if (!sameJson(asset.thresholds, required.thresholds)) {
+      fail(expected.label + ` manifest assets[` + index + `] thresholds must pin ` + required.assetId);
+    }
+  }
+}
 const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await Promise.all([
   readJson(QUEUE_PATH),
   readJson(PACKAGE_PATH),
@@ -1078,16 +1160,17 @@ for (const needle of [
     fail(`VQ-GLTF-REAL-WEBGPU behavioral gate source is stale: missing ${needle}`);
   }
 }
-const realGltfDznManifest = await readJson("tools/reference-renders/gltf-real-behavioral-dzn-full/manifest.json");
-if (realGltfDznManifest.kind !== "vitrum-real-gltf-behavioral-goldens") {
-  fail("VQ-GLTF-REAL-WEBGPU dzn manifest kind mismatch");
-}
-if (realGltfDznManifest.goldenVariant !== "dzn-full") {
-  fail("VQ-GLTF-REAL-WEBGPU dzn manifest must pin goldenVariant=dzn-full");
-}
-if (!Array.isArray(realGltfDznManifest.assets) || realGltfDznManifest.assets.length !== 3) {
-  fail("VQ-GLTF-REAL-WEBGPU dzn manifest must pin the three public real-asset rows");
-}
+const realGltfDznManifest = await readJson(`tools/reference-renders/gltf-real-behavioral-dzn-full/manifest.json`);
+assertRealGltfManifestCoverage(await readJson(`tools/reference-renders/gltf-real-behavioral/manifest.json`), {
+  label: `VQ-GLTF-REAL-WEBGPU base`,
+  goldenVariant: null,
+  goldenPathKey: `baseGoldenPath`,
+});
+assertRealGltfManifestCoverage(realGltfDznManifest, {
+  label: `VQ-GLTF-REAL-WEBGPU dzn`,
+  goldenVariant: `dzn-full`,
+  goldenPathKey: `dznFullGoldenPath`,
+});
 
 const rendererFidelityRow = queue.validationQueue.find((row) => row.id === "VQ-RENDERER-FIDELITY-PROOF");
 if (rendererFidelityRow == null) fail("validationQueue missing VQ-RENDERER-FIDELITY-PROOF");

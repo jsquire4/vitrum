@@ -209,4 +209,9 @@ test('committed road unresolved rows carry enforced execution metadata', async (
   assert.match(checkerSource, /function assertPngIdentity/);
   assert.match(checkerSource, /sha256Hex/);
   assert.match(checkerSource, /PNG SHA-256/);
+  assert.match(checkerSource, /REQUIRED_GLTF_REAL_MANIFEST_ROWS/);
+  assert.match(checkerSource, /function assertRealGltfManifestCoverage/);
+  assert.match(checkerSource, /baseGoldenPath/);
+  assert.match(checkerSource, /dznFullGoldenPath/);
+  assert.match(checkerSource, /requiredExtensions must pin/);
 });
