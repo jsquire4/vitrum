@@ -419,6 +419,20 @@ function readPngU32(bytes, offset) {
   return bytes[offset] * 0x1000000 + bytes[offset + 1] * 0x10000 + bytes[offset + 2] * 0x100 + bytes[offset + 3];
 }
 
+/**
+ * @param {string} path
+ * @param {string} label
+ */
+async function assertFileMissing(path, label) {
+  try {
+    const stat = await Deno.stat(repoUrl(path));
+    if (stat.isFile) fail(label + " is marked missing but " + path + " exists");
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return;
+    throw err;
+  }
+}
+
 /** @param {Uint8Array} bytes */
 async function sha256Hex(bytes) {
   const owned = new ArrayBuffer(bytes.byteLength);
@@ -1625,13 +1639,33 @@ if (
 ) {
   fail("learned systems status must pin status-provenance metadata");
 }
-if (typeof learnedProvenance.checkerSha256 !== "string" || learnedProvenance.checkerSha256.length !== 64) {
+if (typeof learnedProvenance.checkerSha256 !== "string" || !/^[0-9a-f]{64}$/.test(learnedProvenance.checkerSha256)) {
   fail("learned systems status provenance must pin checkerSha256");
 }
+await assertFileSha256(
+  "tools/learned-systems/check-status.mjs",
+  learnedProvenance.checkerSha256,
+  "learned systems status provenance checkerSha256",
+);
+const learnedProvenanceSourceFiles = Array.isArray(learnedProvenance.sourceFiles)
+  ? learnedProvenance.sourceFiles
+  : [];
+if (learnedProvenanceSourceFiles.length === 0) {
+  fail("learned systems status provenance must include sourceFiles");
+}
+for (const [index, entry] of learnedProvenanceSourceFiles.entries()) {
+  const sourceFile = /** @type {{ path?: unknown, sha256?: unknown }} */ (entry);
+  if (typeof sourceFile.path !== "string") {
+    fail("learned systems status provenance sourceFiles[" + index + "].path must be a string");
+  }
+  await assertFileSha256(
+    sourceFile.path,
+    sourceFile.sha256,
+    "learned systems status provenance sourceFiles " + sourceFile.path,
+  );
+}
 const learnedProvenanceSourcePaths = new Set(
-  Array.isArray(learnedProvenance.sourceFiles)
-    ? learnedProvenance.sourceFiles.map((entry) => entry?.path)
-    : [],
+  learnedProvenanceSourceFiles.map((entry) => /** @type {{ path?: unknown }} */ (entry).path),
 );
 for (const path of [
   "tools/learned-systems/qualityManifestValidator.mjs",
@@ -1644,21 +1678,34 @@ for (const path of [
     fail("learned systems status provenance must cite " + path);
   }
 }
-if (
-  !Array.isArray(learnedProvenance.checkpointFiles) ||
-  learnedProvenance.checkpointFiles.length !== (learnedCheckpointManifest.checkpoints ?? []).length
-) {
+const learnedCheckpointFiles = Array.isArray(learnedProvenance.checkpointFiles)
+  ? learnedProvenance.checkpointFiles
+  : [];
+if (learnedCheckpointFiles.length !== (learnedCheckpointManifest.checkpoints ?? []).length) {
   fail("learned systems status provenance must cover every checkpoint file");
 }
-for (const checkpoint of learnedProvenance.checkpointFiles) {
-  if (checkpoint?.manifestSha256 !== checkpoint?.actualSha256) {
-    fail("learned systems checkpoint provenance hash mismatch for " + String(checkpoint?.path));
+for (const checkpoint of learnedCheckpointFiles) {
+  const checkpointRecord = /** @type {{ path?: unknown, manifestSha256?: unknown, actualSha256?: unknown }} */ (checkpoint);
+  if (typeof checkpointRecord.path !== "string") {
+    fail("learned systems checkpoint provenance path must be a string");
   }
+  if (checkpointRecord.manifestSha256 !== checkpointRecord.actualSha256) {
+    fail("learned systems checkpoint provenance hash mismatch for " + checkpointRecord.path);
+  }
+  await assertFileSha256(
+    checkpointRecord.path,
+    checkpointRecord.actualSha256,
+    "learned systems checkpoint provenance " + checkpointRecord.path,
+  );
+}
+const learnedQualityEvidenceManifests = Array.isArray(learnedProvenance.qualityEvidenceManifests)
+  ? learnedProvenance.qualityEvidenceManifests
+  : [];
+if (learnedQualityEvidenceManifests.length === 0) {
+  fail("learned systems status provenance must include qualityEvidenceManifests");
 }
 const learnedQualityEvidencePaths = new Set(
-  Array.isArray(learnedProvenance.qualityEvidenceManifests)
-    ? learnedProvenance.qualityEvidenceManifests.map((entry) => entry?.path)
-    : [],
+  learnedQualityEvidenceManifests.map((entry) => /** @type {{ path?: unknown }} */ (entry).path),
 );
 for (const path of [
   "tools/neural-denoiser-training/quality-ab-production.json",
@@ -1668,6 +1715,26 @@ for (const path of [
 ]) {
   if (!learnedQualityEvidencePaths.has(path)) {
     fail("learned systems status provenance must list quality evidence manifest " + path);
+  }
+}
+for (const entry of learnedQualityEvidenceManifests) {
+  const evidence = /** @type {{ path?: unknown, exists?: unknown, sha256?: unknown }} */ (entry);
+  if (typeof evidence.path !== "string") {
+    fail("learned systems quality evidence manifest path must be a string");
+  }
+  if (evidence.exists === true) {
+    await assertFileSha256(
+      evidence.path,
+      evidence.sha256,
+      "learned systems quality evidence manifest " + evidence.path,
+    );
+  } else if (evidence.exists === false) {
+    if (evidence.sha256 !== null) {
+      fail("learned systems missing quality evidence manifest must pin sha256:null for " + evidence.path);
+    }
+    await assertFileMissing(evidence.path, "learned systems quality evidence manifest " + evidence.path);
+  } else {
+    fail("learned systems quality evidence manifest must pin exists boolean for " + evidence.path);
   }
 }
 const qualityRequirements = learnedSystemsStatus.neuralDenoiser?.qualityManifestRequirements;
