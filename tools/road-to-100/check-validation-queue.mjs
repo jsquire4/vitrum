@@ -2089,6 +2089,81 @@ const expectedQualityRequirements = {
 if (JSON.stringify(qualityRequirements) !== JSON.stringify(expectedQualityRequirements)) {
   fail("learned systems status must pin machine-readable production neural quality requirements");
 }
+const expectedNeuralRuntimePolicy = {
+  autoSelectsNeuralOnlyWithProductionCheckpoint: true,
+  explicitNeuralWithNonProductionWeights: "allowed-as-approximate",
+  nonProductionCapabilitySupport: "approximate",
+  requiredMetadataContract: "NeuralCheckpointMetadata",
+};
+if (JSON.stringify(learnedSystemsStatus.neuralDenoiser?.runtimePolicy) !== JSON.stringify(expectedNeuralRuntimePolicy)) {
+  fail("learned systems status must pin neural runtime policy for non-production checkpoints");
+}
+const expectedLearnedPromotionQualityRequirements = {
+  nrc: {
+    manifestPath: "tools/learned-systems/nrc-quality-convergence.json",
+    requiredVerdict: "PASS",
+    requiredMode: "nrc-quality-convergence",
+    requiresQualityComparison: true,
+    requiresConvergenceComparison: true,
+    requiresDefaultTierDecision: true,
+    requiresHardware: true,
+    requiresGeneratedAt: true,
+    requiresArtifacts: true,
+    requiresArtifactFiles: true,
+    requiresBiasedEstimatorDisclosure: true,
+  },
+  gris: {
+    manifestPath: "tools/learned-systems/gris-unbiasedness-ab.json",
+    requiredVerdict: "PASS",
+    requiredMode: "gris-unbiasedness-ab",
+    requiresUnbiasednessAB: true,
+    requiresBiasedDefaultErrorQuantification: true,
+    requiresReferenceEstimator: true,
+    requiresHardware: true,
+    requiresGeneratedAt: true,
+    requiresArtifacts: true,
+    requiresArtifactFiles: true,
+  },
+  ppg: {
+    manifestPath: "tools/learned-systems/ppg-favorable-scene-ab.json",
+    requiredVerdict: "PASS",
+    requiredMode: "ppg-favorable-scene-ab",
+    requiresFavorableSceneAB: true,
+    requiresConvergenceComparison: true,
+    requiresInstabilityChecks: true,
+    requiresHardware: true,
+    requiresGeneratedAt: true,
+    requiresArtifacts: true,
+    requiresArtifactFiles: true,
+  },
+};
+for (const [systemName, expectedRequirements] of Object.entries(expectedLearnedPromotionQualityRequirements)) {
+  const systemStatus = learnedSystemsStatus[systemName];
+  if (systemStatus == null || typeof systemStatus !== "object") {
+    fail(`learned systems status must include ${systemName} posture`);
+  }
+  if (JSON.stringify(systemStatus.qualityManifestRequirements) !== JSON.stringify(expectedRequirements)) {
+    fail(`learned systems status must pin ${systemName} quality/default-tier requirements`);
+  }
+  if (systemStatus.defaultEnabled !== false || systemStatus.productionDefaultEligible !== false || systemStatus.qualityManifest !== null) {
+    fail(`learned systems status must keep ${systemName} opt-in/non-production until quality evidence exists`);
+  }
+}
+if (learnedSystemsStatus.nrc?.estimator !== "biased") {
+  fail("learned systems status must keep NRC biased-estimator disclosure explicit");
+}
+if (learnedSystemsStatus.gris?.optInFlag !== "restirPtReuse" || learnedSystemsStatus.gris?.estimator !== "unbiased-when-enabled") {
+  fail("learned systems status must keep GRIS opt-in unbiased-estimator disclosure explicit");
+}
+for (const guardrail of [
+  "Research checkpoints are loader/runtime validation assets only.",
+  "Neural, NRC, PPG, and GRIS learned/reuse paths remain opt-in unless future quality evidence promotes them.",
+  "Do not treat this PASS as production model quality.",
+]) {
+  if (!Array.isArray(learnedSystemsStatus.guardrails) || !learnedSystemsStatus.guardrails.includes(guardrail)) {
+    fail(`learned systems status must preserve guardrail: ${guardrail}`);
+  }
+}
 if (productionCheckpoint === null) {
   if (learnedRow.status !== "provisioning-needed") {
     fail("VQ-LEARNED-SYSTEMS must remain provisioning-needed while productionCheckpoint is null");
