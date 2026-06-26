@@ -2085,6 +2085,16 @@ if (
 ) {
   fail("VQ-RADIOMETRIC-PT promotion provenance wrapper/helper hashes must be lowercase SHA-256 digests");
 }
+await assertFileSha256(
+  "tools/radiometric-ab/run-pt-ab.mjs",
+  ptRadiometricPromotionProvenanceRecord.wrapperSha256,
+  "VQ-RADIOMETRIC-PT promotion provenance wrapperSha256",
+);
+await assertFileSha256(
+  "tools/radiometric-ab/resultProvenance.mjs",
+  ptRadiometricPromotionProvenanceRecord.helperSha256,
+  "VQ-RADIOMETRIC-PT promotion provenance helperSha256",
+);
 if (
   JSON.stringify(ptRadiometricPromotionStatus.sourceStatuses ?? []) !==
   JSON.stringify(REQUIRED_PT_RADIOMETRIC_PROMOTION_SOURCE_STATUS_PATHS)
@@ -2102,6 +2112,13 @@ assertSha256DigestRows(
   REQUIRED_PT_RADIOMETRIC_PROMOTION_SOURCE_STATUS_PATHS,
   "VQ-RADIOMETRIC-PT promotion provenance sourceStatusSha256",
 );
+for (const row of /** @type {Array<{ path: string, sha256: unknown }>} */ (ptRadiometricPromotionProvenanceRecord.sourceStatusSha256)) {
+  await assertFileSha256(
+    row.path,
+    row.sha256,
+    "VQ-RADIOMETRIC-PT promotion provenance sourceStatusSha256 " + row.path,
+  );
+}
 if (ptRadiometricHostStatus.harness !== "pt-radiometric-ab") {
   fail("VQ-RADIOMETRIC-PT host status must pin harness=pt-radiometric-ab");
 }
@@ -2412,6 +2429,21 @@ for (const [field, value] of [
     fail(`VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance ${field} must be a lowercase SHA-256 digest`);
   }
 }
+await assertFileSha256(
+  "tools/radiometric-ab/run-walkaround-ab.mjs",
+  walkaroundPromotionProvenanceRecord.wrapperSha256,
+  "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance wrapperSha256",
+);
+await assertFileSha256(
+  "tools/radiometric-ab/walkaround-ab.mjs",
+  walkaroundPromotionProvenanceRecord.harnessSha256,
+  "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance harnessSha256",
+);
+await assertFileSha256(
+  "tools/radiometric-ab/resultProvenance.mjs",
+  walkaroundPromotionProvenanceRecord.helperSha256,
+  "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance helperSha256",
+);
 if (
   JSON.stringify(walkaroundPromotionStatus.sourceStatuses ?? []) !==
   JSON.stringify(REQUIRED_WALKAROUND_PROMOTION_SOURCE_STATUS_PATHS)
@@ -2435,11 +2467,25 @@ assertSha256DigestRows(
   REQUIRED_WALKAROUND_PROMOTION_SOURCE_STATUS_PATHS,
   "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceStatusSha256",
 );
+for (const row of /** @type {Array<{ path: string, sha256: unknown }>} */ (walkaroundPromotionProvenanceRecord.sourceStatusSha256)) {
+  await assertFileSha256(
+    row.path,
+    row.sha256,
+    "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceStatusSha256 " + row.path,
+  );
+}
 assertSha256DigestRows(
   walkaroundPromotionProvenanceRecord.sourceResultSha256,
   REQUIRED_WALKAROUND_PROMOTION_SOURCE_RESULT_PATHS,
   "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceResultSha256",
 );
+for (const row of /** @type {Array<{ path: string, sha256: unknown }>} */ (walkaroundPromotionProvenanceRecord.sourceResultSha256)) {
+  await assertFileSha256(
+    row.path,
+    row.sha256,
+    "VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceResultSha256 " + row.path,
+  );
+}
 if (walkaroundAllSpp64Status.verdict !== "PASS-PARTIAL") {
   fail("walkaround all-spp64 status must pin PASS-PARTIAL");
 }

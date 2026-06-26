@@ -102,6 +102,12 @@ test('Road checker pins radiometric promotion provenance blocks', async () => {
   assert.match(validationQueueChecker, /vitrum\.walkaround-ab\.promotion-provenance\.v1/);
   assert.match(validationQueueChecker, /walkaroundPromotionProvenance/);
   assert.match(validationQueueChecker, /assertSha256DigestRows/);
+  assert.match(validationQueueChecker, /assertFileSha256/);
+  assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT promotion provenance wrapperSha256/);
+  assert.match(validationQueueChecker, /VQ-RADIOMETRIC-PT promotion provenance sourceStatusSha256/);
+  assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance wrapperSha256/);
+  assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceStatusSha256/);
+  assert.match(validationQueueChecker, /VQ-WALKAROUND-RADIOMETRIC-AB promotion provenance sourceResultSha256/);
 });
 test('pt radiometric wrapper refreshes promotion status after complete recapture', async () => {
   const runner = await readFile(ptRunnerPath, 'utf8');
