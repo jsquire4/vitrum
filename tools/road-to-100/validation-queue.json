@@ -1,6 +1,6 @@
 {
   "schema": "vitrum.road-to-100.validation-queue.v1",
-  "currentAsOf": "2026-06-24",
+  "currentAsOf": "2026-06-26",
   "implementationQueue": [],
   "validationQueue": [
     {
@@ -412,6 +412,7 @@
         { "path": "tools/behavioral-gate/check-cwbvh-renderer-parity-status.mjs" },
         { "path": "tools/behavioral-gate/cwbvh-parity-oracle.mjs" },
         { "path": "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs" },
+        { "path": "scripts/__tests__/cwbvh-repeat-evidence.test.mjs" },
         {
           "path": "tools/behavioral-gate/cwbvh-parity-status.json",
           "json": {
@@ -506,7 +507,7 @@
         { "path": "packages/shared-bvh/src/__tests__/compressedWideBvh.test.ts" },
         { "path": "packages/shared-bvh/src/__tests__/cwbvhWgsl.test.ts" }
       ],
-      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, dzn full-tier simple/complex parity shards, and a broader dzn material/glTF workload shard. Default promotion is still blocked: the fixed per-shard dzn status artifacts are single-sample snapshots and uniformly slower for CWBVH across the simple, complex, material-lobe, material-lobe-map, and glTF material-sweep shards. `npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 --dzn-timeout-ms=900000` now checkpoints summary and raw repeat records after every completed shard and carries a 900s dzn shard timeout sized to the committed broader CWBVH lane; the committed repeat artifact is a completed five-sample warmup-discarded dzn campaign across all workloads. It remains classification=uniform-slower with promotion.defaultReady=false: binary, complex, material-lobe, and glTF medians are slower, while one material-lobe-map fast outlier is not enough for default promotion. A browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload remains required before making CWBVH the default traversal."
+      "remaining": "Committed proof pins opt-in CWBVH closest-hit/any-hit WGSL oracle parity, renderer binary-vs-CWBVH pixel parity, multi-root remapping, dzn full-tier simple/complex parity shards, and a broader dzn material/glTF workload shard. Default promotion is still blocked: the fixed per-shard dzn status artifacts are single-sample snapshots and uniformly slower for CWBVH across the simple, complex, material-lobe, material-lobe-map, and glTF material-sweep shards. `npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 --dzn-timeout-ms=900000` now checkpoints summary and raw repeat records after every completed shard and carries a 900s dzn shard timeout sized to the committed broader CWBVH lane; the committed repeat artifact is a completed five-sample warmup-discarded dzn campaign across all workloads, and the proof checker now recomputes workload summaries from the raw repeat-record artifact before trusting the status summary. It remains classification=uniform-slower with promotion.defaultReady=false: binary, complex, material-lobe, and glTF medians are slower, while one material-lobe-map fast outlier is not enough for default promotion. A browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload remains required before making CWBVH the default traversal."
     },
     {
       "id": "VQ-ADJOINT-SCOPED-PATH-REPLAY",
@@ -607,7 +608,7 @@
         { "path": "packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts" },
         { "path": "HARDWARE-VALIDATION-NEEDS.md" }
       ],
-      "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence. The learned-systems proof checker validates research checkpoint identity and requires production quality metrics plus production-scale dataset metadata (>=500 samples, 1 spp noisy inputs, >=4096 spp clean references, albedo/normal buffers, capture source, tonemap, and reproducibility artifact paths) before any production checkpoint can count."
+      "remaining": "Production neural checkpoint plus quality A/B; NRC quality/convergence A/B and default-tier decision; GRIS/PPG quality evidence. The learned-systems proof checker validates research checkpoint identity and requires production quality metrics plus production-scale dataset metadata (>=500 samples, 1 spp noisy inputs, >=4096 spp clean references, albedo/normal buffers, capture source, tonemap, reproducibility artifact paths, and existing per-scene noisy/clean/albedo/normal artifacts) before any production checkpoint can count."
     },
     {
       "id": "VQ-GLTF-MATERIAL-TOPOLOGY",

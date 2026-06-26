@@ -9,7 +9,7 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
 {
   "schema": "vitrum.road-to-100.gap-ledger.v1",
   "ledgerDate": "2026-06-11",
-  "currentAsOf": "2026-06-24",
+  "currentAsOf": "2026-06-26",
   "status": "active",
   "canonicalDetail": "plan/road-to-100.md",
   "historicalBugLedger": "items_to_fix.md",
@@ -62,14 +62,15 @@ machine-checkable so handoffs do not depend on memory or chat summaries.
     "inverse active-profile material support truthfulness, walkaround TLAS material-frame parity, and anisotropy-map tangent generation",
     "historical items_to_fix open-heading reconciliation guarded by road-to-100-source-check",
     "pt-webgpu bump-map sampler-policy parity across forward full-tier shading, adjoint replay, and upload diagnostics",
-    "machine-readable Road-to-100 validation queue and status checker so proof/provisioning/future-contract tails do not re-enter the code queue"
+    "machine-readable Road-to-100 validation queue and status checker so proof/provisioning/future-contract tails do not re-enter the code queue",
+    "learned-system production dataset artifact validation and CWBVH raw repeat-record provenance hardening"
   ],
   "openPromotionBuckets": [
     "VQ-GLTF-BROWSER-PTWEBGL2: broader glTF browser/cross-adapter validation beyond committed real-asset lavapipe/dzn goldens; npm run gltf-browser-proof-check:required fails on HOST-BLOCKED until real browser PNG/golden PASS exists",
     "VQ-WALKAROUND-RADIOMETRIC-AB and VQ-RADIOMETRIC-PT: GRIS/ReSTIR-GI/PPG/NRC/neural/BDPT quality and radiometric A/B evidence, including rich-material GI and multi-vertex BDPT research-promotion tails",
     "VQ-RENDERER-FIDELITY-PROOF: pt-webgl2 browser/real-adapter reference A/B for unpromoted specialty rows and source/oracle material-furnace proofs before any native promotion",
-    "VQ-CWBVH-DEFAULT-PROMOTION: browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload before CWBVH default promotion; capture lane is npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 --dzn-timeout-ms=900000 and checkpoints summary plus raw repeat records after every shard with a 900s dzn shard timeout; the committed bounded repeat artifact is a completed five-sample warmup-discarded dzn campaign across all five workloads, uniformly slower for CWBVH except one material-lobe-map fast outlier and not enough for default promotion",
-    "VQ-LEARNED-SYSTEMS: production neural checkpoint plus quality A/B and NRC/neural default-tier decisions",
+    "VQ-CWBVH-DEFAULT-PROMOTION: browser/real-adapter throughput A/B with multiple warmup-discarded repeats per workload before CWBVH default promotion; capture lane is npm run cwbvh-default-promotion-repeats -- --repeats=5 --warmup=1 --dzn-timeout-ms=900000 and checkpoints summary plus raw repeat records after every shard with a 900s dzn shard timeout; the committed bounded repeat artifact is a completed five-sample warmup-discarded dzn campaign across all five workloads, uniformly slower for CWBVH except one material-lobe-map fast outlier and not enough for default promotion; the proof checker now recomputes workload summaries from raw repeat records before trusting the status summary",
+    "VQ-LEARNED-SYSTEMS: production neural checkpoint plus quality A/B and NRC/neural default-tier decisions; production neural evidence must include existing per-scene noisy/clean/albedo/normal artifacts",
     "Future-contract rows: adaptive/error-bounded displacement microgeometry limits beyond bounded uniform CPU subdivision, walkaround spectral/dispersion/thin-film/full-layer-stack fields, approximate walkaround scattering rows, native point/line and arbitrary UV-array contracts, native instanced-skinned-morphed contracts, full analytic adjoint parity, and full transparent transport remain explicit unsupported/approximate contract rows unless a future contract expands them"
   ],
   "requiredGreenGates": [
