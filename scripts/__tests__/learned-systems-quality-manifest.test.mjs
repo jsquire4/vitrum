@@ -223,6 +223,48 @@ test('production neural quality manifest validates dataset manifest artifact con
   assert.doesNotThrow(() => validateWithDatasetManifest(manifest, validDatasetManifest(manifest)));
 });
 
+test('production neural quality manifest rejects missing per-scene dataset artifacts', () => {
+  const manifest = validQualityManifest();
+  const datasetManifest = validDatasetManifest(manifest);
+  const existingPaths = new Set([
+    ...Object.values(manifest.artifacts),
+    ...datasetManifest.scenes.flatMap((scene) => [
+      scene.noisyPath,
+      scene.cleanPath,
+      scene.albedoPath,
+      scene.normalPath,
+    ]),
+  ]);
+  existingPaths.delete(datasetManifest.scenes[0].normalPath);
+
+  assert.throws(
+    () => validateProductionQualityManifest({
+      qualityManifest: manifest,
+      productionEntries: [PRODUCTION_ENTRY],
+      productionCheckpoint: PRODUCTION_ENTRY.name,
+      productionLike: [PRODUCTION_ENTRY.name],
+      expectedParamCount: EXPECTED_PARAM_COUNT,
+      artifactExists: (artifactPath) => existingPaths.has(artifactPath),
+      artifactText: (artifactPath) => {
+        assert.equal(artifactPath, manifest.artifacts.datasetManifestPath);
+        return JSON.stringify(datasetManifest);
+      },
+    }),
+    /scene cornell-box normalPath must point at an existing artifact/,
+  );
+
+  existingPaths.add(datasetManifest.scenes[0].normalPath);
+  assert.doesNotThrow(() => validateProductionQualityManifest({
+    qualityManifest: manifest,
+    productionEntries: [PRODUCTION_ENTRY],
+    productionCheckpoint: PRODUCTION_ENTRY.name,
+    productionLike: [PRODUCTION_ENTRY.name],
+    expectedParamCount: EXPECTED_PARAM_COUNT,
+    artifactExists: (artifactPath) => existingPaths.has(artifactPath),
+    artifactText: () => JSON.stringify(datasetManifest),
+  }));
+});
+
 test('production neural quality manifest rejects invalid dataset manifest JSON', () => {
   const manifest = validQualityManifest();
   assert.throws(

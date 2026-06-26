@@ -170,7 +170,7 @@ export function validateProductionQualityManifest(input) {
           `must point at valid dataset manifest JSON (${message})`,
       );
     }
-    validateProductionDatasetManifest(datasetManifest, datasetRecord, fail);
+    validateProductionDatasetManifest(datasetManifest, datasetRecord, fail, artifactExists);
   }
   const comparison = qualityManifest.comparison;
   if (comparison == null || typeof comparison !== "object") {
@@ -208,8 +208,14 @@ export function validateProductionQualityManifest(input) {
  * @param {unknown} datasetManifest
  * @param {Record<string, any>} expectedDataset
  * @param {(message: string) => void} fail
+ * @param {((path: string) => boolean) | undefined} artifactExists
  */
-export function validateProductionDatasetManifest(datasetManifest, expectedDataset, fail = defaultFail) {
+export function validateProductionDatasetManifest(
+  datasetManifest,
+  expectedDataset,
+  fail = defaultFail,
+  artifactExists = undefined,
+) {
   if (datasetManifest == null || typeof datasetManifest !== "object") {
     fail("production neural dataset manifest must be an object");
   }
@@ -271,6 +277,12 @@ export function validateProductionDatasetManifest(datasetManifest, expectedDatas
         fail(
           `production neural dataset manifest scene ${sceneRecord.id} ` +
             `${field} must be a non-empty string`,
+        );
+      }
+      if (artifactExists != null && !artifactExists(sceneRecord[field])) {
+        fail(
+          `production neural dataset manifest scene ${sceneRecord.id} ` +
+            `${field} must point at an existing artifact`,
         );
       }
     }
