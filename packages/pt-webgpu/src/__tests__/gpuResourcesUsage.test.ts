@@ -35,25 +35,25 @@ describe('GpuResources texture usage', () => {
 
     const gpu = new GpuResources(device, 'full', false);
     expect(gpu.ensureSppmPixelStatsBuffer(4, 4)).toBe(true);
-    const realBuffer = gpu.sppmPixelStatsBuffer as unknown as { label?: string; size: number; destroy: ReturnType<typeof vi.fn> };
+    const realBuffer = gpu.sppm.sppmPixelStatsBuffer as unknown as { label?: string; size: number; destroy: ReturnType<typeof vi.fn> };
     expect(realBuffer.label).toBe('vitrum.pt-webgpu.sppm.pixelStats');
     expect(realBuffer.size).toBe(512);
-    expect(gpu.sppmPixelStatsWidth).toBe(4);
-    expect(gpu.sppmPixelStatsHeight).toBe(4);
+    expect(gpu.sppm.sppmPixelStatsWidth).toBe(4);
+    expect(gpu.sppm.sppmPixelStatsHeight).toBe(4);
 
     gpu.pathTraceBindGroup = {} as GPUBindGroup;
     gpu.pathTraceBindGroup3 = {} as GPUBindGroup;
 
     expect(gpu.ensureSppmPixelStatsBuffer(16, 16)).toBe(false);
 
-    const placeholder = gpu.sppmPixelStatsBuffer as unknown as { label?: string; size: number };
+    const placeholder = gpu.sppm.sppmPixelStatsBuffer as unknown as { label?: string; size: number };
     expect(realBuffer.destroy).toHaveBeenCalledOnce();
     expect(placeholder).not.toBe(realBuffer);
     expect(placeholder.label).toBe('vitrum.pt-webgpu.sppm.pixelStats.placeholder');
     expect(placeholder.size).toBe(64);
     expect(buffers.every((b) => b.size <= 1024)).toBe(true);
-    expect(gpu.sppmPixelStatsWidth).toBe(0);
-    expect(gpu.sppmPixelStatsHeight).toBe(0);
+    expect(gpu.sppm.sppmPixelStatsWidth).toBe(0);
+    expect(gpu.sppm.sppmPixelStatsHeight).toBe(0);
     expect(gpu.pathTraceBindGroup).toBeNull();
     expect(gpu.pathTraceBindGroup3).toBeNull();
     expect(warnSpy).toHaveBeenCalledOnce();

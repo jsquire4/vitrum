@@ -178,8 +178,11 @@ describe('composeTraceGlsl', () => {
   });
 
   it('pins WebGL2 BDPT reverse-PDF placeholders behind the current three-column cap', () => {
+    // T3-D (2026-07-20): BDPT_MAX_LIGHT_BOUNCES moved from index.ts into the
+    // extracted options.validate.ts factory-validation module — repoint the pin
+    // to its new home.
     const engineSource = readFileSync(
-      fileURLToPath(new URL('../index.ts', import.meta.url)),
+      fileURLToPath(new URL('../options.validate.ts', import.meta.url)),
       'utf8',
     );
     const bdptSrc = composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, bdpt: true });

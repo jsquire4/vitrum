@@ -357,66 +357,14 @@ export class GpuResources {
   bdptEyeStackBuffer: GPUBuffer | null = null;
   bdptEyeStackByteSize = 0;
 
-  // ── D8.1 ReservoirResources delegating accessors (keep public surface unchanged) ──
-  /** @see ReservoirResources */
-  get rptReservoirCur(): GPUBuffer | null { return this.#rsvr.rptReservoirCur; }
-  set rptReservoirCur(v: GPUBuffer | null) { this.#rsvr.rptReservoirCur = v; }
-  get rptReservoirPrev(): GPUBuffer | null { return this.#rsvr.rptReservoirPrev; }
-  set rptReservoirPrev(v: GPUBuffer | null) { this.#rsvr.rptReservoirPrev = v; }
-  get rptReservoirSpatial(): GPUBuffer | null { return this.#rsvr.rptReservoirSpatial; }
-  set rptReservoirSpatial(v: GPUBuffer | null) { this.#rsvr.rptReservoirSpatial = v; }
-  get rptResultBuffer(): GPUBuffer | null { return this.#rsvr.rptResultBuffer; }
-  set rptResultBuffer(v: GPUBuffer | null) { this.#rsvr.rptResultBuffer = v; }
-  get rptParamsBuffer(): GPUBuffer | null { return this.#rsvr.rptParamsBuffer; }
-  set rptParamsBuffer(v: GPUBuffer | null) { this.#rsvr.rptParamsBuffer = v; }
-  get rptReservoirByteSize(): number { return this.#rsvr.rptReservoirByteSize; }
-  set rptReservoirByteSize(v: number) { this.#rsvr.rptReservoirByteSize = v; }
-  get rptResultByteSize(): number { return this.#rsvr.rptResultByteSize; }
-  set rptResultByteSize(v: number) { this.#rsvr.rptResultByteSize = v; }
-  get rptProducerPipeline(): GPUComputePipeline | null { return this.#rsvr.rptProducerPipeline; }
-  set rptProducerPipeline(v: GPUComputePipeline | null) { this.#rsvr.rptProducerPipeline = v; }
-  get rptTemporalPipeline(): GPUComputePipeline | null { return this.#rsvr.rptTemporalPipeline; }
-  set rptTemporalPipeline(v: GPUComputePipeline | null) { this.#rsvr.rptTemporalPipeline = v; }
-  get rptSpatialPipeline(): GPUComputePipeline | null { return this.#rsvr.rptSpatialPipeline; }
-  set rptSpatialPipeline(v: GPUComputePipeline | null) { this.#rsvr.rptSpatialPipeline = v; }
-  get rptResolvePipeline(): GPUComputePipeline | null { return this.#rsvr.rptResolvePipeline; }
-  set rptResolvePipeline(v: GPUComputePipeline | null) { this.#rsvr.rptResolvePipeline = v; }
-  get rptCompositePipeline(): GPUComputePipeline | null { return this.#rsvr.rptCompositePipeline; }
-  set rptCompositePipeline(v: GPUComputePipeline | null) { this.#rsvr.rptCompositePipeline = v; }
-  get rptProducerGroup0(): GPUBindGroup | null { return this.#rsvr.rptProducerGroup0; }
-  set rptProducerGroup0(v: GPUBindGroup | null) { this.#rsvr.rptProducerGroup0 = v; }
-  get rptTemporalGroup0(): GPUBindGroup | null { return this.#rsvr.rptTemporalGroup0; }
-  set rptTemporalGroup0(v: GPUBindGroup | null) { this.#rsvr.rptTemporalGroup0 = v; }
-  get rptSpatialGroup0(): GPUBindGroup | null { return this.#rsvr.rptSpatialGroup0; }
-  set rptSpatialGroup0(v: GPUBindGroup | null) { this.#rsvr.rptSpatialGroup0 = v; }
-  get rptResolveGroup0(): GPUBindGroup | null { return this.#rsvr.rptResolveGroup0; }
-  set rptResolveGroup0(v: GPUBindGroup | null) { this.#rsvr.rptResolveGroup0 = v; }
-
-  // ── D8.1 SppmResources delegating accessors (keep public surface unchanged) ──
-  /** @see SppmResources */
-  get sppmPhotonCellsBuffer(): GPUBuffer | null { return this.#sppm.sppmPhotonCellsBuffer; }
-  set sppmPhotonCellsBuffer(v: GPUBuffer | null) { this.#sppm.sppmPhotonCellsBuffer = v; }
-  get sppmCellCountersBuffer(): GPUBuffer | null { return this.#sppm.sppmCellCountersBuffer; }
-  set sppmCellCountersBuffer(v: GPUBuffer | null) { this.#sppm.sppmCellCountersBuffer = v; }
-  get sppmStatsBuffer(): GPUBuffer | null { return this.#sppm.sppmStatsBuffer; }
-  set sppmStatsBuffer(v: GPUBuffer | null) { this.#sppm.sppmStatsBuffer = v; }
-  get sppmPixelStatsBuffer(): GPUBuffer | null { return this.#sppm.sppmPixelStatsBuffer; }
-  set sppmPixelStatsBuffer(v: GPUBuffer | null) { this.#sppm.sppmPixelStatsBuffer = v; }
-  get sppmPixelStatsWidth(): number { return this.#sppm.sppmPixelStatsWidth; }
-  set sppmPixelStatsWidth(v: number) { this.#sppm.sppmPixelStatsWidth = v; }
-  get sppmPixelStatsHeight(): number { return this.#sppm.sppmPixelStatsHeight; }
-  set sppmPixelStatsHeight(v: number) { this.#sppm.sppmPixelStatsHeight = v; }
-  get sppmPhotonPipeline(): GPUComputePipeline | null { return this.#sppm.sppmPhotonPipeline; }
-  set sppmPhotonPipeline(v: GPUComputePipeline | null) { this.#sppm.sppmPhotonPipeline = v; }
-  get sppmBuffersReady(): boolean { return this.#sppm.sppmBuffersReady; }
-  set sppmBuffersReady(v: boolean) { this.#sppm.sppmBuffersReady = v; }
-
-  // ── D8.1 PresentResources delegating accessors (keep public surface unchanged) ──
-  /** @see PresentResources */
-  get presentTexture(): GPUTexture | null { return this.#present.presentTexture; }
-  set presentTexture(v: GPUTexture | null) { this.#present.presentTexture = v; }
-  get presentView(): GPUTextureView | null { return this.#present.presentView; }
-  set presentView(v: GPUTextureView | null) { this.#present.presentView = v; }
+  // ── D8.1 sub-object public accessors (D9-2: sub-objects are the real owners) ──
+  /** ReSTIR-PT reuse reservoir/pipeline/bind-group cluster. Access fields via
+   *  `gpu.reservoir.<field>` (was the former delegating get/set accessor pairs). */
+  get reservoir(): ReservoirResources { return this.#rsvr; }
+  /** SPPM photon-map resource cluster. Access fields via `gpu.sppm.<field>`. */
+  get sppm(): SppmResources { return this.#sppm; }
+  /** Present-pass + seed-blit resource cluster. Access fields via `gpu.present.<field>`. */
+  get present(): PresentResources { return this.#present; }
 
   // ── B12 — Lite-tier packed textures (group-0 bindings 12–14) ─────────────────
   /**
@@ -530,9 +478,9 @@ export class GpuResources {
     this.accumWidth = 0;
     this.accumHeight = 0;
     // The present texture is sized to accumTexture; destroy it together.
-    this.presentTexture?.destroy();
-    this.presentTexture = null;
-    this.presentView = null;
+    this.#present.presentTexture?.destroy();
+    this.#present.presentTexture = null;
+    this.#present.presentView = null;
   }
 
   clearAccumBuffer(): void {
@@ -552,13 +500,13 @@ export class GpuResources {
    * not yet been allocated. Called by `index.ts reset()` and full setScene.
    */
   clearReservoirBuffers(): void {
-    if (this.rptReservoirCur == null) return;
+    if (this.#rsvr.rptReservoirCur == null) return;
     const encoder = this.#device.createCommandEncoder({
       label: 'vitrum.pt-webgpu.restirPt.clearReservoirs',
     });
-    encoder.clearBuffer(this.rptReservoirCur);
-    if (this.rptReservoirPrev != null) encoder.clearBuffer(this.rptReservoirPrev);
-    if (this.rptReservoirSpatial != null) encoder.clearBuffer(this.rptReservoirSpatial);
+    encoder.clearBuffer(this.#rsvr.rptReservoirCur);
+    if (this.#rsvr.rptReservoirPrev != null) encoder.clearBuffer(this.#rsvr.rptReservoirPrev);
+    if (this.#rsvr.rptReservoirSpatial != null) encoder.clearBuffer(this.#rsvr.rptReservoirSpatial);
     this.#device.queue.submit([encoder.finish()]);
   }
 
@@ -634,13 +582,13 @@ export class GpuResources {
     // Present texture — same dims as accumTexture. Needs STORAGE_BINDING (write)
     // for the present compute pass and TEXTURE_BINDING so hosts can read it.
     // COPY_SRC so snapshot/debug paths can read it back.
-    this.presentTexture = this.#device.createTexture({
+    this.#present.presentTexture = this.#device.createTexture({
       label: 'vitrum.pt-webgpu.present',
       size: { width, height, depthOrArrayLayers: 1 },
       format: 'rgba16float',
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
     });
-    this.presentView = this.presentTexture.createView();
+    this.#present.presentView = this.#present.presentTexture.createView();
     // Drop ALL cached bind groups: the path-trace groups AND (when reuse is on)
     // the reuse group-0, which references the just-recreated accum/aux views.
     this.invalidateBindGroups();
@@ -703,7 +651,14 @@ export class GpuResources {
    * Callers supply the `sb` scene buffers; this method reads the current accum/
    * aux views + varianceMomentsBuffer off `this`.  Full tier only.
    */
-  #makeGroup0BindGroupEntries(sb: UploadedSceneBuffers): GPUBindGroupEntry[] {
+  /**
+   * D9-6 — The group-0 bindings 0..11 shared byte-identically by BOTH tiers
+   * (accum/params/geometry/aux-views). The lite and full group-0 entry lists
+   * DIVERGE only at 12+ (lite: B12 sampled env/light textures 12-14; full:
+   * motion-vectors storage texture 12 + variance-moments buffer 13). Extracting
+   * the common prefix here means the two tiers can never drift on bindings 0..11.
+   */
+  #makeGroup0SharedPrefixEntries(sb: UploadedSceneBuffers): GPUBindGroupEntry[] {
     return [
       { binding: 0, resource: this.accumView! },
       { binding: 1, resource: { buffer: this.paramsBuffer! } },
@@ -717,8 +672,38 @@ export class GpuResources {
       { binding: 9, resource: this.normalDepthView! },
       { binding: 10, resource: this.albedoView! },
       { binding: 11, resource: this.varianceView! },
+    ];
+  }
+
+  #makeGroup0BindGroupEntries(sb: UploadedSceneBuffers): GPUBindGroupEntry[] {
+    return [
+      ...this.#makeGroup0SharedPrefixEntries(sb),
       { binding: 12, resource: this.motionVectorsView! },
       { binding: 13, resource: { buffer: this.varianceMomentsBuffer! } },
+    ];
+  }
+
+  /**
+   * D9-6 — The full-tier group-2 bind-group entries (TLAS table bindings 0..4 +
+   * BDPT light-path/eye-stack bindings 5/6). Both `buildBindGroups` and
+   * `rebuildGroup2Only` build this identical entry list; extracting it here
+   * eliminates the prior duplication (any change propagates to both). The
+   * `binding:5` light-path buffer is caller-supplied (the full build passes the
+   * lazily-resolved `bdptLightPathBuffer()`; the H9 fast rebuild passes the
+   * host-supplied next-frame buffer). Full tier only.
+   */
+  #makeGroup2BindGroupEntries(
+    sb: UploadedSceneBuffers,
+    lightPathBuffer: GPUBuffer,
+  ): GPUBindGroupEntry[] {
+    return [
+      { binding: 0, resource: { buffer: sb.tlasNodesBuffer } },
+      { binding: 1, resource: { buffer: sb.tlasInstanceIndicesBuffer } },
+      { binding: 2, resource: { buffer: sb.tlasBlasRootsBuffer } },
+      { binding: 3, resource: { buffer: sb.tlasInstanceWorldToLocalBuffer } },
+      { binding: 4, resource: { buffer: sb.tlasInstanceLocalToWorldBuffer } },
+      { binding: 5, resource: { buffer: lightPathBuffer } },
+      { binding: 6, resource: { buffer: this.bdptEyeStackBuffer! } },
     ];
   }
 
@@ -989,56 +974,56 @@ export class GpuResources {
       return false;
     }
     const ready =
-      this.rptReservoirCur != null &&
-      this.rptReservoirByteSize === reservoirBytes &&
-      this.rptResultByteSize === resultBytes;
+      this.#rsvr.rptReservoirCur != null &&
+      this.#rsvr.rptReservoirByteSize === reservoirBytes &&
+      this.#rsvr.rptResultByteSize === resultBytes;
     if (ready) return true;
 
-    this.rptReservoirCur?.destroy();
-    this.rptReservoirPrev?.destroy();
-    this.rptReservoirSpatial?.destroy();
-    this.rptResultBuffer?.destroy();
+    this.#rsvr.rptReservoirCur?.destroy();
+    this.#rsvr.rptReservoirPrev?.destroy();
+    this.#rsvr.rptReservoirSpatial?.destroy();
+    this.#rsvr.rptResultBuffer?.destroy();
     const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;
-    this.rptReservoirCur = this.#device.createBuffer({
+    this.#rsvr.rptReservoirCur = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.restirPt.reservoir.cur',
       size: reservoirBytes,
       usage,
     });
-    this.rptReservoirPrev = this.#device.createBuffer({
+    this.#rsvr.rptReservoirPrev = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.restirPt.reservoir.prev',
       size: reservoirBytes,
       usage,
     });
-    this.rptReservoirSpatial = this.#device.createBuffer({
+    this.#rsvr.rptReservoirSpatial = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.restirPt.reservoir.spatial',
       size: reservoirBytes,
       usage,
     });
-    this.rptResultBuffer = this.#device.createBuffer({
+    this.#rsvr.rptResultBuffer = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.restirPt.result',
       size: resultBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
     });
-    if (this.rptParamsBuffer == null) {
-      this.rptParamsBuffer = this.#device.createBuffer({
+    if (this.#rsvr.rptParamsBuffer == null) {
+      this.#rsvr.rptParamsBuffer = this.#device.createBuffer({
         label: 'vitrum.pt-webgpu.restirPt.params',
         size: GpuResources.RESTIR_PT_PARAMS_BYTES,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
     }
-    this.rptReservoirByteSize = reservoirBytes;
-    this.rptResultByteSize = resultBytes;
+    this.#rsvr.rptReservoirByteSize = reservoirBytes;
+    this.#rsvr.rptResultByteSize = resultBytes;
     // Zero the ping-pong so frame 0's temporal history is an empty reservoir.
     const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.restirPt.clear' });
-    enc.clearBuffer(this.rptReservoirCur);
-    enc.clearBuffer(this.rptReservoirPrev);
-    enc.clearBuffer(this.rptReservoirSpatial);
+    enc.clearBuffer(this.#rsvr.rptReservoirCur);
+    enc.clearBuffer(this.#rsvr.rptReservoirPrev);
+    enc.clearBuffer(this.#rsvr.rptReservoirSpatial);
     this.#device.queue.submit([enc.finish()]);
     // New buffers → the cached reuse bind groups are stale.
-    this.rptProducerGroup0 = null;
-    this.rptTemporalGroup0 = null;
-    this.rptSpatialGroup0 = null;
-    this.rptResolveGroup0 = null;
+    this.#rsvr.rptProducerGroup0 = null;
+    this.#rsvr.rptTemporalGroup0 = null;
+    this.#rsvr.rptSpatialGroup0 = null;
+    this.#rsvr.rptResolveGroup0 = null;
     return true;
   }
 
@@ -1054,7 +1039,7 @@ export class GpuResources {
     wCap: number,
     allowGlossyReuse: boolean,
   ): void {
-    if (!this.#restirPtReuse || this.rptParamsBuffer == null) return;
+    if (!this.#restirPtReuse || this.#rsvr.rptParamsBuffer == null) return;
     const ubo = new ArrayBuffer(GpuResources.RESTIR_PT_PARAMS_BYTES);
     const u = new Uint32Array(ubo);
     const f = new Float32Array(ubo);
@@ -1064,7 +1049,7 @@ export class GpuResources {
     u[3] = allowGlossyReuse ? 1 : 0;
     f[4] = wCap;
     f[5] = 0; f[6] = 0; f[7] = 0; // _padB/_padC/_padD
-    this.#device.queue.writeBuffer(this.rptParamsBuffer, 0, ubo);
+    this.#device.queue.writeBuffer(this.#rsvr.rptParamsBuffer, 0, ubo);
   }
 
   /**
@@ -1116,7 +1101,7 @@ export class GpuResources {
    */
   ensureReservoirPipelines(): void {
     if (!this.#restirPtReuse) return;
-    if (this.rptProducerPipeline != null) return;
+    if (this.#rsvr.rptProducerPipeline != null) return;
     if (
       this.bindGroupLayout1 == null ||
       this.bindGroupLayout2 == null ||
@@ -1145,22 +1130,22 @@ export class GpuResources {
         compute: { module, entryPoint },
       });
     };
-    this.rptProducerPipeline = mk(
+    this.#rsvr.rptProducerPipeline = mk(
       'vitrum.pt-webgpu.restirPt.producer',
       composeRestirPtProducerWgsl({ sampling: this.#sampling }),
       'restirPtProduce',
     );
-    this.rptTemporalPipeline = mk(
+    this.#rsvr.rptTemporalPipeline = mk(
       'vitrum.pt-webgpu.restirPt.temporal',
       composeRestirPtTemporalWgsl({ sampling: this.#sampling }),
       'restirPtTemporal',
     );
-    this.rptSpatialPipeline = mk(
+    this.#rsvr.rptSpatialPipeline = mk(
       'vitrum.pt-webgpu.restirPt.spatial',
       composeRestirPtSpatialWgsl({ sampling: this.#sampling }),
       'restirPtSpatial',
     );
-    this.rptResolvePipeline = mk(
+    this.#rsvr.rptResolvePipeline = mk(
       'vitrum.pt-webgpu.restirPt.resolve',
       composeRestirPtResolveWgsl({ sampling: this.#sampling }),
       'restirPtResolve',
@@ -1168,7 +1153,7 @@ export class GpuResources {
     // A1 — the COMPOSITE megakernel uses the SAME [g0', g1, g2, g3] layout (it reads
     // rpt_result at the relocated group-0 binding 23 + the scene groups). Composed
     // for this engine's BDPT mode (matches the default megakernel's SSS/BDPT gate).
-    this.rptCompositePipeline = mk(
+    this.#rsvr.rptCompositePipeline = mk(
       'vitrum.pt-webgpu.restirPt.compositeMegakernel',
       composePtWebgpuCompositeTraceWgsl(this.#bdpt, {
         sampling: this.#sampling,
@@ -1209,13 +1194,13 @@ export class GpuResources {
    */
   buildReservoirBindGroups(sb: UploadedSceneBuffers): void {
     if (!this.#restirPtReuse || this.#rsvr.rptGroup0Layout == null) return;
-    if (this.rptProducerGroup0 != null) return;
+    if (this.#rsvr.rptProducerGroup0 != null) return;
     if (
-      this.rptReservoirCur == null ||
-      this.rptReservoirPrev == null ||
-      this.rptReservoirSpatial == null ||
-      this.rptResultBuffer == null ||
-      this.rptParamsBuffer == null ||
+      this.#rsvr.rptReservoirCur == null ||
+      this.#rsvr.rptReservoirPrev == null ||
+      this.#rsvr.rptReservoirSpatial == null ||
+      this.#rsvr.rptResultBuffer == null ||
+      this.#rsvr.rptParamsBuffer == null ||
       this.accumView == null ||
       this.normalDepthView == null ||
       this.albedoView == null ||
@@ -1232,7 +1217,7 @@ export class GpuResources {
     // #makeGroup0LayoutEntries() that #buildReservoirGroup0Layout() also uses.
     const sceneG0: GPUBindGroupEntry[] = [
       ...this.#makeGroup0BindGroupEntries(sb),
-      { binding: B + 4, resource: { buffer: this.rptParamsBuffer } },
+      { binding: B + 4, resource: { buffer: this.#rsvr.rptParamsBuffer } },
     ];
     // The reuse-reservoir slots differ only in which buffer is the "current"
     // ping-pong half. All three passes share ONE bind group: b20 = b21 = Cur (the
@@ -1243,18 +1228,18 @@ export class GpuResources {
       layout: this.#rsvr.rptGroup0Layout,
       entries: [
         ...sceneG0,
-        { binding: B + 0, resource: { buffer: this.rptReservoirCur } }, // rpt_reservoirOut → Cur
-        { binding: B + 1, resource: { buffer: this.rptReservoirCur } }, // rpt_resCurrent  → Cur
-        { binding: B + 2, resource: { buffer: this.rptReservoirPrev } }, // rpt_resPrev    → Prev
-        { binding: B + 3, resource: { buffer: this.rptResultBuffer } }, // rpt_result      → result
-        { binding: B + 5, resource: { buffer: this.rptReservoirSpatial } }, // rpt_resSpatial → Spatial
+        { binding: B + 0, resource: { buffer: this.#rsvr.rptReservoirCur } }, // rpt_reservoirOut → Cur
+        { binding: B + 1, resource: { buffer: this.#rsvr.rptReservoirCur } }, // rpt_resCurrent  → Cur
+        { binding: B + 2, resource: { buffer: this.#rsvr.rptReservoirPrev } }, // rpt_resPrev    → Prev
+        { binding: B + 3, resource: { buffer: this.#rsvr.rptResultBuffer } }, // rpt_result      → result
+        { binding: B + 5, resource: { buffer: this.#rsvr.rptReservoirSpatial } }, // rpt_resSpatial → Spatial
       ],
     });
     // Same resources for all four passes (the layout + bindings are uniform).
-    this.rptProducerGroup0 = group0;
-    this.rptTemporalGroup0 = group0;
-    this.rptSpatialGroup0 = group0;
-    this.rptResolveGroup0 = group0;
+    this.#rsvr.rptProducerGroup0 = group0;
+    this.#rsvr.rptTemporalGroup0 = group0;
+    this.#rsvr.rptSpatialGroup0 = group0;
+    this.#rsvr.rptResolveGroup0 = group0;
   }
 
   /**
@@ -1278,13 +1263,13 @@ export class GpuResources {
    */
   swapReservoirs(): void {
     if (!this.#restirPtReuse) return;
-    const tmp = this.rptReservoirPrev;
-    this.rptReservoirPrev = this.rptReservoirSpatial;
-    this.rptReservoirSpatial = tmp;
-    this.rptProducerGroup0 = null;
-    this.rptTemporalGroup0 = null;
-    this.rptSpatialGroup0 = null;
-    this.rptResolveGroup0 = null;
+    const tmp = this.#rsvr.rptReservoirPrev;
+    this.#rsvr.rptReservoirPrev = this.#rsvr.rptReservoirSpatial;
+    this.#rsvr.rptReservoirSpatial = tmp;
+    this.#rsvr.rptProducerGroup0 = null;
+    this.#rsvr.rptTemporalGroup0 = null;
+    this.#rsvr.rptSpatialGroup0 = null;
+    this.#rsvr.rptResolveGroup0 = null;
   }
 
   /** Tear down all ReSTIR-PT reuse resources. Called from dispose(). */
@@ -1319,18 +1304,7 @@ export class GpuResources {
     // device suite validated nothing; the lavapipe behavioral harness caught it.
     // Lite-tier group-0: bindings 0-11 (shared geometry/accum) + 12-14 (B12 textures).
     const liteEntries: GPUBindGroupEntry[] = [
-      { binding: 0, resource: this.accumView! },
-      { binding: 1, resource: { buffer: this.paramsBuffer! } },
-      { binding: 2, resource: { buffer: this.accumBuffer! } },
-      { binding: 3, resource: { buffer: sb.positionsBuffer } },
-      { binding: 4, resource: { buffer: sb.indicesBuffer } },
-      { binding: 5, resource: { buffer: sb.triMaterialIdsBuffer } },
-      { binding: 6, resource: { buffer: sb.materialsBuffer } },
-      { binding: 7, resource: { buffer: sb.bvhNodesBuffer } },
-      { binding: 8, resource: { buffer: sb.normalsBuffer } },
-      { binding: 9, resource: this.normalDepthView! },
-      { binding: 10, resource: this.albedoView! },
-      { binding: 11, resource: this.varianceView! },
+      ...this.#makeGroup0SharedPrefixEntries(sb),
       // B12 — lite-tier texture bindings 12–14 (sampled, not storage).
       { binding: 12, resource: this.liteEnvTextureView! },
       { binding: 13, resource: this.liteEnvCdfTextureView! },
@@ -1353,15 +1327,10 @@ export class GpuResources {
       // N-directional: directionalLights storage buffer (group 1 binding 10).
       { binding: 10, resource: { buffer: sb.directionalLightsBuffer } },
     ];
-    const fullGroup2Entries: GPUBindGroupEntry[] = [
-      { binding: 0, resource: { buffer: sb.tlasNodesBuffer } },
-      { binding: 1, resource: { buffer: sb.tlasInstanceIndicesBuffer } },
-      { binding: 2, resource: { buffer: sb.tlasBlasRootsBuffer } },
-      { binding: 3, resource: { buffer: sb.tlasInstanceWorldToLocalBuffer } },
-      { binding: 4, resource: { buffer: sb.tlasInstanceLocalToWorldBuffer } },
-      { binding: 5, resource: { buffer: bdptLightPathBuffer() } },
-      { binding: 6, resource: { buffer: this.bdptEyeStackBuffer! } },
-    ];
+    const fullGroup2Entries: GPUBindGroupEntry[] = this.#makeGroup2BindGroupEntries(
+      sb,
+      bdptLightPathBuffer(),
+    );
     const bindGroup = this.#device.createBindGroup({
       label: `vitrum.pt-webgpu.pathTrace.bindgroup0.${this.#traceTier}`,
       layout: this.bindGroupLayout!,
@@ -1395,10 +1364,10 @@ export class GpuResources {
           // stats (binding 9). Placeholder buffers are bound when SPPM is off so the
           // layout slot is satisfied; the gather code in caustic.wgsl.ts is guarded
           // by causticMode() == 2u so the placeholders are never accessed.
-          { binding: 6, resource: { buffer: this.sppmPhotonCellsBuffer! } },
-          { binding: 7, resource: { buffer: this.sppmCellCountersBuffer! } },
-          { binding: 8, resource: { buffer: this.sppmStatsBuffer! } },
-          { binding: 9, resource: { buffer: this.sppmPixelStatsBuffer! } },
+          { binding: 6, resource: { buffer: this.#sppm.sppmPhotonCellsBuffer! } },
+          { binding: 7, resource: { buffer: this.#sppm.sppmCellCountersBuffer! } },
+          { binding: 8, resource: { buffer: this.#sppm.sppmStatsBuffer! } },
+          { binding: 9, resource: { buffer: this.#sppm.sppmPixelStatsBuffer! } },
           { binding: 10, resource: { buffer: sb.tangentsBuffer } },
           { binding: 11, resource: { buffer: sb.colorsBuffer } },
           ...(this.#cwbvhClosest
@@ -1445,15 +1414,7 @@ export class GpuResources {
     this.pathTraceBindGroup2 = this.#device.createBindGroup({
       label: 'vitrum.pt-webgpu.pathTrace.bindgroup2.full.bdptRebuild',
       layout: this.bindGroupLayout2,
-      entries: [
-        { binding: 0, resource: { buffer: sb.tlasNodesBuffer } },
-        { binding: 1, resource: { buffer: sb.tlasInstanceIndicesBuffer } },
-        { binding: 2, resource: { buffer: sb.tlasBlasRootsBuffer } },
-        { binding: 3, resource: { buffer: sb.tlasInstanceWorldToLocalBuffer } },
-        { binding: 4, resource: { buffer: sb.tlasInstanceLocalToWorldBuffer } },
-        { binding: 5, resource: { buffer: lightPathBuffer } },
-        { binding: 6, resource: { buffer: this.bdptEyeStackBuffer! } },
-      ],
+      entries: this.#makeGroup2BindGroupEntries(sb, lightPathBuffer),
     });
   }
   /** The light-path buffer reference used to build the most-recent group 2.
@@ -1609,10 +1570,10 @@ export class GpuResources {
     this.#lastBdptLightPathBuffer = null;
     // The reuse bind groups reference the same scene buffers + accum views, so a
     // scene-buffer / accum-view recreation invalidates them too.
-    this.rptProducerGroup0 = null;
-    this.rptTemporalGroup0 = null;
-    this.rptSpatialGroup0 = null;
-    this.rptResolveGroup0 = null;
+    this.#rsvr.rptProducerGroup0 = null;
+    this.#rsvr.rptTemporalGroup0 = null;
+    this.#rsvr.rptSpatialGroup0 = null;
+    this.#rsvr.rptResolveGroup0 = null;
   }
 
   // ── SPPM photon-map lifecycle (A4) ───────────────────────────────────────────
@@ -1628,7 +1589,7 @@ export class GpuResources {
    */
   sppmWouldExceedCeiling(): boolean {
     if (this.#traceTier !== 'full') return false;
-    if (this.sppmBuffersReady) return false;
+    if (this.#sppm.sppmBuffersReady) return false;
     const deviceMaxBuffer = this.#device.limits?.maxBufferSize ?? 256 * 1024 * 1024;
     const deviceMaxBinding =
       this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
@@ -1665,25 +1626,25 @@ export class GpuResources {
     // 0bedd92 / the 32B BVHNode dummies); placeholders sized 64 B to clear any
     // current element stride with headroom.
     if (!sppmActive) {
-      if (this.sppmPhotonCellsBuffer == null) {
-        this.sppmPhotonCellsBuffer = this.#device.createBuffer({
+      if (this.#sppm.sppmPhotonCellsBuffer == null) {
+        this.#sppm.sppmPhotonCellsBuffer = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.sppm.photonCells.placeholder',
           size: 64,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
-        this.sppmCellCountersBuffer = this.#device.createBuffer({
+        this.#sppm.sppmCellCountersBuffer = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.sppm.cellCounters.placeholder',
           size: 64,
           usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
         });
-        this.sppmStatsBuffer = this.#device.createBuffer({
+        this.#sppm.sppmStatsBuffer = this.#device.createBuffer({
           label: 'vitrum.pt-webgpu.sppm.stats.placeholder',
           size: 64,
           usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         });
         // A4-progressive: placeholder for binding(9) when SPPM is off.
-        if (this.sppmPixelStatsBuffer == null) {
-          this.sppmPixelStatsBuffer = this.#device.createBuffer({
+        if (this.#sppm.sppmPixelStatsBuffer == null) {
+          this.#sppm.sppmPixelStatsBuffer = this.#device.createBuffer({
             label: 'vitrum.pt-webgpu.sppm.pixelStats.placeholder',
             size: 64,
             usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
@@ -1696,7 +1657,7 @@ export class GpuResources {
       return false;
     }
     // Full allocation path.
-    if (this.sppmBuffersReady) return true;
+    if (this.#sppm.sppmBuffersReady) return true;
 
     // R7a behavioral-gate fix (2026-06-10): the static ceiling alone let a
     // 402 MiB allocation through onto devices whose maxBufferSize is the
@@ -1729,27 +1690,27 @@ export class GpuResources {
       return false;
     }
     // Destroy any placeholder buffers before allocating the real ones.
-    this.sppmPhotonCellsBuffer?.destroy();
-    this.sppmCellCountersBuffer?.destroy();
-    this.sppmStatsBuffer?.destroy();
-    this.sppmPhotonCellsBuffer = this.#device.createBuffer({
+    this.#sppm.sppmPhotonCellsBuffer?.destroy();
+    this.#sppm.sppmCellCountersBuffer?.destroy();
+    this.#sppm.sppmStatsBuffer?.destroy();
+    this.#sppm.sppmPhotonCellsBuffer = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.sppm.photonCells',
       size: SPPM_PHOTON_CELLS_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.sppmCellCountersBuffer = this.#device.createBuffer({
+    this.#sppm.sppmCellCountersBuffer = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.sppm.cellCounters',
       size: SPPM_CELL_COUNTERS_BYTES,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.sppmStatsBuffer = this.#device.createBuffer({
+    this.#sppm.sppmStatsBuffer = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.sppm.stats',
       size: SPPM_STATS_BYTES,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     // New SPPM buffers — invalidate group-3 so it rebuilds with the real handles.
     this.invalidateGroup3BindGroup();
-    this.sppmBuffersReady = true;
+    this.#sppm.sppmBuffersReady = true;
 
     // Build the photon-emission pipeline lazily.
     // The photon pass uses groups 0–3.  Group 3 now carries the SPPM bindings
@@ -1757,7 +1718,7 @@ export class GpuResources {
     // Its pipeline layout is [g0, g1, g2, g3] — the SAME 4-group layout as the
     // megakernel.  This is safe on ALL adapters (maxBindGroups = 4 is guaranteed
     // by the WebGPU spec).  Must be called AFTER ensurePipeline().
-    if (this.sppmPhotonPipeline == null) {
+    if (this.#sppm.sppmPhotonPipeline == null) {
       if (
         this.bindGroupLayout != null &&
         this.bindGroupLayout1 != null &&
@@ -1777,7 +1738,7 @@ export class GpuResources {
             this.bindGroupLayout3,
           ],
         });
-        this.sppmPhotonPipeline = this.#device.createComputePipeline({
+        this.#sppm.sppmPhotonPipeline = this.#device.createComputePipeline({
           label: 'vitrum.pt-webgpu.sppm.photonPass.pipeline',
           layout: photonLayout,
           compute: { module, entryPoint: 'sppmEmitPhotons' },
@@ -1886,20 +1847,20 @@ export class GpuResources {
 
   #ensureSppmPixelStatsPlaceholder(): void {
     if (
-      this.sppmPixelStatsBuffer != null &&
-      this.sppmPixelStatsWidth === 0 &&
-      this.sppmPixelStatsHeight === 0
+      this.#sppm.sppmPixelStatsBuffer != null &&
+      this.#sppm.sppmPixelStatsWidth === 0 &&
+      this.#sppm.sppmPixelStatsHeight === 0
     ) {
       return;
     }
-    this.sppmPixelStatsBuffer?.destroy();
-    this.sppmPixelStatsBuffer = this.#device.createBuffer({
+    this.#sppm.sppmPixelStatsBuffer?.destroy();
+    this.#sppm.sppmPixelStatsBuffer = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.sppm.pixelStats.placeholder',
       size: 64,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.sppmPixelStatsWidth = 0;
-    this.sppmPixelStatsHeight = 0;
+    this.#sppm.sppmPixelStatsWidth = 0;
+    this.#sppm.sppmPixelStatsHeight = 0;
     this.invalidateGroup3BindGroup();
   }
 
@@ -1911,7 +1872,7 @@ export class GpuResources {
     photonCount: number,
     sceneExtent: number,
   ): void {
-    if (this.sppmStatsBuffer == null) return;
+    if (this.#sppm.sppmStatsBuffer == null) return;
     const ubo = new ArrayBuffer(SPPM_STATS_BYTES);
     const f = new Float32Array(ubo);
     const u = new Uint32Array(ubo);
@@ -1921,7 +1882,7 @@ export class GpuResources {
     u[3] = photonCount >>> 0;
     f[4] = sceneExtent;
     f[5] = 0; f[6] = 0; f[7] = 0; // _pad
-    this.#device.queue.writeBuffer(this.sppmStatsBuffer, 0, ubo);
+    this.#device.queue.writeBuffer(this.#sppm.sppmStatsBuffer, 0, ubo);
   }
 
   /**
@@ -1972,24 +1933,24 @@ export class GpuResources {
     }
     // Cache hit — buffer already at the right size.
     if (
-      this.sppmPixelStatsBuffer != null &&
-      this.sppmPixelStatsWidth  === width &&
-      this.sppmPixelStatsHeight === height
+      this.#sppm.sppmPixelStatsBuffer != null &&
+      this.#sppm.sppmPixelStatsWidth  === width &&
+      this.#sppm.sppmPixelStatsHeight === height
     ) {
       return true;
     }
     // Reallocate.
-    this.sppmPixelStatsBuffer?.destroy();
-    this.sppmPixelStatsBuffer = this.#device.createBuffer({
+    this.#sppm.sppmPixelStatsBuffer?.destroy();
+    this.#sppm.sppmPixelStatsBuffer = this.#device.createBuffer({
       label: 'vitrum.pt-webgpu.sppm.pixelStats',
       size: targetBytes,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
-    this.sppmPixelStatsWidth  = width;
-    this.sppmPixelStatsHeight = height;
+    this.#sppm.sppmPixelStatsWidth  = width;
+    this.#sppm.sppmPixelStatsHeight = height;
     // GPU-clear: all zeros → τ=0, R²=0 (→ seed r₀ on first frame), N=0.
     const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.sppm.pixelStats.clear' });
-    enc.clearBuffer(this.sppmPixelStatsBuffer);
+    enc.clearBuffer(this.#sppm.sppmPixelStatsBuffer);
     this.#device.queue.submit([enc.finish()]);
     // New buffer handle — invalidate group-3 so buildBindGroups picks it up.
     this.invalidateGroup3BindGroup();
@@ -2004,9 +1965,9 @@ export class GpuResources {
    * No-op if the buffer has not been allocated yet.
    */
   clearSppmPixelStats(): void {
-    if (this.sppmPixelStatsBuffer == null || this.sppmPixelStatsWidth === 0) return;
+    if (this.#sppm.sppmPixelStatsBuffer == null || this.#sppm.sppmPixelStatsWidth === 0) return;
     const enc = this.#device.createCommandEncoder({ label: 'vitrum.pt-webgpu.sppm.pixelStats.reset' });
-    enc.clearBuffer(this.sppmPixelStatsBuffer);
+    enc.clearBuffer(this.#sppm.sppmPixelStatsBuffer);
     this.#device.queue.submit([enc.finish()]);
   }
 
@@ -2082,8 +2043,8 @@ export class GpuResources {
       this.#present.presentPipeline == null ||
       this.#present.presentParamsBuffer == null ||
       this.accumTexture == null ||
-      this.presentTexture == null ||
-      this.presentView == null
+      this.#present.presentTexture == null ||
+      this.#present.presentView == null
     ) {
       return;
     }
@@ -2094,7 +2055,7 @@ export class GpuResources {
       entries: [
         { binding: 0, resource: { buffer: this.#present.presentParamsBuffer } },
         { binding: 1, resource: this.accumTexture.createView() },
-        { binding: 2, resource: this.presentView },
+        { binding: 2, resource: this.#present.presentView },
       ],
     });
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.present.pass' });

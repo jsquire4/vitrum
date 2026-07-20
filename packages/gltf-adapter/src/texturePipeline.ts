@@ -15,6 +15,18 @@ import {
   type GltfTextureSourceExtension,
   type RawImageHandle,
 } from './textures.js';
+import {
+  PlatformTextureDecodeError,
+  canDecodeRawImagePixelsWithPlatform,
+  canDecodeRawJpegPixelsWithNode,
+  canDecodeRawPngPixelsWithNode,
+  canDecodeRawWebpPixelsWithNode,
+  decodeRawImagePixelsWithPlatform,
+  decodeRawJpegPixelsWithNode,
+  decodeRawPngPixelsWithNode,
+  decodeRawWebpPixelsWithNode,
+} from './textureCodecs.js';
+import { buildTextureDecodeReport } from './textureDecodeReport.js';
 
 export type GltfMaterialTextureField =
   | 'baseColorMap'
@@ -244,25 +256,10 @@ interface DecodedTextureCacheEntry {
   readonly originalHeight: number;
 }
 
-class PlatformTextureDecodeError extends Error {
-  readonly code: Extract<
-    DecodeSceneTextureDiagnosticCode,
-    'platform-image-decode-failed' | 'platform-image-readback-unavailable' | 'platform-image-readback-failed'
-  >;
-
-  constructor(
-    code: PlatformTextureDecodeError['code'],
-    message: string,
-  ) {
-    super(message);
-    this.name = 'PlatformTextureDecodeError';
-    this.code = code;
-  }
-}
 
 type SpecGlossRoughnessBakeCache = Map<unknown, Map<number, GltfCpuLinearTextureHandle>>;
 
-const MATERIAL_TEXTURE_FIELDS: readonly GltfMaterialTextureField[] = [
+export const MATERIAL_TEXTURE_FIELDS: readonly GltfMaterialTextureField[] = [
   'baseColorMap',
   'normalMap',
   'roughnessMap',
@@ -322,171 +319,6 @@ export function gltfTextureColorSpaceForField(field: GltfMaterialTextureField): 
   return SRGB_TEXTURE_FIELDS.has(field) ? 'srgb' : 'linear';
 }
 
-export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport {
-  const entries: GltfTextureDecodeReportEntry[] = [];
-  const uniqueHandles = new Set<unknown>();
-  for (const [primitiveIndex, primitive] of scene.primitives.entries()) {
-    const material = materialForPrimitive(primitive);
-    for (const field of MATERIAL_TEXTURE_FIELDS) {
-      const ref = material[field] as TextureRef | undefined;
-      if (!ref) continue;
-      uniqueHandles.add(ref.handle);
-      const handleKind = classifyTextureHandle(ref.handle);
-      const handleColorSpace = textureHandleColorSpace(ref.handle);
-      const payloadFields = textureHandlePayloadReportFields(ref.handle);
-      const samplerFields = textureSamplerReportFields(ref);
-      const source = gltfTextureRefSource(ref);
-      const dimensionFields = textureDimensionReportFields(ref.handle);
-      const scenePath = `scene.primitives[${primitiveIndex}].material.${field}`;
-      entries.push({
-        primitiveId: String(primitive.id),
-        primitiveKind: primitive.kind,
-        primitiveIndex,
-        materialField: field,
-        path: source?.path ?? scenePath,
-        ...(source?.imageSourcePath !== undefined ? { imageSourcePath: source.imageSourcePath } : {}),
-        texCoord: ref.texCoord ?? 0,
-        hasTransform: ref.transform !== undefined,
-        wrapS: ref.wrapS ?? 'repeat',
-        wrapT: ref.wrapT ?? 'repeat',
-        ...samplerFields,
-        ...dimensionFields,
-        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
-        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
-        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
-        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
-        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
-        ...(source?.textureSourceExtension !== undefined
-          ? { textureSourceExtension: source.textureSourceExtension }
-          : {}),
-        ...payloadFields,
-        ...(handleColorSpace !== undefined ? { handleColorSpace } : {}),
-        colorSpace: gltfTextureColorSpaceForField(field),
-        handleKind,
-        backendReadiness: backendReadinessForHandle(field, handleKind),
-      });
-    }
-  }
-
-  const rawImageRefs = entries.filter((entry) => entry.handleKind === 'raw-image');
-  const imageBitmapRefs = entries.filter((entry) => entry.handleKind === 'image-bitmap');
-  return {
-    mapCount: entries.length,
-    uniqueHandleCount: uniqueHandles.size,
-    rawImageCount: rawImageRefs.length,
-    imageBitmapCount: imageBitmapRefs.length,
-    opaqueHandleCount: entries.filter((entry) => entry.handleKind === 'opaque').length,
-    cpuReadableCount: entries.filter((entry) =>
-      entry.handleKind === 'pixel-data' || entry.handleKind === 'data-texture',
-    ).length,
-    rawImageRefs,
-    imageBitmapRefs,
-    entries,
-  };
-}
-
-function textureSamplerReportFields(
-  ref: TextureRef,
-): Pick<GltfTextureDecodeReportEntry, 'magFilter' | 'minFilter' | 'mipFilter' | 'usesMipmaps'> {
-  type SamplerReportFields = Pick<
-    GltfTextureDecodeReportEntry,
-    'magFilter' | 'minFilter' | 'mipFilter' | 'usesMipmaps'
-  >;
-  const fields: { -readonly [K in keyof SamplerReportFields]?: SamplerReportFields[K] } = {};
-  if (ref.magFilter !== undefined) fields.magFilter = ref.magFilter;
-  if (ref.minFilter !== undefined) fields.minFilter = ref.minFilter;
-  if (ref.mipFilter !== undefined) {
-    fields.mipFilter = ref.mipFilter;
-    fields.usesMipmaps = ref.mipFilter !== 'none';
-  }
-  return fields;
-}
-
-function textureDimensionReportFields(
-  handle: unknown,
-): Pick<
-  GltfTextureDecodeReportEntry,
-  'width' | 'height' | 'isPowerOfTwo' | 'originalWidth' | 'originalHeight' | 'wasResized' | 'maxTextureSize'
-> {
-  const dims = textureHandleDimensions(handle);
-  if (dims === null) return {};
-  const hint = textureDecodeHint(handle);
-  const originalWidth = hint?.originalWidth ?? dims.width;
-  const originalHeight = hint?.originalHeight ?? dims.height;
-  return {
-    width: dims.width,
-    height: dims.height,
-    isPowerOfTwo: isPowerOfTwo(dims.width, dims.height),
-    originalWidth,
-    originalHeight,
-    wasResized: originalWidth !== dims.width || originalHeight !== dims.height,
-    ...(hint?.maxTextureSize !== undefined ? { maxTextureSize: hint.maxTextureSize } : {}),
-  };
-}
-
-function textureHandleDimensions(handle: unknown): { readonly width: number; readonly height: number } | null {
-  if (!isRecord(handle)) return null;
-  if (typeof handle.width === 'number' && typeof handle.height === 'number') {
-    return { width: handle.width, height: handle.height };
-  }
-  const image = handle.image;
-  if (isRecord(image) && typeof image.width === 'number' && typeof image.height === 'number') {
-    return { width: image.width, height: image.height };
-  }
-  return null;
-}
-
-function textureHandlePayloadReportFields(
-  handle: unknown,
-): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> {
-  const hint = textureHandlePayloadHint(handle);
-  if (hint !== null) return hint;
-  const pixels = decodedPixelsFromCpuReadableHandle(handle);
-  if (pixels === null) return {};
-  const width = Math.max(0, Math.floor(pixels.width));
-  const height = Math.max(0, Math.floor(pixels.height));
-  if (width <= 0 || height <= 0 || !isArrayLikeData(pixels.data)) return {};
-  return {
-    handleChannels: pixels.channels ?? inferDecodedChannels(pixels.data, width, height),
-    handleDataType: pixels.dataType ?? inferDecodedDataType(pixels.data),
-  };
-}
-
-function textureHandlePayloadHint(
-  handle: unknown,
-): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> | null {
-  if (!isRecord(handle)) return null;
-  const direct = texturePayloadHintFromRecord(handle);
-  if (direct !== null) return direct;
-  return isRecord(handle.image) ? texturePayloadHintFromRecord(handle.image, handle) : null;
-}
-
-function texturePayloadHintFromRecord(
-  record: Record<string, unknown>,
-  metadata: Record<string, unknown> = record,
-): Pick<GltfTextureDecodeReportEntry, 'handleChannels' | 'handleDataType'> | null {
-  const hint = isRecord(metadata.__vitrum_hint__) ? metadata.__vitrum_hint__ : metadata;
-  const channels = hint.channels;
-  const dataType = hint.dataType;
-  const out: { handleChannels?: 1 | 2 | 3 | 4; handleDataType?: 'uint8' | 'uint16' | 'float32' } = {};
-  if (channels === 1 || channels === 2 || channels === 3 || channels === 4) out.handleChannels = channels;
-  if (dataType === 'uint8' || dataType === 'uint16' || dataType === 'float32') out.handleDataType = dataType;
-  return out.handleChannels !== undefined || out.handleDataType !== undefined ? out : null;
-}
-
-function textureDecodeHint(handle: unknown): {
-  readonly originalWidth?: number;
-  readonly originalHeight?: number;
-  readonly maxTextureSize?: number;
-} | null {
-  if (!isRecord(handle) || !isRecord(handle.__vitrum_hint__)) return null;
-  const hint = handle.__vitrum_hint__;
-  return {
-    ...(typeof hint.originalWidth === 'number' ? { originalWidth: hint.originalWidth } : {}),
-    ...(typeof hint.originalHeight === 'number' ? { originalHeight: hint.originalHeight } : {}),
-    ...(typeof hint.maxTextureSize === 'number' ? { maxTextureSize: hint.maxTextureSize } : {}),
-  };
-}
 
 export async function decodeSceneTextures(
   scene: Scene,
@@ -575,11 +407,11 @@ export function classifyTextureHandle(handle: unknown): GltfTextureHandleKind {
   return 'opaque';
 }
 
-function materialForPrimitive(primitive: ScenePrimitive): MaterialSpec {
+export function materialForPrimitive(primitive: ScenePrimitive): MaterialSpec {
   return primitive.material;
 }
 
-function backendReadinessForHandle(
+export function backendReadinessForHandle(
   field: GltfMaterialTextureField,
   handleKind: GltfTextureHandleKind,
 ): GltfTextureDecodeReportEntry['backendReadiness'] {
@@ -915,325 +747,6 @@ function cacheEntryFromDecodedPixels(
   };
 }
 
-const decodeRawImagePixelsWithPlatform: DecodeGltfTexturePixelsFn = async (handle, context) => {
-  const bitmap = await createBitmapFromRawImage(handle, context.path);
-  try {
-    const width = Math.max(0, Math.floor(numberProp(bitmap, 'width') ?? 0));
-    const height = Math.max(0, Math.floor(numberProp(bitmap, 'height') ?? 0));
-    if (width <= 0 || height <= 0) {
-      throw new PlatformTextureDecodeError(
-        'platform-image-decode-failed',
-        `[vitrum/gltf-adapter] ${context.path} decoded to invalid image dimensions ${width}x${height}. Texture left unchanged.`,
-      );
-    }
-    const ctx = createReadback2dContext(width, height, context.path);
-    try {
-      ctx.drawImage(bitmap, 0, 0, width, height);
-      const imageData = ctx.getImageData(0, 0, width, height);
-      return {
-        width,
-        height,
-        data: imageData.data,
-        channels: 4,
-        dataType: 'uint8',
-        colorSpace: context.colorSpace,
-      };
-    } catch (err) {
-      throw new PlatformTextureDecodeError(
-        'platform-image-readback-failed',
-        `[vitrum/gltf-adapter] ${context.path} decoded through browser image APIs, but canvas pixel readback failed: ` +
-          `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
-      );
-    }
-  } finally {
-    closeBitmap(bitmap);
-  }
-};
-
-function canDecodeRawImagePixelsWithPlatform(): boolean {
-  return typeof globalThis.createImageBitmap === 'function' && typeof globalThis.Blob === 'function';
-}
-
-function canDecodeRawPngPixelsWithNode(handle: RawImageHandle): boolean {
-  return isNodeLikeHost() && isPngRawImageHandle(handle);
-}
-
-function canDecodeRawJpegPixelsWithNode(handle: RawImageHandle): boolean {
-  return isNodeLikeHost() && isJpegRawImageHandle(handle);
-}
-
-function canDecodeRawWebpPixelsWithNode(handle: RawImageHandle): boolean {
-  return isNodeLikeHost() && isWebpRawImageHandle(handle);
-}
-
-function isNodeLikeHost(): boolean {
-  const host = globalThis as typeof globalThis & {
-    process?: { versions?: { node?: unknown } };
-  };
-  return typeof host.process?.versions?.node === 'string';
-}
-
-function isPngRawImageHandle(handle: RawImageHandle): boolean {
-  const data = handle.data;
-  return data.length >= 8 &&
-    data[0] === 0x89 &&
-    data[1] === 0x50 &&
-    data[2] === 0x4e &&
-    data[3] === 0x47 &&
-    data[4] === 0x0d &&
-    data[5] === 0x0a &&
-    data[6] === 0x1a &&
-    data[7] === 0x0a;
-}
-
-function isJpegRawImageHandle(handle: RawImageHandle): boolean {
-  const data = handle.data;
-  const mimeType = handle.mimeType.toLowerCase();
-  return (mimeType === 'image/jpeg' || mimeType === 'image/jpg') ||
-    (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff);
-}
-
-function isWebpRawImageHandle(handle: RawImageHandle): boolean {
-  const data = handle.data;
-  const mimeType = handle.mimeType.toLowerCase();
-  return mimeType === 'image/webp' ||
-    (data.length >= 12 &&
-      data[0] === 0x52 &&
-      data[1] === 0x49 &&
-      data[2] === 0x46 &&
-      data[3] === 0x46 &&
-      data[8] === 0x57 &&
-      data[9] === 0x45 &&
-      data[10] === 0x42 &&
-      data[11] === 0x50);
-}
-
-const decodeRawPngPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, context) => {
-  try {
-    const { PNG } = await importPngJs();
-    const bytes = handle.data;
-    const decoded = PNG.sync.read(nodeBufferFromUint8Array(bytes));
-    return {
-      width: decoded.width,
-      height: decoded.height,
-      data: decoded.data,
-      channels: 4,
-      dataType: 'uint8',
-      colorSpace: context.colorSpace,
-    };
-  } catch (err) {
-    throw new PlatformTextureDecodeError(
-      'platform-image-decode-failed',
-      `[vitrum/gltf-adapter] ${context.path} could not be decoded as PNG through the built-in Node decoder: ` +
-        `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
-    );
-  }
-};
-
-const decodeRawJpegPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, context) => {
-  try {
-    const jpeg = await importJpegJs();
-    const decode = jpegDecodeFn(jpeg);
-    const decoded = decode(nodeBufferFromUint8Array(handle.data), { useTArray: true });
-    return {
-      width: decoded.width,
-      height: decoded.height,
-      data: decoded.data,
-      channels: 4,
-      dataType: 'uint8',
-      colorSpace: context.colorSpace,
-    };
-  } catch (err) {
-    throw new PlatformTextureDecodeError(
-      'platform-image-decode-failed',
-      `[vitrum/gltf-adapter] ${context.path} could not be decoded as JPEG through the built-in Node decoder: ` +
-        `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
-    );
-  }
-};
-
-const decodeRawWebpPixelsWithNode: DecodeGltfTexturePixelsFn = async (handle, context) => {
-  try {
-    const webp = await importWebpWasm();
-    const decode = webpDecodeFn(webp);
-    const decoded = await decode(arrayBufferFromUint8Array(handle.data));
-    return {
-      width: decoded.width,
-      height: decoded.height,
-      data: decoded.data,
-      channels: 4,
-      dataType: 'uint8',
-      colorSpace: context.colorSpace,
-    };
-  } catch (err) {
-    throw new PlatformTextureDecodeError(
-      'platform-image-decode-failed',
-      `[vitrum/gltf-adapter] ${context.path} could not be decoded as WebP through the built-in Node decoder: ` +
-        `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
-    );
-  }
-};
-
-interface PngJsSyncReader {
-  read(data: unknown): {
-    readonly width: number;
-    readonly height: number;
-    readonly data: Uint8Array;
-  };
-}
-
-interface PngJsModule {
-  readonly PNG: {
-    readonly sync: PngJsSyncReader;
-  };
-}
-
-async function importPngJs(): Promise<PngJsModule> {
-  const specifier = 'pngjs';
-  return await import(/* @vite-ignore */ specifier) as PngJsModule;
-}
-
-interface JpegJsDecodedImage {
-  readonly width: number;
-  readonly height: number;
-  readonly data: Uint8Array | Uint8ClampedArray;
-}
-
-type JpegJsDecodeFn = (
-  data: unknown,
-  options?: { readonly useTArray?: boolean },
-) => JpegJsDecodedImage;
-
-interface JpegJsModule {
-  readonly decode?: JpegJsDecodeFn;
-  readonly default?: {
-    readonly decode?: JpegJsDecodeFn;
-  };
-}
-
-async function importJpegJs(): Promise<JpegJsModule> {
-  const specifier = 'jpeg-js';
-  return await import(/* @vite-ignore */ specifier) as JpegJsModule;
-}
-
-function jpegDecodeFn(module: JpegJsModule): JpegJsDecodeFn {
-  const decode = module.decode ?? module.default?.decode;
-  if (typeof decode !== 'function') {
-    throw new Error('jpeg-js decode export is unavailable');
-  }
-  return decode;
-}
-
-interface WebpWasmDecodedImage {
-  readonly width: number;
-  readonly height: number;
-  readonly data: Uint8Array | Uint8ClampedArray;
-}
-
-type WebpWasmDecodeFn = (data: unknown) => Promise<WebpWasmDecodedImage> | WebpWasmDecodedImage;
-
-interface WebpWasmModule {
-  readonly decode?: WebpWasmDecodeFn;
-  readonly default?: {
-    readonly decode?: WebpWasmDecodeFn;
-  };
-}
-
-async function importWebpWasm(): Promise<WebpWasmModule> {
-  const specifier = 'webp-wasm';
-  return await import(/* @vite-ignore */ specifier) as WebpWasmModule;
-}
-
-function webpDecodeFn(module: WebpWasmModule): WebpWasmDecodeFn {
-  const owner = module.decode !== undefined ? module : module.default;
-  const decode = owner?.decode;
-  if (typeof decode !== 'function') {
-    throw new Error('webp-wasm decode export is unavailable');
-  }
-  return (data) => decode.call(owner, data);
-}
-
-function nodeBufferFromUint8Array(bytes: Uint8Array): unknown {
-  const host = globalThis as typeof globalThis & {
-    Buffer?: {
-      from(buffer: ArrayBufferLike, byteOffset?: number, length?: number): unknown;
-    };
-  };
-  if (host.Buffer == null) {
-    throw new Error('Node Buffer is unavailable');
-  }
-  return host.Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-}
-
-function arrayBufferFromUint8Array(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-}
-
-async function createBitmapFromRawImage(handle: RawImageHandle, path: string): Promise<unknown> {
-  try {
-    const bytes = handle.data;
-    const slice = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-    const blob = new Blob([slice as ArrayBuffer], { type: handle.mimeType });
-    return await createImageBitmap(blob);
-  } catch (err) {
-    throw new PlatformTextureDecodeError(
-      'platform-image-decode-failed',
-      `[vitrum/gltf-adapter] ${path} could not be decoded through browser image APIs: ` +
-        `${err instanceof Error ? err.message : String(err)}. Texture left unchanged.`,
-    );
-  }
-}
-
-interface Canvas2dReadbackContext {
-  drawImage(image: unknown, dx: number, dy: number, dw: number, dh: number): void;
-  getImageData(sx: number, sy: number, sw: number, sh: number): { readonly data: Uint8ClampedArray };
-}
-
-function createReadback2dContext(
-  width: number,
-  height: number,
-  path: string,
-): Canvas2dReadbackContext {
-  const host = globalThis as typeof globalThis & {
-    OffscreenCanvas?: new (width: number, height: number) => { getContext(type: '2d'): unknown };
-    document?: { createElement(tag: 'canvas'): { width: number; height: number; getContext(type: '2d'): unknown } };
-  };
-  const canvas = typeof host.OffscreenCanvas === 'function'
-    ? new host.OffscreenCanvas(width, height)
-    : host.document?.createElement('canvas');
-  if (canvas == null) {
-    throw new PlatformTextureDecodeError(
-      'platform-image-readback-unavailable',
-      `[vitrum/gltf-adapter] ${path} decoded through browser image APIs, but no OffscreenCanvas/document canvas ` +
-        'is available for pixel readback. Texture left unchanged.',
-    );
-  }
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!isCanvas2dReadbackContext(ctx)) {
-    throw new PlatformTextureDecodeError(
-      'platform-image-readback-unavailable',
-      `[vitrum/gltf-adapter] ${path} decoded through browser image APIs, but a 2D canvas readback context ` +
-        'could not be created. Texture left unchanged.',
-    );
-  }
-  return ctx;
-}
-
-function isCanvas2dReadbackContext(value: unknown): value is Canvas2dReadbackContext {
-  return isRecord(value) &&
-    typeof value.drawImage === 'function' &&
-    typeof value.getImageData === 'function';
-}
-
-function numberProp(value: unknown, key: string): number | undefined {
-  return isRecord(value) && typeof value[key] === 'number' ? value[key] : undefined;
-}
-
-function closeBitmap(bitmap: unknown): void {
-  if (isRecord(bitmap) && typeof bitmap.close === 'function') bitmap.close();
-}
 
 function maybeBakeSpecGlossRoughnessMap(
   material: MaterialSpec,
@@ -1341,7 +854,7 @@ function cpuLinearTextureHandleForSpecGlossBake(
   return pixels === null ? null : normalizeDecodedPixels(pixels, 'srgb', 'linear', maxTextureSize);
 }
 
-function decodedPixelsFromCpuReadableHandle(handle: unknown): GltfDecodedTexturePixels | null {
+export function decodedPixelsFromCpuReadableHandle(handle: unknown): GltfDecodedTexturePixels | null {
   if (isRecord(handle)) {
     const direct = decodedPixelsFromRecord(handle);
     if (direct !== null) return direct;
@@ -1675,7 +1188,7 @@ function withDecodedTextureMetadata<T extends GltfCpuTextureHandle>(
   } as T;
 }
 
-function inferDecodedChannels(data: ArrayLike<number>, width: number, height: number): 1 | 2 | 3 | 4 {
+export function inferDecodedChannels(data: ArrayLike<number>, width: number, height: number): 1 | 2 | 3 | 4 {
   const stride = Math.max(1, Math.round(data.length / Math.max(1, width * height)));
   if (stride <= 1) return 1;
   if (stride === 2) return 2;
@@ -1683,13 +1196,13 @@ function inferDecodedChannels(data: ArrayLike<number>, width: number, height: nu
   return 4;
 }
 
-function inferDecodedDataType(data: ArrayLike<number>): 'uint8' | 'uint16' | 'float32' {
+export function inferDecodedDataType(data: ArrayLike<number>): 'uint8' | 'uint16' | 'float32' {
   if (data instanceof Uint8Array || data instanceof Uint8ClampedArray) return 'uint8';
   if (data instanceof Uint16Array) return 'uint16';
   return 'float32';
 }
 
-function isPowerOfTwo(width: number, height: number): boolean {
+export function isPowerOfTwo(width: number, height: number): boolean {
   return isSinglePowerOfTwo(width) && isSinglePowerOfTwo(height);
 }
 
@@ -1701,7 +1214,7 @@ function usesRepeatWrap(ref: TextureRef): boolean {
   return (ref.wrapS ?? 'repeat') !== 'clamp-to-edge' || (ref.wrapT ?? 'repeat') !== 'clamp-to-edge';
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
@@ -1717,7 +1230,7 @@ function isCpuLinearTextureHandle(handle: unknown): handle is GltfCpuLinearTextu
     hint.colorSpace === 'linear';
 }
 
-function textureHandleColorSpace(handle: unknown): GltfTextureColorSpace | undefined {
+export function textureHandleColorSpace(handle: unknown): GltfTextureColorSpace | undefined {
   if (!isRecord(handle)) return undefined;
   const direct = handle.colorSpace;
   if (direct === 'srgb' || direct === 'linear') return direct;
@@ -1795,6 +1308,24 @@ function isImageBitmapLike(handle: unknown): boolean {
   return typeof h.width === 'number' && typeof h.height === 'number' && typeof h.close === 'function';
 }
 
-function isArrayLikeData(data: unknown): boolean {
+export function isArrayLikeData(data: unknown): boolean {
   return typeof data === 'object' && data !== null && typeof (data as { length?: unknown }).length === 'number';
 }
+
+export function textureDecodeHint(handle: unknown): {
+  readonly originalWidth?: number;
+  readonly originalHeight?: number;
+  readonly maxTextureSize?: number;
+} | null {
+  if (!isRecord(handle) || !isRecord(handle.__vitrum_hint__)) return null;
+  const hint = handle.__vitrum_hint__;
+  return {
+    ...(typeof hint.originalWidth === 'number' ? { originalWidth: hint.originalWidth } : {}),
+    ...(typeof hint.originalHeight === 'number' ? { originalHeight: hint.originalHeight } : {}),
+    ...(typeof hint.maxTextureSize === 'number' ? { maxTextureSize: hint.maxTextureSize } : {}),
+  };
+}
+
+// D15-6: buildTextureDecodeReport now lives in textureDecodeReport.ts; re-export it
+// from here so the historical `./texturePipeline.js` import path keeps working.
+export { buildTextureDecodeReport } from './textureDecodeReport.js';

@@ -34,6 +34,13 @@ import {
   readRgba16fTextureToF32,
 } from './denoise/rgba16fReadback.js';
 import { summarizeScene, type SceneSummary } from './scene/flattenScene.js';
+import { emitLiteSceneWarnings } from './scene/liteSceneWarnings.js';
+import { ptWebgpuCapabilities } from './capabilities.js';
+import {
+  validatePtWebgpuOptions,
+  resolveBdptMaxLightBounces,
+  EXPERIMENTAL_MAX_BOUNCES,
+} from './ptWebgpuValidation.js';
 import {
   buildPackedScene,
   scenePackResultFromPacked,
@@ -155,47 +162,6 @@ function collectUnsupportedMaterialFieldUses(
     }
   }
   return uses;
-}
-
-function liteCanBakeVertexColors(primitive: ScenePrimitive): boolean {
-  const colors = (primitive as { readonly colors?: Float32Array }).colors;
-  const positions = (primitive as { readonly positions?: Float32Array }).positions;
-  if (colors == null || colors.length === 0) return true;
-  if (positions == null || positions.length === 0) return false;
-  const vertexCount = Math.floor(positions.length / 3);
-  const stride = colors.length >= vertexCount * 4
-    ? 4
-    : colors.length >= vertexCount * 3
-      ? 3
-      : 0;
-  if (vertexCount === 0 || stride === 0) return false;
-  const r = colors[0] ?? 1;
-  const g = colors[1] ?? 1;
-  const b = colors[2] ?? 1;
-  const eps = 1e-6;
-  for (let i = 0; i < vertexCount; i += 1) {
-    const o = i * stride;
-    if (
-      Math.abs((colors[o] ?? 1) - r) > eps ||
-      Math.abs((colors[o + 1] ?? 1) - g) > eps ||
-      Math.abs((colors[o + 2] ?? 1) - b) > eps
-    ) {
-      return false;
-    }
-    if (stride === 4 && Math.abs((colors[o + 3] ?? 1) - 1) > eps) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function collectLiteUnsupportedVertexColorPrimitiveIds(scene: Scene): string[] {
-  const ids: string[] = [];
-  for (const primitive of scene.primitives) {
-    const colors = (primitive as { readonly colors?: Float32Array }).colors;
-    if (colors != null && colors.length > 0 && !liteCanBakeVertexColors(primitive)) ids.push(primitive.id);
-  }
-  return ids.sort();
 }
 
 export interface PTEngineWebGPUOptions extends EngineOptions {
@@ -359,14 +325,6 @@ export type {
   OIDNBridgeLoader,
 } from './denoise/oidnFinalDispatcher.js';
 
-const EXPERIMENTAL_MAX_BOUNCES = 8;
-const BDPT_MAX_LIGHT_BOUNCES = 8;
-// D2 (2026-07-20): raised 1 → 2 unconditionally. With maxLv=2 the kernel
-// connection loop `for lvi=1u; lvi<maxLv` executes lvi=1, so BDPT does real
-// light-path connections out of the box instead of being silently inert at the
-// old default of 1 (which performed zero connections). BDPT remains opt-in
-// (`bdpt:true`); this only fixes its default light-bounce count.
-const BDPT_SAFE_DEFAULT_LIGHT_BOUNCES = 2;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
 /** A4 — SPPM photons emitted per frame: 65536 (= 1024 workgroups × 64 lanes). */
@@ -375,17 +333,8 @@ const SPPM_WORKGROUP_COUNT = Math.ceil(SPPM_PHOTON_COUNT / 64);
 
 // D8.14 — Lite-tier capability sets (derived from PT_WEBGPU_SUPPORT diff).
 // Sourced from shared constants rather than inline literals so any change to the
-// full-tier support set is the single update point.
-/** Emitter kinds supported by the lite tier via texture packing (B12). */
-const PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS: ReadonlySet<import('@vitrum/core').SceneEmitter['kind']> =
-  new Set(['directional', 'point', 'spot', 'rect-area', 'disc-area']);
-/** Emitter kinds in the full-tier set but NOT in the lite tier (no NEE path in lite kernel). */
-const PT_WEBGPU_LITE_UNSUPPORTED_EMITTER_KINDS: ReadonlySet<import('@vitrum/core').SceneEmitter['kind']> =
-  new Set(
-    [...PT_WEBGPU_SUPPORT.supportedEmitterKinds].filter(
-      (k) => !PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS.has(k),
-    ),
-  );
+// full-tier support set is the single update point. Extracted to `capabilities.ts`
+// (T3-B) alongside the capabilities builder; re-imported above.
 
 interface StateSlot {
   readonly get: () => EngineState;
@@ -402,52 +351,8 @@ function makeStateSlot(initial: EngineState = 'initializing'): StateSlot {
   };
 }
 
-function emitPteWarning(
-  opts: Pick<PTEngineWebGPUOptions, 'onWarning'>,
-  warning: EngineWarning,
-  ...consoleArgs: readonly unknown[]
-): void {
-  console.warn(...(consoleArgs.length > 0 ? consoleArgs : [warning.message]));
-  try {
-    opts.onWarning?.(warning);
-  } catch {
-    // Host warning callbacks must not break engine construction.
-  }
-}
-
-function hasOidnModelUrl(opts: Pick<PTEngineWebGPUOptions, 'oidn'>): boolean {
-  return typeof opts.oidn?.modelUrl === 'string' && opts.oidn.modelUrl.length > 0;
-}
-
-function resolvePtWebgpuAutoDenoiser(opts: PTEngineWebGPUOptions): PTEngineWebGPUOptions {
-  if (opts.denoiser !== 'auto') return opts;
-  const resolved = hasOidnModelUrl(opts) ? 'oidn-final' : 'none';
-  const reason = resolved === 'oidn-final' ? 'host-oidn-model-url' : 'no-host-model-assets';
-  emitPteWarning(opts, {
-    code: 'pt-webgpu.denoiser-auto-resolved',
-    backend: 'pt-webgpu',
-    phase: 'construction',
-    method: 'createPTEngine_WebGPU',
-    message:
-      `[vitrum/pt-webgpu] denoiser:'auto' resolved to '${resolved}' (${reason}). ` +
-      `pt-webgpu ships no OIDN model; provide oidn.modelUrl to enable the async final-pass OIDN denoiser.`,
-    details: {
-      requested: 'auto',
-      resolved,
-      reason,
-      packageProvidesProductionWeights: false,
-    },
-  });
-  return { ...opts, denoiser: resolved };
-}
-
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
-}
-
-function resolveBdptMaxLightBounces(requested: number | undefined): number {
-  if (requested === undefined) return BDPT_SAFE_DEFAULT_LIGHT_BOUNCES;
-  return Math.min(BDPT_MAX_LIGHT_BOUNCES, Math.floor(requested));
 }
 
 class PTEngineWebGPU implements Engine {
@@ -730,170 +635,17 @@ class PTEngineWebGPU implements Engine {
   }
 
   get capabilities(): EngineCapabilities {
-    return {
-      // Material / transform / positions primitive patches upload in place.
-      // `topology: true` — every COUNT-changing patch updatePrimitive can legally
-      // receive is absorbed without a full setScene:
-      //   • instanced-mesh instance-count change → TLAS-only rebuild, BLAS reused
-      //     verbatim (slice-1);
-      //   • mesh/skinned-mesh vertex/index-count change → rebuild ONLY the
-      //     changed primitive's BLAS, splice into the concat buffers, rebase
-      //     downstream offsets + TLAS roots, realloc the 10 geometry buffers
-      //     (slice-2).
-      // `id`/`kind` morphs throw (contract violation); whole-primitive add/remove
-      // is `setScene`, not a patch — both correctly outside the `topology` flag.
-      supportsIncrementalScene: true,
-      incrementalPatchSupport: this.#traceTier === 'lite'
-        ? {
-            transform: false,
-            positions: false,
-            material: true,
-            emitter: true,
-            topology: false,
-          }
-        : {
-            transform: true,
-            positions: true,
-            material: true,
-            emitter: true,
-            topology: true,
-          },
-      // Explicit whole-primitive add/remove API (addPrimitive / removePrimitive)
-      // is implemented via a full buildPackedScene repack of the mutated scene.
-      supportsAddRemovePrimitive: true,
-      supportsAuxBuffers: this.#traceTier === 'full',
-      accumulates: true,
-      // Progressive walkaround→PT handoff (P8): this engine can seed its accum
-      // buffers with an initial image as a decaying prior (seedAccumulator).
-      supportsAccumulatorSeed: true,
-      maxSamplesPerPixel: this.#maxSamplesLimit,
-      maxBounces: this.#maxBouncesLimit,
-      // H12 — lite-tier capabilities reflect what the lite kernel ACTUALLY binds:
-      //   • No analytic shapes (group-1 is not bound on the lite layout; the
-      //     analytic geometry/params/localToWorld/worldToLocal buffers are absent).
-      //   • Mesh/skinned/instanced primitives are statically supported by baking
-      //     all mesh-like primitives into one world-space BLAS at setScene time.
-      //   • Emitters: directional + point + spot + rect-area + disc-area
-      //     (B12 — texture-packed). Mesh-area remains unsupported.
-      //   • Environments: none + procedural-sky + hdri (B12 — texture-packed).
-      //   • No pt-webgpu-bdpt in experimentalFeatures even when bdpt:true was
-      //     passed at construction (BDPT requires the full-tier group-2 layout).
-      //
-      // B12 (Wave B) — lite-tier fidelity cliff, SHIPPED.
-      // The lite tier targets adapters reporting maxStorageBuffersPerShaderStage
-      // as low as 8 (PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE). The lite
-      // group-0 layout already consumes 7 storage buffers (bindings 2,3,4,5,6,7,8
-      // = accum, positions, indices, triMaterialIds, materials, bvhNodes,
-      // normals), leaving exactly ONE free storage-buffer slot under the 8 cap.
-      //
-      // B12 resolution: light data and HDRI env packed as sampled texture_2d<f32>
-      // (bindings 12-14 in group-0, type = 'texture' not 'buffer' — counted from
-      // maxSampledTexturesPerShaderStage ≥ 16, NOT the storage-buffer budget).
-      //   • liteLightTex (binding 14): 1×N RGBA32F, directional (2 vec4/light)
-      //     + point (3 vec4/light) + spot (4 vec4/light) + rect/disc-area
-      //     (4 vec4/light) packed contiguously.
-      //   • liteEnvTex (binding 12): W×H RGBA32F, .rgb = HDR radiance, .a = pdf/sr.
-      //   • liteEnvCdfTex (binding 13): W×H RGBA32F, .r = marginal/conditional CDF
-      //     value at pixel i+1 (2D layout to avoid 8192-width limit).
-      // Budget arithmetic post-B12: 7 storage buffers (unchanged) + 3 sampled
-      // textures (new, drawn from a separate ≥16 budget). The budget arithmetic is
-      // PINNED by the liteTierBindingBudget test in webgpuLimits.test.ts.
-      //
-      // For the full tier the capability is derived from PT_WEBGPU_SUPPORT so
-      // the declared set and the ingestion/packer behavior stay in sync.
-      supportedAnalyticShapes: this.#traceTier === 'lite'
-        ? new Set<import('@vitrum/core').AnalyticShape>()
-        : new Set(PT_WEBGPU_SUPPORT.supportedAnalyticShapes),
-      supportedEmitterKinds: this.#traceTier === 'lite'
-        // B12 — point/spot/rect/disc-area now supported via lite texture packing (liteLightTex).
-        ? new Set(PT_WEBGPU_LITE_SUPPORTED_EMITTER_KINDS)
-        : new Set(PT_WEBGPU_SUPPORT.supportedEmitterKinds),
-      supportedPrimitiveKinds: this.#traceTier === 'lite'
-        ? new Set<import('@vitrum/core').ScenePrimitive['kind']>(['mesh', 'skinned-mesh', 'instanced-mesh'])
-        : new Set(PT_WEBGPU_SUPPORT.supportedPrimitiveKinds),
-      supportedEnvironmentKinds: this.#traceTier === 'lite'
-        // B12 — HDRI env now supported via lite texture packing (liteEnvTex + liteEnvCdfTex).
-        ? new Set<import('@vitrum/core').Scene['environment']['kind']>(['none', 'procedural-sky', 'hdri'])
-        : new Set(PT_WEBGPU_SUPPORT.supportedEnvironmentKinds),
-      presentationMode: 'offscreen-texture',
-      // H12 — lite-tier supportDetails must reflect what group-0 ACTUALLY binds,
-      // not the full-tier ledger. Group-0 lite omits group-1 (analytic, env, lights)
-      // and group-2 (TLAS, BDPT). Mesh-area emitters, analytic primitives, and
-      // analytic shapes remain unsupported (no NEE path for those in the lite kernel).
-      // Static instanced meshes are native because the lite packer bakes each
-      // instance into its single root-0 BLAS. Geometry, transform, and topology
-      // patches are accepted through a fallback merged-BLAS repack rather than
-      // the full-tier BLAS/TLAS-native fast paths.
-      // B12 — point/spot/rect/disc-area upgraded to 'native' (texture-packed NEE).
-      // B12 — hdri upgraded to 'native' (liteEnvTex + liteEnvCdfTex importance sampling).
-      supportDetails:
-        this.#traceTier === 'lite'
-          ? {
-              primitives: {
-                mesh: 'native',
-                'skinned-mesh': 'native',
-                'instanced-mesh': 'native',
-                analytic: 'unsupported',
-              },
-              emitters: {
-                directional: 'native',
-                point: 'native',
-                spot: 'native',
-                'rect-area': 'native',
-                'disc-area': 'native',
-                'mesh-area': 'unsupported',
-              },
-              environments: {
-                none: 'native',
-                'procedural-sky': 'approximate',
-                hdri: 'native',
-              },
-              analyticShapes: {
-                sphere: 'unsupported',
-                box: 'unsupported',
-                capsule: 'unsupported',
-                cylinder: 'unsupported',
-                'h-channel-came': 'unsupported',
-              },
-              materials: PT_WEBGPU_LITE_MATERIALS,
-              // SHADOW-01 — same rows as the full tier: primitive castShadow is
-              // enforced in the SHARED traceMeshBvh any-hit path; the lite NEE
-              // loops gate directional/point/spot/rect emitter flags through
-              // the lite light texture records.
-              shadows: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.shadows,
-              denoisers: BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.denoisers,
-              mutations: {
-                ...BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.mutations,
-                transform: 'fallback-rebuild',
-                positions: 'fallback-rebuild',
-                material: 'native',
-                topology: 'fallback-rebuild',
-              },
-            }
-          : BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails,
-      experimentalFeatures: new Set([
-        ...(this.#traceTier === 'lite' ? (['pt-webgpu-lite-tier'] as const) : []),
-        ...(this.#postDenoiser instanceof OIDNFinalDispatcher
-          ? (['pt-webgpu-oidn-final'] as const)
-          : []),
-        // BDPT requires the full-tier group-2 layout; suppress from lite even
-        // when bdpt:true was passed at construction (the engine silently ignores
-        // the flag for lite — the shader does not have the bdptEnabled UBO slot
-        // and the BDPT sub-path pipeline is not created on the lite layout).
-        ...(this.#bdpt && this.#traceTier !== 'lite' ? (['pt-webgpu-bdpt'] as const) : []),
-        ...(this.#restirPtReuse ? (['pt-webgpu-restir-pt-reuse'] as const) : []),
-        ...(this.#sampling === 'sobol' ? (['pt-webgpu-sobol-sampling'] as const) : []),
-        ...(this.#bvhTraversal === 'cwbvh-closest-experimental'
-          ? (['pt-webgpu-cwbvh-closest-traversal'] as const)
-          : []),
-        ...(this.#traceTier !== 'lite' && this.#causticStrategy === 'photon-map'
-          ? (['pt-webgpu-photon-map-sppm'] as const)
-          : []),
-      ]),
-      causticStrategy: this.#traceTier === 'lite' ? 'none' : this.#causticStrategy,
-      // W3-D8 — this engine exposes `debug.estimatedGpuMemoryBytes()`.
-      debugSurface: true,
-    };
+    return ptWebgpuCapabilities({
+      traceTier: this.#traceTier,
+      maxSamplesLimit: this.#maxSamplesLimit,
+      maxBouncesLimit: this.#maxBouncesLimit,
+      bdpt: this.#bdpt,
+      restirPtReuse: this.#restirPtReuse,
+      sampling: this.#sampling,
+      bvhTraversal: this.#bvhTraversal,
+      causticStrategy: this.#causticStrategy,
+      isOidnFinal: this.#postDenoiser instanceof OIDNFinalDispatcher,
+    });
   }
 
   /** Supported analytic shapes (id > 0) — passed to the pure incrementalPatch
@@ -1065,7 +817,7 @@ class PTEngineWebGPU implements Engine {
     // on the fast-outs (before the first render, paused, converged) where the
     // present pass does not dispatch — presentTexture already carries the last
     // frame's tonemapped output and is a valid displayable surface.
-    const displayTex = this.#gpu.presentTexture ?? primary;
+    const displayTex = this.#gpu.present.presentTexture ?? primary;
     return {
       kind: 'rendered',
       primaryRadiance: asBackendTexture<'webgpu', GPUTexture>(displayTex),
@@ -1100,7 +852,7 @@ class PTEngineWebGPU implements Engine {
    * disposed) so the host skips the blit until there is something to present.
    */
   getPresentationSource(): { device: unknown; texture: BackendTexture } | null {
-    const displayTex = this.#gpu.presentTexture ?? this.#gpu.accumTexture;
+    const displayTex = this.#gpu.present.presentTexture ?? this.#gpu.accumTexture;
     if (displayTex == null) return null;
     return {
       device: this.#device,
@@ -1180,84 +932,7 @@ class PTEngineWebGPU implements Engine {
   setScene(scene: Scene): void {
     this.#assertUsable('setScene');
     if (this.#traceTier === 'lite') {
-      // Warn when the scene contains content the lite tier cannot handle.
-      // B12 — point/spot/rect-area emitters and HDRI environments are now
-      // supported via texture packing (liteLightTex, liteEnvTex, liteEnvCdfTex).
-      // Remaining unsupported: analytic primitives (group-1 absent) and mesh-area
-      // emitters (no NEE path in lite kernel). Static
-      // mesh/skinned/instanced primitives, including non-identity transforms, are
-      // baked into the lite tier's single world-space BLAS at pack time.
-      const analyticPrimitives = scene.primitives.filter((p) => p.kind === 'analytic');
-      if (analyticPrimitives.length > 0) {
-        const primitiveIds = analyticPrimitives.map((p) => p.id);
-        this.#warn({
-          code: 'pt-webgpu.lite-analytic-primitive',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/pt-webgpu] Lite tier: scene contains ${analyticPrimitives.length} analytic primitive(s) — ` +
-            'analytic shape rendering requires the full tier (group-1 bindings are absent on lite). ' +
-            'They are ignored by the lite renderer after this structured warning.',
-          details: {
-            count: analyticPrimitives.length,
-            primitiveIds,
-            primitiveKinds: ['analytic'],
-            requiredTier: 'full',
-            fallback: 'ignore-unsupported-lite-primitive',
-          },
-        });
-      }
-      // B12 — only mesh-area is unsupported on lite; point/spot/rect/disc-area
-      // are handled via texture-packed NEE (liteLightTex).
-      // D8.14: kind-set sourced from PT_WEBGPU_LITE_UNSUPPORTED_EMITTER_KINDS
-      // (derived from PT_WEBGPU_SUPPORT diff) rather than inline literals.
-      const unsupportedEmitters = scene.emitters.filter(
-        (e) => PT_WEBGPU_LITE_UNSUPPORTED_EMITTER_KINDS.has(e.kind),
-      );
-      if (unsupportedEmitters.length > 0) {
-        const kinds = [...new Set(unsupportedEmitters.map((e) => e.kind))].join(', ');
-        const emitterIds = unsupportedEmitters.map((e) => e.id);
-        const emitterKinds = unsupportedEmitters.map((e) => e.kind);
-        this.#warn({
-          code: 'pt-webgpu.lite-unsupported-emitters',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/pt-webgpu] Lite tier: scene contains emitters of kind(s) [${kinds}] — ` +
-            'mesh-area emitters are not supported on the lite tier (no NEE path in lite kernel). ' +
-            'They are ignored by the lite renderer after this structured warning.',
-          details: {
-            kinds,
-            count: unsupportedEmitters.length,
-            emitterIds,
-            emitterKinds,
-            requiredTier: 'full',
-            fallback: 'ignore-unsupported-lite-emitter',
-          },
-        });
-      }
-      // B12 follow-up — HDRI environments and all directional emitters are now
-      // supported via texture packing; no first-directional truncation warning.
-      const vertexColorPrimitiveIds = collectLiteUnsupportedVertexColorPrimitiveIds(scene);
-      if (vertexColorPrimitiveIds.length > 0) {
-        this.#warn({
-          code: 'pt-webgpu.lite-unsupported-vertex-colors',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          message:
-            `[vitrum/pt-webgpu] Lite tier: scene contains ${vertexColorPrimitiveIds.length} primitive(s) with ` +
-            'non-constant or alpha-bearing vertex colors (COLOR_0). Constant RGB vertex colors are baked into ' +
-            'the lite material base color, but arbitrary COLOR_0 still needs the full-tier vertex-color binding.',
-          details: {
-            primitiveIds: vertexColorPrimitiveIds,
-            bakedWhen: 'constant-rgb-alpha-one',
-            requiredTier: 'full',
-          },
-        });
-      }
+      emitLiteSceneWarnings(scene, (w) => this.#warn(w));
     }
     this.#repackScene(scene, { warnOnEmpty: true });
   }
@@ -1268,7 +943,7 @@ class PTEngineWebGPU implements Engine {
    *
    * Performs an inline AABB walk over `#geoPack.positions` (stride-4 Float32Array:
    * xyz + packed-uv-in-w per vertex).  On success writes `#sppmR0` and
-   * `#sppmSceneExtent`; also invalidates `#gpu.sppmBuffersReady` so the buffers
+   * `#sppmSceneExtent`; also invalidates `#gpu.sppm.sppmBuffersReady` so the buffers
    * rebuild with the new scene-extent stats on the next frame.
    *
    * Called only from `#repackScene` when `causticStrategy === 'photon-map'` on
@@ -1298,7 +973,7 @@ class PTEngineWebGPU implements Engine {
     // scene-extent stats (r₀ recomputed above).  The per-pixel stats buffer
     // is cleared in reset() (called below) — static-eye-point invariant holds
     // because a setScene always resets accumulation.
-    this.#gpu.sppmBuffersReady = false;
+    this.#gpu.sppm.sppmBuffersReady = false;
   }
 
   /**
@@ -1510,17 +1185,55 @@ class PTEngineWebGPU implements Engine {
   } {
     const gpu = this.#gpu;
 
-    // BDPT eye-subpath scratch stack (D2). Sized per-pixel × the active bounce
-    // depth; refuses to grow beyond the safety ceiling (returns false → BDPT
-    // connections skipped this frame, unidirectional path unaffected). A 32-byte
-    // placeholder is allocated when BDPT is off so the auto layout stays valid.
+    // Per-subsystem preparation, in the SAME order as the former monolithic body:
+    //   1. BDPT eye-subpath scratch stack,
+    //   2. FrameParams UBO pack + write (with SPPM-ceiling caustic fallback +
+    //      over-budget BDPT disable),
+    //   3. SPPM hash-grid / per-pixel-stats buffers,
+    //   4. build the group-0 bind group,
+    //   5. ReSTIR-PT reuse reservoirs/pipelines/params.
+    const bdptStackReady = this.#ensureBdptStackPerFrame(gpu, width, height);
+    this.#ensureParamsPerFrame(gpu, input, width, height, bdptStackReady);
+    const sppmReady = this.#ensureSppmPerFrame(gpu, width, height);
+    const bindGroup = gpu.buildBindGroups(this.#sceneBuffers!, () => this.#bdptLightPathBuffer());
+    const restirPtReady = this.#ensureRestirPtPerFrame(gpu, width, height);
+    return { bindGroup, sppmReady, restirPtReady, bdptStackReady };
+  }
+
+  /**
+   * Per-frame BDPT eye-subpath scratch stack (D2). Sized per-pixel × the active
+   * bounce depth; refuses to grow beyond the safety ceiling (returns false → BDPT
+   * connections skipped this frame, unidirectional path unaffected). A 32-byte
+   * placeholder is allocated when BDPT is off so the auto layout stays valid.
+   * Extracted from `#ensurePerFrameResources` (T3-B) — behaviour identical.
+   */
+  #ensureBdptStackPerFrame(gpu: GpuResources, width: number, height: number): boolean {
     const bdptActive = this.#bdpt && this.#traceTier === 'full';
-    const bdptStackReady = gpu.ensureBdptEyeStack(
+    return gpu.ensureBdptEyeStack(
       width,
       height,
       this.#activeBounces,
       bdptActive,
     );
+  }
+
+  /**
+   * Per-frame FrameParams UBO pack + write. Decides the SPPM-ceiling caustic
+   * fallback (`#causticModeOverride`) BEFORE packing, then packs via
+   * {@link packFrameParams}. When BDPT is active but its eye stack was
+   * over-budget this frame (`!bdptStackReady`), the packed `bdptEnabled` slot is
+   * cleared so the shader takes the unidirectional path (`packFrameParams` flag —
+   * the byte-patch is gated on this per-frame condition, not applied blindly).
+   * Extracted from `#ensurePerFrameResources` (T3-B) — behaviour identical.
+   */
+  #ensureParamsPerFrame(
+    gpu: GpuResources,
+    input: FrameInput,
+    width: number,
+    height: number,
+    bdptStackReady: boolean,
+  ): void {
+    const bdptActive = this.#bdpt && this.#traceTier === 'full';
 
     // V2-1: decide the SPPM ceiling fallback BEFORE packing params. When the
     // configured strategy is photon-map on full tier but the photon-cells
@@ -1534,15 +1247,26 @@ class PTEngineWebGPU implements Engine {
         ? 'manifold-nee'
         : null;
 
+    // `packFrameParams` flag: only patch the packed bdptEnabled byte when BDPT is
+    // active this frame AND its eye stack is over budget.
+    const disableBdptInParams = bdptActive && !bdptStackReady;
     const paramsArrayBuffer = this.#buildParamsBuffer(input, width, height);
-    if (bdptActive && !bdptStackReady) {
+    if (disableBdptInParams) {
       // Over-budget: disable BDPT in the UBO so the shader takes the
       // unidirectional path (and never touches the placeholder eye stack).
       const u32 = new Uint32Array(paramsArrayBuffer);
       u32[FrameParamsSlot.bdptEnabled] = 0;
     }
     this.#device.queue.writeBuffer(gpu.paramsBuffer!, 0, paramsArrayBuffer);
+  }
 
+  /**
+   * Per-frame SPPM hash-grid + per-pixel-stats buffer allocation. MUST run before
+   * `buildBindGroups` so group-3 is built with the correct (real or placeholder)
+   * buffer handles. Returns whether the SPPM photon pass is ready to dispatch.
+   * Extracted from `#ensurePerFrameResources` (T3-B) — behaviour identical.
+   */
+  #ensureSppmPerFrame(gpu: GpuResources, width: number, height: number): boolean {
     // A4 + Item-1 fix (2026-06-10): ALL SPPM buffer allocation happens HERE,
     // BEFORE buildBindGroups, so that group-3 is always built with the correct
     // (real or placeholder) buffer handles.  The previous ordering had
@@ -1596,21 +1320,26 @@ class PTEngineWebGPU implements Engine {
       sppmReady =
         sppmBuffersOk &&
         sppmPixelStatsOk &&
-        gpu.sppmPhotonPipeline != null &&
-        gpu.sppmPixelStatsBuffer != null;
+        gpu.sppm.sppmPhotonPipeline != null &&
+        gpu.sppm.sppmPixelStatsBuffer != null;
     } else if (this.#traceTier === 'full') {
       // Ensure placeholder SPPM buffers exist so group-3 bindings 6/7/8/9 are
       // satisfied (the gather is guarded by causticMode() == 2u, so the
       // placeholders are never accessed).
       gpu.ensureSppmBuffers(false);
     }
+    return sppmReady;
+  }
 
-    const bindGroup = gpu.buildBindGroups(this.#sceneBuffers!, () => this.#bdptLightPathBuffer());
-
-    // EXPERIMENTAL ReSTIR-PT reuse (OFF by default). When ON: (re)allocate the
-    // reservoir ping-pong + result + params, build the reuse pipelines + bind
-    // groups, and write RestirPtParams. All gated inside GpuResources, so this is
-    // a no-op + allocates nothing when the flag is off (default render untouched).
+  /**
+   * Per-frame EXPERIMENTAL ReSTIR-PT reuse setup (OFF by default). When ON:
+   * (re)allocate the reservoir ping-pong + result + params, build the reuse
+   * pipelines + bind groups, and write RestirPtParams. All gated inside
+   * GpuResources, so this is a no-op + allocates nothing when the flag is off
+   * (default render untouched). Returns whether the reuse sequence is ready.
+   * Extracted from `#ensurePerFrameResources` (T3-B) — behaviour identical.
+   */
+  #ensureRestirPtPerFrame(gpu: GpuResources, width: number, height: number): boolean {
     let restirPtReady = false;
     if (this.#restirPtReuse) {
       const reservoirBuffersReady = gpu.ensureReservoirBuffers(width, height);
@@ -1625,18 +1354,17 @@ class PTEngineWebGPU implements Engine {
         );
         gpu.buildReservoirBindGroups(this.#sceneBuffers!);
         restirPtReady =
-          gpu.rptProducerPipeline != null &&
-          gpu.rptTemporalPipeline != null &&
-          gpu.rptSpatialPipeline != null &&
-          gpu.rptResolvePipeline != null &&
-          gpu.rptProducerGroup0 != null &&
+          gpu.reservoir.rptProducerPipeline != null &&
+          gpu.reservoir.rptTemporalPipeline != null &&
+          gpu.reservoir.rptSpatialPipeline != null &&
+          gpu.reservoir.rptResolvePipeline != null &&
+          gpu.reservoir.rptProducerGroup0 != null &&
           gpu.pathTraceBindGroup1 != null &&
           gpu.pathTraceBindGroup2 != null &&
           gpu.pathTraceBindGroup3 != null;
       }
     }
-
-    return { bindGroup, sppmReady, restirPtReady, bdptStackReady };
+    return restirPtReady;
   }
 
   /**
@@ -1671,9 +1399,9 @@ class PTEngineWebGPU implements Engine {
     // (streaming window of last SPPM_CELL_CAPACITY photons per cell), giving
     // stable coverage.  The progressive radius/τ shrink is handled per-pixel in
     // the megakernel's sppmGatherProgressive, not in the emission pass.
-    if (sppmReady && gpu.sppmPhotonPipeline != null) {
+    if (sppmReady && gpu.sppm.sppmPhotonPipeline != null) {
       const photonPass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.sppm.photonPass' });
-      photonPass.setPipeline(gpu.sppmPhotonPipeline);
+      photonPass.setPipeline(gpu.sppm.sppmPhotonPipeline);
       photonPass.setBindGroup(0, bindGroup);
       photonPass.setBindGroup(1, gpu.pathTraceBindGroup1);
       photonPass.setBindGroup(2, gpu.pathTraceBindGroup2);
@@ -1727,11 +1455,11 @@ class PTEngineWebGPU implements Engine {
     // composite path composites the ReSTIR-PT indirect into the BEAUTY accumulator;
     // the default path is byte-identical to pre-A1.
     const useComposite =
-      restirPtReady && gpu.rptCompositePipeline != null && gpu.rptProducerGroup0 != null;
+      restirPtReady && gpu.reservoir.rptCompositePipeline != null && gpu.reservoir.rptProducerGroup0 != null;
     const pass = encoder.beginComputePass({ label: 'vitrum.pt-webgpu.pathTrace.pass' });
     if (useComposite) {
-      pass.setPipeline(gpu.rptCompositePipeline!);
-      pass.setBindGroup(0, gpu.rptProducerGroup0);
+      pass.setPipeline(gpu.reservoir.rptCompositePipeline!);
+      pass.setBindGroup(0, gpu.reservoir.rptProducerGroup0);
       pass.setBindGroup(1, gpu.pathTraceBindGroup1);
       pass.setBindGroup(2, gpu.pathTraceBindGroup2);
       pass.setBindGroup(3, gpu.pathTraceBindGroup3);
@@ -1828,7 +1556,7 @@ class PTEngineWebGPU implements Engine {
     // usages. The present pass always runs (aces@1.0@srgb by default); hosts
     // that want raw linear output can set tonemap:'none' + outputColorSpace:'linear'.
     // Adjoint/OIDN readbacks always use accumTexture (not presentTexture).
-    if (gpu.presentTexture != null) {
+    if (gpu.present.presentTexture != null) {
       const q = input.quality ?? {};
       const tonemapMode = TONEMAP_MODE_INDEX[q.tonemap ?? 'aces'];
       const exposure = q.exposure ?? 1.0;
@@ -1923,10 +1651,10 @@ class PTEngineWebGPU implements Engine {
       p.dispatchWorkgroups(wgX, wgY, 1);
       p.end();
     };
-    dispatch('vitrum.pt-webgpu.restirPt.produce', gpu.rptProducerPipeline!, gpu.rptProducerGroup0!);
-    dispatch('vitrum.pt-webgpu.restirPt.temporal', gpu.rptTemporalPipeline!, gpu.rptTemporalGroup0!);
-    dispatch('vitrum.pt-webgpu.restirPt.spatial', gpu.rptSpatialPipeline!, gpu.rptSpatialGroup0!);
-    dispatch('vitrum.pt-webgpu.restirPt.resolve', gpu.rptResolvePipeline!, gpu.rptResolveGroup0!);
+    dispatch('vitrum.pt-webgpu.restirPt.produce', gpu.reservoir.rptProducerPipeline!, gpu.reservoir.rptProducerGroup0!);
+    dispatch('vitrum.pt-webgpu.restirPt.temporal', gpu.reservoir.rptTemporalPipeline!, gpu.reservoir.rptTemporalGroup0!);
+    dispatch('vitrum.pt-webgpu.restirPt.spatial', gpu.reservoir.rptSpatialPipeline!, gpu.reservoir.rptSpatialGroup0!);
+    dispatch('vitrum.pt-webgpu.restirPt.resolve', gpu.reservoir.rptResolvePipeline!, gpu.reservoir.rptResolveGroup0!);
   }
 
   /**
@@ -1948,7 +1676,7 @@ class PTEngineWebGPU implements Engine {
     this.#assertUsable('captureFrame');
     const colorSpace = opts?.colorSpace ?? 'linear';
     const gpu = this.#gpu;
-    const texture = colorSpace === 'output' ? gpu.presentTexture : gpu.accumTexture;
+    const texture = colorSpace === 'output' ? gpu.present.presentTexture : gpu.accumTexture;
     if (texture == null) return null;
     const width = gpu.accumWidth;
     const height = gpu.accumHeight;
@@ -1974,7 +1702,7 @@ class PTEngineWebGPU implements Engine {
    */
   getRestirPtResultBuffer(): GPUBuffer | null {
     this.#assertUsable('getRestirPtResultBuffer');
-    return this.#restirPtReuse ? this.#gpu.rptResultBuffer : null;
+    return this.#restirPtReuse ? this.#gpu.reservoir.rptResultBuffer : null;
   }
 
   reset(): void {
@@ -2354,336 +2082,9 @@ export const createPTEngine_WebGPU: EngineFactory<
   opts: PTEngineWebGPUOptions,
 // eslint-disable-next-line @typescript-eslint/require-await -- factory signature is async to match EngineFactory<…> contract; no async setup needed in this code path
 ): Promise<Engine & PTEngineWebGPUSurface> => {
-  if (opts.device == null || typeof (opts.device).createCommandEncoder !== 'function') {
-    throw new TypeError(
-      'createPTEngine_WebGPU: device must be a GPUDevice instance',
-    );
-  }
-  const maxBounces = opts.maxBounces;
-  if (maxBounces !== undefined && maxBounces < 1) {
-    throw new RangeError(
-      `createPTEngine_WebGPU: maxBounces structural cap must be >= 1 (got ${maxBounces})`,
-    );
-  }
-  const maxSpp = opts.maxSamplesPerPixel;
-  if (maxSpp !== undefined && maxSpp < 1) {
-    throw new RangeError(
-      `createPTEngine_WebGPU: maxSamplesPerPixel structural cap must be >= 1 (got ${maxSpp})`,
-    );
-  }
-  if (maxBounces !== undefined && maxBounces > EXPERIMENTAL_MAX_BOUNCES) {
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.max-bounces-clamped',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message: `[vitrum/pt-webgpu] maxBounces=${maxBounces} requested, clamping to experimental limit ${EXPERIMENTAL_MAX_BOUNCES}.`,
-      details: { requested: maxBounces, clampedTo: EXPERIMENTAL_MAX_BOUNCES },
-    });
-  }
-  const bdptMaxLightBounces = opts.bdptOptions?.maxLightBounces;
-  if (
-    bdptMaxLightBounces !== undefined &&
-    (!Number.isFinite(bdptMaxLightBounces) || bdptMaxLightBounces < 1)
-  ) {
-    throw new RangeError(
-      `createPTEngine_WebGPU: bdptOptions.maxLightBounces must be a finite number >= 1 (got ${bdptMaxLightBounces})`,
-    );
-  }
-  if (bdptMaxLightBounces !== undefined && bdptMaxLightBounces > BDPT_MAX_LIGHT_BOUNCES) {
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.bdpt-max-light-bounces-clamped',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        `[vitrum/pt-webgpu] bdptOptions.maxLightBounces=${bdptMaxLightBounces} requested, ` +
-        `clamping to supported BDPT light-subpath limit ${BDPT_MAX_LIGHT_BOUNCES}.`,
-      details: { requested: bdptMaxLightBounces, clampedTo: BDPT_MAX_LIGHT_BOUNCES },
-    });
-  }
-  if (
-    bdptMaxLightBounces !== undefined &&
-    bdptMaxLightBounces <= BDPT_MAX_LIGHT_BOUNCES &&
-    !Number.isInteger(bdptMaxLightBounces)
-  ) {
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.bdpt-max-light-bounces-rounded',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        `[vitrum/pt-webgpu] bdptOptions.maxLightBounces=${bdptMaxLightBounces} requested, ` +
-        `rounding down to integer ${resolveBdptMaxLightBounces(bdptMaxLightBounces)}.`,
-      details: {
-        requested: bdptMaxLightBounces,
-        roundedTo: resolveBdptMaxLightBounces(bdptMaxLightBounces),
-      },
-    });
-  }
-  const resolvedBdptMaxLightBounces = resolveBdptMaxLightBounces(bdptMaxLightBounces);
-  const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
-  const effectiveOpts = resolvePtWebgpuAutoDenoiser(opts);
-  if (
-    opts.bdpt === true &&
-    traceTier === 'full' &&
-    resolvedBdptMaxLightBounces > BDPT_SAFE_DEFAULT_LIGHT_BOUNCES
-  ) {
-    if (opts.bdptOptions?.experimentalMultiVertex !== true) {
-      throw new RangeError(
-        `createPTEngine_WebGPU: bdptOptions.maxLightBounces > ${BDPT_SAFE_DEFAULT_LIGHT_BOUNCES} activates the multi-vertex BDPT research path; ` +
-        `set bdptOptions.experimentalMultiVertex=true to opt in, or omit maxLightBounces for the safe default (${BDPT_SAFE_DEFAULT_LIGHT_BOUNCES}).`,
-      );
-    }
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.bdpt-multivertex-research-mode',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        `[vitrum/pt-webgpu] bdptOptions.maxLightBounces=${resolvedBdptMaxLightBounces} enables the ` +
-        'multi-vertex BDPT research path. Current radiometric evidence shows this path is not yet ' +
-        'weighted against the regular eye-path strategy, so it requires experimentalMultiVertex:true; omit ' +
-        'bdptOptions.maxLightBounces for the endpoint-only radiometrically neutral default.',
-      details: {
-        requested: bdptMaxLightBounces,
-        resolved: resolvedBdptMaxLightBounces,
-        safeDefault: BDPT_SAFE_DEFAULT_LIGHT_BOUNCES,
-        experimentalMultiVertex: true,
-        promotionReady: false,
-        currentEstimator: 'additive-sidecar-not-weighted-against-eye-path',
-        blocker: 'not-weighted-against-regular-eye-path-strategy',
-        requiredEstimator: 'multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy',
-        safeAlternative: `omit bdptOptions.maxLightBounces or set maxLightBounces:${BDPT_SAFE_DEFAULT_LIGHT_BOUNCES}`,
-        evidencePath: 'tools/radiometric-ab/results-bdpt.json',
-      },
-    });
-  }
-  if (
-    effectiveOpts.denoiser != null &&
-    effectiveOpts.denoiser !== 'none' &&
-    effectiveOpts.denoiser !== 'oidn-final'
-  ) {
-    emitPteWarning(effectiveOpts, {
-      code: 'pt-webgpu.unsupported-denoiser',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        `[vitrum/pt-webgpu] denoiser="${effectiveOpts.denoiser}" requested, but only 'none' and 'oidn-final' are wired. ` +
-        "pt-webgpu is a converged progressive path tracer; 'svgf-real' is a real-time 1-spp filter and is unsupported here — " +
-        "use 'oidn-final' for converged denoising. Degrading to no-denoise.",
-      details: { requested: effectiveOpts.denoiser },
-    });
-  }
-  const requestedSampling = (opts as { readonly sampling?: unknown }).sampling;
-  if (
-    requestedSampling != null &&
-    requestedSampling !== 'pcg' &&
-    requestedSampling !== 'sobol'
-  ) {
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.unsupported-sampling',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        `[vitrum/pt-webgpu] sampling="${String(requestedSampling)}" requested, but only ` +
-        "'pcg' and 'sobol' are wired. Degrading to the default PCG stream.",
-      details: { requested: requestedSampling },
-    });
-  }
-  if (requestedSampling === 'sobol') {
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.sobol-sampling-experimental',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        "[vitrum/pt-webgpu] sampling:'sobol' enables an opt-in hash-based " +
-        'Owen-scrambled Sobol RNG across the pt-webgpu megakernel and auxiliary ' +
-        'SPPM/ReSTIR-PT/BDPT pipelines with a tiled ranked rotation. The ' +
-        'dimension-assignment audit is pinned; WSL-lite RMSE evidence is bounded, ' +
-        'while full-tier default-promotion evidence remains a Road-to-100 tail.',
-      details: {
-        sampling: 'sobol',
-        fallback: 'none',
-        rotation: 'ranked-8x8',
-        promotionTails: ['equal-time-rmse-ab'],
-      },
-    });
-  }
-  const requestedBvhTraversal = (opts as { readonly bvhTraversal?: unknown }).bvhTraversal;
-  const cwbvhClosestRequested = requestedBvhTraversal === 'cwbvh-closest-experimental';
-  if (
-    requestedBvhTraversal != null &&
-    requestedBvhTraversal !== 'binary' &&
-    requestedBvhTraversal !== 'cwbvh-closest-experimental'
-  ) {
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.unsupported-bvh-traversal',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        `[vitrum/pt-webgpu] bvhTraversal="${String(requestedBvhTraversal)}" requested, but only ` +
-        "'binary' and 'cwbvh-closest-experimental' are wired. Degrading to binary traversal.",
-      details: { requested: requestedBvhTraversal, fallback: 'binary' },
-    });
-  }
-  // H51-C: warn once listing any extensions keys the host supplied that are
-  // either (a) graduated legacy keys that no longer do anything, or (b) truly
-  // unknown keys. In both cases the key is silently ignored at runtime; the
-  // warn ensures the host is aware that migration is needed.
-  //
-  // pt-webgpu graduated its formerly-experimental extensions in 2025:
-  //   vitrum.ptWebgpu.spectralHeroWavelength.*  →  opts.spectral (boolean)
-  //   vitrum.ptWebgpu.bdpt.*                    →  opts.bdpt (boolean) + opts.bdptOptions
-  //   vitrum.ptWebgpu.oidn.*                    →  opts.denoiser:'oidn-final' + opts.oidn
-  if (opts.extensions != null) {
-    const GRADUATED_KEY_MIGRATION: Record<string, string> = {
-      'vitrum.ptWebgpu.spectralHeroWavelength':
-        "opts.spectral (boolean) — set spectral: true to enable hero-wavelength spectral transport",
-      'vitrum.ptWebgpu.bdpt':
-        "opts.bdpt (boolean) + opts.bdptOptions — set bdpt: true to enable bidirectional path tracing",
-      'vitrum.ptWebgpu.oidn':
-        "opts.denoiser: 'oidn-final' + opts.oidn: { modelUrl } — pass denoiser:'oidn-final' with an OIDN model URL",
-    };
-    const allKeys = Object.keys(opts.extensions);
-    for (const [prefix, migration] of Object.entries(GRADUATED_KEY_MIGRATION)) {
-      const matchingKeys = allKeys.filter((k) => k.startsWith(prefix));
-      if (matchingKeys.length > 0) {
-        emitPteWarning(opts, {
-          code: 'pt-webgpu.graduated-extension-key',
-          backend: 'pt-webgpu',
-          phase: 'construction',
-          method: 'createPTEngine_WebGPU',
-          message:
-            `[vitrum/pt-webgpu] Extension key(s) ${matchingKeys.map((k) => JSON.stringify(k)).join(', ')} ` +
-            `are no longer consumed — this key graduated to a first-class option. ` +
-            `Replace with: ${migration}.`,
-          details: { keys: matchingKeys, migration },
-        });
-      }
-    }
-    const unknownKeys = allKeys.filter(
-      (k) => !Object.keys(GRADUATED_KEY_MIGRATION).some((prefix) => k.startsWith(prefix)),
-    );
-    if (unknownKeys.length > 0) {
-      emitPteWarning(opts, {
-        code: 'pt-webgpu.unknown-extension-key',
-        backend: 'pt-webgpu',
-        phase: 'construction',
-        method: 'createPTEngine_WebGPU',
-        message:
-          `[vitrum/pt-webgpu] Unknown extensions keys will be ignored: ${unknownKeys.map((k) => JSON.stringify(k)).join(', ')}. ` +
-          "pt-webgpu's stable extensions (spectral, bdpt, oidn, restirPtReuse) are now first-class " +
-          'named options. Check the PTEngineWebGPUOptions interface for the current option set.',
-        details: { keys: unknownKeys },
-      });
-    }
-  }
-
-  if (opts.restirPtReuse === true) {
-    assertRestirPtReuseSupported(opts.device, traceTier);
-    if (opts.restirPtReuseOptions?.experimentalGlossyReuse === true) {
-      emitPteWarning(opts, {
-        code: 'pt-webgpu.restir-pt-glossy-reuse-research-mode',
-        backend: 'pt-webgpu',
-        phase: 'construction',
-        method: 'createPTEngine_WebGPU',
-        message:
-          '[vitrum/pt-webgpu] restirPtReuseOptions.experimentalGlossyReuse=true admits glossy/metallic visible vertices into the ' +
-          'ReSTIR-PT temporal/spatial feedback loop. Current radiometric evidence marks this branch as a non-promotable research finding; ' +
-          'omit experimentalGlossyReuse for the diffuse-safe validated default.',
-        details: {
-          restirPtReuse: true,
-          experimentalGlossyReuse: true,
-          promotionReady: false,
-          blocker: 'glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope',
-          evidencePath: 'tools/radiometric-ab/results-restir-pt-glossy-research.json',
-        },
-      });
-    }
-  }
-  if (cwbvhClosestRequested) {
-    assertCwbvhClosestSupported(opts.device, traceTier, opts.restirPtReuse === true);
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.cwbvh-closest-experimental',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        "[vitrum/pt-webgpu] bvhTraversal:'cwbvh-closest-experimental' routes full-tier closest-hit and any-hit mesh traversal through the uploaded CWBVH forest. " +
-        'The any-hit wrapper preserves castShadow:false predicate parity; renderer parity/performance A/B is still required before default promotion.',
-      details: {
-        traversal: 'cwbvh-closest-experimental',
-        closestHit: 'cwbvh',
-        anyHit: 'cwbvh-cast-shadow-aware',
-        requiredStorageBuffersPerStage: opts.restirPtReuse === true
-          ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
-          : PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
-      },
-    });
-  }
-  if (traceTier === 'full') {
-    console.info(
-      '[vitrum/pt-webgpu] Full trace tier: TLAS, analytic shapes, HDRI, area lights, motion/variance aux, caustics.',
-    );
-  } else {
-    emitPteWarning(opts, {
-      code: 'pt-webgpu.lite-tier',
-      backend: 'pt-webgpu',
-      phase: 'construction',
-      method: 'createPTEngine_WebGPU',
-      message:
-        '[vitrum/pt-webgpu] Lite trace tier (software-adapter fallback): merged mesh-like BVH, directional/point/spot/rect-area/disc-area emitters, HDRI and procedural-sky environments. ' +
-        'Disabled on lite: analytic shapes, TLAS, mesh-area emitters, caustics, BDPT, and motion/variance aux buffers. ' +
-        `On a discrete GPU host, request a device with maxStorageBuffersPerShaderStage >= ${PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE} and maxStorageTexturesPerShaderStage >= 5, or pass traceTier: "full" after verifying limits.`,
-      details: { traceTier },
-    });
-  }
+  const { traceTier, effectiveOpts } = validatePtWebgpuOptions(opts);
   const slot = makeStateSlot();
   const engine = new PTEngineWebGPU(effectiveOpts, slot, traceTier);
   slot.set('ready');
   return engine;
 };
-
-function assertRestirPtReuseSupported(device: GPUDevice, traceTier: PtWebgpuTraceTier): void {
-  if (traceTier !== 'full') {
-    throw new Error(
-      'createPTEngine_WebGPU: restirPtReuse requires traceTier "full"; the selected lite tier cannot bind the ReSTIR-PT reuse reservoirs.',
-    );
-  }
-  const maxBuffers = device.limits.maxStorageBuffersPerShaderStage;
-  if (maxBuffers < PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE) {
-    throw new Error(
-      `createPTEngine_WebGPU: restirPtReuse requires maxStorageBuffersPerShaderStage >= ` +
-      `${PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE}; device exposes ${maxBuffers}. ` +
-      'Request the ReSTIR-PT reuse limit floor when acquiring the GPUDevice.',
-    );
-  }
-}
-
-function assertCwbvhClosestSupported(
-  device: GPUDevice,
-  traceTier: PtWebgpuTraceTier,
-  restirPtReuse: boolean,
-): void {
-  if (traceTier !== 'full') {
-    throw new Error(
-      "createPTEngine_WebGPU: bvhTraversal:'cwbvh-closest-experimental' requires traceTier \"full\"; the selected lite tier does not bind full-tier TLAS/material/CWBVH groups.",
-    );
-  }
-  const required = restirPtReuse
-    ? PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE
-    : PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE;
-  const maxBuffers = device.limits.maxStorageBuffersPerShaderStage;
-  if (maxBuffers < required) {
-    throw new Error(
-      "createPTEngine_WebGPU: bvhTraversal:'cwbvh-closest-experimental' requires " +
-      `maxStorageBuffersPerShaderStage >= ${required}; device exposes ${maxBuffers}. ` +
-      'Request the CWBVH traversal limit floor when acquiring the GPUDevice, or omit bvhTraversal to use the binary BVH.',
-    );
-  }
-}

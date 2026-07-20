@@ -259,6 +259,10 @@ vi.mock('@vitrum/gltf-adapter', () => ({
     }
   },
   loadGltfForEngine: mocks.loadGltfForEngine,
+  // T3-E (I4-2/D15-8): engine/gltf.ts now imports the shared texture-readiness
+  // predicate from @vitrum/gltf-adapter; mirror its real implementation here.
+  isTextureReadinessIssue: (issue: { category: string; name: string }): boolean =>
+    issue.category === 'texture' && issue.name.startsWith('texture-readiness:'),
 }));
 
 vi.mock('../adapterProfile.js', () => ({

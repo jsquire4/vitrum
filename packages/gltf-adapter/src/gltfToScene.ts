@@ -497,6 +497,713 @@ function emitImportDiagnostic(
  *   decoded as UTF-8 JSON.
  * @param opts  - Optional conversion settings (see `GltfToSceneOptions`).
  */
+interface BuildPrimitiveContext {
+  readonly gltf: GltfJson;
+  readonly buffers: Map<number, ArrayBuffer>;
+  readonly warnings: string[];
+  readonly diagnostics: GltfImportDiagnostic[];
+  readonly onAccessorDiagnostic: (diagnostic: GltfAccessorDiagnostic) => void;
+  readonly coreMaterials: MaterialSpec[];
+  readonly opts: GltfToSceneOptions;
+  readonly selectedMaterialVariant: number | undefined;
+  readonly primitives: ScenePrimitive[];
+  readonly animationTargets: Record<string, string[]>;
+  readonly materialVariantBindings: GltfMaterialVariantBinding[];
+  readonly materialBindings: GltfMaterialBinding[];
+  readonly instancingBindings: GltfInstancingBinding[];
+  readonly primId: { value: number };
+}
+
+interface BuildPrimitiveNodeContext {
+  readonly node: GltfNode;
+  readonly nodeIdx: number;
+  /** The node's mesh index, already narrowed to a defined number by the caller. */
+  readonly meshIndex: number;
+  readonly mesh: NonNullable<GltfJson['meshes']>[number];
+  readonly worldMat: Mat4;
+  readonly skinData: SkinData | undefined;
+  readonly bones: Float32Array | undefined;
+  readonly boneInverses: Float32Array | undefined;
+  readonly instanceTransforms: MeshGpuInstancingTransforms | undefined;
+  readonly instanceFallbackWarned: { value: boolean };
+}
+
+// Section-8 inner loop body (D15-4): builds/pushes the ScenePrimitive(s) for one
+// glTF mesh primitive. Extracted verbatim from the node→mesh→primitive flatten
+// loop; the primitive-loop-level `continue;` statements became `return;` (nested
+// skin-influence-set-loop `continue;` are preserved). All previously outer-scope
+// state is threaded via ctx (function-scope constants + accumulators) and nodeCtx
+// (per-node state); `primIdCounter` and `instanceFallbackWarned` are mutable holders.
+function buildPrimitiveFromMeshPrimitive(
+  ctx: BuildPrimitiveContext,
+  nodeCtx: BuildPrimitiveNodeContext,
+  prim: GltfPrimitive,
+  primitiveIndex: number,
+): void {
+  const {
+    gltf, buffers, warnings, diagnostics, onAccessorDiagnostic, coreMaterials,
+    opts, selectedMaterialVariant, primitives, animationTargets,
+    materialVariantBindings, materialBindings, instancingBindings,
+  } = ctx;
+  const { node, nodeIdx, meshIndex, mesh, worldMat, skinData, bones, boneInverses, instanceTransforms } = nodeCtx;
+  const primitivePath = `meshes[${node.mesh}].primitives[${primitiveIndex}]`;
+  // Mode check — native triangle modes plus deterministic generated-mesh
+  // fallback for point/line modes. Unknown modes are still skipped.
+  const mode = prim.mode ?? GLTF_PRIMITIVE_MODE_TRIANGLES;
+  if (
+    mode !== GLTF_PRIMITIVE_MODE_TRIANGLES &&
+    mode !== GLTF_MODE_TRIANGLE_STRIP &&
+    mode !== GLTF_MODE_TRIANGLE_FAN &&
+    !isPointLineMode(mode)
+  ) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'unsupported-primitive-mode',
+      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unsupported ` +
+        `mode ${mode} (${pointLineModeName(mode)}). Supported modes are POINTS (0), ` +
+        'LINES (1), LINE_LOOP (2), LINE_STRIP (3), TRIANGLES (4), ' +
+        'TRIANGLE_STRIP (5) and TRIANGLE_FAN (6). This primitive is SKIPPED.',
+    });
+    return;
+  }
+
+  // Compression left UNRESOLVED by resolveCompression (no hook + no spec
+  // fallback, or the decode hook failed) — skip honestly.
+  const primExtKeys = Object.keys(prim.extensions ?? {});
+  if (primExtKeys.includes('KHR_draco_mesh_compression')) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'unresolved-compression',
+      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].extensions.KHR_draco_mesh_compression`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unresolved ` +
+        'KHR_draco_mesh_compression geometry (no opts.dracoDecode hook / decode failed, ' +
+        'and no uncompressed fallback). Primitive SKIPPED.',
+    });
+    return;
+  }
+
+  // ── Unpack attributes ──────────────────────────────────────────────────
+  const posIdx = prim.attributes['POSITION'];
+  if (posIdx === undefined) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'missing-position',
+      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].attributes.POSITION`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has no POSITION ` +
+        'attribute. Primitive SKIPPED.',
+    });
+    return;
+  }
+
+  let positions: Float32Array;
+  try {
+    positions = unpackAccessorFloat(gltf, buffers, posIdx, warnings, onAccessorDiagnostic);
+  } catch (e) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'unreadable-position',
+      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].attributes.POSITION`,
+      message:
+        `[vitrum/gltf-adapter] Failed to read POSITION for mesh "${mesh.name ?? node.mesh}": ` +
+        String(e) + ' Primitive SKIPPED.',
+    });
+    return;
+  }
+
+  const vertexCount = Math.floor(positions.length / 3);
+
+  // Indices (optional).
+  let indices: Uint32Array | undefined;
+  if (prim.indices !== undefined) {
+    try {
+      indices = unpackAccessorUint32(gltf, buffers, prim.indices, null, onAccessorDiagnostic);
+    } catch (e) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'unreadable-indices',
+        path: `meshes[${node.mesh}].primitives[${primitiveIndex}].indices`,
+        message:
+          `[vitrum/gltf-adapter] Failed to read indices for mesh "${mesh.name ?? node.mesh}": ` +
+          String(e) + ' Primitive SKIPPED.',
+      });
+      return;
+    }
+  }
+
+  // TRIANGLE_STRIP / TRIANGLE_FAN → indexed triangle list (GLTF-05).
+  // Works for indexed and non-indexed inputs; degenerate (repeated-index)
+  // triangles are dropped per glTF §3.7.2.1 winding rules.
+  if (mode === GLTF_MODE_TRIANGLE_STRIP || mode === GLTF_MODE_TRIANGLE_FAN) {
+    const src = indices ?? sequentialIndices(positions.length / 3);
+    const tris = triangulateTopology(src, mode);
+    if (tris.length === 0) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'empty-triangulated-primitive',
+        path: `meshes[${node.mesh}].primitives[${primitiveIndex}]`,
+        message:
+          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
+          `${mode === GLTF_MODE_TRIANGLE_STRIP ? 'TRIANGLE_STRIP' : 'TRIANGLE_FAN'} primitive ` +
+          'yields no non-degenerate triangles. Primitive SKIPPED.',
+      });
+      return;
+    }
+    indices = tris;
+  }
+
+  const usesPointLineFallback = isPointLineMode(mode);
+
+  // Normals — generate flat normals if absent or unreadable.
+  // Point/line fallback generates its own mesh normals below, so reporting
+  // normal generation for the discarded source topology would be misleading.
+  const normIdx = prim.attributes['NORMAL'];
+  const normAttempt = usesPointLineFallback
+    ? undefined
+    : _tryUnpackFloat(
+        gltf, buffers, normIdx,
+        `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-normal',
+        `${primitivePath}.attributes.NORMAL`,
+      );
+  if (!usesPointLineFallback && normAttempt === undefined && normIdx === undefined) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'generated-flat-normals',
+      path: `${primitivePath}.attributes.NORMAL`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has no NORMAL attribute. ` +
+        'Generating flat normals.',
+    });
+  } else if (!usesPointLineFallback && normAttempt === undefined) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'unreadable-normal',
+      path: `${primitivePath}.attributes.NORMAL`,
+      message:
+        `[vitrum/gltf-adapter] NORMAL unreadable for mesh "${mesh.name ?? node.mesh}". ` +
+        'Generating flat normals.',
+    });
+  }
+  let normals: Float32Array = usesPointLineFallback
+    ? new Float32Array(positions.length)
+    : normAttempt ?? generateFlatNormals(positions, indices);
+
+  // UVs — optional, but glTF TEXCOORD_N accessors must be VEC2.
+  const uv0Idx = prim.attributes['TEXCOORD_0'];
+  let uvs = _validatePrimitiveAttributeAccessor(
+    gltf,
+    uv0Idx,
+    ['VEC2'],
+    vertexCount,
+    'TEXCOORD_0',
+    `${mesh.name ?? node.mesh}`,
+    `${primitivePath}.attributes.TEXCOORD_0`,
+    warnings,
+    diagnostics,
+  )
+    ? _tryUnpackFloat(
+        gltf, buffers, uv0Idx,
+        `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.attributes.TEXCOORD_0`,
+      )
+    : undefined;
+  const uv1Idx = prim.attributes['TEXCOORD_1'];
+  let uv1 = _validatePrimitiveAttributeAccessor(
+    gltf,
+    uv1Idx,
+    ['VEC2'],
+    vertexCount,
+    'TEXCOORD_1',
+    `${mesh.name ?? node.mesh}`,
+    `${primitivePath}.attributes.TEXCOORD_1`,
+    warnings,
+    diagnostics,
+  )
+    ? _tryUnpackFloat(
+        gltf, buffers, uv1Idx,
+        `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.attributes.TEXCOORD_1`,
+      )
+    : undefined;
+  let primitiveUvs = uvs;
+  let primitiveUv1 = uv1;
+
+  // Tangents — optional (xyzw per vertex).
+  const tangentIdx = prim.attributes['TANGENT'];
+  let tangents = _validatePrimitiveAttributeAccessor(
+    gltf,
+    tangentIdx,
+    ['VEC4'],
+    vertexCount,
+    'TANGENT',
+    `${mesh.name ?? node.mesh}`,
+    `${primitivePath}.attributes.TANGENT`,
+    warnings,
+    diagnostics,
+  )
+    ? _tryUnpackFloat(
+        gltf, buffers, tangentIdx,
+        `TANGENT for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.attributes.TANGENT`,
+      )
+    : undefined;
+
+  // Vertex colors — optional (COLOR_0).
+  const color0Idx = prim.attributes['COLOR_0'];
+  let colors = _validatePrimitiveAttributeAccessor(
+    gltf,
+    color0Idx,
+    ['VEC3', 'VEC4'],
+    vertexCount,
+    'COLOR_0',
+    `${mesh.name ?? node.mesh}`,
+    `${primitivePath}.attributes.COLOR_0`,
+    warnings,
+    diagnostics,
+  )
+    ? _tryUnpackFloat(
+        gltf, buffers, color0Idx,
+        `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
+        diagnostics,
+        'unreadable-optional-attribute',
+        `${primitivePath}.attributes.COLOR_0`,
+      )
+    : undefined;
+  for (const attrName of Object.keys(prim.attributes).sort()) {
+    if (/^COLOR_[1-9][0-9]*$/.test(attrName)) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'ignored-vertex-color-set',
+        path: `${primitivePath}.attributes.${attrName}`,
+        message:
+          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ${attrName}, ` +
+          'but the core Scene contract currently imports only COLOR_0. This secondary vertex-color set is ignored.',
+      });
+    }
+  }
+
+  // ── Skinning attributes ────────────────────────────────────────────────
+  // Only unpacked when this node has a skin. JOINTS_N / WEIGHTS_N without
+  // node.skin carry no glTF skinning semantics, but report the ignored data
+  // so strict one-call loading can reject the degradation before rendering.
+  let skinIndices: Uint32Array | undefined;
+  let skinWeights: Float32Array | undefined;
+  const skinInfluenceSetIndices = collectSkinInfluenceSetIndices(prim.attributes);
+  const jointsIdx = prim.attributes['JOINTS_0'];
+  const weightsIdx = prim.attributes['WEIGHTS_0'];
+  if (!skinData && skinInfluenceSetIndices.length > 0) {
+    const firstSet = skinInfluenceSetIndices[0] ?? 0;
+    const firstJoints = prim.attributes[`JOINTS_${firstSet}`];
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'ignored-skin-attributes',
+      path: firstJoints !== undefined
+        ? `${primitivePath}.attributes.JOINTS_${firstSet}`
+        : `${primitivePath}.attributes.WEIGHTS_${firstSet}`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ` +
+        'JOINTS_N/WEIGHTS_N data, but the node does not bind a skin. ' +
+        'Skin attributes are ignored and the primitive is imported as a static mesh.',
+    });
+  }
+  if (skinData && bones && boneInverses) {
+    if (jointsIdx !== undefined && weightsIdx !== undefined) {
+      const decodedSets: SkinInfluenceSet[] = [];
+      let primaryReadable = true;
+      for (const setIndex of skinInfluenceSetIndices) {
+        const setJointsIdx = prim.attributes[`JOINTS_${setIndex}`];
+        const setWeightsIdx = prim.attributes[`WEIGHTS_${setIndex}`];
+        if (setJointsIdx === undefined || setWeightsIdx === undefined) {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'incomplete-skin-attributes',
+            path: `${primitivePath}.attributes.${setJointsIdx === undefined ? `JOINTS_${setIndex}` : `WEIGHTS_${setIndex}`}`,
+            message:
+              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, ` +
+              `but influence set ${setIndex} does not provide both JOINTS_${setIndex} and WEIGHTS_${setIndex}. ` +
+              (setIndex === 0
+                ? 'Skinning is omitted and the primitive is imported as a static mesh.'
+                : 'That secondary influence set is ignored.'),
+          });
+          if (setIndex === 0) primaryReadable = false;
+          continue;
+        }
+
+        let decodedJoints: Uint32Array | undefined;
+        let decodedWeights: Float32Array | undefined;
+        try {
+          decodedJoints = _unpackJoints(gltf, buffers, setJointsIdx, onAccessorDiagnostic, `JOINTS_${setIndex}`);
+        } catch (e) {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'unreadable-skin-joints',
+            path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
+            message:
+              `[vitrum/gltf-adapter] Failed to read JOINTS_${setIndex} for "${mesh.name ?? node.mesh}": ` +
+              String(e) +
+              (setIndex === 0 ? '. Falling back to static mesh.' : '. Secondary influence set skipped.'),
+          });
+          if (setIndex === 0) primaryReadable = false;
+        }
+        try {
+          decodedWeights = unpackAccessorFloat(gltf, buffers, setWeightsIdx, warnings, onAccessorDiagnostic);
+        } catch (e) {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'unreadable-skin-weights',
+            path: `${primitivePath}.attributes.WEIGHTS_${setIndex}`,
+            message:
+              `[vitrum/gltf-adapter] Failed to read WEIGHTS_${setIndex} for "${mesh.name ?? node.mesh}": ` +
+              String(e) +
+              (setIndex === 0 ? '. Falling back to static mesh.' : '. Secondary influence set skipped.'),
+          });
+          if (setIndex === 0) primaryReadable = false;
+        }
+
+        if (!decodedJoints || !decodedWeights) continue;
+        const expectedLength = Math.floor(positions.length / 3) * 4;
+        if (decodedJoints.length !== expectedLength || decodedWeights.length !== expectedLength) {
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'invalid-primitive-attribute',
+            path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
+            message:
+              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" influence set ${setIndex} has ` +
+              `JOINTS_${setIndex}/WEIGHTS_${setIndex} length mismatch for ${expectedLength / 4} vertices. ` +
+              (setIndex === 0
+                ? 'Skinning is omitted and the primitive is imported as a static mesh.'
+                : 'That secondary influence set is ignored.'),
+          });
+          if (setIndex === 0) primaryReadable = false;
+          continue;
+        }
+        decodedSets.push({ setIndex, joints: decodedJoints, weights: decodedWeights });
+      }
+
+      if (primaryReadable && decodedSets.length > 0) {
+        const hasSecondarySets = decodedSets.some((set) => set.setIndex !== 0);
+        if (hasSecondarySets) {
+          const collapsed = collapseSkinInfluenceSets(decodedSets, Math.floor(positions.length / 3));
+          skinIndices = collapsed.skinIndices;
+          skinWeights = collapsed.skinWeights;
+          emitImportDiagnostic(warnings, diagnostics, {
+            severity: 'warning',
+            code: 'collapsed-skin-influence-sets',
+            path: `${primitivePath}.attributes.JOINTS_1`,
+            message:
+              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" provides ${decodedSets.length} ` +
+              'skinning influence sets. The core Scene contract carries four unique joint weights per vertex, ' +
+              'so the importer retained the strongest four, merged duplicate joints, and renormalized weights' +
+              (collapsed.droppedPositiveInfluences > 0
+                ? ` (${collapsed.droppedPositiveInfluences} positive lower-weight influences dropped).`
+                : '.'),
+          });
+        } else {
+          skinIndices = decodedSets[0]!.joints;
+          skinWeights = decodedSets[0]!.weights;
+        }
+      }
+    } else {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'incomplete-skin-attributes',
+        path: `${primitivePath}.attributes.${jointsIdx === undefined ? 'JOINTS_0' : 'WEIGHTS_0'}`,
+        message:
+          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, ` +
+          'but the primitive does not provide both JOINTS_0 and WEIGHTS_0. ' +
+          'Skinning is omitted and the primitive is imported as a static mesh.',
+      });
+    }
+  }
+
+  // Warn on unsupported primitive attributes.
+  for (const attrName of Object.keys(prim.attributes)) {
+    if (
+      !['POSITION', 'NORMAL', 'TEXCOORD_0', 'TEXCOORD_1', 'TANGENT', 'COLOR_0',
+        'JOINTS_0', 'WEIGHTS_0'].includes(attrName) &&
+      !isSkinInfluenceAttribute(attrName) &&
+      !attrName.startsWith('TEXCOORD_') &&
+      !attrName.startsWith('COLOR_')
+    ) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'ignored-primitive-attribute',
+        path: `${primitivePath}.attributes.${attrName}`,
+        message:
+          `[vitrum/gltf-adapter] Unknown primitive attribute "${attrName}" in mesh ` +
+          `"${mesh.name ?? node.mesh}" is ignored.`,
+      });
+    }
+  }
+
+  // Material.
+  const materialIndex = _resolvePrimitiveMaterialIndex(
+    gltf,
+    prim,
+    prim.material,
+    selectedMaterialVariant,
+    warnings,
+    diagnostics,
+    `${mesh.name ?? node.mesh}`,
+    primitivePath,
+  );
+  if (
+    materialIndex !== undefined &&
+    (!Number.isInteger(materialIndex) || materialIndex < 0 || materialIndex >= coreMaterials.length)
+  ) {
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'material-not-found',
+      path: `${primitivePath}.material`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive references missing ` +
+        `material ${String(materialIndex)}. Default material is used.`,
+    });
+  }
+  const material =
+    materialIndex !== undefined && materialIndex < coreMaterials.length
+      ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
+      : GLTF_DEFAULT_MATERIAL;
+  const uvResolvedMaterial = _resolvePrimitiveUvMaterial(
+    gltf,
+    buffers,
+    prim,
+    material,
+    uvs,
+    uv1,
+    vertexCount,
+    warnings,
+    diagnostics,
+    primitivePath,
+    mesh.name ?? meshIndex,
+    onAccessorDiagnostic,
+  );
+  uvs = uvResolvedMaterial.uvs;
+  uv1 = uvResolvedMaterial.uv1;
+
+  // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT plus the
+  // glTF UV semantics currently carried in core uvs/uv1 + node/mesh weights.
+  let morph = _extractMorphTargets(
+    gltf, buffers, prim.targets, node.weights ?? mesh.weights,
+    positions.length / 3, uvs, uvResolvedMaterial.uvSourceTexCoord, uv1, uvResolvedMaterial.uv1SourceTexCoord,
+    `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics, onAccessorDiagnostic,
+  );
+  if (usesPointLineFallback) {
+    const originalVertexCount = Math.floor(positions.length / 3);
+    const fallback = buildPointLineFallbackGeometry(
+      positions,
+      indices,
+      mode,
+      opts.pointLineFallbackRadius,
+    );
+    if (fallback == null) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'empty-triangulated-primitive',
+        path: `meshes[${node.mesh}].primitives[${primitiveIndex}]`,
+        message:
+          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
+          `${pointLineModeName(mode)} primitive could not produce non-degenerate fallback mesh geometry. ` +
+          'Primitive SKIPPED.',
+      });
+      return;
+    }
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'fallback-generated-primitive-mode',
+      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive mode ${mode} ` +
+        `(${pointLineModeName(mode)}) was imported as fallback-generated mesh geometry ` +
+        `(radius ${fallback.radius}). Topology fidelity is approximate, but the primitive is renderable.`,
+    });
+    uvs = remapVec2Attribute(uvs, fallback.sourceVertices);
+    uv1 = remapVec2Attribute(uv1, fallback.sourceVertices);
+    primitiveUvs = remapVec2Attribute(primitiveUvs, fallback.sourceVertices);
+    primitiveUv1 = remapVec2Attribute(primitiveUv1, fallback.sourceVertices);
+    colors = remapVertexColors(colors, originalVertexCount, fallback.sourceVertices);
+    tangents = undefined;
+    if (skinIndices && skinWeights) {
+      skinIndices = remapVec4UintAttribute(skinIndices, fallback.sourceVertices);
+      skinWeights = remapVec4FloatAttribute(skinWeights, fallback.sourceVertices);
+    }
+    morph = remapMorphData(morph, fallback.sourceVertices);
+    positions = fallback.positions;
+    normals = fallback.normals;
+    indices = fallback.indices;
+  }
+  const finalTangents = tangents ?? _maybeGenerateTangents(
+    positions,
+    normals,
+    uvs,
+    uv1,
+    indices,
+    uvResolvedMaterial.material,
+    `${mesh.name ?? node.mesh}`,
+    warnings,
+    diagnostics,
+    primitivePath,
+  );
+
+  const id = `gltf-prim-${ctx.primId.value++}`;
+  const registerPrimitiveProvenance = (primitiveId: string): void => {
+    (animationTargets[animationNodeId(nodeIdx)] ??= []).push(primitiveId);
+    if (
+      materialIndex !== undefined &&
+      Number.isInteger(materialIndex) &&
+      materialIndex >= 0 &&
+      materialIndex < coreMaterials.length
+    ) {
+      materialBindings.push({ primitiveId, materialIndex });
+    }
+  };
+  const registerPrimitiveVariants = (primitiveId: string): void => {
+    if ((prim.extensions?.KHR_materials_variants?.mappings?.length ?? 0) === 0) return;
+    materialVariantBindings.push({
+      primitiveId,
+      meshIndex,
+      primitiveIndex,
+      ...(prim.material !== undefined ? { baseMaterialIndex: prim.material } : {}),
+      basePatch: _buildPrimitiveMaterialVariantPatch(
+        gltf,
+        buffers,
+        prim,
+        coreMaterials,
+        prim.material,
+        positions,
+        normals,
+        primitiveUvs,
+        primitiveUv1,
+        indices,
+        tangents,
+        `${mesh.name ?? node.mesh}`,
+        warnings,
+        diagnostics,
+        primitivePath,
+        onAccessorDiagnostic,
+      ),
+      variantPatches: _buildPrimitiveMaterialVariantPatches(
+        gltf,
+        buffers,
+        prim,
+        coreMaterials,
+        prim.material,
+        positions,
+        normals,
+        primitiveUvs,
+        primitiveUv1,
+        indices,
+        tangents,
+        `${mesh.name ?? node.mesh}`,
+        warnings,
+        diagnostics,
+        primitivePath,
+        onAccessorDiagnostic,
+      ),
+    });
+  };
+
+  let skinArg = (skinIndices && skinWeights && bones && boneInverses)
+    ? {
+        skinIndices,
+        skinWeights,
+        bones,
+        boneInverses,
+      }
+    : undefined;
+
+  // Morphed-but-unskinned mesh: core carries morph targets only on
+  // SkinnedMeshPrimitive (solveSkin pre-blends morphs before LBS), so we
+  // promote the mesh with a synthesized identity skin — one identity bone,
+  // every vertex weighted [1,0,0,0]. The LBS pass is then a no-op and
+  // solveSkin output equals restPos + Σ w_t · Δ_t in mesh-local space
+  // (the primitive `transform` still applies on top, mirroring how
+  // bindMatrix is only needed for world-space bone chains).
+  if (morph && !skinArg) {
+    const vertexCount = positions.length / 3;
+    const identitySkinWeights = new Float32Array(vertexCount * 4);
+    for (let v = 0; v < vertexCount; v++) identitySkinWeights[v * 4] = 1;
+    const identityBone = new Float32Array(16);
+    identityBone[0] = 1; identityBone[5] = 1; identityBone[10] = 1; identityBone[15] = 1;
+    skinArg = {
+      skinIndices: new Uint32Array(vertexCount * 4), // all bone 0
+      skinWeights: identitySkinWeights,
+      bones: identityBone,
+      boneInverses: new Float32Array(identityBone),
+    };
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'morph-identity-skin-promotion',
+      path: `${primitivePath}.targets`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has morph targets but no skin; ` +
+        'promoted to SkinnedMeshPrimitive with a synthesized identity skeleton (1 bone). ' +
+        'Drive morphWeights and re-solve via @vitrum/core solveSkin to animate the blend shapes.',
+    });
+  }
+
+  let primitiveInstances = instanceTransforms?.worldInstanceTransforms;
+  if (primitiveInstances && skinArg && instanceTransforms) {
+    if (!nodeCtx.instanceFallbackWarned.value) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'fallback-expanded-gpu-instancing',
+        path: `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`,
+        message:
+          `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
+          'on a skinned or morphed mesh. The importer expanded it to one SkinnedMeshPrimitive ' +
+          'per authored instance so every instance remains renderable under the existing core contract.',
+      });
+      nodeCtx.instanceFallbackWarned.value = true;
+    }
+    for (const [instanceIndex, instanceWorld] of primitiveInstances.entries()) {
+      const instanceId = `${id}-instance-${instanceIndex}`;
+      registerPrimitiveProvenance(instanceId);
+      registerPrimitiveVariants(instanceId);
+      instancingBindings.push({
+        primitiveId: instanceId,
+        nodeIndex: nodeIdx,
+        localInstanceTransforms: instanceTransforms.localInstanceTransforms,
+        expandedPrimitiveInstanceIndex: instanceIndex,
+      });
+      primitives.push(_buildPrimitive(
+        instanceId, instanceWorld, positions, normals, indices,
+        uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, undefined,
+      ));
+    }
+    return;
+  }
+  if (primitiveInstances && instanceTransforms) {
+    registerPrimitiveProvenance(id);
+    registerPrimitiveVariants(id);
+    instancingBindings.push({
+      primitiveId: id,
+      nodeIndex: nodeIdx,
+      localInstanceTransforms: instanceTransforms.localInstanceTransforms,
+    });
+  }
+
+  if (!primitiveInstances) {
+    registerPrimitiveProvenance(id);
+    registerPrimitiveVariants(id);
+  }
+  primitives.push(_buildPrimitive(
+    id, worldMat, positions, normals, indices,
+    uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, primitiveInstances,
+  ));
+}
+
 export async function gltfToScene(
   input: ArrayBuffer | GltfJson,
   opts: GltfToSceneOptions = {},
@@ -716,7 +1423,13 @@ export async function gltfToScene(
   const materialVariantBindings: GltfMaterialVariantBinding[] = [];
   const materialBindings: GltfMaterialBinding[] = [];
   const instancingBindings: GltfInstancingBinding[] = [];
-  let primIdCounter = 0;
+  const primId = { value: 0 };
+
+  const buildPrimitiveCtx: BuildPrimitiveContext = {
+    gltf, buffers, warnings, diagnostics, onAccessorDiagnostic, coreMaterials,
+    opts, selectedMaterialVariant, primitives, animationTargets,
+    materialVariantBindings, materialBindings, instancingBindings, primId,
+  };
 
   const gltfNodes = gltf.nodes ?? [];
   const gltfMeshes = gltf.meshes ?? [];
@@ -735,7 +1448,7 @@ export async function gltfToScene(
       diagnostics,
       onAccessorDiagnostic,
     );
-    let instanceFallbackWarned = false;
+    const instanceFallbackWarned = { value: false };
 
     const mesh = gltfMeshes[node.mesh];
     if (!mesh) continue;
@@ -748,664 +1461,11 @@ export async function gltfToScene(
     );
     const { bones, boneInverses } = skinData ?? {};
 
+    const nodeCtx: BuildPrimitiveNodeContext = {
+      node, nodeIdx, meshIndex: node.mesh, mesh, worldMat, skinData, bones, boneInverses, instanceTransforms, instanceFallbackWarned,
+    };
     for (const [primitiveIndex, prim] of mesh.primitives.entries()) {
-      const primitivePath = `meshes[${node.mesh}].primitives[${primitiveIndex}]`;
-      // Mode check — native triangle modes plus deterministic generated-mesh
-      // fallback for point/line modes. Unknown modes are still skipped.
-      const mode = prim.mode ?? GLTF_PRIMITIVE_MODE_TRIANGLES;
-      if (
-        mode !== GLTF_PRIMITIVE_MODE_TRIANGLES &&
-        mode !== GLTF_MODE_TRIANGLE_STRIP &&
-        mode !== GLTF_MODE_TRIANGLE_FAN &&
-        !isPointLineMode(mode)
-      ) {
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'unsupported-primitive-mode',
-          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
-          message:
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unsupported ` +
-            `mode ${mode} (${pointLineModeName(mode)}). Supported modes are POINTS (0), ` +
-            'LINES (1), LINE_LOOP (2), LINE_STRIP (3), TRIANGLES (4), ' +
-            'TRIANGLE_STRIP (5) and TRIANGLE_FAN (6). This primitive is SKIPPED.',
-        });
-        continue;
-      }
-
-      // Compression left UNRESOLVED by resolveCompression (no hook + no spec
-      // fallback, or the decode hook failed) — skip honestly.
-      const primExtKeys = Object.keys(prim.extensions ?? {});
-      if (primExtKeys.includes('KHR_draco_mesh_compression')) {
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'unresolved-compression',
-          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].extensions.KHR_draco_mesh_compression`,
-          message:
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has unresolved ` +
-            'KHR_draco_mesh_compression geometry (no opts.dracoDecode hook / decode failed, ' +
-            'and no uncompressed fallback). Primitive SKIPPED.',
-        });
-        continue;
-      }
-
-      // ── Unpack attributes ──────────────────────────────────────────────────
-      const posIdx = prim.attributes['POSITION'];
-      if (posIdx === undefined) {
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'missing-position',
-          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].attributes.POSITION`,
-          message:
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive has no POSITION ` +
-            'attribute. Primitive SKIPPED.',
-        });
-        continue;
-      }
-
-      let positions: Float32Array;
-      try {
-        positions = unpackAccessorFloat(gltf, buffers, posIdx, warnings, onAccessorDiagnostic);
-      } catch (e) {
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'unreadable-position',
-          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].attributes.POSITION`,
-          message:
-            `[vitrum/gltf-adapter] Failed to read POSITION for mesh "${mesh.name ?? node.mesh}": ` +
-            String(e) + ' Primitive SKIPPED.',
-        });
-        continue;
-      }
-
-      const vertexCount = Math.floor(positions.length / 3);
-
-      // Indices (optional).
-      let indices: Uint32Array | undefined;
-      if (prim.indices !== undefined) {
-        try {
-          indices = unpackAccessorUint32(gltf, buffers, prim.indices, null, onAccessorDiagnostic);
-        } catch (e) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'unreadable-indices',
-            path: `meshes[${node.mesh}].primitives[${primitiveIndex}].indices`,
-            message:
-              `[vitrum/gltf-adapter] Failed to read indices for mesh "${mesh.name ?? node.mesh}": ` +
-              String(e) + ' Primitive SKIPPED.',
-          });
-          continue;
-        }
-      }
-
-      // TRIANGLE_STRIP / TRIANGLE_FAN → indexed triangle list (GLTF-05).
-      // Works for indexed and non-indexed inputs; degenerate (repeated-index)
-      // triangles are dropped per glTF §3.7.2.1 winding rules.
-      if (mode === GLTF_MODE_TRIANGLE_STRIP || mode === GLTF_MODE_TRIANGLE_FAN) {
-        const src = indices ?? sequentialIndices(positions.length / 3);
-        const tris = triangulateTopology(src, mode);
-        if (tris.length === 0) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'empty-triangulated-primitive',
-            path: `meshes[${node.mesh}].primitives[${primitiveIndex}]`,
-            message:
-              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
-              `${mode === GLTF_MODE_TRIANGLE_STRIP ? 'TRIANGLE_STRIP' : 'TRIANGLE_FAN'} primitive ` +
-              'yields no non-degenerate triangles. Primitive SKIPPED.',
-          });
-          continue;
-        }
-        indices = tris;
-      }
-
-      const usesPointLineFallback = isPointLineMode(mode);
-
-      // Normals — generate flat normals if absent or unreadable.
-      // Point/line fallback generates its own mesh normals below, so reporting
-      // normal generation for the discarded source topology would be misleading.
-      const normIdx = prim.attributes['NORMAL'];
-      const normAttempt = usesPointLineFallback
-        ? undefined
-        : _tryUnpackFloat(
-            gltf, buffers, normIdx,
-            `NORMAL for mesh "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-            diagnostics,
-            'unreadable-normal',
-            `${primitivePath}.attributes.NORMAL`,
-          );
-      if (!usesPointLineFallback && normAttempt === undefined && normIdx === undefined) {
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'generated-flat-normals',
-          path: `${primitivePath}.attributes.NORMAL`,
-          message:
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has no NORMAL attribute. ` +
-            'Generating flat normals.',
-        });
-      } else if (!usesPointLineFallback && normAttempt === undefined) {
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'unreadable-normal',
-          path: `${primitivePath}.attributes.NORMAL`,
-          message:
-            `[vitrum/gltf-adapter] NORMAL unreadable for mesh "${mesh.name ?? node.mesh}". ` +
-            'Generating flat normals.',
-        });
-      }
-      let normals: Float32Array = usesPointLineFallback
-        ? new Float32Array(positions.length)
-        : normAttempt ?? generateFlatNormals(positions, indices);
-
-      // UVs — optional, but glTF TEXCOORD_N accessors must be VEC2.
-      const uv0Idx = prim.attributes['TEXCOORD_0'];
-      let uvs = _validatePrimitiveAttributeAccessor(
-        gltf,
-        uv0Idx,
-        ['VEC2'],
-        vertexCount,
-        'TEXCOORD_0',
-        `${mesh.name ?? node.mesh}`,
-        `${primitivePath}.attributes.TEXCOORD_0`,
-        warnings,
-        diagnostics,
-      )
-        ? _tryUnpackFloat(
-            gltf, buffers, uv0Idx,
-            `TEXCOORD_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-            diagnostics,
-            'unreadable-optional-attribute',
-            `${primitivePath}.attributes.TEXCOORD_0`,
-          )
-        : undefined;
-      const uv1Idx = prim.attributes['TEXCOORD_1'];
-      let uv1 = _validatePrimitiveAttributeAccessor(
-        gltf,
-        uv1Idx,
-        ['VEC2'],
-        vertexCount,
-        'TEXCOORD_1',
-        `${mesh.name ?? node.mesh}`,
-        `${primitivePath}.attributes.TEXCOORD_1`,
-        warnings,
-        diagnostics,
-      )
-        ? _tryUnpackFloat(
-            gltf, buffers, uv1Idx,
-            `TEXCOORD_1 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-            diagnostics,
-            'unreadable-optional-attribute',
-            `${primitivePath}.attributes.TEXCOORD_1`,
-          )
-        : undefined;
-      let primitiveUvs = uvs;
-      let primitiveUv1 = uv1;
-
-      // Tangents — optional (xyzw per vertex).
-      const tangentIdx = prim.attributes['TANGENT'];
-      let tangents = _validatePrimitiveAttributeAccessor(
-        gltf,
-        tangentIdx,
-        ['VEC4'],
-        vertexCount,
-        'TANGENT',
-        `${mesh.name ?? node.mesh}`,
-        `${primitivePath}.attributes.TANGENT`,
-        warnings,
-        diagnostics,
-      )
-        ? _tryUnpackFloat(
-            gltf, buffers, tangentIdx,
-            `TANGENT for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-            diagnostics,
-            'unreadable-optional-attribute',
-            `${primitivePath}.attributes.TANGENT`,
-          )
-        : undefined;
-
-      // Vertex colors — optional (COLOR_0).
-      const color0Idx = prim.attributes['COLOR_0'];
-      let colors = _validatePrimitiveAttributeAccessor(
-        gltf,
-        color0Idx,
-        ['VEC3', 'VEC4'],
-        vertexCount,
-        'COLOR_0',
-        `${mesh.name ?? node.mesh}`,
-        `${primitivePath}.attributes.COLOR_0`,
-        warnings,
-        diagnostics,
-      )
-        ? _tryUnpackFloat(
-            gltf, buffers, color0Idx,
-            `COLOR_0 for "${mesh.name ?? node.mesh}"`, warnings, onAccessorDiagnostic,
-            diagnostics,
-            'unreadable-optional-attribute',
-            `${primitivePath}.attributes.COLOR_0`,
-          )
-        : undefined;
-      for (const attrName of Object.keys(prim.attributes).sort()) {
-        if (/^COLOR_[1-9][0-9]*$/.test(attrName)) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'ignored-vertex-color-set',
-            path: `${primitivePath}.attributes.${attrName}`,
-            message:
-              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ${attrName}, ` +
-              'but the core Scene contract currently imports only COLOR_0. This secondary vertex-color set is ignored.',
-          });
-        }
-      }
-
-      // ── Skinning attributes ────────────────────────────────────────────────
-      // Only unpacked when this node has a skin. JOINTS_N / WEIGHTS_N without
-      // node.skin carry no glTF skinning semantics, but report the ignored data
-      // so strict one-call loading can reject the degradation before rendering.
-      let skinIndices: Uint32Array | undefined;
-      let skinWeights: Float32Array | undefined;
-      const skinInfluenceSetIndices = collectSkinInfluenceSetIndices(prim.attributes);
-      const jointsIdx = prim.attributes['JOINTS_0'];
-      const weightsIdx = prim.attributes['WEIGHTS_0'];
-      if (!skinData && skinInfluenceSetIndices.length > 0) {
-        const firstSet = skinInfluenceSetIndices[0] ?? 0;
-        const firstJoints = prim.attributes[`JOINTS_${firstSet}`];
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'ignored-skin-attributes',
-          path: firstJoints !== undefined
-            ? `${primitivePath}.attributes.JOINTS_${firstSet}`
-            : `${primitivePath}.attributes.WEIGHTS_${firstSet}`,
-          message:
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive includes ` +
-            'JOINTS_N/WEIGHTS_N data, but the node does not bind a skin. ' +
-            'Skin attributes are ignored and the primitive is imported as a static mesh.',
-        });
-      }
-      if (skinData && bones && boneInverses) {
-        if (jointsIdx !== undefined && weightsIdx !== undefined) {
-          const decodedSets: SkinInfluenceSet[] = [];
-          let primaryReadable = true;
-          for (const setIndex of skinInfluenceSetIndices) {
-            const setJointsIdx = prim.attributes[`JOINTS_${setIndex}`];
-            const setWeightsIdx = prim.attributes[`WEIGHTS_${setIndex}`];
-            if (setJointsIdx === undefined || setWeightsIdx === undefined) {
-              emitImportDiagnostic(warnings, diagnostics, {
-                severity: 'warning',
-                code: 'incomplete-skin-attributes',
-                path: `${primitivePath}.attributes.${setJointsIdx === undefined ? `JOINTS_${setIndex}` : `WEIGHTS_${setIndex}`}`,
-                message:
-                  `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, ` +
-                  `but influence set ${setIndex} does not provide both JOINTS_${setIndex} and WEIGHTS_${setIndex}. ` +
-                  (setIndex === 0
-                    ? 'Skinning is omitted and the primitive is imported as a static mesh.'
-                    : 'That secondary influence set is ignored.'),
-              });
-              if (setIndex === 0) primaryReadable = false;
-              continue;
-            }
-
-            let decodedJoints: Uint32Array | undefined;
-            let decodedWeights: Float32Array | undefined;
-            try {
-              decodedJoints = _unpackJoints(gltf, buffers, setJointsIdx, onAccessorDiagnostic, `JOINTS_${setIndex}`);
-            } catch (e) {
-              emitImportDiagnostic(warnings, diagnostics, {
-                severity: 'warning',
-                code: 'unreadable-skin-joints',
-                path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
-                message:
-                  `[vitrum/gltf-adapter] Failed to read JOINTS_${setIndex} for "${mesh.name ?? node.mesh}": ` +
-                  String(e) +
-                  (setIndex === 0 ? '. Falling back to static mesh.' : '. Secondary influence set skipped.'),
-              });
-              if (setIndex === 0) primaryReadable = false;
-            }
-            try {
-              decodedWeights = unpackAccessorFloat(gltf, buffers, setWeightsIdx, warnings, onAccessorDiagnostic);
-            } catch (e) {
-              emitImportDiagnostic(warnings, diagnostics, {
-                severity: 'warning',
-                code: 'unreadable-skin-weights',
-                path: `${primitivePath}.attributes.WEIGHTS_${setIndex}`,
-                message:
-                  `[vitrum/gltf-adapter] Failed to read WEIGHTS_${setIndex} for "${mesh.name ?? node.mesh}": ` +
-                  String(e) +
-                  (setIndex === 0 ? '. Falling back to static mesh.' : '. Secondary influence set skipped.'),
-              });
-              if (setIndex === 0) primaryReadable = false;
-            }
-
-            if (!decodedJoints || !decodedWeights) continue;
-            const expectedLength = Math.floor(positions.length / 3) * 4;
-            if (decodedJoints.length !== expectedLength || decodedWeights.length !== expectedLength) {
-              emitImportDiagnostic(warnings, diagnostics, {
-                severity: 'warning',
-                code: 'invalid-primitive-attribute',
-                path: `${primitivePath}.attributes.JOINTS_${setIndex}`,
-                message:
-                  `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" influence set ${setIndex} has ` +
-                  `JOINTS_${setIndex}/WEIGHTS_${setIndex} length mismatch for ${expectedLength / 4} vertices. ` +
-                  (setIndex === 0
-                    ? 'Skinning is omitted and the primitive is imported as a static mesh.'
-                    : 'That secondary influence set is ignored.'),
-              });
-              if (setIndex === 0) primaryReadable = false;
-              continue;
-            }
-            decodedSets.push({ setIndex, joints: decodedJoints, weights: decodedWeights });
-          }
-
-          if (primaryReadable && decodedSets.length > 0) {
-            const hasSecondarySets = decodedSets.some((set) => set.setIndex !== 0);
-            if (hasSecondarySets) {
-              const collapsed = collapseSkinInfluenceSets(decodedSets, Math.floor(positions.length / 3));
-              skinIndices = collapsed.skinIndices;
-              skinWeights = collapsed.skinWeights;
-              emitImportDiagnostic(warnings, diagnostics, {
-                severity: 'warning',
-                code: 'collapsed-skin-influence-sets',
-                path: `${primitivePath}.attributes.JOINTS_1`,
-                message:
-                  `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" provides ${decodedSets.length} ` +
-                  'skinning influence sets. The core Scene contract carries four unique joint weights per vertex, ' +
-                  'so the importer retained the strongest four, merged duplicate joints, and renormalized weights' +
-                  (collapsed.droppedPositiveInfluences > 0
-                    ? ` (${collapsed.droppedPositiveInfluences} positive lower-weight influences dropped).`
-                    : '.'),
-              });
-            } else {
-              skinIndices = decodedSets[0]!.joints;
-              skinWeights = decodedSets[0]!.weights;
-            }
-          }
-        } else {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'incomplete-skin-attributes',
-            path: `${primitivePath}.attributes.${jointsIdx === undefined ? 'JOINTS_0' : 'WEIGHTS_0'}`,
-            message:
-              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" node binds a skin, ` +
-              'but the primitive does not provide both JOINTS_0 and WEIGHTS_0. ' +
-              'Skinning is omitted and the primitive is imported as a static mesh.',
-          });
-        }
-      }
-
-      // Warn on unsupported primitive attributes.
-      for (const attrName of Object.keys(prim.attributes)) {
-        if (
-          !['POSITION', 'NORMAL', 'TEXCOORD_0', 'TEXCOORD_1', 'TANGENT', 'COLOR_0',
-            'JOINTS_0', 'WEIGHTS_0'].includes(attrName) &&
-          !isSkinInfluenceAttribute(attrName) &&
-          !attrName.startsWith('TEXCOORD_') &&
-          !attrName.startsWith('COLOR_')
-        ) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'ignored-primitive-attribute',
-            path: `${primitivePath}.attributes.${attrName}`,
-            message:
-              `[vitrum/gltf-adapter] Unknown primitive attribute "${attrName}" in mesh ` +
-              `"${mesh.name ?? node.mesh}" is ignored.`,
-          });
-        }
-      }
-
-      // Material.
-      const materialIndex = _resolvePrimitiveMaterialIndex(
-        gltf,
-        prim,
-        prim.material,
-        selectedMaterialVariant,
-        warnings,
-        diagnostics,
-        `${mesh.name ?? node.mesh}`,
-        primitivePath,
-      );
-      if (
-        materialIndex !== undefined &&
-        (!Number.isInteger(materialIndex) || materialIndex < 0 || materialIndex >= coreMaterials.length)
-      ) {
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'material-not-found',
-          path: `${primitivePath}.material`,
-          message:
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive references missing ` +
-            `material ${String(materialIndex)}. Default material is used.`,
-        });
-      }
-      const material =
-        materialIndex !== undefined && materialIndex < coreMaterials.length
-          ? (coreMaterials[materialIndex] ?? GLTF_DEFAULT_MATERIAL)
-          : GLTF_DEFAULT_MATERIAL;
-      const uvResolvedMaterial = _resolvePrimitiveUvMaterial(
-        gltf,
-        buffers,
-        prim,
-        material,
-        uvs,
-        uv1,
-        vertexCount,
-        warnings,
-        diagnostics,
-        primitivePath,
-        mesh.name ?? node.mesh,
-        onAccessorDiagnostic,
-      );
-      uvs = uvResolvedMaterial.uvs;
-      uv1 = uvResolvedMaterial.uv1;
-
-      // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT plus the
-      // glTF UV semantics currently carried in core uvs/uv1 + node/mesh weights.
-      let morph = _extractMorphTargets(
-        gltf, buffers, prim.targets, node.weights ?? mesh.weights,
-        positions.length / 3, uvs, uvResolvedMaterial.uvSourceTexCoord, uv1, uvResolvedMaterial.uv1SourceTexCoord,
-        `${mesh.name ?? node.mesh}`, primitivePath, warnings, diagnostics, onAccessorDiagnostic,
-      );
-      if (usesPointLineFallback) {
-        const originalVertexCount = Math.floor(positions.length / 3);
-        const fallback = buildPointLineFallbackGeometry(
-          positions,
-          indices,
-          mode,
-          opts.pointLineFallbackRadius,
-        );
-        if (fallback == null) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'empty-triangulated-primitive',
-            path: `meshes[${node.mesh}].primitives[${primitiveIndex}]`,
-            message:
-              `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
-              `${pointLineModeName(mode)} primitive could not produce non-degenerate fallback mesh geometry. ` +
-              'Primitive SKIPPED.',
-          });
-          continue;
-        }
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'fallback-generated-primitive-mode',
-          path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
-          message:
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive mode ${mode} ` +
-            `(${pointLineModeName(mode)}) was imported as fallback-generated mesh geometry ` +
-            `(radius ${fallback.radius}). Topology fidelity is approximate, but the primitive is renderable.`,
-        });
-        uvs = remapVec2Attribute(uvs, fallback.sourceVertices);
-        uv1 = remapVec2Attribute(uv1, fallback.sourceVertices);
-        primitiveUvs = remapVec2Attribute(primitiveUvs, fallback.sourceVertices);
-        primitiveUv1 = remapVec2Attribute(primitiveUv1, fallback.sourceVertices);
-        colors = remapVertexColors(colors, originalVertexCount, fallback.sourceVertices);
-        tangents = undefined;
-        if (skinIndices && skinWeights) {
-          skinIndices = remapVec4UintAttribute(skinIndices, fallback.sourceVertices);
-          skinWeights = remapVec4FloatAttribute(skinWeights, fallback.sourceVertices);
-        }
-        morph = remapMorphData(morph, fallback.sourceVertices);
-        positions = fallback.positions;
-        normals = fallback.normals;
-        indices = fallback.indices;
-      }
-      const finalTangents = tangents ?? _maybeGenerateTangents(
-        positions,
-        normals,
-        uvs,
-        uv1,
-        indices,
-        uvResolvedMaterial.material,
-        `${mesh.name ?? node.mesh}`,
-        warnings,
-        diagnostics,
-        primitivePath,
-      );
-
-      const id = `gltf-prim-${primIdCounter++}`;
-      const meshIndex = node.mesh;
-      const registerPrimitiveProvenance = (primitiveId: string): void => {
-        (animationTargets[animationNodeId(nodeIdx)] ??= []).push(primitiveId);
-        if (
-          materialIndex !== undefined &&
-          Number.isInteger(materialIndex) &&
-          materialIndex >= 0 &&
-          materialIndex < coreMaterials.length
-        ) {
-          materialBindings.push({ primitiveId, materialIndex });
-        }
-      };
-      const registerPrimitiveVariants = (primitiveId: string): void => {
-        if ((prim.extensions?.KHR_materials_variants?.mappings?.length ?? 0) === 0) return;
-        materialVariantBindings.push({
-          primitiveId,
-          meshIndex,
-          primitiveIndex,
-          ...(prim.material !== undefined ? { baseMaterialIndex: prim.material } : {}),
-          basePatch: _buildPrimitiveMaterialVariantPatch(
-            gltf,
-            buffers,
-            prim,
-            coreMaterials,
-            prim.material,
-            positions,
-            normals,
-            primitiveUvs,
-            primitiveUv1,
-            indices,
-            tangents,
-            `${mesh.name ?? node.mesh}`,
-            warnings,
-            diagnostics,
-            primitivePath,
-            onAccessorDiagnostic,
-          ),
-          variantPatches: _buildPrimitiveMaterialVariantPatches(
-            gltf,
-            buffers,
-            prim,
-            coreMaterials,
-            prim.material,
-            positions,
-            normals,
-            primitiveUvs,
-            primitiveUv1,
-            indices,
-            tangents,
-            `${mesh.name ?? node.mesh}`,
-            warnings,
-            diagnostics,
-            primitivePath,
-            onAccessorDiagnostic,
-          ),
-        });
-      };
-
-      let skinArg = (skinIndices && skinWeights && bones && boneInverses)
-        ? {
-            skinIndices,
-            skinWeights,
-            bones,
-            boneInverses,
-          }
-        : undefined;
-
-      // Morphed-but-unskinned mesh: core carries morph targets only on
-      // SkinnedMeshPrimitive (solveSkin pre-blends morphs before LBS), so we
-      // promote the mesh with a synthesized identity skin — one identity bone,
-      // every vertex weighted [1,0,0,0]. The LBS pass is then a no-op and
-      // solveSkin output equals restPos + Σ w_t · Δ_t in mesh-local space
-      // (the primitive `transform` still applies on top, mirroring how
-      // bindMatrix is only needed for world-space bone chains).
-      if (morph && !skinArg) {
-        const vertexCount = positions.length / 3;
-        const identitySkinWeights = new Float32Array(vertexCount * 4);
-        for (let v = 0; v < vertexCount; v++) identitySkinWeights[v * 4] = 1;
-        const identityBone = new Float32Array(16);
-        identityBone[0] = 1; identityBone[5] = 1; identityBone[10] = 1; identityBone[15] = 1;
-        skinArg = {
-          skinIndices: new Uint32Array(vertexCount * 4), // all bone 0
-          skinWeights: identitySkinWeights,
-          bones: identityBone,
-          boneInverses: new Float32Array(identityBone),
-        };
-        emitImportDiagnostic(warnings, diagnostics, {
-          severity: 'warning',
-          code: 'morph-identity-skin-promotion',
-          path: `${primitivePath}.targets`,
-          message:
-            `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" has morph targets but no skin; ` +
-            'promoted to SkinnedMeshPrimitive with a synthesized identity skeleton (1 bone). ' +
-            'Drive morphWeights and re-solve via @vitrum/core solveSkin to animate the blend shapes.',
-        });
-      }
-
-      let primitiveInstances = instanceTransforms?.worldInstanceTransforms;
-      if (primitiveInstances && skinArg && instanceTransforms) {
-        if (!instanceFallbackWarned) {
-          emitImportDiagnostic(warnings, diagnostics, {
-            severity: 'warning',
-            code: 'fallback-expanded-gpu-instancing',
-            path: `nodes[${nodeIdx}].extensions.EXT_mesh_gpu_instancing`,
-            message:
-              `[vitrum/gltf-adapter] Node "${node.name ?? nodeIdx}" uses EXT_mesh_gpu_instancing ` +
-              'on a skinned or morphed mesh. The importer expanded it to one SkinnedMeshPrimitive ' +
-              'per authored instance so every instance remains renderable under the existing core contract.',
-          });
-          instanceFallbackWarned = true;
-        }
-        for (const [instanceIndex, instanceWorld] of primitiveInstances.entries()) {
-          const instanceId = `${id}-instance-${instanceIndex}`;
-          registerPrimitiveProvenance(instanceId);
-          registerPrimitiveVariants(instanceId);
-          instancingBindings.push({
-            primitiveId: instanceId,
-            nodeIndex: nodeIdx,
-            localInstanceTransforms: instanceTransforms.localInstanceTransforms,
-            expandedPrimitiveInstanceIndex: instanceIndex,
-          });
-          primitives.push(_buildPrimitive(
-            instanceId, instanceWorld, positions, normals, indices,
-            uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, undefined,
-          ));
-        }
-        continue;
-      }
-      if (primitiveInstances && instanceTransforms) {
-        registerPrimitiveProvenance(id);
-        registerPrimitiveVariants(id);
-        instancingBindings.push({
-          primitiveId: id,
-          nodeIndex: nodeIdx,
-          localInstanceTransforms: instanceTransforms.localInstanceTransforms,
-        });
-      }
-
-      if (!primitiveInstances) {
-        registerPrimitiveProvenance(id);
-        registerPrimitiveVariants(id);
-      }
-      primitives.push(_buildPrimitive(
-        id, worldMat, positions, normals, indices,
-        uvs, uvResolvedMaterial.uv1, finalTangents, colors, uvResolvedMaterial.material, skinArg, morph, primitiveInstances,
-      ));
+      buildPrimitiveFromMeshPrimitive(buildPrimitiveCtx, nodeCtx, prim, primitiveIndex);
     }
   }
 

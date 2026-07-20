@@ -116,7 +116,6 @@ import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBu
 import type { HybridEngineOptions, LightingOptions } from './HybridEngineOptions.js';
 import { assertKnownLightingKeys } from './HybridEngineOptions.js';
 import {
-  categorizeUnconsumedMaterialFields,
   collectApproximateAlphaBlendPrimitiveIds,
   collectApproximateEmissiveMapTexelPdfPrimitiveIds,
   collectApproximateLightMapPrimitiveIds,
@@ -124,15 +123,12 @@ import {
   collectApproximateVolumeLayerPrimitiveFields,
   collectUnconsumedMaterialFieldsForMaterial,
   collectUnconsumedMaterialPrimitiveFields,
-  EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
-  LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
-  RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
-  VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
   type ApproximateRichMaterialPrimitiveFields,
   type ApproximateVolumeLayerPrimitiveFields,
   type UnconsumedMaterialPrimitiveFields,
 } from './restir/consumedMaterialFields.js';
 import { RCSubsystem } from './HybridEngineRC.js';
+import { MaterialApproximationWarner } from './HybridEngineMaterialWarner.js';
 import { propagateBvhToGiSubsystems } from './HybridEngineGiPropagation.js';
 import {
   directionalSunMultiplier,
@@ -247,26 +243,15 @@ export class HybridEngine implements Engine {
   /** Fires environment-resolution warnings at most once per engine instance
    *  (see {@link _skyScalarsFromEnvironment}). */
   private _proceduralSkyWarned = false;
-  /** Tracks which unconsumed-material-field sets have already been warned about
-   *  (keyed by sorted join of the field names). Prevents duplicate console.warn
-   *  calls across incremental `setScene` calls with the same ignored fields. */
-  private _warnedMaterialFields = new Set<string>();
-  /** Tracks which fractional alpha-blend primitive sets have already warned. */
-  private _warnedAlphaBlendApproximationIds = new Set<string>();
-  /** Tracks which emissive-map texel-PDF approximation primitive sets have warned. */
-  private _warnedEmissiveMapTexelPdfApproximationIds = new Set<string>();
-  /** Tracks which light-map camera-visible approximation primitive sets have warned. */
-  private _warnedLightMapApproximationIds = new Set<string>();
-  /** Tracks which rich-material approximation primitive/field sets have warned. */
-  private _warnedRichMaterialApproximationIds = new Set<string>();
-  /** Tracks which volume/layer transport approximation primitive/field sets have warned. */
-  private _warnedVolumeLayerTransportApproximationIds = new Set<string>();
-  /** Tracks atlas-backed material texture drops already reported to hosts. */
-  private _warnedMaterialTextureAtlasDiagnostics = new Set<string>();
-  /** Tracks invalid setSize dimensions already reported to hosts. */
-  private _warnedInvalidSetSize = new Set<string>();
-  /** Tracks unknown primitive patch field sets already reported to hosts. */
-  private _warnedUnknownPrimitivePatchFields = new Set<string>();
+  /**
+   * Material-approximation / truthfulness warning subsystem (T3-A extraction).
+   * Owns the 9 once-only dedup sets + every `warnX` method HybridEngine used to
+   * inline. The private `_warn*` methods below delegate to it; the engine's
+   * `_warn` (console + subscriber fan-out) is injected as the sink.
+   */
+  private readonly _materialWarner = new MaterialApproximationWarner(
+    (warning) => this._warn(warning),
+  );
   /** Internal render width = `_width × _resolutionFactor`. Drives compute
    *  dispatch + UBO `screenSize`; the composite upscales to `_width`. */
   private _internalWidth:        number;
@@ -941,286 +926,66 @@ export class HybridEngine implements Engine {
 
   // ── Scene management ───────────────────────────────────────────────────
 
+  // Material-approximation / truthfulness warnings are owned by
+  // `_materialWarner` (T3-A extraction). These private methods delegate so the
+  // call sites (setScene / updatePrimitive / updateEmitter / the mutation
+  // router / lifecycle) keep their existing shape.
+
   private _warnUnconsumedMaterialFields(
     fields: readonly string[],
     method: 'setScene' | 'updatePrimitive',
     primitiveFields: readonly UnconsumedMaterialPrimitiveFields[] = [],
   ): void {
-    if (fields.length === 0) return;
-    const sortedFields = Array.from(fields).sort();
-    const key = sortedFields.join(',');
-    if (this._warnedMaterialFields.has(key)) return;
-    this._warnedMaterialFields.add(key);
-    const categories = categorizeUnconsumedMaterialFields(sortedFields);
-    this._warn({
-      code: 'walkaround-hybrid.unconsumed-material-fields',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: the following material fields are ` +
-        `supplied but not consumed by this backend: ${sortedFields.join(', ')}. ` +
-        `See consumedMaterialFields.ts for the full allowlist.`,
-      details: {
-        fields: sortedFields,
-        categories,
-        primitiveFields,
-      },
-    });
+    this._materialWarner.warnUnconsumedMaterialFields(fields, method, primitiveFields);
   }
 
   private _warnApproximateAlphaBlendPrimitiveIds(
     primitiveIds: readonly string[],
     method: 'setScene' | 'updatePrimitive',
   ): void {
-    if (primitiveIds.length === 0) return;
-    const key = primitiveIds.join(',');
-    if (this._warnedAlphaBlendApproximationIds.has(key)) return;
-    this._warnedAlphaBlendApproximationIds.add(key);
-    this._warn({
-      code: 'walkaround-hybrid.alpha-blend-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: fractional or texture-driven alphaMode:'blend' ` +
-        `is camera-composited by the transparent OIT pass, but transparent-layer ` +
-        `ReSTIR/GI participation remains approximate; finite emitters are ` +
-        `camera-visible fixed-stratified direct lights, not reservoir participants; ` +
-        `primitives: ${primitiveIds.join(', ')}.`,
-      details: { primitiveIds },
-    });
+    this._materialWarner.warnApproximateAlphaBlendPrimitiveIds(primitiveIds, method);
   }
 
   private _warnApproximateEmissiveMapTexelPdfPrimitiveIds(
     primitiveIds: readonly string[],
     method: 'setScene' | 'updatePrimitive' | 'updateEmitter',
   ): void {
-    if (primitiveIds.length === 0) return;
-    const key = primitiveIds.join(',');
-    if (this._warnedEmissiveMapTexelPdfApproximationIds.has(key)) return;
-    this._warnedEmissiveMapTexelPdfApproximationIds.add(key);
-    this._warn({
-      code: 'walkaround-hybrid.emissive-map-texel-pdf-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: material-backed emissiveMap ` +
-        `surfaces are rendered; eligible ReSTIR-DI finite emitters are split ` +
-        `into exact texel-cell sub-triangles, and GI/probe hit shading samples ` +
-        `the readable texel at the hit UV, but full texel-space alias tables/PDFs ` +
-        `are not guaranteed across every GI, RC, DDGI, and fallback sampling path; ` +
-        `primitives: ${primitiveIds.join(', ')}.`,
-      details: {
-        primitiveIds,
-        ...EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS,
-      },
-    });
+    this._materialWarner.warnApproximateEmissiveMapTexelPdfPrimitiveIds(primitiveIds, method);
   }
 
   private _warnApproximateLightMapPrimitiveIds(
     primitiveIds: readonly string[],
     method: 'setScene' | 'updatePrimitive',
   ): void {
-    if (primitiveIds.length === 0) return;
-    const key = primitiveIds.join(',');
-    if (this._warnedLightMapApproximationIds.has(key)) return;
-    this._warnedLightMapApproximationIds.add(key);
-    this._warn({
-      code: 'walkaround-hybrid.light-map-camera-visible-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: lightMap is consumed as camera-visible baked ` +
-        `outgoing radiance, but it is not sampled as a scene light and is not propagated ` +
-        `through ReSTIR-GI, DDGI, or RC transport; primitives: ${primitiveIds.join(', ')}.`,
-      details: {
-        primitiveIds,
-        ...LIGHT_MAP_CAMERA_VISIBLE_APPROXIMATION_DETAILS,
-      },
-    });
+    this._materialWarner.warnApproximateLightMapPrimitiveIds(primitiveIds, method);
   }
 
   private _warnApproximateRichMaterialPrimitiveFields(
     primitiveFields: readonly ApproximateRichMaterialPrimitiveFields[],
     method: 'setScene' | 'updatePrimitive',
   ): void {
-    if (primitiveFields.length === 0) return;
-    const normalized = primitiveFields
-      .map((entry) => ({
-        primitiveId: entry.primitiveId,
-        fields: [...entry.fields].sort(),
-      }))
-      .sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
-    const key = normalized.map((entry) => `${entry.primitiveId}:${entry.fields.join('|')}`).join(',');
-    if (this._warnedRichMaterialApproximationIds.has(key)) return;
-    this._warnedRichMaterialApproximationIds.add(key);
-    const fieldSet = [...new Set(normalized.flatMap((entry) => entry.fields))].sort();
-    this._warn({
-      code: 'walkaround-hybrid.rich-material-gi-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: rich material lobes are consumed ` +
-        `by the realtime material path, but specular/clearcoat/sheen/anisotropy/` +
-        `iridescence GI remains approximate pending material-furnace/reference A/B; ` +
-        `primitives: ${normalized.map((entry) => entry.primitiveId).join(', ')}.`,
-      details: {
-        primitiveFields: normalized,
-        fields: fieldSet,
-        ...RICH_MATERIAL_GI_APPROXIMATION_DETAILS,
-      },
-    });
+    this._materialWarner.warnApproximateRichMaterialPrimitiveFields(primitiveFields, method);
   }
 
   private _warnApproximateVolumeLayerPrimitiveFields(
     primitiveFields: readonly ApproximateVolumeLayerPrimitiveFields[],
     method: 'setScene' | 'updatePrimitive',
   ): void {
-    if (primitiveFields.length === 0) return;
-    const normalized = primitiveFields
-      .map((entry) => ({
-        primitiveId: entry.primitiveId,
-        fields: [...entry.fields].sort(),
-      }))
-      .sort((a, b) => a.primitiveId.localeCompare(b.primitiveId));
-    const key = normalized.map((entry) => `${entry.primitiveId}:${entry.fields.join('|')}`).join(',');
-    if (this._warnedVolumeLayerTransportApproximationIds.has(key)) return;
-    this._warnedVolumeLayerTransportApproximationIds.add(key);
-    const fieldSet = [...new Set(normalized.flatMap((entry) => entry.fields))].sort();
-    this._warn({
-      code: 'walkaround-hybrid.volume-layer-transport-approximation',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: volume scattering and face-layer ` +
-        `material fields are consumed by the compact realtime material path, but ` +
-        `full participating-media and layered-stack transport remains approximate; ` +
-        `primitives: ${normalized.map((entry) => entry.primitiveId).join(', ')}.`,
-      details: {
-        primitiveFields: normalized,
-        fields: fieldSet,
-        ...VOLUME_LAYER_TRANSPORT_APPROXIMATION_DETAILS,
-      },
-    });
+    this._materialWarner.warnApproximateVolumeLayerPrimitiveFields(primitiveFields, method);
   }
 
   private _warnReservedReceiveShadowPrimitiveIds(
     primitiveIds: readonly string[],
     method: 'setScene' | 'updatePrimitive',
   ): void {
-    if (primitiveIds.length === 0) return;
-    this._warn({
-      code: 'walkaround-hybrid.reserved-receive-shadow',
-      backend: 'walkaround-hybrid',
-      phase: method,
-      method,
-      message:
-        `[vitrum/walkaround-hybrid] ${method}: receiveShadow:false is reserved and not ` +
-        `consumed by any backend (non-physical for GI); primitives: ${primitiveIds.join(', ')}.`,
-      details: { primitiveIds },
-    });
+    this._materialWarner.warnReservedReceiveShadowPrimitiveIds(primitiveIds, method);
   }
 
   private _warnMaterialTextureAtlasDiagnostics(
     diagnostics: readonly MaterialTextureAtlasDiagnostic[],
     method: 'setScene' | 'updatePrimitive',
   ): void {
-    for (const diagnostic of diagnostics) {
-      const sourcePath = diagnostic.sourcePath;
-      const key =
-        `${method}:${diagnostic.code}:${diagnostic.materialIndex}:${diagnostic.field}:` +
-        `${diagnostic.colorSpace}:${sourcePath ?? ''}:${diagnostic.texCoord ?? ''}:` +
-        `${diagnostic.transformComponents?.join(',') ?? ''}:` +
-        `${diagnostic.magFilter ?? ''}:${diagnostic.minFilter ?? ''}:${diagnostic.mipFilter ?? ''}:` +
-        `${diagnostic.pixelStride ?? ''}:${diagnostic.valueCount ?? ''}`;
-      if (this._warnedMaterialTextureAtlasDiagnostics.has(key)) continue;
-      this._warnedMaterialTextureAtlasDiagnostics.add(key);
-      const unsupportedTexCoord = diagnostic.code === 'unsupported-material-texture-texcoord';
-      const ambiguousStride = diagnostic.code === 'ambiguous-material-texture-stride';
-      const invalidTransform = diagnostic.code === 'invalid-material-texture-transform';
-      const samplerPolicy = diagnostic.code === 'material-texture-sampler-policy-approximation';
-      this._warn({
-        code: unsupportedTexCoord
-          ? 'walkaround-hybrid.unsupported-material-texture-texcoord'
-          : ambiguousStride
-            ? 'walkaround-hybrid.ambiguous-material-texture-stride'
-            : invalidTransform
-              ? 'walkaround-hybrid.invalid-material-texture-transform'
-              : samplerPolicy
-                ? 'walkaround-hybrid.material-texture-sampler-policy-approximation'
-                : 'walkaround-hybrid.unreadable-material-texture-map',
-        backend: 'walkaround-hybrid',
-        phase: method,
-        method,
-        message: unsupportedTexCoord
-          ? `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
-            `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
-            `uses texCoord ${diagnostic.texCoord}; the material atlas only supports UV sets 0 and 1, so the map is ignored.`
-          : ambiguousStride
-            ? `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
-              `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
-              `has ambiguous raw pixel stride ${diagnostic.pixelStride} ` +
-              `(${diagnostic.valueCount} values / ${diagnostic.width}x${diagnostic.height} pixels); ` +
-              `the atlas decoded it heuristically. Attach __vitrum_hint__ = { channels: N } ` +
-              `to make texture ingestion deterministic.`
-            : invalidTransform
-              ? `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
-                `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
-                `has non-finite texture transform component(s) ` +
-                `${diagnostic.transformComponents?.join(', ') ?? '(unknown)'}; invalid components are replaced ` +
-                `with the identity texture transform fallback and the map remains atlas-backed.`
-              : samplerPolicy
-                ? `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
-                  `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
-                  `requests sampler policy ` +
-                  `mag=${diagnostic.magFilter ?? 'default'}, min=${diagnostic.minFilter ?? 'default'}, ` +
-                  `mip=${diagnostic.mipFilter ?? 'default'}; the material atlas honors footprint-independent ` +
-                  `nearest/linear filtering, but this policy needs implicit LOD or min/mag footprint selection ` +
-                  `in compute passes, so the map remains atlas-backed with approximate mip/footprint filtering.`
-          : `[vitrum/walkaround-hybrid] ${method}: ${diagnostic.field} on material slot ` +
-            `${diagnostic.materialIndex}${sourcePath !== undefined ? ` at ${sourcePath}` : ''} ` +
-            `has a texture handle that is not CPU-readable; ` +
-            `the map is ignored by the material atlas. Provide a raw {width,height,data} ` +
-            `or DataTexture-shaped handle before setScene/updatePrimitive for native map sampling.`,
-        details: {
-          materialIndex: diagnostic.materialIndex,
-          field: diagnostic.field,
-          colorSpace: diagnostic.colorSpace,
-          ...(diagnostic.texCoord !== undefined ? { texCoord: diagnostic.texCoord } : {}),
-          ...(diagnostic.pixelStride !== undefined ? { pixelStride: diagnostic.pixelStride } : {}),
-          ...(diagnostic.valueCount !== undefined ? { valueCount: diagnostic.valueCount } : {}),
-          ...(diagnostic.width !== undefined ? { width: diagnostic.width } : {}),
-          ...(diagnostic.height !== undefined ? { height: diagnostic.height } : {}),
-          ...(diagnostic.transformComponents !== undefined
-            ? { transformComponents: diagnostic.transformComponents }
-            : {}),
-          ...(diagnostic.magFilter !== undefined ? { magFilter: diagnostic.magFilter } : {}),
-          ...(diagnostic.minFilter !== undefined ? { minFilter: diagnostic.minFilter } : {}),
-          ...(diagnostic.mipFilter !== undefined ? { mipFilter: diagnostic.mipFilter } : {}),
-          ...(sourcePath !== undefined ? { sourcePath } : {}),
-          ...(diagnostic.textureIndex !== undefined ? { textureIndex: diagnostic.textureIndex } : {}),
-          ...(diagnostic.imageIndex !== undefined ? { imageIndex: diagnostic.imageIndex } : {}),
-          ...(diagnostic.samplerIndex !== undefined ? { samplerIndex: diagnostic.samplerIndex } : {}),
-          ...(diagnostic.imageUri !== undefined ? { imageUri: diagnostic.imageUri } : {}),
-          ...(diagnostic.imageMimeType !== undefined ? { imageMimeType: diagnostic.imageMimeType } : {}),
-          ...(diagnostic.textureSourceExtension !== undefined
-            ? { textureSourceExtension: diagnostic.textureSourceExtension }
-            : {}),
-          fallback: ambiguousStride
-            ? 'heuristic pixel stride'
-            : invalidTransform
-              ? 'identity texture transform fallback'
-              : samplerPolicy
-                ? 'base-level atlas sampler'
-                : 'map ignored',
-        },
-      });
-    }
+    this._materialWarner.warnMaterialTextureAtlasDiagnostics(diagnostics, method);
   }
 
   /**
@@ -1612,21 +1377,7 @@ export class HybridEngine implements Engine {
     id: string,
     fields: readonly string[],
   ): void {
-    if (fields.length === 0) return;
-    const sortedFields = Array.from(new Set(fields)).sort();
-    const key = `${id}:${sortedFields.join(',')}`;
-    if (this._warnedUnknownPrimitivePatchFields.has(key)) return;
-    this._warnedUnknownPrimitivePatchFields.add(key);
-    this._warn({
-      code: 'walkaround-hybrid.unknown-primitive-patch-fields',
-      backend: 'walkaround-hybrid',
-      phase: 'mutation',
-      method: 'updatePrimitive',
-      message:
-        `[vitrum/walkaround-hybrid] updatePrimitive("${id}"): patch fields are not ` +
-        `recognized by this backend and were ignored: ${sortedFields.join(', ')}.`,
-      details: { primitiveId: id, fields: sortedFields },
-    });
+    this._materialWarner.warnUnknownPrimitivePatchFields(id, fields);
   }
 
   /**
@@ -2421,19 +2172,7 @@ export class HybridEngine implements Engine {
   }
 
   private _warnInvalidSetSize(width: number, height: number): void {
-    const key = `${width}x${height}`;
-    if (this._warnedInvalidSetSize.has(key)) return;
-    this._warnedInvalidSetSize.add(key);
-    this._warn({
-      code: 'walkaround-hybrid.invalid-set-size',
-      backend: 'walkaround-hybrid',
-      phase: 'lifecycle',
-      method: 'setSize',
-      message:
-        `[vitrum/walkaround-hybrid] setSize(${width}, ${height}) ignored: ` +
-        `width and height must both be positive before GPU frame resources can be resized.`,
-      details: { width, height },
-    });
+    this._materialWarner.warnInvalidSetSize(width, height);
   }
 
   /**

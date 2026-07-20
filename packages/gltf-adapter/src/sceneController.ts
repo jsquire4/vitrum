@@ -548,36 +548,13 @@ export class GltfSceneController {
       nextScene = patchPrimitiveInScene(nextScene, id, patch);
     }
 
-    let usedSetScene = false;
-    if (target && primitivePatches.length > 0) {
-      if (!options.forceSetScene && target.updatePrimitive) {
-        let attemptedPrimitiveId: string | undefined;
-        try {
-          for (const { id, patch } of primitivePatches) {
-            attemptedPrimitiveId = id;
-            target.updatePrimitive(id, patch);
-          }
-          resetAfterIncrementalPrimitivePatch(target);
-        } catch (err) {
-          const message = errorMessage(err);
-          emitControllerDiagnostic(frame, {
-            code: 'controller-update-primitive-failed',
-            path: attemptedPrimitiveId
-              ? `scene.primitives["${attemptedPrimitiveId}"]`
-              : 'scene.primitives',
-            message:
-              `[vitrum/gltf-adapter] GltfSceneController.setVariant: ` +
-              `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
-            ...(attemptedPrimitiveId !== undefined ? { primitiveId: attemptedPrimitiveId } : {}),
-          });
-          target.setScene(nextScene);
-          usedSetScene = true;
-        }
-      } else {
-        target.setScene(nextScene);
-        usedSetScene = true;
-      }
-    }
+    const usedSetScene = this.#commitSceneChange(
+      target,
+      primitivePatches,
+      nextScene,
+      frame,
+      options.forceSetScene ?? false,
+    );
 
     this.#scene = nextScene;
     for (const [id, materialIndex] of materialBindingUpdates) {
@@ -659,6 +636,51 @@ export class GltfSceneController {
       }
     }
     target.setScene(this.#scene);
+  }
+
+  /**
+   * Commit a batch of primitive patches to the target engine (D15-5). Prefers
+   * incremental `updatePrimitive`; on ANY failure it emits a diagnostic through
+   * `frame` and falls back to a full `setScene(nextScene)`. Returns whether the
+   * setScene fallback (or the forced-setScene path) was taken. Extracted from the
+   * byte-identical patch-then-fallback blocks in `setVariant` and
+   * `applyAnimationFrame`. (`resetPose` keeps its own early-return variant.)
+   */
+  #commitSceneChange(
+    target: GltfScenePatchTarget | undefined,
+    primitivePatches: readonly GltfPrimitivePatchRecord[],
+    nextScene: Scene,
+    frame: GltfSceneControllerDiagnosticFrame,
+    forceSetScene: boolean,
+  ): boolean {
+    if (!(target && primitivePatches.length > 0)) return false;
+    if (!forceSetScene && target.updatePrimitive) {
+      let attemptedPrimitiveId: string | undefined;
+      try {
+        for (const { id, patch } of primitivePatches) {
+          attemptedPrimitiveId = id;
+          target.updatePrimitive(id, patch);
+        }
+        resetAfterIncrementalPrimitivePatch(target);
+        return false;
+      } catch (err) {
+        const message = errorMessage(err);
+        emitControllerDiagnostic(frame, {
+          code: 'controller-update-primitive-failed',
+          path: attemptedPrimitiveId
+            ? `scene.primitives["${attemptedPrimitiveId}"]`
+            : 'scene.primitives',
+          message:
+            `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: ` +
+            `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
+          ...(attemptedPrimitiveId !== undefined ? { primitiveId: attemptedPrimitiveId } : {}),
+        });
+        target.setScene(nextScene);
+        return true;
+      }
+    }
+    target.setScene(nextScene);
+    return true;
   }
 
   #setCurrentMaterialBinding(primitiveId: string, materialIndex: number | undefined): void {
@@ -833,36 +855,13 @@ export class GltfSceneController {
       nextScene = patchPrimitiveInScene(nextScene, id, patch);
     }
 
-    let usedSetScene = false;
-    if (target && primitivePatches.length > 0) {
-      if (!options.forceSetScene && target.updatePrimitive) {
-        let attemptedPrimitiveId: string | undefined;
-        try {
-          for (const { id, patch } of primitivePatches) {
-            attemptedPrimitiveId = id;
-            target.updatePrimitive(id, patch);
-          }
-          resetAfterIncrementalPrimitivePatch(target);
-        } catch (err) {
-          const message = errorMessage(err);
-          emitControllerDiagnostic(frame, {
-            code: 'controller-update-primitive-failed',
-            path: attemptedPrimitiveId
-              ? `scene.primitives["${attemptedPrimitiveId}"]`
-              : 'scene.primitives',
-            message:
-              `[vitrum/gltf-adapter] GltfSceneController.${frame.caller}: ` +
-              `engine.updatePrimitive failed; falling back to setScene(nextScene). ${message}`,
-            ...(attemptedPrimitiveId !== undefined ? { primitiveId: attemptedPrimitiveId } : {}),
-          });
-          target.setScene(nextScene);
-          usedSetScene = true;
-        }
-      } else {
-        target.setScene(nextScene);
-        usedSetScene = true;
-      }
-    }
+    const usedSetScene = this.#commitSceneChange(
+      target,
+      primitivePatches,
+      nextScene,
+      frame,
+      options.forceSetScene ?? false,
+    );
 
     this.#scene = nextScene;
     this.#cameras = cameras;

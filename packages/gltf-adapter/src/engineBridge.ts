@@ -28,6 +28,7 @@ import {
   type GltfScenePatchTarget,
 } from './sceneController.js';
 import type { GltfBackendProfileId, GltfCompatibilityIssue } from './featureReport.js';
+import { isTextureReadinessIssue } from './compatibilityIssuePredicates.js';
 import {
   GltfCompatibilityError,
   type GltfCompatibilityFailureDetail,
@@ -784,6 +785,3 @@ function isSpecGlossAlphaBakeSatisfied(asset: GltfDecodedAssetResult, path: stri
     );
 }
 
-function isTextureReadinessIssue(issue: GltfCompatibilityIssue): boolean {
-  return issue.category === 'texture' && issue.name.startsWith('texture-readiness:');
-}

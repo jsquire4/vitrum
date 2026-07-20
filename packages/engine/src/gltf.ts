@@ -5,7 +5,7 @@
 // subpath only injects @vitrum/engine's createEngine facade for hosts that want
 // a single import path.
 
-import { GltfCompatibilityError, loadGltfForEngine } from '@vitrum/gltf-adapter';
+import { GltfCompatibilityError, isTextureReadinessIssue, loadGltfForEngine } from '@vitrum/gltf-adapter';
 import type {
   GltfAssetInput,
   GltfAssetResult,
@@ -500,8 +500,7 @@ function isSatisfiedRuntimeCompatibilityIssue(
   asset: GltfAssetResult,
 ): boolean {
   if (
-    issue.category === 'texture' &&
-    issue.name.startsWith('texture-readiness:') &&
+    isTextureReadinessIssue(issue) &&
     issue.support === 'requires-hook'
   ) {
     return opaqueTextureHandlesReadyForBackend(options, 'pt-webgpu');

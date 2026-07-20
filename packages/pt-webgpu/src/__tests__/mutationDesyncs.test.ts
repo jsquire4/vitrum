@@ -527,9 +527,9 @@ describe('GpuResources.clearReservoirBuffers — Item 2e: reservoir history clea
     const rptReservoirSpatial = buf('spatial');
 
     const gpu = new GpuResources(device, 'full', false, true);
-    gpu.rptReservoirCur = rptReservoirCur as unknown as GPUBuffer;
-    gpu.rptReservoirPrev = rptReservoirPrev as unknown as GPUBuffer;
-    gpu.rptReservoirSpatial = rptReservoirSpatial as unknown as GPUBuffer;
+    gpu.reservoir.rptReservoirCur = rptReservoirCur as unknown as GPUBuffer;
+    gpu.reservoir.rptReservoirPrev = rptReservoirPrev as unknown as GPUBuffer;
+    gpu.reservoir.rptReservoirSpatial = rptReservoirSpatial as unknown as GPUBuffer;
     gpu.clearReservoirBuffers();
 
     // Three clearBuffer calls — Cur, Prev, Spatial.

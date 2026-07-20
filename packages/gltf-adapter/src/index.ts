@@ -172,3 +172,13 @@ export type {
   MeshoptMode,
   MeshoptFilter,
 } from './compression.js';
+
+// Shared compatibility-issue vocabulary (I4-2 / D15-8): single source of truth for
+// the `texture-readiness:` / `texture-decode:` issue-name prefixes + predicates,
+// consumed by engineBridge, @vitrum/engine's gltf.ts, and the reconciler.
+export {
+  TEXTURE_DECODE_DIAGNOSTIC_ISSUE_PREFIX,
+  TEXTURE_READINESS_ISSUE_PREFIX,
+  isTextureDecodeDiagnosticIssue,
+  isTextureReadinessIssue,
+} from './compatibilityIssuePredicates.js';
