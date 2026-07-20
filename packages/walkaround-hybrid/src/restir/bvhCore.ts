@@ -15,6 +15,7 @@ import {
   mergeWorldSpaceFromCore,
   packSceneFromCore,
   rebuildPrimitiveBlas,
+  toProductionEmissiveRadiance,
   type PrimitiveTlasBinding,
   type ScenePackResult,
   type WorldSpaceMergeResult,
@@ -22,12 +23,14 @@ import {
 import {
   packUVIntoPositionW,
   packUVIntoVec4W,
+} from '../bvh/bvhPacking.js';
+import {
   packBVHIndexWFromCore,
   packBVHBeerColorsFromCore,
   packBVHEmissiveLeFromCore,
   packBVHRoughMetalFromCore,
 } from './packingHelpers.js';
-import { packMaterialTextureAtlas } from '../pipeline/materialTextureAtlas.js';
+import { packMaterialTextureAtlas } from '../bvh/materialTextureAtlasPack.js';
 import { buildEmitterListFromCore, buildLightTreeBuffer } from './emitterList.js';
 import {
   collectRectAreaEmitterTrisFromCore,
@@ -89,12 +92,6 @@ function makeStorageHandle(
     byteLength: data.byteLength,
     count: Math.floor(data.byteLength / elementBytes),
   };
-}
-
-function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
-  if (m.emissive === undefined) return m;
-  if (m.emissiveIntensity === 1) return m;
-  return { ...m, emissiveIntensity: 1 };
 }
 
 function applyMeshAreaLeOverride(material: MaterialSpec, override: MeshAreaLeOverride): MaterialSpec {

@@ -81,7 +81,7 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 import {
   RESERVOIR_GI_BASE_STRIDE_U32,
   RESERVOIR_GI_GRIS_STRIDE_U32,
-} from '../restir/reservoirGiLayout.js';
+} from '../gi/giLayout.js';
 
 export interface ReservoirGiWgslOptions {
   /** Include the appended GRIS reconnection-shift cache fields on the GPU buffer layout. */

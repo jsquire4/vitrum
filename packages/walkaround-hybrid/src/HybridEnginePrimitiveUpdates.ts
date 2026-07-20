@@ -62,7 +62,7 @@ import {
   rebuildEmitterBuffersFromCoreScene,
 } from './restir/bvhCore.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
-import { packMaterialTextureAtlas } from './pipeline/materialTextureAtlas.js';
+import { packMaterialTextureAtlas } from './bvh/materialTextureAtlasPack.js';
 
 /** Union world AABB from merged `bvhPositions` (RC bounds after transform refit). */
 function computeWorldAabbFromBvhPositions(

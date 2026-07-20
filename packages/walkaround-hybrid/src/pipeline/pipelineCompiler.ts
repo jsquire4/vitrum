@@ -83,7 +83,7 @@ import {
 } from './bindGroupLayouts.js';
 import { buildRisGiNrcModule, type RisGiNrcConfig } from '../shaders/risGiNrc.wgsl.js';
 import { buildReservoirGiModule } from '../shaders/reservoirGi.wgsl.js';
-import { reservoirGiStrideU32ForRestirPtReuse } from '../restir/reservoirGiLayout.js';
+import { reservoirGiStrideU32ForRestirPtReuse } from '../gi/giLayout.js';
 import {
   buildPpgUpdateWgsl,
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,

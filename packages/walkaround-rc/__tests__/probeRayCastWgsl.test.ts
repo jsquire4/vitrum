@@ -20,7 +20,9 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
   });
 
   it('keeps RC material metadata stride aligned with the atlas producer and main material shader', () => {
-    const atlasSource = readRepoText('walkaround-hybrid/src/pipeline/materialTextureAtlas.ts');
+    // The MATERIAL_MAP_META_TEXELS_PER_TRI stride authority moved to the CPU
+    // pack module (T6-2 / I3-2); the pipeline file now re-exports it.
+    const atlasSource = readRepoText('walkaround-hybrid/src/bvh/materialTextureAtlasPack.ts');
     const materialAtlasWgsl = readRepoText('walkaround-hybrid/src/shaders/materialAtlas.wgsl.ts');
     const hostStride = numberFrom(
       atlasSource,

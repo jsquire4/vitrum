@@ -10,11 +10,13 @@
 import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import {
+  packBVHEmissiveLeFromCore,
+} from '../packingHelpers.js';
+import {
   materialEmissiveLe,
   packBVHEmissiveLe,
-  packBVHEmissiveLeFromCore,
   type PbrMaterialLike,
-} from '../packingHelpers.js';
+} from './support/legacyPbrPackers.js';
 
 const color = (r: number, g: number, b: number) => ({ r, g, b });
 

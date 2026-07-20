@@ -15,182 +15,38 @@ import type { MaterialSpec } from '@vitrum/core';
 import {
   materialSpecTriColor,
   materialSpecSurfaceTextureId,
+  toProductionEmissiveRadiance,
 } from '@vitrum/shared-bvh';
 
-interface ColorLike {
-  readonly r: number;
-  readonly g: number;
-  readonly b: number;
-}
+// Generic vertex-stream UV packing (packUVIntoVec4W / packUVIntoPositionW /
+// BufferAttributeLike) moved to `../bvh/bvhPacking.ts` (I3-1: restir/ was a
+// de-facto shared-foundation sink). Re-exported here so existing test imports
+// (`from '../packingHelpers.js'`) keep resolving.
+export {
+  packUVIntoPositionW,
+  packUVIntoVec4W,
+  type BufferAttributeLike,
+} from '../bvh/bvhPacking.js';
 
-export interface BufferAttributeLike {
-  readonly array: ArrayLike<number>;
-}
+// The legacy structural-PBR (`PbrMaterialLike`) per-triangle packers
+// (packBVHIndexWTri/packBVHRoughMetalTri/packBVHBeerColorTri and their
+// public wrappers + `materialEmissiveLe`/`packBVHEmissiveLe`) were retained here
+// as byte-identity test ORACLES for the `*FromCore` production packers. They had
+// zero production consumers, so they moved to
+// `restir/__tests__/support/legacyPbrPackers.ts` (D6-4 / I3). The shared pure
+// helpers they depend on (`WARM_GRAY_DEFAULT_*`, `resolveRoughMetal`,
+// `packRoughMetalIorBytes`) stay here — the production `*FromCore` packers use
+// them too — and are `@internal`-exported for that test-support file so the
+// shared math has one source of truth.
 
-export interface PbrMaterialLike {
-  readonly color?: ColorLike;
-  readonly emissive?: ColorLike;
-  readonly emissiveIntensity?: number;
-  readonly roughness?: number;
-  readonly metalness?: number;
-  readonly transmission?: number;
-  readonly ior?: number;
-  readonly attenuationColor?: ColorLike;
-  readonly attenuationDistance?: number;
-  readonly thickness?: number;
-  readonly userData?: {
-    readonly surfaceTextureId?: number;
-  };
-}
-
-/** Default warm-gray fallback color (sRGB byte values) when a triangle has
- *  no material or unrecognised material type. Matches the old in-file
- *  `WARM_GRAY_DEFAULT_*` constants. File-local — no external consumers
- *  (2026-05-18 dead-code sweep). */
-const WARM_GRAY_DEFAULT_R = 153;
-const WARM_GRAY_DEFAULT_G = 148;
-const WARM_GRAY_DEFAULT_B = 140;
-
-/**
- * Apply Beer-Lambert absorption to an attenuation color given a sample
- * thickness / attenuation-distance pair. Returns the input color unchanged
- * if any required parameter is missing or non-finite.
- *
- * File-local — no external consumers (2026-05-18 dead-code sweep).
- */
-function applyBeerLambert(
-  attCol: ColorLike,
-  thickness: number | undefined,
-  attDist: number | undefined,
-): ColorLike {
-  if (thickness === undefined || attDist === undefined) return attCol;
-  if (!Number.isFinite(thickness) || !Number.isFinite(attDist)) return attCol;
-  if (thickness <= 0 || attDist <= 0) return attCol;
-  const k = thickness / attDist;
-  return {
-    r: Math.pow(Math.max(1e-6, attCol.r), k),
-    g: Math.pow(Math.max(1e-6, attCol.g), k),
-    b: Math.pow(Math.max(1e-6, attCol.b), k),
-  };
-}
-
-/**
- * Pack UV (two f16 values) into the .w slot of every vec4f position.
- * See the ReSTIR BVH builders for the rationale (single storage buffer per stage).
- */
-export function packUVIntoPositionW(
-  positions: Float32Array,
-  uvAttr: BufferAttributeLike | undefined,
-  vertCount: number,
-): Float32Array<ArrayBuffer> {
-  return packUVIntoVec4W(positions, uvAttr, vertCount);
-}
-
-/**
- * Pack UV (two f16 values) into the .w slot of a vec4f-strided stream.
- * The xyz lanes are preserved verbatim. Used for position.w (uv0, consumed by
- * traversal) and normal.w (uv1, consumed by material texture sampling).
- */
-export function packUVIntoVec4W(
-  values: Float32Array,
-  uvAttr: BufferAttributeLike | undefined,
-  vertCount: number,
-): Float32Array<ArrayBuffer> {
-  const out = new Float32Array(values.length);
-  out.set(values);
-  const u32View = new Uint32Array(out.buffer);
-  const sourceUvs = uvAttr?.array;
-
-  for (let i = 0; i < vertCount; i++) {
-    const u16 = floatToHalfBits(sourceUvs?.[i * 2 + 0] ?? 0);
-    const v16 = floatToHalfBits(sourceUvs?.[i * 2 + 1] ?? 0);
-    u32View[i * 4 + 3] = (v16 << 16) | u16;
-  }
-  return out;
-}
-
-function floatToHalfBits(value: number): number {
-  const input = Number.isFinite(value) ? Math.fround(value) : 0;
-  const sign = input < 0 || Object.is(input, -0) ? 0x8000 : 0;
-  const abs = Math.abs(input);
-  if (abs === 0) return sign;
-  if (abs >= 65504) return sign | 0x7bff;
-  if (abs < 2 ** -24) return sign;
-  if (abs < 2 ** -14) {
-    return sign | Math.min(0x03ff, Math.round(abs / (2 ** -24)));
-  }
-
-  let exp = Math.floor(Math.log2(abs));
-  let mant = Math.round((abs / (2 ** exp) - 1) * 1024);
-  if (mant === 1024) {
-    mant = 0;
-    exp += 1;
-  }
-  const halfExp = exp + 15;
-  if (halfExp >= 31) return sign | 0x7bff;
-  return sign | ((halfExp & 0x1f) << 10) | (mant & 0x03ff);
-}
-
-/**
- * Resolve a triangle's RGB color for packing. Shared between packBVHIndexW
- * (raw attenuation color) and packBVHBeerColors (Beer-Lambert tinted).
- */
-function resolveTriColor(mat: PbrMaterialLike, applyBeer: boolean): ColorLike {
-  const transmission = (mat.transmission ?? 0);
-  const isTransmissive = transmission > 0.01;
-  const attenColor = mat.attenuationColor;
-  if (isTransmissive && attenColor) {
-    if (applyBeer) {
-      return applyBeerLambert(
-        attenColor,
-        mat.thickness,
-        mat.attenuationDistance,
-      );
-    }
-    return attenColor;
-  }
-  return mat.color ?? { r: 0.6, g: 0.58, b: 0.55 };
-}
-
-/**
- * Pack one triangle's index lanes + material byte into an existing vec4u buffer.
- * @deprecated Superseded by {@link packBVHIndexWFromCore} (core `MaterialSpec[]`).
- *   The structural `PbrMaterialLike`-based family is legacy; production code uses
- *   the `*FromCore` counterparts. Retained for tests and legacy adapters only.
- */
-function packBVHIndexWTri(
-  indexBuf: Uint32Array,
-  indices: Uint32Array,
-  triMaterialId: Uint32Array,
-  materials: readonly PbrMaterialLike[],
-  tri: number,
-): void {
-  const base4 = tri * 4;
-  indexBuf[base4 + 0] = indices[tri * 3 + 0]!;
-  indexBuf[base4 + 1] = indices[tri * 3 + 1]!;
-  indexBuf[base4 + 2] = indices[tri * 3 + 2]!;
-
-  const matId = triMaterialId[tri]!;
-  const mat = materials[matId];
-  let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
-  let transmission = 0;
-  let texTypeId = 0;
-  let isMetal = 0;
-  if (mat) {
-    transmission = (mat.transmission ?? 0);
-    const color = resolveTriColor(mat, /* applyBeer */ false);
-    r = Math.round(color.r * 255) & 0xFF;
-    g = Math.round(color.g * 255) & 0xFF;
-    b = Math.round(color.b * 255) & 0xFF;
-    const surfTex = mat.userData?.surfaceTextureId;
-    texTypeId = (typeof surfTex === 'number' ? surfTex : 0) & 0x7;
-    const metalness = (mat.metalness ?? 0);
-    isMetal = metalness > 1e-4 ? 1 : 0;
-  }
-  const trans4 = Math.min(15, Math.round(transmission * 15)) & 0xF;
-  const lowByte = ((trans4 << 4) | (isMetal << 3) | (texTypeId & 0x7)) & 0xFF;
-  indexBuf[base4 + 3] = (r << 24) | (g << 16) | (b << 8) | lowByte;
-}
+/** @internal Default warm-gray fallback color (sRGB byte values) for a triangle
+ *  with no material / unrecognised material type. Shared by the production
+ *  `*FromCore` packers and the legacy test-oracle packers. */
+export const WARM_GRAY_DEFAULT_R = 153;
+/** @internal @see WARM_GRAY_DEFAULT_R */
+export const WARM_GRAY_DEFAULT_G = 148;
+/** @internal @see WARM_GRAY_DEFAULT_R */
+export const WARM_GRAY_DEFAULT_B = 140;
 
 // ──────────────────────────────────────────────────────────────────────────
 // B1 — per-triangle roughness + metalness lane.
@@ -229,7 +85,9 @@ function packBVHIndexWTri(
 // to within 0.003. Opaque/non-glass materials pack IOR_DEFAULT_OPAQUE = 1.0
 // (byte 0) — decodes to exactly 1.0 (air/vacuum); the WGSL consumers skip the
 // IOR lane for non-glass surfaces so this value has no visual impact.
-const ROUGH_DEFAULT = 0.85;
+/** @internal Default roughness for a non-glass material with no authored value.
+ *  Shared by the production `*FromCore` packers and the legacy test-oracle packers. */
+export const ROUGH_DEFAULT = 0.85;
 const ROUGH_GLASS = 0.05;
 /** Default IOR for glass (crown glass). Packs to byte 64, decodes to 1.502. */
 export const IOR_DEFAULT_GLASS = 1.5;
@@ -258,7 +116,9 @@ function quantizeAoMapIntensity(value: number | undefined): number {
   return (Math.round(strength * 31) & 0x1F) << 3;
 }
 
-function packRoughMetalIorBytes(roughness: number, metalness: number, ior: number): number {
+/** @internal Pack (roughness, metalness, ior) into the u32 rough/metal/ior lane.
+ *  Shared by the production `*FromCore` packers and the legacy test-oracle packers. */
+export function packRoughMetalIorBytes(roughness: number, metalness: number, ior: number): number {
   const r8 = Math.min(255, Math.max(0, Math.round(roughness * 255))) & 0xFF;
   const m8 = Math.min(255, Math.max(0, Math.round(metalness * 255))) & 0xFF;
   const i8 = quantizeIor(ior);
@@ -278,11 +138,12 @@ function scalarAlphaDiscarded(mat: MaterialSpec): boolean {
   return opacity <= 0;
 }
 
-/** Resolve a triangle's (roughness, metalness, ior) for packing, applying the
+/** @internal Resolve a triangle's (roughness, metalness, ior) for packing, applying the
  *  B1 diffuse-default invariant (no authored roughness → 0.85; glass → 0.05)
  *  and the B1-ior-per-tri IOR default invariant (no authored ior on glass → 1.5;
- *  opaque → 1.0 — not consumed for opaque surfaces). */
-function resolveRoughMetal(
+ *  opaque → 1.0 — not consumed for opaque surfaces). Shared by the production
+ *  `*FromCore` packers and the legacy test-oracle packers. */
+export function resolveRoughMetal(
   roughness: number | undefined,
   metalness: number | undefined,
   transmission: number | undefined,
@@ -303,181 +164,15 @@ function resolveRoughMetal(
   return { rough, metal, ior: resolvedIor };
 }
 
-/**
- * Pack one triangle's roughness+metalness+IOR into a parallel u32 buffer.
- * @deprecated Superseded by {@link packBVHRoughMetalFromCore} (core `MaterialSpec[]`).
- *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
- */
-function packBVHRoughMetalTri(
-  rmBuf: Uint32Array,
-  triMaterialId: Uint32Array,
-  materials: readonly PbrMaterialLike[],
-  tri: number,
-): void {
-  const matId = triMaterialId[tri]!;
-  const mat = materials[matId];
-  const rm = mat
-    ? resolveRoughMetal(mat.roughness, mat.metalness, mat.transmission, mat.ior)
-    : { rough: ROUGH_DEFAULT, metal: 0, ior: IOR_RANGE_MIN };
-  rmBuf[tri] = packRoughMetalIorBytes(rm.rough, rm.metal, rm.ior);
-}
-
-/**
- * Pack one triangle's Beer-Lambert visible color into a parallel u32 buffer.
- * @deprecated Superseded by {@link packBVHBeerColorsFromCore} (core `MaterialSpec[]`).
- *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
- */
-function packBVHBeerColorTri(
-  beerBuf: Uint32Array,
-  triMaterialId: Uint32Array,
-  materials: readonly PbrMaterialLike[],
-  tri: number,
-): void {
-  const matId = triMaterialId[tri]!;
-  const mat = materials[matId];
-  let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
-  if (mat) {
-    const color = resolveTriColor(mat, /* applyBeer */ true);
-    r = Math.round(Math.min(1, color.r) * 255) & 0xFF;
-    g = Math.round(Math.min(1, color.g) * 255) & 0xFF;
-    b = Math.round(Math.min(1, color.b) * 255) & 0xFF;
-  }
-  beerBuf[tri] = (r << 24) | (g << 16) | (b << 8);
-}
-
-/**
- * Re-pack `bvhIndex.w` and `bvh_beer` for a contiguous triangle subrange.
- * Used by the material-only `updatePrimitive` fast path.
- *
- * @deprecated Structural `PbrMaterialLike`-based family; legacy adapter.
- *   The canonical location of this function is also re-exported from
- *   `restir/bvhCore.ts` (D6.7, R6 E sweep, 2026-06-11) for subsystem-local
- *   access. Retained here for back-compatibility.
- */
-function _repackBVHMaterialRange(
-  indexBuf: Uint32Array,
-  beerBuf: Uint32Array,
-  indices: Uint32Array,
-  triMaterialId: Uint32Array,
-  materials: readonly PbrMaterialLike[],
-  triStart: number,
-  triCount: number,
-  rmBuf?: Uint32Array,
-): void {
-  const triEnd = triStart + triCount;
-  for (let t = triStart; t < triEnd; t++) {
-    packBVHIndexWTri(indexBuf, indices, triMaterialId, materials, t);
-    packBVHBeerColorTri(beerBuf, triMaterialId, materials, t);
-    if (rmBuf) packBVHRoughMetalTri(rmBuf, triMaterialId, materials, t);
-  }
-}
-
-/**
- * Pack vertex indices + RGBA8 baseColor + (trans4|texType4) into vec4u
- * per-triangle (4 u32 = 16 bytes per triangle).
- * @deprecated Superseded by {@link packBVHIndexWFromCore} (core `MaterialSpec[]`).
- *   The structural `PbrMaterialLike`-based family is legacy; production code uses
- *   the `*FromCore` counterparts. Retained for tests only.
- */
-function _packBVHIndexW(
-  indices: Uint32Array,
-  triMaterialId: Uint32Array,
-  materials: readonly PbrMaterialLike[],
-  triCount: number,
-): Uint32Array<ArrayBuffer> {
-  const indexBuf = new Uint32Array(triCount * 4);
-
-  for (let t = 0; t < triCount; t++) {
-    packBVHIndexWTri(indexBuf, indices, triMaterialId, materials, t);
-  }
-  return indexBuf;
-}
-
-/**
- * Pack per-triangle roughness+metalness+IOR into a parallel u32 buffer
- * (bits[31:24]=rough×255, bits[23:16]=metal×255, bits[15:8]=ior_quantized).
- * Read by the ReSTIR/shade WGSL via decodeRoughMetal+decodeIor(triIndex).
- * See packBVHRoughMetalTri for the B1 diffuse-default invariant and the
- * B1-ior-per-tri IOR default invariant (glass → 1.5; opaque → 1.0).
- * @deprecated Superseded by {@link packBVHRoughMetalFromCore} (core `MaterialSpec[]`).
- *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
- */
-export function packBVHRoughMetal(
-  triMaterialId: Uint32Array,
-  materials: readonly PbrMaterialLike[],
-  triCount: number,
-): Uint32Array<ArrayBuffer> {
-  const rmBuf = new Uint32Array(triCount);
-  for (let t = 0; t < triCount; t++) {
-    packBVHRoughMetalTri(rmBuf, triMaterialId, materials, t);
-  }
-  return rmBuf;
-}
-
-/**
- * Pack the Beer-Lambert visible color per triangle into a parallel u32 buffer.
- * Read by shade.wgsl Lo_emit on a primary glass hit.
- * @deprecated Superseded by {@link packBVHBeerColorsFromCore} (core `MaterialSpec[]`).
- *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
- */
-function _packBVHBeerColors(
-  triMaterialId: Uint32Array,
-  materials: readonly PbrMaterialLike[],
-  triCount: number,
-): Uint32Array<ArrayBuffer> {
-  const beerBuf = new Uint32Array(triCount);
-  for (let t = 0; t < triCount; t++) {
-    packBVHBeerColorTri(beerBuf, triMaterialId, materials, t);
-  }
-  return beerBuf;
-}
-
-/**
- * Emissive radiance Le (HDR, `emissive.rgb * emissiveIntensity`) of a material,
- * or `null` when the material is not a self-emissive surface. This
- * mirrors the EMISSIVE branch of `classifyTriangleEmitter` (emitterList.ts) EXACTLY
- * — so the camera-visible glow Le equals the radiance ReSTIR-DI samples for that
- * emitter — but deliberately EXCLUDES the transmissive "sun-attenuated secondary
- * emitter" branch: glass self-emission to the camera is already handled by
- * shade.wgsl `lo_emit` (Beer-Lambert), so packing it here would double-count.
- * @deprecated Structural `PbrMaterialLike` family; legacy adapter. Production code
- *   uses `materialSpecEmissiveLe` from `@vitrum/shared-bvh` via the `*FromCore` packers.
- */
-export function materialEmissiveLe(mat: PbrMaterialLike): [number, number, number] | null {
-  const em = mat.emissive;
-  if (!em) return null;
-  const ei = mat.emissiveIntensity;
-  if (!(ei && ei > 0)) return null;
-  if (em.r <= 0 && em.g <= 0 && em.b <= 0) return null;
-  return [em.r * ei, em.g * ei, em.b * ei];
-}
-
-/**
- * Pack per-triangle emissive radiance Le into a parallel rgba32float buffer
- * (stride 4: rgb + 0 pad). Read by shade.wgsl `lo_emitterGlow` on a primary hit
- * so emissive-mesh surfaces are CAMERA-VISIBLE (the real-time analogue of the
- * pt-webgpu camera-visible-emitters fix). Non-emissive triangles are zero. HDR
- * (emissiveIntensity may exceed 1), hence float — not the LDR `bvh_beer` u32.
- * @deprecated Superseded by {@link packBVHEmissiveLeFromCore} (core `MaterialSpec[]`).
- *   The structural `PbrMaterialLike`-based family is legacy. Retained for tests only.
- */
-export function packBVHEmissiveLe(
-  triMaterialId: Uint32Array,
-  materials: readonly PbrMaterialLike[],
-  triCount: number,
-): Float32Array<ArrayBuffer> {
-  const out = new Float32Array(triCount * 4);
-  for (let t = 0; t < triCount; t++) {
-    const mat = materials[triMaterialId[t]!];
-    if (!mat) continue;
-    const le = materialEmissiveLe(mat);
-    if (le == null) continue;
-    out[t * 4 + 0] = le[0];
-    out[t * 4 + 1] = le[1];
-    out[t * 4 + 2] = le[2];
-  }
-  return out;
-}
+// The legacy structural-PBR (`PbrMaterialLike`) per-triangle packers —
+// packBVHRoughMetalTri / packBVHBeerColorTri / packBVHIndexW /
+// packBVHRoughMetal / packBVHBeerColors / materialEmissiveLe /
+// packBVHEmissiveLe / repackBVHMaterialRange — moved to
+// `restir/__tests__/support/legacyPbrPackers.ts` (D6-4 / I3). They were
+// byte-identity test oracles for the `*FromCore` production packers below, with
+// zero production consumers. The shared math (`resolveRoughMetal`,
+// `packRoughMetalIorBytes`, `WARM_GRAY_DEFAULT_*`) is `@internal`-exported above
+// for that test-support file.
 
 // ──────────────────────────────────────────────────────────────────────────
 // Core-material per-triangle packers.
@@ -495,25 +190,12 @@ export function packBVHEmissiveLe(
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Apply the production emissive convention to a core material before reading
- * its emissive Le: treat `emissive` as the FINAL radiance-space colour and force
- * `emissiveIntensity = 1`, so `materialSpecEmissiveLe` yields
- * `Le = emissive * 1`. This is the SAME ei-collapse fix the ReSTIR-DI
- * emitter decouple (`restir/bvhCore.ts:toProductionEmissiveRadiance`, commit
- * `46a0078`) and the DDGI material decouple (`probeUpdateMaterials.ts`, commit
- * `15070cd`) needed: a raw `materialSpecEmissiveLe` computes
- * `emissive * emissiveIntensity`, so a core emitter with `ei = 4` would pack 4x
- * the intended radiance — the exact divergence those GPU A/Bs caught.
- * A material with no `emissive` is returned unchanged (not an emitter either way).
- */
-function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
-  if (m.emissive === undefined) return m;
-  if (m.emissiveIntensity === 1) return m; // already the production convention
-  return { ...m, emissiveIntensity: 1 };
-}
-
-/**
  * Scalar production Le for the camera-visible emissive buffer.
+ *
+ * The production emissive convention (`emissive` is the FINAL radiance-space
+ * colour, `emissiveIntensity` collapsed to 1) is applied via the shared
+ * `toProductionEmissiveRadiance` from `@vitrum/shared-bvh` (hoisted from the
+ * four byte-identical subsystem copies — D6-8).
  *
  * Readable emissiveMap energy is intentionally NOT folded in here: shade.wgsl
  * samples the emissive atlas at the hit UV, so averaging the map into this

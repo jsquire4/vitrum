@@ -6,6 +6,7 @@ import type { MaterialSpec } from '@vitrum/core';
 import {
   coreMaterialToMaterialEntry,
   packMaterials,
+  toProductionEmissiveRadiance,
   MATERIAL_ENTRY_FLOATS,
   MATERIAL_ENTRY_STRIDE_BYTES,
   type MaterialEntryInput,
@@ -47,32 +48,12 @@ export function packDDGIMaterialsN(mats: readonly PbrScalarSource[], maxMaterial
   return out.buffer as ArrayBuffer;
 }
 
-/**
- * Apply the production emissive convention to a core material before packing:
- * treat `emissive` as the FINAL radiance-space colour and force
- * `emissiveIntensity = 1`, so `coreMaterialToMaterialEntry` writes
- * `emissive * 1` into the packed MaterialEntry.
- *
- * This is the SAME ei-collapse fix the ReSTIR-DI emitter decouple needed
- * (`restir/bvhCore.ts:toProductionEmissiveRadiance`, commit `46a0078`): a raw
- * `coreMaterialToMaterialEntry` computes `emissive · emissiveIntensity`, so a
- * core emitter with `ei = 4` would pack 4x the intended radiance: the exact
- * divergence that emitter-decouple GPU A/B caught.
- *
- * Force `ei = 1` whenever `emissive` is PRESENT. A material with no `emissive`
- * is returned unchanged.
- *
- * The DDGI probe-ray kernel (`probeUpdateRays.wgsl`) reads `mat.emissive` for
- * direct probe hits on plain material-emissive surfaces. Keep the packed bytes
- * on the same production convention as the ReSTIR/RC material paths: the core
- * material's `emissive` field is already the radiance-space colour, so do not
- * multiply it again by `emissiveIntensity`.
- */
-function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
-  if (m.emissive === undefined) return m;
-  if (m.emissiveIntensity === 1) return m;
-  return { ...m, emissiveIntensity: 1 };
-}
+// The DDGI probe-ray kernel (`probeUpdateRays.wgsl`) reads `mat.emissive` for
+// direct probe hits on plain material-emissive surfaces; the packed bytes must
+// stay on the same production `emissive * 1` convention as the ReSTIR/RC
+// material paths. The shared `toProductionEmissiveRadiance` (imported from
+// `@vitrum/shared-bvh`, hoisted from the four byte-identical subsystem copies —
+// D6-8) enforces that convention before `coreMaterialToMaterialEntry`.
 
 /**
  * Core-first counterpart to {@link packDDGIMaterialsN}: pack a deduped

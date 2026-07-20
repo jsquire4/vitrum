@@ -221,6 +221,32 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
   return out;
 }
 
+/**
+ * Apply the production emissive convention to a core material: treat `emissive`
+ * as the FINAL radiance-space colour and force `emissiveIntensity = 1`, so any
+ * downstream `emissive * emissiveIntensity` read yields `Le = emissive * 1`.
+ *
+ * This is the ei-collapse guard the ReSTIR-DI emitter decouple
+ * (`restir/bvhCore.ts`, commit `46a0078`), the DDGI material decouple
+ * (`ddgi/probeUpdateMaterials.ts`, commit `15070cd`), the RC cascade material
+ * path (`rc/bvhCore.ts`), and the camera-visible-emitter packer
+ * (`restir/packingHelpers.ts`) each needed independently: a raw
+ * `coreMaterialToMaterialEntry` / `materialSpecEmissiveLe` computes
+ * `emissive · emissiveIntensity`, so a core emitter with `ei = 4` would pack 4×
+ * the intended radiance — the exact divergence those GPU A/Bs caught. Hoisting
+ * the three-line byte-identical guard here gives every walkaround subsystem one
+ * source of truth (D6-8).
+ *
+ * A material with no `emissive` is returned unchanged (not an emitter either
+ * way). A material already at `emissiveIntensity === 1` is returned unchanged
+ * (already the production convention — no spread allocation).
+ */
+export function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
+  if (m.emissive === undefined) return m;
+  if (m.emissiveIntensity === 1) return m;
+  return { ...m, emissiveIntensity: 1 };
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Core emitter / Beer-Lambert / surface-texture classification
 //

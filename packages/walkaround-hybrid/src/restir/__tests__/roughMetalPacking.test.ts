@@ -14,15 +14,17 @@
 import { describe, it, expect } from 'vitest';
 import type { MaterialSpec } from '@vitrum/core';
 import {
-  packBVHRoughMetal,
   packBVHRoughMetalFromCore,
   quantizeIor,
   dequantizeIor,
   IOR_DEFAULT_GLASS,
   IOR_RANGE_MIN,
   IOR_RANGE_MAX,
-  type PbrMaterialLike,
 } from '../packingHelpers.js';
+import {
+  packBVHRoughMetal,
+  type PbrMaterialLike,
+} from './support/legacyPbrPackers.js';
 
 /** Mirror of the WGSL `decodeRoughMetal` (materialDecode.wgsl) — bits[31:24]
  *  rough, bits[23:16] metal, /255. */

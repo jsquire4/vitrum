@@ -13,10 +13,11 @@ import {
   mergeWorldSpaceFromCore,
   coreMaterialToMaterialEntry,
   packMaterials,
+  toProductionEmissiveRadiance,
   MATERIAL_ENTRY_FLOATS,
   type MaterialEntryInput,
 } from '@vitrum/shared-bvh';
-import { packUVIntoVec4W } from '../restir/packingHelpers.js';
+import { packUVIntoVec4W } from '../bvh/bvhPacking.js';
 
 export interface StorageAttributeLike<T extends Float32Array | Uint32Array = Float32Array | Uint32Array> {
   readonly array: T;
@@ -42,12 +43,6 @@ const RC_CORE_MESH_FILTER = (p: ScenePrimitive): boolean =>
 
 function attr<T extends Float32Array | Uint32Array>(array: T, itemSize: number): StorageAttributeLike<T> {
   return { array, itemSize };
-}
-
-function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
-  if (m.emissive === undefined) return m;
-  if (m.emissiveIntensity === 1) return m;
-  return { ...m, emissiveIntensity: 1 };
 }
 
 function coreToCascadeMaterialEntryInput(mat: MaterialSpec): MaterialEntryInput {

@@ -115,7 +115,7 @@ import {
   type TimestampState,
   type PassLabel,
 } from './timestampQueries.js';
-import { reservoirGiStrideU32ForRestirPtReuse } from '../restir/reservoirGiLayout.js';
+import { reservoirGiStrideU32ForRestirPtReuse } from '../gi/giLayout.js';
 import type { RestirGISnapshot } from '../giStateSnapshot.js';
 
 // D3.5 — PipelineFrame* interfaces extracted to pipelineFrameInputs.ts.

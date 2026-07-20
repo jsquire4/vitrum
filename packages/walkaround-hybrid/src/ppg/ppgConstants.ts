@@ -93,4 +93,4 @@ export const PPG_FLUX_DECAY = 0.5;
 
 export {
   RESERVOIR_GI_GRIS_STRIDE_U32 as RESERVOIR_GI_STRIDE,
-} from '../restir/reservoirGiLayout.js';
+} from '../gi/giLayout.js';

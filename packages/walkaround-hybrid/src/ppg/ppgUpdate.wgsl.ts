@@ -50,7 +50,7 @@ import {
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
   PPG_DEFAULT_SPATIAL_CELLS,
 } from './ppgConstants.js';
-import { RESERVOIR_GI_GRIS_STRIDE_U32 } from '../restir/reservoirGiLayout.js';
+import { RESERVOIR_GI_GRIS_STRIDE_U32 } from '../gi/giLayout.js';
 import type { WgslModule } from '../wgslTypes.js';
 
 /**

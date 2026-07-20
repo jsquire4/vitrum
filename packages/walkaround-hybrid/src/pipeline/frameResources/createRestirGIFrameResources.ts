@@ -3,7 +3,7 @@
  */
 
 import type { RestirGIFrameResources } from '../resourceManager.js';
-import { reservoirGiStrideBytesForRestirPtReuse } from '../../restir/reservoirGiLayout.js';
+import { reservoirGiStrideBytesForRestirPtReuse } from '../../gi/giLayout.js';
 
 export interface RestirGIFrameResourceOptions {
   /**
