@@ -482,14 +482,22 @@ const COMMON_UNSUPPORTED_EXTENSIONS = new Set<string>();
 
 const FALLBACK_GENERATED_PRIMITIVE_MODES = new Set([0, 1, 2, 3]);
 const SUPPORTED_GLTF_PRIMITIVE_MODES = new Set([0, 1, 2, 3, 4, 5, 6]);
-const VERTEX_COLOR_SUPPORT: Readonly<Record<GltfBackendProfileId, BackendSupportMode>> = Object.freeze({
+/** Exported for the capability-drift pin-test (`featureReportCapabilityPin.test.ts`):
+ *  a hand-maintained per-profile table that must stay consistent with the set of
+ *  backend profiles + the pt-webgpu-lite tier restriction (T1-4 / I4-4). Not part
+ *  of the adapter's runtime API — do not consume for routing. */
+export const VERTEX_COLOR_SUPPORT: Readonly<Record<GltfBackendProfileId, BackendSupportMode>> = Object.freeze({
   'pt-webgl2': 'native',
   'pt-webgpu': 'native',
   'pt-webgpu-lite': 'unsupported',
   'walkaround-hybrid': 'approximate',
 });
 
-const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = [
+/** Exported for the capability-drift pin-test. The lite trace tier composes no
+ *  full-tier group-3 material texture bindings, so every entry here must be a
+ *  valid `keyof MaterialSpec` AND must be one that the FULL pt-webgpu profile does
+ *  NOT mark unsupported (the lite tier is what restricts them). See the pin. */
+export const PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS = [
   // Lite composes no full-tier group-3 material texture bindings; every
   // texture-backed MaterialSpec field is therefore unsupported on that profile.
   'baseColorMap',

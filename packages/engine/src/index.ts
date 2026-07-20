@@ -91,6 +91,7 @@ export {
 export {
   createProgressiveEngine,
   computeProgressiveLimitUnion,
+  checkProgressiveLimitUnion,
   type CreateProgressiveEngineOptions,
   type ProgressiveEngineHandle,
 } from './createProgressiveEngine.js';

@@ -180,6 +180,30 @@ export function computeProgressiveLimitUnion(
 }
 
 /**
+ * Preflight an adapter against the progressive limit UNION and return the list of
+ * unmet limits (empty ⇒ the adapter satisfies the union). Each entry is a
+ * human-readable `"<key>: need ≥<wanted>, adapter has <cap>"` string.
+ *
+ * Single source of truth for the identical union-comparison loop that both
+ * {@link createProgressiveEngine} and `negotiateWebGPUDevice`'s `'progressive'`
+ * target ran inline (D2-4). Callers keep their own gap-naming error message.
+ */
+export function checkProgressiveLimitUnion(
+  adapter: { readonly limits: GPUSupportedLimits },
+  options: ProgressiveLimitUnionOptions = {},
+): string[] {
+  const union = computeProgressiveLimitUnion(options);
+  const unmet: string[] = [];
+  for (const [key, wanted] of Object.entries(union)) {
+    const cap = (adapter.limits as unknown as Record<string, number | undefined>)[key];
+    if (typeof cap !== 'number' || cap < wanted) {
+      unmet.push(`${key}: need ≥${wanted}, adapter has ${cap ?? 'undefined'}`);
+    }
+  }
+  return unmet;
+}
+
+/**
  * Build a progressive walkaround→PT engine pair on one shared GPUDevice.
  *
  * @throws if WebGPU is unavailable, if the adapter cannot satisfy the limit UNION
@@ -213,16 +237,9 @@ export async function createProgressiveEngine(
   // The shared device must satisfy BOTH backends' FULL floors. Compute the union
   // and check the adapter BEFORE requesting the device, so we can throw a clear,
   // gap-naming error instead of letting requestDevice reject opaquely.
-  const union = computeProgressiveLimitUnion({
-    restirPtReuse: opts.convergedOptions?.restirPtReuse === true,
-  });
-  const unmet: string[] = [];
-  for (const [key, wanted] of Object.entries(union)) {
-    const cap = (adapter.limits as unknown as Record<string, number | undefined>)[key];
-    if (typeof cap !== 'number' || cap < wanted) {
-      unmet.push(`${key}: need ≥${wanted}, adapter has ${cap ?? 'undefined'}`);
-    }
-  }
+  const restirPtReuse = opts.convergedOptions?.restirPtReuse === true;
+  const union = computeProgressiveLimitUnion({ restirPtReuse });
+  const unmet = checkProgressiveLimitUnion(adapter, { restirPtReuse });
   if (unmet.length > 0) {
     throw new Error(
       'createProgressiveEngine: this adapter cannot satisfy the device-limit UNION of ' +

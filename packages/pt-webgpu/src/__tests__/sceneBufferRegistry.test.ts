@@ -12,8 +12,14 @@
  * file coupling deferred per the D8.7 scope note) — the registry's sync comment
  * documents that invariant for the next developer.
  */
-import { describe, expect, it } from 'vitest';
-import { SCENE_BUFFER_REGISTRY } from '../scene/uploadSceneBuffers.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { Scene } from '@vitrum/core';
+import {
+  SCENE_BUFFER_REGISTRY,
+  buildPackedScene,
+  uploadPackedScene,
+} from '../scene/uploadSceneBuffers.js';
+import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 describe('D8.7 SceneBufferRegistry', () => {
   /**
@@ -87,5 +93,106 @@ describe('D8.7 SceneBufferRegistry', () => {
     expect(idx).toBe(28);
     // Remaining 5 entries are the TLAS buffers.
     expect(SCENE_BUFFER_REGISTRY.length - idx).toBe(5);
+  });
+});
+
+/**
+ * T2-A — registry-driven single-source gates. `uploadPackedScene` now drives its
+ * create loop, destroy closure, and gpuMemoryBytes off SCENE_BUFFER_REGISTRY;
+ * these tests pin that every `*Buffer` field on a REAL uploaded scene is covered
+ * by the registry (completeness), that destroy tears down every registry buffer,
+ * and that gpuMemoryBytes preserves the historical meshAreaLightSourceFactors
+ * omission via the `excludeFromMemorySum` flag.
+ */
+function meshScene(): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'mesh-a',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
+interface StubBuffer {
+  label: string;
+  size: number;
+  destroy: ReturnType<typeof vi.fn>;
+}
+
+function makeUploadDevice(): { device: GPUDevice; buffers: StubBuffer[] } {
+  installGpuConstStubs();
+  const buffers: StubBuffer[] = [];
+  const device = {
+    queue: { writeBuffer: vi.fn(), writeTexture: vi.fn() },
+    createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
+      const buf: StubBuffer = {
+        label: desc.label ?? '',
+        size: desc.size,
+        destroy: vi.fn(),
+      };
+      buffers.push(buf);
+      return buf as unknown as GPUBuffer;
+    }),
+    ...textureStubMethods(),
+    limits: { maxTextureDimension2D: 8192 },
+  } as unknown as GPUDevice;
+  return { device, buffers };
+}
+
+describe('T2-A registry-driven upload single-source', () => {
+  it('every *Buffer field on a real uploaded scene has a registry entry (completeness)', () => {
+    const { device } = makeUploadDevice();
+    const sb = uploadPackedScene(device, buildPackedScene(meshScene()));
+    // Enumerate every GPUBuffer-handle field on the concrete UploadedSceneBuffers:
+    // a field whose name ends in 'Buffer' and whose value has a `.destroy` method.
+    const bufferFields = Object.keys(sb).filter(
+      (k) =>
+        k.endsWith('Buffer') &&
+        typeof (sb as unknown as Record<string, { destroy?: unknown }>)[k]?.destroy === 'function',
+    );
+    expect(bufferFields.length).toBeGreaterThan(0);
+    const registryFields = new Set(SCENE_BUFFER_REGISTRY.map((e) => e.bufferField));
+    for (const field of bufferFields) {
+      expect(registryFields.has(field as never), `buffer field "${field}" is missing from SCENE_BUFFER_REGISTRY`).toBe(true);
+    }
+    // And the registry has no extra entries beyond the real buffer set.
+    expect(new Set(bufferFields)).toStrictEqual(registryFields);
+    sb.destroy();
+  });
+
+  it('destroy() tears down every registry buffer exactly once + both material textures', () => {
+    const { device, buffers } = makeUploadDevice();
+    const sb = uploadPackedScene(device, buildPackedScene(meshScene()));
+    const registryBuffers = SCENE_BUFFER_REGISTRY.map(
+      (e) => sb[e.bufferField] as unknown as StubBuffer,
+    );
+    sb.destroy();
+    for (const b of registryBuffers) {
+      expect(b.destroy, `registry buffer ${b.label}`).toHaveBeenCalledTimes(1);
+    }
+    void buffers;
+  });
+
+  it('gpuMemoryBytes counts every registry buffer EXCEPT excludeFromMemorySum entries', () => {
+    const { device } = makeUploadDevice();
+    const sb = uploadPackedScene(device, buildPackedScene(meshScene()));
+    const expected = SCENE_BUFFER_REGISTRY
+      .filter((e) => !('excludeFromMemorySum' in e && e.excludeFromMemorySum))
+      .reduce((sum, e) => sum + (sb[e.bufferField] as unknown as StubBuffer).size, 0);
+    const { bufferBytes } = sb.gpuMemoryBytes();
+    expect(bufferBytes).toBe(expected);
+    // The historically-omitted buffer is flagged and its bytes are NOT included.
+    const excluded = SCENE_BUFFER_REGISTRY.filter(
+      (e) => 'excludeFromMemorySum' in e && e.excludeFromMemorySum,
+    );
+    expect(excluded.map((e) => e.bufferField)).toStrictEqual(['meshAreaLightSourceFactorsBuffer']);
+    sb.destroy();
   });
 });

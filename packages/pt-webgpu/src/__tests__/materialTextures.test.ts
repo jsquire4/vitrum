@@ -27,6 +27,7 @@ import {
   MATERIAL_TEX_UV_META_VEC4_OFFSET,
   MATERIAL_TEX_UV_META_VEC4S_PER_MAP,
   MATERIAL_TEX_VEC4_STRIDE,
+  TEXTURE_MAP_SLOTS,
 } from '../scene/materialTextures.js';
 import { PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
 import type { MaterialSpec } from '@vitrum/core';
@@ -803,6 +804,33 @@ describe('collectMaterialTextures (P2 host)', () => {
     const { descriptors } = collectMaterialTextures([mat({ normalMap: { handle: {} } })]);
     const start = (MATERIAL_TEX_UV_META_VEC4_OFFSET + 2 * MATERIAL_TEX_UV_META_VEC4S_PER_MAP) * 4;
     expect(Array.from(descriptors.slice(start, start + 8))).toEqual([0, 0, 0, 0, 1, 1, 0, 0]);
+  });
+
+  it('TEXTURE_MAP_SLOTS matches the layout-doc mip/filter map order (single source of truth)', () => {
+    // The layout doc (materialTextures.ts vec4 #82-#87 comment) fixes the map
+    // order for the mip/filter policy blocks; the slot index in TEXTURE_MAP_SLOTS
+    // IS that policy slot. This pins the table order == doc order == wire format.
+    const expectedOrder = [
+      'baseColor', 'emissive', 'normal', 'roughness', 'metallic', 'ao', 'lightMap',
+      'bump', 'anisotropy', 'alpha', 'transmission', 'clearcoat', 'clearcoatRoughness',
+      'sheenColor', 'sheenRoughness', 'iridescence', 'iridescenceThickness',
+      'specularColor', 'specularIntensity', 'clearcoatNormal', 'thickness',
+      'frontLayerNormal', 'backLayerNormal',
+    ];
+    expect(TEXTURE_MAP_SLOTS.map((s) => s.name)).toStrictEqual(expectedOrder);
+    // 23 slots == the mip/filter policy map count.
+    expect(TEXTURE_MAP_SLOTS.length).toBe(MATERIAL_TEX_MIP_POLICY_MAP_COUNT);
+    // wrap offsets are unique (no two maps share a wrap-pair lane) and land inside
+    // the descriptor block.
+    const wrapOffsets = TEXTURE_MAP_SLOTS.map((s) => s.wrapFloatOffset);
+    expect(new Set(wrapOffsets).size).toBe(wrapOffsets.length);
+    for (const off of wrapOffsets) {
+      expect(off).toBeGreaterThanOrEqual(0);
+      expect(off + 1).toBeLessThan(MATERIAL_TEX_VEC4_STRIDE * 4);
+    }
+    // Every (uvMetaVec4Offset, uvMetaSlot) pair is unique.
+    const metaKeys = TEXTURE_MAP_SLOTS.map((s) => `${s.uvMetaVec4Offset}:${s.uvMetaSlot}`);
+    expect(new Set(metaKeys).size).toBe(metaKeys.length);
   });
 });
 

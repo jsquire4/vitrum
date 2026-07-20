@@ -105,6 +105,46 @@ function tangentBasis(n: Vec3): { t: Vec3; b: Vec3 } {
   return { t, b };
 }
 
+// ── D11-12: shared s0/s1 header helpers ───────────────────────────────────────
+// Every light kind writes the same two leading texels:
+//   s0 = (worldPos.xyz, type)   s1 = (color.rgb, intensity)
+// Previously each of the 5 arms re-spelled these 8 `data[base + k++] = …` writes
+// with a fragile hand-advanced `k` cursor. These helpers own the s0/s1 writes and
+// advance an explicit cursor object so the header can never drift per-kind. The
+// `assertSlotCursor` guards downstream still pin the final per-kind channel count.
+
+interface SlotCursor {
+  k: number;
+}
+
+/** Write s0 = (position.xyz, type) at `base + cursor.k`, advancing the cursor by 4. */
+function writePositionType(
+  data: Float32Array,
+  base: number,
+  cursor: SlotCursor,
+  position: Vec3,
+  type: number,
+): void {
+  data[base + cursor.k++] = position[0];
+  data[base + cursor.k++] = position[1];
+  data[base + cursor.k++] = position[2];
+  data[base + cursor.k++] = type;
+}
+
+/** Write s1 = (color.rgb, intensity) at `base + cursor.k`, advancing the cursor by 4. */
+function writeColorIntensity(
+  data: Float32Array,
+  base: number,
+  cursor: SlotCursor,
+  color: Vec3,
+  intensity: number,
+): void {
+  data[base + cursor.k++] = color[0];
+  data[base + cursor.k++] = color[1];
+  data[base + cursor.k++] = color[2];
+  data[base + cursor.k++] = intensity;
+}
+
 /**
  * Pack the scene's emitters into the 6-texel-per-light RGBA32F square grid the
  * WebGL2 path tracer reads. Mirrors the fork's `LightsInfoUniformStruct.updateFrom`
@@ -135,23 +175,17 @@ export function packLightsTexture(
   for (let i = 0; i < lights.length; i += 1) {
     const l = lights[i]!;
     const base = i * LIGHT_PIXELS * 4;
-    let k = 0;
+    const cursor: SlotCursor = { k: 0 };
 
     const [cr, cg, cb] = l.color;
+    const color: Vec3 = [cr, cg, cb];
     const lum = luminance(cr, cg, cb);
 
     switch (l.kind) {
       case 'rect-area': {
-        // s0: position / type
-        data[base + k++] = l.position[0];
-        data[base + k++] = l.position[1];
-        data[base + k++] = l.position[2];
-        data[base + k++] = RECT_AREA_LIGHT;
-        // s1: color / intensity
-        data[base + k++] = cr;
-        data[base + k++] = cg;
-        data[base + k++] = cb;
-        data[base + k++] = l.intensity;
+        // s0: position / type   s1: color / intensity
+        writePositionType(data, base, cursor, l.position, RECT_AREA_LIGHT);
+        writeColorIntensity(data, base, cursor, color, l.intensity);
         // u-vector + power. Core uAxis/vAxis are the in-plane span vectors; the
         // fork's width/height are their lengths.
         const u = l.uAxis;
@@ -159,30 +193,23 @@ export function packLightsTexture(
         const width = lengthOf(u);
         const height = lengthOf(v);
         // s2: u / power
-        data[base + k++] = u[0];
-        data[base + k++] = u[1];
-        data[base + k++] = u[2];
-        data[base + k++] = lum * l.intensity * (width * height);
+        data[base + cursor.k++] = u[0];
+        data[base + cursor.k++] = u[1];
+        data[base + cursor.k++] = u[2];
+        data[base + cursor.k++] = lum * l.intensity * (width * height);
         // s3: v / area  (area = |u × v|)
-        data[base + k++] = v[0];
-        data[base + k++] = v[1];
-        data[base + k++] = v[2];
-        data[base + k++] = lengthOf(cross(u, v));
+        data[base + cursor.k++] = v[0];
+        data[base + cursor.k++] = v[1];
+        data[base + cursor.k++] = v[2];
+        data[base + cursor.k++] = lengthOf(cross(u, v));
         // rect-area packs s0..s3 (16 channels); s4..s5 stay zero (no cone/radius).
-        assertSlotCursor(k, 16, 'rect-area');
+        assertSlotCursor(cursor.k, 16, 'rect-area');
         break;
       }
       case 'disc-area': {
-        // s0: position / type (CIRC_AREA)
-        data[base + k++] = l.position[0];
-        data[base + k++] = l.position[1];
-        data[base + k++] = l.position[2];
-        data[base + k++] = CIRC_AREA_LIGHT;
-        // s1: color / intensity
-        data[base + k++] = cr;
-        data[base + k++] = cg;
-        data[base + k++] = cb;
-        data[base + k++] = l.intensity;
+        // s0: position / type (CIRC_AREA)   s1: color / intensity
+        writePositionType(data, base, cursor, l.position, CIRC_AREA_LIGHT);
+        writeColorIntensity(data, base, cursor, color, l.intensity);
         // Synthesize an in-plane (u, v) basis from the disc normal; each axis
         // spans the full diameter (2*radius) to match the fork's full-extent
         // width/height convention, then π/4 corrects rectangle→disc.
@@ -192,114 +219,94 @@ export function packLightsTexture(
         const v: Vec3 = [b[0] * d, b[1] * d, b[2] * d];
         const areaScale = Math.PI / 4.0;
         // s2: u / power
-        data[base + k++] = u[0];
-        data[base + k++] = u[1];
-        data[base + k++] = u[2];
-        data[base + k++] = lum * l.intensity * (d * d) * areaScale;
+        data[base + cursor.k++] = u[0];
+        data[base + cursor.k++] = u[1];
+        data[base + cursor.k++] = u[2];
+        data[base + cursor.k++] = lum * l.intensity * (d * d) * areaScale;
         // s3: v / area
-        data[base + k++] = v[0];
-        data[base + k++] = v[1];
-        data[base + k++] = v[2];
-        data[base + k++] = lengthOf(cross(u, v)) * areaScale;
+        data[base + cursor.k++] = v[0];
+        data[base + cursor.k++] = v[1];
+        data[base + cursor.k++] = v[2];
+        data[base + cursor.k++] = lengthOf(cross(u, v)) * areaScale;
         // disc-area packs s0..s3 (16 channels); s4..s5 stay zero (no cone/radius).
-        assertSlotCursor(k, 16, 'disc-area');
+        assertSlotCursor(cursor.k, 16, 'disc-area');
         break;
       }
       case 'spot': {
-        // s0: position / type
-        data[base + k++] = l.position[0];
-        data[base + k++] = l.position[1];
-        data[base + k++] = l.position[2];
-        data[base + k++] = SPOT_LIGHT;
-        // s1: color / intensity
-        data[base + k++] = cr;
-        data[base + k++] = cg;
-        data[base + k++] = cb;
-        data[base + k++] = l.intensity;
+        // s0: position / type   s1: color / intensity
+        writePositionType(data, base, cursor, l.position, SPOT_LIGHT);
+        writeColorIntensity(data, base, cursor, color, l.intensity);
         // The fork builds a lookAt basis: u = (1,0,0), v = (0,1,0) rotated into
         // the light's orientation. Core gives the forward `direction`; we build
         // a basis whose -w is the spot direction and read its u/v axes.
         const forward = normalize(l.direction);
         const { t, b } = tangentBasis(forward);
         // s2: u / power
-        data[base + k++] = t[0];
-        data[base + k++] = t[1];
-        data[base + k++] = t[2];
-        data[base + k++] = lum * l.intensity;
+        data[base + cursor.k++] = t[0];
+        data[base + cursor.k++] = t[1];
+        data[base + cursor.k++] = t[2];
+        data[base + cursor.k++] = lum * l.intensity;
         // s3: v / area. Core spot has no source radius → radius = 0, area = 0.
         const radius = 0;
-        data[base + k++] = b[0];
-        data[base + k++] = b[1];
-        data[base + k++] = b[2];
-        data[base + k++] = Math.PI * radius * radius;
+        data[base + cursor.k++] = b[0];
+        data[base + cursor.k++] = b[1];
+        data[base + cursor.k++] = b[2];
+        data[base + cursor.k++] = Math.PI * radius * radius;
         // s4: radius / decay / distance / coneCos
-        data[base + k++] = radius;
-        data[base + k++] = l.decay ?? 2;
-        data[base + k++] = l.distance ?? 0;
-        data[base + k++] = Math.cos(l.angle);
+        data[base + cursor.k++] = radius;
+        data[base + cursor.k++] = l.decay ?? 2;
+        data[base + cursor.k++] = l.distance ?? 0;
+        data[base + cursor.k++] = Math.cos(l.angle);
         // s5: penumbraCos / (reserved padding) / 0 / 0
         // s5.g was the IES profile slot — IES is removed; padding zero keeps layout stable.
-        data[base + k++] = Math.cos(l.angle * (1 - (l.penumbra ?? 0)));
-        k += 1; // s5.g reserved padding (IES removed)
+        data[base + cursor.k++] = Math.cos(l.angle * (1 - (l.penumbra ?? 0)));
+        cursor.k += 1; // s5.g reserved padding (IES removed)
         // spot packs s0..s4 fully + s5.r + s5.g (pad) = 22 channels; s5.b/s5.a stay zero.
-        assertSlotCursor(k, 22, 'spot');
+        assertSlotCursor(cursor.k, 22, 'spot');
         break;
       }
       case 'point': {
-        // s0: position / type
-        data[base + k++] = l.position[0];
-        data[base + k++] = l.position[1];
-        data[base + k++] = l.position[2];
-        data[base + k++] = POINT_LIGHT;
-        // s1: color / intensity
-        data[base + k++] = cr;
-        data[base + k++] = cg;
-        data[base + k++] = cb;
-        data[base + k++] = l.intensity;
+        // s0: position / type   s1: color / intensity
+        writePositionType(data, base, cursor, l.position, POINT_LIGHT);
+        writeColorIntensity(data, base, cursor, color, l.intensity);
         // s2: u = world position again / power (fork stores worldPosition here)
-        data[base + k++] = l.position[0];
-        data[base + k++] = l.position[1];
-        data[base + k++] = l.position[2];
-        data[base + k++] = lum * l.intensity;
-        // s3 unused (zero); k advances over it
-        k += 4;
+        data[base + cursor.k++] = l.position[0];
+        data[base + cursor.k++] = l.position[1];
+        data[base + cursor.k++] = l.position[2];
+        data[base + cursor.k++] = lum * l.intensity;
+        // s3 unused (zero); cursor advances over it
+        cursor.k += 4;
         // s4: radius=0 / decay / distance / coneCos=0
-        k += 1; // radius slot (0)
-        data[base + k++] = l.decay ?? 2;
-        data[base + k++] = l.distance ?? 0;
+        cursor.k += 1; // radius slot (0)
+        data[base + cursor.k++] = l.decay ?? 2;
+        data[base + cursor.k++] = l.distance ?? 0;
         // s4.a coneCos + s5 stay 0 — point lights are isotropic.
         // point packs: s0(4) + s1(4) + s2(4) + s3(skip4) + s4.r(skip1) + s4.g/s4.b(2) = 19 channels.
-        assertSlotCursor(k, 19, 'point');
+        assertSlotCursor(cursor.k, 19, 'point');
         break;
       }
       case 'directional': {
         // s0: position / type. Directional lights have no position; the fork
         // packs the world position (used only as an origin offset). Core gives
         // a direction only → store origin (0,0,0).
-        data[base + k++] = 0;
-        data[base + k++] = 0;
-        data[base + k++] = 0;
-        data[base + k++] = DIR_LIGHT;
+        writePositionType(data, base, cursor, [0, 0, 0], DIR_LIGHT);
         // s1: color / intensity
-        data[base + k++] = cr;
-        data[base + k++] = cg;
-        data[base + k++] = cb;
-        data[base + k++] = l.intensity;
+        writeColorIntensity(data, base, cursor, color, l.intensity);
         // s2: u = direction TOWARD the light / power. Core `direction` is the
         // unit vector pointing AT the light (matches the fork's
         // normalize(worldPos - target)).
         const dir = normalize(l.direction);
-        data[base + k++] = dir[0];
-        data[base + k++] = dir[1];
-        data[base + k++] = dir[2];
-        data[base + k++] = lum * l.intensity;
+        data[base + cursor.k++] = dir[0];
+        data[base + cursor.k++] = dir[1];
+        data[base + cursor.k++] = dir[2];
+        data[base + cursor.k++] = lum * l.intensity;
         const angularDiameter =
           l.angularDiameter != null && Number.isFinite(l.angularDiameter) && l.angularDiameter > 0
             ? l.angularDiameter
             : 0;
         data[base + 22] = angularDiameter;
         // directional packs s0(4) + s1(4) + s2(4) + s5.b(angularDiameter).
-        assertSlotCursor(k, 12, 'directional');
+        assertSlotCursor(cursor.k, 12, 'directional');
         break;
       }
       default: {

@@ -10,3 +10,33 @@ export const RCParamsOffset = {
   raysPerProbe: 44,
   rayGridSize: 48,
 } as const;
+
+/** Byte size of one `RCLight` entry (mirrors probeRayCast.wgsl.ts). */
+export const RC_LIGHT_ENTRY_BYTES = 64;
+
+/** Byte size of the `RCLightBuffer` header section (count + 3 pad). */
+export const RC_LIGHTS_HEADER_BYTES = 16;
+
+/** Max `RCLight` entries (matches WGSL `array<RCLight, 16>`). */
+export const RC_LIGHTS_MAX = 16;
+
+/** Byte size of the full `RCLightBuffer` GPU allocation (1040 bytes). */
+export const RC_LIGHTS_BUFFER_BYTES = 1040;
+
+/** Byte offsets within the `RCLightBuffer` header. */
+export const RCLightBufferHeaderOffset = {
+  count: 0,
+} as const;
+
+/** Field byte offsets within one `RCLight` entry (relative to entry start). */
+export const RCLightEntryOffset = {
+  kind: 0,
+  distance: 4,
+  decay: 8,
+  position: 16,
+  intensity: 28,
+  direction: 32,
+  innerCone: 44,
+  color: 48,
+  outerCone: 60,
+} as const;

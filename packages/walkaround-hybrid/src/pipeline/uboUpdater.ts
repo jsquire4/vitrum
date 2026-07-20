@@ -153,8 +153,10 @@ export interface CheckerboardUboState {
 const CHECKERBOARD_OFF: CheckerboardUboState = { enabled: false, frameParity: 0 };
 
 /** ReGIR-OFF default — every field zero ⇒ the kernel's `regirEnabled == 0`
- *  gate keeps RIS on the light-tree path bit-for-bit. */
-const REGIR_OFF: RegirUboState = {
+ *  gate keeps RIS on the light-tree path bit-for-bit. Exported so
+ *  {@link ReGIRCoordinator} consumes the single OFF-state source of truth
+ *  instead of re-declaring the same literal (D5-9). */
+export const REGIR_OFF: RegirUboState = {
   enabled: false,
   origin: [0, 0, 0],
   invCellSize: 0,

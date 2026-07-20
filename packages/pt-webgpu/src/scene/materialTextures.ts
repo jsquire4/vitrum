@@ -162,6 +162,78 @@ export const MATERIAL_TEX_VEC4_STRIDE =
   MATERIAL_TEX_FILTER_POLICY_VEC4_OFFSET + MATERIAL_TEX_FILTER_POLICY_VEC4_COUNT;
 export const MATERIAL_TEX_FLOAT_STRIDE = MATERIAL_TEX_VEC4_STRIDE * 4;
 
+/** Combined-map resolution context threaded to each slot's `resolve` accessor.
+ *  glTF's metallicRoughness is one image (G=roughness, B=metallic); when only one
+ *  side is authored, both slots reference it (see `collectMaterialTextures`). */
+interface MaterialTextureResolveContext {
+  readonly roughnessMap: TextureRef | undefined;
+  readonly metallicMap: TextureRef | undefined;
+}
+
+/**
+ * T2-A — the single ordered texture-map table. Index == the map's slot in the
+ * mip/filter policy blocks (0..22). Each entry drives, from ONE loop in
+ * `collectMaterialTextures`, all four per-map descriptor writes that previously
+ * enumerated this same 23-map list separately:
+ *   - `wrap`     → `wrapFloatOffset` (float offset within the material block)
+ *   - `mip`      → the slot index (this array position)
+ *   - `filter`   → the slot index
+ *   - `uvMeta`   → `uvMetaVec4Offset` + `uvMetaSlot`
+ *
+ * The ORDER here IS the wire format the WGSL sampler reads (mip/filter policy
+ * blocks are indexed by slot), and the wrap/uvMeta offsets reproduce the exact
+ * pre-refactor layout — pinned byte-identical by
+ * `materialTexDescriptorGolden.test.ts`. The block layout doc (top of file) is
+ * asserted against this table in `materialTextures.test.ts`.
+ *
+ * NOTE: the per-map INDEX lanes and interspersed scalar lanes (alphaMode,
+ * normalScale, intensities, layer scales) are NOT uniform per-slot — they scatter
+ * across bespoke lanes and stay hand-written in `collectMaterialTextures`.
+ */
+interface TextureMapSlot {
+  /** Diagnostic name (matches the layout-doc map order). */
+  readonly name: string;
+  /** Resolve this slot's TextureRef off the material (+ combined-map context). */
+  readonly resolve: (m: MaterialSpec, ctx: MaterialTextureResolveContext) => TextureRef | undefined;
+  /** Float offset (relative to the material block base `b`) for the wrap pair. */
+  readonly wrapFloatOffset: number;
+  /** vec4 offset of this slot's UV-metadata block (A/B pair). */
+  readonly uvMetaVec4Offset: number;
+  /** Slot index WITHIN that UV-metadata block. */
+  readonly uvMetaSlot: number;
+}
+
+const EXT_WRAP_BASE = MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET * 4;
+
+export const TEXTURE_MAP_SLOTS: readonly TextureMapSlot[] = [
+  // ── Main-block maps (wrap lanes 52..73; UV meta at offset 19) ───────────────
+  { name: 'baseColor',    resolve: (m) => m.baseColorMap,         wrapFloatOffset: 52, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 0 },
+  { name: 'emissive',     resolve: (m) => m.emissiveMap,          wrapFloatOffset: 54, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 1 },
+  { name: 'normal',       resolve: (m) => m.normalMap,            wrapFloatOffset: 56, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 2 },
+  { name: 'roughness',    resolve: (_m, c) => c.roughnessMap,     wrapFloatOffset: 58, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 3 },
+  { name: 'metallic',     resolve: (_m, c) => c.metallicMap,      wrapFloatOffset: 60, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 4 },
+  { name: 'ao',           resolve: (m) => m.aoMap,                wrapFloatOffset: 62, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 5 },
+  { name: 'lightMap',     resolve: (m) => m.lightMap,             wrapFloatOffset: 64, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 6 },
+  { name: 'bump',         resolve: (m) => m.bumpMap,              wrapFloatOffset: 66, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 7 },
+  { name: 'anisotropy',   resolve: (m) => m.anisotropyMap,        wrapFloatOffset: 68, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 8 },
+  { name: 'alpha',        resolve: (m) => m.alphaMap,             wrapFloatOffset: 70, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 9 },
+  { name: 'transmission', resolve: (m) => m.transmissionMap,      wrapFloatOffset: 72, uvMetaVec4Offset: MATERIAL_TEX_UV_META_VEC4_OFFSET, uvMetaSlot: 10 },
+  // ── Extension-lobe maps (wrap at EXT_WRAP_BASE; UV meta at offset 51) ───────
+  { name: 'clearcoat',            resolve: (m) => m.clearcoatMap,             wrapFloatOffset: EXT_WRAP_BASE + 0,  uvMetaVec4Offset: MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET, uvMetaSlot: 0 },
+  { name: 'clearcoatRoughness',   resolve: (m) => m.clearcoatRoughnessMap,    wrapFloatOffset: EXT_WRAP_BASE + 2,  uvMetaVec4Offset: MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET, uvMetaSlot: 1 },
+  { name: 'sheenColor',           resolve: (m) => m.sheenColorMap,            wrapFloatOffset: EXT_WRAP_BASE + 4,  uvMetaVec4Offset: MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET, uvMetaSlot: 2 },
+  { name: 'sheenRoughness',       resolve: (m) => m.sheenRoughnessMap,        wrapFloatOffset: EXT_WRAP_BASE + 6,  uvMetaVec4Offset: MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET, uvMetaSlot: 3 },
+  { name: 'iridescence',          resolve: (m) => m.iridescenceMap,           wrapFloatOffset: EXT_WRAP_BASE + 8,  uvMetaVec4Offset: MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET, uvMetaSlot: 4 },
+  { name: 'iridescenceThickness', resolve: (m) => m.iridescenceThicknessMap,  wrapFloatOffset: EXT_WRAP_BASE + 10, uvMetaVec4Offset: MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET, uvMetaSlot: 5 },
+  { name: 'specularColor',        resolve: (m) => m.specularColorMap,         wrapFloatOffset: EXT_WRAP_BASE + 12, uvMetaVec4Offset: MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET, uvMetaSlot: 6 },
+  { name: 'specularIntensity',    resolve: (m) => m.specularIntensityMap,     wrapFloatOffset: EXT_WRAP_BASE + 14, uvMetaVec4Offset: MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET, uvMetaSlot: 7 },
+  // ── Bespoke single-map lanes (own wrap + UV-meta offsets) ──────────────────
+  { name: 'clearcoatNormal', resolve: (m) => m.clearcoatNormalMap,   wrapFloatOffset: MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET * 4, uvMetaVec4Offset: MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET, uvMetaSlot: 0 },
+  { name: 'thickness',       resolve: (m) => m.thicknessMap,         wrapFloatOffset: MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET * 4,        uvMetaVec4Offset: MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET,        uvMetaSlot: 0 },
+  { name: 'frontLayerNormal', resolve: (m) => m.frontLayer?.normalMap, wrapFloatOffset: MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4 + 0, uvMetaVec4Offset: MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET, uvMetaSlot: 0 },
+  { name: 'backLayerNormal',  resolve: (m) => m.backLayer?.normalMap,  wrapFloatOffset: MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4 + 2, uvMetaVec4Offset: MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET, uvMetaSlot: 1 },
+];
+
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
   opaque: 0,
   mask: 1,
@@ -553,101 +625,21 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[layerNormalFitBase + 3] = 1;
     writeDefaultUvFitPairs(descriptors, b);
     writeDefaultExtensionUvFitPairs(descriptors, b);
-    writeWrapPair(descriptors, b + 52, bc);
-    writeWrapPair(descriptors, b + 54, m.emissiveMap);
-    writeWrapPair(descriptors, b + 56, m.normalMap);
-    writeWrapPair(descriptors, b + 58, roughnessMap);
-    writeWrapPair(descriptors, b + 60, metallicMap);
-    writeWrapPair(descriptors, b + 62, m.aoMap);
-    writeWrapPair(descriptors, b + 64, m.lightMap);
-    writeWrapPair(descriptors, b + 66, m.bumpMap);
-    writeWrapPair(descriptors, b + 68, m.anisotropyMap);
-    writeWrapPair(descriptors, b + 70, m.alphaMap);
-    writeWrapPair(descriptors, b + 72, m.transmissionMap);
-    const extWrapBase = b + MATERIAL_TEX_EXTENSION_WRAP_VEC4_OFFSET * 4;
-    writeWrapPair(descriptors, extWrapBase, m.clearcoatMap);
-    writeWrapPair(descriptors, extWrapBase + 2, m.clearcoatRoughnessMap);
-    writeWrapPair(descriptors, extWrapBase + 4, m.sheenColorMap);
-    writeWrapPair(descriptors, extWrapBase + 6, m.sheenRoughnessMap);
-    writeWrapPair(descriptors, extWrapBase + 8, m.iridescenceMap);
-    writeWrapPair(descriptors, extWrapBase + 10, m.iridescenceThicknessMap);
-    writeWrapPair(descriptors, extWrapBase + 12, m.specularColorMap);
-    writeWrapPair(descriptors, extWrapBase + 14, m.specularIntensityMap);
-    writeWrapPair(descriptors, b + MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP_VEC4_OFFSET * 4, m.clearcoatNormalMap);
-    writeWrapPair(descriptors, b + MATERIAL_TEX_THICKNESS_WRAP_VEC4_OFFSET * 4, m.thicknessMap);
-    writeWrapPair(descriptors, b + MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4, m.frontLayer?.normalMap);
-    writeWrapPair(descriptors, b + MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4 + 2, m.backLayer?.normalMap);
     writeDefaultMipPolicies(descriptors, b);
     writeDefaultFilterPolicies(descriptors, b);
-    writeMipPolicy(descriptors, b, 0, bc);
-    writeMipPolicy(descriptors, b, 1, m.emissiveMap);
-    writeMipPolicy(descriptors, b, 2, m.normalMap);
-    writeMipPolicy(descriptors, b, 3, roughnessMap);
-    writeMipPolicy(descriptors, b, 4, metallicMap);
-    writeMipPolicy(descriptors, b, 5, m.aoMap);
-    writeMipPolicy(descriptors, b, 6, m.lightMap);
-    writeMipPolicy(descriptors, b, 7, m.bumpMap);
-    writeMipPolicy(descriptors, b, 8, m.anisotropyMap);
-    writeMipPolicy(descriptors, b, 9, m.alphaMap);
-    writeMipPolicy(descriptors, b, 10, m.transmissionMap);
-    writeMipPolicy(descriptors, b, 11, m.clearcoatMap);
-    writeMipPolicy(descriptors, b, 12, m.clearcoatRoughnessMap);
-    writeMipPolicy(descriptors, b, 13, m.sheenColorMap);
-    writeMipPolicy(descriptors, b, 14, m.sheenRoughnessMap);
-    writeMipPolicy(descriptors, b, 15, m.iridescenceMap);
-    writeMipPolicy(descriptors, b, 16, m.iridescenceThicknessMap);
-    writeMipPolicy(descriptors, b, 17, m.specularColorMap);
-    writeMipPolicy(descriptors, b, 18, m.specularIntensityMap);
-    writeMipPolicy(descriptors, b, 19, m.clearcoatNormalMap);
-    writeMipPolicy(descriptors, b, 20, m.thicknessMap);
-    writeMipPolicy(descriptors, b, 21, m.frontLayer?.normalMap);
-    writeMipPolicy(descriptors, b, 22, m.backLayer?.normalMap);
-    writeFilterPolicy(descriptors, b, 0, bc);
-    writeFilterPolicy(descriptors, b, 1, m.emissiveMap);
-    writeFilterPolicy(descriptors, b, 2, m.normalMap);
-    writeFilterPolicy(descriptors, b, 3, roughnessMap);
-    writeFilterPolicy(descriptors, b, 4, metallicMap);
-    writeFilterPolicy(descriptors, b, 5, m.aoMap);
-    writeFilterPolicy(descriptors, b, 6, m.lightMap);
-    writeFilterPolicy(descriptors, b, 7, m.bumpMap);
-    writeFilterPolicy(descriptors, b, 8, m.anisotropyMap);
-    writeFilterPolicy(descriptors, b, 9, m.alphaMap);
-    writeFilterPolicy(descriptors, b, 10, m.transmissionMap);
-    writeFilterPolicy(descriptors, b, 11, m.clearcoatMap);
-    writeFilterPolicy(descriptors, b, 12, m.clearcoatRoughnessMap);
-    writeFilterPolicy(descriptors, b, 13, m.sheenColorMap);
-    writeFilterPolicy(descriptors, b, 14, m.sheenRoughnessMap);
-    writeFilterPolicy(descriptors, b, 15, m.iridescenceMap);
-    writeFilterPolicy(descriptors, b, 16, m.iridescenceThicknessMap);
-    writeFilterPolicy(descriptors, b, 17, m.specularColorMap);
-    writeFilterPolicy(descriptors, b, 18, m.specularIntensityMap);
-    writeFilterPolicy(descriptors, b, 19, m.clearcoatNormalMap);
-    writeFilterPolicy(descriptors, b, 20, m.thicknessMap);
-    writeFilterPolicy(descriptors, b, 21, m.frontLayer?.normalMap);
-    writeFilterPolicy(descriptors, b, 22, m.backLayer?.normalMap);
-    writeUvMeta(descriptors, b, 0, bc);
-    writeUvMeta(descriptors, b, 1, m.emissiveMap);
-    writeUvMeta(descriptors, b, 2, m.normalMap);
-    writeUvMeta(descriptors, b, 3, roughnessMap);
-    writeUvMeta(descriptors, b, 4, metallicMap);
-    writeUvMeta(descriptors, b, 5, m.aoMap);
-    writeUvMeta(descriptors, b, 6, m.lightMap);
-    writeUvMeta(descriptors, b, 7, m.bumpMap);
-    writeUvMeta(descriptors, b, 8, m.anisotropyMap);
-    writeUvMeta(descriptors, b, 9, m.alphaMap);
-    writeUvMeta(descriptors, b, 10, m.transmissionMap);
-    writeUvMeta(descriptors, b, 0, m.clearcoatMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 1, m.clearcoatRoughnessMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 2, m.sheenColorMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 3, m.sheenRoughnessMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 4, m.iridescenceMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 5, m.iridescenceThicknessMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 6, m.specularColorMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 7, m.specularIntensityMap, MATERIAL_TEX_EXTENSION_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 0, m.clearcoatNormalMap, MATERIAL_TEX_CLEARCOAT_NORMAL_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 0, m.thicknessMap, MATERIAL_TEX_THICKNESS_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 0, m.frontLayer?.normalMap, MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET);
-    writeUvMeta(descriptors, b, 1, m.backLayer?.normalMap, MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET);
+    // T2-A — drive the wrap / mip / filter / UV-metadata writes for all 23 maps
+    // from the single ordered TEXTURE_MAP_SLOTS table. The slot index IS the
+    // mip/filter policy slot; each entry carries its wrap + UV-metadata offsets.
+    // This replaces four separate hand-written 23-map enumerations. The per-map
+    // INDEX + scalar lanes above stay hand-written (they are not uniform per slot).
+    const resolveContext: MaterialTextureResolveContext = { roughnessMap, metallicMap };
+    TEXTURE_MAP_SLOTS.forEach((slot, slotIdx) => {
+      const ref = slot.resolve(m, resolveContext);
+      writeWrapPair(descriptors, b + slot.wrapFloatOffset, ref);
+      writeMipPolicy(descriptors, b, slotIdx, ref);
+      writeFilterPolicy(descriptors, b, slotIdx, ref);
+      writeUvMeta(descriptors, b, slot.uvMetaSlot, ref, slot.uvMetaVec4Offset);
+    });
   });
 
   return {

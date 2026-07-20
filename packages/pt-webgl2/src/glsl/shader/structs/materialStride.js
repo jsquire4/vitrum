@@ -23,6 +23,54 @@
 //   129 = {front texCoord, back texCoord, _, _}
 export const MATERIAL_WRAP_TEXEL_OFFSET = 100;
 
+// ── Named absolute texel offsets (single source of truth for the packer AND the
+// GLSL fetch sites). The packer (scene/materialsTexture.ts) previously hardcoded
+// these as bare literals (55, 57, …, 98) — the exact stride-drift surface this
+// module exists to eliminate. Each texture-transform occupies 2 texels (mat3
+// rows). Ordering matches the GLSL `readTextureTransform` calls in
+// material_struct.glsl.js (firstTextureTransformIdx + 2k).
+
+/** First texture-transform texel — the fork's `firstTextureTransformIdx`. */
+export const MATERIAL_FIRST_TRANSFORM_TEXEL = 55;
+/** Texels per texture-transform (mat3 packed as 2 rgba texels). */
+export const MATERIAL_TRANSFORM_TEXELS = 2;
+
+// Core 15 texture-transform slots (55..84), in GLSL `readTextureTransform` order.
+// texel = MATERIAL_FIRST_TRANSFORM_TEXEL + MATERIAL_TRANSFORM_TEXELS * k
+export const MATERIAL_TRANSFORM_TEXEL = /** @type {Record<string, number>} */ ({
+  baseColorMap: 55,
+  metallicMap: 57,
+  roughnessMap: 59,
+  transmissionMap: 61,
+  emissiveMap: 63,
+  normalMap: 65,
+  clearcoatMap: 67,
+  clearcoatNormalMap: 69,
+  clearcoatRoughnessMap: 71,
+  sheenColorMap: 73,
+  sheenRoughnessMap: 75,
+  iridescenceMap: 77,
+  iridescenceThicknessMap: 79,
+  specularColorMap: 81,
+  specularIntensityMap: 83,
+});
+
+// D3 auxiliary block.
+/** ao/light/bump map ids + scalars + envMapIntensity + uv-set mask (texels 85/86). */
+export const MATERIAL_D3_AUX_TEXEL = 85;
+/** ao/light/bump transforms (texels 87/89/91, 2 texels each). */
+export const MATERIAL_AO_TRANSFORM_TEXEL = 87;
+export const MATERIAL_LIGHTMAP_TRANSFORM_TEXEL = 89;
+export const MATERIAL_BUMP_TRANSFORM_TEXEL = 91;
+/** alphaMap transform (texels 93/94). */
+export const MATERIAL_ALPHA_TRANSFORM_TEXEL = 93;
+/** anisotropyMap transform (texels 95/96). */
+export const MATERIAL_ANISOTROPY_TRANSFORM_TEXEL = 95;
+/** Volume thickness payload (texel 97). */
+export const MATERIAL_VOLUME_THICKNESS_TEXEL = 97;
+/** thicknessMap transform (texels 98/99). */
+export const MATERIAL_THICKNESS_TRANSFORM_TEXEL = 98;
+
 // Map order shared by the UV-set bitmask and the sampler-policy payload. Bit k in
 // UV_SET_BIT and texel k in the sampler texels describe the same MaterialSpec map.
 export const MATERIAL_MAP_FIELD_ORDER = /** @type {readonly string[]} */ ([

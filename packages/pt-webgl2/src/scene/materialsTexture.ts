@@ -32,6 +32,15 @@ import {
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
   MATERIAL_WRAP_TEXEL_OFFSET,
   UV_SET_BIT,
+  MATERIAL_TRANSFORM_TEXEL,
+  MATERIAL_D3_AUX_TEXEL,
+  MATERIAL_AO_TRANSFORM_TEXEL,
+  MATERIAL_LIGHTMAP_TRANSFORM_TEXEL,
+  MATERIAL_BUMP_TRANSFORM_TEXEL,
+  MATERIAL_ALPHA_TRANSFORM_TEXEL,
+  MATERIAL_ANISOTROPY_TRANSFORM_TEXEL,
+  MATERIAL_VOLUME_THICKNESS_TEXEL,
+  MATERIAL_THICKNESS_TRANSFORM_TEXEL,
 } from '../glsl/shader/structs/materialStride.js';
 
 /** Pixels (RGBA32F texels) per material — single-sourced with every GLSL fetch
@@ -373,6 +382,46 @@ interface LayerIds {
   backLayerNormal: number;
 }
 
+/**
+ * D10.8: Map table driving `packLayerIds`. Each entry declares the `LayerIds`
+ * key, the `MaterialSpec` texture-ref accessor, its sample color space, and the
+ * warning `field` label. One row per resolved layer id — iterated once so the
+ * per-map arguments (color space, field name) live in data, not 23 positional
+ * call sites. `field` doubles as the atlas-warning label the fork's GLSL expects.
+ */
+interface LayerIdMapEntry {
+  readonly key: keyof LayerIds;
+  readonly ref: (m: MaterialSpec) => TextureRefLike | undefined;
+  readonly colorSpace: TextureSampleColorSpace;
+  readonly field: string;
+}
+
+const LAYER_ID_MAP: readonly LayerIdMapEntry[] = [
+  { key: 'baseColor', ref: (m) => m.baseColorMap, colorSpace: 'srgb', field: 'baseColorMap' },
+  { key: 'metal', ref: (m) => m.metallicMap, colorSpace: 'linear', field: 'metallicMap' },
+  { key: 'rough', ref: (m) => m.roughnessMap, colorSpace: 'linear', field: 'roughnessMap' },
+  { key: 'transmission', ref: (m) => m.transmissionMap, colorSpace: 'linear', field: 'transmissionMap' },
+  { key: 'emissive', ref: (m) => m.emissiveMap, colorSpace: 'srgb', field: 'emissiveMap' },
+  { key: 'normal', ref: (m) => m.normalMap, colorSpace: 'linear', field: 'normalMap' },
+  { key: 'alpha', ref: (m) => m.alphaMap, colorSpace: 'linear', field: 'alphaMap' },
+  { key: 'clearcoat', ref: (m) => m.clearcoatMap, colorSpace: 'linear', field: 'clearcoatMap' },
+  { key: 'clearcoatRoughness', ref: (m) => m.clearcoatRoughnessMap, colorSpace: 'linear', field: 'clearcoatRoughnessMap' },
+  { key: 'clearcoatNormal', ref: (m) => m.clearcoatNormalMap, colorSpace: 'linear', field: 'clearcoatNormalMap' },
+  { key: 'sheenColor', ref: (m) => m.sheenColorMap, colorSpace: 'srgb', field: 'sheenColorMap' },
+  { key: 'sheenRoughness', ref: (m) => m.sheenRoughnessMap, colorSpace: 'linear', field: 'sheenRoughnessMap' },
+  { key: 'iridescence', ref: (m) => m.iridescenceMap, colorSpace: 'linear', field: 'iridescenceMap' },
+  { key: 'iridescenceThickness', ref: (m) => m.iridescenceThicknessMap, colorSpace: 'linear', field: 'iridescenceThicknessMap' },
+  { key: 'specularColor', ref: (m) => m.specularColorMap, colorSpace: 'srgb', field: 'specularColorMap' },
+  { key: 'specularIntensity', ref: (m) => m.specularIntensityMap, colorSpace: 'linear', field: 'specularIntensityMap' },
+  { key: 'ao', ref: (m) => m.aoMap, colorSpace: 'linear', field: 'aoMap' },
+  { key: 'lightMap', ref: (m) => m.lightMap, colorSpace: 'linear', field: 'lightMap' },
+  { key: 'bump', ref: (m) => m.bumpMap, colorSpace: 'linear', field: 'bumpMap' },
+  { key: 'anisotropy', ref: (m) => m.anisotropyMap, colorSpace: 'linear', field: 'anisotropyMap' },
+  { key: 'thickness', ref: (m) => m.thicknessMap, colorSpace: 'linear', field: 'thicknessMap' },
+  { key: 'frontLayerNormal', ref: (m) => m.frontLayer?.normalMap, colorSpace: 'linear', field: 'frontLayer.normalMap' },
+  { key: 'backLayerNormal', ref: (m) => m.backLayer?.normalMap, colorSpace: 'linear', field: 'backLayer.normalMap' },
+];
+
 /** D10.8: Resolve all atlas layer ids for a material in one pass (avoids re-calling mapLayer). */
 function packLayerIds(
   m: MaterialSpec,
@@ -380,80 +429,18 @@ function packLayerIds(
   materialIndex: number,
   warnUnsupportedTexCoord: UnsupportedTexCoordWarner,
 ): LayerIds {
-  return {
-    baseColor: mapLayer(m.baseColorMap, layerOf, 'srgb', materialIndex, 'baseColorMap', warnUnsupportedTexCoord),
-    metal: mapLayer(m.metallicMap, layerOf, 'linear', materialIndex, 'metallicMap', warnUnsupportedTexCoord),
-    rough: mapLayer(m.roughnessMap, layerOf, 'linear', materialIndex, 'roughnessMap', warnUnsupportedTexCoord),
-    transmission: mapLayer(m.transmissionMap, layerOf, 'linear', materialIndex, 'transmissionMap', warnUnsupportedTexCoord),
-    emissive: mapLayer(m.emissiveMap, layerOf, 'srgb', materialIndex, 'emissiveMap', warnUnsupportedTexCoord),
-    normal: mapLayer(m.normalMap, layerOf, 'linear', materialIndex, 'normalMap', warnUnsupportedTexCoord),
-    alpha: mapLayer(m.alphaMap, layerOf, 'linear', materialIndex, 'alphaMap', warnUnsupportedTexCoord),
-    clearcoat: mapLayer(m.clearcoatMap, layerOf, 'linear', materialIndex, 'clearcoatMap', warnUnsupportedTexCoord),
-    clearcoatRoughness: mapLayer(
-      m.clearcoatRoughnessMap,
+  const ids = {} as LayerIds;
+  for (const entry of LAYER_ID_MAP) {
+    ids[entry.key] = mapLayer(
+      entry.ref(m),
       layerOf,
-      'linear',
+      entry.colorSpace,
       materialIndex,
-      'clearcoatRoughnessMap',
+      entry.field,
       warnUnsupportedTexCoord,
-    ),
-    clearcoatNormal: mapLayer(
-      m.clearcoatNormalMap,
-      layerOf,
-      'linear',
-      materialIndex,
-      'clearcoatNormalMap',
-      warnUnsupportedTexCoord,
-    ),
-    sheenColor: mapLayer(m.sheenColorMap, layerOf, 'srgb', materialIndex, 'sheenColorMap', warnUnsupportedTexCoord),
-    sheenRoughness: mapLayer(
-      m.sheenRoughnessMap,
-      layerOf,
-      'linear',
-      materialIndex,
-      'sheenRoughnessMap',
-      warnUnsupportedTexCoord,
-    ),
-    iridescence: mapLayer(m.iridescenceMap, layerOf, 'linear', materialIndex, 'iridescenceMap', warnUnsupportedTexCoord),
-    iridescenceThickness: mapLayer(
-      m.iridescenceThicknessMap,
-      layerOf,
-      'linear',
-      materialIndex,
-      'iridescenceThicknessMap',
-      warnUnsupportedTexCoord,
-    ),
-    specularColor: mapLayer(m.specularColorMap, layerOf, 'srgb', materialIndex, 'specularColorMap', warnUnsupportedTexCoord),
-    specularIntensity: mapLayer(
-      m.specularIntensityMap,
-      layerOf,
-      'linear',
-      materialIndex,
-      'specularIntensityMap',
-      warnUnsupportedTexCoord,
-    ),
-    ao: mapLayer(m.aoMap, layerOf, 'linear', materialIndex, 'aoMap', warnUnsupportedTexCoord),
-    lightMap: mapLayer(m.lightMap, layerOf, 'linear', materialIndex, 'lightMap', warnUnsupportedTexCoord),
-    bump: mapLayer(m.bumpMap, layerOf, 'linear', materialIndex, 'bumpMap', warnUnsupportedTexCoord),
-    anisotropy: mapLayer(m.anisotropyMap, layerOf, 'linear', materialIndex, 'anisotropyMap', warnUnsupportedTexCoord),
-    thickness: mapLayer(m.thicknessMap, layerOf, 'linear', materialIndex, 'thicknessMap', warnUnsupportedTexCoord),
-    frontLayerNormal: mapLayer(
-      m.frontLayer?.normalMap,
-      layerOf,
-      'linear',
-      materialIndex,
-      'frontLayer.normalMap',
-      warnUnsupportedTexCoord,
-    ),
-    backLayerNormal: mapLayer(
-      m.backLayer?.normalMap,
-      layerOf,
-      'linear',
-      materialIndex,
-      'backLayer.normalMap',
-      warnUnsupportedTexCoord,
-    ),
-  };
+    );
+  }
+  return ids;
 }
 
 /**
@@ -733,25 +720,25 @@ function packTextureTransforms(
   // clearcoatNormal(14), clearcoatRoughness(16), sheenColor(18), sheenRoughness(20),
   // iridescence(22), iridescenceThickness(24), specularColor(26), specularIntensity(28).
   // Each slot is 2 texels (mat3 rows), starting at texel 55.
-  if (ids.baseColor >= 0) writeTransform(data, base, 55, m.baseColorMap);
-  if (ids.metal >= 0) writeTransform(data, base, 57, m.metallicMap);
-  if (ids.rough >= 0) writeTransform(data, base, 59, m.roughnessMap);
-  if (ids.transmission >= 0) writeTransform(data, base, 61, m.transmissionMap);
-  if (ids.emissive >= 0) writeTransform(data, base, 63, m.emissiveMap);
-  if (ids.normal >= 0) writeTransform(data, base, 65, m.normalMap);
+  if (ids.baseColor >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['baseColorMap']!, m.baseColorMap);
+  if (ids.metal >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['metallicMap']!, m.metallicMap);
+  if (ids.rough >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['roughnessMap']!, m.roughnessMap);
+  if (ids.transmission >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['transmissionMap']!, m.transmissionMap);
+  if (ids.emissive >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['emissiveMap']!, m.emissiveMap);
+  if (ids.normal >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['normalMap']!, m.normalMap);
   // D3 — clearcoat / sheen / iridescence / specular transforms (GLSL slots 12..28).
-  if (ids.clearcoat >= 0) writeTransform(data, base, 67, m.clearcoatMap);
-  if (ids.clearcoatNormal >= 0) writeTransform(data, base, 69, m.clearcoatNormalMap);
-  if (ids.clearcoatRoughness >= 0) writeTransform(data, base, 71, m.clearcoatRoughnessMap);
-  if (ids.sheenColor >= 0) writeTransform(data, base, 73, m.sheenColorMap);
-  if (ids.sheenRoughness >= 0) writeTransform(data, base, 75, m.sheenRoughnessMap);
-  if (ids.iridescence >= 0) writeTransform(data, base, 77, m.iridescenceMap);
-  if (ids.iridescenceThickness >= 0) writeTransform(data, base, 79, m.iridescenceThicknessMap);
-  if (ids.specularColor >= 0) writeTransform(data, base, 81, m.specularColorMap);
-  if (ids.specularIntensity >= 0) writeTransform(data, base, 83, m.specularIntensityMap);
-  if (ids.alpha >= 0) writeTransform(data, base, 93, m.alphaMap);
-  if (ids.anisotropy >= 0) writeTransform(data, base, 95, m.anisotropyMap);
-  if (ids.thickness >= 0) writeTransform(data, base, 98, m.thicknessMap);
+  if (ids.clearcoat >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['clearcoatMap']!, m.clearcoatMap);
+  if (ids.clearcoatNormal >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['clearcoatNormalMap']!, m.clearcoatNormalMap);
+  if (ids.clearcoatRoughness >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['clearcoatRoughnessMap']!, m.clearcoatRoughnessMap);
+  if (ids.sheenColor >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['sheenColorMap']!, m.sheenColorMap);
+  if (ids.sheenRoughness >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['sheenRoughnessMap']!, m.sheenRoughnessMap);
+  if (ids.iridescence >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['iridescenceMap']!, m.iridescenceMap);
+  if (ids.iridescenceThickness >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['iridescenceThicknessMap']!, m.iridescenceThicknessMap);
+  if (ids.specularColor >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['specularColorMap']!, m.specularColorMap);
+  if (ids.specularIntensity >= 0) writeTransform(data, base, MATERIAL_TRANSFORM_TEXEL['specularIntensityMap']!, m.specularIntensityMap);
+  if (ids.alpha >= 0) writeTransform(data, base, MATERIAL_ALPHA_TRANSFORM_TEXEL, m.alphaMap);
+  if (ids.anisotropy >= 0) writeTransform(data, base, MATERIAL_ANISOTROPY_TRANSFORM_TEXEL, m.anisotropyMap);
+  if (ids.thickness >= 0) writeTransform(data, base, MATERIAL_THICKNESS_TRANSFORM_TEXEL, m.thicknessMap);
 
   // D3 — texels 85/86: ao/light/bump map ids + scalars + envMapIntensity
   // (mirrors readMaterialInfo s20/s21 in material_struct.glsl.js).
@@ -763,7 +750,7 @@ function packTextureTransforms(
     if ((ref?.texCoord ?? 0) === 1) uvSetMask |= bit;
   }
 
-  let d3 = base + 85 * 4;
+  let d3 = base + MATERIAL_D3_AUX_TEXEL * 4;
   data[d3++] = ids.ao;
   data[d3++] = ids.lightMap;
   data[d3++] = ids.bump;
@@ -773,11 +760,11 @@ function packTextureTransforms(
   data[d3++] = m.bumpScale ?? 1.0;
   data[d3++] = uvSetMask; // uv-set bitmask (was pad)
   // D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
-  if (ids.ao >= 0) writeTransform(data, base, 87, m.aoMap);
-  if (ids.lightMap >= 0) writeTransform(data, base, 89, m.lightMap);
-  if (ids.bump >= 0) writeTransform(data, base, 91, m.bumpMap);
+  if (ids.ao >= 0) writeTransform(data, base, MATERIAL_AO_TRANSFORM_TEXEL, m.aoMap);
+  if (ids.lightMap >= 0) writeTransform(data, base, MATERIAL_LIGHTMAP_TRANSFORM_TEXEL, m.lightMap);
+  if (ids.bump >= 0) writeTransform(data, base, MATERIAL_BUMP_TRANSFORM_TEXEL, m.bumpMap);
 
-  const volume = base + 97 * 4;
+  const volume = base + MATERIAL_VOLUME_THICKNESS_TEXEL * 4;
   data[volume] = m.thickness ?? 0.0;
   data[volume + 1] = ids.thickness;
   data[volume + 2] = 0.0;

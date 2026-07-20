@@ -34,6 +34,7 @@
 import { CASCADE_DIMS, validateCascadeDims, type CascadeDim } from './cascadePyramid.js';
 import { PROBE_RAY_CAST_WGSL } from './wgsl/probeRayCast.wgsl.js';
 import { CASCADE_MERGE_WGSL } from './wgsl/cascadeMerge.wgsl.js';
+import { CascadeUniformsOffset } from './cascadeUniformsLayout.generated.js';
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
@@ -207,7 +208,7 @@ export interface RCDispatchOptsRaw {
  * Field order and packing are identical to the old positional-params signature;
  * this object form is used internally to eliminate the 13-param call.
  */
-interface CascadeUniformInputs {
+export interface CascadeUniformInputs {
   readonly probeOriginWorld: readonly [number, number, number];
   readonly roomSize:         readonly [number, number, number];
   readonly sunDir:           readonly [number, number, number];
@@ -236,7 +237,7 @@ interface CascadeUniformInputs {
  * `CASCADE_DIMS` lookup. Per-instance dims flow from
  * `HybridEngineOptions.cascadeDims` through `RCDispatcher.constructor`.
  */
-function buildCascadeUniformDataInto(
+export function buildCascadeUniformDataInto(
   d: Float32Array,
   k: number,
   inputs: CascadeUniformInputs,
@@ -262,40 +263,46 @@ function buildCascadeUniformDataInto(
   const rayGridSize = Math.round(Math.sqrt(dim.rays));
   const o = probeOriginWorld;
   const s = roomSize;
-  // CascadeUniforms layout (matches WGSL struct in probeRayCast.wgsl.ts):
-  // probeOriginWorld(3f), _pad0(f)
-  // roomSize(3f), _pad1(f)
-  // probeCount(3u), raysPerProbe(u)
-  // rayGridSize(u), intervalNear(f), intervalFar(f), cascadeIndex(u)
-  // sunDirection(3f), sunAngularRadius(f)
-  // sunColor(3f), envIntensity(f)
-  // frameSeed(u), lastCascade(u), triIntersectEpsilon(f), bvhMode(u)
-  // tlasNodeCount(u), emitterCount(u) [slot 29 — RC emitter NEE]
-  // lightCount(u) [slot 30 — A7 point/spot lights],
-  // sunCastShadowDisabled(u) [slot 31 — Scene directional castShadow:false],
-  // _pad4/5(u)
-  // Total allocation 40 float/uint = 160 bytes.
+  // CascadeUniforms layout is generated from the WGSL struct by
+  // tools/generate-wgsl-layouts.mjs (cascadeUniformsLayout.generated.ts). Each
+  // field is indexed by its named byte offset / 4 (all fields are 4-aligned) so
+  // adding/moving a field is a single-site edit in the codegen field list — the
+  // magic slot indices (ui[29..31] etc.) and the drift-prone ASCII layout
+  // comment are gone. The buffer is still allocated at 40 words (160 bytes) by
+  // the caller; the trailing pad words stay zero from Float32Array init.
+  const O = CascadeUniformsOffset;
   const ui = new Uint32Array(d.buffer);
-  d[0]  = o[0]; d[1]  = o[1]; d[2]  = o[2]; d[3]  = 0;
-  d[4]  = s[0]; d[5]  = s[1]; d[6]  = s[2]; d[7]  = 0;
-  ui[8] = dim.probes[0]; ui[9] = dim.probes[1]; ui[10] = dim.probes[2];
-  ui[11] = dim.rays;
-  ui[12] = rayGridSize;
-  d[13] = dim.intervalNear; d[14] = dim.intervalFar;
-  ui[15] = k;
-  d[16] = sunDir[0]; d[17] = sunDir[1]; d[18] = sunDir[2];
-  d[19] = Number.isFinite(sunAngularRadius) ? Math.max(0, sunAngularRadius) : 0;
-  d[20] = sunColor[0]; d[21] = sunColor[1]; d[22] = sunColor[2];
-  d[23] = envIntensity;
-  ui[24] = frameSeed;
-  ui[25] = dims.length - 1;
-  d[26] = triIntersectEpsilon;  // E2: was _pad4[0]
-  ui[27] = bvhMode >>> 0;
-  ui[28] = tlasNodeCount >>> 0;
-  ui[29] = emitterCount >>> 0;
-  ui[30] = lightCount >>> 0;    // A7: point/spot analytic light count
-  ui[31] = sunCastShadowDisabled ? 1 : 0; // directional emitter castShadow:false
-  // ui[32..33] = _pad4/5 (zero from Float32Array init)
+  d[O.probeOriginWorld / 4 + 0] = o[0];
+  d[O.probeOriginWorld / 4 + 1] = o[1];
+  d[O.probeOriginWorld / 4 + 2] = o[2];
+  d[O.roomSize / 4 + 0] = s[0];
+  d[O.roomSize / 4 + 1] = s[1];
+  d[O.roomSize / 4 + 2] = s[2];
+  ui[O.probeCount / 4 + 0] = dim.probes[0];
+  ui[O.probeCount / 4 + 1] = dim.probes[1];
+  ui[O.probeCount / 4 + 2] = dim.probes[2];
+  ui[O.raysPerProbe / 4] = dim.rays;
+  ui[O.rayGridSize / 4] = rayGridSize;
+  d[O.intervalNear / 4] = dim.intervalNear;
+  d[O.intervalFar / 4] = dim.intervalFar;
+  ui[O.cascadeIndex / 4] = k;
+  d[O.sunDirection / 4 + 0] = sunDir[0];
+  d[O.sunDirection / 4 + 1] = sunDir[1];
+  d[O.sunDirection / 4 + 2] = sunDir[2];
+  d[O.sunAngularRadius / 4] = Number.isFinite(sunAngularRadius) ? Math.max(0, sunAngularRadius) : 0;
+  d[O.sunColor / 4 + 0] = sunColor[0];
+  d[O.sunColor / 4 + 1] = sunColor[1];
+  d[O.sunColor / 4 + 2] = sunColor[2];
+  d[O.envIntensity / 4] = envIntensity;
+  ui[O.frameSeed / 4] = frameSeed;
+  ui[O.lastCascade / 4] = dims.length - 1;
+  d[O.triIntersectEpsilon / 4] = triIntersectEpsilon;  // E2: UBO-plumbed (was local const)
+  ui[O.bvhMode / 4] = bvhMode >>> 0;
+  ui[O.tlasNodeCount / 4] = tlasNodeCount >>> 0;
+  ui[O.emitterCount / 4] = emitterCount >>> 0;         // RC emitter NEE
+  ui[O.lightCount / 4] = lightCount >>> 0;             // A7: point/spot analytic lights
+  ui[O.sunCastShadowDisabled / 4] = sunCastShadowDisabled ? 1 : 0; // directional castShadow:false
+  // _pad4 / _pad5 stay zero from Float32Array init.
 }
 
 function buildMergeUniformData(
@@ -342,64 +349,103 @@ function sameBufferArray(a: readonly GPUBuffer[], b: readonly GPUBuffer[]): bool
   return true;
 }
 
+/**
+ * Single-source field registry for the binding signature (D16-8).
+ *
+ * Each entry captures one binding-relevant field: how to extract it from
+ * `RCDispatchOptsRaw` (applying the default a missing/optional field falls back
+ * to), and how to compare two captured values. `bindingSignature` builds the
+ * cached snapshot by iterating this list; `sameBindingSignature` diffs by
+ * iterating the same list. Adding/removing a binding is a **single-site edit**
+ * here — the two functions can no longer drift out of sync (the H1/H41
+ * offset-drift class this replaces). `bindingFieldRegistryFields` is exported
+ * for a pin test asserting the exact field set is unchanged.
+ *
+ * `kind` selects the comparator: `'ref'` = identity (`===`, incl. GPUBuffer /
+ * texture view / sampler / string), `'vec3'` = per-component tuple equality,
+ * `'bufferArray'` = ordered GPUBuffer[] equality.
+ */
+type BindingFieldKind = 'ref' | 'vec3' | 'bufferArray';
+
+interface BindingField<K extends keyof DispatchBindingSignature> {
+  readonly key: K;
+  readonly kind: BindingFieldKind;
+  readonly extract: (opts: RCDispatchOptsRaw) => DispatchBindingSignature[K];
+}
+
+function bf<K extends keyof DispatchBindingSignature>(
+  key: K,
+  kind: BindingFieldKind,
+  extract: (opts: RCDispatchOptsRaw) => DispatchBindingSignature[K],
+): BindingField<K> {
+  return { key, kind, extract };
+}
+
+// One entry per binding-relevant field. ORDER + membership define the signature.
+const BINDING_FIELDS: readonly BindingField<keyof DispatchBindingSignature>[] = [
+  bf('device', 'ref', (o) => o.device),
+  bf('bvhMode', 'ref', (o) => o.bvhMode ?? 'merged'),
+  bf('bvhNodesBuf', 'ref', (o) => o.bvhNodesBuf),
+  bf('bvhIndicesBuf', 'ref', (o) => o.bvhIndicesBuf),
+  bf('bvhPositionsBuf', 'ref', (o) => o.bvhPositionsBuf),
+  bf('bvhNormalsBuf', 'ref', (o) => o.bvhNormalsBuf),
+  bf('materialsBuf', 'ref', (o) => o.materialsBuf),
+  bf('triMaterialIdBuf', 'ref', (o) => o.triMaterialIdBuf),
+  bf('cascadeBufs', 'bufferArray', (o) => [...o.cascadeBufs]),
+  bf('probeOriginWorld', 'vec3', (o) => [...o.probeOriginWorld] as [number, number, number]),
+  bf('roomSize', 'vec3', (o) => [...o.roomSize] as [number, number, number]),
+  bf('envTextureView', 'ref', (o) => o.envTextureView ?? null),
+  bf('envSampler', 'ref', (o) => o.envSampler ?? null),
+  bf('materialTextureAtlasView', 'ref', (o) => o.materialTextureAtlasView ?? null),
+  bf('materialMapMetaTextureView', 'ref', (o) => o.materialMapMetaTextureView ?? null),
+  bf('bvhTangentTextureView', 'ref', (o) => o.bvhTangentTextureView ?? null),
+  bf('bvhVertexColorTextureView', 'ref', (o) => o.bvhVertexColorTextureView ?? null),
+  bf('tlasNodesBuf', 'ref', (o) => o.tlasNodesBuf ?? null),
+  bf('tlasInstanceIndicesBuf', 'ref', (o) => o.tlasInstanceIndicesBuf ?? null),
+  bf('tlasBlasRootsBuf', 'ref', (o) => o.tlasBlasRootsBuf ?? null),
+  bf('tlasInstanceWorldToLocalBuf', 'ref', (o) => o.tlasInstanceWorldToLocalBuf ?? null),
+  bf('tlasInstanceLocalToWorldBuf', 'ref', (o) => o.tlasInstanceLocalToWorldBuf ?? null),
+  bf('emittersBuf', 'ref', (o) => o.emittersBuf ?? null),
+  bf('lightsBuf', 'ref', (o) => o.lightsBuf ?? null),
+] as const;
+
+/** The binding-signature field keys, in order — exported for the pin test. */
+export const bindingFieldRegistryFields: readonly (keyof DispatchBindingSignature)[] =
+  BINDING_FIELDS.map((f) => f.key);
+
 function bindingSignature(opts: RCDispatchOptsRaw): DispatchBindingSignature {
-  return {
-    device: opts.device,
-    bvhMode: opts.bvhMode ?? 'merged',
-    bvhNodesBuf: opts.bvhNodesBuf,
-    bvhIndicesBuf: opts.bvhIndicesBuf,
-    bvhPositionsBuf: opts.bvhPositionsBuf,
-    bvhNormalsBuf: opts.bvhNormalsBuf,
-    materialsBuf: opts.materialsBuf,
-    triMaterialIdBuf: opts.triMaterialIdBuf,
-    cascadeBufs: [...opts.cascadeBufs],
-    probeOriginWorld: [...opts.probeOriginWorld] as [number, number, number],
-    roomSize: [...opts.roomSize] as [number, number, number],
-    envTextureView: opts.envTextureView ?? null,
-    envSampler: opts.envSampler ?? null,
-    materialTextureAtlasView: opts.materialTextureAtlasView ?? null,
-    materialMapMetaTextureView: opts.materialMapMetaTextureView ?? null,
-    bvhTangentTextureView: opts.bvhTangentTextureView ?? null,
-    bvhVertexColorTextureView: opts.bvhVertexColorTextureView ?? null,
-    tlasNodesBuf: opts.tlasNodesBuf ?? null,
-    tlasInstanceIndicesBuf: opts.tlasInstanceIndicesBuf ?? null,
-    tlasBlasRootsBuf: opts.tlasBlasRootsBuf ?? null,
-    tlasInstanceWorldToLocalBuf: opts.tlasInstanceWorldToLocalBuf ?? null,
-    tlasInstanceLocalToWorldBuf: opts.tlasInstanceLocalToWorldBuf ?? null,
-    emittersBuf: opts.emittersBuf ?? null,
-    lightsBuf: opts.lightsBuf ?? null,
-  };
+  // Iterate the registry so the snapshot always covers exactly BINDING_FIELDS.
+  const sig = {} as Record<keyof DispatchBindingSignature, unknown>;
+  for (const field of BINDING_FIELDS) {
+    sig[field.key] = field.extract(opts);
+  }
+  return sig as unknown as DispatchBindingSignature;
 }
 
 function sameBindingSignature(
   a: DispatchBindingSignature | null,
   b: DispatchBindingSignature,
 ): boolean {
-  return a != null &&
-    a.device === b.device &&
-    a.bvhMode === b.bvhMode &&
-    a.bvhNodesBuf === b.bvhNodesBuf &&
-    a.bvhIndicesBuf === b.bvhIndicesBuf &&
-    a.bvhPositionsBuf === b.bvhPositionsBuf &&
-    a.bvhNormalsBuf === b.bvhNormalsBuf &&
-    a.materialsBuf === b.materialsBuf &&
-    a.triMaterialIdBuf === b.triMaterialIdBuf &&
-    sameBufferArray(a.cascadeBufs, b.cascadeBufs) &&
-    sameVec3(a.probeOriginWorld, b.probeOriginWorld) &&
-    sameVec3(a.roomSize, b.roomSize) &&
-    a.envTextureView === b.envTextureView &&
-    a.envSampler === b.envSampler &&
-    a.materialTextureAtlasView === b.materialTextureAtlasView &&
-    a.materialMapMetaTextureView === b.materialMapMetaTextureView &&
-    a.bvhTangentTextureView === b.bvhTangentTextureView &&
-    a.bvhVertexColorTextureView === b.bvhVertexColorTextureView &&
-    a.tlasNodesBuf === b.tlasNodesBuf &&
-    a.tlasInstanceIndicesBuf === b.tlasInstanceIndicesBuf &&
-    a.tlasBlasRootsBuf === b.tlasBlasRootsBuf &&
-    a.tlasInstanceWorldToLocalBuf === b.tlasInstanceWorldToLocalBuf &&
-    a.tlasInstanceLocalToWorldBuf === b.tlasInstanceLocalToWorldBuf &&
-    a.emittersBuf === b.emittersBuf &&
-    a.lightsBuf === b.lightsBuf;
+  if (a == null) return false;
+  for (const field of BINDING_FIELDS) {
+    const av = a[field.key];
+    const bv = b[field.key];
+    switch (field.kind) {
+      case 'vec3':
+        if (!sameVec3(
+          av as readonly [number, number, number],
+          bv as readonly [number, number, number],
+        )) return false;
+        break;
+      case 'bufferArray':
+        if (!sameBufferArray(av as readonly GPUBuffer[], bv as readonly GPUBuffer[])) return false;
+        break;
+      default:
+        if (av !== bv) return false;
+        break;
+    }
+  }
+  return true;
 }
 
 // ─── RCDispatcher class ───────────────────────────────────────────────────────

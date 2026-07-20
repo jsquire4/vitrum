@@ -36,7 +36,7 @@ import {
 } from '@vitrum/pt-webgpu';
 
 import { probeAdapterProfile } from './adapterProfile.js';
-import { computeProgressiveLimitUnion } from './createProgressiveEngine.js';
+import { checkProgressiveLimitUnion, computeProgressiveLimitUnion } from './createProgressiveEngine.js';
 
 /** Which backend the negotiated device is intended for. Selects the
  *  `requiredLimits` requested at `adapter.requestDevice` so the device is built
@@ -223,16 +223,9 @@ function resolveRequiredLimits(
       // Forward restirPtReuse so a host negotiating a progressive device for
       // ReSTIR-PT reuse gets the higher buffer floor (matching the
       // createProgressiveEngine limit-union preflight).
-      const union = computeProgressiveLimitUnion({
-        restirPtReuse: options.restirPtReuse === true,
-      });
-      const unmet: string[] = [];
-      for (const [key, wanted] of Object.entries(union)) {
-        const cap = (adapter.limits as unknown as Record<string, number | undefined>)[key];
-        if (typeof cap !== 'number' || cap < wanted) {
-          unmet.push(`${key}: need ≥${wanted}, adapter has ${cap ?? 'undefined'}`);
-        }
-      }
+      const restirPtReuse = options.restirPtReuse === true;
+      const union = computeProgressiveLimitUnion({ restirPtReuse });
+      const unmet = checkProgressiveLimitUnion(adapter, { restirPtReuse });
       if (unmet.length > 0) {
         throw new Error(
           'negotiateWebGPUDevice: target "progressive" — this adapter cannot satisfy the ' +

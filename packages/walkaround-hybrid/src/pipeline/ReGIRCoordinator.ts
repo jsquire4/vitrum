@@ -24,6 +24,7 @@
 import { REGIR_FLOATS_PER_SURVIVOR, LIGHT_TREE_FLOATS_PER_NODE } from '@vitrum/shared-samplers';
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
+import { REGIR_OFF } from './uboUpdater.js';
 import type { RegirUboState } from './uboUpdater.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
 
@@ -152,15 +153,7 @@ export class ReGIRCoordinator implements PipelineSubsystem {
    *  stays on the light-tree path bit-identically. */
   uboState(): RegirUboState {
     if (!this._live) {
-      return {
-        enabled: false,
-        origin: [0, 0, 0],
-        invCellSize: 0,
-        dims: [0, 0, 0],
-        candidatesPerCell: 0,
-        survivorsPerCell: 0,
-        gridFloatOffset: 0,
-      };
+      return REGIR_OFF;
     }
     return {
       enabled: true,

@@ -252,6 +252,18 @@ export type { PrimitiveTlasBinding };
  * `bufferField` — the corresponding GPUBuffer handle field on `UploadedSceneBuffers`.
  * `label`       — the label string passed to `createStorageBuffer` (and visible in GPU
  *                 debuggers as `vitrum.pt-webgpu.scene.<name>`).
+ * `excludeFromMemorySum` — (optional) when `true` the buffer is NOT counted by
+ *                 `gpuMemoryBytes`. This flag exists ONLY to preserve the exact
+ *                 pre-registry-driven behavior: `meshAreaLightSourceFactorsBuffer`
+ *                 was historically omitted from the `gpuMemoryBytes` buffer sum
+ *                 (present in destroy + create, absent from the debug memory
+ *                 estimate). The omission looks unintentional; it is kept here as
+ *                 data (not silently changed) so the debug estimate is byte-stable.
+ *
+ * **T2-A single-source invariant** — `uploadPackedScene`'s create loop, the
+ * `destroy` closure, and `gpuMemoryBytes` are ALL driven off this registry, so a
+ * buffer added here appears in creation, teardown, and the memory estimate with
+ * no further hand-listing.
  *
  * **Binding sync invariant** — render-consumed buffers in this registry must be
  * reflected in the bind-group layout declarations in `gpuResources.ts`:
@@ -297,7 +309,7 @@ export const SCENE_BUFFER_REGISTRY = [
   { key: 'spotLightsData',        bufferField: 'spotLightsBuffer',        label: 'vitrum.pt-webgpu.scene.spotLights' },
   { key: 'rectAreaLightsData',    bufferField: 'rectAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.rectAreaLights' },
   { key: 'meshAreaLightsData',    bufferField: 'meshAreaLightsBuffer',    label: 'vitrum.pt-webgpu.scene.meshAreaLights' },
-  { key: 'meshAreaLightSourceFactorsData', bufferField: 'meshAreaLightSourceFactorsBuffer', label: 'vitrum.pt-webgpu.scene.meshAreaLightSourceFactors' },
+  { key: 'meshAreaLightSourceFactorsData', bufferField: 'meshAreaLightSourceFactorsBuffer', label: 'vitrum.pt-webgpu.scene.meshAreaLightSourceFactors', excludeFromMemorySum: true },
   // ── WS2 light tree ────────────────────────────────────────────────────────
   { key: 'lightTreeNodes', bufferField: 'lightTreeBuffer', label: 'vitrum.pt-webgpu.scene.lightTree' },
   // ── P2 per-vertex UVs/tangents/colors + material texture descriptors ─────
@@ -2017,49 +2029,12 @@ function uploadPackedSceneInner(
   createStorageBuffer: (dev: GPUDevice, label: string, data: ArrayBufferView) => GPUBuffer,
   trackMaterialArray: (arr: MaterialTextureArray) => MaterialTextureArray,
 ): UploadedSceneBuffers {
-  const positionsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.positions', packed.positions);
-  const normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', packed.normals);
-  const indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', packed.indices);
-  const triMaterialIdsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.triMaterialIds', packed.triMaterialIds);
-  const materialsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.materials', packed.materials);
-  const bvhNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.bvhNodes', packed.bvhNodes);
-  const cwbvhNodeBoundsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.cwbvhNodeBounds', packed.cwbvhNodeBounds);
-  const cwbvhChildBoundsPackedBuffer = createStorageBuffer(
-    device,
-    'vitrum.pt-webgpu.scene.cwbvhChildBoundsPacked',
-    packed.cwbvhChildBoundsPacked,
-  );
-  const cwbvhChildMetaBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.cwbvhChildMeta', packed.cwbvhChildMeta);
-  const cwbvhChildCountBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.cwbvhChildCount', packed.cwbvhChildCount);
-  const cwbvhTlasBlasRootsBuffer = createStorageBuffer(
-    device,
-    'vitrum.pt-webgpu.scene.cwbvhTlasBlasRoots',
-    packed.cwbvhTlasBlasRoots,
-  );
-  const analyticHeadersBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticHeaders', packed.analyticHeaders);
-  const analyticParamsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticParams', packed.analyticParams);
-  const analyticLocalToWorldBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticLocalToWorld', packed.analyticLocalToWorld);
-  const analyticWorldToLocalBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.analyticWorldToLocal', packed.analyticWorldToLocal);
-  const environmentMapTexelsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.environmentMapTexels', packed.environmentMapTexels);
-  const environmentMapCdfBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.environmentMapCdf', packed.environmentMapCdf);
-  const directionalLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.directionalLights', packed.directionalLightsData);
-  const pointLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.pointLights', packed.pointLightsData);
-  const spotLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.spotLights', packed.spotLightsData);
-  const rectAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData);
-  const meshAreaLightsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.meshAreaLights', packed.meshAreaLightsData);
-  const meshAreaLightSourceFactorsBuffer = createStorageBuffer(
-    device,
-    'vitrum.pt-webgpu.scene.meshAreaLightSourceFactors',
-    packed.meshAreaLightSourceFactorsData,
-  );
-  const lightTreeBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.lightTree', packed.lightTreeNodes);
-  // P2 — per-vertex UVs/tangents/colors + per-material texture descriptors + the baseColor
-  // texture_2d_array (all group 3, full tier). A textureless scene gets a 1×1
-  // white dummy so the binding is always satisfied; descriptors all hold -1 so
-  // the kernel never samples it (textureless render stays byte-identical).
-  const uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', packed.uvs);
-  const tangentsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tangents', packed.tangents);
-  const colorsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.colors', packed.colors);
+  // P2 — the two material texture arrays + the UV-fit descriptor patch MUST run
+  // before the `materialTexDescriptors` storage buffer is created, because
+  // `applyMaterialTextureUvFitScales` mutates `packed.materialTexDescriptors`
+  // in place (with the arrays' per-layer source rects) and the buffer is written
+  // from that array at creation time. Everything else is order-independent, so
+  // the storage buffers are created by a single registry-driven loop below.
   const materialTextureArray = trackMaterialArray(createMaterialTextureArray(
     device,
     packed.materialTextureSources,
@@ -2078,11 +2053,23 @@ function uploadPackedSceneInner(
     materialTextureArray.layerUvScales,
     materialLinearArray.layerUvScales,
   );
-  const materialTexDescriptorsBuffer = createStorageBuffer(
-    device,
-    'vitrum.pt-webgpu.scene.materialTexDescriptors',
-    packed.materialTexDescriptors,
-  );
+
+  // D8.7 / T2-A — create every scene storage buffer from the single-source
+  // SCENE_BUFFER_REGISTRY. Each entry maps a `PackedSceneData` field (`key`)
+  // to the `UploadedSceneBuffers` GPUBuffer handle (`bufferField`) + label.
+  // Driving the create loop off the registry (instead of ~30 hand-written
+  // `createStorageBuffer` lines) keeps the buffer set single-sourced with the
+  // destroy closure + gpuMemoryBytes below. `createStorageBuffer` is the tracked
+  // wrapper, so each create still registers for the atomic-rollback path.
+  // Registry order == the previous hand-written create order (BLAS geometry →
+  // CWBVH → analytic → env → emitters → light-tree → P2 UVs/tangents/colors/
+  // descriptors → TLAS), so the sequence GPU debuggers see is unchanged.
+  const buffers = {} as Record<(typeof SCENE_BUFFER_REGISTRY)[number]['bufferField'], GPUBuffer>;
+  for (const entry of SCENE_BUFFER_REGISTRY) {
+    const data = packed[entry.key] as ArrayBufferView;
+    buffers[entry.bufferField] = createStorageBuffer(device, entry.label, data);
+  }
+
   // Surface texture-array warnings (heterogeneous source sizes → wrong UVs, or an
   // unusable image). Accumulate them onto UploadedSceneBuffers.warnings so the
   // engine drains them through its structured warning/onWarning path.
@@ -2094,19 +2081,6 @@ function uploadPackedSceneInner(
     ...materialTextureEngineWarnings(materialTextureArray.structuredWarnings, 'sRGB'),
     ...materialTextureEngineWarnings(materialLinearArray.structuredWarnings, 'linear'),
   ];
-  const tlasNodesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes);
-  const tlasInstanceIndicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices);
-  const tlasBlasRootsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots);
-  const tlasInstanceWorldToLocalBuffer = createStorageBuffer(
-    device,
-    'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal',
-    packed.tlasInstanceWorldToLocal,
-  );
-  const tlasInstanceLocalToWorldBuffer = createStorageBuffer(
-    device,
-    'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld',
-    packed.tlasInstanceLocalToWorld,
-  );
 
   const uploaded: UploadedSceneBuffers = {
     ...packed,
@@ -2115,120 +2089,42 @@ function uploadPackedSceneInner(
     bvhNodeCount: Math.floor(packed.bvhNodes.length / BVH_NODE_FLOATS),
     tlasNodeCount: Math.floor(packed.tlasNodes.length / BVH_NODE_FLOATS),
     materialCount: Math.floor(packed.materials.length / MATERIAL_FLOAT_STRIDE),
-    positionsBuffer,
-    normalsBuffer,
-    indicesBuffer,
-    triMaterialIdsBuffer,
-    materialsBuffer,
-    bvhNodesBuffer,
-    cwbvhNodeBoundsBuffer,
-    cwbvhChildBoundsPackedBuffer,
-    cwbvhChildMetaBuffer,
-    cwbvhChildCountBuffer,
-    cwbvhTlasBlasRootsBuffer,
-    analyticHeadersBuffer,
-    analyticParamsBuffer,
-    analyticLocalToWorldBuffer,
-    analyticWorldToLocalBuffer,
-    environmentMapTexelsBuffer,
-    environmentMapCdfBuffer,
-    directionalLightsBuffer,
-    pointLightsBuffer,
-    spotLightsBuffer,
-    rectAreaLightsBuffer,
-    meshAreaLightsBuffer,
-    meshAreaLightSourceFactorsBuffer,
-    lightTreeBuffer,
-    tlasNodesBuffer,
-    tlasInstanceIndicesBuffer,
-    tlasBlasRootsBuffer,
-    tlasInstanceWorldToLocalBuffer,
-    tlasInstanceLocalToWorldBuffer,
-    uvsBuffer,
-    tangentsBuffer,
-    colorsBuffer,
-    materialTexDescriptorsBuffer,
+    ...buffers,
     materialTexture: materialTextureArray.texture,
     materialTextureView: materialTextureArray.view,
     materialTextureSampler: materialTextureArray.sampler,
     materialLinearTexture: materialLinearArray.texture,
     materialLinearTextureView: materialLinearArray.view,
-    // BLAS + TLAS buffers are resolved off `uploaded` at destroy-time (not the
-    // captured locals), because the realloc fast paths swap fresh handles onto
-    // the struct: {@link uploadScenePackTlasRealloc} (instance-count change) and
-    // {@link uploadScenePackGeometryRealloc} (mesh vertex/index-count change).
-    // Reading them late keeps `destroy` free of stale handles (no double-free /
-    // leak) without a closure rewire on every realloc. The non-resized buffers
-    // (materials / analytic / environment) stay captured.
+    // T2-A — every scene storage buffer is destroyed via a single registry-driven
+    // loop reading `uploaded[bufferField]`. Resolving each handle LATE off
+    // `uploaded` (not a captured local) is required for the realloc fast paths
+    // that swap fresh handles onto the struct — {@link uploadScenePackTlasRealloc}
+    // (instance-count change), {@link uploadScenePackGeometryRealloc} (mesh
+    // vertex/index-count change), {@link rebuildLightTreeForScene} (node-count
+    // change) — so `destroy` never touches a stale (leaked/double-freed) handle.
+    // Non-resized buffers (materials / analytic / environment / descriptors) are
+    // never reassigned, so reading them off `uploaded` is identical to the
+    // previously-captured locals. The two material texture arrays are destroyed
+    // explicitly (textures are not in the buffer registry).
     destroy: () => {
-      uploaded.positionsBuffer.destroy();
-      uploaded.normalsBuffer.destroy();
-      uploaded.indicesBuffer.destroy();
-      uploaded.triMaterialIdsBuffer.destroy();
-      materialsBuffer.destroy();
-      uploaded.bvhNodesBuffer.destroy();
-      uploaded.cwbvhNodeBoundsBuffer.destroy();
-      uploaded.cwbvhChildBoundsPackedBuffer.destroy();
-      uploaded.cwbvhChildMetaBuffer.destroy();
-      uploaded.cwbvhChildCountBuffer.destroy();
-      uploaded.cwbvhTlasBlasRootsBuffer.destroy();
-      analyticHeadersBuffer.destroy();
-      analyticParamsBuffer.destroy();
-      analyticLocalToWorldBuffer.destroy();
-      analyticWorldToLocalBuffer.destroy();
-      environmentMapTexelsBuffer.destroy();
-      environmentMapCdfBuffer.destroy();
-      uploaded.directionalLightsBuffer.destroy();
-      uploaded.pointLightsBuffer.destroy();
-      uploaded.spotLightsBuffer.destroy();
-      uploaded.rectAreaLightsBuffer.destroy();
-      uploaded.meshAreaLightsBuffer.destroy();
-      uploaded.meshAreaLightSourceFactorsBuffer.destroy();
-      // Light-tree buffer is realloc-swapped by rebuildLightTreeForScene when
-      // the node count changes — resolve it late off `uploaded` like the
-      // BLAS/TLAS handles, or the swapped-in buffer leaks (and the original
-      // gets a benign double-destroy).
-      uploaded.lightTreeBuffer.destroy();
-      uploaded.tlasNodesBuffer.destroy();
-      uploaded.tlasInstanceIndicesBuffer.destroy();
-      uploaded.tlasBlasRootsBuffer.destroy();
-      uploaded.tlasInstanceWorldToLocalBuffer.destroy();
-      uploaded.tlasInstanceLocalToWorldBuffer.destroy();
-      // P2 — uvsBuffer is realloc-swapped on a vertex-count change, so resolve it
-      // late off `uploaded`. tangents/colors buffers follow the same
-      // vertex-count-sized lifetime. The descriptor buffer + texture array are
-      // material-indexed (never resized by a geometry realloc) → captured locals.
-      uploaded.uvsBuffer.destroy();
-      uploaded.tangentsBuffer.destroy();
-      uploaded.colorsBuffer.destroy();
-      materialTexDescriptorsBuffer.destroy();
+      for (const entry of SCENE_BUFFER_REGISTRY) {
+        uploaded[entry.bufferField].destroy();
+      }
       materialTextureArray.texture.destroy();
       materialLinearArray.texture.destroy();
     },
-    // Sum the CURRENT GPUBuffer sizes off `uploaded` (realloc-swapped handles
-    // included) + the two material texture arrays (GPUTexture has no `.size`, so
-    // derive w·h·layers·4 at rgba8 = 4 B/texel, keyed by the actual format).
-    // Keeps `debug.estimatedGpuMemoryBytes` honest instead of under-reporting by
-    // the whole scene.
+    // T2-A — sum the CURRENT GPUBuffer sizes via the same registry (realloc-swapped
+    // handles included) + the two material texture arrays (GPUTexture has no
+    // `.size`, so derive w·h·layers·4 at rgba8 = 4 B/texel, keyed by the actual
+    // format). Entries flagged `excludeFromMemorySum` are skipped to preserve the
+    // exact pre-registry behavior (meshAreaLightSourceFactors was historically not
+    // counted here). Keeps `debug.estimatedGpuMemoryBytes` byte-stable.
     gpuMemoryBytes: () => {
-      const buffers: readonly GPUBuffer[] = [
-        uploaded.positionsBuffer, uploaded.normalsBuffer, uploaded.indicesBuffer,
-        uploaded.triMaterialIdsBuffer, uploaded.materialsBuffer, uploaded.bvhNodesBuffer,
-        uploaded.cwbvhNodeBoundsBuffer, uploaded.cwbvhChildBoundsPackedBuffer,
-        uploaded.cwbvhChildMetaBuffer, uploaded.cwbvhChildCountBuffer,
-        uploaded.cwbvhTlasBlasRootsBuffer,
-        uploaded.analyticHeadersBuffer, uploaded.analyticParamsBuffer,
-        uploaded.analyticLocalToWorldBuffer, uploaded.analyticWorldToLocalBuffer,
-        uploaded.environmentMapTexelsBuffer, uploaded.environmentMapCdfBuffer,
-        uploaded.directionalLightsBuffer,
-        uploaded.pointLightsBuffer, uploaded.spotLightsBuffer, uploaded.rectAreaLightsBuffer,
-        uploaded.meshAreaLightsBuffer, uploaded.lightTreeBuffer,
-        uploaded.tlasNodesBuffer, uploaded.tlasInstanceIndicesBuffer, uploaded.tlasBlasRootsBuffer,
-        uploaded.tlasInstanceWorldToLocalBuffer, uploaded.tlasInstanceLocalToWorldBuffer,
-        uploaded.uvsBuffer, uploaded.tangentsBuffer, uploaded.colorsBuffer, uploaded.materialTexDescriptorsBuffer,
-      ];
       let bufferBytes = 0;
-      for (const b of buffers) bufferBytes += b.size;
+      for (const entry of SCENE_BUFFER_REGISTRY) {
+        if ('excludeFromMemorySum' in entry && entry.excludeFromMemorySum) continue;
+        bufferBytes += uploaded[entry.bufferField].size;
+      }
       const textureBytesByFormat: Record<string, number> = {};
       const addTex = (t: GPUTexture): void => {
         const bytes = t.width * t.height * t.depthOrArrayLayers * 4;
