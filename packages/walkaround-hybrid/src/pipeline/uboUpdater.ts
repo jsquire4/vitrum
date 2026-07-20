@@ -165,7 +165,7 @@ const REGIR_OFF: RegirUboState = {
 };
 
 /**
- * Pure packing core — fills and returns the 416-byte WalkaroundUBO ArrayBuffer
+ * Pure packing core — fills and returns the 432-byte WalkaroundUBO ArrayBuffer
  * from structured inputs. No GPU types involved; safe to call in Node / Vitest.
  *
  * Extracted so the sentinel round-trip test (I3.3/D3.17) can verify every

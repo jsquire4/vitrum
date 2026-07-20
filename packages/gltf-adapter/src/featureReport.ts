@@ -3700,7 +3700,7 @@ function addAnimationAccessorStorageIssues(
     readonly accessor: NonNullable<GltfJson['accessors']>[number];
   },
 ): void {
-  const { animationIndex, channelIndex, channel, sampler, accessorRole, accessorIndex, accessor } = input;
+  const { animationIndex, channelIndex, channel, accessorRole, accessorIndex, accessor } = input;
   const kindPrefix = accessorRole === 'input' ? 'input' : 'output';
   if (accessor.bufferView !== undefined) {
     const bufferViewIndex = accessor.bufferView;

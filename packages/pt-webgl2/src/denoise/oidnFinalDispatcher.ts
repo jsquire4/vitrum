@@ -4,7 +4,6 @@ import {
 } from '@vitrum/shared-denoisers';
 import type {
   DenoisedFrame,
-  OIDNBridgeLike,
   OIDNBridgeLoader,
   OIDNFinalDispatcherOptions,
   ReadbackResult,

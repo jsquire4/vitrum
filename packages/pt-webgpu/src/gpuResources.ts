@@ -1271,9 +1271,10 @@ export class GpuResources {
    * while the GPU is still reading/writing them inside the submitted command buffer,
    * causing temporal history corruption on the very next frame (Prev and Spatial
    * buffers in the new bind groups would point to the wrong ping-pong half).
-   * The call site in `index.ts` (line 1371, immediately after `this.#device.queue.submit(…)`)
-   * enforces this ordering: the swap and bind-group invalidation always happen after
-   * the GPU command stream has been handed to the driver.
+   * The call site in `index.ts` (the `gpu.swapReservoirs()` call immediately after
+   * `this.#device.queue.submit(…)` in `renderFrame`) enforces this ordering: the swap
+   * and bind-group invalidation always happen after the GPU command stream has been
+   * handed to the driver.
    */
   swapReservoirs(): void {
     if (!this.#restirPtReuse) return;
@@ -1870,7 +1871,7 @@ export class GpuResources {
    * Item-1 fix (2026-06-10): also clears `pathTraceBindGroup` (group-0 cache) so
    * `buildBindGroups` is forced to rebuild ALL groups — not just group-3.
    * Previously, group-0 stayed cached after placeholder→real buffer swap, causing
-   * `buildBindGroups` to return the cached group-0 early (line 1078 fast-out)
+   * `buildBindGroups` to return the cached group-0 early (its `pathTraceBindGroup != null` fast-out)
    * while leaving `pathTraceBindGroup3` null on every subsequent frame.  Both
    * the photon-emission pass and the megakernel guard group-3 with a null-check
    * and silently skip the bind — the photon pass wrote nothing, the gather read

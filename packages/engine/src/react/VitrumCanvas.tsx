@@ -421,7 +421,6 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
     // via a stable ref to prevent inline callbacks from tearing down the engine.
     // `advanced` stays in the dep array because backend options are construction
     // inputs and prop identity changes must apply.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [
 	      props.scene,
 	      props.gltf,

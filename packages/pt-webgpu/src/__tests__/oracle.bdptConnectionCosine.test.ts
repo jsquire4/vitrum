@@ -384,7 +384,7 @@ describe('PTWG-BDPT-01 oracle — BDPT connection cosine/area audit', () => {
       sumCorrectLum += lum(correctConnectionContribution(x));
     }
     const ratio = sumShaderLum / sumCorrectLum;
-    expect(sumShaderLum / sumCorrectLum).toBeCloseTo(1, 2);
+    expect(ratio).toBeCloseTo(1, 2);
   });
 
   it('one-bounce diffuse oracle: finite-area emitter extension carries the π solid-angle factor', () => {

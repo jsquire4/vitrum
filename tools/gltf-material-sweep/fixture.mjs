@@ -116,7 +116,7 @@ export function expectedSamplerPolicy(textureIndex) {
   };
 }
 
-export function samplerPolicyIsNativeForBackend(backend, policy, field = undefined) {
+export function samplerPolicyIsNativeForBackend(backend, policy, _field = undefined) {
   if (backend === "walkaround-hybrid") {
     return policy.magFilter === policy.minFilter && policy.mipFilter === "none";
   }

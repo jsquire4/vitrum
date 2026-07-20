@@ -145,86 +145,100 @@ export async function runBmfrWebGPU(opts: BmfrWebGPUOptions): Promise<Float32Arr
     errorLabel: 'runBmfrWebGPU',
   });
 
-  const pipeline = bmfrPipeline(device);
+  // Tracked resources: destroyed in `finally` so a throw from any GPU call or
+  // the final readback frees everything (matching the try/finally teardown the
+  // sibling dispatchers use — svgfRealWebGPU / atrousVarianceWebGPU /
+  // hdrLuminanceBilateralWebGPU). Assigned inside the try, null-guarded here.
+  const textures: GPUTexture[] = [];
+  let ubo: GPUBuffer | undefined;
 
-  const texB = GPUTextureUsage.TEXTURE_BINDING;
-  const texC = GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
-  const texS = GPUTextureUsage.STORAGE_BINDING;
+  try {
+    const pipeline = bmfrPipeline(device);
 
-  const colorTex   = device.createTexture({ label: 'bmfr-color',   size: [w, h], format: 'rgba16float', usage: texB | texC });
-  const normalTex  = device.createTexture({ label: 'bmfr-normal',  size: [w, h], format: 'rgba16float', usage: texB | texC });
-  const worldPosTex = device.createTexture({ label: 'bmfr-worldpos', size: [w, h], format: 'rgba32float', usage: texB | texC });
-  const historyTex = device.createTexture({ label: 'bmfr-history', size: [w, h], format: 'rgba16float', usage: texB | texC });
-  const outTex     = device.createTexture({ label: 'bmfr-out',     size: [w, h], format: 'rgba16float', usage: texS | texB | texC });
+    const texB = GPUTextureUsage.TEXTURE_BINDING;
+    const texC = GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
+    const texS = GPUTextureUsage.STORAGE_BINDING;
 
-  // Color (demodulated by albedo when supplied).
-  const rgbForFit = opts.albedoRgb != null
-    ? demodulateAlbedo(opts.rgb, opts.albedoRgb, px)
-    : opts.rgb;
-  uploadRgbAsRgba16f(device, colorTex, rgbForFit, w, h);
+    const trackTexture = (texture: GPUTexture): GPUTexture => {
+      textures.push(texture);
+      return texture;
+    };
 
-  // Normals (packed 0..1); default forward-facing +Z = packed (0.5,0.5,1).
-  if (opts.gbufferNormalsRgb != null) {
-    uploadRgbAsRgba16f(device, normalTex, opts.gbufferNormalsRgb, w, h);
-  } else {
-    uploadRgbAsRgba16f(device, normalTex, packedFlatNormals(px), w, h);
+    const colorTex   = trackTexture(device.createTexture({ label: 'bmfr-color',   size: [w, h], format: 'rgba16float', usage: texB | texC }));
+    const normalTex  = trackTexture(device.createTexture({ label: 'bmfr-normal',  size: [w, h], format: 'rgba16float', usage: texB | texC }));
+    const worldPosTex = trackTexture(device.createTexture({ label: 'bmfr-worldpos', size: [w, h], format: 'rgba32float', usage: texB | texC }));
+    const historyTex = trackTexture(device.createTexture({ label: 'bmfr-history', size: [w, h], format: 'rgba16float', usage: texB | texC }));
+    const outTex     = trackTexture(device.createTexture({ label: 'bmfr-out',     size: [w, h], format: 'rgba16float', usage: texS | texB | texC }));
+
+    // Color (demodulated by albedo when supplied).
+    const rgbForFit = opts.albedoRgb != null
+      ? demodulateAlbedo(opts.rgb, opts.albedoRgb, px)
+      : opts.rgb;
+    uploadRgbAsRgba16f(device, colorTex, rgbForFit, w, h);
+
+    // Normals (packed 0..1); default forward-facing +Z = packed (0.5,0.5,1).
+    if (opts.gbufferNormalsRgb != null) {
+      uploadRgbAsRgba16f(device, normalTex, opts.gbufferNormalsRgb, w, h);
+    } else {
+      uploadRgbAsRgba16f(device, normalTex, packedFlatNormals(px), w, h);
+    }
+
+    // World position (XYZ in .xyz, validity/depth in .w). The kernel uses .w<=0
+    // as the sky/miss sentinel.
+    uploadWorldPosAsRgba32f(device, worldPosTex, opts, w, h);
+
+    // History (only sampled when hasHistory; zero-fill otherwise so the
+    // texture is initialised — the kernel skips the read unless hasHistory).
+    uploadRgbAsRgba16f(device, historyTex, opts.historyRgb ?? new Float32Array(px * 3), w, h);
+
+    // UBO.
+    const uboScratch = new ArrayBuffer(BMFR_UNIFORMS_SIZE_BYTES);
+    packBmfrUniforms(uniforms, uboScratch);
+    ubo = device.createBuffer({
+      label: 'bmfr-ubo',
+      size: BMFR_UNIFORMS_SIZE_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(ubo, 0, uboScratch);
+
+    const bg = device.createBindGroup({
+      label: 'bmfr-bg',
+      layout: pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: colorTex.createView() },
+        { binding: 1, resource: normalTex.createView() },
+        { binding: 2, resource: worldPosTex.createView() },
+        { binding: 3, resource: historyTex.createView() },
+        { binding: 4, resource: outTex.createView() },
+        { binding: 5, resource: { buffer: ubo } },
+      ],
+    });
+
+    // One workgroup per block origin. Grid covers all block origins that touch
+    // the image (ceil so the trailing partial block is included).
+    const blocksX = Math.ceil(w / blockStride);
+    const blocksY = Math.ceil(h / blockStride);
+
+    const encoder = device.createCommandEncoder({ label: 'bmfr' });
+    const pass = encoder.beginComputePass({ label: 'bmfr-fit' });
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bg);
+    pass.dispatchWorkgroups(blocksX, blocksY, 1);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+
+    const result = await readRgba16fToRgb(device, outTex, w, h);
+
+    if (opts.albedoRgb != null) {
+      remodulateAlbedo(result, opts.albedoRgb, px);
+    }
+
+    return result;
+  } finally {
+    for (const t of textures) t.destroy();
+    ubo?.destroy();
+    destroyEphemeral();
   }
-
-  // World position (XYZ in .xyz, validity/depth in .w). The kernel uses .w<=0
-  // as the sky/miss sentinel.
-  uploadWorldPosAsRgba32f(device, worldPosTex, opts, w, h);
-
-  // History (only sampled when hasHistory; zero-fill otherwise so the
-  // texture is initialised — the kernel skips the read unless hasHistory).
-  uploadRgbAsRgba16f(device, historyTex, opts.historyRgb ?? new Float32Array(px * 3), w, h);
-
-  // UBO.
-  const uboScratch = new ArrayBuffer(BMFR_UNIFORMS_SIZE_BYTES);
-  packBmfrUniforms(uniforms, uboScratch);
-  const ubo = device.createBuffer({
-    label: 'bmfr-ubo',
-    size: BMFR_UNIFORMS_SIZE_BYTES,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  device.queue.writeBuffer(ubo, 0, uboScratch);
-
-  const bg = device.createBindGroup({
-    label: 'bmfr-bg',
-    layout: pipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: colorTex.createView() },
-      { binding: 1, resource: normalTex.createView() },
-      { binding: 2, resource: worldPosTex.createView() },
-      { binding: 3, resource: historyTex.createView() },
-      { binding: 4, resource: outTex.createView() },
-      { binding: 5, resource: { buffer: ubo } },
-    ],
-  });
-
-  // One workgroup per block origin. Grid covers all block origins that touch
-  // the image (ceil so the trailing partial block is included).
-  const blocksX = Math.ceil(w / blockStride);
-  const blocksY = Math.ceil(h / blockStride);
-
-  const encoder = device.createCommandEncoder({ label: 'bmfr' });
-  const pass = encoder.beginComputePass({ label: 'bmfr-fit' });
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bg);
-  pass.dispatchWorkgroups(blocksX, blocksY, 1);
-  pass.end();
-  device.queue.submit([encoder.finish()]);
-
-  const result = await readRgba16fToRgb(device, outTex, w, h);
-
-  if (opts.albedoRgb != null) {
-    remodulateAlbedo(result, opts.albedoRgb, px);
-  }
-
-  for (const t of [colorTex, normalTex, worldPosTex, historyTex, outTex]) t.destroy();
-  ubo.destroy();
-  destroyEphemeral();
-
-  return result;
 }
 
 /** Forward-facing +Z normal, packed 0..1 → (0.5, 0.5, 1) per pixel. */

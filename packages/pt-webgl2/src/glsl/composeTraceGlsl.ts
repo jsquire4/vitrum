@@ -215,7 +215,13 @@ export interface UniformManifestEntry {
  * INVARIANT: buildUniformDecls() === UNIFORM_DECLS (byte-identical).
  * Verified by the unit test in composeTraceGlsl.test.ts (D10.3 pin).
  */
-export const UNIFORM_MANIFEST: readonly UniformManifestEntry[] = [
+// NOTE: `as const satisfies …` (NOT a `: readonly UniformManifestEntry[]`
+// annotation) is load-bearing for the D10.5 exhaustiveness gate below — a plain
+// type annotation widens each row's `frameKey` back to the full declared union,
+// which makes `_ManifestFrameKey` vacuously equal to `keyof FrameUniforms` and
+// silently defeats the gate. `as const` preserves the literal frameKeys so the
+// gate tracks the ACTUAL array contents; `satisfies` still type-checks each row.
+export const UNIFORM_MANIFEST = [
   // ── environment ──────────────────────────────────────────────────────────
   { glslName: 'envMapInfo',            glslType: 'EquirectHdrInfo',  frameKey: 'samplerOrStruct' },
   { glslName: 'environmentRotation',   glslType: 'mat4',             frameKey: 'environmentRotation' },
@@ -250,7 +256,7 @@ export const UNIFORM_MANIFEST: readonly UniformManifestEntry[] = [
   // ── image ─────────────────────────────────────────────────────────────────
   { glslName: 'resolution',            glslType: 'vec2',             frameKey: 'resolution' },
   { glslName: 'opacity',               glslType: 'float',            frameKey: 'internal' },
-] as const;
+] as const satisfies readonly UniformManifestEntry[];
 
 // ── D10.5: compile-time exhaustiveness gate ───────────────────────────────────
 // Every key of FrameUniforms must be either:
@@ -303,8 +309,12 @@ type _AllFrameKeys = keyof FrameUniforms;
 type _ExhaustivenessCheck = _AllFrameKeys extends (_ManifestFrameKey | _HandledSeparately)
   ? true
   : never;
-// If the above type resolves to `never`, uncomment the next line to see which keys are uncovered:
-// const _exhaustive: _ExhaustivenessCheck = true;
+// Consumed compile-time assert: if `_ExhaustivenessCheck` resolves to `never` (a
+// FrameUniforms key is neither in the manifest nor in _HandledSeparately), the
+// assignment `never = true` is a TypeScript error and `npm run typecheck` fails,
+// naming the gap. This is the live gate — it must stay uncommented (the leading
+// underscore exempts it from the no-unused-vars rule).
+const _exhaustive: _ExhaustivenessCheck = true;
 
 /**
  * D10.3: Generate the GLSL uniform declarations block from UNIFORM_MANIFEST plus the

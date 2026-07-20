@@ -106,7 +106,7 @@ function clearcoatPdf(
 function charlieD(nDotH: number, alpha: number): number {
   const invAlpha = 1 / Math.max(alpha, 1e-4);
   const sinThetaH = Math.sqrt(Math.max(0, 1 - nDotH * nDotH));
-  return (2 + invAlpha) * Math.pow(sinThetaH, invAlpha) / (2 * PI);
+  return (2 + invAlpha) * Math.pow(sinThetaH, invAlpha) * INV_PI * 0.5;
 }
 
 function sheenVisibility(nDotL: number, nDotV: number): number {

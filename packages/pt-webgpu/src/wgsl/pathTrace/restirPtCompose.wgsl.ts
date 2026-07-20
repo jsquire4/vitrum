@@ -349,7 +349,6 @@ export function composeRestirPtResolveWgsl(opts: RestirPtComposeOptions = {}): s
 }
 
 import {
-  PT_WEBGPU_COMMON_WGSL,
   composePtWebgpuCommonWgsl,
   type PtWebgpuSamplingMode,
 } from '../common.wgsl.js';

@@ -575,7 +575,12 @@ export function intersectCompressedWideBvhAnyHit(
   const positionStride = opts.positionStride ?? 4;
   const indexStride = opts.indexStride ?? 4;
   const triEps = opts.triEps ?? 1e-5;
-  const tMin = opts.tMin ?? 1e-4;
+  // Reconciled with intersectCompressedWideBvhFirstHit: same default tMin
+  // (triEps) and the same inclusive `>=` acceptance below. anyHit must not
+  // report a *miss* where firstHit reports a *hit* at the same epsilon boundary,
+  // or shadow/occlusion rays would under-occlude relative to the closest-hit
+  // geometry.
+  const tMin = opts.tMin ?? triEps;
   const tMax = opts.tMax ?? Number.POSITIVE_INFINITY;
   const skipGlass = opts.skipGlass ?? false;
 
@@ -615,7 +620,7 @@ export function intersectCompressedWideBvhAnyHit(
           const b = positionAt(positions, i1, positionStride);
           const c = positionAt(positions, i2, positionStride);
           const hit = intersectTriangle(ray, a, b, c, triEps);
-          if (hit != null && hit.t > tMin && hit.t < tMax) return true;
+          if (hit != null && hit.t >= tMin && hit.t < tMax) return true;
         }
       }
     }

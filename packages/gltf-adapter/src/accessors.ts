@@ -520,7 +520,6 @@ export function unpackAccessorUint32(
     if (!bv) throw new Error(`[vitrum/gltf-adapter] BufferView ${bvIdx} not found`);
 
     const buf = _getBuffer(buffers, bv.buffer, gltf);
-    const compSize = componentByteSize(ct);
     const bvOffset = bv.byteOffset ?? 0;
     const range = accessorBufferViewRange(accessor, bv, 1);
     validateBufferViewAccess(buf, bvIdx, bv, range.requiredByteLength, 'index accessor');

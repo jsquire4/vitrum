@@ -378,7 +378,6 @@ describe('PTWG-LITE-01 oracle — lite rect area-light paired MIS', () => {
         `connectLite.wgsl.ts intersects packed liteLightTex rect/disc records) ` +
         `and lite rect lights were not geometry — the w_bsdf share of the energy ` +
         `was simply discarded, a deterministic under-estimate (not variance).`;
-      // eslint-disable-next-line no-console
       console.log(`[oracle.liteRectMis] ${msg}`);
       // The deficit is material/geometry dependent; both cases must show a
       // clear under-estimate (>2% beyond any MC noise; the seeds are fixed).

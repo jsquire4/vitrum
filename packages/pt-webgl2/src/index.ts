@@ -182,26 +182,6 @@ interface UnsupportedMaterialFieldUse {
   readonly fields: readonly string[];
 }
 
-function collectPrimitiveMaterialFieldUses(
-  scene: Scene,
-  unsupportedFields: readonly (keyof MaterialSpec)[],
-): UnsupportedMaterialFieldUse[] {
-  const uses: UnsupportedMaterialFieldUse[] = [];
-  const fields = new Set<string>();
-  for (const primitive of scene.primitives) {
-    const material = (primitive as { readonly material?: Partial<MaterialSpec> }).material;
-    if (material == null) continue;
-    fields.clear();
-    for (const field of unsupportedFields) {
-      if (material[field] != null) fields.add(field);
-    }
-    if (fields.size > 0) {
-      uses.push({ primitiveId: primitive.id, fields: Array.from(fields).sort() });
-    }
-  }
-  return uses;
-}
-
 function collectFieldUnion(uses: readonly UnsupportedMaterialFieldUse[]): string[] {
   const fields = new Set<string>();
   for (const use of uses) {

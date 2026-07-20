@@ -47,9 +47,14 @@ import {
 //   kind      — 'tex2d' | 'tex2dArray' (determines gl.TEXTURE_2D vs gl.TEXTURE_2D_ARRAY)
 //   source    — accessor returning the WebGLTexture to bind, or null for a dummy
 //
-// TABLE ORDER IS LOAD-BEARING: GlProgram assigns sampler units in the order
-// uniforms are bound at link time. The mock-GL tests pin sampler-unit assignment
-// by this order; reordering entries breaks those tests without a golden re-pin.
+// TABLE ORDER IS LOAD-BEARING: GlProgram assigns sampler units by walking the
+// linked program's active uniforms (getActiveUniform / ACTIVE_UNIFORMS), and this
+// table must bind each sampler exactly once so every slot gets a distinct unit.
+// The pre-push T1 GPU smoke compiles/links the real pass graph and is the true
+// guard for sampler-unit order — the mock-GL suite does NOT exercise
+// assignSamplerUnits (createMockGl.getActiveUniform returns null, so the sampler
+// walk is skipped and mock sampler binds no-op). Do not rely on a mock-GL test to
+// catch a reorder here; a reorder is caught by the T1 smoke, not vitest.
 //
 // Non-texture uniforms (lights.count, uMeshLightCount, uTotalEmissiveArea,
 // uTotalEmissivePower, envMapInfo.totalSum) are uploaded separately after the
@@ -605,8 +610,10 @@ export class GlResources {
     const d2a = this.#dummyTex2DArray();
 
     // D10.2: table-driven texture binding. Loop order matches the original hand-written
-    // call order — GlProgram assigns sampler units in bind order at link time, so the
-    // mock-GL tests' sampler-unit pin relies on this sequence being preserved.
+    // call order. GlProgram assigns sampler units by walking the linked program's active
+    // uniforms; each sampler must be bound exactly once here so it gets a distinct unit.
+    // The T1 GPU smoke links the real program and is the true sampler-order guard; the
+    // mock-GL suite does not exercise assignSamplerUnits (mock getActiveUniform is null).
     for (const binding of SCENE_TEXTURE_BINDINGS) {
       const tex = binding.source(scene, d2d, d2a);
       const target = binding.kind === 'tex2dArray' ? gl.TEXTURE_2D_ARRAY : gl.TEXTURE_2D;

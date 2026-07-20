@@ -264,7 +264,7 @@ async function createBrowserDracoDecode(): Promise<DracoDecodeHook> {
       if (geometryType !== module.TRIANGULAR_MESH) {
         throw new Error(`[gltf-viewer example] unsupported Draco geometry type ${geometryType}`);
       }
-      mesh = new module.Mesh();
+      mesh = createDracoMesh(module);
       const status = decoder.DecodeBufferToMesh(buffer, mesh);
       if (!status.ok()) throw new Error(status.error_msg());
 

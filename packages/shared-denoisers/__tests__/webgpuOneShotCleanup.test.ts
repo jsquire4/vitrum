@@ -26,6 +26,7 @@ const textureUploadMocks = vi.hoisted(() => {
 vi.mock('../src/webGpuTextureUpload.js', () => textureUploadMocks);
 
 import { runAtrousVarianceWebGPU } from '../src/atrousVarianceWebGPU.js';
+import { runBmfrWebGPU } from '../src/bmfrWebGPU.js';
 import { runHdrLuminanceBilateralWebGPU } from '../src/hdrLuminanceBilateralWebGPU.js';
 import { runSVGFRealWebGPU } from '../src/svgfRealWebGPU.js';
 
@@ -69,6 +70,7 @@ function createFakeDevice(): FakeDevice {
     destroyed: false,
     queue: {
       writeBuffer: vi.fn(),
+      writeTexture: vi.fn(),
       submit: vi.fn(),
     },
     createShaderModule: vi.fn(() => ({})),
@@ -166,6 +168,25 @@ describe('one-shot WebGPU denoiser cleanup', () => {
 
     expect(device.textures).toHaveLength(9);
     expect(device.buffers).toHaveLength(3);
+    expectAllTransientsDestroyed(device);
+  });
+
+  it('destroys BMFR resources when readback throws', async () => {
+    const device = createFakeDevice();
+
+    await expect(
+      runBmfrWebGPU({
+        device: device as unknown as GPUDevice,
+        rgb: new Float32Array([1, 1, 1]),
+        worldPosRgb: new Float32Array([0, 0, 0]),
+        width: 1,
+        height: 1,
+      }),
+    ).rejects.toThrow('mock readback failure');
+
+    // color/normal/worldpos/history/out + the UBO.
+    expect(device.textures).toHaveLength(5);
+    expect(device.buffers).toHaveLength(1);
     expectAllTransientsDestroyed(device);
   });
 

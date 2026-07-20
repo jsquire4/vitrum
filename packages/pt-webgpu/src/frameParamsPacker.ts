@@ -36,17 +36,10 @@ if (FRAME_PARAMS_BYTE_SIZE > FRAME_PARAMS_BUFFER_ALLOC_BYTES) {
 // moves the highest slot past 127 without bumping the allocation, a silent OOB
 // write would corrupt the GPU uniform.  We export this constant so tests can pin it.
 export const FRAME_PARAMS_MAX_SLOT = 127;
-const _highestSlot = Math.max(...(Object.values(FrameParamsSlot) as number[]));
-// For vec4f/mat4x4f fields the slot value is the first slot; add their size:
-//   invViewProj at slot 48, mat4x4f = 16 slots → last slot 63
-//   prevViewProj at slot 80, mat4x4f = 16 slots → last slot 95
-//   directionalLightCount at slot 96, u32 = 1 slot → last slot 96
-//   sceneCenterX/Y/Z + sceneRadius at slots 97..100 → last slot 100
-//   directLightingMode at slot 101, u32 = 1 slot → last slot 101
-// The last slot actually WRITTEN is directLightingMode = 101. The mat fields span
-// slots [48..95].
-// We let the generator-derived FRAME_PARAMS_BYTE_SIZE / 4 give us the effective
-// slot count (accounting for trailing struct padding):
+// The authoritative per-field slot map is generated in
+// scene/frameParamsLayout.generated.ts (FrameParamsSlot); do not hand-maintain a
+// slot ledger here. The generator-derived FRAME_PARAMS_BYTE_SIZE / 4 gives the
+// effective slot count (accounting for trailing struct padding):
 const _effectiveSlots = FRAME_PARAMS_BYTE_SIZE / 4; // e.g. 416/4 = 104
 if (_effectiveSlots > FRAME_PARAMS_MAX_SLOT + 1) {
   throw new Error(

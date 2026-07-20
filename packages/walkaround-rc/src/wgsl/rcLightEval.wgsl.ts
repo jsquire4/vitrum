@@ -228,13 +228,3 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, wo: vec3f, material: RCProbeHi
   }
   return Lo;
 }`;
-
-/**
- * Combined WGSL block: RC_SUN_VISIBILITY_WGSL + '\n\n' + RC_NEE_POINTSPOT_WGSL.
- * Retained as a convenience export for external consumers that want the full
- * light-eval block in one string. probeRayCast.wgsl.ts uses the two
- * sub-exports (RC_SUN_VISIBILITY_WGSL / RC_NEE_POINTSPOT_WGSL) for their
- * respective insertion points (byte-identity verified in F6 completion, 2026-06-11).
- * Export this constant if/when external callers need the combined block.
- */
-const _RC_LIGHT_EVAL_WGSL = `${RC_SUN_VISIBILITY_WGSL}\n\n${RC_NEE_POINTSPOT_WGSL}`;

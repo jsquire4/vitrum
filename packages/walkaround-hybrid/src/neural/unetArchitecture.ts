@@ -91,7 +91,7 @@ export interface UNetSpec {
  * source, named `enc{N}_feat`) followed by a separate stride-2 down-conv
  * (named `enc{N}_down`). The decoder's transposed conv at level N produces
  * the same (H, W, C) as `enc{N}_feat`, so skip-add (not skip-concat) is
- * shape-correct at every site. `InferenceGraph._validateSkipShapes()`
+ * shape-correct at every site. `tensorDimSolver.validateSkipShapes()`
  * asserts this at init time.
  *
  * Final layer graph (built below by `buildUNetSpec()`):

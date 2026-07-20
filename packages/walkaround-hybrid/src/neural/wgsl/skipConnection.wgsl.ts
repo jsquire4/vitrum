@@ -4,7 +4,7 @@
  * Adds two tensors element-wise (skip connection). Both tensors must have the
  * same total element count (same H, W, C): if the spatial or channel
  * dimensions don't match, the dispatch produces wrong results, so
- * `InferenceGraph._validateSkipShapes()` checks shape matching before dispatch.
+ * `tensorDimSolver.validateSkipShapes()` checks shape matching before dispatch.
  *
  * Canonical binding layout:
  *   @group(0) @binding(0)  inputA : array<f32>  — first input  (decoder upsample output)

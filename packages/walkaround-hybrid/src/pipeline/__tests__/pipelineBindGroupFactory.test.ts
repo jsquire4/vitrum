@@ -16,7 +16,6 @@ import { PipelineResourceCache } from '../PipelineResourceCache.js';
 import {
   buildCompositeBindGroup,
   buildFrameBindGroup,
-  buildRisGiFrameBindGroup,
   buildSceneBindGroup,
   buildUboBindGroup,
 } from '../bindGroupBuilders.js';

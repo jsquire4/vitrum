@@ -166,7 +166,7 @@ describe('glTF common extension policy', () => {
       },
     });
     gltf.extensionsUsed = ['KHR_materials_dispersion'];
-    const { scene, warnings, diagnostics } = await gltfToScene(gltf, { buffers });
+    const { scene, warnings } = await gltfToScene(gltf, { buffers });
     const material = (scene.primitives[0] as MeshPrimitive).material;
 
     expect(material.ior).toBeCloseTo(1.5);
