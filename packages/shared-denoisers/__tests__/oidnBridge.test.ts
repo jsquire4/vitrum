@@ -81,10 +81,14 @@ describe('clearOIDNCache', () => {
     const bridge = await import('../src/oidnBridge.js');
     await bridge.preloadOIDNModel({ modelUrl: '/mock.onnx', executionProviders: ['wasm'] });
 
+    // The cache now holds a Promise<session>; release happens once the promise
+    // resolves (a microtask after clear). Flush the microtask queue.
     bridge.clearOIDNCache();
+    await Promise.resolve();
     expect(release).toHaveBeenCalledTimes(1);
 
     bridge.clearOIDNCache();
+    await Promise.resolve();
     expect(release).toHaveBeenCalledTimes(1);
   });
 
@@ -107,12 +111,92 @@ describe('clearOIDNCache', () => {
     await bridge.preloadOIDNModel({ modelUrl: '/b.onnx', executionProviders: ['wasm'] });
 
     bridge.releaseOIDNCacheEntry({ modelUrl: '/a.onnx', executionProviders: ['wasm'] });
+    await Promise.resolve();
     expect(releases[0]).toHaveBeenCalledTimes(1);
     expect(releases[1]).not.toHaveBeenCalled();
 
     bridge.clearOIDNCache();
+    await Promise.resolve();
     expect(releases[0]).toHaveBeenCalledTimes(1);
     expect(releases[1]).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Concurrent first-use session race (V3-6) ──────────────────────────────────
+//
+// Two concurrent preloads against a SLOW session-create must share ONE session:
+// caching the resolved session (old code) let both pass the undefined check and
+// create a duplicate that leaked untracked. The fix caches the creation PROMISE
+// synchronously before the await; a rejected create deletes its own entry.
+
+describe('OIDN concurrent first-use (promise cache)', () => {
+  it('two concurrent preloads create exactly ONE session (no duplicate leak)', async () => {
+    vi.resetModules();
+    let createCount = 0;
+    let releaseSession = () => {};
+    const run = vi.fn(async () => ({ output: { data: new Float32Array(3) } }));
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        // Slow create: resolve on the next macrotask so both callers are
+        // in-flight before either resolves.
+        create: vi.fn(async () => {
+          createCount += 1;
+          await new Promise((r) => setTimeout(r, 10));
+          const release = vi.fn();
+          releaseSession = release;
+          return { run, release };
+        }),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    // Fire two concurrent preloads for the SAME key before either resolves.
+    await Promise.all([
+      bridge.preloadOIDNModel({ modelUrl: '/race.onnx', executionProviders: ['wasm'] }),
+      bridge.preloadOIDNModel({ modelUrl: '/race.onnx', executionProviders: ['wasm'] }),
+    ]);
+
+    expect(createCount).toBe(1);
+
+    // The single cached session is released exactly once on clear.
+    bridge.clearOIDNCache();
+    await Promise.resolve();
+    expect(releaseSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rejected create removes its cache entry (no poisoning)', async () => {
+    vi.resetModules();
+    let attempt = 0;
+    const run = vi.fn(async () => ({ output: { data: new Float32Array(3) } }));
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        constructor(..._args: unknown[]) {}
+      },
+      InferenceSession: {
+        create: vi.fn(async () => {
+          attempt += 1;
+          if (attempt === 1) {
+            throw new Error('mock create failure');
+          }
+          return { run, release: vi.fn() };
+        }),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    // First create rejects → entry must be deleted, not cached.
+    await expect(
+      bridge.preloadOIDNModel({ modelUrl: '/poison.onnx', executionProviders: ['wasm'] }),
+    ).rejects.toThrow('mock create failure');
+
+    // A retry after the rejection succeeds (cache was not poisoned).
+    await expect(
+      bridge.preloadOIDNModel({ modelUrl: '/poison.onnx', executionProviders: ['wasm'] }),
+    ).resolves.toBeUndefined();
+    expect(attempt).toBe(2);
   });
 });
 

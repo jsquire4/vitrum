@@ -1617,6 +1617,25 @@ export class GpuResources {
   // ── SPPM photon-map lifecycle (A4) ───────────────────────────────────────────
 
   /**
+   * Predicate: would the full SPPM photon-cells allocation exceed the effective
+   * ceiling (min of the static SPPM ceiling and the live device limits)?  This
+   * mirrors the ceiling check inside {@link ensureSppmBuffers} but is side-effect
+   * free, so the engine can decide the caustic-mode fallback BEFORE it packs the
+   * per-frame params buffer (V2-1: the packed `causticMode` must reflect the
+   * manifold-nee fallback, not the placeholder photon path).  Returns `false` on
+   * the lite tier (SPPM never runs there) and when SPPM is already allocated.
+   */
+  sppmWouldExceedCeiling(): boolean {
+    if (this.#traceTier !== 'full') return false;
+    if (this.sppmBuffersReady) return false;
+    const deviceMaxBuffer = this.#device.limits?.maxBufferSize ?? 256 * 1024 * 1024;
+    const deviceMaxBinding =
+      this.#device.limits?.maxStorageBufferBindingSize ?? 128 * 1024 * 1024;
+    const sppmCeiling = Math.min(SPPM_PHOTON_CELLS_MAX_BYTES, deviceMaxBuffer, deviceMaxBinding);
+    return SPPM_PHOTON_CELLS_BYTES > sppmCeiling;
+  }
+
+  /**
    * (Re)allocate or ensure the SPPM buffers and pipeline exist.  Returns `true`
    * when the full photon-cells + counters + stats buffers are allocated and the
    * photon-emission pipeline is built; `false` on the lite tier or when the

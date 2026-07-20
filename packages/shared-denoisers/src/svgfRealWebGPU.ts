@@ -55,6 +55,8 @@ import {
   fillRg32f,
   fillRgba32f,
   readRgba16fToRgb,
+  readRgba32fToRg,
+  readR32UintToU32,
 } from './webGpuTextureUpload.js';
 
 // ============================================================
@@ -109,6 +111,21 @@ export interface SVGFRealWebGPUOptions {
   /** Per-pixel object ID (u32), length W*H. Defaults to 0. */
   readonly objectIds?: Uint32Array;
 
+  // ── Previous-frame G-buffer (enables multi-frame chaining) ────────────────
+  // When a prev* input is supplied it is uploaded to the corresponding prev
+  // texture used by reprojection disocclusion. When absent, the one-shot
+  // fallback mirrors the current-frame value (prev == curr) as before — so a
+  // caller that omits these keeps the historic single-frame behavior exactly.
+
+  /** Previous-frame linear depth, length W*H. Falls back to `linearDepth` (curr) when absent. */
+  readonly prevLinearDepth?: Float32Array;
+  /** Previous-frame packed normals (0..1 XYZ), length W*H*3. Falls back to `gbufferNormalsRgb` (curr) when absent. */
+  readonly prevNormalsRgb?: Float32Array;
+  /** Previous-frame object IDs (u32), length W*H. Falls back to `objectIds` (curr) when absent. */
+  readonly prevObjectIds?: Uint32Array;
+  /** Previous-frame per-pixel history length (u32), length W*H. Alias of `historyLengthIn`; when both set, this wins for the prev texture. */
+  readonly prevHistoryLength?: Uint32Array;
+
   /**
    * Per-pixel surface albedo ρ (linear RGB row-major, length W*H*3). When
    * supplied, the SVGF chain runs on demodulated lighting (L = c/ρ) per
@@ -136,13 +153,42 @@ export interface SVGFRealWebGPUOptions {
   readonly device?: GPUDevice;
   /** When true, uses process-shared WebGPU device; otherwise uses ephemeral device. Default: false. */
   readonly reuseSharedWebGpuDevice?: boolean;
+
+  /**
+   * When true, the reprojection outputs (blended moments + per-pixel history
+   * length) are read back BEFORE the transient textures are destroyed and
+   * returned as `momentsOut` / `historyLengthOut`, so the caller can feed them
+   * back as `momentsIn` / `historyLengthIn` next frame — enabling multi-frame
+   * chaining. Default false (single-frame; `momentsOut`/`historyLengthOut`
+   * remain undefined and no extra readback is submitted).
+   */
+  readonly chainable?: boolean;
+}
+
+/**
+ * Result of a one-shot SVGF pass.
+ *
+ * `rgb` is always the filtered HDR RGB (length width*height*3). When the caller
+ * sets `chainable: true`, `momentsOut` (blended M1/M2 interleaved, length W*H*2)
+ * and `historyLengthOut` (per-pixel u32 history length, length W*H) are also
+ * returned so they can be threaded into the next frame's `momentsIn` /
+ * `historyLengthIn`; otherwise both are undefined.
+ */
+export interface SVGFRealWebGPUResult {
+  readonly rgb: Float32Array;
+  readonly momentsOut?: Float32Array;
+  readonly historyLengthOut?: Uint32Array;
 }
 
 /**
  * Run a full Schied 2017 SVGF denoiser pass on the given inputs.
- * Returns the filtered HDR RGB (length width*height*3).
+ * Returns `{ rgb, momentsOut?, historyLengthOut? }`: `rgb` is the filtered HDR
+ * RGB (length width*height*3); `momentsOut`/`historyLengthOut` are populated
+ * only when `opts.chainable` is true (for multi-frame chaining).
  */
-export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Float32Array> {
+export async function runSVGFRealWebGPU(
+  opts: SVGFRealWebGPUOptions,
+): Promise<SVGFRealWebGPUResult> {
   const w = opts.width;
   const h = opts.height;
   const rawAtrous = opts.atrousIterations ?? SVGF_REAL_DEFAULT_ATROUS_ITERATIONS;
@@ -372,49 +418,61 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
     } else {
       fillRg32f(device, motionTex, w, h, 0, 0);
     }
+    // Depth: curr from linearDepth (or 1.0); prev from prevLinearDepth when
+    // supplied, else mirror curr (one-shot fallback).
     if (opts.linearDepth != null) {
       uploadR32f(device, currDepthTex, opts.linearDepth, w, h);
-      uploadR32f(device, prevDepthTex, opts.linearDepth, w, h); // prev same as curr for one-shot
     } else {
-      const ones = new Float32Array(w * h).fill(1);
-      uploadR32f(device, currDepthTex, ones, w, h);
-      uploadR32f(device, prevDepthTex, ones, w, h);
+      uploadR32f(device, currDepthTex, new Float32Array(w * h).fill(1), w, h);
     }
+    {
+      const prevDepth = opts.prevLinearDepth ?? opts.linearDepth;
+      if (prevDepth != null) {
+        uploadR32f(device, prevDepthTex, prevDepth, w, h);
+      } else {
+        uploadR32f(device, prevDepthTex, new Float32Array(w * h).fill(1), w, h);
+      }
+    }
+    // Normals: curr from gbufferNormalsRgb (or rest pose); prev from
+    // prevNormalsRgb when supplied, else mirror curr.
+    const NORMAL_REST: readonly [number, number, number, number] = [0.5, 0.5, 1.0, 0.0];
     if (opts.gbufferNormalsRgb != null) {
-      // Upload packed normals to both curr and prev normal textures.
-      // Per-channel fallback: R→0.5, G→0.5, B→1.0 (packed octahedral +Z); alpha=0.
-      uploadRgbAsRgba32fPacked(
-        device,
-        currNormTex,
-        opts.gbufferNormalsRgb,
-        w,
-        h,
-        [0.5, 0.5, 1.0, 0.0],
-      );
-      uploadRgbAsRgba32fPacked(
-        device,
-        prevNormTex,
-        opts.gbufferNormalsRgb,
-        w,
-        h,
-        [0.5, 0.5, 1.0, 0.0],
-      );
+      uploadRgbAsRgba32fPacked(device, currNormTex, opts.gbufferNormalsRgb, w, h, NORMAL_REST);
     } else {
-      fillRgba32f(device, currNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
-      fillRgba32f(device, prevNormTex, w, h, [0.5, 0.5, 1.0, 0.0]);
+      fillRgba32f(device, currNormTex, w, h, NORMAL_REST);
     }
+    {
+      const prevNormals = opts.prevNormalsRgb ?? opts.gbufferNormalsRgb;
+      if (prevNormals != null) {
+        uploadRgbAsRgba32fPacked(device, prevNormTex, prevNormals, w, h, NORMAL_REST);
+      } else {
+        fillRgba32f(device, prevNormTex, w, h, NORMAL_REST);
+      }
+    }
+    // Object IDs: curr from objectIds (or 0); prev from prevObjectIds when
+    // supplied, else mirror curr.
     if (opts.objectIds != null) {
       uploadR32Uint(device, currObjTex, opts.objectIds, w, h);
-      uploadR32Uint(device, prevObjTex, opts.objectIds, w, h);
     } else {
-      const zeros32 = new Uint32Array(w * h);
-      uploadR32Uint(device, currObjTex, zeros32, w, h);
-      uploadR32Uint(device, prevObjTex, zeros32, w, h);
+      uploadR32Uint(device, currObjTex, new Uint32Array(w * h), w, h);
     }
-    if (opts.historyLengthIn != null) {
-      uploadR16Uint(device, histInTex, opts.historyLengthIn, w, h);
-    } else {
-      fillR16Uint(device, histInTex, w, h, 0);
+    {
+      const prevObj = opts.prevObjectIds ?? opts.objectIds;
+      if (prevObj != null) {
+        uploadR32Uint(device, prevObjTex, prevObj, w, h);
+      } else {
+        uploadR32Uint(device, prevObjTex, new Uint32Array(w * h), w, h);
+      }
+    }
+    // History length in: prevHistoryLength wins over historyLengthIn (both name
+    // the previous-frame history feeding reprojection); fall back to 0.
+    {
+      const histIn = opts.prevHistoryLength ?? opts.historyLengthIn;
+      if (histIn != null) {
+        uploadR16Uint(device, histInTex, histIn, w, h);
+      } else {
+        fillR16Uint(device, histInTex, w, h, 0);
+      }
     }
     if (opts.momentsIn != null) {
       uploadInterleavedRgAsRg32f(device, momentsInTex, opts.momentsIn, w, h);
@@ -573,7 +631,18 @@ export async function runSVGFRealWebGPU(opts: SVGFRealWebGPUOptions): Promise<Fl
       svgfRealRemodulateAlbedo(result, opts.albedoRgb, px);
     }
 
-    return result;
+    // Multi-frame chaining: read the reprojection outputs (blended moments +
+    // per-pixel history length) back BEFORE the `finally` destroys the
+    // textures, so the caller can thread them into the next frame's
+    // `momentsIn` / `historyLengthIn`. momOutTex is rgba32float (M1/M2 in .rg);
+    // histOutTex is r32uint. Skipped entirely when `chainable` is false.
+    if (opts.chainable === true) {
+      const momentsOut = await readRgba32fToRg(device, momOutTex, w, h);
+      const historyLengthOut = await readR32UintToU32(device, histOutTex, w, h);
+      return { rgb: result, momentsOut, historyLengthOut };
+    }
+
+    return { rgb: result };
   } finally {
     for (const buffer of buffers) buffer.destroy();
     for (const texture of textures) texture.destroy();

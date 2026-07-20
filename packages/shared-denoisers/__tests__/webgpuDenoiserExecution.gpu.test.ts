@@ -36,8 +36,8 @@ describe.skipIf(!hasWebGpu)('exported WebGPU denoiser execution smokes', () => {
       reuseSharedWebGpuDevice: true,
     });
 
-    expect(out.length).toBe(width * height * 3);
-    expectFinitePrefix(out, 12);
+    expect(out.rgb.length).toBe(width * height * 3);
+    expectFinitePrefix(out.rgb, 12);
   });
 
   it('executes runHdrLuminanceBilateralWebGPU and returns finite RGB', async () => {

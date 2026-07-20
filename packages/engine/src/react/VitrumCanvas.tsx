@@ -101,6 +101,11 @@ function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): EngineWithB
       handle.converged.setSize?.(width, height);
     },
     renderFrame: (input: FrameInput) => coordinator.frame(input).output,
+    // V1-1 / R2 — presentation source for attachVitrum's offscreen blit. The
+    // coordinator returns the converged (offscreen pt-webgpu) engine's texture
+    // once it hands off, and null while the swapchain realtime engine is driving
+    // (it presents itself). This is what unfreezes the canvas after handoff.
+    getPresentationSource: () => coordinator.getPresentationSource(),
     reset: () => {
       handle.realtime.reset();
       handle.converged.reset();

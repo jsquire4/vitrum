@@ -68,6 +68,7 @@ export type CreateEngineErrorPhase =
   | 'attach:auto-recreate'
   | 'attach:initial'
   | 'attach:swapchain'
+  | 'attach:present'
   | 'attach:renderFrame';
 
 export interface CreateEngineErrorEvent {

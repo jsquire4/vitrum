@@ -33,6 +33,7 @@ import {
 } from './materialTextures.js';
 import {
   createMaterialTextureArray,
+  type MaterialTextureArray,
   type MaterialTextureArrayWarning,
 } from './materialTextureArray.js';
 import { environmentParams } from './environmentPacking.js';
@@ -1972,6 +1973,50 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
         `pt-webgpu requires stride-4 indices — 3 vertex u32 + 1 zero-fill u32.`,
     );
   }
+  // V2-2: failure cleanup. uploadPackedScene creates ~30 GPU resources
+  // sequentially; a mid-sequence throw (e.g. createMaterialTextureArray on a
+  // malformed texture, or a buffer-size validation error) previously leaked every
+  // resource already created. Track every created buffer/texture and, on any throw
+  // in the body, destroy them all and rethrow so the caller (setScene) sees the
+  // error with no leaked GPU memory. `createStorageBuffer` is shadowed by a local
+  // tracking wrapper so all 27 storage-buffer creates below register automatically;
+  // the two material texture arrays register their textures explicitly.
+  const createdResources: Array<{ destroy: () => void }> = [];
+  const trackedCreateStorageBuffer = (
+    dev: GPUDevice,
+    label: string,
+    data: ArrayBufferView,
+  ): GPUBuffer => {
+    const buf = createStorageBuffer(dev, label, data);
+    createdResources.push(buf);
+    return buf;
+  };
+  const trackMaterialArray = (arr: MaterialTextureArray): MaterialTextureArray => {
+    // GPUSampler has no destroy(); only the texture holds device memory.
+    createdResources.push(arr.texture);
+    return arr;
+  };
+  try {
+    return uploadPackedSceneInner(device, packed, trackedCreateStorageBuffer, trackMaterialArray);
+  } catch (err) {
+    for (const r of createdResources) {
+      try {
+        r.destroy();
+      } catch {
+        // best-effort teardown — swallow secondary destroy errors so the original
+        // upload failure propagates.
+      }
+    }
+    throw err;
+  }
+}
+
+function uploadPackedSceneInner(
+  device: GPUDevice,
+  packed: PackedSceneData,
+  createStorageBuffer: (dev: GPUDevice, label: string, data: ArrayBufferView) => GPUBuffer,
+  trackMaterialArray: (arr: MaterialTextureArray) => MaterialTextureArray,
+): UploadedSceneBuffers {
   const positionsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.positions', packed.positions);
   const normalsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.normals', packed.normals);
   const indicesBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.indices', packed.indices);
@@ -2015,19 +2060,19 @@ export function uploadPackedScene(device: GPUDevice, packed: PackedSceneData): U
   const uvsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.uvs', packed.uvs);
   const tangentsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.tangents', packed.tangents);
   const colorsBuffer = createStorageBuffer(device, 'vitrum.pt-webgpu.scene.colors', packed.colors);
-  const materialTextureArray = createMaterialTextureArray(
+  const materialTextureArray = trackMaterialArray(createMaterialTextureArray(
     device,
     packed.materialTextureSources,
     'rgba8unorm-srgb',
     packed.materialTextureSourceInfos,
-  );
+  ));
   // Linear array (normal + ORM) — rgba8unorm so the sampler does NOT sRGB-decode.
-  const materialLinearArray = createMaterialTextureArray(
+  const materialLinearArray = trackMaterialArray(createMaterialTextureArray(
     device,
     packed.materialTextureLinearSources,
     'rgba8unorm',
     packed.materialTextureLinearSourceInfos,
-  );
+  ));
   applyMaterialTextureUvFitScales(
     packed.materialTexDescriptors,
     materialTextureArray.layerUvScales,

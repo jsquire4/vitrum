@@ -82,7 +82,11 @@ export interface BmfrWebGPUOptions {
 
   /** Square block edge in pixels (default BMFR_BLOCK_SIZE = 32). */
   readonly blockSize?: number;
-  /** Block grid stride in pixels (default = blockSize; < blockSize = overlap). */
+  /**
+   * Block grid stride in pixels (default = blockSize). Clamped to >= blockSize:
+   * overlapping strides produce nondeterministic output (last-writer-wins
+   * textureStore across workgroups) and no production consumer needs them.
+   */
   readonly blockStride?: number;
   /** World-space normalisation scale for the squared features. */
   readonly positionScale?: number;
@@ -113,7 +117,16 @@ export async function runBmfrWebGPU(opts: BmfrWebGPUOptions): Promise<Float32Arr
   // per workgroup, so blockSize is clamped to [2, 32]: a larger block would
   // leave its trailing pixels uncovered by any thread.
   const blockSize = Math.min(BMFR_BLOCK_SIZE, Math.max(2, Math.floor(opts.blockSize ?? BMFR_BLOCK_SIZE)));
-  const blockStride = Math.max(1, Math.floor(opts.blockStride ?? blockSize));
+  // blockStride is clamped to >= blockSize (no overlap). Overlapping strides
+  // (stride < blockSize) make neighbouring workgroups textureStore the SAME
+  // output texels (bmfr.wgsl bmfrMain: the reconstruct-and-store loop writes
+  // every pixel a block touches). WebGPU gives no cross-workgroup ordering
+  // guarantee, so overlapping writes are last-writer-wins nondeterministic —
+  // the result varies run-to-run. No production consumer requests overlap;
+  // rather than add an accumulate+resolve pass for an opt-in-only path, we
+  // clamp the knob so the tiling always partitions the image disjointly.
+  const requestedStride = Math.max(1, Math.floor(opts.blockStride ?? blockSize));
+  const blockStride = Math.max(blockSize, requestedStride);
 
   const uniforms: BmfrUniforms = {
     blockSize,

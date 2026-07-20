@@ -130,11 +130,18 @@ export interface OIDNDenoiseOptions {
 // Module-level cache
 // ============================================================
 
-// Cached InferenceSession keyed by modelUrl.
+// Cached InferenceSession-creation PROMISE keyed by modelUrl (+ EP tuple).
 // Using `unknown` avoids importing onnxruntime-web types at the module level,
 // which would make the package hard-fail at compile time when the optional
 // peer dep is absent.
-const _sessionCache = new Map<string, unknown>();
+//
+// We cache the in-flight Promise (not the resolved session) so two concurrent
+// first-use callers share ONE `InferenceSession.create` — otherwise both pass
+// the `undefined` check, each creates a session, and the overwritten one leaks
+// untracked (never released). The promise is inserted synchronously BEFORE the
+// await; a rejected create deletes its own entry so a transient failure does
+// not poison the cache.
+const _sessionCache = new Map<string, Promise<unknown>>();
 
 // ============================================================
 // Public API
@@ -229,8 +236,13 @@ export async function preloadOIDNModel(opts: OIDNDenoiseOptions): Promise<void> 
  * from scratch (including another model load).
  */
 export function clearOIDNCache(): void {
-  for (const session of _sessionCache.values()) {
-    _releaseSession(session);
+  for (const pending of _sessionCache.values()) {
+    // Release the session once it resolves; swallow a rejected create (its
+    // entry is already removed by _getOrCreateSession's catch).
+    void pending.then(
+      (session) => _releaseSession(session),
+      () => {},
+    );
   }
   _sessionCache.clear();
 }
@@ -331,9 +343,12 @@ export function releaseOIDNCacheEntry(
   opts: Pick<OIDNDenoiseOptions, 'modelUrl' | 'executionProviders'>,
 ): void {
   const key = _sessionCacheKey(opts);
-  const session = _sessionCache.get(key);
-  if (session !== undefined) {
-    _releaseSession(session);
+  const pending = _sessionCache.get(key);
+  if (pending !== undefined) {
+    void pending.then(
+      (session) => _releaseSession(session),
+      () => {},
+    );
   }
   _sessionCache.delete(key);
 }
@@ -347,15 +362,26 @@ async function _getOrCreateSession(
 
   const cached = _sessionCache.get(key);
   if (cached !== undefined) {
-    return cached;
+    // A concurrent first-use caller already started (or finished) creation;
+    // share its in-flight promise instead of creating a duplicate session.
+    return await cached;
   }
 
-  const session = await ort.InferenceSession.create(modelUrl, {
+  // Insert the creation promise SYNCHRONOUSLY (before the await) so a second
+  // concurrent caller hits the cache above and shares this one create. Delete
+  // the entry on rejection so a transient failure doesn't poison the cache.
+  const creation = ort.InferenceSession.create(modelUrl, {
     executionProviders: executionProviders,
   });
-
-  _sessionCache.set(key, session);
-  return session;
+  _sessionCache.set(key, creation);
+  try {
+    return await creation;
+  } catch (err) {
+    if (_sessionCache.get(key) === creation) {
+      _sessionCache.delete(key);
+    }
+    throw err;
+  }
 }
 
 /**

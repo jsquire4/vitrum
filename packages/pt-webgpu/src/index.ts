@@ -242,6 +242,15 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   /**
    * Enable the bidirectional path tracer (full Veach §10.3 connection MIS). Full
    * tier only. Off by default. (Graduated from `extensions['vitrum.ptWebgpu.bdpt']`.)
+   *
+   * KNOWN-BIAS CAVEAT (D2, 2026-07-20): the default light-subpath bounce count is
+   * now `2` (was `1`, which performed zero light-path connections and made
+   * `bdpt:true` silently inert). At the default the BDPT contribution is an
+   * ADDITIVE light-connection sidecar — it is NOT yet eye-path re-weighted against
+   * the unidirectional estimator, so it introduces a small known bias vs. a fully
+   * MIS-balanced BDPT. Multi-vertex BDPT (`maxLightBounces > 2` via
+   * `experimentalMultiVertex:true`) remains a research harness (see CLAUDE.md).
+   * `bdpt:true` continues to route the existing experimental-feature warning.
    */
   readonly bdpt?: boolean;
   /**
@@ -286,12 +295,14 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
   /** BDPT tuning — read only when {@link bdpt} is `true`. */
   readonly bdptOptions?: {
     /**
-     * Max light-subpath bounces, clamped 1-8 with a construction warning. Default 1
-     * keeps `bdpt:true` endpoint-only and radiometrically neutral against the
-     * unidirectional estimator. Values >1 require `experimentalMultiVertex:true`
-     * because the current multi-vertex path is a research harness whose
-     * connection estimator is not yet composed against the regular eye-path
-     * strategy.
+     * Max light-subpath bounces, clamped 1-8 with a construction warning. Default 2
+     * (D2, 2026-07-20 — raised from 1 so `bdpt:true` performs real light-path
+     * connections out of the box; at maxLv=2 the kernel connection loop
+     * `for lvi=1u; lvi<maxLv` runs once, lvi=1). This default carries the known
+     * additive-sidecar bias documented on {@link bdpt}. Values >2 require
+     * `experimentalMultiVertex:true` because the multi-vertex path is a research
+     * harness whose connection estimator is not yet composed against the regular
+     * eye-path strategy.
      */
     readonly maxLightBounces?: number;
     /**
@@ -370,7 +381,12 @@ export type {
 
 const EXPERIMENTAL_MAX_BOUNCES = 8;
 const BDPT_MAX_LIGHT_BOUNCES = 8;
-const BDPT_SAFE_DEFAULT_LIGHT_BOUNCES = 1;
+// D2 (2026-07-20): raised 1 → 2 unconditionally. With maxLv=2 the kernel
+// connection loop `for lvi=1u; lvi<maxLv` executes lvi=1, so BDPT does real
+// light-path connections out of the box instead of being silently inert at the
+// old default of 1 (which performed zero connections). BDPT remains opt-in
+// (`bdpt:true`); this only fixes its default light-bounce count.
+const BDPT_SAFE_DEFAULT_LIGHT_BOUNCES = 2;
 const DEFAULT_MAX_SAMPLES_PER_PIXEL = 4096;
 const WORKGROUP_SIZE = 8;
 /** A4 — SPPM photons emitted per frame: 65536 (= 1024 workgroups × 64 lanes). */
@@ -460,6 +476,16 @@ class PTEngineWebGPU implements Engine {
   readonly #maxBouncesLimit: number;
   readonly #maxSamplesLimit: number;
   readonly #causticStrategy: 'none' | 'manifold-nee' | 'photon-map';
+  /**
+   * V2-1: when the full SPPM photon-cells allocation would exceed the effective
+   * ceiling (device/static limits), the engine falls back to the manifold-nee
+   * caustic path. This override forces the packed `causticMode` to reflect that
+   * fallback for the frame — otherwise the packer would emit `photon-map` (2u)
+   * from the static config and the kernel's `caustic==2u` branch would gather
+   * against placeholder photon buffers, rendering caustics ~zero. `null` = no
+   * override (use the configured strategy).
+   */
+  #causticModeOverride: 'manifold-nee' | null = null;
   readonly #mneeMaxIterations: number;
   readonly #mneeMaxChainLength: number;
   readonly #traceTier: PtWebgpuTraceTier;
@@ -1081,6 +1107,28 @@ class PTEngineWebGPU implements Engine {
   }
 
   /**
+   * Presentation SOURCE for this offscreen backend (V1-1 / R2). pt-webgpu
+   * declares `presentationMode: 'offscreen-texture'` — it renders to an internal
+   * texture and never presents to the host canvas itself. A canvas-owning host
+   * (e.g. `attachVitrum`) blits the returned texture to the canvas each frame.
+   *
+   * Returns the backend's own {@link GPUDevice} (which owns the texture) plus the
+   * displayable surface — the same tonemapped `presentTexture` `#frameOutput`
+   * hands back as `primaryRadiance`. `device` is typed `unknown` in the core
+   * contract so the backend-agnostic core carries no WebGPU types; the host casts
+   * at the boundary. Null before any GPU resources exist (pre-first-frame /
+   * disposed) so the host skips the blit until there is something to present.
+   */
+  getPresentationSource(): { device: unknown; texture: BackendTexture } | null {
+    const displayTex = this.#gpu.presentTexture ?? this.#gpu.accumTexture;
+    if (displayTex == null) return null;
+    return {
+      device: this.#device,
+      texture: asBackendTexture<'webgpu', GPUTexture>(displayTex),
+    };
+  }
+
+  /**
    * Emit the per-frame telemetry pair (onFrame stats + onProgress) that all
    * three renderFrame return paths share. `spp` is 0 for the no-op fast-outs
    * and 1 for an actual dispatch; `fraction` is computed from
@@ -1134,7 +1182,7 @@ class PTEngineWebGPU implements Engine {
         activeBounces: this.#activeBounces,
         mneeMaxIterations: this.#mneeMaxIterations,
         mneeMaxChainLength: this.#mneeMaxChainLength,
-        causticStrategy: this.#causticStrategy,
+        causticStrategy: this.#causticModeOverride ?? this.#causticStrategy,
         spectralEnabled: this.#spectralEnabled,
         traceTier: this.#traceTier,
         bdpt: this.#bdpt,
@@ -1344,10 +1392,18 @@ class PTEngineWebGPU implements Engine {
         details: displacementWarningDetails(warning),
       });
     }
+    // V2-2: atomic setScene. Upload into a LOCAL first; only after it succeeds do
+    // we swap it in and destroy the old buffers. Previously the old buffers were
+    // destroyed BEFORE uploadPackedScene ran — a mid-upload throw (uploadPackedScene
+    // does ~30 sequential buffer creates) left the engine sceneless AND leaked the
+    // buffers the failed upload had already created. uploadPackedScene now cleans up
+    // its own partial allocations on throw (see uploadSceneBuffers.ts); this swap
+    // keeps the previously-valid scene installed if the new upload fails.
+    const previousSceneBuffers = this.#sceneBuffers;
+    const uploadedScene = uploadPackedScene(this.#device, packed);
     this.#geoPack = scenePackResultFromPacked(packed);
-    this.#sceneBuffers?.destroy();
-    this.#sceneBuffers = uploadPackedScene(this.#device, packed);
-    const uploadedScene = this.#sceneBuffers;
+    this.#sceneBuffers = uploadedScene;
+    previousSceneBuffers?.destroy();
     this.#syncLiteTextures(uploadedScene);
     this.#bdptLightPath?.dispose();
     this.#bdptLightPath = null;
@@ -1485,6 +1541,18 @@ class PTEngineWebGPU implements Engine {
       this.#activeBounces,
       bdptActive,
     );
+
+    // V2-1: decide the SPPM ceiling fallback BEFORE packing params. When the
+    // configured strategy is photon-map on full tier but the photon-cells
+    // allocation would exceed the effective ceiling, force `causticMode` to
+    // manifold-nee for this pack so the kernel takes the manifold path instead
+    // of gathering against placeholder photon buffers (which rendered ~zero).
+    this.#causticModeOverride =
+      this.#causticStrategy === 'photon-map' &&
+      this.#traceTier === 'full' &&
+      gpu.sppmWouldExceedCeiling()
+        ? 'manifold-nee'
+        : null;
 
     const paramsArrayBuffer = this.#buildParamsBuffer(input, width, height);
     if (bdptActive && !bdptStackReady) {
@@ -2383,8 +2451,8 @@ export const createPTEngine_WebGPU: EngineFactory<
   ) {
     if (opts.bdptOptions?.experimentalMultiVertex !== true) {
       throw new RangeError(
-        'createPTEngine_WebGPU: bdptOptions.maxLightBounces > 1 activates the multi-vertex BDPT research path; ' +
-        'set bdptOptions.experimentalMultiVertex=true to opt in, or omit maxLightBounces for the endpoint-only safe default.',
+        `createPTEngine_WebGPU: bdptOptions.maxLightBounces > ${BDPT_SAFE_DEFAULT_LIGHT_BOUNCES} activates the multi-vertex BDPT research path; ` +
+        `set bdptOptions.experimentalMultiVertex=true to opt in, or omit maxLightBounces for the safe default (${BDPT_SAFE_DEFAULT_LIGHT_BOUNCES}).`,
       );
     }
     emitPteWarning(opts, {
@@ -2406,7 +2474,7 @@ export const createPTEngine_WebGPU: EngineFactory<
         currentEstimator: 'additive-sidecar-not-weighted-against-eye-path',
         blocker: 'not-weighted-against-regular-eye-path-strategy',
         requiredEstimator: 'multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy',
-        safeAlternative: 'omit bdptOptions.maxLightBounces or set maxLightBounces:1',
+        safeAlternative: `omit bdptOptions.maxLightBounces or set maxLightBounces:${BDPT_SAFE_DEFAULT_LIGHT_BOUNCES}`,
         evidencePath: 'tools/radiometric-ab/results-bdpt.json',
       },
     });

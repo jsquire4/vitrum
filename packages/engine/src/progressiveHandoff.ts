@@ -198,6 +198,12 @@ export class ProgressiveHandoffCoordinator {
   #prev: CameraSnapshot | null = null;
   #stillFrames = 0;
   #phase: HandoffPhase = 'realtime';
+  /** The engine whose output was DISPLAYED by the most recent {@link frame} call
+   *  (the realtime engine in realtime/settling/prerolling, the converged engine
+   *  in converging). Drives {@link getPresentationSource} so a canvas-owning host
+   *  presents the converged (offscreen) output after handoff and lets the swapchain
+   *  realtime engine present itself before it. */
+  #lastActive: Engine | null = null;
   /** The converged accumulator holds a DIFFERENT camera's samples (or none);
    *  reset it before the first converged frame of a settle. */
   #convergedStale = true;
@@ -407,6 +413,7 @@ export class ProgressiveHandoffCoordinator {
         convOutput.isConverged || convOutput.samplesAccumulated >= this.#displaySamples;
       if (!this.#settleBehind || convReady) {
         this.#phase = 'converging';
+        this.#lastActive = this.#converged;
         return { phase: 'converging', active: this.#converged, output: convOutput, stillFrames: this.#stillFrames };
       }
       // Pre-roll: the converged engine accumulated above (behind the scenes);
@@ -414,6 +421,7 @@ export class ProgressiveHandoffCoordinator {
       // hiding the real-time → 1-sample pop.
       this.#phase = 'prerolling';
       const rtOutput = this.#realtime.renderFrame(input);
+      this.#lastActive = this.#realtime;
       return {
         phase: 'prerolling',
         active: this.#realtime,
@@ -426,7 +434,28 @@ export class ProgressiveHandoffCoordinator {
     // Real-time: moving, or still-but-settling (below the threshold).
     this.#phase = this.#stillFrames > 0 ? 'settling' : 'realtime';
     const output = this.#realtime.renderFrame(input);
+    this.#lastActive = this.#realtime;
     return { phase: this.#phase, active: this.#realtime, output, stillFrames: this.#stillFrames };
+  }
+
+  /**
+   * Presentation SOURCE for a canvas-owning host (V1-1 / R2). Delegates to the
+   * engine that was DISPLAYED by the most recent {@link frame} call:
+   *  - realtime/settling/prerolling → the realtime (swapchain) engine, which
+   *    presents itself, so this returns `null` (nothing for the host to blit).
+   *  - converging → the converged (offscreen pt-webgpu) engine's source, so the
+   *    host blits its texture to the canvas — this is what unfreezes the display
+   *    after handoff.
+   *
+   * Returns `null` before the first frame or whenever the active engine does not
+   * expose `getPresentationSource` / has nothing to present.
+   */
+  getPresentationSource(): { device: unknown; texture: import('@vitrum/core').BackendTexture } | null {
+    const active = this.#lastActive;
+    if (active == null) return null;
+    const getSource = active.getPresentationSource;
+    if (typeof getSource !== 'function') return null;
+    return getSource.call(active);
   }
 
   /** Seed the converged accumulator from the real-time engine's last frame (the

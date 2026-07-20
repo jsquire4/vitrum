@@ -184,8 +184,9 @@ fn bmfrMain(
 ) {
   let dims = textureDimensions(bmfr_color);
   let blockSize = bmfr_ubo.blockSize;
-  // Block origin in pixels. The grid stride may be < blockSize (overlap); the
-  // host dispatches one workgroup per block origin = wid * blockStride.
+  // Block origin in pixels. The host clamps blockStride >= blockSize so the
+  // tiling partitions the image disjointly (no overlapping textureStore →
+  // deterministic output); one workgroup per block origin = wid * blockStride.
   let blockOrigin = wid.xy * bmfr_ubo.blockStride;
 
   // Each thread covers a PATCH×PATCH sub-tile of the block.

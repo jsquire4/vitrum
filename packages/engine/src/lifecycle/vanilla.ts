@@ -13,9 +13,10 @@
 //     out-of-box (a host that omits these silently degrades to no-temporal).
 //   - Idempotent dispose.
 
-import type { CapturedFrame, CaptureFrameOptions, Engine, EngineError, EngineWarning, FrameInput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
+import type { CapturedFrame, CaptureFrameOptions, Engine, EngineError, EngineWarning, FrameInput, FrameOutput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
 import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
 import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
+import { createOffscreenPresenter, type OffscreenPresenter } from '../presentOffscreen.js';
 import type { GIStatePersistable } from '../idempotentDispose.js';
 import type { GIStateSnapshot } from '@vitrum/walkaround-hybrid';
 import type { EngineWithBackendId } from '../createEngineInternals.js';
@@ -597,6 +598,9 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       unsubFrame = undefined;
       unsubProgress = undefined;
       unsubEngineError = undefined;
+      try { presenter?.dispose(); } catch { /* best-effort cleanup after cap — ignore */ }
+      presenter = undefined;
+      presenterDevice = undefined;
       try { engine.dispose(); } catch { /* best-effort cleanup after cap — ignore */ }
       console.error(
         `[attachVitrum] auto-recreate cap (${AUTO_RECREATE_MAX_ATTEMPTS} attempts / ` +
@@ -761,6 +765,55 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     }
   };
 
+  // ── Offscreen-backend presentation ───────────────────────────────────────
+  // V1-1 / R2 — offscreen-texture backends (pt-webgpu, and the progressive
+  // walkaround→PT facade once it hands off to pt-webgpu) render to an internal
+  // GPUTexture and never present to the canvas themselves. When the active engine
+  // exposes `getPresentationSource()` returning a `{ device, texture }` for the
+  // frame, blit it onto the canvas's WebGPU context so an auto-selected pt-webgpu
+  // engine is not black and the progressive handoff doesn't freeze on the last
+  // realtime frame. Swapchain-required backends (walkaround) present themselves and
+  // return null (or omit the method) → no presenter is constructed for them.
+  //
+  // The presenter is lazily built on the first non-null source and keyed to that
+  // source's device: an auto-recreate that mints a new device rebuilds it. Its
+  // context is the canvas's `webgpu` context (the same instance the shared-device
+  // progressive facade configured), reused across frames.
+  let presenter: OffscreenPresenter | undefined;
+  let presenterDevice: GPUDevice | undefined;
+  let presenterContext: GPUCanvasContext | undefined;
+  const presentOffscreenFrame = (output: FrameOutput): void => {
+    const getSource = engine.getPresentationSource;
+    if (typeof getSource !== 'function') return;
+    if (output.kind !== 'rendered') return;
+    let source: { device: unknown; texture: unknown } | null;
+    try {
+      source = getSource.call(engine);
+    } catch (err) {
+      reportError(err, { phase: 'attach:present', recoverable: true });
+      return;
+    }
+    if (source == null) return;
+    const device = source.device as GPUDevice | undefined;
+    const texture = source.texture as GPUTexture | undefined;
+    if (device == null || texture == null) return;
+    try {
+      if (presenter == null || presenterDevice !== device) {
+        // (Re)build the presenter for this device. A prior presenter (from an
+        // auto-recreated device) is dropped; the render pipeline/sampler GC with it.
+        presenter?.dispose();
+        const ctx = presenterContext ?? (opts.canvas.getContext('webgpu') as GPUCanvasContext | null) ?? undefined;
+        if (ctx == null) return;
+        presenterContext = ctx;
+        presenter = createOffscreenPresenter({ device, canvas: opts.canvas, context: ctx });
+        presenterDevice = device;
+      }
+      presenter.present(texture);
+    } catch (err) {
+      reportError(err, { phase: 'attach:present', recoverable: true });
+    }
+  };
+
   // ── RAF loop ─────────────────────────────────────────────────────────────
   let frameIndex = 0;
   let prevView: Mat4 | undefined;
@@ -808,9 +861,14 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         : {}),
     });
     try {
-      engine.renderFrame(input);
+      const output = engine.renderFrame(input);
       // Reset the consecutive-throw counter on any successful frame.
       consecutiveThrows = 0;
+      // V1-1 / R2 — present the FrameOutput for offscreen-texture backends. The
+      // output is no longer discarded: if the active engine renders offscreen
+      // (pt-webgpu, or the progressive facade after handoff) blit its texture to
+      // the canvas. A no-op for swapchain backends that present themselves.
+      presentOffscreenFrame(output);
     } catch (err) {
       consecutiveThrows++;
       if (consecutiveThrows >= RAF_SELF_STOP_THRESHOLD) {
@@ -856,6 +914,9 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       try { unsubFrame?.(); } catch { /* best-effort cleanup — ignore */ }
       try { unsubProgress?.(); } catch { /* best-effort cleanup — ignore */ }
       try { unsubEngineError?.(); } catch { /* best-effort cleanup — ignore */ }
+      try { presenter?.dispose(); } catch { /* best-effort cleanup — ignore */ }
+      presenter = undefined;
+      presenterDevice = undefined;
       try { engine.dispose(); } catch { /* best-effort cleanup — ignore */ }
     },
     captureFrame: (captureOpts?: CaptureFrameOptions) => {

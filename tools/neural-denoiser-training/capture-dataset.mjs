@@ -13,10 +13,10 @@
  * tools/neural-denoiser-training/README.md.
  *
  * Output layout matches dataset_spec.md exactly:
- *   <out>/<scene>/noisy/frame_NNNN.png          (low-spp colour, Reinhard LDR)
- *   <out>/<scene>/noisy/frame_NNNN_albedo.png   (primary-hit albedo)
- *   <out>/<scene>/noisy/frame_NNNN_normal.png   (world normal, n*0.5+0.5)
- *   <out>/<scene>/clean/frame_NNNN.png          (high-spp colour, Reinhard LDR)
+ *   <out>/<scene>/noisy/frame_NNNN.bin          (low-spp colour, linear-HDR VHDR)
+ *   <out>/<scene>/noisy/frame_NNNN_albedo.png   (primary-hit albedo, 8-bit)
+ *   <out>/<scene>/noisy/frame_NNNN_normal.png   (world normal, n*0.5+0.5, 8-bit)
+ *   <out>/<scene>/clean/frame_NNNN.bin          (high-spp colour, linear-HDR VHDR)
  *
  * Determinism: a single Park-Miller LCG seeded per (scene, frame, spp-pass)
  * from the CLI --seed. Re-running with the same flags is bit-identical.
@@ -529,7 +529,8 @@ function rayFor(cam, px, py, size) {
 }
 
 // ── Tonemap + encode ─────────────────────────────────────────────────────────
-const reinhard = (l) => l / (1 + l);
+// (color targets are written as linear HDR .bin — see encodeVHDR below; toByte
+// is used only for the albedo/normal 8-bit PNG G-buffers.)
 function toByte(x) { return Math.max(0, Math.min(255, Math.round(x * 255))); }
 
 // Minimal PNG encoder (RGB, 8-bit, no interlace). Uses node zlib.
@@ -568,9 +569,31 @@ function encodePNG(rgb, w, h) {
   return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', idat), chunk('IEND', Buffer.alloc(0))]);
 }
 
-// ── Render one image (color, given spp) ──────────────────────────────────────
+// ── Linear-HDR color container (VHDR .bin) ────────────────────────────────────
+// The runtime pack shader (neuralPack.wgsl) feeds RAW LINEAR HDR color to the
+// denoiser (no tonemap). Training must match that, so color targets are written
+// as linear float32 RGB — NOT reinhard-tonemapped 8-bit PNG. train.py loads this
+// via _load_hdr / _load_hdr_np. Albedo + normal G-buffers stay 8-bit PNG.
+//
+// Header (little-endian): u32 magic ('VHDR' = 0x52444856), u32 version (1),
+// u32 width, u32 height, then width*height*3 float32 linear radiance (row-major
+// interleaved RGB).
+const VHDR_MAGIC = 0x52444856;
+const VHDR_VERSION = 1;
+function encodeVHDR(linearRgb, w, h) {
+  const header = Buffer.alloc(16);
+  header.writeUInt32LE(VHDR_MAGIC, 0);
+  header.writeUInt32LE(VHDR_VERSION, 4);
+  header.writeUInt32LE(w, 8);
+  header.writeUInt32LE(h, 12);
+  const body = Buffer.alloc(w * h * 3 * 4);
+  for (let i = 0; i < linearRgb.length; i++) body.writeFloatLE(linearRgb[i], i * 4);
+  return Buffer.concat([header, body]);
+}
+
+// ── Render one image (color, given spp) → linear HDR float32 RGB ──────────────
 function renderColor(scene, cam, size, spp, rng, maxBounces) {
-  const out = Buffer.alloc(size * size * 3);
+  const out = new Float32Array(size * size * 3);
   for (let py = 0; py < size; py++) {
     for (let px = 0; px < size; px++) {
       let acc = [0, 0, 0];
@@ -580,9 +603,11 @@ function renderColor(scene, cam, size, spp, rng, maxBounces) {
       }
       const c = scale(acc, 1 / spp);
       const i = (py * size + px) * 3;
-      out[i] = toByte(reinhard(c[0]));
-      out[i + 1] = toByte(reinhard(c[1]));
-      out[i + 2] = toByte(reinhard(c[2]));
+      // Store RAW LINEAR radiance (no reinhard, no 8-bit quantization) so the
+      // training color matches the runtime raw-linear denoiser input.
+      out[i] = c[0];
+      out[i + 1] = c[1];
+      out[i + 2] = c[2];
     }
   }
   return out;
@@ -653,10 +678,11 @@ function main() {
     const clean = renderColor(scene, cam, args.size, args.cleanSpp, cleanRng, args.maxBounces);
     const { albedo, normal } = renderAux(scene, cam, args.size);
 
-    writeFileSync(join(noisyDir, `${tag}.png`), encodePNG(noisy, args.size, args.size));
+    // Color targets → linear-HDR .bin; albedo/normal G-buffers → 8-bit PNG.
+    writeFileSync(join(noisyDir, `${tag}.bin`), encodeVHDR(noisy, args.size, args.size));
     writeFileSync(join(noisyDir, `${tag}_albedo.png`), encodePNG(albedo, args.size, args.size));
     writeFileSync(join(noisyDir, `${tag}_normal.png`), encodePNG(normal, args.size, args.size));
-    writeFileSync(join(cleanDir, `${tag}.png`), encodePNG(clean, args.size, args.size));
+    writeFileSync(join(cleanDir, `${tag}.bin`), encodeVHDR(clean, args.size, args.size));
     if (f % 16 === 0 || f === args.pairs - 1) {
       console.log(`[capture] wrote ${tag} (noisy+albedo+normal+clean)  [${f + 1}/${args.pairs}]`);
     }

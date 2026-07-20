@@ -129,10 +129,13 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
   it('warns when maxLightBounces explicitly opts into multi-vertex BDPT', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const onWarning = vi.fn();
+    // D2 (2026-07-20): the safe default light-bounce count is now 2, so the
+    // multi-vertex research gate triggers at maxLightBounces > 2 (i.e. 3+). Use 3
+    // to exercise the multi-vertex opt-in warning.
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
       bdpt: true,
-      bdptOptions: { maxLightBounces: 2, experimentalMultiVertex: true },
+      bdptOptions: { maxLightBounces: 3, experimentalMultiVertex: true },
       onWarning,
     });
 
@@ -142,15 +145,15 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
     expect(onWarning).toHaveBeenCalledWith(expect.objectContaining({
       code: 'pt-webgpu.bdpt-multivertex-research-mode',
       details: expect.objectContaining({
-        requested: 2,
-        resolved: 2,
-        safeDefault: 1,
+        requested: 3,
+        resolved: 3,
+        safeDefault: 2,
         experimentalMultiVertex: true,
         promotionReady: false,
         currentEstimator: 'additive-sidecar-not-weighted-against-eye-path',
         blocker: 'not-weighted-against-regular-eye-path-strategy',
         requiredEstimator: 'multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy',
-        safeAlternative: 'omit bdptOptions.maxLightBounces or set maxLightBounces:1',
+        safeAlternative: 'omit bdptOptions.maxLightBounces or set maxLightBounces:2',
         evidencePath: 'tools/radiometric-ab/results-bdpt.json',
       }),
     }));
@@ -160,13 +163,26 @@ describe('H51-D: bdptOptions.maxLightBounces validates and warns predictably', (
   });
 
   it('rejects multi-vertex BDPT unless the research flag is explicit', async () => {
+    // D2: maxLightBounces:2 is now the safe default and does NOT trigger the gate;
+    // 3 does.
     await expect(
       createPTEngine_WebGPU({
         device: makeStubDevice(),
         bdpt: true,
-        bdptOptions: { maxLightBounces: 2 },
+        bdptOptions: { maxLightBounces: 3 },
       }),
     ).rejects.toThrow('bdptOptions.experimentalMultiVertex=true');
+  });
+
+  it('accepts maxLightBounces:2 at the new safe default without the research flag', async () => {
+    // D2 regression guard: 2 is the new safe default; constructing with it and no
+    // experimentalMultiVertex flag must NOT throw.
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      bdpt: true,
+      bdptOptions: { maxLightBounces: 2 },
+    });
+    engine.dispose();
   });
 
   it('warns when maxLightBounces is fractional and rounds down', async () => {

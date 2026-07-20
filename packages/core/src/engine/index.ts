@@ -290,6 +290,38 @@ export interface Engine {
     height: number;
   } | null;
 
+  /** Presentation SOURCE for offscreen-texture backends — the counterpart to
+   *  `capabilities.presentationMode === 'offscreen-texture'`.
+   *
+   *  Offscreen backends (e.g. `@vitrum/pt-webgpu`) render to an internal texture
+   *  and return it via `FrameOutput.primaryRadiance`; they do NOT present to the
+   *  host canvas themselves. A host lifecycle helper (e.g. `attachVitrum`) that
+   *  owns the canvas needs to blit that texture to the canvas each frame. This
+   *  method exposes the backend's own {@link GPUDevice} (which owns the offscreen
+   *  texture) plus the exact texture to present, so the host can build a
+   *  device-scoped blit pass without inventing a device-plumbing side channel.
+   *
+   *  Returns `null` when there is nothing for the host to present THIS frame —
+   *  e.g. a swapchain-required sub-engine already presented to its own swapchain,
+   *  or no frame has rendered yet. Composite/coordinator engines (the progressive
+   *  walkaround→PT facade) implement this to return the *currently active*
+   *  offscreen backend's source only while it is the one on screen, so the host
+   *  blits pt-webgpu output after handoff and skips the blit while the swapchain
+   *  realtime engine is driving.
+   *
+   *  `device` is typed `unknown` so the backend-agnostic core does not pull in
+   *  WebGPU type declarations; WebGPU backends return a real `GPUDevice` and the
+   *  host casts at the boundary (same convention as {@link BackendTexture}).
+   *  `texture` is the same handle the frame put in `FrameOutput.primaryRadiance`;
+   *  it is recycled per-frame, so a consumer MUST use it SYNCHRONOUSLY within the
+   *  RAF tick. Available only when `capabilities.presentationMode ===
+   *  'offscreen-texture'` (or, for composite engines, when the active backend is
+   *  offscreen); hosts MUST typeof-check `getPresentationSource` before calling. */
+  getPresentationSource?(): {
+    device: unknown;
+    texture: BackendTexture;
+  } | null;
+
   // ── Pause / resume / dispose ────────────────────────────────────────────
 
   /** Skip per-frame compute work but keep all GPU resources allocated.

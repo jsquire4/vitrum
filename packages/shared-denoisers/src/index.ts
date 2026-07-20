@@ -123,7 +123,7 @@ export type { SVGFReprojUniforms } from './svgfRealBindings.js';
 // (__tests__/webgpuDenoiserExecution.gpu.test.ts). So "zero engine consumers" is by
 // design, not a gap: the algorithm is wired, the convenience wrapper is standalone.
 export { runSVGFRealWebGPU } from './svgfRealWebGPU.js';
-export type { SVGFRealWebGPUOptions } from './svgfRealWebGPU.js';
+export type { SVGFRealWebGPUOptions, SVGFRealWebGPUResult } from './svgfRealWebGPU.js';
 // CPU emulation oracles (test helpers; live in svgfRealCpu.ts but also re-exported
 // from svgfRealWebGPU.ts for backward compatibility with existing test imports):
 export {

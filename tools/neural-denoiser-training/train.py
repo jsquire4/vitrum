@@ -163,11 +163,17 @@ class DenoisingDataset(Dataset if _HAS_TORCH else object):
       data/
         scene_name/
           noisy/
-            frame_0001.png        ← 1 spp path-traced (RGBA, HDR tonemapped to LDR)
-            frame_0001_albedo.png  ← albedo G-buffer
-            frame_0001_normal.png  ← world normals (encoded as RGB [0,1])
+            frame_0001.bin        ← 1 spp path-traced (linear-HDR RGB, VHDR .bin)
+            frame_0001_albedo.png  ← albedo G-buffer (RGB [0,1])
+            frame_0001_normal.png  ← world normals (packed RGB [0,1]; decoded to [-1,1])
           clean/
-            frame_0001.png        ← 4096 spp reference
+            frame_0001.bin        ← high-spp reference (linear-HDR RGB, VHDR .bin)
+
+    Encoding alignment (matches the runtime pack shader neuralPack.wgsl):
+      • color inputs (noisy/clean) are linear HDR — NOT reinhard-tonemapped LDR —
+        so the training target matches the runtime raw-linear color input.
+      • the normal channel is decoded [0,1]->[-1,1] and renormalized in
+        __getitem__ (see _decode_normal), mirroring neuralPack.wgsl:57-58.
     """
 
     def __init__(self, data_dir: str, patch_size: int = 256):
@@ -182,19 +188,21 @@ class DenoisingDataset(Dataset if _HAS_TORCH else object):
             clean_dir  = scene_dir / 'clean'
             if not noisy_dir.exists() or not clean_dir.exists():
                 continue
-            for noisy_path in sorted(noisy_dir.glob('frame_*.png')):
+            # Color targets are linear-HDR .bin (see capture-dataset.mjs);
+            # albedo/normal G-buffers remain [0,1] PNG.
+            for noisy_path in sorted(noisy_dir.glob('frame_*.bin')):
                 stem = noisy_path.stem
                 albedo_path = noisy_dir / f'{stem}_albedo.png'
                 normal_path = noisy_dir / f'{stem}_normal.png'
-                clean_path  = clean_dir / f'{stem}.png'
+                clean_path  = clean_dir / f'{stem}.bin'
                 if albedo_path.exists() and normal_path.exists() and clean_path.exists():
                     self.samples.append((noisy_path, albedo_path, normal_path, clean_path))
 
         if not self.samples:
             raise ValueError(
                 f'No valid training samples found in {data_dir}. '
-                f'Expected scene/noisy/frame_*.png + frame_*_albedo.png + frame_*_normal.png '
-                f'and scene/clean/frame_*.png pairs. See dataset_spec.md.'
+                f'Expected scene/noisy/frame_*.bin (linear-HDR color) + frame_*_albedo.png '
+                f'+ frame_*_normal.png and scene/clean/frame_*.bin pairs. See dataset_spec.md.'
             )
 
     def __len__(self) -> int:
@@ -203,10 +211,16 @@ class DenoisingDataset(Dataset if _HAS_TORCH else object):
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         noisy_path, albedo_path, normal_path, clean_path = self.samples[idx]
 
-        noisy  = _load_rgb(noisy_path)   # [3, H, W] float32
-        albedo = _load_rgb(albedo_path)  # [3, H, W] float32
-        normal = _load_rgb(normal_path)  # [3, H, W] float32
-        clean  = _load_rgb(clean_path)   # [3, H, W] float32
+        noisy  = _load_hdr(noisy_path)   # [3, H, W] float32 linear HDR
+        albedo = _load_rgb(albedo_path)  # [3, H, W] float32 [0,1]
+        normal = _load_rgb(normal_path)  # [3, H, W] float32 [0,1] (packed)
+        clean  = _load_hdr(clean_path)   # [3, H, W] float32 linear HDR
+
+        # Runtime alignment (neuralPack.wgsl:57-58): the pack shader decodes the
+        # normal G-buffer [0,1]->[-1,1] and renormalizes before feeding it to the
+        # denoiser. Mirror that here on the NORMAL channel only so training sees
+        # the same encoding as inference. noisy/albedo/clean are NOT remapped.
+        normal = _decode_normal(normal)
 
         # Stack to 9-channel input.
         x = torch.cat([noisy, albedo, normal], dim=0)  # [9, H, W]
@@ -228,6 +242,49 @@ def _load_rgb(path: Path) -> torch.Tensor:
     img = Image.open(path).convert('RGB')
     arr = np.array(img, dtype=np.float32) / 255.0  # [H, W, 3]
     return torch.from_numpy(arr).permute(2, 0, 1)   # [3, H, W]
+
+
+# Linear-HDR color container written by capture-dataset.mjs. Header (little-endian):
+#   u32 magic ('VHDR' = 0x52444856), u32 version, u32 width, u32 height,
+# then width*height*3 float32 linear radiance (row-major, interleaved RGB).
+_VHDR_MAGIC   = 0x52444856
+_VHDR_VERSION = 1
+
+
+def _load_hdr_np(path: Path) -> np.ndarray:
+    """Load a .bin linear-HDR color target as a float32 array [H, W, 3] (linear)."""
+    with open(path, 'rb') as f:
+        header = np.frombuffer(f.read(16), dtype='<u4')
+        magic, version, width, height = (int(header[0]), int(header[1]),
+                                         int(header[2]), int(header[3]))
+        if magic != _VHDR_MAGIC:
+            raise ValueError(f'{path}: bad VHDR magic 0x{magic:08X} (expected 0x{_VHDR_MAGIC:08X})')
+        if version != _VHDR_VERSION:
+            raise ValueError(f'{path}: unsupported VHDR version {version} (expected {_VHDR_VERSION})')
+        data = np.frombuffer(f.read(width * height * 3 * 4), dtype='<f4')
+    return data.reshape(height, width, 3).astype(np.float32)  # linear, NOT tonemapped
+
+
+def _load_hdr(path: Path) -> torch.Tensor:
+    """Load a .bin linear-HDR color target as a float32 tensor [3, H, W] (linear)."""
+    arr = _load_hdr_np(path)                          # [H, W, 3] linear
+    return torch.from_numpy(np.ascontiguousarray(arr)).permute(2, 0, 1)  # [3, H, W]
+
+
+def _decode_normal(normal: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """
+    Decode a packed [0,1] normal tensor [3, H, W] to a renormalized [-1,1]
+    unit-vector field, mirroring the runtime pack shader neuralPack.wgsl:57-58
+    (nd_remapped = nd*2-1; select(normalize(nd_remapped), (0,1,0), len<eps)).
+    Zero-length (sky/background) normals fall back to geometric-up (0,1,0).
+    """
+    remapped = normal * 2.0 - 1.0                     # [0,1] -> [-1,1]
+    len_sq = (remapped * remapped).sum(dim=0, keepdim=True)  # [1, H, W]
+    norm = torch.sqrt(torch.clamp(len_sq, min=eps))
+    decoded = remapped / norm
+    up = torch.zeros_like(decoded)
+    up[1] = 1.0
+    return torch.where(len_sq < eps, up, decoded)
 
 
 # ── Loss ─────────────────────────────────────────────────────────────────────
@@ -406,11 +463,11 @@ def enumerate_samples(data_dir: str) -> list[tuple[Path, Path, Path, Path]]:
         noisy_dir, clean_dir = scene_dir / 'noisy', scene_dir / 'clean'
         if not noisy_dir.exists() or not clean_dir.exists():
             continue
-        for noisy_path in sorted(noisy_dir.glob('frame_*.png')):
+        for noisy_path in sorted(noisy_dir.glob('frame_*.bin')):
             stem = noisy_path.stem
             albedo = noisy_dir / f'{stem}_albedo.png'
             normal = noisy_dir / f'{stem}_normal.png'
-            clean  = clean_dir / f'{stem}.png'
+            clean  = clean_dir / f'{stem}.bin'
             if albedo.exists() and normal.exists() and clean.exists():
                 samples.append((noisy_path, albedo, normal, clean))
     return samples
@@ -438,15 +495,25 @@ def dry_run(args: argparse.Namespace) -> None:
 
     # 2. Shape validation on the first sample.
     noisy_p, albedo_p, normal_p, clean_p = samples[0]
-    def load(p: Path) -> np.ndarray:
+    def load_png(p: Path) -> np.ndarray:
         return np.asarray(Image.open(p).convert('RGB'), dtype=np.float32) / 255.0  # [H,W,3]
-    noisy, albedo, normal, clean = load(noisy_p), load(albedo_p), load(normal_p), load(clean_p)
+    # Color targets are linear-HDR .bin; albedo/normal are [0,1] PNG. Decode the
+    # normal [0,1]->[-1,1]+renormalize to mirror neuralPack.wgsl:57-58.
+    noisy  = _load_hdr_np(noisy_p)                             # [H,W,3] linear
+    clean  = _load_hdr_np(clean_p)                             # [H,W,3] linear
+    albedo = load_png(albedo_p)                                # [H,W,3] [0,1]
+    normal_packed = load_png(normal_p)                         # [H,W,3] [0,1]
+    remapped = normal_packed * 2.0 - 1.0
+    lensq = np.sum(remapped * remapped, axis=-1, keepdims=True)
+    up = np.zeros_like(remapped); up[..., 1] = 1.0
+    normal = np.where(lensq < 1e-6, up, remapped / np.sqrt(np.clip(lensq, 1e-6, None)))
     x = np.concatenate([noisy, albedo, normal], axis=-1)  # [H,W,9]
     H, W, _ = x.shape
     assert x.shape[2] == 9, f'expected 9 input channels, got {x.shape[2]}'
     assert clean.shape == (H, W, 3), f'clean shape {clean.shape} != ({H},{W},3)'
     assert noisy.shape == albedo.shape == normal.shape == (H, W, 3)
-    print(f'Input stack OK: x[{H}x{W}x9] (noisy+albedo+normal), target clean[{H}x{W}x3]')
+    print(f'Input stack OK: x[{H}x{W}x9] (noisy[HDR]+albedo+normal[-1,1]), '
+          f'target clean[{H}x{W}x3][HDR]')
 
     # 3. Build deterministic random checkpoint + export.
     rng = np.random.default_rng(args.seed)
