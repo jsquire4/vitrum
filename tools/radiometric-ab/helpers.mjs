@@ -14,94 +14,17 @@
 import { createPTEngine_WebGPU } from "@vitrum/pt-webgpu";
 import { asMat4 } from "@vitrum/core";
 
-// ── Naga gap patches (copied from tools/behavioral-gate/gate.mjs) ─────────────
-// These are the same patches the behavioral gate uses; without them lavapipe
-// rejects the shader at createShaderModule.
-
-function stripBdptMipArg(wgsl) {
-  const NEEDLE = "textureLoad(bdptLightPath,";
-  let result = "", i = 0;
-  while (i < wgsl.length) {
-    const start = wgsl.indexOf(NEEDLE, i);
-    if (start < 0) { result += wgsl.slice(i); break; }
-    const openParen = start + "textureLoad".length;
-    result += wgsl.slice(i, openParen + 1);
-    let depth = 1, j = openParen + 1;
-    const commas = [];
-    let closeParen = -1;
-    while (j < wgsl.length) {
-      const ch = wgsl[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") { depth--; if (depth === 0) { closeParen = j; break; } }
-      else if (ch === "," && depth === 1) commas.push(j);
-      j++;
-    }
-    if (closeParen < 0) { result += wgsl.slice(openParen + 1); break; }
-    if (commas.length >= 2) {
-      result += wgsl.slice(openParen + 1, commas[commas.length - 1]) + ")";
-    } else {
-      result += wgsl.slice(openParen + 1, closeParen) + ")";
-    }
-    i = closeParen + 1;
-  }
-  return result;
-}
-
-function addBdptMipArg(wgsl) {
-  const NEEDLE = "textureLoad(bdptLightPath,";
-  let result = "", i = 0;
-  while (i < wgsl.length) {
-    const start = wgsl.indexOf(NEEDLE, i);
-    if (start < 0) { result += wgsl.slice(i); break; }
-    const openParen = start + "textureLoad".length;
-    result += wgsl.slice(i, openParen + 1);
-    let depth = 1, j = openParen + 1;
-    const commas = [];
-    let closeParen = -1;
-    while (j < wgsl.length) {
-      const ch = wgsl[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") { depth--; if (depth === 0) { closeParen = j; break; } }
-      else if (ch === "," && depth === 1) commas.push(j);
-      j++;
-    }
-    if (closeParen < 0) { result += wgsl.slice(openParen + 1); break; }
-    if (commas.length === 1) {
-      result += wgsl.slice(openParen + 1, closeParen) + ", 0)";
-    } else {
-      result += wgsl.slice(openParen + 1, closeParen) + ")";
-    }
-    i = closeParen + 1;
-  }
-  return result;
-}
-
-export function applyPtNagaGapFix(wgsl, bdptOn) {
-  let fixed = stripBdptMipArg(wgsl);
-  if (fixed.includes("isNan(") || fixed.includes("isInf(")) {
-    const helpers = `\nfn isNan(v: vec3f) -> vec3<bool> { return v != v; }\nfn isInf(v: vec3f) -> vec3<bool> { return abs(v) >= vec3f(1e38); }\n`;
-    const idx = fixed.indexOf('\nfn ');
-    if (idx > 0) fixed = fixed.slice(0, idx) + helpers + fixed.slice(idx);
-  }
-  if (!bdptOn && fixed.includes('texture_storage_2d<rgba32float, read_write>')) {
-    fixed = fixed.replace('texture_storage_2d<rgba32float, read_write>', 'texture_2d<f32>');
-    fixed = addBdptMipArg(fixed);
-    fixed = fixed.replace(/textureStore\s*\(\s*bdptLightPath\s*,[^;]+;/g,
-      '// naga-gap-fix: textureStore(bdptLightPath) removed');
-  }
-  return fixed;
-}
-
-export function patchDeviceForPt(device, bdptOn) {
-  const orig = device.createShaderModule.bind(device);
-  device.createShaderModule = (desc) => {
-    if (typeof desc.code === "string" && desc.code.includes("bdptLightPath")) {
-      return orig({ ...desc, code: applyPtNagaGapFix(desc.code, bdptOn) });
-    }
-    return orig(desc);
-  };
-  return () => { device.createShaderModule = orig; };
-}
+// ── Naga gap patches (shared) ─────────────────────────────────────────────────
+// These were a byte-identical copy of tools/behavioral-gate/gate.mjs's patches;
+// both now import the single source of truth (tools/lib/ptNagaGapFix.mjs — D17-4)
+// so the radiometric harness exercises the exact same shader-rewrite path.
+export {
+  stripBdptMipArg,
+  addBdptMipArg,
+  applyPtNagaGapFix,
+  patchDeviceForPt,
+} from "../lib/ptNagaGapFix.mjs";
+import { patchDeviceForPt } from "../lib/ptNagaGapFix.mjs";
 
 // ── Device acquisition ─────────────────────────────────────────────────────────
 

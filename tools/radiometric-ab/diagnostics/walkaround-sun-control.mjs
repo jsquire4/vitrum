@@ -4,7 +4,7 @@
 // Also: stronger sun (I=0.9) should be proportionally brighter than I=0.3.
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
-import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
+import { applyNagaFix } from "../../shader-gate/nagaFix.mjs";
 
 const W = 128, H = 128, SPP = 16;
 

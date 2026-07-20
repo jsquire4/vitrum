@@ -47,6 +47,16 @@ This matrix tracks **truthful** renderer capability claims for `@vitrum/pt-webgl
 - **Correctness vs perf:** several rows have correctness GPU-validated on dzn/lavapipe
   per `HARDWARE-VALIDATION-NEEDS.md` but stay `experimental` because promotion additionally
   requires a perf field + a strict committed-baseline hash on a real GPU.
+- **Browser portability (walkaround/RC = Chromium-only):** the walkaround-hybrid +
+  `@vitrum/walkaround-rc` production shaders use `ptr<storage>` function parameters
+  (shared-bvh TLAS traversal), which need the `unrestricted_pointer_parameters` WGSL
+  capability. Tint/Chrome accept it; **naga (Firefox) and Deno's wgpu-native REJECT** it
+  (no WebGPU `enable` path), so these runtime shaders currently run **only on Chromium**.
+  The shader gate compiles an `applyNagaFix`-patched derivative for its green path and
+  emits a separate non-fatal verbatim-compile tracked metric counting the naga rejections.
+  pt-webgpu shaders are gate-validated verbatim and are portable. Removing `ptr<storage>`
+  from the traversal core is a scoped tracked program in `plan/road-to-100.md`
+  (D4 decision: keep shipping, track + document; do not refactor yet).
 
 See also `plan/road-to-100.md`, `plan/fidelity-promotion-playbook.md`, and
 `items_to_fix.md` §H for current promotion blockers and historical fix context.

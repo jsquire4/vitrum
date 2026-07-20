@@ -45,7 +45,14 @@
 
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
-import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
+// Shared WH GPU harness scaffolding (camera/device/naga-patch) — D17-5. The scene
+// builders below stay local (they carry harness-specific ior/attenuation params).
+import {
+  makePerspectiveMatrix,
+  makeLookAtMatrix,
+  patchDeviceForWh,
+  acquireWhDevice,
+} from "../lib/whHarness.mjs";
 import { readRgba16fWalkaround } from "../../packages/walkaround-hybrid/src/util/gpuReadback.ts";
 
 // ── Resolution + frame count ──────────────────────────────────────────────────
@@ -62,35 +69,7 @@ const SPP = parsePositiveIntEnv("VITRUM_WALKAROUND_AB_SPP", 16); // accumulation
 const QUALITY_PROFILE = Deno.env.get("VITRUM_WALKAROUND_AB_PROFILE") ?? (SPP === 16 && W === 128 && H === 128 ? "baseline" : "custom");
 
 // ── Camera ────────────────────────────────────────────────────────────────────
-function makePerspectiveMatrix(fovDeg, aspect, near, far) {
-  const f  = 1.0 / Math.tan((fovDeg * Math.PI) / 180 / 2);
-  const nf = 1 / (near - far);
-  return new Float32Array([
-    f / aspect, 0, 0, 0,
-    0, f, 0, 0,
-    0, 0, (far + near) * nf, -1,
-    0, 0, 2 * far * near * nf, 0,
-  ]);
-}
-
-function makeLookAtMatrix(eye, center, up) {
-  const fx = center[0]-eye[0], fy = center[1]-eye[1], fz = center[2]-eye[2];
-  const fL  = Math.hypot(fx, fy, fz);
-  const fnx = fx/fL, fny = fy/fL, fnz = fz/fL;
-  const sx = fny*up[2]-fnz*up[1], sy = fnz*up[0]-fnx*up[2], sz = fnx*up[1]-fny*up[0];
-  const sL  = Math.hypot(sx, sy, sz);
-  const snx = sx/sL, sny = sy/sL, snz = sz/sL;
-  const ux  = sny*fnz-snz*fny, uy = snz*fnx-snx*fnz, uz = snx*fny-sny*fnx;
-  return new Float32Array([
-    snx, ux, -fnx, 0,
-    sny, uy, -fny, 0,
-    snz, uz, -fnz, 0,
-    -(snx*eye[0]+sny*eye[1]+snz*eye[2]),
-    -(ux *eye[0]+uy *eye[1]+uz *eye[2]),
-     fnx*eye[0]+fny*eye[1]+fnz*eye[2],
-    1,
-  ]);
-}
+// makePerspectiveMatrix / makeLookAtMatrix imported from ../lib/whHarness.mjs.
 
 const EYE    = [0, 0, 2.5];
 const CENTER = [0, 0, 0];
@@ -190,31 +169,7 @@ function makeDirOnlyScene() {
   };
 }
 
-// ── Naga gap patch (walkaround-hybrid) ────────────────────────────────────────
-function patchDeviceForWh(device) {
-  const orig = device.createShaderModule.bind(device);
-  device.createShaderModule = (desc) => {
-    if (typeof desc.code === "string") {
-      try { return orig({ ...desc, code: applyNagaFix(desc.code) }); }
-      catch { return orig(desc); }
-    }
-    return orig(desc);
-  };
-}
-
-// ── Device acquisition ────────────────────────────────────────────────────────
-async function acquireWhDevice() {
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error("No WebGPU adapter");
-  const limits = {};
-  const sb = adapter.limits.maxStorageBuffersPerShaderStage ?? 8;
-  const st = adapter.limits.maxStorageTexturesPerShaderStage ?? 4;
-  if (sb >= 16) limits.maxStorageBuffersPerShaderStage = sb;
-  if (st >= 8)  limits.maxStorageTexturesPerShaderStage = st;
-  const bg = adapter.limits.maxBindGroups ?? 4;
-  if (bg > 4) limits.maxBindGroups = bg;
-  return adapter.requestDevice(Object.keys(limits).length ? { requiredLimits: limits } : {});
-}
+// patchDeviceForWh + acquireWhDevice imported from ../lib/whHarness.mjs (D17-5).
 
 // ── Engine readiness helper ──────────────────────────────────────────────────
 async function waitForReady(engine, label, timeoutMs = 90_000) {

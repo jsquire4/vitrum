@@ -3,8 +3,21 @@
 // VK_DRIVER_FILES pointed at lavapipe (or a hardware ICD) take effect here —
 // unlike Chromium's bundled SwiftShader-only Dawn.
 //
-// Mirrors tools/benchmark-runner/launchWebGpuBrowser.mjs tier math.
+// Tier thresholds are sourced from the pt-webgpu authority (D17-11) instead of
+// re-encoding them here — webgpuLimits.ts is a dependency-free constants module
+// so this standalone Deno script can import it directly by relative .ts path.
+// (The hybrid 16/8 floor stays inline: importing HYBRID_WEBGPU_REQUIRED_LIMITS
+// would pull the walkaround-hybrid pipeline graph, which this map-less Deno
+// script cannot resolve — it is asserted against the authority in the behavioral
+// gate instead.)
 // Run: deno run --unstable-webgpu -A tools/gpu-env/probe-deno.ts
+
+import {
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+  PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+} from "../../packages/pt-webgpu/src/webgpuLimits.ts";
 
 const out: Record<string, unknown> = { runtime: "deno-native-webgpu" };
 
@@ -53,8 +66,12 @@ const report = {
   device: (info as Record<string, string>).device ?? "",
   maxStorageBuffersPerShaderStage: msb,
   maxStorageTexturesPerShaderStage: mst,
-  ptWebgpuFullTier: msb >= 10 && mst >= 5,
-  ptWebgpuLiteTier: msb >= 8 && mst >= 4,
+  ptWebgpuFullTier:
+    msb >= PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE &&
+    mst >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+  ptWebgpuLiteTier:
+    msb >= PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE &&
+    mst >= PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
   hybridCanRun: msb >= 16 && mst >= 8,
   deviceAtHybridLimits,
   deviceErr,

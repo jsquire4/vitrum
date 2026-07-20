@@ -2,7 +2,7 @@
 // @ts-nocheck
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
-import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
+import { applyNagaFix } from "../../shader-gate/nagaFix.mjs";
 
 const W = 128, H = 128, SPP = 16;
 

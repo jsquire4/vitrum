@@ -7,7 +7,9 @@
  * ptWebgpuLiteTier / hybridCanRun).
  *
  * Backends (env VITRUM_GPU_BACKEND):
- *   swiftshader  — Chromium's built-in software Vulkan (baseline; 10/4)
+ *   swiftshader  — Chromium's built-in software Vulkan (baseline; below the
+ *                  pt-webgpu lite floor of 8 storage buffers / 4 storage textures,
+ *                  see packages/pt-webgpu/src/webgpuLimits.ts)
  *   vulkan       — Dawn over the system Vulkan loader, honouring VK_ICD_FILENAMES
  *                  / VK_DRIVER_FILES (point these at lavapipe to get its limits)
  *   default      — no special flags beyond --enable-unsafe-webgpu

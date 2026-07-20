@@ -1,0 +1,15 @@
+{
+  "unstable": ["webgpu"],
+  "imports": {
+    "@vitrum/pt-webgpu":               "../../../packages/pt-webgpu/src/index.ts",
+    "@vitrum/core":                    "../../../packages/core/src/index.ts",
+    "@vitrum/shared-bvh":              "../../../packages/shared-bvh/src/index.ts",
+    "@vitrum/shared-samplers":         "../../../packages/shared-samplers/src/index.ts",
+    "@vitrum/shared-denoisers":        "../../../packages/shared-denoisers/src/index.ts",
+    "@vitrum/walkaround-hybrid":       "../../../packages/walkaround-hybrid/src/index.ts",
+    "@vitrum/walkaround-rc":           "../../../packages/walkaround-rc/src/index.ts",
+    "@vitrum/scene-lighting":          "../../../packages/scene-lighting/src/index.ts",
+    "@vitrum/stained-glass-extensions": "../../../packages/stained-glass-extensions/src/index.ts",
+    "@vitrum/engine":                  "../../../packages/engine/src/index.ts"
+  }
+}

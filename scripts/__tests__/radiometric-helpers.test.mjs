@@ -14,7 +14,11 @@ const radiometricProofsPath = join(repoRoot, 'tools', 'radiometric-ab', 'proofs.
 const radiometricCheckerPath = join(repoRoot, 'tools', 'radiometric-ab', 'check-results.mjs');
 const radiometricProvenancePath = join(repoRoot, 'tools', 'radiometric-ab', 'resultProvenance.mjs');
 const validationQueueCheckerPath = join(repoRoot, 'tools', 'road-to-100', 'check-validation-queue.mjs');
-const ptWebgpuIndexPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'index.ts');
+// Wave T3-B moved the multi-vertex BDPT research gate (with the promotionReady /
+// currentEstimator metadata) out of index.ts into ptWebgpuValidation.ts; Wave
+// R4/D2 also reparameterized the bounds threshold as the
+// BDPT_SAFE_DEFAULT_LIGHT_BOUNCES template literal.
+const ptWebgpuValidationPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'ptWebgpuValidation.ts');
 const ptWebgpuKernelPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'wgsl', 'pathTrace', 'kernel.wgsl.ts');
 
 test('radiometric varianceROI fails closed when capture count is too low', async () => {
@@ -149,7 +153,7 @@ test('pt BDPT radiometric proof keeps multi-vertex mode research-only', async ()
   const proofs = await readFile(radiometricProofsPath, 'utf8');
   const checker = await readFile(radiometricCheckerPath, 'utf8');
   const provenance = await readFile(radiometricProvenancePath, 'utf8');
-  const ptWebgpuIndex = await readFile(ptWebgpuIndexPath, 'utf8');
+  const ptWebgpuValidation = await readFile(ptWebgpuValidationPath, 'utf8');
   const ptWebgpuKernel = await readFile(ptWebgpuKernelPath, 'utf8');
 
   assert.match(harness, /CONTROL_MAX_LIGHT_BOUNCES = \[1, 2, 3\]/);
@@ -182,9 +186,9 @@ test('pt BDPT radiometric proof keeps multi-vertex mode research-only', async ()
   assert.match(provenance, /ptRadiometricStatusProvenance/);
   assert.match(provenance, /ptRadiometricPromotionProvenance/);
 
-  assert.match(ptWebgpuIndex, /bdptOptions\.maxLightBounces > 1 activates the multi-vertex BDPT research path/);
-  assert.match(ptWebgpuIndex, /promotionReady: false/);
-  assert.match(ptWebgpuIndex, /currentEstimator: 'additive-sidecar-not-weighted-against-eye-path'/);
+  assert.match(ptWebgpuValidation, /bdptOptions\.maxLightBounces > \$\{BDPT_SAFE_DEFAULT_LIGHT_BOUNCES\} activates the multi-vertex BDPT research path/);
+  assert.match(ptWebgpuValidation, /promotionReady: false/);
+  assert.match(ptWebgpuValidation, /currentEstimator: 'additive-sidecar-not-weighted-against-eye-path'/);
 
   assert.match(ptWebgpuKernel, /for \(var lvi = 1u; lvi < maxLv; lvi\+\+\) \{/);
   assert.match(ptWebgpuKernel, /radiance = radiance \+ evaluateBdptConnection\(/);

@@ -56,12 +56,30 @@
  */
 
 import { createPTEngine_WebGPU } from "@vitrum/pt-webgpu";
+import {
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+  PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE,
+} from "@vitrum/pt-webgpu";
 import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
+import { HYBRID_WEBGPU_REQUIRED_LIMITS } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
 import { loadGltfForEngine } from "@vitrum/gltf-adapter";
 import { Buffer } from "node:buffer";
 import { PNG } from "npm:pngjs@7.0.0";
-import { applyNagaFix } from "../shader-gate/nagaFix.mjs";
+// Shared naga-gap patch (was byte-identical in radiometric-ab/helpers.mjs; D17-4).
+import { patchDeviceForPt } from "../lib/ptNagaGapFix.mjs";
+// Shared WH GPU harness scaffolding (camera/device/readback) — was re-declared in
+// 5 files, behaviorally identical modulo whitespace (D17-5). Scene builders are
+// NOT shared (they have diverged) and stay local below.
+import {
+  makePerspectiveMatrix,
+  makeLookAtMatrix,
+  patchDeviceForWh,
+  acquireWhDevice,
+  readbackBgra8,
+} from "../lib/whHarness.mjs";
+// GPU readback + pixel stats (D17-1).
+import { readbackAsRgba8, meanLuminance, hasNaN } from "../lib/readback.mjs";
 import {
   SWEEP_MAPS,
   makeSweepGltf,
@@ -84,6 +102,10 @@ function readFlagValue(name) {
 }
 const labelFilter = readFlagValue("--filter");
 const goldenVariant = readFlagValue("--golden-variant") || Deno.env.get("VITRUM_BEHAVIORAL_GOLDEN_VARIANT") || "";
+// Machine-readable results sidecar (D17-9). When set, gate writes a structured
+// JSON of the run to this path so consumers (run-gate.mjs) read it directly
+// instead of regex-scraping the human log. The human stdout log is unchanged.
+const jsonSidecarPath = readFlagValue("--json");
 
 // ── Expectation table ─────────────────────────────────────────────────────────
 // keyed by config label; missing entry defaults to { expected: 'ok' }.
@@ -1847,35 +1869,8 @@ async function buildGateScene(opts = {}) {
 
 const W = 64, H = 64;
 
-function makePerspectiveMatrix(fovDeg, aspect, near, far) {
-  const f  = 1.0 / Math.tan((fovDeg * Math.PI) / 180 / 2);
-  const nf = 1 / (near - far);
-  return new Float32Array([
-    f / aspect, 0, 0, 0,
-    0, f, 0, 0,
-    0, 0, (far + near) * nf, -1,
-    0, 0, 2 * far * near * nf, 0,
-  ]);
-}
-
-function makeLookAtMatrix(eye, center, up) {
-  const fx = center[0]-eye[0], fy = center[1]-eye[1], fz = center[2]-eye[2];
-  const fL  = Math.hypot(fx, fy, fz);
-  const fnx = fx/fL, fny = fy/fL, fnz = fz/fL;
-  const sx = fny*up[2]-fnz*up[1], sy = fnz*up[0]-fnx*up[2], sz = fnx*up[1]-fny*up[0];
-  const sL  = Math.hypot(sx, sy, sz);
-  const snx = sx/sL, sny = sy/sL, snz = sz/sL;
-  const ux  = sny*fnz-snz*fny, uy = snz*fnx-snx*fnz, uz = snx*fny-sny*fnx;
-  return new Float32Array([
-    snx, ux, -fnx, 0,
-    sny, uy, -fny, 0,
-    snz, uz, -fnz, 0,
-    -(snx*eye[0]+sny*eye[1]+snz*eye[2]),
-    -(ux *eye[0]+uy *eye[1]+uz *eye[2]),
-     fnx*eye[0]+fny*eye[1]+fnz*eye[2],
-    1,
-  ]);
-}
+// makePerspectiveMatrix / makeLookAtMatrix now live in tools/lib/whHarness.mjs
+// (imported above; shared harness — D17-5).
 
 // pt-webgpu camera
 const PT_EYE    = [-0.05, 0, 2.75];
@@ -1889,104 +1884,12 @@ const WH_CENTER = [0, 0, 0];
 const whProj    = asMat4(makePerspectiveMatrix(60, W / H, 0.1, 50));
 const whView    = asMat4(makeLookAtMatrix(WH_EYE, WH_CENTER, [0,1,0]));
 
-// ── Naga gap patches (pt-webgpu) ──────────────────────────────────────────────
-// Mirrors render-pt-webgpu.ts and the /tmp prototypes.
-
-function stripBdptMipArg(wgsl) {
-  const NEEDLE = "textureLoad(bdptLightPath,";
-  let result = "", i = 0;
-  while (i < wgsl.length) {
-    const start = wgsl.indexOf(NEEDLE, i);
-    if (start < 0) { result += wgsl.slice(i); break; }
-    const openParen = start + "textureLoad".length;
-    result += wgsl.slice(i, openParen + 1);
-    let depth = 1, j = openParen + 1;
-    const commas = [];
-    let closeParen = -1;
-    while (j < wgsl.length) {
-      const ch = wgsl[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") { depth--; if (depth === 0) { closeParen = j; break; } }
-      else if (ch === "," && depth === 1) commas.push(j);
-      j++;
-    }
-    if (closeParen < 0) { result += wgsl.slice(openParen + 1); break; }
-    if (commas.length >= 2) {
-      result += wgsl.slice(openParen + 1, commas[commas.length - 1]) + ")";
-    } else {
-      result += wgsl.slice(openParen + 1, closeParen) + ")";
-    }
-    i = closeParen + 1;
-  }
-  return result;
-}
-
-function addBdptMipArg(wgsl) {
-  const NEEDLE = "textureLoad(bdptLightPath,";
-  let result = "", i = 0;
-  while (i < wgsl.length) {
-    const start = wgsl.indexOf(NEEDLE, i);
-    if (start < 0) { result += wgsl.slice(i); break; }
-    const openParen = start + "textureLoad".length;
-    result += wgsl.slice(i, openParen + 1);
-    let depth = 1, j = openParen + 1;
-    const commas = [];
-    let closeParen = -1;
-    while (j < wgsl.length) {
-      const ch = wgsl[j];
-      if (ch === "(") depth++;
-      else if (ch === ")") { depth--; if (depth === 0) { closeParen = j; break; } }
-      else if (ch === "," && depth === 1) commas.push(j);
-      j++;
-    }
-    if (closeParen < 0) { result += wgsl.slice(openParen + 1); break; }
-    if (commas.length === 1) {
-      result += wgsl.slice(openParen + 1, closeParen) + ", 0)";
-    } else {
-      result += wgsl.slice(openParen + 1, closeParen) + ")";
-    }
-    i = closeParen + 1;
-  }
-  return result;
-}
-
-function applyPtNagaGapFix(wgsl, bdptOn) {
-  let fixed = stripBdptMipArg(wgsl);
-  if (fixed.includes("isNan(") || fixed.includes("isInf(")) {
-    const helpers = `\nfn isNan(v: vec3f) -> vec3<bool> { return v != v; }\nfn isInf(v: vec3f) -> vec3<bool> { return abs(v) >= vec3f(1e38); }\n`;
-    const idx = fixed.indexOf('\nfn ');
-    if (idx > 0) fixed = fixed.slice(0, idx) + helpers + fixed.slice(idx);
-  }
-  if (!bdptOn && fixed.includes('texture_storage_2d<rgba32float, read_write>')) {
-    fixed = fixed.replace('texture_storage_2d<rgba32float, read_write>', 'texture_2d<f32>');
-    fixed = addBdptMipArg(fixed);
-    fixed = fixed.replace(/textureStore\s*\(\s*bdptLightPath\s*,[^;]+;/g,
-      '// naga-gap-fix: textureStore(bdptLightPath) removed');
-  }
-  return fixed;
-}
-
-function patchDeviceForPt(device, bdptOn) {
-  const orig = device.createShaderModule.bind(device);
-  device.createShaderModule = (desc) => {
-    if (typeof desc.code === "string" && desc.code.includes("bdptLightPath")) {
-      return orig({ ...desc, code: applyPtNagaGapFix(desc.code, bdptOn) });
-    }
-    return orig(desc);
-  };
-  return () => { device.createShaderModule = orig; };
-}
-
-function patchDeviceForWh(device) {
-  const orig = device.createShaderModule.bind(device);
-  device.createShaderModule = (desc) => {
-    if (typeof desc.code === "string") {
-      try { return orig({ ...desc, code: applyNagaFix(desc.code) }); }
-      catch { return orig(desc); }
-    }
-    return orig(desc);
-  };
-}
+// ── Naga gap patches (pt-webgpu) + WH harness scaffolding ─────────────────────
+// stripBdptMipArg / addBdptMipArg / applyPtNagaGapFix / patchDeviceForPt now live
+// in tools/lib/ptNagaGapFix.mjs (shared with radiometric-ab/helpers.mjs — D17-4).
+// makePerspectiveMatrix / makeLookAtMatrix / patchDeviceForWh / acquireWhDevice /
+// readbackBgra8 now live in tools/lib/whHarness.mjs (shared harness — D17-5).
+// Both are imported at the top of this file.
 
 // ── Device acquisition ────────────────────────────────────────────────────────
 
@@ -1997,132 +1900,32 @@ async function acquirePtDevice(wantsFullTier) {
   if (wantsFullTier) {
     const sb = adapter.limits.maxStorageBuffersPerShaderStage ?? 8;
     const st = adapter.limits.maxStorageTexturesPerShaderStage ?? 4;
-    if (sb >= 34) limits.maxStorageBuffersPerShaderStage = sb;
-    if (st >= 5)  limits.maxStorageTexturesPerShaderStage = st;
+    // Full-tier storage thresholds sourced from the pt-webgpu authority (D17-11)
+    // instead of re-encoding 34/5 here.
+    if (sb >= PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE) limits.maxStorageBuffersPerShaderStage = sb;
+    if (st >= PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE) limits.maxStorageTexturesPerShaderStage = st;
   }
   const bg = adapter.limits.maxBindGroups ?? 4;
   if (bg > 4) limits.maxBindGroups = bg;
   return adapter.requestDevice(Object.keys(limits).length ? { requiredLimits: limits } : {});
 }
 
-async function acquireWhDevice() {
-  const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) throw new Error("No WebGPU adapter");
-  const limits = {};
-  const sb = adapter.limits.maxStorageBuffersPerShaderStage ?? 8;
-  const st = adapter.limits.maxStorageTexturesPerShaderStage ?? 4;
-  if (sb >= 16) limits.maxStorageBuffersPerShaderStage = sb;
-  if (st >= 8)  limits.maxStorageTexturesPerShaderStage = st;
-  const bg = adapter.limits.maxBindGroups ?? 4;
-  if (bg > 4) limits.maxBindGroups = bg;
-  return adapter.requestDevice(Object.keys(limits).length ? { requiredLimits: limits } : {});
+// acquireWhDevice now lives in tools/lib/whHarness.mjs (imported above); its
+// 16/8 floor is HYBRID_WEBGPU_REQUIRED_LIMITS (D17-11 authority), asserted below.
+// Fail loudly if the shared harness ever drifts from the walkaround-hybrid authority.
+if (
+  HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageBuffersPerShaderStage !== 16 ||
+  HYBRID_WEBGPU_REQUIRED_LIMITS.maxStorageTexturesPerShaderStage !== 8
+) {
+  throw new Error(
+    "[behavioral-gate] HYBRID_WEBGPU_REQUIRED_LIMITS drifted from the 16/8 floor " +
+      "baked into tools/lib/whHarness.mjs acquireWhDevice — reconcile the harness.",
+  );
 }
 
 // ── Readback helpers ──────────────────────────────────────────────────────────
-
-/**
- * Readback an rgba16float (or rgba32float) texture via a blit-to-rgba8unorm
- * render pass, then CPU readback.  Returns Uint8Array of RGBA pixels.
- */
-async function readbackAsRgba8(device, srcTex, texW, texH) {
-  const dstTex = device.createTexture({
-    size: { width: texW, height: texH },
-    format: "rgba8unorm",
-    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-    label: "bg-blit-dst",
-  });
-  const blitMod = device.createShaderModule({
-    label: "bg-blit",
-    code: `
-      @group(0) @binding(0) var srcTex: texture_2d<f32>;
-      @group(0) @binding(1) var srcSmp: sampler;
-      struct VO { @builtin(position) pos: vec4f, @location(0) uv: vec2f }
-      @vertex fn vs(@builtin(vertex_index) vi: u32) -> VO {
-        var p = array<vec2f,3>(vec2f(-1,-1), vec2f(3,-1), vec2f(-1,3));
-        var o: VO;
-        o.pos = vec4f(p[vi], 0.0, 1.0);
-        o.uv  = (p[vi] + vec2f(1,1)) * 0.5;
-        o.uv.y = 1.0 - o.uv.y;
-        return o;
-      }
-      @fragment fn fs(i: VO) -> @location(0) vec4f {
-        return vec4f(clamp(textureSample(srcTex, srcSmp, i.uv).rgb, vec3f(0), vec3f(1)), 1.0);
-      }
-    `,
-  });
-  const bgl = device.createBindGroupLayout({ entries: [
-    { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "float" } },
-    { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
-  ]});
-  const pipeline = device.createRenderPipeline({
-    label: "bg-blit-pipeline",
-    layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-    vertex:   { module: blitMod, entryPoint: "vs" },
-    fragment: { module: blitMod, entryPoint: "fs", targets: [{ format: "rgba8unorm" }] },
-    primitive: { topology: "triangle-list" },
-  });
-  const bg = device.createBindGroup({ layout: bgl, entries: [
-    { binding: 0, resource: srcTex.createView() },
-    { binding: 1, resource: device.createSampler({ magFilter: "nearest", minFilter: "nearest" }) },
-  ]});
-  const enc  = device.createCommandEncoder();
-  const pass = enc.beginRenderPass({ colorAttachments: [{
-    view: dstTex.createView(), loadOp: "clear", storeOp: "store",
-    clearValue: { r: 0, g: 0, b: 0, a: 1 },
-  }]});
-  pass.setPipeline(pipeline); pass.setBindGroup(0, bg); pass.draw(3); pass.end();
-  device.queue.submit([enc.finish()]);
-
-  const bpr  = Math.ceil(texW * 4 / 256) * 256;
-  const buf  = device.createBuffer({ size: bpr * texH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const enc2 = device.createCommandEncoder();
-  enc2.copyTextureToBuffer({ texture: dstTex }, { buffer: buf, bytesPerRow: bpr, rowsPerImage: texH }, { width: texW, height: texH, depthOrArrayLayers: 1 });
-  device.queue.submit([enc2.finish()]);
-  await buf.mapAsync(GPUMapMode.READ);
-  const mapped = new Uint8Array(buf.getMappedRange());
-  const pixels = new Uint8Array(texW * texH * 4);
-  for (let row = 0; row < texH; row++) {
-    pixels.set(mapped.subarray(row * bpr, row * bpr + texW * 4), row * texW * 4);
-  }
-  buf.unmap(); buf.destroy(); dstTex.destroy();
-  return pixels;
-}
-
-/** Readback bgra8unorm texture (walkaround swap chain). Returns RGBA pixels. */
-async function readbackBgra8(device, tex, texW, texH) {
-  const bpr  = Math.ceil(texW * 4 / 256) * 256;
-  const buf  = device.createBuffer({ size: bpr * texH, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const enc  = device.createCommandEncoder();
-  enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr, rowsPerImage: texH }, { width: texW, height: texH, depthOrArrayLayers: 1 });
-  device.queue.submit([enc.finish()]);
-  await buf.mapAsync(GPUMapMode.READ);
-  const mapped = new Uint8Array(buf.getMappedRange());
-  const pixels = new Uint8Array(texW * texH * 4);
-  for (let row = 0; row < texH; row++) {
-    pixels.set(mapped.subarray(row * bpr, row * bpr + texW * 4), row * texW * 4);
-  }
-  buf.unmap(); buf.destroy();
-  // swap B↔R (bgra → rgba)
-  for (let i = 0; i < pixels.length; i += 4) {
-    const b = pixels[i]; pixels[i] = pixels[i+2]; pixels[i+2] = b;
-  }
-  return pixels;
-}
-
-function meanLuminance(pixels) {
-  let sum = 0;
-  for (let i = 0; i < pixels.length; i += 4) {
-    sum += 0.2126 * (pixels[i]/255) + 0.7152 * (pixels[i+1]/255) + 0.0722 * (pixels[i+2]/255);
-  }
-  return sum / (pixels.length / 4);
-}
-
-function hasNaN(pixels) {
-  for (let i = 0; i < pixels.length; i++) {
-    if (Number.isNaN(pixels[i])) return true;
-  }
-  return false;
-}
+// readbackAsRgba8 / meanLuminance / hasNaN now live in tools/lib/readback.mjs
+// (D17-1); readbackBgra8 in tools/lib/whHarness.mjs. All imported at the top.
 
 const BEHAVIORAL_GOLDENS = {
   "pt/material-lobes": selectGolden(MATERIAL_LOBE_GOLDEN),
@@ -2359,6 +2162,69 @@ function hasCwbvhPerfEvidence(cwbvhPerf) {
     Number.isFinite(cwbvhPerf.sceneBytesDelta);
 }
 
+// ── Shared mutation dispatch ──────────────────────────────────────────────────
+// runPtConfig and runWhConfig previously carried char-identical ~55-line mutation
+// chains (they differed only in one error-message phrase). Single source now.
+// `backendLabel` reproduces the original per-backend "unknown …" throw text
+// byte-for-byte ("" → pt-webgpu, "walkaround " → walkaround-hybrid).
+function applyMutation(engine, kind, backendLabel = "") {
+  if (kind === "material") {
+    engine.updatePrimitive("mutation-quad", {
+      material: {
+        shadingModel: "unlit",
+        baseColor: [0.05, 0.08, 1.0],
+        roughness: 1.0,
+        metallic: 0.0,
+      },
+    });
+  } else if (kind === "environment") {
+    engine.updateEnvironment({
+      kind: "hdri",
+      hdri: makeMutationHdri(1.0),
+      intensity: 2.0,
+      rotationY: 0.25,
+    });
+  } else if (kind === "emitter") {
+    engine.updateEmitter("mutation-lamp", {
+      color: [0.08, 0.18, 1.0],
+      intensity: 14.0,
+      position: [0.18, -0.08, 1.15],
+      castShadow: false,
+    });
+  } else if (kind === "transform") {
+    engine.updatePrimitive("mutation-transform-quad", {
+      transform: asMat4(new Float32Array([
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 1, 0,
+        0.95, 0, 0, 1,
+      ])),
+    });
+  } else if (kind === "topology") {
+    engine.updatePrimitive("mutation-topology-primitive", {
+      positions: GLTF_QUAD.positions,
+      normals: GLTF_QUAD.normals,
+      indices: new Uint32Array(GLTF_QUAD.indices),
+    });
+  } else if (kind === "instanced-count") {
+    engine.updatePrimitive("mutation-instanced-count-primitive", {
+      instances: [
+        instanceMatrix(-0.45),
+      ],
+    });
+  } else if (kind === "add-primitive") {
+    engine.addPrimitive(makeMutationQuadPrimitive(
+      "mutation-added-primitive",
+      0.42,
+      [0.05, 0.08, 1.0],
+    ));
+  } else if (kind === "remove-primitive") {
+    engine.removePrimitive("mutation-remove-target");
+  } else {
+    throw new Error(`unknown ${backendLabel}mutation gate kind: ${kind}`);
+  }
+}
+
 // ── pt-webgpu runner ──────────────────────────────────────────────────────────
 
 async function runPtConfig(label, engineOpts, sceneOpts) {
@@ -2463,61 +2329,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
     }
     if (sceneOpts.mutation) {
       beforeMutationPixels = pixels;
-      if (sceneOpts.mutation === "material") {
-        engine.updatePrimitive("mutation-quad", {
-          material: {
-            shadingModel: "unlit",
-            baseColor: [0.05, 0.08, 1.0],
-            roughness: 1.0,
-            metallic: 0.0,
-          },
-        });
-      } else if (sceneOpts.mutation === "environment") {
-        engine.updateEnvironment({
-          kind: "hdri",
-          hdri: makeMutationHdri(1.0),
-          intensity: 2.0,
-          rotationY: 0.25,
-        });
-      } else if (sceneOpts.mutation === "emitter") {
-        engine.updateEmitter("mutation-lamp", {
-          color: [0.08, 0.18, 1.0],
-          intensity: 14.0,
-          position: [0.18, -0.08, 1.15],
-          castShadow: false,
-        });
-      } else if (sceneOpts.mutation === "transform") {
-        engine.updatePrimitive("mutation-transform-quad", {
-          transform: asMat4(new Float32Array([
-            1, 0, 0, 0,
-            0, 1, 0, 0,
-            0, 0, 1, 0,
-            0.95, 0, 0, 1,
-          ])),
-        });
-      } else if (sceneOpts.mutation === "topology") {
-        engine.updatePrimitive("mutation-topology-primitive", {
-          positions: GLTF_QUAD.positions,
-          normals: GLTF_QUAD.normals,
-          indices: new Uint32Array(GLTF_QUAD.indices),
-        });
-      } else if (sceneOpts.mutation === "instanced-count") {
-        engine.updatePrimitive("mutation-instanced-count-primitive", {
-          instances: [
-            instanceMatrix(-0.45),
-          ],
-        });
-      } else if (sceneOpts.mutation === "add-primitive") {
-        engine.addPrimitive(makeMutationQuadPrimitive(
-          "mutation-added-primitive",
-          0.42,
-          [0.05, 0.08, 1.0],
-        ));
-      } else if (sceneOpts.mutation === "remove-primitive") {
-        engine.removePrimitive("mutation-remove-target");
-      } else {
-        throw new Error(`unknown mutation gate kind: ${sceneOpts.mutation}`);
-      }
+      applyMutation(engine, sceneOpts.mutation);
       pixels = (await renderFramesAndReadback()).pixels;
       if (beforeMutationPixels != null && pixels != null) {
         mutation = { kind: sceneOpts.mutation, ...comparePixels(pixels, beforeMutationPixels) };
@@ -2626,61 +2438,7 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
   }
 
   function applyWhMutation() {
-    if (sceneOpts.mutation === "material") {
-      engine.updatePrimitive("mutation-quad", {
-        material: {
-          shadingModel: "unlit",
-          baseColor: [0.05, 0.08, 1.0],
-          roughness: 1.0,
-          metallic: 0.0,
-        },
-      });
-    } else if (sceneOpts.mutation === "environment") {
-      engine.updateEnvironment({
-        kind: "hdri",
-        hdri: makeMutationHdri(1.0),
-        intensity: 2.0,
-        rotationY: 0.25,
-      });
-    } else if (sceneOpts.mutation === "emitter") {
-      engine.updateEmitter("mutation-lamp", {
-        color: [0.08, 0.18, 1.0],
-        intensity: 14.0,
-        position: [0.18, -0.08, 1.15],
-        castShadow: false,
-      });
-    } else if (sceneOpts.mutation === "transform") {
-      engine.updatePrimitive("mutation-transform-quad", {
-        transform: asMat4(new Float32Array([
-          1, 0, 0, 0,
-          0, 1, 0, 0,
-          0, 0, 1, 0,
-          0.95, 0, 0, 1,
-        ])),
-      });
-    } else if (sceneOpts.mutation === "topology") {
-      engine.updatePrimitive("mutation-topology-primitive", {
-        positions: GLTF_QUAD.positions,
-        normals: GLTF_QUAD.normals,
-        indices: new Uint32Array(GLTF_QUAD.indices),
-      });
-    } else if (sceneOpts.mutation === "instanced-count") {
-      engine.updatePrimitive("mutation-instanced-count-primitive", {
-        instances: [
-          instanceMatrix(-0.45),
-        ],
-      });
-    } else if (sceneOpts.mutation === "add-primitive") {
-      engine.addPrimitive(makeMutationQuadPrimitive(
-        "mutation-added-primitive",
-        0.42,
-        [0.05, 0.08, 1.0],
-      ));
-    } else if (sceneOpts.mutation === "remove-primitive") {
-      engine.removePrimitive("mutation-remove-target");
-    } else {
-      throw new Error(`unknown walkaround mutation gate kind: ${sceneOpts.mutation}`);
-    }
+    applyMutation(engine, sceneOpts.mutation, "walkaround ");
   }
 
   try {
@@ -2931,6 +2689,95 @@ const residuals = results.filter(r => {
 });
 
 console.log(`=== summary: ${results.length} configs total, ${failures.length} failures, ${residuals.length} known-residuals ===`);
+
+// ── Machine-readable results sidecar (D17-9) ──────────────────────────────────
+// Serialize the already-structured `results` objects directly so consumers stop
+// regex-scraping the human log. Emitted for both PASS and FAIL runs.
+if (jsonSidecarPath) {
+  // Emit the SAME flat per-config field shape the run-gate.mjs stdout scraper
+  // produced (downstream status-file consumers depend on it: cwbvh promotion
+  // checks read row.cwbvhParityRmse etc.). gate.mjs is the authoritative source
+  // of these values, so it computes the flat fields directly (no scrape).
+  const num = (v) => (Number.isFinite(v) ? v : null);
+  const rows = results.map((r) => {
+    const { pass } = checkExpectation(r.label, r.rawStatus, r.lum, r.errCount, r.nans);
+    const entry = EXPECTATION_TABLE[r.label] ?? { expected: "ok" };
+    const verdict = entry.expected === "known-residual" ? "KNOWN-RESIDUAL" : (pass ? "PASS" : "FAIL");
+    const g = r.golden ?? null;
+    const m = r.mutation ?? null;
+    const cp = r.cwbvhParity ?? null;
+    const cf = r.cwbvhPerf ?? null;
+    return {
+      verdict,
+      label: r.label,
+      rawStatus: r.rawStatus,
+      tier: r.traceTier ?? null,
+      luminance: num(r.lum),
+      gpuErrors: num(r.errCount),
+      nan: typeof r.nans === "boolean" ? r.nans : null,
+      mutation: m ? formatMutation(m) : null,
+      mutationKind: m ? m.kind : null,
+      mutationMeanAbs: m ? num(m.meanAbs) : null,
+      mutationMaxAbs: m ? num(m.maxAbs) : null,
+      cwbvhParity: cp ? formatCwbvhParity(cp) : null,
+      cwbvhParityKind: cp ? "binary" : null,
+      cwbvhParityRmse: cp ? num(cp.rmse) : null,
+      cwbvhParityMeanAbs: cp ? num(cp.meanAbs) : null,
+      cwbvhParityMaxAbs: cp ? num(cp.maxAbs) : null,
+      cwbvhParityThresholds: cp
+        ? {
+            maxRmse: CWBVH_BINARY_PARITY_THRESHOLDS.rmse,
+            maxMeanAbs: CWBVH_BINARY_PARITY_THRESHOLDS.meanAbs,
+            maxAbs: CWBVH_BINARY_PARITY_THRESHOLDS.maxAbs,
+          }
+        : null,
+      cwbvhPerf: cf ? formatCwbvhPerf(cf) : null,
+      cwbvhPerfKind: cf ? cf.kind : null,
+      cwbvhBinaryRenderMs: cf ? num(cf.binaryRenderMs) : null,
+      cwbvhRenderMs: cf ? num(cf.cwbvhRenderMs) : null,
+      cwbvhRenderMsRatio: cf ? num(cf.renderMsRatio) : null,
+      cwbvhBinaryMemoryBytes: cf ? num(cf.binaryMemoryBytes) : null,
+      cwbvhMemoryBytes: cf ? num(cf.cwbvhMemoryBytes) : null,
+      cwbvhMemoryBytesDelta: cf ? num(cf.memoryBytesDelta) : null,
+      cwbvhBinarySceneBytes: cf ? num(cf.binarySceneBytes) : null,
+      cwbvhSceneBytes: cf ? num(cf.cwbvhSceneBytes) : null,
+      cwbvhSceneBytesDelta: cf ? num(cf.sceneBytesDelta) : null,
+      golden: g ? formatGolden(g) : null,
+      goldenStatus: g ? (g.updated ? "updated" : g.error ? "FAIL" : (g.pass ? "ok" : "FAIL")) : null,
+      goldenVariant: g?.variant ?? null,
+      // rmse/meanAbs/maxAbs tokens only appear for compared (non-updated,
+      // non-error) goldens in the log, so mirror that: null otherwise.
+      rmse: g && !g.updated && !g.error ? num(g.rmse) : null,
+      meanAbs: g && !g.updated && !g.error ? num(g.meanAbs) : null,
+      maxAbs: g && !g.updated && !g.error ? num(g.maxAbs) : null,
+      thresholds: g?.thresholds
+        ? {
+            maxRmse: g.thresholds.maxRmse,
+            maxMeanAbs: g.thresholds.maxMeanAbs,
+            maxAbs: g.thresholds.maxAbs,
+          }
+        : null,
+    };
+  });
+  const sidecar = {
+    generatedAt: new Date().toISOString(),
+    harness: "behavioral-gate",
+    verdict: failures.length > 0 ? "FAIL" : "PASS",
+    filter: labelFilter || null,
+    goldenVariant: goldenVariant || null,
+    summary: {
+      totalConfigs: results.length,
+      failures: failures.length,
+      knownResiduals: residuals.length,
+    },
+    configs: rows,
+  };
+  try {
+    await Deno.mkdir(dirname(jsonSidecarPath), { recursive: true });
+  } catch { /* best-effort — parent may already exist */ }
+  await Deno.writeTextFile(jsonSidecarPath, `${JSON.stringify(sidecar, null, 2)}\n`);
+  console.log(`[behavioral-gate] results sidecar written to ${jsonSidecarPath}`);
+}
 
 if (failures.length > 0) {
   console.error("\nFAILED configs:");

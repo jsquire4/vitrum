@@ -319,6 +319,12 @@ const shaders = [];
     shaders.push({
       name: `walkaround-hybrid/${name}`,
       wgsl: applyNagaFix(raw),
+      // Un-patched (verbatim) shipped source. The walkaround/RC shaders use
+      // ptr<storage> fn params (unrestricted_pointer_parameters) that naga/
+      // Firefox reject — the gating pass compiles the applyNagaFix-patched
+      // derivative, but the verbatim-compile tracked metric (D4) compiles THIS
+      // to report how many shipped shaders are Chromium-only.
+      verbatimWgsl: raw,
     });
   };
 
@@ -539,6 +545,8 @@ fn cwbvhGateMain() {
     name: "walkaround-rc/probeRayCast",
     wgsl: applyNagaFix(PROBE_RAY_CAST_WGSL),
     entryPoint: "probeRayCastKernel",
+    // Verbatim (un-patched) shipped source for the D4 Chromium-only tracked metric.
+    verbatimWgsl: PROBE_RAY_CAST_WGSL,
   });
 
   shaders.push({
@@ -607,6 +615,45 @@ for (const entry of shaders) {
 const total = passed + failed;
 console.log("");
 console.log(`[shader-gate] ${total} shader(s) compiled — ${passed} OK, ${failed} FAILED`);
+
+// ── D4 verbatim-compile tracked metric (walkaround/RC Chromium-only) ────────────
+// The gating pass above compiles the applyNagaFix-patched derivatives. The
+// walkaround-hybrid + walkaround-rc shipped source uses `ptr<storage>` fn params
+// requiring `unrestricted_pointer_parameters` — Tint/Chrome accept, but naga
+// (Deno's wgpu-native + Firefox) REJECT. This pass ALSO attempts the un-patched
+// (verbatim) source and REPORTS the naga-incompatibility count as a tracked
+// metric. It is NON-FATAL by design: the exit code is unchanged (D4 Option B —
+// keep ptr<storage> shipping, track it honestly). See packages/walkaround-hybrid/
+// README.md + plan/renderer-fidelity-matrix.md + plan/road-to-100.md.
+{
+  const verbatimEntries = shaders.filter(
+    (e) => typeof e.verbatimWgsl === "string" && e.verbatimWgsl.trim().length > 0,
+  );
+  if (verbatimEntries.length > 0) {
+    let verbatimReject = 0;
+    let verbatimOk = 0;
+    for (const entry of verbatimEntries) {
+      const module = device.createShaderModule({
+        label: `${entry.name} (verbatim)`,
+        code: entry.verbatimWgsl,
+      });
+      const info = await module.getCompilationInfo();
+      const errs = info.messages.filter((m) => m.type === "error");
+      if (errs.length > 0) {
+        verbatimReject++;
+      } else {
+        verbatimOk++;
+      }
+    }
+    console.log("");
+    console.log(
+      `[shader-gate] verbatim-compile metric (tracked, non-fatal): walkaround/RC = Chromium-only, ` +
+        `${verbatimReject}/${verbatimEntries.length} shipped shaders reject on naga verbatim ` +
+        `(${verbatimOk} compile un-patched). ptr<storage> fn params need unrestricted_pointer_parameters ` +
+        `(no WebGPU enable path); tracked in plan/road-to-100.md.`,
+    );
+  }
+}
 
 const brokenSelfTest = errors.find((e) => e.name === "__self-test/intentionally-broken");
 const realCompileFailures = errors.filter((e) => e.name !== "__self-test/intentionally-broken");

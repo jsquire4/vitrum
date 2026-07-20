@@ -53,8 +53,13 @@ async function probe() {
     vendor, architecture, description, device,
     maxStorageBuffersPerShaderStage: msb,
     maxStorageTexturesPerShaderStage: mst,
-    // pt-webgpu tiers (tools/benchmark-runner/launchWebGpuBrowser.mjs:49-57)
-    ptWebgpuFullTier: msb >= 10 && mst >= 5,
+    // pt-webgpu tiers. MUST MATCH the authority in
+    // packages/pt-webgpu/src/webgpuLimits.ts (D17-11):
+    //   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 34 / TEXTURES = 5
+    //   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 8  / TEXTURES = 4
+    // This browser page cannot import the TS module (no bundler/import map here),
+    // so the constants are inlined; keep them in sync with webgpuLimits.ts.
+    ptWebgpuFullTier: msb >= 34 && mst >= 5,
     ptWebgpuLiteTier: msb >= 8 && mst >= 4,
     // walkaround-hybrid HYBRID_WEBGPU_REQUIRED_LIMITS (16/8)
     hybridCanRun: msb >= 16 && mst >= 8,

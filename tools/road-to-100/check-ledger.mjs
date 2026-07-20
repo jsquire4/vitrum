@@ -426,7 +426,11 @@ if (!/row !== 'unsupported'[\s\S]*CONSUMED_MATERIAL_FIELDS/.test(walkaroundPromi
 const walkaroundMaterialRows = parseStringSupportObject(walkaroundPromiseLedger, "WALKAROUND_MATERIALS");
 const walkaroundConsumedFieldsSource = await readText("packages/walkaround-hybrid/src/restir/consumedMaterialFields.ts");
 const walkaroundConsumedFields = parseConsumedMaterialFields(walkaroundConsumedFieldsSource);
-const walkaroundMaterialAtlas = await readText("packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts");
+// Wave T6 moved the AtlasMapField union, ATLAS_MAP_FIELDS, and the atlas
+// offset/meta constants out of pipeline/materialTextureAtlas.ts (now a
+// re-export shim) into bvh/materialTextureAtlasPack.ts. Parse the pack file
+// where each construct actually lives.
+const walkaroundMaterialAtlas = await readText("packages/walkaround-hybrid/src/bvh/materialTextureAtlasPack.ts");
 const atlasMapFieldUnion = parseAtlasMapFieldUnion(walkaroundMaterialAtlas);
 const atlasMapFields = parseAtlasMapFields(walkaroundMaterialAtlas);
 const atlasOffsetNames = parseMaterialAtlasOffsetNames(walkaroundMaterialAtlas);
@@ -738,6 +742,11 @@ for (const needle of [
 }
 
 const ptWebgpuSource = await readText("packages/pt-webgpu/src/index.ts");
+// Wave T3-B moved the Sobol sampling warning emission (with the exact
+// "WSL-lite RMSE evidence is bounded" phrasing) out of index.ts into
+// ptWebgpuValidation.ts; index.ts keeps the doc-comment form. Pin the
+// bounded-RMSE/default-promotion boundary against the file that now carries it.
+const ptWebgpuValidationSource = await readText("packages/pt-webgpu/src/ptWebgpuValidation.ts");
 if (ptWebgpuSource.includes("blue-noise rotation, broader dimension audits")) {
   fail("pt-webgpu sampling option docs contain stale Sobol blue-noise pending wording");
 }
@@ -747,7 +756,7 @@ if (ptWebgpuSource.includes("broader dimension audits and RMSE promotion")) {
 if (!ptWebgpuSource.includes("with a tiled ranked rotation; the dimension-assignment audit is pinned")) {
   fail("pt-webgpu sampling option docs must retain the Sobol rotation and dimension-audit boundary");
 }
-if (!ptWebgpuSource.includes("WSL-lite RMSE evidence is bounded")) {
+if (!ptWebgpuValidationSource.includes("WSL-lite RMSE evidence is bounded")) {
   fail("pt-webgpu sampling option docs must retain the bounded-RMSE/default-promotion boundary");
 }
 const ptWebgpuSamplingOptionsTest = await readText("packages/pt-webgpu/src/__tests__/samplingOptions.test.ts");
@@ -775,17 +784,37 @@ for (const needle of [
   }
 }
 
-const ptWebgl2ConstructionSourceForBdpt = await readText("packages/pt-webgl2/src/index.ts");
+// Wave R4/D2 + T3-B: the multi-vertex BDPT research opt-in gate moved out of
+// the backend index.ts constructors. pt-webgpu's gate now lives in
+// ptWebgpuValidation.ts with the bounds threshold parameterized as the
+// BDPT_SAFE_DEFAULT_LIGHT_BOUNCES template literal (renders `> 2`); pt-webgl2's
+// gate moved to options.validate.ts and keeps the literal `> 1` (its safe
+// default is 1). Point each backend at the file that now carries the gate and
+// match its actual source text.
+const ptWebgpuBdptGateSource = await readText("packages/pt-webgpu/src/ptWebgpuValidation.ts");
+const ptWebgl2BdptGateSource = await readText("packages/pt-webgl2/src/options.validate.ts");
 const bdptResearchGateSources = [
-  ["pt-webgpu constructor", ptWebgpuSource],
-  ["pt-webgl2 constructor", ptWebgl2ConstructionSourceForBdpt],
+  [
+    "pt-webgpu BDPT gate",
+    ptWebgpuBdptGateSource,
+    [
+      "opts.bdptOptions?.experimentalMultiVertex !== true",
+      "bdptOptions.maxLightBounces > ${BDPT_SAFE_DEFAULT_LIGHT_BOUNCES} activates the multi-vertex BDPT research path",
+      "bdpt-multivertex-research-mode",
+    ],
+  ],
+  [
+    "pt-webgl2 BDPT gate",
+    ptWebgl2BdptGateSource,
+    [
+      "opts.bdptOptions?.experimentalMultiVertex !== true",
+      "bdptOptions.maxLightBounces > 1 activates the multi-vertex BDPT research path",
+      "bdpt-multivertex-research-mode",
+    ],
+  ],
 ];
-for (const [label, source] of bdptResearchGateSources) {
-  for (const needle of [
-    "opts.bdptOptions?.experimentalMultiVertex !== true",
-    "bdptOptions.maxLightBounces > 1 activates the multi-vertex BDPT research path",
-    "bdpt-multivertex-research-mode",
-  ]) {
+for (const [label, source, needles] of bdptResearchGateSources) {
+  for (const needle of needles) {
     if (!source.includes(needle)) {
       fail(`${label} must retain the explicit multi-vertex BDPT research opt-in gate: ${needle}`);
     }
@@ -1177,7 +1206,10 @@ if (gltfReadme.includes("pt-webgpu lite reports a structured unsupported issue. 
   fail("gltf-adapter README must not revive the stale blanket pt-webgpu-lite COLOR_0 unsupported wording");
 }
 
-const gltfFeatureReport = await readText("packages/gltf-adapter/src/featureReport.ts");
+// T3-E / D15-1 split featureReport.ts into four modules and left it as a
+// re-export barrel; the backend-compatibility classification value literals now
+// live in backendCompatibility.ts. Parse the file that carries the constructs.
+const gltfFeatureReport = await readText("packages/gltf-adapter/src/backendCompatibility.ts");
 const gltfToScene = await readText("packages/gltf-adapter/src/gltfToScene.ts");
 for (const needle of [
   "name: 'EXT_mesh_gpu_instancing.skinnedOrMorphed'",
@@ -1229,14 +1261,28 @@ for (const needle of [
   }
 }
 
-const gltfAssetLoader = await readText("packages/gltf-adapter/src/assetLoader.ts");
-for (const needle of [
-  "const TEXTURE_DECODE_DIAGNOSTIC_ISSUE_PREFIX = 'texture-decode:';",
-  "'decoded-texture-exceeds-max-size'",
-  "'decoded-texture-npot-repeat-wrap'",
-  "textureDecodeDiagnosticIssuesForCandidate(",
+// The decoded-texture diagnostic pipeline was split out of assetLoader.ts into
+// dedicated modules: the issue prefix const now lives in
+// compatibilityIssuePredicates.ts, and the decode-issue codes plus the
+// per-candidate diagnostic emitter live in backendCompatibilityReconcile.ts.
+// Read each file where the construct now lives; the pin still enforces that the
+// diagnostics feed backend compatibility.
+const gltfCompatibilityIssuePredicates = await readText(
+  "packages/gltf-adapter/src/compatibilityIssuePredicates.ts",
+);
+const gltfBackendCompatibilityReconcile = await readText(
+  "packages/gltf-adapter/src/backendCompatibilityReconcile.ts",
+);
+for (const [needle, source] of [
+  [
+    "const TEXTURE_DECODE_DIAGNOSTIC_ISSUE_PREFIX = 'texture-decode:';",
+    gltfCompatibilityIssuePredicates,
+  ],
+  ["'decoded-texture-exceeds-max-size'", gltfBackendCompatibilityReconcile],
+  ["'decoded-texture-npot-repeat-wrap'", gltfBackendCompatibilityReconcile],
+  ["textureDecodeDiagnosticIssuesForCandidate(", gltfBackendCompatibilityReconcile],
 ]) {
-  if (!gltfAssetLoader.includes(needle)) {
+  if (!source.includes(needle)) {
     fail(`gltf decoded texture diagnostics must feed backend compatibility: ${needle}`);
   }
 }
@@ -1296,7 +1342,9 @@ for (const needle of [
   }
 }
 
-const walkaroundMaterialTextureAtlas = await readText("packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts");
+// Wave T6 moved the CPU pack half (sampler-policy packing + diagnostics) from
+// pipeline/materialTextureAtlas.ts into bvh/materialTextureAtlasPack.ts.
+const walkaroundMaterialTextureAtlas = await readText("packages/walkaround-hybrid/src/bvh/materialTextureAtlasPack.ts");
 for (const needle of [
   "'material-texture-sampler-policy-approximation'",
   "const FILTER_MODE_INDEX",
@@ -1586,11 +1634,21 @@ for (const needle of [
   "if (opts.denoiser === 'oidn-final')",
   "const modelUrl = opts.oidn?.modelUrl;",
   "this.#postDenoiser = new OIDNFinalDispatcher(",
+]) {
+  if (!ptWebgl2DenoiserIndex.includes(needle)) {
+    fail(`pt-webgl2 must retain OIDN and caustic-approximation runtime warnings: ${needle}`);
+  }
+}
+// The caustic-strategy-approximation runtime warning moved out of index.ts into
+// the extracted pt-webgl2 options.validate.ts alongside the other option-time
+// warnings; pin it against that file.
+const ptWebgl2CausticWarning = await readText("packages/pt-webgl2/src/options.validate.ts");
+for (const needle of [
   "pt-webgl2.caustic-strategy-approximation",
   "deterministic refraction-walk heuristic",
   "deterministic cone-traced photon estimate",
 ]) {
-  if (!ptWebgl2DenoiserIndex.includes(needle)) {
+  if (!ptWebgl2CausticWarning.includes(needle)) {
     fail(`pt-webgl2 must retain OIDN and caustic-approximation runtime warnings: ${needle}`);
   }
 }
@@ -1682,12 +1740,19 @@ for (const needle of [
 }
 
 const walkaroundHybridEngine = await readText("packages/walkaround-hybrid/src/HybridEngine.ts");
-for (const needle of [
-  "walkaround-hybrid.rich-material-gi-approximation",
-  "collectApproximateRichMaterialPrimitiveFields",
-  "_warnApproximateRichMaterialPrimitiveFields",
+// The rich-material approximation warning EMISSION (the warning code) was
+// extracted into HybridEngineMaterialWarner.ts; HybridEngine.ts still imports
+// that warner and invokes _warnApproximateRichMaterialPrimitiveFields, so the
+// warning stays wired through HybridEngine. Pin each construct where it lives.
+const walkaroundHybridMaterialWarner = await readText(
+  "packages/walkaround-hybrid/src/HybridEngineMaterialWarner.ts",
+);
+for (const [needle, source] of [
+  ["walkaround-hybrid.rich-material-gi-approximation", walkaroundHybridMaterialWarner],
+  ["collectApproximateRichMaterialPrimitiveFields", walkaroundHybridEngine],
+  ["_warnApproximateRichMaterialPrimitiveFields", walkaroundHybridEngine],
 ]) {
-  if (!walkaroundHybridEngine.includes(needle)) {
+  if (!source.includes(needle)) {
     fail(`walkaround rich-material approximation warning must stay wired through HybridEngine: ${needle}`);
   }
 }
@@ -1789,7 +1854,11 @@ for (const needle of [
   }
 }
 
-const ptWebgpuInverseSession = await readText("packages/pt-webgpu/src/inverse/inverseSession.ts");
+// The path-replay diagnostics (alpha-coverage, transport/visibility/geometry
+// fallback taxonomy, environment issue, and the base-BRDF classifier) were
+// extracted out of inverseSession.ts into inverse/pathReplayDiagnostics.ts.
+// Point the shared source read at that module.
+const ptWebgpuInverseSession = await readText("packages/pt-webgpu/src/inverse/pathReplayDiagnostics.ts");
 for (const needle of [
   "const coverage = pathReplayAlphaCoverage(material, primitive);",
   "function pathReplayAlphaCoverage",
@@ -1842,10 +1911,14 @@ for (const needle of [
     fail(`pt-webgpu inverse tests must pin scoped path-replay fallback/replay behavior: ${needle}`);
   }
 }
-const brdfIssueStart = ptWebgpuInverseSession.indexOf("function materialIssueForBrdf");
-const brdfIssueEnd = ptWebgpuInverseSession.indexOf("function materialIssueForAdditiveLobe", brdfIssueStart);
+// The 11 near-identical materialIssueFor* functions were collapsed into a
+// table-driven MATERIAL_ISSUE_TABLE; the base-BRDF classifier is now the
+// `brdf:` row (followed by `additiveLobe:`). Scope the fixed iridescence/
+// anisotropy replay check to that row.
+const brdfIssueStart = ptWebgpuInverseSession.indexOf("  brdf: {");
+const brdfIssueEnd = ptWebgpuInverseSession.indexOf("  additiveLobe: {", brdfIssueStart);
 if (brdfIssueStart < 0 || brdfIssueEnd < 0) {
-  fail("pt-webgpu inverse session must retain materialIssueForBrdf before materialIssueForAdditiveLobe");
+  fail("pt-webgpu inverse session must retain the MATERIAL_ISSUE_TABLE brdf row before additiveLobe");
 }
 const brdfIssueBlock = ptWebgpuInverseSession.slice(brdfIssueStart, brdfIssueEnd);
 for (const needle of [
@@ -2057,7 +2130,9 @@ for (const needle of [
   }
 }
 
-const ptWebgl2Index = await readText("packages/pt-webgl2/src/index.ts");
+// The denoiser:'auto' resolver moved out of index.ts into the extracted
+// pt-webgl2 options.validate.ts.
+const ptWebgl2Index = await readText("packages/pt-webgl2/src/options.validate.ts");
 for (const needle of [
   "function resolveWebgl2AutoDenoiser",
   "pt-webgl2.denoiser-auto-resolved",
@@ -2069,14 +2144,17 @@ for (const needle of [
   }
 }
 
+// The denoiser:'auto' resolver moved out of index.ts into ptWebgpuValidation.ts;
+// index.ts still constructs the engine with the resolver's effective options.
 const ptWebgpuIndexForDenoiser = await readText("packages/pt-webgpu/src/index.ts");
-for (const needle of [
-  "function resolvePtWebgpuAutoDenoiser",
-  "pt-webgpu.denoiser-auto-resolved",
-  "provide oidn.modelUrl",
-  "new PTEngineWebGPU(effectiveOpts, slot, traceTier)",
+const ptWebgpuValidationForDenoiser = await readText("packages/pt-webgpu/src/ptWebgpuValidation.ts");
+for (const [needle, source] of [
+  ["function resolvePtWebgpuAutoDenoiser", ptWebgpuValidationForDenoiser],
+  ["pt-webgpu.denoiser-auto-resolved", ptWebgpuValidationForDenoiser],
+  ["provide oidn.modelUrl", ptWebgpuValidationForDenoiser],
+  ["new PTEngineWebGPU(effectiveOpts, slot, traceTier)", ptWebgpuIndexForDenoiser],
 ]) {
-  if (!ptWebgpuIndexForDenoiser.includes(needle)) {
+  if (!source.includes(needle)) {
     fail(`pt-webgpu denoiser:auto resolver must stay wired: ${needle}`);
   }
 }

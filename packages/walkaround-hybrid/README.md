@@ -166,6 +166,22 @@ engine. Hosts provide lifecycle-owned GPU resources through the engine
 constructor; the package no longer imports `three/webgpu` or depends on Three.js
 renderer internals for probe updates.
 
+### Shader portability: Chromium-only (`ptr<storage>` fn params)
+
+The walkaround-hybrid + `@vitrum/walkaround-rc` production shaders use
+`ptr<storage>` function parameters (the shared-bvh TLAS traversal helpers pass
+storage pointers by parameter). This requires the WGSL
+`unrestricted_pointer_parameters` capability, which **Tint/Chrome accept but
+naga (Firefox, and Deno's wgpu-native) reject** — there is no WebGPU `enable`
+path for it. The runtime walkaround shaders are therefore **Chromium-only**
+today; the shader gate compiles an `applyNagaFix`-patched derivative for its
+green path and separately REPORTS a verbatim-compile tracked metric
+(`[shader-gate] verbatim-compile metric …`) counting how many shipped shaders
+reject on naga verbatim. Refactoring the traversal core away from `ptr<storage>`
+is a scoped, tracked road-to-100 program (see `plan/road-to-100.md`); it is not
+scheduled here. pt-webgpu shaders are gate-validated verbatim and are not
+affected. See `plan/renderer-fidelity-matrix.md`.
+
 ### RC subsystem: GPU-validated 2026-06-07
 
 The RC (Radiance Cascades) subsystem was extracted to `@vitrum/walkaround-rc` on

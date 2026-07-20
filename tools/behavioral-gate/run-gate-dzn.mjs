@@ -15,7 +15,10 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
-const dznEnv = process.env.WSL_GPU_DZN_ENV_SH ?? '/home/jsquire4/projects/wsl-gpu/dzn-runtime/env.sh';
+// The companion WSL GPU harness lives beside the vitrum checkout (…/wsl-gpu),
+// so derive the default env.sh from the repo root's parent rather than pinning
+// an absolute /home path. Override with WSL_GPU_DZN_ENV_SH when running elsewhere.
+const dznEnv = process.env.WSL_GPU_DZN_ENV_SH ?? resolve(repoRoot, '..', 'wsl-gpu/dzn-runtime/env.sh');
 const DEFAULT_TIMEOUT_MS = 420_000;
 const timeoutMs = parseTimeoutMs(process.env.VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
 const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));

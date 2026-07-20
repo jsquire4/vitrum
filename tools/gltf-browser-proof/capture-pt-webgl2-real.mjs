@@ -8,6 +8,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
 import { gltfBrowserProofStatusExitCode } from './status-exit-code.mjs';
+import {
+  REAL_GLTF_ASSETS,
+  REAL_GLTF_GOLDEN_THRESHOLDS,
+  getRealGltfAsset,
+} from '../gltf-real-asset-sweep/assetManifest.mjs';
 
 const CHECKER_PATH = 'tools/gltf-browser-proof/check-status.mjs';
 const CAPTURE_HARNESS_PATH = 'tools/gltf-browser-proof/capture-pt-webgl2-real.mjs';
@@ -31,42 +36,48 @@ const pauseBeforeEngineCapture = process.env.VITRUM_PAUSE_BEFORE_CAPTURE == null
   ? true
   : parseBooleanEnv(process.env.VITRUM_PAUSE_BEFORE_CAPTURE);
 const engineCaptureMode = parseEngineCaptureMode(process.env.VITRUM_ENGINE_CAPTURE_MODE);
-const DEFAULT_GOLDEN_THRESHOLDS = { maxRmse: 8.0, maxMeanAbs: 4.0, maxAbs: 48 };
+const DEFAULT_GOLDEN_THRESHOLDS = REAL_GLTF_GOLDEN_THRESHOLDS;
 // Prevent browser readback failures from becoming white/black "successful" goldens.
 const structureThresholds = {
   minLumaRange: 12,
   minUniqueColorCount: 16,
   minNonDominantFraction: 0.05,
 };
-const REAL_BROWSER_ASSETS = [
-  {
-    assetId: 'box-textured-glb',
-    kind: 'textured-glb',
+// Harness-only per-asset fields (golden path, hook + texture expectations) keyed
+// by the shared manifest id. assetId / kind / requiredExtensions are sourced from
+// tools/gltf-real-asset-sweep/assetManifest.mjs (REAL_GLTF_ASSETS) so those rows
+// stop drifting from the sweep/proof lanes. Checkers keep their own pins.
+const BROWSER_ASSET_HARNESS_FIELDS = {
+  'box-textured-glb': {
     goldenPath: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-box-textured.png',
     minTextures: 1,
-    requiredExtensions: [],
     requiredHooks: [],
-    thresholds: DEFAULT_GOLDEN_THRESHOLDS,
   },
-  {
-    assetId: 'cesium-milk-truck-draco',
-    kind: 'draco',
+  'cesium-milk-truck-draco': {
     goldenPath: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-draco.png',
     minTextures: 0,
-    requiredExtensions: ['KHR_draco_mesh_compression'],
     requiredHooks: ['draco'],
-    thresholds: DEFAULT_GOLDEN_THRESHOLDS,
   },
-  {
-    assetId: 'meshopt-cube-real',
-    kind: 'meshopt',
+  'meshopt-cube-real': {
     goldenPath: 'tools/reference-renders/gltf-real-browser-pt-webgl2/pt-webgl2-gltf-real-meshopt.png',
     minTextures: 0,
-    requiredExtensions: ['KHR_meshopt_compression'],
     requiredHooks: ['meshopt'],
-    thresholds: DEFAULT_GOLDEN_THRESHOLDS,
   },
-];
+};
+const REAL_BROWSER_ASSETS = Object.keys(BROWSER_ASSET_HARNESS_FIELDS).map((id) => {
+  const manifest = getRealGltfAsset(id);
+  const harness = BROWSER_ASSET_HARNESS_FIELDS[id];
+  return {
+    assetId: manifest.id,
+    kind: manifest.kind,
+    goldenPath: harness.goldenPath,
+    minTextures: harness.minTextures,
+    requiredExtensions: manifest.expect?.requiredExtensions ?? [],
+    requiredHooks: harness.requiredHooks,
+    thresholds: DEFAULT_GOLDEN_THRESHOLDS,
+  };
+});
+void REAL_GLTF_ASSETS;
 let activeBrowser = null;
 let captureStep = 'not-started';
 let lastTelemetry = null;

@@ -1,6 +1,6 @@
 #!/usr/bin/env -S deno run --unstable-webgpu --sloppy-imports --allow-read --allow-env --allow-write
 // @ts-nocheck
-const { packBVHRoughMetalFromCore, packBVHIndexWFromCore } = await import("../../packages/walkaround-hybrid/src/restir/packingHelpers.ts");
+const { packBVHRoughMetalFromCore, packBVHIndexWFromCore } = await import("../../../packages/walkaround-hybrid/src/restir/packingHelpers.ts");
 
 const triMaterialId = new Uint32Array([0,0, 1,1, 2,2, 3,3, 4,4]);
 const indices3 = new Uint32Array(30);

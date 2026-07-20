@@ -9,8 +9,9 @@
  * validation queue can distinguish "engine failed" from "host crashed".
  */
 import { spawnSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
+import { dirname, resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -21,6 +22,12 @@ const requestedStatusPath = process.env.VITRUM_BEHAVIORAL_GATE_STATUS_PATH
   : '';
 
 const gateArgs = process.argv.slice(2);
+// Ask gate.mjs to emit a machine-readable results sidecar so we parse structured
+// JSON instead of regex-scraping its human log (D17-9). The sidecar lives under
+// tools/reference-renders (already in gate.mjs's --allow-write scope). We fall
+// back to stdout scraping if the sidecar is absent (e.g. host crash before write).
+const sidecarDir = mkdtempSync(join(tmpdir(), 'vitrum-behavioral-gate-'));
+const sidecarPath = join(sidecarDir, 'results.json');
 const denoArgs = [
   'run',
   '--unstable-webgpu',
@@ -28,9 +35,10 @@ const denoArgs = [
   '--allow-read',
   '--allow-env',
   '--allow-net',
-  '--allow-write=tools/reference-renders',
+  `--allow-write=tools/reference-renders,${sidecarDir}`,
   'tools/behavioral-gate/gate.mjs',
   ...gateArgs,
+  `--json=${sidecarPath}`,
 ];
 
 const result = spawnSync('deno', denoArgs, {
@@ -42,6 +50,10 @@ const result = spawnSync('deno', denoArgs, {
 
 if (result.stdout) process.stdout.write(result.stdout);
 if (result.stderr) process.stderr.write(result.stderr);
+
+// Prefer the structured sidecar gate.mjs wrote; fall back to stdout scraping.
+const sidecar = readSidecar(sidecarPath);
+cleanupSidecar();
 
 if (result.error) {
   throw result.error;
@@ -58,8 +70,8 @@ if (requestedStatusPath) {
     icd: process.env.VK_ICD_FILENAMES ?? null,
     exitStatus: result.status,
     signal: result.signal,
-    summary: parseSummary(result.stdout ?? ''),
-    configs: parseConfigRows(result.stdout ?? ''),
+    summary: sidecar?.summary ?? parseSummary(result.stdout ?? ''),
+    configs: sidecar?.configs ?? parseConfigRows(result.stdout ?? ''),
   };
   writeFileSync(requestedStatusPath, `${JSON.stringify(status, null, 2)}\n`);
 }
@@ -107,6 +119,24 @@ function readFlagValue(args, name) {
   if (eq) return eq.slice(name.length + 1);
   const i = args.indexOf(name);
   return i >= 0 ? (args[i + 1] ?? '') : '';
+}
+
+function readSidecar(path) {
+  if (!existsSync(path)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8'));
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function cleanupSidecar() {
+  try {
+    rmSync(sidecarDir, { recursive: true, force: true });
+  } catch {
+    /* best-effort temp cleanup */
+  }
 }
 
 function parseSummary(stdout) {
