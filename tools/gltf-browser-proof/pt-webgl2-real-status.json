@@ -551,7 +551,7 @@
     "checkerPath": "tools/gltf-browser-proof/check-status.mjs",
     "checkerSha256": "9b48194ea722d428e2e19719f04f029046055ef67c46129348a2c26d82285420",
     "captureHarnessPath": "tools/gltf-browser-proof/capture-pt-webgl2-real.mjs",
-    "captureHarnessSha256": "d32edc2c5c18cc8224f22af300325c914d5088af7470b4175af1334971da59ca",
+    "captureHarnessSha256": "6ef20ca1dca82618d324f44fe234d2d6006549098004ecb0ce3987f6cceeb588",
     "manifestPath": "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",
     "manifestSha256": "a2dcc0de38d4ecd8a3b28c2dd6026a9113136d76961c81c7bdab0f4a5f14238e",
     "goldenFiles": [

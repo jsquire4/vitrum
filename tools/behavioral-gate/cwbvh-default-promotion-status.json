@@ -2,6 +2,7 @@
   "generatedAt": "2026-06-23T04:38:00.000Z",
   "harness": "cwbvh-default-promotion-proof",
   "verdict": "PASS-PARTIAL",
+  "notes": "2026-07-20 campaign refactor: the T3 validation split moved the pt-webgpu default-promotion caveat string from index.ts to ptWebgpuValidation.ts. The checker now reads the caveat from CAVEAT_GUARD (ptWebgpuValidation.ts) while the opt-in gate + binary default remain guarded in SOURCE_GUARD (index.ts). sourceGuardSha256 re-pinned to the current index.ts (c2d6b469...); caveatGuardSha256 pins the current ptWebgpuValidation.ts (3016ebd1...). Parity re-verified on current source: all 5 CWBVH dzn shards rmse=0.000.",
   "promotion": {
     "defaultReady": false,
     "classification": "uniform-slower",
@@ -71,9 +72,11 @@
   "provenance": {
     "schema": "vitrum.cwbvh-default-promotion.provenance.v1",
     "checkerPath": "tools/behavioral-gate/check-cwbvh-default-promotion-status.mjs",
-    "checkerSha256": "a15845b2871ea2fdc3a0add18d30c405ed9123305d1c45861af22ebce9ab15ba",
+    "checkerSha256": "64ecde11481c4c523872c6a5b131d00d184e500a2736258836f89910b84ba034",
     "sourceGuardPath": "packages/pt-webgpu/src/index.ts",
-    "sourceGuardSha256": "e0e1075e58f80d434dfdf2c7a8edf2d13eab81417e5f863a79c5e7fe99b26f89",
+    "sourceGuardSha256": "c2d6b469ded31b42ba8f025aa50d59b88f8603a1e16a885cc14d108d96e29c88",
+    "caveatGuardPath": "packages/pt-webgpu/src/ptWebgpuValidation.ts",
+    "caveatGuardSha256": "3016ebd1eeb2a99a8daadec8d3ab9c1e050e54263ec127d6a896f4f7b80d9f70",
     "repeatHarnessPath": "tools/behavioral-gate/run-cwbvh-default-promotion-repeats.mjs",
     "repeatHarnessSha256": "d83eea69b1d7d0d0c651e39cae010350d41e3a659f762d032505a2d5008cbc87",
     "repeatStatusPath": "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json",

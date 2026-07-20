@@ -29,6 +29,11 @@ const STATUS_FILES = [
 ];
 
 const SOURCE_GUARD = "packages/pt-webgpu/src/index.ts";
+// The T3 validation split (campaign 2026-07-20) moved the default-promotion caveat
+// string out of index.ts and into ptWebgpuValidation.ts. The opt-in gate + binary
+// default still live in index.ts (SOURCE_GUARD); the caveat now lives here and is
+// SHA-pinned separately so the guard stays meaningful after the split.
+const CAVEAT_GUARD = "packages/pt-webgpu/src/ptWebgpuValidation.ts";
 const SUMMARY_STATUS = "tools/behavioral-gate/cwbvh-default-promotion-status.json";
 const REPEAT_STATUS = "tools/behavioral-gate/cwbvh-default-promotion-repeat-status.json";
 const REPEAT_RECORDS = "tools/behavioral-gate/cwbvh-default-promotion-repeat-records.json";
@@ -63,6 +68,8 @@ async function expectedSummaryProvenance() {
     checkerSha256: await sha256File(CHECKER_PATH),
     sourceGuardPath: SOURCE_GUARD,
     sourceGuardSha256: await sha256File(SOURCE_GUARD),
+    caveatGuardPath: CAVEAT_GUARD,
+    caveatGuardSha256: await sha256File(CAVEAT_GUARD),
     repeatHarnessPath: REPEAT_HARNESS,
     repeatHarnessSha256: await sha256File(REPEAT_HARNESS),
     repeatStatusPath: REPEAT_STATUS,
@@ -143,7 +150,11 @@ function assertSourceStillOptIn(source) {
   if (!source.includes(": 'binary';")) {
     fail("pt-webgpu source no longer visibly defaults bvhTraversal to binary");
   }
-  if (!source.includes("renderer parity/performance A/B is still required before default promotion")) {
+}
+
+/** @param {string} caveatSource */
+function assertCaveatPreserved(caveatSource) {
+  if (!caveatSource.includes("renderer parity/performance A/B is still required before default promotion")) {
     fail("pt-webgpu CWBVH opt-in warning no longer preserves the promotion caveat");
   }
 }
@@ -436,6 +447,8 @@ function summarizeRepeatRecords(records, warmupCount) {
 
 const source = await Deno.readTextFile(SOURCE_GUARD);
 assertSourceStillOptIn(source);
+const caveatSource = await Deno.readTextFile(CAVEAT_GUARD);
+assertCaveatPreserved(caveatSource);
 const repeatHarness = await Deno.readTextFile(REPEAT_HARNESS);
 assertRepeatHarness(repeatHarness);
 

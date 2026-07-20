@@ -732,7 +732,7 @@
           ]
         },
         {
-          "path": "packages/walkaround-hybrid/src/HybridEngine.ts",
+          "path": "packages/walkaround-hybrid/src/HybridEngineMaterialWarner.ts",
           "includes": [
             "code: 'walkaround-hybrid.alpha-blend-approximation'",
             "ReSTIR/GI participation remains approximate"
@@ -787,10 +787,15 @@
           ]
         },
         {
-          "path": "packages/walkaround-hybrid/src/HybridEngine.ts",
+          "path": "packages/walkaround-hybrid/src/HybridEngineMaterialWarner.ts",
           "includes": [
             "code: 'walkaround-hybrid.volume-layer-transport-approximation'",
-            "full participating-media and layered-stack transport remains approximate",
+            "full participating-media and layered-stack transport remains approximate"
+          ]
+        },
+        {
+          "path": "packages/walkaround-hybrid/src/HybridEngine.ts",
+          "includes": [
             "collectApproximateVolumeLayerPrimitiveFields"
           ]
         },
@@ -830,7 +835,7 @@
           ]
         },
         {
-          "path": "packages/gltf-adapter/src/featureReport.ts",
+          "path": "packages/gltf-adapter/src/backendCompatibility.ts",
           "includes": [
             "support: 'fallback-generated-mesh'",
             "because @vitrum/core has no native point/line primitive contract."
@@ -872,7 +877,7 @@
           ]
         },
         {
-          "path": "packages/gltf-adapter/src/featureReport.ts",
+          "path": "packages/gltf-adapter/src/backendCompatibility.ts",
           "includes": [
             "contract carries only UV sets 0 and 1 (`uvs` / `uv1`)",
             "cannot be losslessly remapped into the uv1 lane"
@@ -915,7 +920,7 @@
           ]
         },
         {
-          "path": "packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts",
+          "path": "packages/walkaround-hybrid/src/bvh/materialTextureAtlasPack.ts",
           "includes": [
             "code: 'unsupported-material-texture-texcoord'",
             "walkaround material atlas supports UV sets 0 and 1 only"
@@ -943,7 +948,7 @@
           ]
         },
         {
-          "path": "packages/gltf-adapter/src/featureReport.ts",
+          "path": "packages/gltf-adapter/src/backendCompatibility.ts",
           "includes": [
             "fallback-expanded into one SkinnedMeshPrimitive",
             "not native instanced skinning"
@@ -970,7 +975,7 @@
       "currentContract": "pt-webgpu supports scoped direct-light path replay for bounded material/emitter domains and finite-difference fallback diagnostics for transport, visibility, displacement geometry, unsupported render regimes, environment escape, non-delta light selection, indirect paths, and full-path parity cases.",
       "sourceEvidence": [
         {
-          "path": "packages/pt-webgpu/src/inverse/inverseSession.ts",
+          "path": "packages/pt-webgpu/src/inverse/pathReplayDiagnostics.ts",
           "includes": [
             "path-replay-unsupported-transport",
             "path-replay-unsupported-visibility",

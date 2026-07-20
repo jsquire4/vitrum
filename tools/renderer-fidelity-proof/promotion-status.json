@@ -73,11 +73,11 @@
     "sourceStatusSha256": [
       {
         "path": "tools/gltf-browser-proof/pt-webgl2-real-status.json",
-        "sha256": "eafc01e80ea4ccfda4edcc17d0b7d18604ac8e675badf2cde3842c423a1b60b8"
+        "sha256": "4b9456bc8d70c98f3e36819bacd6d1b378c5fc85226c3ec5c5a51fb457bf69c1"
       },
       {
         "path": "tools/gltf-browser-proof/pt-webgl2-real-canvas-first-status.json",
-        "sha256": "5dbb8875b3289ba0560aef55baf7a128538f9d8e43d198d4c8a4cec74b087848"
+        "sha256": "bf2c73d87bdb4eeff10360aea6b0f0d094b673d3322d22e721815fedff6a7ba3"
       },
       {
         "path": "tools/reference-renders/gltf-real-browser-pt-webgl2/manifest.json",
@@ -97,7 +97,7 @@
       },
       {
         "path": "tools/behavioral-gate/behavioral-gate-dzn-bdpt-status.json",
-        "sha256": "34607a59048085f98a3d343714232bd8c247da832c67a4d89d05fbc394d484c7"
+        "sha256": "4a83ae731d664483772a7648bf92ec36bd5b1a6bbe9c910433d0a4aaa4e8d50b"
       },
       {
         "path": "tools/radiometric-ab/pt-promotion-status.json",

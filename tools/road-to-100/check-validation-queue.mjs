@@ -613,6 +613,9 @@ const [queue, packageJson, executionPlan, ledger, promiseLedger, road] = await P
   readText("plan/road-to-100.md"),
 ]);
 const inverseSessionSource = await readText("packages/pt-webgpu/src/inverse/inverseSession.ts");
+const pathReplayDiagnosticsSource = await readText(
+  "packages/pt-webgpu/src/inverse/pathReplayDiagnostics.ts",
+);
 const inverseSessionTestSource = await readText("packages/pt-webgpu/src/__tests__/inverseSession.test.ts");
 const brdfAdjointSource = await readText("packages/pt-webgpu/src/inverse/brdfAdjoint.ts");
 const pathTraceAdjointWgslSource = await readText("packages/pt-webgpu/src/wgsl/pathTrace/pathTraceAdjoint.wgsl.ts");
@@ -636,6 +639,12 @@ const transparentAlphaTransportContractTest = await readText(
 );
 const transparentOitSource = await readText("packages/walkaround-hybrid/src/shaders/transparentOit.wgsl.ts");
 const gltfAssetLoaderSource = await readText("packages/gltf-adapter/src/assetLoader.ts");
+// Wave T3 batch 1 (41772904) split the gltf-adapter god-file; the pt-webgpu-lite
+// backend compatibility reconciliation (incl. ptWebgpuLiteBakeableVertexColor) now
+// lives in backendCompatibilityReconcile.ts, re-imported by assetLoader.ts.
+const gltfBackendReconcileSource = await readText(
+  "packages/gltf-adapter/src/backendCompatibilityReconcile.ts",
+);
 const gltfAssetApiTestSource = await readText("packages/gltf-adapter/src/gltfAssetApi.test.ts");
 const gltfMaterialProofSource = await readText("tools/gltf-material-sweep/check-proofs.mjs");
 const gltfMaterialFixtureSource = await readText("tools/gltf-material-sweep/fixture.mjs");
@@ -1846,11 +1855,19 @@ for (const needle of [
   "normalScale",
   "bumpScale",
   "clearcoatNormalScale",
-  "Dormant alpha/transmission",
-  "active alpha visibility",
 ]) {
   if (!inverseSessionSource.includes(needle)) {
     fail(`inverseSession.ts scoped adjoint contract prose is stale: missing ${needle}`);
+  }
+}
+// Wave T3 (cbf03b52) split inverseSession.ts; the alpha/transmission scoped-adjoint
+// contract prose now lives in pathReplayDiagnostics.ts.
+for (const needle of [
+  "Dormant alpha/transmission",
+  "active alpha visibility",
+]) {
+  if (!pathReplayDiagnosticsSource.includes(needle)) {
+    fail(`pathReplayDiagnostics.ts scoped adjoint contract prose is stale: missing ${needle}`);
   }
 }
 for (const needle of [
@@ -1861,8 +1878,9 @@ for (const needle of [
   "path-replay-unsupported-light-selection",
   "path-replay-unsupported-environment",
 ]) {
-  if (!inverseSessionSource.includes(needle)) {
-    fail(`inverseSession.ts scoped adjoint downgrade taxonomy is stale: missing ${needle}`);
+  // Wave T3 (cbf03b52) moved the downgrade taxonomy tokens into pathReplayDiagnostics.ts.
+  if (!pathReplayDiagnosticsSource.includes(needle)) {
+    fail(`pathReplayDiagnostics.ts scoped adjoint downgrade taxonomy is stale: missing ${needle}`);
   }
   if (!inverseSessionTestSource.includes(needle)) {
     fail(`inverseSession.test.ts scoped adjoint downgrade taxonomy is stale: missing ${needle}`);
@@ -2277,21 +2295,28 @@ for (const needle of [
     fail(`VQ-RADIOMETRIC-PT remaining text must include ${needle}`);
   }
 }
-const ptWebgpuIndexSource = await readText("packages/pt-webgpu/src/index.ts");
+// Wave T3 batch 1 (41772904) split packages/pt-webgpu/src/index.ts; the structured
+// research-warning source now lives in packages/pt-webgpu/src/ptWebgpuValidation.ts
+// (index.ts re-exports it). Repoint the needles to the module that now holds them.
+const ptWebgpuValidationSource = await readText("packages/pt-webgpu/src/ptWebgpuValidation.ts");
 for (const needle of [
   "pt-webgpu.bdpt-multivertex-research-mode",
   "promotionReady: false",
   "currentEstimator: 'additive-sidecar-not-weighted-against-eye-path'",
   "not-weighted-against-regular-eye-path-strategy",
   "multi-vertex-light-subpath-strategies-weighted-against-regular-eye-path-strategy",
-  "safeAlternative: 'omit bdptOptions.maxLightBounces or set maxLightBounces:1'",
+  // The safe-alternative guidance is emitted from a template literal
+  // (`...maxLightBounces:${BDPT_SAFE_DEFAULT_LIGHT_BOUNCES}`), so pin the stable
+  // non-interpolated prefix rather than a hard-coded bounce count. This predates the
+  // T-wave split; the old raw `...maxLightBounces:1` literal never matched the source.
+  "safeAlternative: `omit bdptOptions.maxLightBounces or set maxLightBounces:",
   "tools/radiometric-ab/results-bdpt.json",
   "pt-webgpu.restir-pt-glossy-reuse-research-mode",
   "restirPtReuseOptions.experimentalGlossyReuse=true",
   "glossy-visible-vertex-reuse-outside-diffuse-safe-validation-envelope",
   "tools/radiometric-ab/results-restir-pt-glossy-research.json",
 ]) {
-  if (!ptWebgpuIndexSource.includes(needle)) {
+  if (!ptWebgpuValidationSource.includes(needle)) {
     fail(`VQ-RADIOMETRIC-PT structured research warning source is stale: missing ${needle}`);
   }
 }
@@ -2749,13 +2774,18 @@ for (const needle of [
 }
 for (const needle of [
   "bakePtWebgpuLiteCompatibleVertexColors",
-  "ptWebgpuLiteBakeableVertexColor",
   "canBakeLiteVertexColors",
   "materialVariantBindings",
 ]) {
   if (!gltfAssetLoaderSource.includes(needle)) {
     fail(`VQ-GLTF-MATERIAL-TOPOLOGY asset loader source is stale: missing ${needle}`);
   }
+}
+// ptWebgpuLiteBakeableVertexColor moved to backendCompatibilityReconcile.ts (Wave T3).
+if (!gltfBackendReconcileSource.includes("ptWebgpuLiteBakeableVertexColor")) {
+  fail(
+    "VQ-GLTF-MATERIAL-TOPOLOGY backend compatibility reconcile source is stale: missing ptWebgpuLiteBakeableVertexColor",
+  );
 }
 for (const needle of [
   "allows direct pt-webgpu-lite strict loads for primitive-constant RGB COLOR_0 scenes",

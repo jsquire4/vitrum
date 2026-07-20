@@ -111,7 +111,7 @@
       },
       {
         "path": "packages/walkaround-hybrid/README.md",
-        "sha256": "9b0a46a866ab05aa4cab1eaa1c2082c21c434a9e18f7447336ef9cddd29eedc4"
+        "sha256": "6c1251705000eaa820e14575331de8abbcd884addc6415930f824d3f8d64f3eb"
       },
       {
         "path": "packages/walkaround-hybrid/__tests__/neuralWeightsRoundTrip.test.ts",
@@ -119,7 +119,7 @@
       },
       {
         "path": "packages/walkaround-hybrid/src/HybridEngine.ts",
-        "sha256": "af5b87a6b3166a9e9a3a920bd0600414e74715da84e1caa07da84d9a9f6d0880"
+        "sha256": "b4f608d9d29cb732dc5c7956cdc6589e2931bcb5b9b50251dc6ba1bd05df395e"
       },
       {
         "path": "packages/walkaround-hybrid/src/HybridEngineConfig.ts",
@@ -155,7 +155,7 @@
       },
       {
         "path": "packages/walkaround-hybrid/src/pipeline/WalkaroundGPUPipeline.ts",
-        "sha256": "15e11127e57485111a26e7e3e5b54f8b52c86603a66ada5fe7c0b3a0445c63e4"
+        "sha256": "0432eedb6d909b6f63d398c5545f84ce8d7082eb89fc7a6edbec1dd0b649fdd7"
       },
       {
         "path": "packages/walkaround-hybrid/src/pipeline/__tests__/nrcDeviceCapability.test.ts",
@@ -191,7 +191,7 @@
       },
       {
         "path": "tools/neural-denoiser-training/capture-dataset.mjs",
-        "sha256": "51970b7984cbfa85a673130e5d775b78a9dda82f0e187ac7d5b885ddd9967863"
+        "sha256": "582535d0fa7c07ed723d80c5d0eecb5a3b50b73d9267baa58c7bac43a8ec0e0d"
       },
       {
         "path": "tools/neural-denoiser-training/checkpoints/manifest.json",
@@ -215,7 +215,7 @@
       },
       {
         "path": "tools/neural-denoiser-training/train.py",
-        "sha256": "ae5b8cf73df6fdfa5f3035845f6efee3110c5323b51fc3194948a8ef64af1068"
+        "sha256": "0116ba1aaa8e0f52b5905b31171830c785388d7156fba0a1f763edbcc79d4e96"
       }
     ],
     "checkpointFiles": [
