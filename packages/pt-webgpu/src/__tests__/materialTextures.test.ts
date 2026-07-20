@@ -194,18 +194,22 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[12]).toBeCloseTo(0.5);
   });
 
-  it('collects emissiveMap into the same (sRGB) sources + packs emissiveIdx', () => {
+  it('T1-6 — collects emissiveMap into a DEDICATED emissive source list (own index space)', () => {
     const tex = { id: 'base' };
     const emis = { id: 'emis' };
-    const { sources, descriptors } = collectMaterialTextures([
+    const { sources, emissiveSources, descriptors } = collectMaterialTextures([
       mat({ baseColorMap: { handle: tex }, emissiveMap: { handle: emis } }),
-      mat({ emissiveMap: { handle: tex } }), // emissive reuses the baseColor handle → dedup
+      mat({ emissiveMap: { handle: tex } }), // same handle as baseColor, but a separate emissive array layer
     ]);
-    expect(sources).toEqual([tex, emis]); // baseColor + emissive share the sRGB source list
-    expect(descriptors[0]).toBe(0); // mat0 baseColorIdx → tex (0)
-    expect(descriptors[3]).toBe(1); // mat0 emissiveIdx → emis (1)
+    // Emissive has its OWN rgba16float array now, so it no longer rides the sRGB
+    // baseColor source list. Dedup is per-array: the baseColor handle `tex` also
+    // appearing as an emissive map is a NEW emissive-array layer (not shared).
+    expect(sources).toEqual([tex]);              // sRGB list: baseColor only
+    expect(emissiveSources).toEqual([emis, tex]); // emissive list: mat0 emis, mat1 tex
+    expect(descriptors[0]).toBe(0); // mat0 baseColorIdx → sRGB 0
+    expect(descriptors[3]).toBe(0); // mat0 emissiveIdx → emissive array 0 (emis)
     expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 0]).toBe(-1); // mat1 no baseColor
-    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 3]).toBe(0); // mat1 emissiveIdx → tex (dedup 0)
+    expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 3]).toBe(1); // mat1 emissiveIdx → emissive array 1 (tex)
   });
 
   it('collects normal + roughness/metallic maps into a SEPARATE linear source list (own index space)', () => {
@@ -364,7 +368,7 @@ describe('collectMaterialTextures (P2 host)', () => {
     expectCloseArray(descriptors.slice(layerMeta, layerMeta + 8), [1, 0.11, 0.12, 0.31, 0.21, 0.22, 0, 0]);
     expectCloseArray(descriptors.slice(layerMeta + 8, layerMeta + 16), [0, 0.41, 0.42, 0.61, 0.51, 0.52, 0, 0]);
 
-    applyMaterialTextureUvFitScales(descriptors, [], [[1, 1], [0.5, 0.25], [0.75, 0.5]]);
+    applyMaterialTextureUvFitScales(descriptors, [], [[1, 1], [0.5, 0.25], [0.75, 0.5]], []);
     expectCloseArray(descriptors.slice(layerFit, layerFit + 4), [0.5, 0.25, 0.75, 0.5]);
   });
 
@@ -501,7 +505,7 @@ describe('collectMaterialTextures (P2 host)', () => {
     const { descriptors } = collectMaterialTextures([
       mat({ thicknessMap: { handle: thicknessTex } }),
     ]);
-    applyMaterialTextureUvFitScales(descriptors, [], [[0.25, 0.5]]);
+    applyMaterialTextureUvFitScales(descriptors, [], [[0.25, 0.5]], []);
     const thicknessBase = MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4;
     expectCloseArray(descriptors.slice(thicknessBase + 1, thicknessBase + 3), [0.25, 0.5]);
   });
@@ -600,6 +604,7 @@ describe('collectMaterialTextures (P2 host)', () => {
         [0.71, 0.72],
         [0.81, 0.82],
       ],
+      [],
     );
 
     const extUvFitStart = MATERIAL_TEX_EXTENSION_UV_FIT_VEC4_OFFSET * 4;
@@ -648,7 +653,7 @@ describe('collectMaterialTextures (P2 host)', () => {
     expectCloseArray(uvMeta(7), [0, 0.4, 0.5, 0.6, 1.4, 1.5, 0, 0]);
   });
 
-  it('applies per-map UV-fit scales from the uploaded sRGB and linear texture arrays', () => {
+  it('applies per-map UV-fit scales from the uploaded sRGB, linear, and emissive texture arrays', () => {
     const base = { id: 'base' };
     const emissive = { id: 'emissive' };
     const normal = { id: 'normal' };
@@ -676,7 +681,8 @@ describe('collectMaterialTextures (P2 host)', () => {
 
     applyMaterialTextureUvFitScales(
       descriptors,
-      [[0.5, 1], [1, 0.25]],
+      // sRGB array: baseColor is layer 0 (emissive no longer rides this array).
+      [[0.5, 1]],
       [
         [0.75, 1],
         [1, 0.5],
@@ -687,6 +693,8 @@ describe('collectMaterialTextures (P2 host)', () => {
         [0.2, 0.1],
         [0.6, 0.4],
       ],
+      // T1-6 — emissive array: emissive is layer 0 → its UV-fit is [1, 0.25].
+      [[1, 0.25]],
     );
 
     expectCloseArray(descriptors.slice(28, 32), [0.5, 1, 1, 0.25]);
@@ -1017,7 +1025,10 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('textureSampleLevel(materialTextures, materialTexSampler, fittedUv, layerIdx, policyLod)');
     expect(wgsl).toContain('textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod)');
     expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, MATERIAL_TEX_UV_BASE_COLOR');
-    expect(wgsl).toContain('sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE');
+    // T1-6 — emissive samples the dedicated rgba16float emissive array.
+    expect(wgsl).toContain('sampleMaterialLayerEmissive(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE');
+    expect(wgsl).toContain('textureSampleLevel(materialTexturesEmissive, materialTexSampler, fittedUv, layerIdx, policyLod)');
+    expect(wgsl).toContain('@group(3) @binding(17) var materialTexturesEmissive: texture_2d_array<f32>;');
     expect(wgsl).toContain('sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, normalUvMetaOffset, normalUvFitScale, normalWrapMode');
     expect(wgsl).toContain('normalMipPolicySlot = select(MATERIAL_TEX_MIP_BACK_LAYER_NORMAL, MATERIAL_TEX_MIP_FRONT_LAYER_NORMAL, isFrontFace);');
     expect(wgsl).toContain('MATERIAL_TEX_UV_ROUGHNESS');

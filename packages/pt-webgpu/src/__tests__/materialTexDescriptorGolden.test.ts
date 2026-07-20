@@ -84,11 +84,14 @@ function richAllMapsMaterial(): MaterialSpec {
 
 describe('T2-A material descriptor golden (byte-identity)', () => {
   it('packs the rich all-maps material byte-identically to the pre-refactor golden', () => {
-    const { descriptors, sources, linearSources } = collectMaterialTextures([richAllMapsMaterial()]);
+    const { descriptors, sources, linearSources, emissiveSources } =
+      collectMaterialTextures([richAllMapsMaterial()]);
     // Distinct per-layer UV-fit scales so the uv-fit pass is exercised on every layer.
     const srgb = sources.map((_, k) => [0.5 + 0.01 * k, 0.6 + 0.01 * k] as [number, number]);
     const lin = linearSources.map((_, k) => [0.3 + 0.01 * k, 0.4 + 0.01 * k] as [number, number]);
-    applyMaterialTextureUvFitScales(descriptors, srgb, lin);
+    // T1-6 — emissive now has its own rgba16float array + index/scale space.
+    const emissive = emissiveSources.map((_, k) => [0.7 + 0.01 * k, 0.8 + 0.01 * k] as [number, number]);
+    applyMaterialTextureUvFitScales(descriptors, srgb, lin, emissive);
 
     expect(descriptors.length).toBe(MATERIAL_TEX_FLOAT_STRIDE);
     expect(descriptors.length).toBe(MATERIAL_TEX_DESCRIPTOR_GOLDEN.length);

@@ -101,6 +101,59 @@ interface NormalizedRgba8Upload {
   readonly rowsPerImage: number;
 }
 
+/** rgba16float upload payload — 4 half-floats (Uint16 bit patterns) per texel. */
+interface NormalizedFloatUpload {
+  readonly data: Uint16Array<ArrayBuffer>;
+  readonly bytesPerRow: number;
+  readonly rowsPerImage: number;
+}
+
+/**
+ * sRGB electro-optical transfer function (sRGB-encoded value → linear). Matches
+ * the hardware decode a `rgba8unorm-srgb`-sampled texture applies, so an LDR
+ * emissive texture that previously rode the sRGB array produces the IDENTICAL
+ * linear value when decoded here and stored in the linear `rgba16float` array.
+ * Alpha is NOT transfer-encoded in sRGB, so callers must pass alpha straight
+ * through (this fn is applied per RGB channel only).
+ */
+function srgbToLinear(c: number): number {
+  if (!Number.isFinite(c)) return 0;
+  const u = Math.min(1, Math.max(0, c));
+  return u <= 0.04045 ? u / 12.92 : ((u + 0.055) / 1.055) ** 2.4;
+}
+
+/**
+ * IEEE-754 float32 → float16 (half) bit pattern, returned as a u16. Round-to-
+ * nearest-even is not required for texture data; round-toward-zero on the
+ * mantissa (truncation) is used, matching common GPU upload encoders. Handles
+ * sub-normals, overflow→±inf, and NaN. rgba16float half-floats carry values
+ * well beyond 1.0 (max finite ≈ 65504), so HDR emissive > 1.0 survives.
+ */
+function float32ToFloat16(value: number): number {
+  if (Number.isNaN(value)) return 0x7e00; // canonical NaN
+  const sign = value < 0 || Object.is(value, -0) ? 0x8000 : 0;
+  const a = Math.abs(value);
+  if (a === 0) return sign;
+  if (!Number.isFinite(a) || a >= 65520) return sign | 0x7c00; // ±inf / overflow
+  if (a < 6.103515625e-5) {
+    // Sub-normal half: scale the mantissa into the 10-bit field.
+    const mant = Math.round(a / 5.960464477539063e-8);
+    return sign | (mant & 0x03ff);
+  }
+  let e = Math.floor(Math.log2(a));
+  if (a < 2 ** e) e -= 1;
+  const exp = e + 15;
+  if (exp <= 0) return sign;
+  if (exp >= 0x1f) return sign | 0x7c00;
+  const mant = Math.round((a / 2 ** e - 1) * 1024);
+  // Rounding can carry the mantissa to 1024 → bump the exponent.
+  if (mant >= 1024) {
+    if (exp + 1 >= 0x1f) return sign | 0x7c00;
+    return sign | ((exp + 1) << 10);
+  }
+  return sign | (exp << 10) | (mant & 0x03ff);
+}
+
 function byteViewOf(data: ArrayBufferView): Uint8Array<ArrayBuffer> | null {
   const bytesPerElement = (data as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT;
   if (!(data instanceof DataView) && bytesPerElement !== 1) return null;
@@ -191,6 +244,82 @@ function normalizeRawTextureUpload(
   height: number,
 ): NormalizedRgba8Upload | null {
   return normalizeRawRgba8(data, width, height) ?? normalizeRawNumericRgba8(data, width, height);
+}
+
+/**
+ * Raw-data upload path for the `rgba16float` emissive array. Two colour-space
+ * conventions, keyed by the SOURCE typed-array element type so the LDR path
+ * round-trips byte-for-byte against the previous sRGB-8-bit array while the HDR
+ * path passes linear radiance through unclamped:
+ *
+ *  - **Integer channels** (`Uint8Array` / `DataView` / normalized `Uint16`/…):
+ *    treated as sRGB-ENCODED LDR (the same data that previously wrote into the
+ *    `rgba8unorm-srgb` array and was hardware-decoded on sample). RGB is decoded
+ *    `srgbToLinear` after normalizing to [0,1]; alpha is passed through linearly.
+ *    The stored half-float therefore equals the exact linear value the old sRGB
+ *    sampler produced → LDR emissive is visually identical.
+ *  - **Float channels** (`Float32Array` / `Float64Array`): treated as ALREADY
+ *    LINEAR HDR radiance. Values pass straight through with NO sRGB decode and NO
+ *    [0,1] clamp, so authored emissive > 1.0 survives packing (the HDR win).
+ *
+ * Returns half-float (Uint16 bit-pattern) rows for `queue.writeTexture` into an
+ * `rgba16float` target.
+ */
+function normalizeRawTextureUploadFloat(
+  data: ArrayBufferView,
+  width: number,
+  height: number,
+): NormalizedFloatUpload | null {
+  const pixelCount = width * height;
+  if (pixelCount <= 0) return null;
+
+  // Integer byte data (Uint8 / DataView) — sRGB-encoded LDR.
+  const bytes = byteViewOf(data);
+  if (bytes != null) {
+    const channels = bytes.byteLength / pixelCount;
+    if (![1, 2, 3, 4].includes(channels) || !Number.isInteger(channels)) return null;
+    const out = new Uint16Array(pixelCount * 4);
+    for (let i = 0; i < pixelCount; i += 1) {
+      const src = i * channels;
+      const dst = i * 4;
+      const r = (bytes[src] ?? 0) / 255;
+      const g = channels >= 2 ? (bytes[src + 1] ?? 0) / 255 : r;
+      const b = channels >= 3 ? (bytes[src + 2] ?? 0) / 255 : r;
+      const a = channels >= 4 ? (bytes[src + 3] ?? 255) / 255 : 1;
+      out[dst] = float32ToFloat16(srgbToLinear(r));
+      out[dst + 1] = float32ToFloat16(srgbToLinear(g));
+      out[dst + 2] = float32ToFloat16(srgbToLinear(b));
+      out[dst + 3] = float32ToFloat16(a);
+    }
+    return { data: out, bytesPerRow: width * 8, rowsPerImage: height };
+  }
+
+  // Numeric typed arrays — floats are linear HDR (pass-through, unclamped);
+  // normalized integers are sRGB-encoded LDR (decode like the byte path).
+  const maxValue = numericChannelMax(data);
+  if (maxValue == null) return null;
+  const length = (data as unknown as ArrayLike<number>).length;
+  if (length == null) return null;
+  const channels = length / pixelCount;
+  if (![1, 2, 3, 4].includes(channels) || !Number.isInteger(channels)) return null;
+  const isLinearFloat = data instanceof Float32Array || data instanceof Float64Array;
+  const encodeRgb = (v: number): number =>
+    isLinearFloat ? v : srgbToLinear(v / maxValue);
+  const encodeAlpha = (v: number): number => (isLinearFloat ? v : v / maxValue);
+  const out = new Uint16Array(pixelCount * 4);
+  for (let i = 0; i < pixelCount; i += 1) {
+    const src = i * channels;
+    const dst = i * 4;
+    const r = numericChannelAt(data, src);
+    const g = channels >= 2 ? numericChannelAt(data, src + 1) : r;
+    const b = channels >= 3 ? numericChannelAt(data, src + 2) : r;
+    const a = channels >= 4 ? numericChannelAt(data, src + 3) : maxValue;
+    out[dst] = float32ToFloat16(encodeRgb(r));
+    out[dst + 1] = float32ToFloat16(encodeRgb(g));
+    out[dst + 2] = float32ToFloat16(encodeRgb(b));
+    out[dst + 3] = float32ToFloat16(encodeAlpha(a));
+  }
+  return { data: out, bytesPerRow: width * 8, rowsPerImage: height };
 }
 
 const DUMMY_LABEL = 'vitrum.pt-webgpu.scene.materialTextures.dummy';
@@ -313,6 +442,88 @@ function generateTextureArrayMips(
   device.queue.submit([encoder.finish()]);
 }
 
+/**
+ * Stage an sRGB-encoded external image into a linear `rgba16float` array layer.
+ * `copyExternalImageToTexture` does NOT apply sRGB decode when the destination
+ * format is non-sRGB, so we copy the image into a scratch `rgba8unorm-srgb`
+ * texture (which the sampler DOES decode) and render it into the float layer.
+ * The fragment output is linear, matching what the previous sRGB-8-bit emissive
+ * array produced on sample. Values are clamped to [0,1] by the 8-bit source, so
+ * only true-HDR (raw-float) emissive exceeds 1.0 — external LDR images stay LDR.
+ */
+function blitExternalSrgbToFloatLayer(
+  device: GPUDevice,
+  external: GPUCopyExternalImageSource,
+  target: GPUTexture,
+  layer: number,
+  copyW: number,
+  copyH: number,
+): void {
+  const scratch = device.createTexture({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.emissive.srgbStage',
+    size: { width: copyW, height: copyH, depthOrArrayLayers: 1 },
+    format: 'rgba8unorm-srgb',
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  device.queue.copyExternalImageToTexture(
+    { source: external, flipY: false },
+    { texture: scratch, origin: { x: 0, y: 0, z: 0 } },
+    { width: copyW, height: copyH },
+  );
+  const module = device.createShaderModule({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.emissive.srgbStage.module',
+    code: MATERIAL_TEXTURE_MIPMAP_WGSL,
+  });
+  const sampler = device.createSampler({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.emissive.srgbStage.sampler',
+    magFilter: 'nearest',
+    minFilter: 'nearest',
+  });
+  const pipeline = device.createRenderPipeline({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.emissive.srgbStage.pipeline',
+    layout: 'auto',
+    vertex: { module, entryPoint: 'vsMain' },
+    fragment: { module, entryPoint: 'fsMain', targets: [{ format: 'rgba16float' }] },
+    primitive: { topology: 'triangle-list' },
+  });
+  const bindGroup = device.createBindGroup({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.emissive.srgbStage.bindGroup',
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: scratch.createView() },
+      { binding: 1, resource: sampler },
+    ],
+  });
+  const encoder = device.createCommandEncoder({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.emissive.srgbStage.encoder',
+  });
+  const pass = encoder.beginRenderPass({
+    label: 'vitrum.pt-webgpu.scene.materialTextures.emissive.srgbStage.pass',
+    colorAttachments: [{
+      view: target.createView({
+        dimension: '2d',
+        baseMipLevel: 0,
+        mipLevelCount: 1,
+        baseArrayLayer: layer,
+        arrayLayerCount: 1,
+      }),
+      clearValue: { r: 0, g: 0, b: 0, a: 1 },
+      loadOp: 'clear',
+      storeOp: 'store',
+    }],
+  });
+  pass.setPipeline(pipeline);
+  // Constrain the draw to the copyW×copyH top-left rect (mirrors the
+  // copyExternalImageToTexture origin/extent), so the per-layer UV-fit scale
+  // remaps repeat-wrapped UVs into the same source rectangle as the 8-bit path.
+  pass.setViewport(0, 0, copyW, copyH, 0, 1);
+  pass.setBindGroup(0, bindGroup);
+  pass.draw(3);
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+  scratch.destroy();
+}
+
 /** 1×1 white single-layer array — the always-bound placeholder for scenes with
  *  no sampled textures (kernel never reads it; descriptors are all -1). */
 function createDummyArray(device: GPUDevice, format: GPUTextureFormat): MaterialTextureArray {
@@ -322,10 +533,17 @@ function createDummyArray(device: GPUDevice, format: GPUTextureFormat): Material
     format,
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
+  // rgba16float dummy carries a linear-white half-float texel (1.0 → 0x3c00);
+  // 8-bit formats keep the byte-white texel. The kernel never samples the dummy
+  // (all descriptor indices are -1), so this only satisfies the binding.
+  const isFloat = format === 'rgba16float';
+  const dummyTexel = isFloat
+    ? new Uint16Array([0x3c00, 0x3c00, 0x3c00, 0x3c00])
+    : new Uint8Array([255, 255, 255, 255]);
   device.queue.writeTexture(
     { texture, origin: { x: 0, y: 0, z: 0 } },
-    new Uint8Array([255, 255, 255, 255]),
-    { bytesPerRow: 4, rowsPerImage: 1 },
+    dummyTexel,
+    { bytesPerRow: isFloat ? 8 : 4, rowsPerImage: 1 },
     { width: 1, height: 1, depthOrArrayLayers: 1 },
   );
   return {
@@ -416,6 +634,13 @@ export function createMaterialTextureArray(
     height = Math.max(height, Math.min(p.height, maxDim));
   }
   const mipLevelCount = materialTextureMipLevelCount(width, height);
+  // rgba16float is a LINEAR (non-sRGB) format. Raw-data uploads apply the sRGB
+  // decode on the CPU (normalizeRawTextureUploadFloat); external images (which
+  // carry sRGB-encoded 8-bit samples and get NO hardware sRGB decode when copied
+  // into a float target) are staged through an rgba8unorm-srgb texture and blit
+  // via a render pass so the sampler applies the sRGB→linear decode — keeping LDR
+  // emissive visually identical to the previous sRGB-8-bit array path.
+  const isFloatArray = format === 'rgba16float';
 
   const texture = device.createTexture({
     label: ARRAY_LABEL,
@@ -463,13 +688,20 @@ export function createMaterialTextureArray(
     const copyW = Math.min(p.width, width);
     const copyH = Math.min(p.height, height);
     if (p.external != null) {
-      device.queue.copyExternalImageToTexture(
-        { source: p.external, flipY: false },
-        { texture, origin: { x: 0, y: 0, z: layer } },
-        { width: copyW, height: copyH },
-      );
+      if (isFloatArray) {
+        // sRGB-decode staging blit into the linear float layer (see isFloatArray).
+        blitExternalSrgbToFloatLayer(device, p.external, texture, layer, copyW, copyH);
+      } else {
+        device.queue.copyExternalImageToTexture(
+          { source: p.external, flipY: false },
+          { texture, origin: { x: 0, y: 0, z: layer } },
+          { width: copyW, height: copyH },
+        );
+      }
     } else if (p.data != null) {
-      const upload = normalizeRawTextureUpload(p.data, p.width, p.height);
+      const upload = isFloatArray
+        ? normalizeRawTextureUploadFloat(p.data, p.width, p.height)
+        : normalizeRawTextureUpload(p.data, p.width, p.height);
       if (upload == null) {
         const warning =
           `[materialTextureArray] source ${layer} has raw data with unsupported byte layout ` +

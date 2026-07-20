@@ -73,8 +73,9 @@ import {
  * SPPM group-3 WGSL bindings (bindings 6/7/8/9) — composed into the megakernel
  * AND the photon-emission pass.  Group 3 already carries the light-tree node
  * buffer (binding 0), mesh UVs (1), material-texture descriptors (2),
- * materialTextures array (3), materialTexSampler (4), and materialLinearTextures
- * (5) on the full tier.  SPPM appends four more bindings here to avoid
+ * materialTextures array (3), materialTexSampler (4), materialLinearTextures
+ * (5), and materialTexturesEmissive (17, T1-6 rgba16float HDR emissive) on the
+ * full tier.  SPPM appends four more bindings here to avoid
  * requiring maxBindGroups ≥ 5 (group 4 would need that, which lavapipe rejects).
  *
  * Binding layout (@group(3)):

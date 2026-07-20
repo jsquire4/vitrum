@@ -127,6 +127,81 @@ describe('uploadPackedScene warning propagation', () => {
       consoleWarn.mockRestore();
     }
   });
+  it('T1-6 — uploads emissive to a dedicated rgba16float array; HDR emissive > 1.0 survives packing', () => {
+    installGpuConstStubs();
+    // Device that records createTexture formats + writeTexture payloads keyed by texture.
+    const writes: Array<{ format: string; data: unknown }> = [];
+    const device = {
+      queue: {
+        writeBuffer: vi.fn(),
+        writeTexture: vi.fn((dst: { texture: { format: string } }, data: unknown) => {
+          writes.push({ format: dst.texture.format, data });
+        }),
+        copyExternalImageToTexture: vi.fn(),
+        submit: vi.fn(),
+      },
+      createBuffer: vi.fn((desc: GPUBufferDescriptor) => ({ label: desc.label, size: desc.size, destroy: vi.fn() })),
+      createTexture: vi.fn((desc: GPUTextureDescriptor) => {
+        const size = desc.size as { width: number; height: number; depthOrArrayLayers?: number };
+        return {
+          label: desc.label, format: desc.format,
+          width: size.width, height: size.height, depthOrArrayLayers: size.depthOrArrayLayers ?? 1,
+          createView: vi.fn(() => ({})), destroy: vi.fn(),
+        };
+      }),
+      createSampler: vi.fn(() => ({})),
+      createShaderModule: vi.fn(() => ({})),
+      createRenderPipeline: vi.fn(() => ({ getBindGroupLayout: vi.fn(() => ({})) })),
+      createBindGroup: vi.fn(() => ({})),
+      createCommandEncoder: vi.fn(() => ({
+        beginRenderPass: vi.fn(() => ({ setPipeline: vi.fn(), setViewport: vi.fn(), setBindGroup: vi.fn(), draw: vi.fn(), end: vi.fn() })),
+        finish: vi.fn(() => ({})),
+      })),
+      limits: {
+        maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
+        maxStorageTexturesPerShaderStage: 8,
+        maxTextureDimension2D: 8192,
+      },
+      addEventListener: vi.fn(), removeEventListener: vi.fn(), lost: new Promise<never>(() => {}),
+    } as unknown as GPUDevice;
+
+    const hdrEmissive: Scene = {
+      primitives: [{
+        kind: 'mesh', id: 'mesh-a',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1], roughness: 0.5, metallic: 0,
+          // Linear HDR emissive texel (float32 → linear pass-through, > 1.0).
+          emissiveMap: { handle: { image: { width: 1, height: 1, data: new Float32Array([12.0, 4.0, 0.5, 1.0]) } } },
+        },
+      }],
+      emitters: [], environment: { kind: 'none' },
+    };
+
+    const uploaded = uploadPackedScene(device, buildPackedScene(hdrEmissive));
+    // A rgba16float emissive array exists and is bound distinctly from the sRGB array.
+    expect(uploaded.materialEmissiveTexture.format).toBe('rgba16float');
+    expect(uploaded.materialEmissiveTexture).not.toBe(uploaded.materialTexture);
+    // The HDR emissive texel was written to the rgba16float target as half-floats,
+    // and the > 1.0 red channel survives (half-float encoding of 12.0).
+    const emissiveWrite = writes.find((w) => w.format === 'rgba16float' && w.data instanceof Uint16Array);
+    expect(emissiveWrite).toBeDefined();
+    const half = emissiveWrite!.data as Uint16Array;
+    const halfToFloat = (h: number): number => {
+      const sign = (h & 0x8000) ? -1 : 1;
+      const exp = (h & 0x7c00) >> 10;
+      const frac = h & 0x03ff;
+      if (exp === 0) return sign * frac * 2 ** -24;
+      if (exp === 0x1f) return frac ? NaN : sign * Infinity;
+      return sign * (1 + frac / 1024) * 2 ** (exp - 15);
+    };
+    expect(halfToFloat(half[0]!)).toBeCloseTo(12.0, 1); // > 1.0 emissive NOT clamped
+    expect(halfToFloat(half[1]!)).toBeCloseTo(4.0, 1);
+    expect(halfToFloat(half[2]!)).toBeCloseTo(0.5, 2);
+  });
+
   it('routes material texture upload warnings through UploadedSceneBuffers warnings', () => {
     installGpuConstStubs();
     const device = makeDevice();

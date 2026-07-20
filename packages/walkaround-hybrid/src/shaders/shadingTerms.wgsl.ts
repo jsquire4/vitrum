@@ -76,6 +76,9 @@
  * literal. Resolved 2026-06-11; byte-identical to the original composed
  * shader string.
  */
+import { analyticLightFalloffWgsl } from './analyticLightFalloff.wgsl.js';
+import { giBilinearWeightsWgsl, giBilinearCornerSelectWgsl } from './giBilinearGather.wgsl.js';
+
 export const SHADING_TERMS_WGSL = /* wgsl */ `// ── Stained-glass sun glow for primary glass hits ─────────────────────────
 //
 // Le ≈ attenuationColor × transmission × sunIntensity × |sunDot| × textureMod.
@@ -147,33 +150,7 @@ fn lo_emitterGlow(triIndex: u32) -> vec3f {
 // no need for reservoir denoising). skipGlass=true (same as lo_direct).
 //
 // Glass/metal: skip (same policy as lo_direct — their Lo_emit drives).
-fn analyticSpotConeFalloff(lightDir: vec3f, wi: vec3f, cosInner: f32, cosOuter: f32) -> f32 {
-  let axisLen2 = dot(lightDir, lightDir);
-  if (axisLen2 <= 0.01) { return 1.0; }
-  let axis = lightDir * inverseSqrt(axisLen2);
-  let cosTheta = dot(-axis, wi);
-  if (cosTheta < cosOuter) { return 0.0; }
-  if (abs(cosInner - cosOuter) < 1e-5) {
-    return select(0.0, 1.0, cosTheta >= cosOuter);
-  }
-  return smoothstep(cosOuter, cosInner, cosTheta);
-}
-
-fn analyticPointSpotAttenuation(dist: f32, cutoffDistance: f32, decay: f32, dist2Floor: f32) -> f32 {
-  var attenuation = 1.0;
-  if (decay > 0.01) {
-    if (abs(decay - 2.0) < 1e-5) {
-      attenuation = 1.0 / (dist * dist + dist2Floor);
-    } else {
-      attenuation = 1.0 / max(pow(max(dist, 1.0), decay), max(dist2Floor, 1e-6));
-    }
-  }
-  if (cutoffDistance > 0.0) {
-    let x = clamp(1.0 - pow(dist / cutoffDistance, 4.0), 0.0, 1.0);
-    attenuation = attenuation * x * x;
-  }
-  return attenuation;
-}
+${analyticLightFalloffWgsl('analytic')}
 
 fn lo_analyticNEE(
   pos:      vec3f,
@@ -534,16 +511,7 @@ fn lo_indirect(
 ) -> vec3f {
   if (isGlass || isMetal) { return vec3f(0.0); }
   var Lo_indirect = vec3f(0.0);
-  let halfDims = dims / 2u;
-  let halfPxF = vec2f(gid) * 0.5;
-  let hx0 = u32(floor(halfPxF.x));
-  let hy0 = u32(floor(halfPxF.y));
-  let fx = halfPxF.x - f32(hx0);
-  let fy = halfPxF.y - f32(hy0);
-  let bw00 = (1.0 - fx) * (1.0 - fy);
-  let bw10 =        fx  * (1.0 - fy);
-  let bw01 = (1.0 - fx) *        fy;
-  let bw11 =        fx  *        fy;
+${giBilinearWeightsWgsl()}
   var totalW: f32 = 0.0;
   // Confidence accumulator — bilinear-weighted ReSTIR-GI sample count over the
   // same 4 half-res reservoirs that build Lo_indirect. The reservoir M is the
@@ -554,16 +522,7 @@ fn lo_indirect(
   // matches the radiance blend exactly.
   var Maccum: f32 = 0.0;
   for (var k: u32 = 0u; k < 4u; k = k + 1u) {
-    var hx = hx0;
-    var hy = hy0;
-    var bw: f32 = 0.0;
-    if      (k == 0u) { hx = hx0;          hy = hy0;          bw = bw00; }
-    else if (k == 1u) { hx = hx0 + 1u;     hy = hy0;          bw = bw10; }
-    else if (k == 2u) { hx = hx0;          hy = hy0 + 1u;     bw = bw01; }
-    else              { hx = hx0 + 1u;     hy = hy0 + 1u;     bw = bw11; }
-    if (hx >= halfDims.x) { hx = halfDims.x - 1u; }
-    if (hy >= halfDims.y) { hy = halfDims.y - 1u; }
-    if (bw < 1e-5) { continue; }
+${giBilinearCornerSelectWgsl()}
     let giIdx = hy * halfDims.x + hx;
     let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);
     if (g.W <= 0.0 || g.M == 0u) { continue; }
@@ -711,29 +670,11 @@ fn lo_transmittedGI(
   // previous nearest-neighbour lookup made an entire 2x2 full-res quad inherit
   // one post-glass GI reservoir, which over-promoted rare W-tail samples on large
   // panes and failed the bounded glass/no-glass radiometric A/B.
-  let halfDims = dims / 2u;
-  let halfPxF = vec2f(gid) * 0.5;
-  let hx0 = u32(floor(halfPxF.x));
-  let hy0 = u32(floor(halfPxF.y));
-  let fx = halfPxF.x - f32(hx0);
-  let fy = halfPxF.y - f32(hy0);
-  let bw00 = (1.0 - fx) * (1.0 - fy);
-  let bw10 =        fx  * (1.0 - fy);
-  let bw01 = (1.0 - fx) *        fy;
-  let bw11 =        fx  *        fy;
+${giBilinearWeightsWgsl()}
   var Lo_transmitted = vec3f(0.0);
   var totalW: f32 = 0.0;
   for (var k: u32 = 0u; k < 4u; k = k + 1u) {
-    var hx = hx0;
-    var hy = hy0;
-    var bw: f32 = 0.0;
-    if      (k == 0u) { hx = hx0;          hy = hy0;          bw = bw00; }
-    else if (k == 1u) { hx = hx0 + 1u;     hy = hy0;          bw = bw10; }
-    else if (k == 2u) { hx = hx0;          hy = hy0 + 1u;     bw = bw01; }
-    else              { hx = hx0 + 1u;     hy = hy0 + 1u;     bw = bw11; }
-    if (hx >= halfDims.x) { hx = halfDims.x - 1u; }
-    if (hy >= halfDims.y) { hy = halfDims.y - 1u; }
-    if (bw < 1e-5) { continue; }
+${giBilinearCornerSelectWgsl()}
 
     let giIdx = hy * halfDims.x + hx;
     let g = loadReservoirGI_rw(&reservoirGiCurrent, giIdx);

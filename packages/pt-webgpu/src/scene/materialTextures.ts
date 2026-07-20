@@ -309,15 +309,24 @@ function createUnsupportedTexCoordWarner(
 }
 
 export interface CollectedTextures {
-  /** Unique sRGB-decoded texture sources (baseColor + emissive), upload order. */
+  /** Unique sRGB-decoded texture sources (baseColor + extension color-tint maps),
+   *  upload order. Emissive is NO LONGER here — it has its own rgba16float array
+   *  (see {@link emissiveSources}) so HDR emissive values survive packing. */
   readonly sources: unknown[];
   /** Unique LINEAR texture sources (normal + scalar/data maps — must NOT be sRGB-decoded),
    *  a separate index space → its own texture_2d_array. */
   readonly linearSources: unknown[];
+  /** Unique EMISSIVE texture sources → a dedicated rgba16float texture_2d_array.
+   *  Own index space (emissiveIdx points here, not the sRGB array). Uploaded to a
+   *  linear-float target with a CPU sRGB→linear decode for LDR sources, so HDR
+   *  emissive texture values > 1.0 are not clamped to [0,1]. */
+  readonly emissiveSources: unknown[];
   /** Source-layer provenance for host-facing upload diagnostics. */
   readonly sourceInfos: readonly MaterialTextureLayerInfo[];
   /** Linear source-layer provenance for host-facing upload diagnostics. */
   readonly linearSourceInfos: readonly MaterialTextureLayerInfo[];
+  /** Emissive source-layer provenance for host-facing upload diagnostics. */
+  readonly emissiveSourceInfos: readonly MaterialTextureLayerInfo[];
   /** Per-material descriptor floats (MATERIAL_TEX_FLOAT_STRIDE per material). */
   readonly descriptors: Float32Array;
   /** Structured diagnostics for maps dropped because they target texCoord > 1. */
@@ -449,13 +458,15 @@ export function applyMaterialTextureUvFitScales(
   descriptors: Float32Array,
   sRgbLayerScales: readonly MaterialTextureLayerUvScale[],
   linearLayerScales: readonly MaterialTextureLayerUvScale[],
+  emissiveLayerScales: readonly MaterialTextureLayerUvScale[],
 ): void {
   const materialCount = Math.floor(descriptors.length / MATERIAL_TEX_FLOAT_STRIDE);
   for (let mi = 0; mi < materialCount; mi += 1) {
     const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
-    // sRGB array maps: baseColor and emissive.
+    // sRGB array maps: baseColor. Emissive now lives in the dedicated rgba16float
+    // emissive array, so its UV-fit scale reads from that array's layer scales.
     writeUvFitPair(descriptors, b + 28, uvFitScaleFor(sRgbLayerScales, descriptors[b + 0] ?? -1));
-    writeUvFitPair(descriptors, b + 30, uvFitScaleFor(sRgbLayerScales, descriptors[b + 3] ?? -1));
+    writeUvFitPair(descriptors, b + 30, uvFitScaleFor(emissiveLayerScales, descriptors[b + 3] ?? -1));
     // Linear array maps: normal, roughness, metallic, AO, light, bump, anisotropy, alpha, transmission.
     writeUvFitPair(descriptors, b + 32, uvFitScaleFor(linearLayerScales, descriptors[b + 1] ?? -1));
     writeUvFitPair(descriptors, b + 34, uvFitScaleFor(linearLayerScales, descriptors[b + 2] ?? -1));
@@ -513,6 +524,7 @@ export function applyMaterialTextureUvFitScales(
 export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>): CollectedTextures {
   const sources: unknown[] = [];
   const linearSources: unknown[] = [];
+  const emissiveSources: unknown[] = [];
   const unsupportedTexCoordWarnings: EngineWarning[] = [];
   const warnUnsupportedTexCoord = createUnsupportedTexCoordWarner(unsupportedTexCoordWarnings);
   const makeIndexer = (list: unknown[], colorSpace: MaterialTextureColorSpace) => {
@@ -545,8 +557,14 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
   };
   const sRgbIndexer = makeIndexer(sources, 'srgb');
   const linearIndexer = makeIndexer(linearSources, 'linear');
-  const indexOf = sRgbIndexer.index;        // sRGB array
-  const indexOfLinear = linearIndexer.index; // linear array
+  // Emissive is authored sRGB but uploaded to a LINEAR rgba16float array (the CPU
+  // upload path applies the sRGB decode). Its provenance colorSpace stays 'srgb'
+  // (that is the authored encoding), while the layers live in a separate index
+  // space from the sRGB baseColor array so HDR emissive survives packing.
+  const emissiveIndexer = makeIndexer(emissiveSources, 'srgb');
+  const indexOf = sRgbIndexer.index;          // sRGB array
+  const indexOfLinear = linearIndexer.index;  // linear array
+  const indexOfEmissive = emissiveIndexer.index; // emissive rgba16float array
 
   const descriptors = new Float32Array(materials.length * MATERIAL_TEX_FLOAT_STRIDE);
   materials.forEach((m, mi) => {
@@ -560,7 +578,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 0] = indexOf(bc, mi, 'baseColorMap');            // baseColorIdx (sRGB array)
     descriptors[b + 1] = indexOfLinear(m.normalMap, mi, 'normalMap');                 // normalIdx (linear array)
     descriptors[b + 2] = indexOfLinear(roughnessMap, mi, 'roughnessMap'); // roughness map (linear; glTF G channel)
-    descriptors[b + 3] = indexOf(m.emissiveMap, mi, 'emissiveMap'); // emissiveIdx (sRGB array — same layers as baseColor)
+    descriptors[b + 3] = indexOfEmissive(m.emissiveMap, mi, 'emissiveMap'); // emissiveIdx (dedicated rgba16float emissive array)
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
     descriptors[b + 6] = m.opacity ?? 1;
@@ -645,8 +663,10 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
   return {
     sources,
     linearSources,
+    emissiveSources,
     sourceInfos: sRgbIndexer.infos(),
     linearSourceInfos: linearIndexer.infos(),
+    emissiveSourceInfos: emissiveIndexer.infos(),
     descriptors,
     unsupportedTexCoordWarnings,
   };

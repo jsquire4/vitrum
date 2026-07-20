@@ -177,6 +177,55 @@ const BVH_BEER_TEX_WIDTH: u32 = 4096u;
 //   visibility   — in/out tinted visibility accumulator (ptr)
 //
 // Returns true if traversal should continue; false on opaque hit (zeroes *visibility).
+// D8-5 (T4-2, 2026-07-20): the barycentric + Beer-Lambert glass-tint decode was
+// verbatim-duplicated in _bvhTintedTriAccumulate and
+// materialGlassTintForShadowHit. Single-sourced here. The two call sites
+// pass the hit point p, the packed material word (for the surface-texture id),
+// and the material alpha; everything else is identical. References the
+// bvh_normal consumer binding + the atlas/surface helpers, so it lives as a
+// raw WGSL fn in this composed string (not a WgslModule).
+fn _bvhBeerTintFactor(
+  triIdx:        u32,
+  idx:           vec3u,
+  matColorWord:  u32,
+  matColA:       f32,
+  p:             vec3f,
+  bvh_position:  ptr<storage, array<vec4f>, read>,
+  bvh_beer:      texture_2d<u32>,
+) -> vec3f {
+  // WS1 — beer texel: triangle index -> vec2u(tri % W, tri / W).
+  let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
+  let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
+  let beerColor = vec3f(
+    f32((beerPacked >> 24u) & 0xFFu) / 255.0,
+    f32((beerPacked >> 16u) & 0xFFu) / 255.0,
+    f32((beerPacked >>  8u) & 0xFFu) / 255.0,
+  );
+  let pa4 = (*bvh_position)[idx.x];
+  let pb4 = (*bvh_position)[idx.y];
+  let pc4 = (*bvh_position)[idx.z];
+  let a = pa4.xyz; let b = pb4.xyz; let c = pc4.xyz;
+  let ab = b - a; let ac = c - a; let ap = p - a;
+  let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
+  let d20 = dot(ap, ab); let d21 = dot(ap, ac);
+  let denom = max(d00 * d11 - d01 * d01, 1e-8);
+  var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
+  var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
+  let bw = 1.0 - u - v;
+  let uvA = unpack2x16float(bitcast<u32>(pa4.w));
+  let uvB = unpack2x16float(bitcast<u32>(pb4.w));
+  let uvC = unpack2x16float(bitcast<u32>(pc4.w));
+  let uvAt = bw * uvA + u * uvB + v * uvC;
+  let uv1A = materialAtlasPackedUvFromVec4(bvh_normal[idx.x]);
+  let uv1B = materialAtlasPackedUvFromVec4(bvh_normal[idx.y]);
+  let uv1C = materialAtlasPackedUvFromVec4(bvh_normal[idx.z]);
+  let uv1At = bw * uv1A + u * uv1B + v * uv1C;
+  let texId = decodeSurfaceTextureId(matColorWord);
+  let texMod = surfaceTextureMod(uvAt, texId);
+  let beerTint = applyThicknessMapToBeerTint(triIdx, uvAt, uv1At, beerColor);
+  return sqrt(max(vec3f(1e-8), beerTint * matColA * texMod));
+}
+
 fn _bvhTintedTriAccumulate(
   triIdx:       u32,
   idxEntry:     vec4u,
@@ -195,41 +244,8 @@ fn _bvhTintedTriAccumulate(
     // Glass hit — multiply visibility by sqrt(Beer x trans x texMod).
     let idx = idxEntry.xyz;
     let matCol = decodeMaterialColor(idxEntry.w);
-    // WS1 — beer texel: triangle index -> vec2u(tri % W, tri / W).
-    let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
-    let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
-    let beerColor = vec3f(
-      f32((beerPacked >> 24u) & 0xFFu) / 255.0,
-      f32((beerPacked >> 16u) & 0xFFu) / 255.0,
-      f32((beerPacked >>  8u) & 0xFFu) / 255.0,
-    );
-    // Re-read full vec4f for .w (packed UV) — the .xyz was already used
-    // by the caller for the intersection test; this second load is
-    // intentional (matches the pre-extracted code).
-    let pa4 = (*bvh_position)[idx.x];
-    let pb4 = (*bvh_position)[idx.y];
-    let pc4 = (*bvh_position)[idx.z];
-    let a = pa4.xyz; let b = pb4.xyz; let c = pc4.xyz;
     let p = origin + dir * t;
-    let ab = b - a; let ac = c - a; let ap = p - a;
-    let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
-    let d20 = dot(ap, ab); let d21 = dot(ap, ac);
-    let denom = max(d00 * d11 - d01 * d01, 1e-8);
-    var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
-    var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
-    let bw = 1.0 - u - v;
-    let uvA = unpack2x16float(bitcast<u32>(pa4.w));
-    let uvB = unpack2x16float(bitcast<u32>(pb4.w));
-    let uvC = unpack2x16float(bitcast<u32>(pc4.w));
-    let uvAt = bw * uvA + u * uvB + v * uvC;
-    let uv1A = materialAtlasPackedUvFromVec4(bvh_normal[idx.x]);
-    let uv1B = materialAtlasPackedUvFromVec4(bvh_normal[idx.y]);
-    let uv1C = materialAtlasPackedUvFromVec4(bvh_normal[idx.z]);
-    let uv1At = bw * uv1A + u * uv1B + v * uv1C;
-    let texId = decodeSurfaceTextureId(idxEntry.w);
-    let texMod = surfaceTextureMod(uvAt, texId);
-    let beerTint = applyThicknessMapToBeerTint(triIdx, uvAt, uv1At, beerColor);
-    let perHitFactor = sqrt(max(vec3f(1e-8), beerTint * matCol.a * texMod));
+    let perHitFactor = _bvhBeerTintFactor(triIdx, idx, idxEntry.w, matCol.a, p, bvh_position, bvh_beer);
     *visibility = (*visibility) * perHitFactor;
   } else {
     // Opaque hit — fully shadowed.
@@ -257,37 +273,8 @@ fn materialGlassTintForShadowHit(
   let idx = hit.indices.xyz;
   let triIdx = hit.indices.w;
   let matCol = decodeMaterialColor(hit.matColorPacked);
-  let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
-  let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
-  let beerColor = vec3f(
-    f32((beerPacked >> 24u) & 0xFFu) / 255.0,
-    f32((beerPacked >> 16u) & 0xFFu) / 255.0,
-    f32((beerPacked >>  8u) & 0xFFu) / 255.0,
-  );
-  let pa4 = (*bvh_position)[idx.x];
-  let pb4 = (*bvh_position)[idx.y];
-  let pc4 = (*bvh_position)[idx.z];
-  let a = pa4.xyz; let b = pb4.xyz; let c = pc4.xyz;
   let p = origin + dir * hit.dist;
-  let ab = b - a; let ac = c - a; let ap = p - a;
-  let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
-  let d20 = dot(ap, ab); let d21 = dot(ap, ac);
-  let denom = max(d00 * d11 - d01 * d01, 1e-8);
-  var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
-  var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
-  let bw = 1.0 - u - v;
-  let uvA = unpack2x16float(bitcast<u32>(pa4.w));
-  let uvB = unpack2x16float(bitcast<u32>(pb4.w));
-  let uvC = unpack2x16float(bitcast<u32>(pc4.w));
-  let uvAt = bw * uvA + u * uvB + v * uvC;
-  let uv1A = materialAtlasPackedUvFromVec4(bvh_normal[idx.x]);
-  let uv1B = materialAtlasPackedUvFromVec4(bvh_normal[idx.y]);
-  let uv1C = materialAtlasPackedUvFromVec4(bvh_normal[idx.z]);
-  let uv1At = bw * uv1A + u * uv1B + v * uv1C;
-  let texId = decodeSurfaceTextureId(hit.matColorPacked);
-  let texMod = surfaceTextureMod(uvAt, texId);
-  let beerTint = applyThicknessMapToBeerTint(triIdx, uvAt, uv1At, beerColor);
-  return sqrt(max(vec3f(1e-8), beerTint * matCol.a * texMod));
+  return _bvhBeerTintFactor(triIdx, idx, hit.matColorPacked, matCol.a, p, bvh_position, bvh_beer);
 }
 
 fn traceSceneAlphaTintTransmittanceTextured(

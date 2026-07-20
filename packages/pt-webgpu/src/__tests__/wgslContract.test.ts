@@ -305,8 +305,13 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Re-pinned 2026-06-22: bump-map finite-difference height reads now consume
     // the same per-map mip/filter sampler policy as regular linear material maps.
     // RENDER-CHANGING only for authored non-default bump sampler policies.
-    expect(digest).toBe('b5a74db5bf44612a7de45e9f9336ed0868c235b12f641b7344fa797e866c6e97');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(403431);
+    // Re-pinned 2026-07-20 (T1-6): dedicated rgba16float emissive texture array —
+    // new @group(3) @binding(17) materialTexturesEmissive + a sampleMaterialLayerEmissive
+    // variant; emissive now samples the HDR emissive array (was the sRGB baseColor
+    // array). RENDER-CHANGING for HDR textured emissive (values > 1.0 survive);
+    // LDR emissive is visually identical (CPU sRGB→linear decode on upload).
+    expect(digest).toBe('c2957a41ad2c2dc0ab28ef1b1fa9891efd1c8715d611e2b878b6ab919f71b61b');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(408332);
   });
 });
 

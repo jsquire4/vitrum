@@ -402,6 +402,13 @@ const WALKAROUND_MATERIALS: MaterialSupportMatrix = Object.freeze({
   normalScale: 'approximate',
   transmissionMap: 'approximate',
   thicknessMap: 'approximate',
+  // T1-6 — emissiveMap now uploads to a DEDICATED rgba16float texture array, so
+  // authored HDR emissive texel values > 1.0 survive (they were previously
+  // clamped to [0,1] by the shared sRGB 8-bit array); LDR emissive round-trips
+  // identically via a CPU sRGB→linear decode on upload. Still 'approximate' (NOT
+  // native) because emitter SELECTION power for mapped emitters still lacks a
+  // global texel-alias PDF and transparent/GI transport for mapped emitters stays
+  // approximate — the HDR-range fix does not change those transport gaps.
   emissiveMap: 'approximate',
   alphaMap: 'approximate',
   aoMap: 'approximate',

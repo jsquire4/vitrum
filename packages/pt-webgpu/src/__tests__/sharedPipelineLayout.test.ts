@@ -181,9 +181,11 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     // texture_2d_array for normal/scalar data maps (5) + A4 SPPM buffers: sppmPhotonCells (6),
     // sppmCellCounters (7), sppmStats uniform (8) + A4-progressive per-pixel
     // stats buffer (9): SppmPixelStats[W×H] read_write + authored tangents (10)
-    // + COLOR_0 vertex colors (11).
-    expect(g3!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    // + COLOR_0 vertex colors (11). T1-6 appends the dedicated rgba16float
+    // emissive array at binding 17 (declared right after the linear array 5).
+    expect(g3!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 17, 6, 7, 8, 9, 10, 11]);
     const g3m = new Map(g3!.entries.map((e) => [e.binding, e]));
+    expect(g3m.get(17)!.texture?.viewDimension).toBe('2d-array'); // materialTexturesEmissive (T1-6, rgba16float)
     expect(g3m.get(0)!.buffer?.type).toBe('read-only-storage'); // lightTree
     expect(g3m.get(1)!.buffer?.type).toBe('read-only-storage'); // meshUvs (P2)
     expect(g3m.get(2)!.buffer?.type).toBe('read-only-storage'); // descriptors (P2)
@@ -226,7 +228,7 @@ describe('pt-webgpu shared explicit pipeline layout (BDPT cross-pipeline bind-gr
     const g3 = stub.createdLayouts.find((layout) => layout.label === 'vitrum.pt-webgpu.layout.group3.full');
     expect(g3).toBeDefined();
     expect(g3!.entries.map((e) => e.binding)).toEqual([
-      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+      0, 1, 2, 3, 4, 5, 17, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
     ]);
     const g3m = new Map(g3!.entries.map((e) => [e.binding, e]));
     for (const binding of [12, 13, 14, 15, 16]) {

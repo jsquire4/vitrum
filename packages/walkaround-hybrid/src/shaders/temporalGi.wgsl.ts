@@ -54,7 +54,8 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
-import { TEMPORAL_GI_COMMON_WGSL } from './temporalGiCommon.wgsl.js';
+import { TEMPORAL_GI_COMMON_WGSL, TEMPORAL_GI_MCLAMP_COMMENT_WGSL } from './temporalGiCommon.wgsl.js';
+import { GI_SCENE_GROUP_BINDINGS_WGSL } from './giSceneBindings.wgsl.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 // OFF (default) — Sprint-17 temporal reuse plus receiver-material p-hat recast.
@@ -67,26 +68,9 @@ export const TEMPORAL_GI_WGSL = /* wgsl */ `
 @group(0) @binding(1) var<storage, read>       tgi_resPrev:    array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+${GI_SCENE_GROUP_BINDINGS_WGSL}
 
-// The temporal-GI M clamp (ubo.restirGiMClamp, Cornell default 50)
-// controls how strongly the previous-frame reservoir dominates temporal
-// reuse.  Higher = the chosen sample changes less often per-pixel → less
-// per-frame pattern jitter (the temporal accumulator's per-frame
-// contribution looks stabler).  Bitterli 2020 uses M=20 for ReSTIR-DI;
-// Majercik 2021 §4.5 suggests ~30–100 for GI since the indirect signal
-// varies less per pixel than DI light-source swaps.  Empirically 50 cuts
-// visible pattern dance on Cornell static frames in half compared to 20
-// without introducing motion lag (the camera-move reset path forces α=1
-// and discards prev independently). Library consumers override via
-// HybridEngineOptions.restirGiMClamp.
+${TEMPORAL_GI_MCLAMP_COMMENT_WGSL}
 ${TEMPORAL_GI_COMMON_WGSL}
 
 @compute @workgroup_size(8, 8, 1)
@@ -228,14 +212,7 @@ export const TEMPORAL_GI_GRIS_WGSL = /* wgsl */ `
 // Scene group (group 1) — BVH + TLAS + material atlas. The default variant
 // binds the same group for receiver-material p-hat recasts; the GRIS variant
 // additionally uses it for reconnection visibility.
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+${GI_SCENE_GROUP_BINDINGS_WGSL}
 
 const TGI_GRIS_NORMAL_BIAS: f32 = 1e-3;
 
@@ -256,17 +233,7 @@ fn tgiReconnectionVisible(xv: vec3f, nv: vec3f, xs: vec3f) -> bool {
   return !occ;
 }
 
-// The temporal-GI M clamp (ubo.restirGiMClamp, Cornell default 50)
-// controls how strongly the previous-frame reservoir dominates temporal
-// reuse.  Higher = the chosen sample changes less often per-pixel → less
-// per-frame pattern jitter (the temporal accumulator's per-frame
-// contribution looks stabler).  Bitterli 2020 uses M=20 for ReSTIR-DI;
-// Majercik 2021 §4.5 suggests ~30–100 for GI since the indirect signal
-// varies less per pixel than DI light-source swaps.  Empirically 50 cuts
-// visible pattern dance on Cornell static frames in half compared to 20
-// without introducing motion lag (the camera-move reset path forces α=1
-// and discards prev independently). Library consumers override via
-// HybridEngineOptions.restirGiMClamp.
+${TEMPORAL_GI_MCLAMP_COMMENT_WGSL}
 ${TEMPORAL_GI_COMMON_WGSL}
 
 @compute @workgroup_size(8, 8, 1)

@@ -236,6 +236,10 @@ struct AdjointParams {
 @group(0) @binding(22) var<storage, read>       meshAreaLightSourceFactors: array<vec4f>;
 // xyz = tangent, w = bitangent sign; mirrors the forward normal-map path.
 @group(0) @binding(23) var<storage, read>       meshTangents: array<vec4f>;
+// T1-6 — dedicated rgba16float emissive array (HDR emissive). emissiveIdx now
+// indexes this array's layer space (NOT the sRGB baseColor array), so the
+// emissive replay below samples here to stay consistent with the forward pass.
+@group(0) @binding(24) var                      materialTexturesEmissive: texture_2d_array<f32>;
 
 // ── BRDF primitives ──────────────────────────────────────────────────────────
 const ADJOINT_FROZEN_SEED_BASE = 0x5eed5eedu;
@@ -498,6 +502,89 @@ fn sampleAdjointMaterialLayer(layerIdx: i32, base: u32, triIndex: u32, baryVW: v
   return textureSampleLevel(materialTextures, materialTexSampler, fittedUv, layerIdx, policyLod);
 }
 
+// T1-6 — emissive variant: same sampling as sampleAdjointMaterialLayer but from
+// the dedicated rgba16float emissive array (already linear; sRGB decode applied
+// on upload). Mirrors the sRGB fn exactly, hence the parallel definition (WGSL
+// can't pass a texture as an argument) — same pattern as the *Linear variant.
+fn sampleAdjointMaterialLayerEmissive(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
+  if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  let tri = indices[triIndex];
+  if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs)) {
+    return vec4f(1.0);
+  }
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  let uva = meshUvs[tri.x];
+  let uvb = meshUvs[tri.y];
+  let uvc = meshUvs[tri.z];
+  let ch0 = uva.xy * u + uvb.xy * v + uvc.xy * w;
+  let ch1 = uva.zw * u + uvb.zw * v + uvc.zw * w;
+  let uvMeta = materialTexDescriptors[base + uvMetaOffset];
+  let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
+  let texCoord = u32(uvMeta.x);
+  let rawUv = select(ch0, ch1, texCoord == 1u);
+  let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
+  let rot = uvMeta.w;
+  let c = cos(rot);
+  let s = sin(rot);
+  let sx = xform.z;
+  let sy = xform.w;
+  let rawA = select(uva.xy, uva.zw, texCoord == 1u);
+  let rawB = select(uvb.xy, uvb.zw, texCoord == 1u);
+  let rawC = select(uvc.xy, uvc.zw, texCoord == 1u);
+  let uvA = vec2f(
+    sx * c * rawA.x + sx * s * rawA.y + xform.x,
+    -sy * s * rawA.x + sy * c * rawA.y + xform.y,
+  );
+  let uvB = vec2f(
+    sx * c * rawB.x + sx * s * rawB.y + xform.x,
+    -sy * s * rawB.x + sy * c * rawB.y + xform.y,
+  );
+  let uvC = vec2f(
+    sx * c * rawC.x + sx * s * rawC.y + xform.x,
+    -sy * s * rawC.x + sy * c * rawC.y + xform.y,
+  );
+  let uv = vec2f(
+    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
+    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
+  );
+  let wrappedUv = vec2f(adjointWrapTextureCoord(uv.x, wrapMode.x), adjointWrapTextureCoord(uv.y, wrapMode.y));
+  let fittedUv = wrappedUv * uvFitScale;
+  let texDim = vec2f(textureDimensions(materialTexturesEmissive, 0));
+  let mipCount = f32(textureNumLevels(materialTexturesEmissive));
+  let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
+  let pa = positions[tri.x].xyz;
+  let pb = positions[tri.y].xyz;
+  let pc = positions[tri.z].xyz;
+  let worldArea = max(0.5 * length(cross(pb - pa, pc - pa)), 1e-8);
+  let hitPos = pa * u + pb * v + pc * w;
+  let cameraDistance = max(length(hitPos - params.cameraPos.xyz), 1e-3);
+  let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
+  let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
+  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(mipCount - 1.0, 0.0));
+  let mipPolicy = adjointMaterialTextureMipPolicy(base, mipPolicySlot);
+  let policyLod = adjointMaterialTexturePolicyLod(lod, mipCount, mipPolicy);
+  let filterPolicy = adjointMaterialTextureFilterPolicy(base, mipPolicySlot);
+  let filterMode = select(filterPolicy.x, filterPolicy.y, lod > 0.0);
+  if (filterMode < 0.5) {
+    let maxLod = max(mipCount - 1.0, 0.0);
+    let lod0 = clamp(floor(policyLod), 0.0, maxLod);
+    let lod1 = clamp(lod0 + 1.0, 0.0, maxLod);
+    let lod0u = u32(lod0);
+    let lod1u = u32(lod1);
+    let dim0 = vec2f(textureDimensions(materialTexturesEmissive, lod0u));
+    let dim1 = vec2f(textureDimensions(materialTexturesEmissive, lod1u));
+    let coord0 = vec2i(clamp(floor(fittedUv * dim0), vec2f(0.0), max(dim0 - vec2f(1.0), vec2f(0.0))));
+    let coord1 = vec2i(clamp(floor(fittedUv * dim1), vec2f(0.0), max(dim1 - vec2f(1.0), vec2f(0.0))));
+    let c0 = textureLoad(materialTexturesEmissive, coord0, layerIdx, lod0u);
+    let c1 = textureLoad(materialTexturesEmissive, coord1, layerIdx, lod1u);
+    let mipMix = select(0.0, fract(policyLod), mipPolicy >= 1.5);
+    return mix(c0, c1, mipMix);
+  }
+  return textureSampleLevel(materialTexturesEmissive, materialTexSampler, fittedUv, layerIdx, policyLod);
+}
+
 fn sampleAdjointMaterialLayerLinear(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
   if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
   let tri = indices[triIndex];
@@ -654,10 +741,12 @@ fn sampleAdjointMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triInde
   return textureSampleLevel(materialTexturesLinear, materialTexSampler, fittedUv, layerIdx, policyLod);
 }
 
+// T1-6 — samples the dedicated rgba16float emissive array (emissiveIdx indexes
+// that array's layer space, matching the forward sampleEmissiveTexture path).
 fn sampleAdjointEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * ADJOINT_MATERIAL_TEX_VEC4_STRIDE;
   if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleAdjointMaterialLayer(
+  return sampleAdjointMaterialLayerEmissive(
     i32(materialTexDescriptors[base].w),
     base,
     triIndex,

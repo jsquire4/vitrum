@@ -64,6 +64,7 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { GI_SCENE_GROUP_BINDINGS_WGSL } from './giSceneBindings.wgsl.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 // OFF (default) — Sprint-17 spatial reuse plus receiver-material p-hat recast.
@@ -76,14 +77,7 @@ export const SPATIAL_GI_WGSL = /* wgsl */ `
 @group(0) @binding(1) var<storage, read_write> sgi_resOut: array<u32>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+${GI_SCENE_GROUP_BINDINGS_WGSL}
 
 @compute @workgroup_size(8, 8, 1)
 fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -204,14 +198,7 @@ export const SPATIAL_GI_GRIS_WGSL = /* wgsl */ `
 // Scene group (group 1) — BVH + TLAS + material atlas. The default variant
 // binds the same group for receiver-material p-hat recasts; the GRIS variant
 // additionally uses it for reconnection visibility.
-@group(1) @binding(0) var<storage, read> bvh:          array<BVHNode>;
-@group(1) @binding(1) var<storage, read> bvh_index:    array<vec4u>;
-@group(1) @binding(2) var<storage, read> bvh_position: array<vec4f>;
-@group(1) @binding(6) var<storage, read> tlasNodes: array<BVHNode>;
-@group(1) @binding(7) var<storage, read> tlasInstanceIndices: array<u32>;
-@group(1) @binding(8) var<storage, read> tlasBlasRoots: array<u32>;
-@group(1) @binding(9) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
-@group(1) @binding(10) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+${GI_SCENE_GROUP_BINDINGS_WGSL}
 
 // Normal bias for the GRIS reconnection-visibility ray origin (lift off the
 // surface so the ray does not self-intersect the visible point's triangle).

@@ -1,4 +1,142 @@
+import { buildMaterialAtlasOffsetConstsWGSL } from '@vitrum/shared-bvh';
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+
+// 62-texel material-atlas offset ABI — single-sourced in @vitrum/shared-bvh
+// (T4-2, 2026-07-20). The subset + order below reproduces the historical
+// hand-written const block byte-for-byte (pinned by the shade composed-WGSL
+// golden). The decode functions below are NOT single-sourced — they diverge
+// semantically from the DDGI/RC copies (bindings, meta-coord scheme, atlas
+// filter policy); see materialAtlasOffsets.wgsl.ts for the divergence note.
+const MATERIAL_ATLAS_OFFSET_CONSTS = buildMaterialAtlasOffsetConstsWGSL({
+  prefix: '',
+  include: [
+    'META_TEXELS_PER_TRI',
+    'SLOT_BASE_COLOR',
+    'SLOT_ROUGHNESS',
+    'SLOT_METALLIC',
+    'SLOT_AO',
+    'SLOT_ALPHA',
+    'ALPHA_COVERAGE_TEXEL_OFFSET',
+    'EMISSIVE_TEXEL_OFFSET',
+    'TRANSMISSION_TEXEL_OFFSET',
+    'NORMAL_TEXEL_OFFSET',
+    'NORMAL_SCALE_TEXEL_OFFSET',
+    'LIGHT_TEXEL_OFFSET',
+    'LIGHT_INTENSITY_TEXEL_OFFSET',
+    'SPECULAR_TEXEL_OFFSET',
+    'CLEARCOAT_TEXEL_OFFSET',
+    'SHEEN_COLOR_TEXEL_OFFSET',
+    'SPECULAR_COLOR_TEXEL_OFFSET',
+    'SPECULAR_INTENSITY_TEXEL_OFFSET',
+    'CLEARCOAT_FACTOR_TEXEL_OFFSET',
+    'CLEARCOAT_ROUGHNESS_TEXEL_OFFSET',
+    'SHEEN_COLOR_MAP_TEXEL_OFFSET',
+    'SHEEN_ROUGHNESS_TEXEL_OFFSET',
+    'CLEARCOAT_NORMAL_TEXEL_OFFSET',
+    'CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET',
+    'ANISOTROPY_TEXEL_OFFSET',
+    'ANISOTROPY_SCALAR_TEXEL_OFFSET',
+    'IRIDESCENCE_TEXEL_OFFSET',
+    'IRIDESCENCE_THICKNESS_TEXEL_OFFSET',
+    'IRIDESCENCE_SCALAR_TEXEL_OFFSET',
+    'THICKNESS_TEXEL_OFFSET',
+    'BUMP_TEXEL_OFFSET',
+    'BUMP_SCALE_TEXEL_OFFSET',
+    'ENV_INTENSITY_TEXEL_OFFSET',
+    'FRONT_LAYER_TEXEL_OFFSET',
+    'BACK_LAYER_TEXEL_OFFSET',
+    'VOLUME_SCATTERING_TEXEL_OFFSET',
+    'FRONT_LAYER_NORMAL_TEXEL_OFFSET',
+    'FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET',
+    'BACK_LAYER_NORMAL_TEXEL_OFFSET',
+    'BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET',
+  ],
+});
+
+/**
+ * The textured first-hit alpha-mask walk-wrapper (D8-3, T4-2 2026-07-20). Two
+ * consumers — the RIS/GI pass (`materialAlphaDiscardedForHit`) and the opaque
+ * G-buffer pass (`materialAlphaDiscardedForOpaquePass`) — need the identical
+ * 32-step self-shadow walk differing ONLY in the per-hit discard predicate.
+ * This builder single-sources that body; the two call sites interpolate their
+ * predicate. Verified byte-identical modulo the predicate name (2026-07-20).
+ *
+ * NOTE: `sceneTraversal.wgsl.ts`'s `traceSceneFirstHitAlphaMask` is NOT folded
+ * in here — it uses a different predicate SIGNATURE
+ * (`materialScalarAlphaDiscardedForTri(triIndex, mask, width)` reads the mask
+ * internally) and a structurally different exhausted-check, so it is not
+ * byte-identical to these two; it is left in place with this note.
+ *
+ * References consumer bindings (`materialMask`, BVH storage) → raw-string
+ * template interpolated into the consumer body, NOT a WgslModule (composeWgsl
+ * ordering constraint).
+ */
+function makeTexturedFirstHitAlphaMaskWalkerWGSL(fnName: string, discardPredicate: string): string {
+  return /* wgsl */ `fn ${fnName}(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  bvh_index: ptr<storage, array<vec4u>, read>,
+  bvh_position: ptr<storage, array<vec4f>, read>,
+  bvh: ptr<storage, array<BVHNode>, read>,
+  tlasNodes: ptr<storage, array<BVHNode>, read>,
+  tlasInstanceIndices: ptr<storage, array<u32>, read>,
+  tlasBlasRoots: ptr<storage, array<u32>, read>,
+  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
+  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
+  ray: Ray,
+  triEps: f32,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+) -> IntersectionResult {
+  var walkRay = ray;
+  var traveled = 0.0;
+  let step = max(1e-4, triEps * 4.0);
+  for (var i = 0u; i < 32u; i = i + 1u) {
+    var hit = traceSceneFirstHit(
+      bvhMode, tlasNodeCount,
+      bvh_index, bvh_position, bvh,
+      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+      walkRay, triEps,
+    );
+    if (!hit.didHit) {
+      return hit;
+    }
+    let word = textureLoad(
+      materialMask,
+      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
+      0,
+    ).r;
+    if (!${discardPredicate}(hit, word)) {
+      hit.dist = hit.dist + traveled;
+      return hit;
+    }
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = ray.origin + ray.direction * traveled;
+  }
+  var exhausted = traceSceneFirstHit(
+    bvhMode, tlasNodeCount,
+    bvh_index, bvh_position, bvh,
+    tlasNodes, tlasInstanceIndices, tlasBlasRoots,
+    tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
+    walkRay, triEps,
+  );
+  if (exhausted.didHit) {
+    let word = textureLoad(
+      materialMask,
+      vec2i(i32(exhausted.indices.w % materialMaskWidth), i32(exhausted.indices.w / materialMaskWidth)),
+      0,
+    ).r;
+    if (${discardPredicate}(exhausted, word)) {
+      exhausted.didHit = false;
+    }
+  }
+  if (exhausted.didHit) {
+    exhausted.dist = exhausted.dist + traveled;
+  }
+  return exhausted;
+}`;
+}
 
 export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 // Phase-3D material-map atlas. The host stores readable material TextureRefs as
@@ -12,46 +150,7 @@ export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 @group(1) @binding(11) var<storage, read> bvh_normal: array<vec4f>;
 
 const BASE_COLOR_MAP_META_TEX_WIDTH: u32 = 4096u;
-const MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 62u;
-const MATERIAL_MAP_SLOT_BASE_COLOR: u32 = 0u;
-const MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;
-const MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;
-const MATERIAL_MAP_SLOT_AO: u32 = 3u;
-const MATERIAL_MAP_SLOT_ALPHA: u32 = 4u;
-const MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET: u32 = 10u;
-const MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET: u32 = 11u;
-const MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;
-const MATERIAL_MAP_NORMAL_TEXEL_OFFSET: u32 = 15u;
-const MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET: u32 = 17u;
-const MATERIAL_MAP_LIGHT_TEXEL_OFFSET: u32 = 18u;
-const MATERIAL_MAP_LIGHT_INTENSITY_TEXEL_OFFSET: u32 = 20u;
-const MATERIAL_MAP_SPECULAR_TEXEL_OFFSET: u32 = 21u;
-const MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET: u32 = 22u;
-const MATERIAL_MAP_SHEEN_COLOR_TEXEL_OFFSET: u32 = 23u;
-const MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET: u32 = 24u;
-const MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET: u32 = 26u;
-const MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET: u32 = 28u;
-const MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET: u32 = 30u;
-const MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET: u32 = 32u;
-const MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET: u32 = 34u;
-const MATERIAL_MAP_CLEARCOAT_NORMAL_TEXEL_OFFSET: u32 = 36u;
-const MATERIAL_MAP_CLEARCOAT_NORMAL_SCALE_TEXEL_OFFSET: u32 = 38u;
-const MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET: u32 = 39u;
-const MATERIAL_MAP_ANISOTROPY_SCALAR_TEXEL_OFFSET: u32 = 41u;
-const MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET: u32 = 42u;
-const MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET: u32 = 44u;
-const MATERIAL_MAP_IRIDESCENCE_SCALAR_TEXEL_OFFSET: u32 = 46u;
-const MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;
-const MATERIAL_MAP_BUMP_TEXEL_OFFSET: u32 = 49u;
-const MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET: u32 = 51u;
-const MATERIAL_MAP_ENV_INTENSITY_TEXEL_OFFSET: u32 = 52u;
-const MATERIAL_MAP_FRONT_LAYER_TEXEL_OFFSET: u32 = 53u;
-const MATERIAL_MAP_BACK_LAYER_TEXEL_OFFSET: u32 = 54u;
-const MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET: u32 = 55u;
-const MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET: u32 = 56u;
-const MATERIAL_MAP_FRONT_LAYER_NORMAL_SCALE_TEXEL_OFFSET: u32 = 58u;
-const MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET: u32 = 59u;
-const MATERIAL_MAP_BACK_LAYER_NORMAL_SCALE_TEXEL_OFFSET: u32 = 61u;
+${MATERIAL_ATLAS_OFFSET_CONSTS}
 
 fn baseColorMapMetaCoord(texel: u32) -> vec2i {
   return vec2i(i32(texel % BASE_COLOR_MAP_META_TEX_WIDTH), i32(texel / BASE_COLOR_MAP_META_TEX_WIDTH));
@@ -974,70 +1073,7 @@ fn materialAlphaDiscardedForOpaquePass(
   return alpha.coverage <= 0.0;
 }
 
-fn traceSceneFirstHitAlphaMaskTextured(
-  bvhMode: u32,
-  tlasNodeCount: u32,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
-  bvh: ptr<storage, array<BVHNode>, read>,
-  tlasNodes: ptr<storage, array<BVHNode>, read>,
-  tlasInstanceIndices: ptr<storage, array<u32>, read>,
-  tlasBlasRoots: ptr<storage, array<u32>, read>,
-  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
-  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
-  ray: Ray,
-  triEps: f32,
-  materialMask: texture_2d<u32>,
-  materialMaskWidth: u32,
-) -> IntersectionResult {
-  var walkRay = ray;
-  var traveled = 0.0;
-  let step = max(1e-4, triEps * 4.0);
-  for (var i = 0u; i < 32u; i = i + 1u) {
-    var hit = traceSceneFirstHit(
-      bvhMode, tlasNodeCount,
-      bvh_index, bvh_position, bvh,
-      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
-      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
-      walkRay, triEps,
-    );
-    if (!hit.didHit) {
-      return hit;
-    }
-    let word = textureLoad(
-      materialMask,
-      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
-      0,
-    ).r;
-    if (!materialAlphaDiscardedForHit(hit, word)) {
-      hit.dist = hit.dist + traveled;
-      return hit;
-    }
-    traveled = traveled + hit.dist + step;
-    walkRay.origin = ray.origin + ray.direction * traveled;
-  }
-  var exhausted = traceSceneFirstHit(
-    bvhMode, tlasNodeCount,
-    bvh_index, bvh_position, bvh,
-    tlasNodes, tlasInstanceIndices, tlasBlasRoots,
-    tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
-    walkRay, triEps,
-  );
-  if (exhausted.didHit) {
-    let word = textureLoad(
-      materialMask,
-      vec2i(i32(exhausted.indices.w % materialMaskWidth), i32(exhausted.indices.w / materialMaskWidth)),
-      0,
-    ).r;
-    if (materialAlphaDiscardedForHit(exhausted, word)) {
-      exhausted.didHit = false;
-    }
-  }
-  if (exhausted.didHit) {
-    exhausted.dist = exhausted.dist + traveled;
-  }
-  return exhausted;
-}
+${makeTexturedFirstHitAlphaMaskWalkerWGSL('traceSceneFirstHitAlphaMaskTextured', 'materialAlphaDiscardedForHit')}
 
 fn materialShadowOccluderForHit(
   hit: IntersectionResult,
@@ -1172,70 +1208,7 @@ fn traceSceneAnyAlphaMaskTextured(
   ) <= 0.001;
 }
 
-fn traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(
-  bvhMode: u32,
-  tlasNodeCount: u32,
-  bvh_index: ptr<storage, array<vec4u>, read>,
-  bvh_position: ptr<storage, array<vec4f>, read>,
-  bvh: ptr<storage, array<BVHNode>, read>,
-  tlasNodes: ptr<storage, array<BVHNode>, read>,
-  tlasInstanceIndices: ptr<storage, array<u32>, read>,
-  tlasBlasRoots: ptr<storage, array<u32>, read>,
-  tlasInstanceWorldToLocal: ptr<storage, array<vec4f>, read>,
-  tlasInstanceLocalToWorld: ptr<storage, array<vec4f>, read>,
-  ray: Ray,
-  triEps: f32,
-  materialMask: texture_2d<u32>,
-  materialMaskWidth: u32,
-) -> IntersectionResult {
-  var walkRay = ray;
-  var traveled = 0.0;
-  let step = max(1e-4, triEps * 4.0);
-  for (var i = 0u; i < 32u; i = i + 1u) {
-    var hit = traceSceneFirstHit(
-      bvhMode, tlasNodeCount,
-      bvh_index, bvh_position, bvh,
-      tlasNodes, tlasInstanceIndices, tlasBlasRoots,
-      tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
-      walkRay, triEps,
-    );
-    if (!hit.didHit) {
-      return hit;
-    }
-    let word = textureLoad(
-      materialMask,
-      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
-      0,
-    ).r;
-    if (!materialAlphaDiscardedForOpaquePass(hit, word)) {
-      hit.dist = hit.dist + traveled;
-      return hit;
-    }
-    traveled = traveled + hit.dist + step;
-    walkRay.origin = ray.origin + ray.direction * traveled;
-  }
-  var exhausted = traceSceneFirstHit(
-    bvhMode, tlasNodeCount,
-    bvh_index, bvh_position, bvh,
-    tlasNodes, tlasInstanceIndices, tlasBlasRoots,
-    tlasInstanceWorldToLocal, tlasInstanceLocalToWorld,
-    walkRay, triEps,
-  );
-  if (exhausted.didHit) {
-    let word = textureLoad(
-      materialMask,
-      vec2i(i32(exhausted.indices.w % materialMaskWidth), i32(exhausted.indices.w / materialMaskWidth)),
-      0,
-    ).r;
-    if (materialAlphaDiscardedForOpaquePass(exhausted, word)) {
-      exhausted.didHit = false;
-    }
-  }
-  if (exhausted.didHit) {
-    exhausted.dist = exhausted.dist + traveled;
-  }
-  return exhausted;
-}
+${makeTexturedFirstHitAlphaMaskWalkerWGSL('traceSceneFirstHitAlphaMaskTexturedOpaqueOnly', 'materialAlphaDiscardedForOpaquePass')}
 `;
 
 export const MATERIAL_ATLAS_MODULE: WgslModule = {

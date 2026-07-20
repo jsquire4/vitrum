@@ -372,6 +372,22 @@ const _SAMPLE_MAT_LAYER_LINEAR_WGSL = materialLayerSamplerWgsl(
   '',
   '',
 );
+// T1-6 — emissive variant (materialTexturesEmissive — dedicated rgba16float
+// array). Samples exactly like the sRGB variant but from the HDR emissive array
+// (already linear; the CPU upload applied the sRGB decode), so authored HDR
+// emissive > 1.0 is not clamped. Standalone fn — WGSL can't pass a texture as an
+// argument, hence the parallel function mirroring sampleMaterialLayer.
+const _SAMPLE_MAT_LAYER_EMISSIVE_WGSL = materialLayerSamplerWgsl(
+  'sampleMaterialLayerEmissive',
+  'materialTexturesEmissive',
+  // Same KHR UV-transform preamble as the sRGB variant (emissive maps carry the
+  // same KHR_texture_transform metadata as baseColor).
+  '// KHR_texture_transform — matches THREE.Matrix3.setUvTransform (center 0), the\n' +
+  '  // convention the importer (three-bindings toTextureRef) extracts offset/repeat/\n' +
+  "  // rotation in:  u' = sx·c·u + sx·s·v + tx ;  v' = -sy·s·u + sy·c·v + ty.\n" +
+  '  ',
+  ' // offset.xy, scale.xy',
+);
 
 export const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL =
   /* wgsl */ `
@@ -395,6 +411,11 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 @group(3) @binding(4) var materialTexSampler: sampler;                    // shared by both arrays
 @group(3) @binding(5) var materialTexturesLinear: texture_2d_array<f32>;  // LINEAR (normal + scalar maps)
 @group(3) @binding(10) var<storage, read> meshTangents: array<vec4f>;      // xyz = tangent, w = bitangent sign
+// T1-6 — dedicated EMISSIVE rgba16float array (linear-decoded on upload). HDR
+// emissive texture values > 1.0 survive here (the sRGB 8-bit array clamped to
+// [0,1]). Sampled as texture_2d_array<f32>; binding 17 is the next free group-3
+// slot after the tangents/colors/SPPM/CWBVH bindings (6..16).
+@group(3) @binding(17) var materialTexturesEmissive: texture_2d_array<f32>;
 @group(3) @binding(11) var<storage, read> meshVertexColors: array<vec4f>;  // rgba = glTF COLOR_0, defaults to 1
 
 // vec4s per material in the descriptor buffer — MUST match the TS
@@ -575,11 +596,18 @@ fn sampleVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f {
   return meshVertexColors[tri.x] * u + meshVertexColors[tri.y] * v + meshVertexColors[tri.z] * w;
 }
 
-// emissive map (sRGB array, same layers as baseColor) — descriptor vec4[0].w.
+// T1-6 — emissive sampler variant (dedicated rgba16float emissive array).
+${_SAMPLE_MAT_LAYER_EMISSIVE_WGSL}
+
+// emissive map (dedicated rgba16float emissive array) — descriptor vec4[0].w.
+// HDR emissive texture values > 1.0 are preserved (the sRGB 8-bit array clamped
+// them). emissiveIdx indexes the emissive array's layer space (materialTextures.ts
+// indexOfEmissive), and the UV-fit lane vec4[7].zw is filled from the emissive
+// array's per-layer scales.
 fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f) -> vec4f {
   let base = matId * MATERIAL_TEX_VEC4_STRIDE;
   if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleMaterialLayer(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE, materialTexDescriptors[base + 7u].zw, materialTexDescriptors[base + 13u].zw, MATERIAL_TEX_MIP_EMISSIVE);
+  return sampleMaterialLayerEmissive(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, MATERIAL_TEX_UV_EMISSIVE, materialTexDescriptors[base + 7u].zw, materialTexDescriptors[base + 13u].zw, MATERIAL_TEX_MIP_EMISSIVE);
 }
 
 // As sampleMaterialLayer, but samples the LINEAR array (materialTexturesLinear)

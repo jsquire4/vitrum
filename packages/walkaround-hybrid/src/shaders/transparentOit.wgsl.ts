@@ -17,6 +17,7 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { analyticLightFalloffWgsl } from './analyticLightFalloff.wgsl.js';
 
 export const TRANSPARENT_OIT_WGSL = /* wgsl */ `
 
@@ -79,33 +80,7 @@ fn oitShadowTransmittance(origin: vec3f, dir: vec3f, tMax: f32, triEps: f32) -> 
   );
 }
 
-fn oitSpotConeFalloff(lightDir: vec3f, wi: vec3f, cosInner: f32, cosOuter: f32) -> f32 {
-  let axisLen2 = dot(lightDir, lightDir);
-  if (axisLen2 <= 0.01) { return 1.0; }
-  let axis = lightDir * inverseSqrt(axisLen2);
-  let cosTheta = dot(-axis, wi);
-  if (cosTheta < cosOuter) { return 0.0; }
-  if (abs(cosInner - cosOuter) < 1e-5) {
-    return select(0.0, 1.0, cosTheta >= cosOuter);
-  }
-  return smoothstep(cosOuter, cosInner, cosTheta);
-}
-
-fn oitPointSpotAttenuation(dist: f32, cutoffDistance: f32, decay: f32, dist2Floor: f32) -> f32 {
-  var attenuation = 1.0;
-  if (decay > 0.01) {
-    if (abs(decay - 2.0) < 1e-5) {
-      attenuation = 1.0 / (dist * dist + dist2Floor);
-    } else {
-      attenuation = 1.0 / max(pow(max(dist, 1.0), decay), max(dist2Floor, 1e-6));
-    }
-  }
-  if (cutoffDistance > 0.0) {
-    let x = clamp(1.0 - pow(dist / cutoffDistance, 4.0), 0.0, 1.0);
-    attenuation = attenuation * x * x;
-  }
-  return attenuation;
-}
+${analyticLightFalloffWgsl('oit')}
 
 struct OitLayerNormals {
   smoothNormal: vec3f,

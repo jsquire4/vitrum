@@ -76,6 +76,13 @@ interface PackedSceneData {
   readonly materialTextureLinearSources: readonly unknown[];
   /** Provenance for each LINEAR material texture layer, for structured upload warnings. */
   readonly materialTextureLinearSourceInfos: readonly MaterialTextureLayerInfo[];
+  /** Dedup'd, upload-ordered EMISSIVE texture handles → a dedicated rgba16float
+   *  texture_2d_array so HDR emissive texture values survive packing (the sRGB
+   *  8-bit array clamped them to [0,1]). LDR sources are sRGB→linear decoded on
+   *  upload so they stay visually identical to the previous sRGB-array path. */
+  readonly materialTextureEmissiveSources: readonly unknown[];
+  /** Provenance for each EMISSIVE material texture layer, for structured upload warnings. */
+  readonly materialTextureEmissiveSourceInfos: readonly MaterialTextureLayerInfo[];
   /**
    * Triangle indices — stride 4 (vec4u): 3 u32 vertex indices + `.w = 0`
    * (zero-fill contract). The pt-webgpu WGSL reads `.x,.y,.z` from
@@ -230,6 +237,10 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly materialLinearTexture: GPUTexture;
   /** P2 — linear 2d-array view bound in group 3 (binding 5). */
   readonly materialLinearTextureView: GPUTextureView;
+  /** T1-6 — EMISSIVE rgba16float texture_2d_array handle (HDR emissive; for dispose). */
+  readonly materialEmissiveTexture: GPUTexture;
+  /** T1-6 — emissive rgba16float 2d-array view bound in group 3 (binding 17). */
+  readonly materialEmissiveTextureView: GPUTextureView;
   /** Live GPU footprint of the scene resources, split so the debug surface can
    *  honour `GpuMemoryBreakdown`'s invariants: `bufferBytes` (all 24 scene
    *  STORAGE buffers) + `textureBytesByFormat` (the two material arrays, keyed by
@@ -1020,6 +1031,8 @@ export function buildPackedScene(
     materialTextureSourceInfos: texCollection.sourceInfos,
     materialTextureLinearSources: texCollection.linearSources,
     materialTextureLinearSourceInfos: texCollection.linearSourceInfos,
+    materialTextureEmissiveSources: texCollection.emissiveSources,
+    materialTextureEmissiveSourceInfos: texCollection.emissiveSourceInfos,
     bvhNodes: geo.bvhNodes,
     tlasNodes: geo.tlasNodes,
     tlasInstanceIndices: geo.tlasInstanceIndices,
@@ -1944,7 +1957,7 @@ function materialTextureWarningCode(warning: MaterialTextureArrayWarning): strin
 
 function materialTextureEngineWarnings(
   warnings: readonly MaterialTextureArrayWarning[],
-  colorSpace: 'sRGB' | 'linear',
+  colorSpace: 'sRGB' | 'linear' | 'emissive',
 ): readonly EngineWarning[] {
   return warnings.map((warning) => {
     const messageWarning = `material texture array (${colorSpace}): ${warning.warning}`;
@@ -2048,10 +2061,20 @@ function uploadPackedSceneInner(
     'rgba8unorm',
     packed.materialTextureLinearSourceInfos,
   ));
+  // T1-6 — dedicated EMISSIVE array in rgba16float (linear). HDR emissive texture
+  // values survive (the sRGB 8-bit array clamped to [0,1]); LDR sources are
+  // sRGB→linear decoded on upload so they render identically to the old path.
+  const materialEmissiveArray = trackMaterialArray(createMaterialTextureArray(
+    device,
+    packed.materialTextureEmissiveSources,
+    'rgba16float',
+    packed.materialTextureEmissiveSourceInfos,
+  ));
   applyMaterialTextureUvFitScales(
     packed.materialTexDescriptors,
     materialTextureArray.layerUvScales,
     materialLinearArray.layerUvScales,
+    materialEmissiveArray.layerUvScales,
   );
 
   // D8.7 / T2-A — create every scene storage buffer from the single-source
@@ -2076,10 +2099,12 @@ function uploadPackedSceneInner(
   const materialTextureWarnings = [
     ...materialTextureArray.warnings.map((w) => `material texture array (sRGB): ${w}`),
     ...materialLinearArray.warnings.map((w) => `material texture array (linear): ${w}`),
+    ...materialEmissiveArray.warnings.map((w) => `material texture array (emissive): ${w}`),
   ];
   const materialTextureStructuredWarnings = [
     ...materialTextureEngineWarnings(materialTextureArray.structuredWarnings, 'sRGB'),
     ...materialTextureEngineWarnings(materialLinearArray.structuredWarnings, 'linear'),
+    ...materialTextureEngineWarnings(materialEmissiveArray.structuredWarnings, 'emissive'),
   ];
 
   const uploaded: UploadedSceneBuffers = {
@@ -2095,6 +2120,8 @@ function uploadPackedSceneInner(
     materialTextureSampler: materialTextureArray.sampler,
     materialLinearTexture: materialLinearArray.texture,
     materialLinearTextureView: materialLinearArray.view,
+    materialEmissiveTexture: materialEmissiveArray.texture,
+    materialEmissiveTextureView: materialEmissiveArray.view,
     // T2-A — every scene storage buffer is destroyed via a single registry-driven
     // loop reading `uploaded[bufferField]`. Resolving each handle LATE off
     // `uploaded` (not a captured local) is required for the realloc fast paths
@@ -2112,6 +2139,7 @@ function uploadPackedSceneInner(
       }
       materialTextureArray.texture.destroy();
       materialLinearArray.texture.destroy();
+      materialEmissiveArray.texture.destroy();
     },
     // T2-A — sum the CURRENT GPUBuffer sizes via the same registry (realloc-swapped
     // handles included) + the two material texture arrays (GPUTexture has no
@@ -2127,11 +2155,14 @@ function uploadPackedSceneInner(
       }
       const textureBytesByFormat: Record<string, number> = {};
       const addTex = (t: GPUTexture): void => {
-        const bytes = t.width * t.height * t.depthOrArrayLayers * 4;
+        // Bytes-per-texel by format: rgba8* = 4, rgba16float = 8 (T1-6 emissive).
+        const bytesPerTexel = t.format === 'rgba16float' ? 8 : 4;
+        const bytes = t.width * t.height * t.depthOrArrayLayers * bytesPerTexel;
         textureBytesByFormat[t.format] = (textureBytesByFormat[t.format] ?? 0) + bytes;
       };
       addTex(uploaded.materialTexture);
       addTex(uploaded.materialLinearTexture);
+      addTex(uploaded.materialEmissiveTexture);
       return { bufferBytes, textureBytesByFormat };
     },
   };

@@ -19,6 +19,24 @@
  * `projectToPrevHalfPx`, so each body interpolates it where the inline block
  * used to live with no surrounding-byte change.
  */
+// D8-7 (complexity-sweep 2026-07-20, T4-4): the 11-line temporal-GI M-clamp
+// rationale comment is byte-identical between the OFF and GRIS bodies. Shared
+// here (raw string, no bindings — it's a comment) and interpolated verbatim at
+// each body's pre-`${TEMPORAL_GI_COMMON_WGSL}` position so both composed shaders
+// stay byte-identical. Emitted with NO trailing newline; the call site controls
+// the surrounding whitespace.
+export const TEMPORAL_GI_MCLAMP_COMMENT_WGSL = /* wgsl */ `// The temporal-GI M clamp (ubo.restirGiMClamp, Cornell default 50)
+// controls how strongly the previous-frame reservoir dominates temporal
+// reuse.  Higher = the chosen sample changes less often per-pixel → less
+// per-frame pattern jitter (the temporal accumulator's per-frame
+// contribution looks stabler).  Bitterli 2020 uses M=20 for ReSTIR-DI;
+// Majercik 2021 §4.5 suggests ~30–100 for GI since the indirect signal
+// varies less per pixel than DI light-source swaps.  Empirically 50 cuts
+// visible pattern dance on Cornell static frames in half compared to 20
+// without introducing motion lag (the camera-move reset path forces α=1
+// and discards prev independently). Library consumers override via
+// HybridEngineOptions.restirGiMClamp.`;
+
 export const TEMPORAL_GI_COMMON_WGSL = /* wgsl */ `// Geometric-rejection thresholds for "is this the same world surface".
 // 0.1 × current depth = 10 % depth tolerance — generous enough for sub-pixel
 // jitter and 1-frame camera motion, tight enough to reject occlusion changes.

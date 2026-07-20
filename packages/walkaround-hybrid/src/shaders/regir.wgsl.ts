@@ -63,6 +63,25 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 // TS constant so the WGSL value is always in sync with the host value.
 import { REGIR_FLOATS_PER_SURVIVOR } from '@vitrum/shared-samplers';
 
+// D8-6 (complexity-sweep 2026-07-20, T4-3): the cell-index → world-centroid math
+// is byte-identical between the REGIR read kernel (`regir_cell_centroid`) and the
+// REGIR build kernel (`rb_cell_centroid`). It reads `ubo` (a CONSUMER binding), so
+// per the composeWgsl ordering rule it is shared as a RAW-STRING template
+// interpolated into each consumer body — NOT a WgslModule. The function name is
+// the single parameterized slot; the body is emitted byte-for-byte identically so
+// both composed shaders stay byte-identical.
+function regirCellCentroidWgsl(fnName: string): string {
+  return /* wgsl */ `fn ${fnName}(cellIdx: u32) -> vec3f {
+  let dimsXY = ubo.regirDims.x * ubo.regirDims.y;
+  let cz = cellIdx / dimsXY;
+  let rem = cellIdx % dimsXY;
+  let cy = rem / ubo.regirDims.x;
+  let cx = rem % ubo.regirDims.x;
+  let cellSize = 1.0 / ubo.regirInvCellSize;
+  return ubo.regirOrigin + (vec3f(f32(cx), f32(cy), f32(cz)) + vec3f(0.5)) * cellSize;
+}`;
+}
+
 export const REGIR_WGSL = /* wgsl */ `// ============================================================
 // ReGIR — grid build + cell sampling. Reuses the combined light-tree storage
 // buffer (lightTree @group(3) @binding(0) on RIS; the grid-build pass binds
@@ -87,15 +106,7 @@ fn regir_cell_index(p: vec3f) -> u32 {
 }
 
 // Cell centroid in world space (cell-index → centre).
-fn regir_cell_centroid(cellIdx: u32) -> vec3f {
-  let dimsXY = ubo.regirDims.x * ubo.regirDims.y;
-  let cz = cellIdx / dimsXY;
-  let rem = cellIdx % dimsXY;
-  let cy = rem / ubo.regirDims.x;
-  let cx = rem % ubo.regirDims.x;
-  let cellSize = 1.0 / ubo.regirInvCellSize;
-  return ubo.regirOrigin + (vec3f(f32(cx), f32(cy), f32(cz)) + vec3f(0.5)) * cellSize;
-}
+${regirCellCentroidWgsl('regir_cell_centroid')}
 
 // Float offset of survivor j of cell c in the combined buffer.
 fn regir_survivor_base(cellIdx: u32, j: u32) -> u32 {
@@ -245,15 +256,7 @@ fn rb_sample_tree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function, 
   return s;
 }
 
-fn rb_cell_centroid(cellIdx: u32) -> vec3f {
-  let dimsXY = ubo.regirDims.x * ubo.regirDims.y;
-  let cz = cellIdx / dimsXY;
-  let rem = cellIdx % dimsXY;
-  let cy = rem / ubo.regirDims.x;
-  let cx = rem % ubo.regirDims.x;
-  let cellSize = 1.0 / ubo.regirInvCellSize;
-  return ubo.regirOrigin + (vec3f(f32(cx), f32(cy), f32(cz)) + vec3f(0.5)) * cellSize;
-}
+${regirCellCentroidWgsl('rb_cell_centroid')}
 
 @compute @workgroup_size(64, 1, 1)
 fn regirBuildMain(@builtin(global_invocation_id) gid: vec3u) {

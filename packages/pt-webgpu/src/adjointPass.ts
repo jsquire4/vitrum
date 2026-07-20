@@ -407,6 +407,8 @@ export class AdjointPass {
         { binding: 21, resource: { buffer: sb.environmentMapCdfBuffer } },
         { binding: 22, resource: { buffer: meshAreaLightSourceFactorsBuffer } },
         { binding: 23, resource: { buffer: tangentsBuffer } },
+        // T1-6 — dedicated rgba16float emissive array (HDR emissive replay).
+        { binding: 24, resource: sb.materialEmissiveTextureView },
       ],
     });
 

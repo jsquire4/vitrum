@@ -780,6 +780,8 @@ export class GpuResources {
           { binding: 3, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTextures sRGB (P2)
           { binding: 4, visibility: VIS, sampler: { type: 'filtering' } }, // materialTexSampler (P2)
           { binding: 5, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTexturesLinear normal/scalar data maps (P2)
+          // T1-6 — dedicated rgba16float emissive array (sampled as float 2d-array).
+          { binding: 17, visibility: VIS, texture: { sampleType: 'float', viewDimension: '2d-array' } }, // materialTexturesEmissive (HDR emissive)
           _buf(6, _rw), // A4: sppmPhotonCells (read_write storage)
           _buf(7, _rw), // A4: sppmCellCounters (read_write storage, atomic)
           _buf(8, _uniform), // A4: sppmStats (uniform)
@@ -1360,6 +1362,8 @@ export class GpuResources {
           { binding: 3, resource: sb.materialTextureView },
           { binding: 4, resource: sb.materialTextureSampler },
           { binding: 5, resource: sb.materialLinearTextureView },
+          // T1-6 — dedicated rgba16float emissive array view (HDR emissive).
+          { binding: 17, resource: sb.materialEmissiveTextureView },
           // A4 — SPPM photon hash-grid (bindings 6/7/8) + A4-progressive per-pixel
           // stats (binding 9). Placeholder buffers are bound when SPPM is off so the
           // layout slot is satisfied; the gather code in caustic.wgsl.ts is guarded
