@@ -184,13 +184,20 @@ export async function constructWalkaround(
     // this configure step, a host using attachVitrum() against a WebGPU
     // backend gets a black canvas. We configure here (not in attachVitrum)
     // because createEngine owns the GPUDevice handle.
+    // V1-7 — walkaround-hybrid is swap-chain-required: a swallowed configure
+    // failure would leave every frame without a swapChainView (permanent black
+    // canvas). Pass `required: true` so a configure failure re-throws into the
+    // constructor's catch below (best-effort engine dispose + device destroy,
+    // then re-throw) instead of silently rendering black forever. The reported
+    // error is escalated to recoverable:false to reflect the non-recoverable
+    // swap-chain state.
     configureWebGpuCanvas(opts.canvas, device, (err) => {
       reportCreateEngineError(opts, err, {
         phase: 'canvas-configure',
         backend: 'walkaround-hybrid',
-        recoverable: true,
+        recoverable: false,
       });
-    });
+    }, { required: true });
 
     const built = engine;
     engine = null;

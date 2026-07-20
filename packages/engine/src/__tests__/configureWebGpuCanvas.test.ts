@@ -74,4 +74,37 @@ describe('configureWebGpuCanvas', () => {
     expect(() => configureWebGpuCanvas(makeCanvas({ configure }), FAKE_DEVICE, onError)).not.toThrow();
     expect(onError).toHaveBeenCalledTimes(1);
   });
+
+  // V1-7 — swap-chain-required backends must fail fast on configure failure so
+  // they do not render a permanently-black canvas; offscreen backends keep the
+  // historical swallow behaviour.
+  it('offscreen path (required omitted/false) still swallows a configure failure', () => {
+    Object.defineProperty(globalThis, 'navigator', { value: { gpu: {} }, configurable: true });
+    const err = new Error('lost');
+    const configure = vi.fn(() => { throw err; });
+    const onError = vi.fn();
+    expect(() => configureWebGpuCanvas(makeCanvas({ configure }), FAKE_DEVICE, onError)).not.toThrow();
+    expect(() => configureWebGpuCanvas(makeCanvas({ configure }), FAKE_DEVICE, onError, { required: false })).not.toThrow();
+    expect(onError).toHaveBeenCalledWith(err);
+  });
+
+  it('required:true re-throws a configure failure (after invoking onError)', () => {
+    Object.defineProperty(globalThis, 'navigator', { value: { gpu: {} }, configurable: true });
+    const err = new Error('swapchain configure failed');
+    const configure = vi.fn(() => { throw err; });
+    const onError = vi.fn();
+    expect(() =>
+      configureWebGpuCanvas(makeCanvas({ configure }), FAKE_DEVICE, onError, { required: true }),
+    ).toThrow(err);
+    expect(onError).toHaveBeenCalledWith(err);
+  });
+
+  it('required:true does not throw on the happy path', () => {
+    Object.defineProperty(globalThis, 'navigator', { value: { gpu: {} }, configurable: true });
+    const configure = vi.fn();
+    expect(() =>
+      configureWebGpuCanvas(makeCanvas({ configure }), FAKE_DEVICE, undefined, { required: true }),
+    ).not.toThrow();
+    expect(configure).toHaveBeenCalledTimes(1);
+  });
 });

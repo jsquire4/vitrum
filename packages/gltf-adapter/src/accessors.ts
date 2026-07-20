@@ -58,6 +58,44 @@ export function typeComponentCount(type: string): number {
   return n;
 }
 
+/**
+ * Number of rows per column for a matrix accessor `type` (the column length),
+ * or `null` for non-matrix types. MAT2 → 2, MAT3 → 3, MAT4 → 4.
+ */
+function matrixColumnLength(type: string): number | null {
+  switch (type) {
+    case 'MAT2':
+      return 2;
+    case 'MAT3':
+      return 3;
+    case 'MAT4':
+      return 4;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Column-alignment layout for a matrix accessor whose component size is < 4
+ * bytes (glTF 2.0 spec §3.6.2.4): each matrix column must start on a 4-byte
+ * boundary, so a column of `colLen` components of `compSize` bytes is padded up
+ * to `ceil(compSize*colLen/4)*4` bytes. Returns `null` when no padding applies
+ * (non-matrix types, or matrix columns that are already 4-byte aligned — e.g.
+ * MAT4/BYTE, MAT2/SHORT, or any FLOAT/UNSIGNED_INT matrix).
+ */
+function matrixColumnPadding(
+  type: string,
+  compSize: number,
+): { readonly colLen: number; readonly colStride: number; readonly elementByteLength: number } | null {
+  if (compSize >= 4) return null;
+  const colLen = matrixColumnLength(type);
+  if (colLen === null) return null;
+  const unpadded = compSize * colLen;
+  const colStride = Math.ceil(unpadded / 4) * 4;
+  if (colStride === unpadded) return null;
+  return { colLen, colStride, elementByteLength: colStride * colLen };
+}
+
 /** Byte size of each component type. Exported for compression.ts. */
 export function componentByteSize(ct: GltfComponentType): number {
   switch (ct) {
@@ -88,7 +126,11 @@ export function accessorBufferViewRange(
   componentCount = typeComponentCount(accessor.type),
 ): GltfAccessorBufferViewRange {
   const compSize = componentByteSize(accessor.componentType);
-  const elementByteLength = compSize * componentCount;
+  const padding = matrixColumnPadding(accessor.type, compSize);
+  // glTF §3.6.2.4: matrix accessors with sub-4-byte components pad each column
+  // up to a 4-byte boundary, so the element occupies more bytes than the tight
+  // `compSize * componentCount`.
+  const elementByteLength = padding !== null ? padding.elementByteLength : compSize * componentCount;
   const byteStride = bufferView?.byteStride ?? elementByteLength;
   const byteOffset = accessor.byteOffset ?? 0;
   const requiredByteLength = byteOffset + (accessor.count <= 0
@@ -197,12 +239,21 @@ function _readBufferViewIntoResult(
 
   const dataView = new DataView(buf, bvOffset, bv.byteLength);
 
+  // glTF §3.6.2.4: matrix accessors with sub-4-byte components store each
+  // column on a 4-byte boundary, so component `c` (column-major) lives at
+  // `column * colStride + row * compSize` within the element rather than the
+  // tight `c * compSize`. `padding` is null for every other accessor.
+  const padding = matrixColumnPadding(accessor.type, compSize);
+
   for (let i = 0; i < accessor.count; i++) {
     const elemOffset = range.byteOffset + i * range.byteStride;
     for (let c = 0; c < componentCount; c++) {
+      const compByteOffset = padding !== null
+        ? Math.floor(c / padding.colLen) * padding.colStride + (c % padding.colLen) * compSize
+        : c * compSize;
       result[i * componentCount + c] = readScalar(
         dataView,
-        elemOffset + c * compSize,
+        elemOffset + compByteOffset,
         ct,
         normalized,
       );

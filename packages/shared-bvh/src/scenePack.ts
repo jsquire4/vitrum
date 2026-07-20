@@ -540,14 +540,25 @@ function collectTlasInstancesFromBindings(
         reason: `primitive "${binding.primitiveId}" kind mismatch or not mesh-like`,
       };
     }
-    const { transformCount, resolved } = resolveInstanceTransforms(binding, primitive);
-    if (transformCount !== binding.instanceCount) {
+    const { resolved } = resolveInstanceTransforms(binding, primitive);
+    // V2-3: mirror the initial-pack skip — non-invertible instances are NOT
+    // inserted (no identity-at-origin fallback), and the membership comparison
+    // uses the INSERTED count so it matches `binding.instanceCount` (which is now
+    // itself the inserted-instance count). A membership change (e.g. a formerly
+    // singular instance became invertible) rejects → caller falls back to a full
+    // repack.
+    const insertedInstances: PendingTlasInstance[] = [];
+    for (const { instance, nonInvertible } of resolved) {
+      if (nonInvertible) continue;
+      insertedInstances.push(instance);
+    }
+    if (insertedInstances.length !== binding.instanceCount) {
       return {
         ok: false,
-        reason: `primitive "${binding.primitiveId}" instance count changed from ${binding.instanceCount} to ${transformCount}`,
+        reason: `primitive "${binding.primitiveId}" instance count changed from ${binding.instanceCount} to ${insertedInstances.length}`,
       };
     }
-    for (const { instance } of resolved) {
+    for (const instance of insertedInstances) {
       instances.push(instance);
     }
   }
@@ -956,6 +967,11 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
         primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
       // Zero-instance case is handled above (before geometry concatenation); this
       // branch should never be reached with an empty transforms array now.
+      // `insertedInstanceCount` counts only the instances that actually land in
+      // the TLAS — non-invertible (singular) transforms are skipped, so the
+      // per-primitive `instanceCount` reflects TLAS MEMBERSHIP, not the raw
+      // transform count (V2-3: count-vs-membership reconcile).
+      let insertedInstanceCount = 0;
       for (const transform of transforms) {
         const { instance, nonInvertible } = resolveOneTransform(
           transform,
@@ -973,12 +989,13 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
           continue;
         }
         pendingTlasInstances.push(instance);
+        insertedInstanceCount += 1;
       }
       primitiveTlasBindings.push({
         primitiveId: primitive.id,
         primitiveKind: primitive.kind,
         blasRoot: nodeBase,
-        instanceCount: transforms.length,
+        instanceCount: insertedInstanceCount,
         vertexStart: vertexBase,
         vertexCount,
         triStart: triBase,
@@ -1209,15 +1226,23 @@ function collectLiveTlasInstancesFromBindings(
         reason: `primitive "${binding.primitiveId}" has zero instances (TLAS-only rebuild needs at least one)`,
       };
     }
-    liveCounts.push(transformCount);
+    // V2-3: mirror the initial-pack skip behavior — a non-invertible (singular)
+    // instance is SKIPPED (not inserted at identity), and `liveCounts` counts
+    // only the instances that actually land in the TLAS so the count matches
+    // membership on both build paths.
+    let insertedCount = 0;
     for (const { instance, nonInvertible } of resolved) {
       if (nonInvertible) {
         warnings.push(
-          `Primitive "${binding.primitiveId}" has non-invertible instance transform; using identity fallback for TLAS transform.`,
+          `Primitive "${binding.primitiveId}" has non-invertible instance transform; ` +
+          `skipping this TLAS instance (geometry would be placed at the origin otherwise).`,
         );
+        continue;
       }
       instances.push(instance);
+      insertedCount += 1;
     }
+    liveCounts.push(insertedCount);
   }
   return { ok: true, instances, liveCounts, warnings };
 }

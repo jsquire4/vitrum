@@ -175,6 +175,7 @@ export type DecodeSceneTextureDiagnosticCode =
   | 'platform-image-readback-unavailable'
   | 'platform-image-readback-failed'
   | 'decoded-texture-exceeds-max-size'
+  | 'decoded-texture-exceeds-pixel-budget'
   | 'decoded-texture-npot-repeat-wrap'
   | 'decoded-texture-npot-repeat-wrap-resized'
   | 'decoded-texture-npot-repeat-wrap-clamped'
@@ -193,6 +194,7 @@ export interface DecodeSceneTextureDiagnostic {
   readonly width?: number;
   readonly height?: number;
   readonly maxTextureSize?: number;
+  readonly maxDecodedTexturePixels?: number;
   readonly resizedWidth?: number;
   readonly resizedHeight?: number;
   readonly wrapS?: TextureWrapMode;
@@ -211,6 +213,16 @@ export interface DecodeSceneTexturesOptions {
   readonly target: 'cpu-linear' | 'webgpu';
   readonly decodePixels?: DecodeGltfTexturePixelsFn;
   readonly maxTextureSize?: number;
+  /**
+   * Hard ceiling on the number of pixels (width × height) a decoded texture may
+   * have. A decoded texture exceeding this budget is REJECTED before the
+   * full-resolution Float32Array is allocated (the texture is left unchanged and
+   * a `decoded-texture-exceeds-pixel-budget` diagnostic is emitted), guarding
+   * against unbounded allocation from a hostile/huge asset. `maxTextureSize`
+   * clamps dimensions of accepted textures; this budget rejects outright.
+   * Non-positive or undefined disables the budget.
+   */
+  readonly maxDecodedTexturePixels?: number;
   readonly npotRepeatWrapPolicy?: GltfNpotRepeatWrapPolicy;
   readonly warnOnNpotRepeatWrap?: boolean;
   readonly onDiagnostic?: (diagnostic: DecodeSceneTextureDiagnostic) => void;
@@ -637,6 +649,7 @@ async function decodeTextureRef(
   if (handleKind === 'pixel-data' || handleKind === 'data-texture') {
     const pixels = decodedPixelsFromCpuReadableHandle(ref.handle);
     if (pixels === null) return ref;
+    if (exceedsDecodedPixelBudget(pixels, context)) return ref;
     let perSpace = context.decoded.get(ref.handle);
     if (perSpace == null) {
       perSpace = new Map();
@@ -766,6 +779,7 @@ async function decodeTextureRef(
       });
       return ref;
     }
+    if (exceedsDecodedPixelBudget(pixels, context)) return ref;
     entry = cacheEntryFromDecodedPixels(
       pixels,
       colorSpace,
@@ -776,6 +790,49 @@ async function decodeTextureRef(
   }
   emitDecodedTextureDiagnostics(entry, ref, context);
   return applyNpotRepeatWrapPolicy(ref, entry, context);
+}
+
+/**
+ * Pixel-budget guard: rejects a decoded texture whose pixel count exceeds
+ * `options.maxDecodedTexturePixels` BEFORE any full-resolution Float32Array is
+ * allocated (called at every decode path prior to `cacheEntryFromDecodedPixels`
+ * / `normalizeDecodedPixels`). Emits a `decoded-texture-exceeds-pixel-budget`
+ * diagnostic and returns `true` when the texture must be left unchanged.
+ */
+function exceedsDecodedPixelBudget(
+  pixels: GltfDecodedTexturePixels,
+  context: {
+    readonly field: GltfMaterialTextureField;
+    readonly path: string;
+    readonly source?: GltfTextureRefSource;
+    readonly primitiveId: string;
+    readonly primitiveIndex: number;
+    readonly options: DecodeSceneTexturesOptions;
+    readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
+  },
+): boolean {
+  const budget = context.options.maxDecodedTexturePixels;
+  if (typeof budget !== 'number' || budget <= 0) return false;
+  const width = Math.max(0, Math.floor(pixels.width));
+  const height = Math.max(0, Math.floor(pixels.height));
+  if (width <= 0 || height <= 0) return false;
+  if (width * height <= budget) return false;
+  context.diagnostic({
+    severity: 'warning',
+    code: 'decoded-texture-exceeds-pixel-budget',
+    path: context.path,
+    materialField: context.field,
+    primitiveId: context.primitiveId,
+    primitiveIndex: context.primitiveIndex,
+    width,
+    height,
+    maxDecodedTexturePixels: budget,
+    ...textureSourceDiagnosticFields(context.source),
+    message: `[vitrum/gltf-adapter] ${context.path} decoded to ${width}x${height} ` +
+      `(${width * height} pixels), which exceeds maxDecodedTexturePixels=${budget}. ` +
+      'Texture left unchanged (rejected before allocation).',
+  });
+  return true;
 }
 
 function validateDecodedTexturePixels(pixels: GltfDecodedTexturePixels): string | null {
@@ -835,23 +892,26 @@ function cacheEntryFromDecodedPixels(
   outputColorSpace: GltfTextureColorSpace,
   maxTextureSize: number | undefined,
 ): DecodedTextureCacheEntry {
-  const normalized = normalizeDecodedPixels(pixels, colorSpace, outputColorSpace);
-  const resized = resizeDecodedTextureToMaxSize(normalized, maxTextureSize);
+  // Clamp target dimensions to maxTextureSize BEFORE allocation: the
+  // decode+resize is fused so only the clamped Float32Array is ever created,
+  // never the full-resolution buffer for an over-`maxTextureSize` source.
+  const sourceWidth = Math.max(0, Math.floor(pixels.width));
+  const sourceHeight = Math.max(0, Math.floor(pixels.height));
+  const normalized = normalizeDecodedPixels(pixels, colorSpace, outputColorSpace, maxTextureSize);
+  const wasClamped = normalized.width !== sourceWidth || normalized.height !== sourceHeight;
   const shouldAnnotate =
-    resized.width !== normalized.width ||
-    resized.height !== normalized.height ||
-    (typeof maxTextureSize === 'number' && maxTextureSize > 0);
+    wasClamped || (typeof maxTextureSize === 'number' && maxTextureSize > 0);
   return {
     handle: shouldAnnotate
       ? withDecodedTextureMetadata(
-          resized,
-          normalized.width,
-          normalized.height,
+          normalized,
+          sourceWidth,
+          sourceHeight,
           maxTextureSize,
         )
-      : resized,
-    originalWidth: normalized.width,
-    originalHeight: normalized.height,
+      : normalized,
+    originalWidth: sourceWidth,
+    originalHeight: sourceHeight,
   };
 }
 
@@ -1193,7 +1253,10 @@ function maybeBakeSpecGlossRoughnessMap(
   const path = source?.path ??
     `scene.primitives[${context.primitiveIndex}].material.roughnessMap`;
   const glossinessFactor = clamp01Number(specGloss.glossinessFactor, 1);
-  const sourceHandle = cpuLinearTextureHandleForSpecGlossBake(sourceRef.handle);
+  const sourceHandle = cpuLinearTextureHandleForSpecGlossBake(
+    sourceRef.handle,
+    context.options.maxTextureSize,
+  );
   if (sourceHandle !== null) {
     return {
       ...sourceRef,
@@ -1266,10 +1329,16 @@ function getOrBakeSpecGlossRoughnessHandle(
   return baked;
 }
 
-function cpuLinearTextureHandleForSpecGlossBake(handle: unknown): GltfCpuLinearTextureHandle | null {
+function cpuLinearTextureHandleForSpecGlossBake(
+  handle: unknown,
+  maxTextureSize: number | undefined,
+): GltfCpuLinearTextureHandle | null {
   if (isCpuLinearTextureHandle(handle)) return handle;
   const pixels = decodedPixelsFromCpuReadableHandle(handle);
-  return pixels === null ? null : normalizeDecodedPixels(pixels, 'srgb');
+  // Pass maxTextureSize so the spec-gloss bake source is clamped BEFORE its
+  // full-resolution Float32Array is allocated (the bake output inherits the
+  // clamped dimensions), matching the primary decode path.
+  return pixels === null ? null : normalizeDecodedPixels(pixels, 'srgb', 'linear', maxTextureSize);
 }
 
 function decodedPixelsFromCpuReadableHandle(handle: unknown): GltfDecodedTexturePixels | null {
@@ -1449,41 +1518,59 @@ function normalizeDecodedPixels(
   pixels: GltfDecodedTexturePixels,
   fieldColorSpace: GltfTextureColorSpace,
   outputColorSpace: 'linear',
+  maxTextureSize?: number,
 ): GltfCpuLinearTextureHandle;
 function normalizeDecodedPixels(
   pixels: GltfDecodedTexturePixels,
   fieldColorSpace: GltfTextureColorSpace,
   outputColorSpace: 'srgb',
+  maxTextureSize?: number,
 ): GltfCpuTextureHandle;
 function normalizeDecodedPixels(
   pixels: GltfDecodedTexturePixels,
   fieldColorSpace: GltfTextureColorSpace,
   outputColorSpace: GltfTextureColorSpace,
+  maxTextureSize?: number,
 ): GltfCpuTextureHandle;
 function normalizeDecodedPixels(
   pixels: GltfDecodedTexturePixels,
   fieldColorSpace: GltfTextureColorSpace,
   outputColorSpace: GltfTextureColorSpace = 'linear',
+  maxTextureSize?: number,
 ): GltfCpuTextureHandle {
-  const width = Math.max(0, Math.floor(pixels.width));
-  const height = Math.max(0, Math.floor(pixels.height));
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+  const sourceWidth = Math.max(0, Math.floor(pixels.width));
+  const sourceHeight = Math.max(0, Math.floor(pixels.height));
+  if (!Number.isFinite(sourceWidth) || !Number.isFinite(sourceHeight) || sourceWidth <= 0 || sourceHeight <= 0) {
     throw new Error(`[vitrum/gltf-adapter] decodePixels returned invalid texture dimensions ${pixels.width}x${pixels.height}.`);
   }
-  const channels = pixels.channels ?? inferDecodedChannels(pixels.data, width, height);
+  // Clamp the OUTPUT dimensions to maxTextureSize BEFORE allocating the
+  // destination buffer, then nearest-sample the source into it. This fuses the
+  // former normalize→resize two-step so the full-resolution Float32Array is
+  // never allocated for an over-`maxTextureSize` source.
+  const { width, height } = clampToMaxTextureSize(sourceWidth, sourceHeight, maxTextureSize);
+  const channels = pixels.channels ?? inferDecodedChannels(pixels.data, sourceWidth, sourceHeight);
   const dataType = pixels.dataType ?? inferDecodedDataType(pixels.data);
   const sourceColorSpace = pixels.colorSpace ?? fieldColorSpace;
   const out = new Float32Array(width * height * 4);
-  for (let p = 0; p < width * height; p += 1) {
-    const s = p * channels;
-    const r = decodeChannel(pixels.data[s] ?? 0, dataType);
-    const g = decodeChannel(pixels.data[s + (channels > 1 ? 1 : 0)] ?? 0, dataType);
-    const b = decodeChannel(pixels.data[s + (channels > 2 ? 2 : 0)] ?? 0, dataType);
-    const a = channels >= 4 ? decodeChannel(pixels.data[s + 3] ?? 1, dataType) : 1;
-    out[p * 4] = convertColorChannel(r, sourceColorSpace, outputColorSpace);
-    out[p * 4 + 1] = convertColorChannel(g, sourceColorSpace, outputColorSpace);
-    out[p * 4 + 2] = convertColorChannel(b, sourceColorSpace, outputColorSpace);
-    out[p * 4 + 3] = a;
+  for (let y = 0; y < height; y += 1) {
+    const sy = width === sourceWidth && height === sourceHeight
+      ? y
+      : Math.min(sourceHeight - 1, Math.floor((y * sourceHeight) / height));
+    for (let x = 0; x < width; x += 1) {
+      const sx = width === sourceWidth && height === sourceHeight
+        ? x
+        : Math.min(sourceWidth - 1, Math.floor((x * sourceWidth) / width));
+      const s = (sy * sourceWidth + sx) * channels;
+      const dst = (y * width + x) * 4;
+      const r = decodeChannel(pixels.data[s] ?? 0, dataType);
+      const g = decodeChannel(pixels.data[s + (channels > 1 ? 1 : 0)] ?? 0, dataType);
+      const b = decodeChannel(pixels.data[s + (channels > 2 ? 2 : 0)] ?? 0, dataType);
+      const a = channels >= 4 ? decodeChannel(pixels.data[s + 3] ?? 1, dataType) : 1;
+      out[dst] = convertColorChannel(r, sourceColorSpace, outputColorSpace);
+      out[dst + 1] = convertColorChannel(g, sourceColorSpace, outputColorSpace);
+      out[dst + 2] = convertColorChannel(b, sourceColorSpace, outputColorSpace);
+      out[dst + 3] = a;
+    }
   }
   return {
     width,
@@ -1493,17 +1580,24 @@ function normalizeDecodedPixels(
   };
 }
 
-function resizeDecodedTextureToMaxSize(
-  handle: GltfCpuTextureHandle,
+/**
+ * Compute the clamped output dimensions for a source of `width`×`height`,
+ * scaled down to fit within `maxTextureSize` on its longest edge (the same
+ * scale the former `resizeDecodedTextureToMaxSize` used). Returns the source
+ * dimensions unchanged when no clamp applies.
+ */
+function clampToMaxTextureSize(
+  width: number,
+  height: number,
   maxTextureSize: number | undefined,
-): GltfCpuTextureHandle {
-  if (typeof maxTextureSize !== 'number' || maxTextureSize <= 0) return handle;
-  if (handle.width <= maxTextureSize && handle.height <= maxTextureSize) return handle;
-
-  const scale = maxTextureSize / Math.max(handle.width, handle.height);
-  const width = Math.max(1, Math.round(handle.width * scale));
-  const height = Math.max(1, Math.round(handle.height * scale));
-  return resizeDecodedTextureNearest(handle, width, height);
+): { readonly width: number; readonly height: number } {
+  if (typeof maxTextureSize !== 'number' || maxTextureSize <= 0) return { width, height };
+  if (width <= maxTextureSize && height <= maxTextureSize) return { width, height };
+  const scale = maxTextureSize / Math.max(width, height);
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
 }
 
 function resizeDecodedTextureToPowerOfTwo(

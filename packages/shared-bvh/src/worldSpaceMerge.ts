@@ -63,6 +63,22 @@ export interface MergedMeshVertexRange {
   readonly triStart: number;
   readonly triCount: number;
   readonly windingFlipped?: boolean;
+  /**
+   * Source scene-primitive id this range was produced from (V2-4). Additive:
+   * distinct from {@link name} only in intent — `name` is the display/lookup
+   * label historically equal to the primitive id, while `sourcePrimitiveId`
+   * is the explicit provenance a consumer keys off to attach per-primitive
+   * attribute data (e.g. UV1) WITHOUT re-deriving the producer's per-instance
+   * skip logic. Optional so existing consumers are unaffected.
+   */
+  readonly sourcePrimitiveId?: string;
+  /**
+   * Zero-based instance index of this range within its source primitive
+   * (V2-4). For a non-instanced primitive this is always 0; for an
+   * instanced-mesh it is the index of the transform that produced this range,
+   * skipping any all-filtered instances. Additive/optional.
+   */
+  readonly sourceInstanceIndex?: number;
 }
 
 export interface WorldSpaceMergeResult {
@@ -782,7 +798,8 @@ export function mergeWorldSpaceFromCore(
     const localTriCount = Math.floor(baseIndices.length / 3);
     if (localTriCount === 0) continue;
 
-    for (const transform of transforms) {
+    for (let instanceIndex = 0; instanceIndex < transforms.length; instanceIndex += 1) {
+      const transform = transforms[instanceIndex];
       const m = transform ?? IDENTITY_MAT4;
       const normalMatrix = getNormalMatrix3(m);
       const flip = determinant4(m) < 0;
@@ -884,6 +901,11 @@ export function mergeWorldSpaceFromCore(
         triStart,
         triCount: validTriangles.length,
         windingFlipped: flip,
+        // V2-4: explicit provenance so consumers (e.g. mergeUv1FromCore) can
+        // key attribute data off the range WITHOUT re-deriving the per-instance
+        // skip logic above (all-filtered instances push no range).
+        sourcePrimitiveId: primitive.id,
+        sourceInstanceIndex: instanceIndex,
       });
     }
   }
@@ -1004,15 +1026,15 @@ export function mergeUv1FromCore(
   const anyUv1 = meshLike.some((p) => p.uv1 != null && p.uv1.length > 0);
   if (!anyUv1) return undefined;
 
-  const out = new Float32Array(totalVertexCount * 2);
-
-  let rangeIdx = 0;
+  // V2-4: build a per-primitive UV1 source lookup ONCE (UV1 is instance- and
+  // transform-invariant), then drive the output off the merged ranges directly
+  // — keyed by each range's recorded source-primitive id. This eliminates the
+  // replicated per-instance skip logic that used to desync `rangeIdx` when the
+  // producer dropped an all-filtered instance (validTriangles.length === 0 →
+  // no range pushed).
+  const srcUv1ByPrimitiveId = new Map<string, Float32Array>();
   for (const prim of meshLike) {
-    const localVertexCount = Math.floor(prim.positions.length / 3);
-    if (localVertexCount < 3) continue;
-    const localTriCount = Math.floor((prim.indices?.length ?? localVertexCount) / 3);
-    if (localTriCount === 0) continue;
-
+    if (prim.uv1 == null) continue;
     const microdisplaced = maybeMicrodisplaceMeshGeometry({
       primitiveId: prim.id,
       material: prim.material,
@@ -1025,20 +1047,22 @@ export function mergeUv1FromCore(
       ...(prim.colors != null ? { colors: prim.colors } : {}),
     });
     const srcUv1 = microdisplaced?.uv1 ?? prim.uv1;
-    const instanceCount = prim.kind === 'instanced-mesh' ? prim.instances.length : 1;
+    if (srcUv1 != null) srcUv1ByPrimitiveId.set(prim.id, srcUv1);
+  }
 
-    for (let inst = 0; inst < instanceCount; inst += 1) {
-      const range: MergedMeshVertexRange | undefined = ranges[rangeIdx];
-      if (range == null) break;
-      rangeIdx += 1;
+  const out = new Float32Array(totalVertexCount * 2);
 
-      if (srcUv1 == null) continue;
+  for (const range of ranges) {
+    // Prefer the explicit provenance field; fall back to `name` (historically
+    // equal to the primitive id) for ranges produced before the field existed.
+    const primitiveId = range.sourcePrimitiveId ?? range.name;
+    const srcUv1 = srcUv1ByPrimitiveId.get(primitiveId);
+    if (srcUv1 == null) continue;
 
-      const { vertexStart, vertexCount } = range;
-      for (let v = 0; v < vertexCount; v += 1) {
-        out[(vertexStart + v) * 2] = srcUv1[v * 2] ?? 0;
-        out[(vertexStart + v) * 2 + 1] = srcUv1[v * 2 + 1] ?? 0;
-      }
+    const { vertexStart, vertexCount } = range;
+    for (let v = 0; v < vertexCount; v += 1) {
+      out[(vertexStart + v) * 2] = srcUv1[v * 2] ?? 0;
+      out[(vertexStart + v) * 2 + 1] = srcUv1[v * 2 + 1] ?? 0;
     }
   }
 

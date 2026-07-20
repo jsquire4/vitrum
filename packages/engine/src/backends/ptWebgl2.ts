@@ -15,6 +15,7 @@ import type { PTEngineWebGL2Options } from '@vitrum/pt-webgl2';
 import {
   attachBackendId,
   resolveAdvancedForBackend,
+  stripOwnershipCriticalKeys,
   wrapWithIdempotentDispose,
   type CreateEngineOptions,
   type EngineWithBackendId,
@@ -53,13 +54,24 @@ export async function constructPathTracer(
 
   let engine: Engine | null = null;
   try {
-    const advancedWebGL2 = resolveAdvancedForBackend(
+    const advancedWebGL2Raw = resolveAdvancedForBackend(
       opts,
       'pt-webgl2',
     ) as WebGL2PathTracerAdvancedOptions | undefined;
+    // V1-6 — pt-webgl2 was the only device-owning backend NOT stripping
+    // ownership-critical keys (device/canvas/context) from `advanced`. Because
+    // `advanced` was spread AFTER `device: gl`, a host-supplied `advanced.device`
+    // could clobber the createEngine-owned WebGL2 context, causing a
+    // double-dispose / owned-handle leak. Route it through the same
+    // stripOwnershipCriticalKeys guard the walkaround/pt-webgpu backends use.
+    const advancedWebGL2 = stripOwnershipCriticalKeys(
+      advancedWebGL2Raw as Record<string, unknown> | undefined,
+      'pt-webgl2',
+      opts.onWarning,
+    ) as WebGL2PathTracerAdvancedOptions;
     const merged: PTEngineWebGL2Options = {
       device: gl,
-      ...(advancedWebGL2 ?? {}),
+      ...advancedWebGL2,
       ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
     };
 

@@ -165,6 +165,30 @@ describe('RCDispatcher binding cache invalidation', () => {
     expect(createBindGroup.mock.calls.length).toBeGreaterThan(bindGroupsAfterFirst);
   });
 
+  it('recompiles shader modules after invalidateBindings (device-change safety)', () => {
+    // V1-5: shader modules are bound to the device that created them. On a device
+    // change `invalidateBindings()` must null the cached cast/merge modules so the
+    // next dispatch recompiles them on the fresh device — otherwise a rebuild
+    // reuses an old-device module and raises a cross-device validation error.
+    installWebGpuConstants();
+    const { device } = makeMockDevice();
+    const createShaderModule = device.createShaderModule as unknown as {
+      mock: { calls: unknown[][] };
+    };
+    const dispatcher = new RCDispatcher(DIMS);
+    const opts = baseOpts(device);
+
+    dispatcher.dispatchFrameRaw(opts);
+    const shaderModulesAfterFirst = createShaderModule.mock.calls.length;
+    expect(shaderModulesAfterFirst).toBeGreaterThan(0);
+
+    // A pure binding invalidation with no device change: subsequent dispatch reuses
+    // the cached modules only because we recompile on rebuild — assert the null.
+    dispatcher.invalidateBindings();
+    dispatcher.dispatchFrameRaw({ ...opts, frameSeed: 2 });
+    expect(createShaderModule.mock.calls.length).toBeGreaterThan(shaderModulesAfterFirst);
+  });
+
   it('packs sunAngularRadius into the former sun-direction padding lane', () => {
     installWebGpuConstants();
     const { device } = makeMockDevice();

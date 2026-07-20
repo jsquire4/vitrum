@@ -3030,6 +3030,13 @@ export class HybridEngine implements Engine {
       reportWarning:          (w)   => { self._warn(w); },
       teardownPipeline:       ()    => { self._teardownPipeline(); },
       disposeDdgi:            ()    => { self._ddgi.dispose(); },
+      // Mirror the synchronous dispose (HybridEngine.dispose) so a deferred
+      // (dispose-races-init) teardown releases RC + skinning too, not just
+      // pipeline/BVH/DDGI. RC dispose also nulls the handle, matching dispose().
+      disposeRc:              ()    => {
+        if (self._rc) { self._rc.dispose(); self._rc = null; }
+      },
+      disposeSkinning:        ()    => { self._skinning?.dispose(); },
 
       recordInitStart: () => {
         const d = self._dbg;

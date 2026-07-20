@@ -517,10 +517,17 @@ export class RCDispatcher {
     device.queue.submit([commandEncoder.finish()]);
   }
 
-  /** Drop cached bind groups so the next dispatch captures fresh caller buffers. */
+  /** Drop cached bind groups so the next dispatch captures fresh caller buffers.
+   *  Also nulls the cached shader modules: `invalidateBindings` fires on a device
+   *  change, and a shader module is bound to the device that created it. Reusing an
+   *  old-device module across a device swap raises a cross-device validation error,
+   *  so the modules must be recompiled on the fresh device by the next
+   *  `_buildHandlesRaw`. */
   invalidateBindings(): void {
     this._releaseHandles();
     this._lastError = null;
+    this._castShaderModule  = null;
+    this._mergeShaderModule = null;
   }
 
   /** Release all GPU resources. Next `dispatchFrame()` will re-initialize. */

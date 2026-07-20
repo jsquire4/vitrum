@@ -580,10 +580,27 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       autoRecreateMachine.times.shift();
     }
     if (autoRecreateMachine.times.length >= AUTO_RECREATE_MAX_ATTEMPTS) {
-      // Cap exceeded — final error already delivered above; stay stopped.
+      // V1-3 — Cap exceeded: the final error was already delivered above, but
+      // the loop and the fatal engine still leak. Mirror the H31-d self-stop
+      // teardown: stop the loop, cancel the pending RAF, unsubscribe telemetry,
+      // and dispose the broken engine. Without this the RAF keeps re-throwing
+      // for ~5 frames (until the self-stop threshold) and the engine is never
+      // torn down, leaking its GPU resources.
+      stopped = true;
+      if (rafHandle != null) {
+        cancelAnimationFrame(rafHandle);
+        rafHandle = null;
+      }
+      unsubFrame?.();
+      unsubProgress?.();
+      unsubEngineError?.();
+      unsubFrame = undefined;
+      unsubProgress = undefined;
+      unsubEngineError = undefined;
+      try { engine.dispose(); } catch { /* best-effort cleanup after cap — ignore */ }
       console.error(
         `[attachVitrum] auto-recreate cap (${AUTO_RECREATE_MAX_ATTEMPTS} attempts / ` +
-        `${AUTO_RECREATE_WINDOW_MS}ms) exceeded; RAF loop will not be restarted.`,
+        `${AUTO_RECREATE_WINDOW_MS}ms) exceeded; RAF loop stopped and engine disposed.`,
       );
       return;
     }
@@ -682,7 +699,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
 
     // 4. Recreate.
     try {
-      engine = opts.recreateEngine != null
+      const recreated = opts.recreateEngine != null
         ? await opts.recreateEngine({
             scene: currentScene,
             previousBackendId,
@@ -690,6 +707,18 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
             attempt: recreateAttempt,
           })
         : await buildEngineFromOpts(opts, currentScene);
+      // V1-2 — a dispose() that arrived while we were awaiting the (async)
+      // recreate would otherwise be lost: `disposed` was only re-checked at
+      // step 7 (post-install), so the freshly-minted engine got installed +
+      // subscribed and never torn down. Re-check here, before install, and if
+      // the handle was disposed mid-recreate, dispose the late engine and
+      // reset the recreate state machine instead of installing it.
+      if (disposed) {
+        try { recreated.dispose(); } catch { /* best-effort cleanup of late engine — ignore */ }
+        autoRecreateMachine.recreating = false;
+        return;
+      }
+      engine = recreated;
       trackEngineScene(engine);
       attachSceneController(engine);
       lastSceneControllerFrameMs = null;

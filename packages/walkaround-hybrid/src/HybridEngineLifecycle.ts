@@ -157,6 +157,14 @@ export interface PipelineInitHost {
   /** Engine's DDGI dispose — called once, only if the coordinator
    *  finalises a deferred teardown. */
   disposeDdgi(): void;
+  /** Engine's RC-subsystem dispose — mirrors the synchronous dispose so a
+   *  deferred (dispose-races-init) teardown does not leak RC GPU resources.
+   *  No-op when RC is inactive. */
+  disposeRc(): void;
+  /** Engine's GPU-skinning dispose — mirrors the synchronous dispose so a
+   *  deferred teardown does not leak skinning GPU resources. No-op when
+   *  skinning is inactive. */
+  disposeSkinning(): void;
 
   // ── debug counters (only touched when host.debug === true) ──────────
   recordInitStart(): void;
@@ -303,6 +311,34 @@ export class PipelineInitCoordinator {
 
   // ── Internal phase machine ─────────────────────────────────────────────
 
+  /**
+   * Finalise a deferred teardown, if one is pending and we're still the
+   * latest chain. Mirrors the synchronous `engine.dispose()` teardown:
+   * pipeline + BVH (via `teardownPipeline`), DDGI, RC, and skinning. Called
+   * from BOTH the scene-readiness poll-exit paths AND the phase-machine
+   * `finally` — a dispose that races the poll must still complete the
+   * teardown the coordinator deferred to this chain.
+   *
+   * Returns true when it finalised a teardown (caller may skip its own
+   * finalisation), false otherwise.
+   */
+  private _finaliseDeferredTeardownIfPending(mySeq: number): boolean {
+    if (!(this._pendingTeardown && mySeq === this._initSeq)) return false;
+    const host = this.host;
+    if (host.debug) {
+      console.log('[hybrid:debug] finalising deferred teardown', { seq: mySeq });
+    }
+    host.teardownPipeline();
+    // These were deferred by requestTeardown() while init was in-flight;
+    // safe to call now because no chain is using them any more. Mirror the
+    // synchronous dispose so a dispose-races-init does not leak DDGI/RC/skinning.
+    try { host.disposeDdgi(); } catch { /* best-effort cleanup — ignore */ }
+    try { host.disposeRc(); } catch { /* best-effort cleanup — ignore */ }
+    try { host.disposeSkinning(); } catch { /* best-effort cleanup — ignore */ }
+    host.setState('disposed');
+    return true;
+  }
+
   private async _runInitChain(mySeq: number, device: GPUDevice): Promise<void> {
     const host = this.host;
     const initStart = host.debug ? performance.now() : 0;
@@ -327,6 +363,13 @@ export class PipelineInitCoordinator {
           pollIters, disposed: this._disposed, raced: mySeq !== this._initSeq, seq: mySeq,
         });
       }
+      // A dispose that raced the poll left _pendingTeardown set but never
+      // reached the phase-machine try/finally (we return before it). Finalise
+      // the deferred teardown HERE so pipeline/BVH/DDGI/RC/skinning are
+      // actually released and _pendingTeardown resolves. (Nothing was
+      // published yet at this phase, so this is just DDGI/RC/skinning +
+      // state='disposed'.)
+      this._finaliseDeferredTeardownIfPending(mySeq);
       // Clear _initRunning if we're still latest; otherwise leave it
       // alone for the racer.
       if (mySeq === this._initSeq) this._initRunning = false;
@@ -599,18 +642,9 @@ export class PipelineInitCoordinator {
       // published successfully) is responsible for actually tearing
       // down — we're the last live reference. Note: if a newer chain
       // is still running, its own checkpoints will see _pendingTeardown
-      // and bail before publishing.
-      if (this._pendingTeardown && mySeq === this._initSeq) {
-        if (host.debug) {
-          console.log('[hybrid:debug] init finally — finalising deferred teardown', { seq: mySeq });
-        }
-        host.teardownPipeline();
-        // host.disposeDdgi() was deferred by requestTeardown() since
-        // init was in-flight; it's safe to call now because no chain
-        // is using it any more.
-        try { host.disposeDdgi(); } catch { /* best-effort cleanup — ignore */ }
-        host.setState('disposed');
-      }
+      // and bail before publishing. Mirrors the synchronous dispose
+      // (pipeline+BVH+DDGI+RC+skinning) via the shared helper.
+      this._finaliseDeferredTeardownIfPending(mySeq);
       // Always clear _initRunning at the end of OUR chain — but only if
       // we're still the latest. A newer chain will have set it back to
       // true; we MUST NOT clear another chain's flag.
