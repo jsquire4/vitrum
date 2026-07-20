@@ -345,6 +345,22 @@ function baryVec3(
   ];
 }
 
+/** Area of the triangle (subA, subB, subC) via half the edge cross-product
+ *  magnitude. Shared by the texel-sub-triangle emit path (D6-9). */
+function triangleArea(
+  subA: readonly [number, number, number],
+  subB: readonly [number, number, number],
+  subC: readonly [number, number, number],
+): number {
+  const sx = subB[0] - subA[0], sy = subB[1] - subA[1], sz = subB[2] - subA[2];
+  const tx = subC[0] - subA[0], ty = subC[1] - subA[1], tz = subC[2] - subA[2];
+  return 0.5 * Math.sqrt(
+    (sy * tz - sz * ty) ** 2 +
+    (sz * tx - sx * tz) ** 2 +
+    (sx * ty - sy * tx) ** 2,
+  );
+}
+
 function baryUv(
   a: [number, number],
   b: [number, number],
@@ -527,31 +543,53 @@ function buildEmitterListCore(
     const parentB: [number, number, number] = [bx, by, bz];
     const parentC: [number, number, number] = [cx0, cy0, cz0];
     const normal: [number, number, number] = [nx, ny, nz];
+    // Expand a barycentric sub-triangle of the parent and push it as an emitter.
+    // Shared by the texel-patch and subdivision paths (D6-9); each supplies its
+    // own area (texel patches recompute from the cross-product; subdivision
+    // divides the parent area by level²) + color/provenance metadata.
+    const emitSubTriangle = (
+      wa: BarycentricWeights,
+      wb: BarycentricWeights,
+      wc: BarycentricWeights,
+      meta: {
+        area: number | ((subA: [number, number, number], subB: [number, number, number], subC: [number, number, number]) => number);
+        color: [number, number, number];
+        intensity: number;
+        selectionColor?: [number, number, number];
+        sourceTriIndex: number;
+        sourceSubdivLevel?: number;
+        sourceSubdivOrdinal?: number;
+      },
+    ): void => {
+      const subA = baryVec3(parentA, parentB, parentC, wa);
+      const subB = baryVec3(parentA, parentB, parentC, wb);
+      const subC = baryVec3(parentA, parentB, parentC, wc);
+      const subArea = typeof meta.area === 'function' ? meta.area(subA, subB, subC) : meta.area;
+      if (subArea < 1e-12) return;
+      pushEmitter({
+        triIdx: t,
+        sourceTriIndex: meta.sourceTriIndex,
+        ...(meta.sourceSubdivLevel != null ? { sourceSubdivLevel: meta.sourceSubdivLevel } : {}),
+        ...(meta.sourceSubdivOrdinal != null ? { sourceSubdivOrdinal: meta.sourceSubdivOrdinal } : {}),
+        vA: subA,
+        vB: subB,
+        vC: subC,
+        normal,
+        area: subArea,
+        color: meta.color,
+        intensity: meta.intensity,
+        castShadowDisabled,
+        ...(meta.selectionColor != null ? { selectionColor: meta.selectionColor } : {}),
+      });
+    };
     if (classified.texelSubTriangles != null) {
       for (const patch of classified.texelSubTriangles) {
-        const subA = baryVec3(parentA, parentB, parentC, patch.a);
-        const subB = baryVec3(parentA, parentB, parentC, patch.b);
-        const subC = baryVec3(parentA, parentB, parentC, patch.c);
-        const sx = subB[0] - subA[0], sy = subB[1] - subA[1], sz = subB[2] - subA[2];
-        const tx = subC[0] - subA[0], ty = subC[1] - subA[1], tz = subC[2] - subA[2];
-        const subArea = 0.5 * Math.sqrt(
-          (sy * tz - sz * ty) ** 2 +
-          (sz * tx - sx * tz) ** 2 +
-          (sx * ty - sy * tx) ** 2,
-        );
-        if (subArea < 1e-12) continue;
-        pushEmitter({
-          triIdx: t,
-          sourceTriIndex: -1,
-          vA: subA,
-          vB: subB,
-          vC: subC,
-          normal,
-          area: subArea,
+        emitSubTriangle(patch.a, patch.b, patch.c, {
+          area: triangleArea,
           color: patch.radiance,
           intensity: 1,
-          castShadowDisabled,
           selectionColor: patch.radiance,
+          sourceTriIndex: -1,
         });
       }
       continue;
@@ -560,27 +598,19 @@ function buildEmitterListCore(
     const subdivisionLevel = Math.max(1, Math.floor(classified.subdivisionLevel ?? 1));
     if (sourceTriIndex !== -1 && subdivisionLevel > 1) {
       let ordinal = 0;
+      const subArea = area / (subdivisionLevel * subdivisionLevel);
       forEachBarycentricSubTriangle(subdivisionLevel, (wa, wb, wc) => {
-        const subA = baryVec3(parentA, parentB, parentC, wa);
-        const subB = baryVec3(parentA, parentB, parentC, wb);
-        const subC = baryVec3(parentA, parentB, parentC, wc);
         const subSelectionColor = classified.subdivisionSelectionColor?.(wa, wb, wc) ??
           classified.selectionColor ??
           classified.color;
-        pushEmitter({
-          triIdx: t,
+        emitSubTriangle(wa, wb, wc, {
+          area: subArea,
+          color: [cr, cg, cb],
+          intensity,
+          selectionColor: subSelectionColor,
           sourceTriIndex,
           sourceSubdivLevel: subdivisionLevel,
           sourceSubdivOrdinal: ordinal,
-          vA: subA,
-          vB: subB,
-          vC: subC,
-          normal,
-          area: area / (subdivisionLevel * subdivisionLevel),
-          color: [cr, cg, cb],
-          intensity,
-          castShadowDisabled,
-          selectionColor: subSelectionColor,
         });
         ordinal += 1;
       });

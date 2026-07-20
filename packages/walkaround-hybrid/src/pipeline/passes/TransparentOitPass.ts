@@ -8,11 +8,13 @@
  */
 
 import { buildTransparentOitBindGroup } from '../bindGroupBuilders.js';
-import type {
-  Pass,
-  PassDispatchContext,
-  PassInitContext,
+import {
+  dispatchSharedBindGroupPass,
+  type Pass,
+  type PassDispatchContext,
+  type PassInitContext,
 } from '../Pass.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class TransparentOitPass implements Pass {
@@ -33,20 +35,7 @@ export class TransparentOitPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const {
-      device,
-      encoder,
-      bglCache,
-      resources,
-      frameBindGroup,
-      sceneBindGroup,
-      uboBindGroup,
-      frameState,
-      computeDesc,
-      wgX,
-      wgY,
-      resourceCache,
-    } = ctx;
+    const { device, bglCache, resources, frameState, resourceCache } = ctx;
     const outTex = resources.common.transparentCompositeTexture;
     const buildBg = (): GPUBindGroup => buildTransparentOitBindGroup(
       device,
@@ -54,19 +43,17 @@ export class TransparentOitPass implements Pass {
       resourceCache?.textureView(frameState.combinedDenoised) ?? frameState.combinedDenoised.createView(),
       resourceCache?.textureView(outTex) ?? outTex.createView(),
     );
-    const oitBg = resourceCache?.bindGroup('pass:transparent-oit', [
+    const oitBg = cachedBindGroup(resourceCache, 'pass:transparent-oit', [
       frameState.combinedDenoised,
       outTex,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
 
-    const pass = encoder.beginComputePass(computeDesc('transparent-oit'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, frameBindGroup);
-    pass.setBindGroup(1, sceneBindGroup);
-    pass.setBindGroup(2, uboBindGroup);
-    pass.setBindGroup(3, oitBg);
-    pass.dispatchWorkgroups(wgX, wgY, 1);
-    pass.end();
+    dispatchSharedBindGroupPass(ctx, this._pipeline, {
+      label: 'transparent-oit',
+      // The OIT front-to-back layer walk binds its own per-frame composition
+      // group (source radiance + output) at slot 3; full-res dispatch.
+      extraGroups: [{ slot: 3, group: oitBg }],
+    });
 
     frameState.combinedDenoised = outTex;
   }

@@ -18,6 +18,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 export class TemporalGIReservoirPass implements Pass {
   readonly id = 'gi-temporal' as const;
@@ -44,11 +45,11 @@ export class TemporalGIReservoirPass implements Pass {
       resources.restirGI.reservoirGiPreviousBuffer,
       resources.common.uboBuffer,
     );
-    const bg = resourceCache?.bindGroup('pass:gi-temporal', [
+    const bg = cachedBindGroup(resourceCache, 'pass:gi-temporal', [
       resources.restirGI.reservoirGiCurrentBuffer,
       resources.restirGI.reservoirGiPreviousBuffer,
       resources.common.uboBuffer,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     // group(1) — shared scene BVH/TLAS/material atlas. Half-res dispatch.
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gi-temporal', {
       half: true,

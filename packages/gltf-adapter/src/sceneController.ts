@@ -206,7 +206,7 @@ function primitiveResetPatch(primitive: ScenePrimitive): Partial<ScenePrimitive>
     if (key === 'id' || key === 'kind') continue;
     patch[key] = value;
   }
-  return patch as Partial<ScenePrimitive>;
+  return patch;
 }
 
 function emitControllerDiagnostic(
@@ -536,7 +536,7 @@ export class GltfSceneController {
           const material = materialForIndex(this.#convertedMaterials, materialIndex, frame);
           mergePrimitivePatch(patchMap, binding.primitiveId, {
             material: materialReplacementPatch(material),
-          } as Partial<ScenePrimitive>);
+          });
         }
       }
     }
@@ -755,7 +755,7 @@ export class GltfSceneController {
       return;
     }
 
-    const state = locals[nodeIndex]!;
+    const state = locals[nodeIndex];
     if (state.matrix && !this.#warnedMatrixOverrideNodes.has(nodeIndex)) {
       this.#warnedMatrixOverrideNodes.add(nodeIndex);
       emitControllerDiagnostic(frame, {
@@ -815,7 +815,7 @@ export class GltfSceneController {
         if (instancingBinding && isInstancedMesh(current)) {
           const instances = buildAnimatedInstanceTransforms(world, instancingBinding.localInstanceTransforms);
           if (!instanceMatricesAlmostEqual(current.instances, instances)) {
-            mergePrimitivePatch(patchMap, id, { instances } as Partial<ScenePrimitive>);
+            mergePrimitivePatch(patchMap, id, { instances });
           }
           continue;
         }
@@ -824,12 +824,12 @@ export class GltfSceneController {
           : undefined;
         if (expandedInstanceTransform) {
           if (!mat4AlmostEqual(primitiveTransform(current), expandedInstanceTransform)) {
-            mergePrimitivePatch(patchMap, id, { transform: expandedInstanceTransform } as Partial<ScenePrimitive>);
+            mergePrimitivePatch(patchMap, id, { transform: expandedInstanceTransform });
           }
           continue;
         }
         if (!mat4AlmostEqual(primitiveTransform(current), world)) {
-          mergePrimitivePatch(patchMap, id, { transform: world } as Partial<ScenePrimitive>);
+          mergePrimitivePatch(patchMap, id, { transform: world });
         }
       }
     }
@@ -902,7 +902,7 @@ export class GltfSceneController {
       ...(solved.tangents ? { tangents: solved.tangents } : {}),
       ...(solved.uvs ? { uvs: solved.uvs } : {}),
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
-    } as Partial<ScenePrimitive>;
+    };
   }
 
   #buildSkinPatch(
@@ -972,7 +972,7 @@ export class GltfSceneController {
       ...(solved.tangents ? { tangents: solved.tangents } : {}),
       ...(solved.uvs ? { uvs: solved.uvs } : {}),
       ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
-    } as Partial<ScenePrimitive>;
+    };
   }
 
   #applyMaterialPointerSamples(
@@ -1040,7 +1040,7 @@ export class GltfSceneController {
         if (!findPrimitive(this.#scene, id)) continue;
         mergePrimitivePatch(patchMap, id, {
           material: materialReplacementPatch(material),
-        } as Partial<ScenePrimitive>);
+        });
       }
     }
   }
@@ -1367,7 +1367,7 @@ type MaterialTextureRefField = typeof MATERIAL_TEXTURE_REF_FIELDS[number];
 function materialReplacementPatch(material: MaterialSpec): MaterialSpec {
   const patch: Record<string, unknown> = {};
   for (const field of MATERIAL_REPLACEMENT_CLEAR_FIELDS) patch[field] = undefined;
-  return Object.assign(patch, material) as MaterialSpec;
+  return Object.assign(patch, material);
 }
 
 function isTextureRef(value: unknown): value is TextureRef {
@@ -1388,16 +1388,16 @@ function materialForVariantPatch(
   if (patch.materialRouting === undefined) return material;
   const routed: Record<string, unknown> = { ...material };
   const droppedFields = new Set<MaterialTextureRefField>(
-    patch.droppedTextureFields as readonly MaterialTextureRefField[] | undefined,
+    patch.droppedTextureFields,
   );
   for (const field of MATERIAL_TEXTURE_REF_FIELDS) {
-    const routedRef = patch.materialRouting[field as MaterialTextureRefField];
-    const liveRef = material[field as MaterialTextureRefField];
+    const routedRef = patch.materialRouting[field];
+    const liveRef = material[field];
     if (isTextureRef(routedRef)) {
       routed[field] = isTextureRef(liveRef)
         ? textureRefWithRouting(liveRef, routedRef)
         : routedRef;
-    } else if (droppedFields.has(field as MaterialTextureRefField)) {
+    } else if (droppedFields.has(field)) {
       delete routed[field];
     }
   }
@@ -1422,7 +1422,7 @@ function scenePrimitivePatchForMaterialVariant(
     uvs: patch.uvs,
     uv1: patch.uv1,
     tangents: patch.tangents,
-  } as unknown as Partial<ScenePrimitive>;
+  };
 }
 
 function normalizeBlendWeights(weights: readonly number[]): number[] {
@@ -1565,7 +1565,7 @@ function mergePrimitivePatch(
   id: string,
   patch: Partial<ScenePrimitive>,
 ): void {
-  map.set(id, { ...(map.get(id) ?? {}), ...patch } as Partial<ScenePrimitive>);
+  map.set(id, { ...(map.get(id) ?? {}), ...patch });
 }
 
 function findPrimitive(scene: Scene, id: string): ScenePrimitive | undefined {

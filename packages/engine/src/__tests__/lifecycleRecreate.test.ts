@@ -74,7 +74,7 @@ function makeEngine(backendId = 'pt-webgl2', retainedScene: Scene | null = scene
   return { engine, errorCallbacks, unsubFrame, unsubProgress, unsubError };
 }
 
-const LOSS: EngineError = { kind: 'device-lost', fatal: true, message: 'lost' } as EngineError;
+const LOSS: EngineError = { kind: 'device-lost', fatal: true, message: 'lost' };
 
 describe('attachVitrum lifecycle recreate (R1)', () => {
   const originalRaf = globalThis.requestAnimationFrame;
@@ -149,8 +149,8 @@ describe('attachVitrum lifecycle recreate (R1)', () => {
     const third = makeEngine('pt-webgpu');
     // Each recreate returns a fresh engine; the loss is re-fired on the newest.
     const recreateEngine = vi.fn()
-      .mockResolvedValueOnce(second.engine as unknown as EngineWithBackendId)
-      .mockResolvedValueOnce(third.engine as unknown as EngineWithBackendId);
+      .mockResolvedValueOnce(second.engine)
+      .mockResolvedValueOnce(third.engine);
 
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 

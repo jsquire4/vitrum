@@ -285,19 +285,7 @@ export function kickTimestampReadback(
       const range = target.getMappedRange();
       const view = new BigInt64Array(range.slice(0));
       target.unmap();
-      const next: Record<string, number> = {};
-      let total = 0;
-      for (let i = 0; i < N; i++) {
-        const begin = view[i * 2] ?? 0n;
-        const end   = view[i * 2 + 1] ?? 0n;
-        // Monotonic clocks should never decrement, but at boot the first
-        // frame's begin/end can be 0n — skip those.
-        if (end <= begin) continue;
-        const ms = Number(end - begin) * periodNs / 1_000_000;
-        const label = labels[i];
-        if (label !== undefined) next[label] = +ms.toFixed(3);
-        total += ms;
-      }
+      const { perPass: next, total } = decodeTimestampSlots(view, labels, N, periodNs);
       next['total'] = +total.toFixed(3);
       state.lastGpuTimings = next;
       state.lastGpuTimingsFrame = frameCount;
@@ -309,6 +297,41 @@ export function kickTimestampReadback(
   }).catch(() => {
     state.readbackInFlight = null;
   });
+}
+
+/**
+ * Decode a `BigInt64Array` of `[begin, end]` timestamp pairs into per-label
+ * millisecond durations + a `total`. Shared by the fire-and-forget readback
+ * (`tryReadbackTimestamps`) and the synchronous diagnostic readback
+ * (`readTimestampsOnce`), which had drifting copies of this loop (D5-8).
+ *
+ * A pair with `end <= begin` (boot-frame zeros / non-monotonic) is skipped.
+ * When `rawBigints` is supplied, every slot's `begin/end` is appended to it
+ * BEFORE the skip (the diagnostic path wants the raw values even for skipped
+ * slots).
+ */
+function decodeTimestampSlots(
+  view: BigInt64Array,
+  labels: readonly (string | undefined)[],
+  slotCount: number,
+  periodNs: number,
+  rawBigints?: string[],
+): { perPass: Record<string, number>; total: number } {
+  const perPass: Record<string, number> = {};
+  let total = 0;
+  for (let i = 0; i < slotCount; i++) {
+    const begin = view[i * 2] ?? 0n;
+    const end = view[i * 2 + 1] ?? 0n;
+    if (rawBigints !== undefined) rawBigints.push(`${String(begin)}/${String(end)}`);
+    // Monotonic clocks should never decrement, but at boot the first frame's
+    // begin/end can be 0n — skip those.
+    if (end <= begin) continue;
+    const ms = Number(end - begin) * periodNs / 1_000_000;
+    const label = labels[i];
+    if (label !== undefined) perPass[label] = +ms.toFixed(3);
+    total += ms;
+  }
+  return { perPass, total };
 }
 
 /**
@@ -367,19 +390,10 @@ export async function readTimestampsOnce(
   readback.unmap();
   readback.destroy();
 
-  const perPass: Record<string, number> = {};
   const rawBigints: string[] = [];
-  let total = 0;
-  for (let i = 0; i < layout.slotCount; i++) {
-    const begin = view[i * 2] ?? 0n;
-    const end = view[i * 2 + 1] ?? 0n;
-    rawBigints.push(`${String(begin)}/${String(end)}`);
-    if (end <= begin) continue;
-    const ms = Number(end - begin) * state.periodNs / 1_000_000;
-    const label = layout.labels[i];
-    if (label) perPass[label] = +ms.toFixed(3);
-    total += ms;
-  }
+  const { perPass, total } = decodeTimestampSlots(
+    view, layout.labels, layout.slotCount, state.periodNs, rawBigints,
+  );
   perPass['total'] = +total.toFixed(3);
   return { perPass, rawBigints };
 }

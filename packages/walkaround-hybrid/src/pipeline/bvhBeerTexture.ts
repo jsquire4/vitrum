@@ -23,16 +23,13 @@ import {
   assertBvhTextureFitsDevice,
   assertBvhTextureRefreshCapacity,
   normalizeBvhTextureTriangleCount,
+  uploadElementTexture,
+  writeElementTexture,
 } from './bvhTextureLimits.js';
 
 /** Fixed texture width for the beer texture. Power-of-two ≤ 8192 (the WebGPU
  *  `maxTextureDimension2D` guaranteed floor). The shader uses the SAME value. */
 const BVH_BEER_TEX_WIDTH = 4096;
-
-/** `GPUTextureUsage.TEXTURE_BINDING | COPY_DST` — literals avoid a top-level
- *  `GPUTextureUsage` reference (Node vitest has no WebGPU globals). */
-const TEX_BINDING = 0x04;
-const COPY_DST = 0x02;
 
 export interface BeerTexture {
   texture: GPUTexture;
@@ -61,13 +58,16 @@ export function uploadBeerTexture(
 ): BeerTexture {
   const { width, height } = beerTextureSize(triCount);
   assertBvhTextureFitsDevice('bvhBeer', device, width, height, triCount);
-  const texture = device.createTexture({
+  const texture = uploadElementTexture(device, {
     label: 'vitrum.bvhBeer.r32uint',
-    size: { width, height, depthOrArrayLayers: 1 },
     format: 'r32uint',
-    usage: TEX_BINDING | COPY_DST,
+    width,
+    height,
+    bytesPerTexel: 4,
+    elementsPerTexel: 1,
+    makePadded: (n) => new Uint32Array(n),
+    fill: (padded) => fillBeer(padded, beerData, triCount),
   });
-  writeBeerTexture(device, texture, beerData, triCount, width, height);
   return { texture, width, height };
 }
 
@@ -85,25 +85,19 @@ export function refreshBeerTexture(
   triCount: number,
 ): void {
   assertBvhTextureRefreshCapacity('bvhBeer', tex.width, tex.height, triCount);
-  writeBeerTexture(device, tex.texture, beerData, triCount, tex.width, tex.height);
+  writeElementTexture(device, tex.texture, {
+    width: tex.width,
+    height: tex.height,
+    bytesPerTexel: 4,
+    elementsPerTexel: 1,
+    makePadded: (n) => new Uint32Array(n),
+    fill: (padded) => fillBeer(padded, beerData, triCount),
+  });
 }
 
-function writeBeerTexture(
-  device: GPUDevice,
-  texture: GPUTexture,
-  beerData: ArrayBuffer,
-  triCount: number,
-  width: number,
-  height: number,
-): void {
-  // Pad to a full width×height u32 grid (the source has exactly triCount u32s).
+/** Populate the padded r32uint grid from the packed per-triangle u32 data
+ *  (the source has exactly triCount u32s). */
+function fillBeer(padded: Uint32Array, beerData: ArrayBuffer, triCount: number): void {
   const src = new Uint32Array(beerData);
-  const padded = new Uint32Array(width * height);
   padded.set(src.subarray(0, Math.min(src.length, triCount)));
-  device.queue.writeTexture(
-    { texture },
-    padded.buffer,
-    { bytesPerRow: width * 4, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 },
-  );
 }

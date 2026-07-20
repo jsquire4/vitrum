@@ -7,43 +7,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import type {
   Engine,
-  EngineCapabilities,
-  EngineState,
   ScenePrimitive,
 } from '@vitrum/core';
 import { wrapWithIdempotentDispose } from '../createEngine.js';
-
-function capabilities(supportsAddRemove: boolean): EngineCapabilities {
-  return {
-    supportsIncrementalScene: false,
-    supportsAddRemovePrimitive: supportsAddRemove,
-    supportsAuxBuffers: false,
-    accumulates: true,
-    maxSamplesPerPixel: 1,
-    maxBounces: 1,
-    supportedAnalyticShapes: new Set(),
-    supportedEmitterKinds: new Set(),
-    supportedPrimitiveKinds: new Set(),
-    supportedEnvironmentKinds: new Set(),
-    presentationMode: 'offscreen-texture',
-    experimentalFeatures: new Set(),
-    causticStrategy: 'none',
-  } as unknown as EngineCapabilities;
-}
+import { stubCapabilities, stubEngine } from './fixtures/stubEngine.js';
 
 function makeEngine(opts: { supportsAddRemove: boolean; hasMethods: boolean }) {
   const add = vi.fn((_p: ScenePrimitive) => {});
   const remove = vi.fn((_id: ScenePrimitive['id']) => {});
-  const caps = capabilities(opts.supportsAddRemove);
+  const caps = stubCapabilities({ supportsAddRemovePrimitive: opts.supportsAddRemove });
   const engine: Engine = {
-    get state(): EngineState { return 'ready'; },
-    get capabilities() { return caps; },
-    setScene: vi.fn(),
-    renderFrame: vi.fn(() => ({ kind: 'skipped', samplesAccumulated: 0, isConverged: false })),
-    reset: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    dispose: vi.fn(),
+    ...stubEngine(caps),
     ...(opts.hasMethods
       ? {
           addPrimitive: (p: ScenePrimitive) => add(p),

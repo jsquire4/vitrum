@@ -306,7 +306,7 @@ describe('createMaterialTextureArray', () => {
   it('uploads an rgba16float emissive array with a half-float dummy for empty scenes', () => {
     installGpuConstStubs();
     const { device, writeTexture, createTexture } = makeDevice();
-    const array = createMaterialTextureArray(device, [], 'rgba16float');
+    createMaterialTextureArray(device, [], 'rgba16float');
     expect(createTexture).toHaveBeenCalledWith(expect.objectContaining({ format: 'rgba16float' }));
     // Linear-white dummy texel: 1.0 → half-float 0x3c00 in all four channels.
     const call = writeTexture.mock.calls[0] as [unknown, Uint16Array, unknown, unknown];

@@ -18,9 +18,7 @@ import {
 } from './wgsl/atrousVariance.wgsl.js';
 import {
   ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
-  ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
   ATROUS_VARIANCE_VARIANCE_UNIFORMS_SIZE_BYTES,
-  packAtrousVarianceAtrousUniforms,
   packAtrousVarianceVarianceUniforms,
 } from './atrousVarianceBindings.js';
 import {
@@ -29,6 +27,10 @@ import {
   ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT,
 } from './atrousVarianceConstants.js';
 import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
+import { buildAtrousChain, makeResourceTracker } from './atrousChain.js';
+// NOTE: albedo demodulation differs INTENTIONALLY between this à-trous+variance
+// denoiser and svgfRealWebGPU.ts — see the demodulation cross-reference comment
+// at the `rgbForAtrous` site below (`demodulateAlbedo`/`remodulateAlbedo`).
 import { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
 import {
   fillRg32f,
@@ -223,16 +225,8 @@ export async function runAtrousVarianceWebGPU(
     errorLabel: 'runAtrousVarianceWebGPU',
   });
 
-  const textures: GPUTexture[] = [];
-  const buffers: GPUBuffer[] = [];
-  const trackTexture = (texture: GPUTexture): GPUTexture => {
-    textures.push(texture);
-    return texture;
-  };
-  const trackBuffer = (buffer: GPUBuffer): GPUBuffer => {
-    buffers.push(buffer);
-    return buffer;
-  };
+  const { trackTexture, trackBuffer, dispose: disposeResources } =
+    makeResourceTracker(destroyEphemeral);
 
   try {
     const { variance: variancePipeline, atrous: atrousPipeline } = atrousVariancePipelines(device);
@@ -385,58 +379,30 @@ export async function runAtrousVarianceWebGPU(
       ],
     });
 
-    // Pre-allocate one UBO per à-trous iteration so each pass reads its own
-    // uniforms. With a shared UBO + per-iter writeBuffer, the driver can re-
-    // order writes vs dispatches and produce wrong stepWidth per pass; per-iter
-    // UBOs are tiny (32 B × N) and remove that hazard. Write all UBOs once,
-    // then batch every pass (variance + N × atrous) into a single encoder /
-    // single queue.submit — replaces what used to be up to 13 separate submits.
-    const atrousUbos: GPUBuffer[] = [];
-    const atrousScratch = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    for (let iter = 0; iter < atrousIterations; iter += 1) {
-      const ubo = trackBuffer(
-        device.createBuffer({
-          label: `atrous-variance-atrous-ubo-${iter}`,
-          size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        }),
-      );
-      packAtrousVarianceAtrousUniforms(
-        { iteration: iter, sigmaColor, sigmaNormal, sigmaDepth },
-        atrousScratch,
-      );
-      device.queue.writeBuffer(ubo, 0, atrousScratch);
-      atrousUbos.push(ubo);
-    }
-
     // Item 24 — albedo demodulation (Schied 2017 §4.1).
     // When albedoRgb is supplied, divide the input rgb by albedo before
     // uploading to the GPU so the à-trous chain filters pure lighting.
     // The demodulated buffer is used ONLY for colorPingA (the à-trous input);
     // inputColor (the variance pass input) receives the original rgb so the
     // variance estimate reflects the actual noisy signal energy.
+    //
+    // ── Demodulation cross-reference (D14-3) ─────────────────────────────────
+    // This is DELIBERATELY narrower than svgfRealWebGPU.ts's demodulation. Here
+    // ONLY the à-trous input (colorPingA) sees demodulated lighting; the
+    // variance pass reads the ORIGINAL noisy `rgb` so the variance estimate
+    // reflects true signal energy. In svgfRealWebGPU.ts BOTH current AND
+    // previous radiance are demodulated up front so reprojection blending,
+    // moment tracking, and variance all operate on lighting L = c/ρ (that path
+    // has real temporal moments; this à-trous+variance denoiser does not).
+    // The divergence is intentional — do NOT unify these two demodulation
+    // strategies; the algorithms differ (Schied SVGF vs à-trous lookup).
     const rgbForAtrous =
       opts.albedoRgb != null ? demodulateAlbedo(opts.rgb, opts.albedoRgb, w * h) : opts.rgb;
     uploadRgbAsRgba16f(device, colorPingA, rgbForAtrous, w, h);
 
-    // Build the alternating bind groups up front: A→B for even iterations,
-    // B→A for odd. Each pair is paired with its iteration's UBO.
-    const atrousBindGroups: GPUBindGroup[] = atrousUbos.map((ubo, iter) => {
-      const isEven = iter % 2 === 0;
-      return device.createBindGroup({
-        layout: atrousPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: (isEven ? colorPingA : colorPingB).createView() },
-          { binding: 1, resource: (isEven ? colorPingB : colorPingA).createView() },
-          { binding: 2, resource: gbufferNormal.createView() },
-          { binding: 3, resource: gbufferDepth.createView() },
-          { binding: 4, resource: varianceOut.createView() },
-          { binding: 5, resource: { buffer: ubo } },
-        ],
-      });
-    });
-
     const wg = ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE;
+    // Batch every pass (variance + N × atrous) into a single encoder /
+    // single queue.submit — replaces what used to be up to 13 separate submits.
     const encoder = device.createCommandEncoder({ label: 'atrous-variance-batched' });
 
     const passV = encoder.beginComputePass();
@@ -445,19 +411,29 @@ export async function runAtrousVarianceWebGPU(
     passV.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
     passV.end();
 
-    for (let iter = 0; iter < atrousIterations; iter += 1) {
-      const passA = encoder.beginComputePass();
-      passA.setPipeline(atrousPipeline);
-      passA.setBindGroup(0, atrousBindGroups[iter]);
-      passA.dispatchWorkgroups(Math.ceil(w / wg), Math.ceil(h / wg));
-      passA.end();
-    }
+    // Shared à-trous ping-pong chain (atrousChain.ts) — per-iter UBOs +
+    // alternating bind groups + parity-based readTex. Single source of truth
+    // with svgfRealWebGPU.ts.
+    const readTex = buildAtrousChain({
+      device,
+      atrousPipeline,
+      encoder,
+      atrousIterations,
+      width: w,
+      height: h,
+      sigmaColor,
+      sigmaNormal,
+      sigmaDepth,
+      pingTex: colorPingA,
+      pongTex: colorPingB,
+      normalView: gbufferNormal.createView(),
+      depthView: gbufferDepth.createView(),
+      varianceView: varianceOut.createView(),
+      uboLabelPrefix: 'atrous-variance-atrous-ubo-',
+      trackBuffer,
+    });
 
     device.queue.submit([encoder.finish()]);
-
-    // After N iterations, the last write went into colorPingB when N is odd,
-    // colorPingA when N is even (the loop's pre-fix swap convention).
-    const readTex = atrousIterations % 2 === 0 ? colorPingA : colorPingB;
 
     const rgbOut = await readRgba16fToRgb(device, readTex, w, h);
 
@@ -469,8 +445,6 @@ export async function runAtrousVarianceWebGPU(
 
     return rgbOut;
   } finally {
-    for (const buffer of buffers) buffer.destroy();
-    for (const texture of textures) texture.destroy();
-    destroyEphemeral();
+    disposeResources();
   }
 }

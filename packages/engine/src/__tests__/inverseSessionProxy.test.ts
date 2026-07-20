@@ -5,30 +5,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import type {
   Engine,
-  EngineCapabilities,
-  EngineState,
   InverseSession,
   InverseSessionOptions,
 } from '@vitrum/core';
 import { wrapWithIdempotentDispose } from '../createEngine.js';
-
-function baseCapabilities(): EngineCapabilities {
-  return {
-    supportsIncrementalScene: false,
-    supportsAddRemovePrimitive: false,
-    supportsAuxBuffers: false,
-    accumulates: true,
-    maxSamplesPerPixel: 1,
-    maxBounces: 1,
-    supportedAnalyticShapes: new Set(),
-    supportedEmitterKinds: new Set(),
-    supportedPrimitiveKinds: new Set(),
-    supportedEnvironmentKinds: new Set(),
-    presentationMode: 'offscreen-texture',
-    experimentalFeatures: new Set(),
-    causticStrategy: 'none',
-  } as unknown as EngineCapabilities;
-}
+import { stubEngine } from './fixtures/stubEngine.js';
 
 function fakeSession(): InverseSession {
   return {
@@ -43,14 +24,7 @@ function fakeSession(): InverseSession {
 function makeEngine(withInverse: boolean) {
   const createInverse = vi.fn((_opts: InverseSessionOptions): InverseSession => fakeSession());
   const engine: Engine = {
-    get state(): EngineState { return 'ready'; },
-    get capabilities() { return baseCapabilities(); },
-    setScene: vi.fn(),
-    renderFrame: vi.fn(() => ({ kind: 'skipped', samplesAccumulated: 0, isConverged: false })),
-    reset: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    dispose: vi.fn(),
+    ...stubEngine(),
     ...(withInverse
       ? { createInverseSession: (opts: InverseSessionOptions) => createInverse(opts) }
       : {}),

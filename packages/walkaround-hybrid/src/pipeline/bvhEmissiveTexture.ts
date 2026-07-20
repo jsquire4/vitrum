@@ -24,14 +24,12 @@ import {
   assertBvhTextureFitsDevice,
   assertBvhTextureRefreshCapacity,
   normalizeBvhTextureTriangleCount,
+  uploadElementTexture,
+  writeElementTexture,
 } from './bvhTextureLimits.js';
 
 /** Fixed texture width (power-of-two ≤ 8192 WebGPU floor). Shader uses the SAME. */
 const BVH_EMISSIVE_TEX_WIDTH = 4096;
-
-/** `GPUTextureUsage.TEXTURE_BINDING | COPY_DST` literals (Node vitest lacks WebGPU globals). */
-const TEX_BINDING = 0x04;
-const COPY_DST = 0x02;
 
 export interface EmissiveTexture {
   texture: GPUTexture;
@@ -59,13 +57,16 @@ export function uploadEmissiveTexture(
 ): EmissiveTexture {
   const { width, height } = emissiveTextureSize(triCount);
   assertBvhTextureFitsDevice('bvhEmissive', device, width, height, triCount);
-  const texture = device.createTexture({
+  const texture = uploadElementTexture(device, {
     label: 'vitrum.bvhEmissive.rgba32float',
-    size: { width, height, depthOrArrayLayers: 1 },
     format: 'rgba32float',
-    usage: TEX_BINDING | COPY_DST,
+    width,
+    height,
+    bytesPerTexel: 16,
+    elementsPerTexel: 4,
+    makePadded: (n) => new Float32Array(n),
+    fill: (padded) => fillEmissive(padded, emissiveData, triCount),
   });
-  writeEmissiveTexture(device, texture, emissiveData, triCount, width, height);
   return { texture, width, height };
 }
 
@@ -77,24 +78,17 @@ export function refreshEmissiveTexture(
   triCount: number,
 ): void {
   assertBvhTextureRefreshCapacity('bvhEmissive', tex.width, tex.height, triCount);
-  writeEmissiveTexture(device, tex.texture, emissiveData, triCount, tex.width, tex.height);
+  writeElementTexture(device, tex.texture, {
+    width: tex.width,
+    height: tex.height,
+    bytesPerTexel: 16,
+    elementsPerTexel: 4,
+    makePadded: (n) => new Float32Array(n),
+    fill: (padded) => fillEmissive(padded, emissiveData, triCount),
+  });
 }
 
-function writeEmissiveTexture(
-  device: GPUDevice,
-  texture: GPUTexture,
-  emissiveData: Float32Array,
-  triCount: number,
-  width: number,
-  height: number,
-): void {
-  // Pad to a full width×height rgba32float grid (source has 4 floats/triangle).
-  const padded = new Float32Array(width * height * 4);
+/** Populate the padded rgba32float grid (source has 4 floats/triangle). */
+function fillEmissive(padded: Float32Array, emissiveData: Float32Array, triCount: number): void {
   padded.set(emissiveData.subarray(0, Math.min(emissiveData.length, triCount * 4)));
-  device.queue.writeTexture(
-    { texture },
-    padded.buffer,
-    { bytesPerRow: width * 4 * 4, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 },
-  );
 }

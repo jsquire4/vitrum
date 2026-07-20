@@ -272,6 +272,9 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
     wgX: 8, wgY: 8,
     wgX16: 4, wgY16: 4,
     halfWgX: 2, halfWgY: 2,
+    // 64×64 ⇒ ceil(ceil(64/2)/8)=4 X workgroups, ceil(64/8)=8 Y — the shared
+    // checkerboard compaction the RIS/Shade/SpatialReservoir passes now read.
+    checkerboardWgX: 4, checkerboardWgY: 8,
     gtaoDownscale: 2,
     welfordPing: 0,
     gNormalDepthView: { __tag: 'gndView' } as unknown as GPUTextureView,

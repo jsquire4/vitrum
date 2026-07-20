@@ -45,6 +45,8 @@ export {
 } from './sobol.js';
 export { BSDF_PRIMITIVES_WGSL, BSDF_PRIMITIVES_MODULE_NAME } from './wgsl/bsdfPrimitives.wgsl.js';
 export { luminance, luminanceAt } from './luminance.js';
+export { vecLength, vecCross, vecNormalize, tangentBasis } from './vecMath.js';
+export type { Vec3Tuple } from './vecMath.js';
 export { haltonSO3AxisAngleFromFrameIndex } from './haltonSo3.js';
 export { bakePreethamSkyEquirect } from './preethamSky.js';
 export type { PreethamSkyBake, PreethamSkyBakeOptions } from './preethamSky.js';
@@ -188,3 +190,24 @@ export type {
   UboDefinition,
   UboWgslOptions,
 } from './uboCodegen.js';
+
+// T1-1 — backend-agnostic material scalar derivations single-sourced for both
+// the pt-webgpu and pt-webgl2 material packers (layouts stay per-backend; only
+// the scalar math is shared).
+export {
+  ATTENUATION_TRANSMITTANCE_EPSILON,
+  SPECTRAL_GRID_SAMPLE_COUNT,
+  SPECTRAL_GRID_START_NM,
+  SPECTRAL_GRID_END_NM,
+  sigmaAFromAttenuation,
+  sampleSpectralCurve,
+  sampleSpectralGrid,
+  dispersionStrengthFromAbbe,
+  resolveEmissiveIntensity,
+} from './materialScalarDerivations.js';
+export type {
+  MaterialScalarVec3,
+  SpectralCurveLike,
+  SpectralCurveSampleOptions,
+  SpectralGridResult,
+} from './materialScalarDerivations.js';

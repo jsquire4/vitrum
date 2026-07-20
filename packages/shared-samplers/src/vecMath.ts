@@ -1,0 +1,62 @@
+/**
+ * vecMath.ts — small pure Vec3 helpers shared by the host-CPU scene packers.
+ *
+ * The path-tracing backends (`@vitrum/pt-webgl2` lights/mesh-area packers,
+ * `@vitrum/pt-webgpu` emitter packer) each re-spelled `cross`/`normalize`/
+ * `tangentBasis`/`lengthOf` inline. This module single-sources them so the
+ * packed emitter geometry (u/v basis synthesis for disc/spot emitters,
+ * triangle areas) is computed identically everywhere.
+ *
+ * SEMANTICS NOTE — {@link normalize} returns the zero vector `[0,0,0]` for a
+ * near-degenerate input (`len < 1e-12`). This matches the pt-webgl2 lights
+ * packer's historical behaviour EXACTLY and is what {@link tangentBasis}
+ * depends on; it is deliberately NOT the "pass the input through" convention
+ * used by `@vitrum/shared-bvh`'s `v3Normalize` (that one is for BVH transform
+ * math with a different degeneracy contract). Do not "unify" the two without a
+ * byte-identity A/B on both consumers.
+ */
+
+export type Vec3Tuple = readonly [number, number, number];
+
+/** Euclidean length of a Vec3. */
+export function vecLength(v: Vec3Tuple): number {
+  return Math.hypot(v[0], v[1], v[2]);
+}
+
+/** Cross product a × b. */
+export function vecCross(a: Vec3Tuple, b: Vec3Tuple): [number, number, number] {
+  return [
+    a[1] * b[2] - a[2] * b[1],
+    a[2] * b[0] - a[0] * b[2],
+    a[0] * b[1] - a[1] * b[0],
+  ];
+}
+
+/**
+ * Normalize a Vec3. Returns `[0,0,0]` when the length is below `1e-12`
+ * (the pt-webgl2 lights-packer degeneracy contract — see the module note).
+ */
+export function vecNormalize(v: Vec3Tuple): [number, number, number] {
+  const len = vecLength(v);
+  if (len < 1e-12) return [0, 0, 0];
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+/**
+ * Build two unit tangent vectors spanning the plane perpendicular to `n`.
+ * Used to synthesize the (u, v) basis for a disc-area / spot emitter, whose
+ * core representation gives only a centre, a normal/direction and a radius (no
+ * explicit in-plane axes). Deterministic so the packed data is stable across
+ * calls.
+ */
+export function tangentBasis(n: Vec3Tuple): {
+  t: [number, number, number];
+  b: [number, number, number];
+} {
+  const nn = vecNormalize(n);
+  // Pick the world axis least aligned with nn to avoid degeneracy.
+  const ref: Vec3Tuple = Math.abs(nn[0]) > 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const t = vecNormalize(vecCross(ref, nn));
+  const b = vecNormalize(vecCross(nn, t));
+  return { t, b };
+}

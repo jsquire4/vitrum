@@ -33,7 +33,7 @@ function meshWithUv1(id: string, u: number): ScenePrimitive {
     // All three vertices carry the same marker so any vertex reveals the source.
     uv1: new Float32Array([u, u, u, u, u, u]),
     material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
-  } as ScenePrimitive;
+  };
 }
 
 /** An instanced-mesh whose single instance is all-filtered (Inf transform) →
@@ -49,7 +49,7 @@ function allFilteredInstancedMesh(id: string): ScenePrimitive {
     uv1: new Float32Array([9, 9, 9, 9, 9, 9]),
     material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
     instances: [infTranslate()],
-  } as ScenePrimitive;
+  };
 }
 
 describe('mergeUv1FromCore — range-by-id after an all-filtered predecessor (R5 / V2-4)', () => {
@@ -96,7 +96,7 @@ describe('mergeUv1FromCore — range-by-id after an all-filtered predecessor (R5
     const scene: Scene = {
       primitives: [
         meshWithUv1('A', 1),
-        { ...(meshWithUv1('B', 2) as ScenePrimitive), transform: ident() } as ScenePrimitive,
+        { ...(meshWithUv1('B', 2)), transform: ident() } as ScenePrimitive,
         meshWithUv1('C', 3),
       ],
       emitters: [],

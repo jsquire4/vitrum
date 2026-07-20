@@ -25,7 +25,11 @@ import {
 } from '@vitrum/shared-bvh';
 import { buildLightTree, packLightTreeForGPU } from '@vitrum/shared-samplers';
 import { invertMat4 } from '../math/mat4.js';
-import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from './materialPacking.js';
+import {
+  MATERIAL_FLOAT_STRIDE,
+  THIN_FILM_LAYER_LIMIT,
+  materialToPackedVec4s,
+} from './materialPacking.js';
 import {
   applyMaterialTextureUvFitScales,
   collectMaterialTextures,
@@ -572,6 +576,47 @@ function emitSolveSkinFallbackWarning(
   console.warn(message);
 }
 
+/**
+ * D1 (2026-07-20, Option B) — structured truthfulness warnings for materials
+ * whose `thinFilmStack.layers` exceed pt-webgpu's declared `THIN_FILM_LAYER_LIMIT`
+ * (8). Layers beyond the limit are silently dropped by the packer; this makes the
+ * truncation visible to the host so it can reconcile against the backend's
+ * declared `BackendSupportDetails.thinFilmLayerLimit`. One warning per exceeding
+ * material index. Emitting these adds NO packed-texel bytes (≤8-layer scenes are
+ * byte-identical). The warning is also `console.warn`'d for parity with the
+ * other material-texture structured warnings.
+ */
+function thinFilmLayerLimitWarnings(
+  materialSpecs: readonly MaterialSpec[],
+  options: BuildPackedSceneOptions,
+): EngineWarning[] {
+  const out: EngineWarning[] = [];
+  for (let materialIndex = 0; materialIndex < materialSpecs.length; materialIndex += 1) {
+    const layers = materialSpecs[materialIndex]?.thinFilmStack?.layers;
+    const requested = layers?.length ?? 0;
+    if (requested <= THIN_FILM_LAYER_LIMIT) continue;
+    const message =
+      `[vitrum/pt-webgpu] material ${materialIndex} declares ${requested} thin-film layers; ` +
+      `this backend packs at most ${THIN_FILM_LAYER_LIMIT} — ${requested - THIN_FILM_LAYER_LIMIT} ` +
+      `excess layer(s) are dropped.`;
+    out.push({
+      code: 'thin-film-layer-limit-exceeded',
+      backend: 'pt-webgpu',
+      phase: options.warningPhase ?? 'setScene',
+      method: options.warningMethod ?? 'setScene',
+      message,
+      details: {
+        materialIndex,
+        requested,
+        limit: THIN_FILM_LAYER_LIMIT,
+        dropped: requested - THIN_FILM_LAYER_LIMIT,
+      },
+    });
+    console.warn(message.replace('[vitrum/pt-webgpu] ', '[pt-webgpu] '));
+  }
+  return out;
+}
+
 function hdriHandleDiagnostics(scene: Scene): Record<string, unknown> {
   if (scene.environment.kind !== 'hdri') return {};
   const handle = scene.environment.hdri;
@@ -975,6 +1020,7 @@ export function buildPackedScene(
   const structuredWarnings = [
     ...structuredEnvironmentWarnings(scene, environment, options),
     ...texCollection.unsupportedTexCoordWarnings,
+    ...thinFilmLayerLimitWarnings(materialSpecs, options),
   ];
   const sceneBounds = sceneCenterRadiusFromPack(geo);
   warnings.push(...environment.warnings);

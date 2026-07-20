@@ -1,4 +1,5 @@
 import type { MaterialSpec, TextureRef, TextureWrapMode, UvTransform } from '@vitrum/core';
+import { halfToFloat } from './textureDecode.js';
 
 interface RawHeightPixels {
   readonly width: number;
@@ -22,15 +23,6 @@ export interface MicrodisplacedMeshGeometry {
   readonly tangents?: Float32Array;
   readonly colors?: Float32Array;
   readonly subdivisions: number;
-}
-
-function halfToFloat(h: number): number {
-  const s = (h & 0x8000) >> 15;
-  const e = (h & 0x7c00) >> 10;
-  const f = h & 0x03ff;
-  if (e === 0) return (s ? -1 : 1) * 2 ** -14 * (f / 1024);
-  if (e === 0x1f) return f ? NaN : (s ? -1 : 1) * Infinity;
-  return (s ? -1 : 1) * 2 ** (e - 15) * (1 + f / 1024);
 }
 
 function finiteOr(value: number | undefined, fallback: number): number {
@@ -554,5 +546,94 @@ export function maybeMicrodisplaceMeshGeometry(input: {
     ...(outTangents != null ? { tangents: new Float32Array(outTangents) } : {}),
     ...(outColors != null ? { colors: new Float32Array(outColors) } : {}),
     subdivisions,
+  };
+}
+
+/** Mesh-like primitive attributes consumed by {@link resolveDisplacedGeometry}. */
+export interface DisplaceablePrimitive {
+  readonly id: string;
+  readonly material: MaterialSpec;
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly indices?: Uint32Array | Uint16Array;
+  readonly uvs?: Float32Array;
+  readonly uv1?: Float32Array;
+  readonly tangents?: Float32Array;
+  readonly colors?: Float32Array;
+}
+
+/** Resolved base attributes after (optional) microdisplacement + vertex displacement. */
+export interface ResolvedDisplacedGeometry {
+  /** Whether microdisplacement diced the source geometry. */
+  readonly microdisplaced: boolean;
+  readonly basePositions: Float32Array;
+  readonly baseNormals: Float32Array;
+  readonly baseTangents: Float32Array | undefined;
+  readonly baseColors: Float32Array | undefined;
+  readonly baseUvs: Float32Array | undefined;
+  readonly baseUv1: Float32Array | undefined;
+  readonly baseIndicesSource: Uint32Array | Uint16Array | undefined;
+  /**
+   * `basePositions` after CPU vertex displacement — equal to `basePositions`
+   * when the primitive was microdisplaced (which already bakes displacement) or
+   * when there is no displacement map to apply.
+   */
+  readonly sourcePositions: Float32Array;
+}
+
+/**
+ * Fold the microdisplacement + base-attribute resolution + vertex-displacement
+ * preamble that was triplicated across `scenePack.packOneMeshLikePrimitive`,
+ * `worldSpaceMerge.mergeWorldSpaceFromCore`, and (partially) `mergeUv1FromCore`
+ * (D12-6). Behavior is bit-for-bit identical to the former inline blocks:
+ *   1. `maybeMicrodisplaceMeshGeometry` (diced geometry bakes displacement);
+ *   2. `base*` = microdisplaced attribute ?? authored attribute;
+ *   3. `sourcePositions` = when NOT microdisplaced, `maybeDisplaceMeshPositions`
+ *      over the base positions/normals (?? basePositions); else basePositions.
+ */
+export function resolveDisplacedGeometry(
+  primitive: DisplaceablePrimitive,
+  warn: DisplacementWarningSink,
+): ResolvedDisplacedGeometry {
+  const microdisplaced = maybeMicrodisplaceMeshGeometry({
+    primitiveId: primitive.id,
+    material: primitive.material,
+    positions: primitive.positions,
+    normals: primitive.normals,
+    ...(primitive.indices != null ? { indices: primitive.indices } : {}),
+    ...(primitive.uvs != null ? { uvs: primitive.uvs } : {}),
+    ...(primitive.uv1 != null ? { uv1: primitive.uv1 } : {}),
+    ...(primitive.tangents != null ? { tangents: primitive.tangents } : {}),
+    ...(primitive.colors != null ? { colors: primitive.colors } : {}),
+    onWarning: warn,
+  });
+  const basePositions = microdisplaced?.positions ?? primitive.positions;
+  const baseNormals = microdisplaced?.normals ?? primitive.normals;
+  const baseTangents = microdisplaced?.tangents ?? primitive.tangents;
+  const baseColors = microdisplaced?.colors ?? primitive.colors;
+  const baseUvs = microdisplaced?.uvs ?? primitive.uvs;
+  const baseUv1 = microdisplaced?.uv1 ?? primitive.uv1;
+  const baseIndicesSource = microdisplaced?.indices ?? primitive.indices;
+  const sourcePositions = microdisplaced == null
+    ? maybeDisplaceMeshPositions({
+        primitiveId: primitive.id,
+        material: primitive.material,
+        positions: basePositions,
+        normals: baseNormals,
+        ...(baseUvs != null ? { uvs: baseUvs } : {}),
+        ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
+        onWarning: warn,
+      }) ?? basePositions
+    : basePositions;
+  return {
+    microdisplaced: microdisplaced != null,
+    basePositions,
+    baseNormals,
+    baseTangents,
+    baseColors,
+    baseUvs,
+    baseUv1,
+    baseIndicesSource,
+    sourcePositions,
   };
 }

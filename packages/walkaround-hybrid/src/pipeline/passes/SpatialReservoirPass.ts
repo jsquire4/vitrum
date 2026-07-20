@@ -61,13 +61,10 @@ export class SpatialReservoirPass extends SharedBindGroupPass {
     // with the existing bounds check. Y stays full-res (one compacted thread per
     // row). Workgroup size is 8×8 (matches spatial.wgsl @workgroup_size(8,8,1)),
     // identical to the ShadePass compaction.
-    const compactCols = Math.ceil(ctx.width / 2);
-    const cbWgX = Math.ceil(compactCols / 8);
-    const cbWgY = Math.ceil(ctx.height / 8);
     for (const label of this.passLabels) {
       dispatchSharedBindGroupPass(ctx, this._pipeline, {
         label,
-        dispatchOverride: { x: cbWgX, y: cbWgY },
+        dispatchOverride: { x: ctx.checkerboardWgX, y: ctx.checkerboardWgY },
       });
     }
   }

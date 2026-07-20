@@ -21,8 +21,10 @@
 import type {
   Scene,
   Engine,
+  FrameInput,
 } from '@vitrum/core';
 import { auditSceneNeedsTlas } from '@vitrum/core';
+import type { EngineWithBackendId } from './createEngineInternals.js';
 import {
   HYBRID_WEBGPU_REQUIRED_LIMITS,
   type HybridEngineOptions,
@@ -140,6 +142,89 @@ export interface ProgressiveEngineHandle {
   readonly converged: Engine;
   /** Tear down both engines, then destroy the shared device. Idempotent. */
   dispose(): void;
+}
+
+/**
+ * Subscribe `cb` to a telemetry channel on BOTH sub-engines and return a single
+ * unsubscribe that drains both. The progressive facade fans out the identical
+ * pattern for `onFrame`, `onError`, and `onWarning`; this collapses the three
+ * near-identical bodies into one. A sub-engine that lacks the channel simply
+ * contributes no subscription.
+ */
+function fanOut<Cb>(
+  engines: readonly (Engine | undefined)[],
+  channel: (engine: Engine) => ((cb: Cb) => (() => void)) | undefined,
+  cb: Cb,
+): () => void {
+  const unsubs = engines
+    .map((engine) => (engine != null ? channel(engine)?.(cb) : undefined))
+    .filter((fn): fn is () => void => typeof fn === 'function');
+  return () => {
+    for (const unsub of unsubs) unsub();
+  };
+}
+
+/**
+ * Adapt a {@link ProgressiveEngineHandle} to the {@link EngineWithBackendId}
+ * surface that `attachVitrum` / `<VitrumCanvas>` drive. Scene mutations and the
+ * per-frame render route through the coordinator (the single scene-mutation +
+ * handoff authority); telemetry fans out to both sub-engines via {@link fanOut}.
+ *
+ * Lives here (next to `createProgressiveEngine`) rather than in the React
+ * component so the non-React vanilla path can consume the same adapter and the
+ * fan-out logic is single-source. `getPresentationSource` (R2) is preserved: the
+ * coordinator returns the converged offscreen texture after handoff and null
+ * while the realtime swapchain engine presents itself — this is what unfreezes
+ * the canvas after handoff.
+ */
+export function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): EngineWithBackendId {
+  const coordinator = handle.coordinator;
+  const engine = {
+    backendId: 'pt-webgpu' as const,
+    get state() { return handle.realtime.state; },
+    get capabilities() { return handle.realtime.capabilities; },
+    setScene: (scene: Scene) => coordinator.setScene(scene),
+    getScene: () => coordinator.getScene() ?? handle.realtime.getScene?.() ?? null,
+    updatePrimitive: (id: string, patch: Parameters<NonNullable<EngineWithBackendId['updatePrimitive']>>[1]) =>
+      coordinator.updatePrimitive(id, patch),
+    addPrimitive: (primitive: Parameters<NonNullable<EngineWithBackendId['addPrimitive']>>[0]) =>
+      coordinator.addPrimitive(primitive),
+    removePrimitive: (id: Parameters<NonNullable<EngineWithBackendId['removePrimitive']>>[0]) =>
+      coordinator.removePrimitive(id),
+    setSize: (width: number, height: number) => {
+      handle.realtime.setSize?.(width, height);
+      handle.converged.setSize?.(width, height);
+    },
+    renderFrame: (input: FrameInput) => coordinator.frame(input).output,
+    // V1-1 / R2 — presentation source for attachVitrum's offscreen blit. The
+    // coordinator returns the converged (offscreen pt-webgpu) engine's texture
+    // once it hands off, and null while the swapchain realtime engine is driving
+    // (it presents itself). This is what unfreezes the canvas after handoff.
+    getPresentationSource: () => coordinator.getPresentationSource(),
+    reset: () => {
+      handle.realtime.reset();
+      handle.converged.reset();
+      coordinator.reset();
+    },
+    pause: () => {
+      handle.realtime.pause();
+      handle.converged.pause();
+    },
+    resume: () => {
+      handle.realtime.resume();
+      handle.converged.resume();
+    },
+    dispose: () => handle.dispose(),
+    onFrame: (cb: Parameters<NonNullable<EngineWithBackendId['onFrame']>>[0]) =>
+      fanOut([handle.realtime, handle.converged], (e) => e.onFrame?.bind(e), cb),
+    onProgress: (cb: Parameters<NonNullable<EngineWithBackendId['onProgress']>>[0]) =>
+      handle.converged.onProgress?.(cb) ?? (() => {}),
+    onError: (cb: Parameters<NonNullable<EngineWithBackendId['onError']>>[0]) =>
+      fanOut([handle.realtime, handle.converged], (e) => e.onError?.bind(e), cb),
+    onWarning: (cb: Parameters<NonNullable<EngineWithBackendId['onWarning']>>[0]) =>
+      fanOut([handle.realtime, handle.converged], (e) => e.onWarning?.bind(e), cb),
+  };
+  return engine;
 }
 
 /**

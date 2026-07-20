@@ -50,6 +50,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import { CB_PREFILL_UBO } from './uboLayouts.js';
 
 /** Denoiser IDs that read `hdrColorTexture` directly and therefore require
@@ -115,12 +116,12 @@ export class CheckerboardPrefillPass implements Pass {
       resourceCache?.textureView(ctx.resources.common.motionVectorTexture) ?? ctx.resources.common.motionVectorTexture.createView(),
       resourceCache?.textureView(ctx.resources.common.hdrColorTexture) ?? ctx.resources.common.hdrColorTexture.createView(),
     );
-    const bg = resourceCache?.bindGroup('pass:cb-prefill', [
+    const bg = cachedBindGroup(resourceCache, 'pass:cb-prefill', [
       this._uboRef.buf,
       frameState.readAccum,
       ctx.resources.common.motionVectorTexture,
       ctx.resources.common.hdrColorTexture,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
 
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'cb-prefill');
   }

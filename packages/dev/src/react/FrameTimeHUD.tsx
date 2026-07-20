@@ -16,39 +16,17 @@ import React, {
   type CSSProperties,
 } from 'react';
 import type { DebuggableEngine, FrameStats } from '../types.js';
+import { NumberRing, observeFrameTime } from '../vanilla/numberRing.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Moving-average ring buffer (pure TS, easy to unit-test)
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Fixed-capacity ring buffer that maintains a running sum for O(1) mean. */
-export class RingBuffer {
-  private readonly buf: Float64Array;
-  private head = 0;
-  private count = 0;
-  private sum = 0;
-
-  constructor(readonly capacity: number) {
-    this.buf = new Float64Array(capacity);
-  }
-
-  push(value: number): void {
-    const old = this.buf[this.head] ?? 0;
-    this.sum -= old;
-    this.buf[this.head] = value;
-    this.sum += value;
-    this.head = (this.head + 1) % this.capacity;
-    if (this.count < this.capacity) this.count++;
-  }
-
-  mean(): number {
-    return this.count === 0 ? 0 : this.sum / this.count;
-  }
-
-  get filled(): number {
-    return this.count;
-  }
-}
+// D2-5 — `RingBuffer` is now an alias of the shared O(1)-sum `NumberRing`
+// (packages/dev/src/vanilla/numberRing.ts). Re-exported here so the historical
+// `import { RingBuffer } from '.../react/FrameTimeHUD.js'` path (ringBuffer.test)
+// keeps resolving.
+export { NumberRing as RingBuffer } from '../vanilla/numberRing.js';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Props
@@ -115,52 +93,21 @@ export const FrameTimeHUD: FC<FrameTimeHUDProps> = ({
 }) => {
   const [latest, setLatest] = useState<FrameStats | null>(null);
   const [avgMs, setAvgMs] = useState(0);
-  const ringRef = useRef(new RingBuffer(averageWindow));
-  const rafRef = useRef<number | null>(null);
-  const lastRafTimeRef = useRef<number | null>(null);
+  const ringRef = useRef(new NumberRing(averageWindow));
 
   useEffect(() => {
     // Recreate ring when capacity changes.
-    ringRef.current = new RingBuffer(averageWindow);
+    ringRef.current = new NumberRing(averageWindow);
   }, [averageWindow]);
 
   useEffect(() => {
+    // D2-6 — shared onFrame-else-rAF observer. `observeFrameTime` pushes each
+    // sample into the ring; the HUD renders the latest stats + running mean.
     const ring = ringRef.current;
-
-    // ── Path A: engine.onFrame present (T3.E) ───────────────────────────
-    if (typeof engine.onFrame === 'function') {
-      const unsubscribe = engine.onFrame((stats) => {
-        ring.push(stats.frameTimeMs);
-        setLatest(stats);
-        setAvgMs(ring.mean());
-      });
-      return () => {
-        unsubscribe();
-      };
-    }
-
-    // ── Path B: rAF fallback (T3.E not yet landed) ───────────────────────
-    // Measure wall-clock frame delta; build a synthetic FrameStats.
-    function tick(now: number): void {
-      if (lastRafTimeRef.current !== null) {
-        const dt = now - lastRafTimeRef.current;
-        ring.push(dt);
-        const synthetic: FrameStats = { frameTimeMs: dt };
-        setLatest(synthetic);
-        setAvgMs(ring.mean());
-      }
-      lastRafTimeRef.current = now;
-      rafRef.current = requestAnimationFrame(tick);
-    }
-    rafRef.current = requestAnimationFrame(tick);
-
-    return () => {
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-      lastRafTimeRef.current = null;
-    };
+    return observeFrameTime(engine, ring, (stats) => {
+      setLatest(stats);
+      setAvgMs(ring.mean());
+    });
   }, [engine]);
 
   const fps = avgMs > 0 ? (1000 / avgMs).toFixed(1) : '—';

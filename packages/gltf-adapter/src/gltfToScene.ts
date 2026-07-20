@@ -1153,7 +1153,7 @@ function buildPrimitiveFromMeshPrimitive(
     });
   }
 
-  let primitiveInstances = instanceTransforms?.worldInstanceTransforms;
+  const primitiveInstances = instanceTransforms?.worldInstanceTransforms;
   if (primitiveInstances && skinArg && instanceTransforms) {
     if (!nodeCtx.instanceFallbackWarned.value) {
       emitImportDiagnostic(warnings, diagnostics, {
@@ -2226,7 +2226,7 @@ function _cloneMaterialWithTextureRef(
   return {
     ...material,
     [field]: ref,
-  } as MaterialSpec;
+  };
 }
 
 function _cloneMaterialWithoutTextureRefs(

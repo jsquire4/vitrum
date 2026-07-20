@@ -1178,20 +1178,7 @@ function textureRefLike(value: unknown): {
 } | null {
   if (value == null || typeof value !== 'object') return null;
   if ('handle' in value) {
-    return value as {
-      readonly handle: unknown;
-      readonly texCoord?: number;
-      readonly transform?: {
-        readonly offset?: readonly [number, number];
-        readonly scale?: readonly [number, number];
-        readonly rotation?: number;
-      };
-      readonly wrapS?: string;
-      readonly wrapT?: string;
-      readonly magFilter?: string;
-      readonly minFilter?: string;
-      readonly mipFilter?: string;
-    };
+    return value;
   }
   return { handle: value };
 }

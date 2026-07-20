@@ -24,24 +24,14 @@ import type {
 } from '@vitrum/core';
 import { BACKEND_PROMISE_LEDGER } from '@vitrum/core';
 import { wrapWithIdempotentDispose } from '../createEngine.js';
+import { stubCapabilities, stubEngine } from './fixtures/stubEngine.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function baseCapabilities(): EngineCapabilities {
-  return {
+  return stubCapabilities({
     supportsIncrementalScene: true,
     supportsAddRemovePrimitive: true,
-    supportsAuxBuffers: false,
-    accumulates: true,
-    maxSamplesPerPixel: 1,
-    maxBounces: 1,
-    supportedAnalyticShapes: new Set(),
-    supportedEmitterKinds: new Set(),
-    supportedPrimitiveKinds: new Set(),
-    supportedEnvironmentKinds: new Set(),
-    presentationMode: 'offscreen-texture',
-    experimentalFeatures: new Set(),
-    causticStrategy: 'none',
     incrementalPatchSupport: {
       transform: true,
       positions: true,
@@ -49,7 +39,7 @@ function baseCapabilities(): EngineCapabilities {
       emitter: true,
       topology: true,
     },
-  } as unknown as EngineCapabilities;
+  });
 }
 
 const FAKE_FRAME: CapturedFrame = {
@@ -63,14 +53,7 @@ function makeEngine() {
   const onErrorSpy = vi.fn((_cb: (e: unknown) => void) => backendUnsub as () => void);
   const captureFrameSpy = vi.fn(async () => FAKE_FRAME as CapturedFrame | null);
   const engine: Engine = {
-    get state(): EngineState { return 'ready'; },
-    get capabilities() { return baseCapabilities(); },
-    setScene: vi.fn(),
-    renderFrame: (_: import('@vitrum/core').FrameInput) => ({ kind: 'skipped' as const, samplesAccumulated: 0, isConverged: false }),
-    reset: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    dispose: vi.fn(),
+    ...stubEngine(baseCapabilities()),
     onError: onErrorSpy,
     captureFrame: captureFrameSpy,
   };

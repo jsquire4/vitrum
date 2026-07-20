@@ -10,7 +10,7 @@
  * in the map order or lane layout fails here.
  */
 import { describe, expect, it } from 'vitest';
-import type { MaterialSpec, TextureFilterMode, TextureMipFilterMode, TextureRef, TextureWrapMode } from '@vitrum/core';
+import type { MaterialSpec, TextureMipFilterMode, TextureRef, TextureWrapMode } from '@vitrum/core';
 import {
   applyMaterialTextureUvFitScales,
   collectMaterialTextures,
@@ -34,8 +34,8 @@ function richAllMapsMaterial(): MaterialSpec {
     texCoord: tc % 2,
     wrapS: WRAP_S[idx % 3]!,
     wrapT: WRAP_T[idx % 3]!,
-    magFilter: (idx % 2 ? 'nearest' : 'linear') as TextureFilterMode,
-    minFilter: (idx % 3 ? 'nearest' : 'linear') as TextureFilterMode,
+    magFilter: (idx % 2 ? 'nearest' : 'linear'),
+    minFilter: (idx % 3 ? 'nearest' : 'linear'),
     mipFilter: MIP[idx % 3]!,
     transform: { offset: [0.01 * idx, 0.02 * idx], scale: [1 + 0.01 * idx, 1 + 0.02 * idx], rotation: 0.03 * idx },
   });

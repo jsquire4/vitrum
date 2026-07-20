@@ -59,3 +59,23 @@ export class PipelineResourceCache {
     this._bindGroups.clear();
   }
 }
+
+/**
+ * Memoize a bind group through an OPTIONAL {@link PipelineResourceCache},
+ * falling back to a fresh build when no cache is supplied. Collapses the
+ * repeated `cache?.bindGroup(id, resources, build) ?? build()` idiom into a
+ * single call so the `?? build()` fallback (and the double-listed resources ↔
+ * cache-key coupling the callers warn about) live in ONE place.
+ *
+ * `resources` is BOTH the invalidation key AND the identity list the caller's
+ * `build` closes over — passing them once here keeps the key and the built
+ * group's contents from drifting (the stale-binding bug the comments guard).
+ */
+export function cachedBindGroup<T = GPUBindGroup>(
+  cache: PipelineResourceCache | undefined,
+  id: string,
+  resources: readonly unknown[],
+  build: () => T,
+): T {
+  return cache?.bindGroup(id, resources, build) ?? build();
+}

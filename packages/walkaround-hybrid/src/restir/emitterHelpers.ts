@@ -290,6 +290,26 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
   return out;
 }
 
+/** A world-space sub-triangle: 3 positions + its UV0 and UV1 vertex pairs.
+ *  Groups the former 9 positional vertex args of the `pushTri` closure. */
+interface SubTriangle {
+  readonly pos: readonly [
+    [number, number, number],
+    [number, number, number],
+    [number, number, number],
+  ];
+  readonly uv0: readonly [readonly [number, number], readonly [number, number], readonly [number, number]];
+  readonly uv1: readonly [readonly [number, number], readonly [number, number], readonly [number, number]];
+}
+
+/** Optional per-sub-triangle metadata (provenance + radiance override). */
+interface SubTriangleMeta {
+  readonly sourceSubdivLevel?: number;
+  readonly sourceSubdivOrdinal?: number;
+  readonly radianceOverride?: readonly [number, number, number];
+  readonly forceScalarLe?: boolean;
+}
+
 /**
  * Expand `mesh-area` emitters from a `@vitrum/core` `Scene` into world-space
  * triangles for DDGI probe NEE. This is the DDGI-only counterpart to
@@ -374,21 +394,14 @@ export function collectMeshAreaEmitterTrisFromCore(
       const invLen = 1 / crossLen;
       const normal: [number, number, number] = [nx * invLen, ny * invLen, nz * invLen];
       const sourceTriIndex = sourceTriIndexFor?.(String(prim.id), ti);
-      const pushTri = (
-        triA: [number, number, number],
-        triB: [number, number, number],
-        triC: [number, number, number],
-        tuv0A: readonly [number, number],
-        tuv0B: readonly [number, number],
-        tuv0C: readonly [number, number],
-        tuv1A: readonly [number, number],
-        tuv1B: readonly [number, number],
-        tuv1C: readonly [number, number],
-        sourceSubdivLevel?: number,
-        sourceSubdivOrdinal?: number,
-        radianceOverride?: readonly [number, number, number],
-        forceScalarLe = false,
-      ): void => {
+      // A world-space sub-triangle: 3 positions + its two UV sets, plus optional
+      // provenance/override metadata. Replaces the former 13-positional-arg
+      // pushTri closure (D6-6).
+      const pushTri = (sub: SubTriangle, meta: SubTriangleMeta = {}): void => {
+        const [triA, triB, triC] = sub.pos;
+        const [tuv0A, tuv0B, tuv0C] = sub.uv0;
+        const [tuv1A, tuv1B, tuv1C] = sub.uv1;
+        const { sourceSubdivLevel, sourceSubdivOrdinal, radianceOverride, forceScalarLe = false } = meta;
         const sx = triB[0] - triA[0], sy = triB[1] - triA[1], sz = triB[2] - triA[2];
         const tx = triC[0] - triA[0], ty = triC[1] - triA[1], tz = triC[2] - triA[2];
         const triArea = 0.5 * Math.sqrt(
@@ -423,6 +436,18 @@ export function collectMeshAreaEmitterTrisFromCore(
         });
       };
 
+      // Interpolate the parent triangle's positions + both UV sets at the given
+      // barycentric weights into a SubTriangle.
+      const subTriangleAt = (
+        wa: readonly [number, number, number],
+        wb: readonly [number, number, number],
+        wc: readonly [number, number, number],
+      ): SubTriangle => ({
+        pos: [baryVec3(vA, vB, vC, wa), baryVec3(vA, vB, vC, wb), baryVec3(vA, vB, vC, wc)],
+        uv0: [baryUv2(uv0A, uv0B, uv0C, wa), baryUv2(uv0A, uv0B, uv0C, wb), baryUv2(uv0A, uv0B, uv0C, wc)],
+        uv1: [baryUv2(uv1A, uv1B, uv1C, wa), baryUv2(uv1A, uv1B, uv1C, wb), baryUv2(uv1A, uv1B, uv1C, wc)],
+      });
+
       const exactTexelHandled = mappedRadianceMaterial == null
         ? false
         : forEachEmissiveMapTexelSubTriangle(
@@ -434,21 +459,7 @@ export function collectMeshAreaEmitterTrisFromCore(
             uv1B,
             uv1C,
             (wa, wb, wc, texelLe) => {
-              pushTri(
-                baryVec3(vA, vB, vC, wa),
-                baryVec3(vA, vB, vC, wb),
-                baryVec3(vA, vB, vC, wc),
-                baryUv2(uv0A, uv0B, uv0C, wa),
-                baryUv2(uv0A, uv0B, uv0C, wb),
-                baryUv2(uv0A, uv0B, uv0C, wc),
-                baryUv2(uv1A, uv1B, uv1C, wa),
-                baryUv2(uv1A, uv1B, uv1C, wb),
-                baryUv2(uv1A, uv1B, uv1C, wc),
-                undefined,
-                undefined,
-                texelLe,
-                true,
-              );
+              pushTri(subTriangleAt(wa, wb, wc), { radianceOverride: texelLe, forceScalarLe: true });
             },
           );
       if (exactTexelHandled) continue;
@@ -457,23 +468,11 @@ export function collectMeshAreaEmitterTrisFromCore(
         ? 1
         : emissiveMapTriangleSubdivisionLevel(mappedRadianceMaterial);
       if (subdiv <= 1) {
-        pushTri(vA, vB, vC, uv0A, uv0B, uv0C, uv1A, uv1B, uv1C);
+        pushTri({ pos: [vA, vB, vC], uv0: [uv0A, uv0B, uv0C], uv1: [uv1A, uv1B, uv1C] });
       } else {
         let ordinal = 0;
         forEachBarycentricSubTriangle(subdiv, (wa, wb, wc) => {
-          pushTri(
-            baryVec3(vA, vB, vC, wa),
-            baryVec3(vA, vB, vC, wb),
-            baryVec3(vA, vB, vC, wc),
-            baryUv2(uv0A, uv0B, uv0C, wa),
-            baryUv2(uv0A, uv0B, uv0C, wb),
-            baryUv2(uv0A, uv0B, uv0C, wc),
-            baryUv2(uv1A, uv1B, uv1C, wa),
-            baryUv2(uv1A, uv1B, uv1C, wb),
-            baryUv2(uv1A, uv1B, uv1C, wc),
-            subdiv,
-            ordinal,
-          );
+          pushTri(subTriangleAt(wa, wb, wc), { sourceSubdivLevel: subdiv, sourceSubdivOrdinal: ordinal });
           ordinal += 1;
         });
       }

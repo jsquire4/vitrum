@@ -9,6 +9,7 @@ const r = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
+      '@vitrum/core/inverse-scaffolding': r('../core/src/inverse-scaffolding.ts'),
       '@vitrum/core': r('../core/src/index.ts'),
       '@vitrum/shared-bvh': r('../shared-bvh/src/index.ts'),
       '@vitrum/shared-denoisers': r('../shared-denoisers/src/index.ts'),

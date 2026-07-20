@@ -133,7 +133,7 @@ const WALKAROUND_ATLAS_MAPS = evidence(
   ],
   [
     {
-      path: 'packages/walkaround-hybrid/src/pipeline/materialTextureAtlas.ts',
+      path: 'packages/walkaround-hybrid/src/bvh/materialTextureAtlasPack.ts',
       includes: [
         "field: 'baseColorMap'",
         "field: 'normalMap'",

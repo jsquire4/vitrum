@@ -1119,6 +1119,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       materials: PT_WEBGL2_MATERIALS,
       shadows: PT_WEBGL2_SHADOWS,
       denoisers: PT_WEBGL2_DENOISERS,
+      // D1 (2026-07-20) — pt-webgl2 packs up to 35 thin-film layers (GLSL stride);
+      // MUST match materialsTexture.ts THIN_FILM_LAYER_LIMIT.
+      thinFilmLayerLimit: 35,
       // buildCapabilities() mirrors this matrix: same-topology transform and
       // position/attribute edits are native subimage updates; topology/list
       // edits still fallback-rebuild. Resize is a native render-target
@@ -1189,6 +1192,9 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       shadows: PT_WEBGPU_SHADOWS,
       denoisers: PT_WEBGPU_DENOISERS,
       mutations: PT_WEBGPU_MUTATIONS,
+      // D1 (2026-07-20) — pt-webgpu packs up to 8 thin-film layers (WGSL loop
+      // stride); MUST match materialPacking.ts THIN_FILM_LAYER_LIMIT + WGSL 8u.
+      thinFilmLayerLimit: 8,
     },
     methodPromises: {
       ...COMMON_METHOD_PROMISES,

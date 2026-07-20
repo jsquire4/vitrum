@@ -149,6 +149,13 @@ export interface PassDispatchContext {
   readonly wgY16: number;
   readonly halfWgX: number;
   readonly halfWgY: number;
+  /** Checkerboard sparse-dispatch workgroup counts — `ceil(ceil(W/2)/8)` ×
+   *  `ceil(H/8)` (ceil-based, distinct from the floor-based half-res
+   *  `halfWgX/halfWgY`). Shared by RIS/Shade/SpatialReservoir when
+   *  `checkerboardOn`; each row compacts to its active-parity columns while Y
+   *  stays full-res. Only consumed when `checkerboardOn` is true. */
+  readonly checkerboardWgX: number;
+  readonly checkerboardWgY: number;
   /**
    * Welford variance ping-pong index at the START of this frame, before the
    * atrousVariance denoiser's dispatch() has run. The SampleBudgetPass reads
@@ -242,6 +249,11 @@ export function dispatchSharedBindGroupPass(
      *  global_invocation_id back into the true pixel). Absent ⇒ the
      *  byte-identical full-res / halfRes dispatch. */
     readonly dispatchOverride?: { readonly x: number; readonly y: number };
+    /** Override the slot-0 bind group. The gi-ris pass binds
+     *  `risGiFrameBindGroup` (its dedicated GI reservoir + frame group) at
+     *  slot 0 instead of the shared `frameBindGroup`. Absent ⇒ the default
+     *  `frameBindGroup` (byte-identical to the pre-override dispatch). */
+    readonly frameBindGroupOverride?: GPUBindGroup;
   },
 ): void {
   const {
@@ -251,7 +263,7 @@ export function dispatchSharedBindGroupPass(
   } = ctx;
   const pass = encoder.beginComputePass(computeDesc(opts.label));
   pass.setPipeline(pipeline);
-  pass.setBindGroup(0, frameBindGroup);
+  pass.setBindGroup(0, opts.frameBindGroupOverride ?? frameBindGroup);
   pass.setBindGroup(1, sceneBindGroup);
   pass.setBindGroup(2, uboBindGroup);
   if (opts.useHybridLayers) {

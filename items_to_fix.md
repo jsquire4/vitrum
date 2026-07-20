@@ -397,6 +397,49 @@ A finding from a sweep doc is hearsay until I read the file myself. Same rule ap
 - **H59 ✅ CLOSED / SOURCE-RECONCILED 2026-06-15 — tool READMEs no longer advertise dead workflows.** Source read found several stale subclaims already closed before this pass: example workspaces exist under `examples/*`, `scenario-presets.mjs` targets `backend:'pt-webgl2'`, neural training docs/scripts use canonical `535,107`, and `pt-webgl-fidelity/README.md` is explicitly archive/provenance with no active capture path. This pass removed the live stale residue: `baseline/README.md` and `session-20260527/README.md` no longer cite deleted `capture:refs:quick` / `benchmark:seed-wg0` commands; `PR-hybrid/README.md`, `PR-hybrid/perf/README.md`, and `PR-hybrid/manifest.json` now label the old PR-hybrid artifacts as archive/provenance and point current validation to `validate:gpu:smoke` or the fail-closed `benchmark:gap-closure` capture-adapter flow. `tools/reference-renders/README.md` already records the `rfe09-bridge-global-cmf.png` pre-`daa9716` unverified status.
 - **Healthy (verified by the agent):** the mechanical no-GPU chain (`verify:mechanical`, rc-acceptance, validate-gpu, githooks, wgsl-layout codegen in sync), `diff-baselines.mjs`, gpu-env probes.
 
+## Section I — pt-webgl2 emitter feature-parity gaps (filed 2026-07-20, complexity-sweep T1-2)
+
+These two gaps were VERIFIED by source-read during the T1-2 cross-backend emitter
+dedup (`plan/complexity-sweep-2026-07-20-plan.md`). They are **behavior/feature
+gaps, NOT dedup**: the vector-math dedup + shared `emitterToCanonical` normalizer
+landed byte-preserving (t2bByteIdentity goldens + `lightsTexture.test.ts` +
+`meshAreaLights.test.ts` green; run-ptwebgl2-h1 anchor unchanged). Do NOT
+"silently fix" either gap without a before/after GPU A/B per the testing
+protocol — they are recorded here + scheduled, not band-aided.
+
+- **I1 ◻ OPEN — pt-webgl2 spot soft-source radius is hardcoded to 0.**
+  `packages/pt-webgl2/src/scene/lightsTexture.ts` (spot arm, `radius = 0`;
+  s3.area `Math.PI * radius * radius = 0`; s4.r `radius = 0`). The core
+  `SpotEmitter` contract has no soft-source radius field, so this is not
+  currently authorable from a core scene — but the fork's spot record carried a
+  finite source radius (soft penumbra area sampling). pt-webgpu spot packing
+  (`emitterPacking.ts` `SPOT_LIGHT_FLOAT_STRIDE`) likewise treats the spot as a
+  delta point (no source radius). **Truthfulness note:** both backends model
+  the spot as a hard point source; the `radius` texel is a dead 0 in pt-webgl2.
+  Closing this needs (a) a core-contract addition (`SpotEmitter.sourceRadius?`)
+  and (b) area-sampled spot NEE on both backends with a converged A/B — a
+  scoped feature, not a dedup. Tracked for scheduling; NOT implemented in T1-2.
+
+- **I2 ◻ OPEN — pt-webgl2 filters `mesh-area` emitters out of the analytic
+  light list.** `packages/pt-webgl2/src/scene/lightsTexture.ts` `packLightsTexture`
+  (`emitters.filter((e) => e.kind !== 'mesh-area')`). Mesh-area emitters are
+  instead handled by the separate emissive-geometry sampling path
+  (`meshAreaLights.ts` `packMeshAreaTexture` / the emissive fold), so they are
+  NOT dropped — but they never enter the same analytic 6-texel light list the
+  other five kinds use. pt-webgpu, by contrast, packs explicit mesh-area
+  emitters into their own `meshAreaLightsData` stream AND synthesizes implicit
+  mesh-area emitters (`packEmitterArrays` H14-A). The shared canonicalizer
+  mirrors this backend split via its `includeMeshArea` flag
+  (`emitterToCanonical(scene, false)` = pt-webgl2 analytic view;
+  `emitterToCanonical(scene, true)` = pt-webgpu view). **Truthfulness note:**
+  this is a deliberate representational split (analytic list vs
+  emissive-geometry sampling), documented in the `packLightsTexture` header, and
+  is captured by the T1-2 parity test
+  (`packages/engine/src/__tests__/emitterCanonicalParity.test.ts` — "documents
+  the mesh-area analytic-list parity gap"). Any future unification of the two
+  mesh-area sampling paths needs a variance/convergence A/B, not a silent
+  filter removal. Tracked; NOT implemented in T1-2.
+
 ### H verification protocol
 
 This historical section still preserves old `◻` markers from the original audit.

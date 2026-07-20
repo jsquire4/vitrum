@@ -472,7 +472,15 @@ export function buildPreparedAccumBindGroup(
 
 // ── Hybrid layers bind group (DDGI, shade pass slot 3) ───────────────────────
 
-interface HybridLayersResources {
+/**
+ * Resources for the SHADE hybrid-layers bind group (bindings 0-5 only): the
+ * DDGI irradiance/visibility textures + sampler + UBO, plus the RC cascade-0 /
+ * params buffers. The shade pass does NOT bind the PPG guided-sampling trees
+ * (those are gi-ris-only, bindings 6-8) — so this narrower type lets the shade
+ * caller supply exactly what it uses, instead of padding the PPG slots with a
+ * filler buffer just to satisfy the shape (D5-7).
+ */
+interface ShadeHybridLayersResources {
   ddgiIrrTex: GPUTexture | null;
   ddgiVisTex: GPUTexture | null;
   ddgiPlaceholderRgba16f: GPUTexture;
@@ -486,11 +494,15 @@ interface HybridLayersResources {
   // sample is actually integrated into Lo_indirect.
   rcCascade0Buffer: GPUBuffer;
   rcParamsBuffer:   GPUBuffer;
+}
+
+interface HybridLayersResources extends ShadeHybridLayersResources {
   // W9 guided sampling — PPG tree buffers (sTree / dTree / dTreeOffsets).
   // Always present GPUBuffers: the real STORAGE-flagged PPG buffers when PPG
   // is enabled, or a shared 16-byte zeroed placeholder when disabled. gi-ris
   // descends them only when ubo.ppgEnabled == 1, so the placeholders are
-  // never dereferenced in the PPG-off path.
+  // never dereferenced in the PPG-off path. The SHADE bind group does not use
+  // these (bindings 6-8 are gi-ris-only).
   ppgSTreeBuffer:        GPUBuffer;
   ppgDTreeBuffer:        GPUBuffer;
   ppgDTreeOffsetsBuffer: GPUBuffer;
@@ -525,7 +537,7 @@ export function buildHybridLayersBindGroup(
 export function buildShadeHybridLayersBindGroup(
   device: GPUDevice,
   cache: BGLCache,
-  r: HybridLayersResources,
+  r: ShadeHybridLayersResources,
   viewCache?: TextureViewCache,
 ): GPUBindGroup {
   const irrTex = r.ddgiIrrTex ?? r.ddgiPlaceholderRgba16f;

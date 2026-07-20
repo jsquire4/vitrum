@@ -36,7 +36,7 @@ import {
 import type { BGLCache } from '../bglTypes.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
 import type { GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
-import type { PipelineResourceCache } from './PipelineResourceCache.js';
+import { cachedBindGroup, type PipelineResourceCache } from './PipelineResourceCache.js';
 
 interface DDGISetInputs {
   irradianceTex: GPUTexture;
@@ -234,7 +234,7 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       ppgDTreeBuffer,
       ppgDTreeOffsetsBuffer,
     }, resourceCache);
-    return resourceCache?.bindGroup('per-frame:hybrid-layers', [
+    return cachedBindGroup(resourceCache, 'per-frame:hybrid-layers', [
       irrTex,
       visTex,
       frameResources.common.nearestSampler,
@@ -244,7 +244,7 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       ppgSTreeBuffer,
       ppgDTreeBuffer,
       ppgDTreeOffsetsBuffer,
-    ], build) ?? build();
+    ], build);
   }
 
   buildShadeBindGroup(
@@ -258,6 +258,9 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
     const rcParamsBuffer = this._rcParamsBuffer ?? rcPh.params;
     const irrTex = this._irrTex ?? frameResources.ddgi.ddgiPlaceholderRgba16f;
     const visTex = this._visTex ?? frameResources.ddgi.ddgiPlaceholderVisRgba16f;
+    // The shade hybrid-layers bind group binds bindings 0-5 only (no PPG
+    // trees), so we pass the narrowed ShadeHybridLayersResources shape — no
+    // more rcCascade0Buffer PPG-filler to satisfy an over-wide type (D5-7).
     const build = (): GPUBindGroup => buildShadeHybridLayersBindGroup(device, bglCache, {
       ddgiIrrTex:             this._irrTex,
       ddgiVisTex:             this._visTex,
@@ -267,18 +270,15 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
-      ppgSTreeBuffer:        rcCascade0Buffer,
-      ppgDTreeBuffer:        rcCascade0Buffer,
-      ppgDTreeOffsetsBuffer: rcCascade0Buffer,
     }, resourceCache);
-    return resourceCache?.bindGroup('per-frame:shade-hybrid-layers', [
+    return cachedBindGroup(resourceCache, 'per-frame:shade-hybrid-layers', [
       irrTex,
       visTex,
       frameResources.common.nearestSampler,
       frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
-    ], build) ?? build();
+    ], build);
   }
 
   gpuMemorySections(): GpuMemoryExternalSections {

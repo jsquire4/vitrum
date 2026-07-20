@@ -16,7 +16,7 @@ import {
 import type { SceneBindGroupResources } from './BvhBufferHost.js';
 import type { OptionalSubsystemBindingState } from './OptionalSubsystemBindingState.js';
 import type { FrameResources } from './resourceManager.js';
-import type { PipelineResourceCache } from './PipelineResourceCache.js';
+import { cachedBindGroup, type PipelineResourceCache } from './PipelineResourceCache.js';
 
 export interface PerFrameBindGroups {
   readonly frame: GPUBindGroup;
@@ -107,7 +107,7 @@ export function buildPerFrameBindGroups(
     scene.bvhVertexColorTextureView, // 23 — COLOR_0 vertex colors
   ] as const;
   return {
-    frame: resourceCache?.bindGroup('per-frame:frame', [
+    frame: cachedBindGroup(resourceCache, 'per-frame:frame', [
       placeholderView,
       restirDI.reservoirCurrentBuffer,
       restirDI.reservoirPreviousBuffer,
@@ -120,17 +120,17 @@ export function buildPerFrameBindGroups(
       common.hdrTotalTexture,
       common.albedoTexture,
       svgf.svgfCurrentObjectIdTexture,
-    ], buildFrame) ?? buildFrame(),
-    risGiFrame: resourceCache?.bindGroup('per-frame:ris-gi-frame', [
+    ], buildFrame),
+    risGiFrame: cachedBindGroup(resourceCache, 'per-frame:ris-gi-frame', [
       common.gNormalDepthTexture,
       restirGI.reservoirGiCurrentBuffer,
-    ], buildRisGiFrame) ?? buildRisGiFrame(),
-    scene: resourceCache?.bindGroup('per-frame:scene', sceneKey, buildScene) ?? buildScene(),
-    ubo: resourceCache?.bindGroup('per-frame:ubo', [
+    ], buildRisGiFrame),
+    scene: cachedBindGroup(resourceCache, 'per-frame:scene', sceneKey, buildScene),
+    ubo: cachedBindGroup(resourceCache, 'per-frame:ubo', [
       common.uboBuffer,
       gtao.aoFullTexture,
       common.tierTexture,
-    ], buildUbo) ?? buildUbo(),
+    ], buildUbo),
     hybridLayers: ddgi.buildBindGroup(device, cache, resources, resourceCache),
     shadeHybridLayers: ddgi.buildShadeBindGroup(device, cache, resources, resourceCache),
   };
@@ -151,9 +151,10 @@ export function buildCompositePresentBindGroup(
     compositeSampler,
     compositeUbo,
   );
-  return resourceCache?.bindGroup(
+  return cachedBindGroup(
+    resourceCache,
     'present:composite',
     [resolvedTexture, compositeSampler, compositeUbo],
     build,
-  ) ?? build();
+  );
 }

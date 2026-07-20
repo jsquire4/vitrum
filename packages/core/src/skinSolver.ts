@@ -137,6 +137,46 @@ export function mat3InverseTranspose(m: ArrayLike<number>, out?: Float32Array): 
 }
 
 /**
+ * Accumulate a weighted morph-target stream into `base` in place:
+ * `base[i] += Σ_t weights[t] · deltas[t][i]` (skipping zero-weight targets).
+ *
+ * Every one of solveSkin's five morph blends (positions, normals, tangents,
+ * uvs, uv1) is this same loop; the only variation was the diagnostic strings
+ * and the tangent xyzw→xyz pre-step (which the caller performs when building
+ * `base`). `deltaName`/`baseName` reproduce the exact per-stream error text so
+ * the pinned messages (`morphSolver.test.ts`) are byte-preserved. When
+ * `checkCount` is true the count mismatch (`deltas.length !== tCount`) is
+ * reported as `${deltaName} length N != morphTargets tCount` — the positions
+ * stream passes `false` because its count is guarded upstream via morphWeights.
+ */
+function blendMorphStream(
+  base: Float32Array,
+  deltas: readonly Float32Array[],
+  weights: ArrayLike<number>,
+  tCount: number,
+  deltaName: string,
+  baseName: string,
+  checkCount: boolean,
+): void {
+  if (checkCount && deltas.length !== tCount) {
+    throw new Error(`solveSkin: ${deltaName} length ${deltas.length} != morphTargets ${tCount}.`);
+  }
+  for (let t = 0; t < tCount; t++) {
+    const w = weights[t]!;
+    if (w === 0) continue;
+    const delta = deltas[t]!;
+    if (delta.length !== base.length) {
+      throw new Error(
+        `solveSkin: ${deltaName}[${t}] length ${delta.length} != ${baseName} ${base.length}.`,
+      );
+    }
+    for (let i = 0; i < base.length; i++) {
+      base[i] = base[i]! + w * delta[i]!;
+    }
+  }
+}
+
+/**
  * Solve linear-blend skinning into `outPositions` + `outNormals`. Allocates
  * fresh buffers if either is omitted; otherwise writes in-place. Returns
  * the (possibly newly-allocated) output references so callers can chain.
@@ -209,9 +249,9 @@ export function solveSkin(
   const positions = outPositions ?? new Float32Array(vertCount * 3);
   const normals = outNormals ?? new Float32Array(vertCount * 3);
   const hasTangents = prim.tangents != null;
-  if (hasTangents && prim.tangents!.length !== vertCount * 4) {
+  if (hasTangents && prim.tangents.length !== vertCount * 4) {
     throw new Error(
-      `solveSkin: tangents length ${prim.tangents!.length} expected ${vertCount * 4}.`,
+      `solveSkin: tangents length ${prim.tangents.length} expected ${vertCount * 4}.`,
     );
   }
   const tangents = hasTangents ? (outTangents ?? new Float32Array(vertCount * 4)) : undefined;
@@ -266,47 +306,15 @@ export function solveSkin(
       }
       const mp: Float32Array = new Float32Array(prim.positions);
       morphedPositions = mp;
-      for (let t = 0; t < tCount; t++) {
-        const w = prim.morphWeights[t]!;
-        if (w === 0) continue;
-        const delta = prim.morphTargets[t]!;
-        if (delta.length !== mp.length) {
-          throw new Error(
-            `solveSkin: morphTargets[${t}] length ${delta.length} != positions ${mp.length}.`,
-          );
-        }
-        for (let i = 0; i < mp.length; i++) {
-          mp[i] = mp[i]! + w * delta[i]!;
-        }
-      }
+      blendMorphStream(mp, prim.morphTargets, prim.morphWeights, tCount, 'morphTargets', 'positions', false);
       if (prim.morphTargetNormals != null) {
-        if (prim.morphTargetNormals.length !== tCount) {
-          throw new Error(
-            `solveSkin: morphTargetNormals length ${prim.morphTargetNormals.length} != morphTargets ${tCount}.`,
-          );
-        }
         const mn: Float32Array = new Float32Array(prim.normals);
         morphedNormals = mn;
-        for (let t = 0; t < tCount; t++) {
-          const w = prim.morphWeights[t]!;
-          if (w === 0) continue;
-          const delta = prim.morphTargetNormals[t]!;
-          if (delta.length !== mn.length) {
-            throw new Error(
-              `solveSkin: morphTargetNormals[${t}] length ${delta.length} != normals ${mn.length}.`,
-            );
-          }
-          for (let i = 0; i < mn.length; i++) {
-            mn[i] = mn[i]! + w * delta[i]!;
-          }
-        }
+        blendMorphStream(mn, prim.morphTargetNormals, prim.morphWeights, tCount, 'morphTargetNormals', 'normals', true);
       }
       if (prim.morphTargetTangents != null && prim.tangents != null) {
-        if (prim.morphTargetTangents.length !== tCount) {
-          throw new Error(
-            `solveSkin: morphTargetTangents length ${prim.morphTargetTangents.length} != morphTargets ${tCount}.`,
-          );
-        }
+        // Pre-step: tangents are stored xyzw (w = handedness); the morph blend
+        // operates on the xyz direction only, so pack a vertCount*3 base first.
         const mt = new Float32Array(vertCount * 3);
         for (let v = 0; v < vertCount; v += 1) {
           mt[v * 3] = prim.tangents[v * 4]!;
@@ -314,69 +322,23 @@ export function solveSkin(
           mt[v * 3 + 2] = prim.tangents[v * 4 + 2]!;
         }
         morphedTangents = mt;
-        for (let t = 0; t < tCount; t++) {
-          const w = prim.morphWeights[t]!;
-          if (w === 0) continue;
-          const delta = prim.morphTargetTangents[t]!;
-          if (delta.length !== mt.length) {
-            throw new Error(
-              `solveSkin: morphTargetTangents[${t}] length ${delta.length} != tangents ${mt.length}.`,
-            );
-          }
-          for (let i = 0; i < mt.length; i++) {
-            mt[i] = mt[i]! + w * delta[i]!;
-          }
-        }
+        blendMorphStream(mt, prim.morphTargetTangents, prim.morphWeights, tCount, 'morphTargetTangents', 'tangents', true);
       }
       if (prim.morphTargetUvs != null) {
         if (prim.uvs == null) {
           throw new Error('solveSkin: morphTargetUvs supplied but primitive has no uvs stream.');
         }
-        if (prim.morphTargetUvs.length !== tCount) {
-          throw new Error(
-            `solveSkin: morphTargetUvs length ${prim.morphTargetUvs.length} != morphTargets ${tCount}.`,
-          );
-        }
         const mu = new Float32Array(prim.uvs);
         morphedUvs = mu;
-        for (let t = 0; t < tCount; t++) {
-          const w = prim.morphWeights[t]!;
-          if (w === 0) continue;
-          const delta = prim.morphTargetUvs[t]!;
-          if (delta.length !== mu.length) {
-            throw new Error(
-              `solveSkin: morphTargetUvs[${t}] length ${delta.length} != uvs ${mu.length}.`,
-            );
-          }
-          for (let i = 0; i < mu.length; i++) {
-            mu[i] = mu[i]! + w * delta[i]!;
-          }
-        }
+        blendMorphStream(mu, prim.morphTargetUvs, prim.morphWeights, tCount, 'morphTargetUvs', 'uvs', true);
       }
       if (prim.morphTargetUv1s != null) {
         if (prim.uv1 == null) {
           throw new Error('solveSkin: morphTargetUv1s supplied but primitive has no uv1 stream.');
         }
-        if (prim.morphTargetUv1s.length !== tCount) {
-          throw new Error(
-            `solveSkin: morphTargetUv1s length ${prim.morphTargetUv1s.length} != morphTargets ${tCount}.`,
-          );
-        }
         const mu1 = new Float32Array(prim.uv1);
         morphedUv1 = mu1;
-        for (let t = 0; t < tCount; t++) {
-          const w = prim.morphWeights[t]!;
-          if (w === 0) continue;
-          const delta = prim.morphTargetUv1s[t]!;
-          if (delta.length !== mu1.length) {
-            throw new Error(
-              `solveSkin: morphTargetUv1s[${t}] length ${delta.length} != uv1 ${mu1.length}.`,
-            );
-          }
-          for (let i = 0; i < mu1.length; i++) {
-            mu1[i] = mu1[i]! + w * delta[i]!;
-          }
-        }
+        blendMorphStream(mu1, prim.morphTargetUv1s, prim.morphWeights, tCount, 'morphTargetUv1s', 'uv1', true);
       }
     }
   }
@@ -521,9 +483,9 @@ export function solveSkin(
     normals[v * 3 + 1] = dny;
     normals[v * 3 + 2] = dnz;
     if (hasVertexTangent && tangents != null && prim.tangents != null) {
-      let dtx = linRowMajor[0]! * tx0 + linRowMajor[1]! * ty0 + linRowMajor[2]! * tz0;
-      let dty = linRowMajor[3]! * tx0 + linRowMajor[4]! * ty0 + linRowMajor[5]! * tz0;
-      let dtz = linRowMajor[6]! * tx0 + linRowMajor[7]! * ty0 + linRowMajor[8]! * tz0;
+      let dtx = linRowMajor[0] * tx0 + linRowMajor[1] * ty0 + linRowMajor[2] * tz0;
+      let dty = linRowMajor[3] * tx0 + linRowMajor[4] * ty0 + linRowMajor[5] * tz0;
+      let dtz = linRowMajor[6] * tx0 + linRowMajor[7] * ty0 + linRowMajor[8] * tz0;
       const tInvLen = 1 / Math.sqrt(dtx * dtx + dty * dty + dtz * dtz + 1e-20);
       dtx *= tInvLen; dty *= tInvLen; dtz *= tInvLen;
       tangents[v * 4 + 0] = dtx;

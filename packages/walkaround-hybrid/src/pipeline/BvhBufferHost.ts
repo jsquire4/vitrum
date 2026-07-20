@@ -347,30 +347,21 @@ export class BvhBufferHost {
     add('tlasInstanceWorldToLocalBuffer', this._tlasInstanceWorldToLocalBuffer);
     add('tlasInstanceLocalToWorldBuffer', this._tlasInstanceLocalToWorldBuffer);
 
-    if (this._bvhBeerTexture != null) {
-      section.bvhBeerTexture = {
-        width: this._bvhBeerTexture.width,
-        height: this._bvhBeerTexture.height,
-        depthOrArrayLayers: 1,
-        format: 'r32uint' as GPUTextureFormat,
-      };
-    }
-    if (this._bvhEmissiveTexture != null) {
-      section.bvhEmissiveTexture = {
-        width: this._bvhEmissiveTexture.width,
-        height: this._bvhEmissiveTexture.height,
-        depthOrArrayLayers: 1,
-        format: 'rgba32float' as GPUTextureFormat,
-      };
-    }
-    if (this._bvhRoughMetalTexture != null) {
-      section.bvhRoughMetalTexture = {
-        width: this._bvhRoughMetalTexture.width,
-        height: this._bvhRoughMetalTexture.height,
-        depthOrArrayLayers: 1,
-        format: 'r32uint' as GPUTextureFormat,
-      };
-    }
+    // Single-layer texture memory sections — all share the
+    // {width, height, depthOrArrayLayers: 1, format} shape; the descriptor
+    // table keeps this list drift-free with dispose/refreshBvhFullRebuild.
+    const addTex = (
+      name: string,
+      tex: { width: number; height: number } | null,
+      format: GPUTextureFormat,
+    ): void => {
+      if (tex != null) {
+        section[name] = { width: tex.width, height: tex.height, depthOrArrayLayers: 1, format };
+      }
+    };
+    addTex('bvhBeerTexture', this._bvhBeerTexture, 'r32uint');
+    addTex('bvhEmissiveTexture', this._bvhEmissiveTexture, 'rgba32float');
+    addTex('bvhRoughMetalTexture', this._bvhRoughMetalTexture, 'r32uint');
     if (this._materialTextureAtlas != null) {
       section.materialTextureAtlas = {
         width: this._materialTextureAtlas.atlasDim,
@@ -385,30 +376,9 @@ export class BvhBufferHost {
         format: 'rgba32float' as GPUTextureFormat,
       };
     }
-    if (this._bvhTangentTexture != null) {
-      section.bvhTangentTexture = {
-        width: this._bvhTangentTexture.width,
-        height: this._bvhTangentTexture.height,
-        depthOrArrayLayers: 1,
-        format: 'rgba32float' as GPUTextureFormat,
-      };
-    }
-    if (this._bvhVertexColorTexture != null) {
-      section.bvhVertexColorTexture = {
-        width: this._bvhVertexColorTexture.width,
-        height: this._bvhVertexColorTexture.height,
-        depthOrArrayLayers: 1,
-        format: 'rgba32float' as GPUTextureFormat,
-      };
-    }
-    if (this._analyticLightsTexture != null) {
-      section.analyticLightsTexture = {
-        width: this._analyticLightsTexture.width,
-        height: this._analyticLightsTexture.height,
-        depthOrArrayLayers: 1,
-        format: 'rgba32float' as GPUTextureFormat,
-      };
-    }
+    addTex('bvhTangentTexture', this._bvhTangentTexture, 'rgba32float');
+    addTex('bvhVertexColorTexture', this._bvhVertexColorTexture, 'rgba32float');
+    addTex('analyticLightsTexture', this._analyticLightsTexture, 'rgba32float');
 
     return { staticScene: section };
   }

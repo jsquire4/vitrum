@@ -40,7 +40,7 @@
  * ⇒ the full-res `wgX/wgY` dispatch, byte-identical to before.
  */
 
-import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
+import { dispatchSharedBindGroupPass, type Pass, type PassDispatchContext, type PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class RISPass implements Pass {
@@ -61,11 +61,6 @@ export class RISPass implements Pass {
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
   dispatch(ctx: PassDispatchContext): void {
-    const {
-      encoder, computeDesc,
-      frameBindGroup, sceneBindGroup, uboBindGroup, lightTreeBindGroup,
-      wgX, wgY,
-    } = ctx;
     // Checkerboard ON — compact the X dispatch to the active-parity columns.
     // Each row has at most ceil(W/2) active-parity pixels; the shader decodes
     // compacted gid.x -> px = gid.x*2 + ((gid.y + frameParity)&1) and the few
@@ -73,16 +68,15 @@ export class RISPass implements Pass {
     // full-res (one compacted thread per row). 8x8 workgroup matches ris.wgsl
     // @workgroup_size(8,8,1) — identical compaction to ShadePass/Spatial. OFF ⇒
     // the full-res wgX/wgY dispatch, byte-identical to before.
-    const dx = ctx.checkerboardOn ? Math.ceil(Math.ceil(ctx.width / 2) / 8) : wgX;
-    const dy = ctx.checkerboardOn ? Math.ceil(ctx.height / 8) : wgY;
-    const pass = encoder.beginComputePass(computeDesc('ris'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, frameBindGroup);
-    pass.setBindGroup(1, sceneBindGroup);
-    pass.setBindGroup(2, uboBindGroup);
-    pass.setBindGroup(3, lightTreeBindGroup); // RIS-only DI light-selection tree
-    pass.dispatchWorkgroups(dx, dy, 1);
-    pass.end();
+    dispatchSharedBindGroupPass(ctx, this._pipeline, {
+      label: 'ris',
+      // RIS-only DI light-selection tree bound at slot 3 (NOT the hybrid-layers
+      // group — RIS uses its own group(3) light-tree layout).
+      extraGroups: [{ slot: 3, group: ctx.lightTreeBindGroup }],
+      ...(ctx.checkerboardOn
+        ? { dispatchOverride: { x: ctx.checkerboardWgX, y: ctx.checkerboardWgY } }
+        : {}),
+    });
   }
 
   dispose(): void {}

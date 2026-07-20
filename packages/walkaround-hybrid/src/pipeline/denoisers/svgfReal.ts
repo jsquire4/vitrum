@@ -42,6 +42,7 @@ import type { UboRef } from '../bindGroupBuilders.js';
 import { buildAtrousVarianceAtrousBindGroup } from '../bindGroupBuilders.js';
 import { checkShaderCompile } from '../shaderUtils.js';
 import { runAtrousChain } from '../passes/dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
@@ -297,7 +298,7 @@ export class SVGFRealDenoiser implements Denoiser {
         currObjIdTexture, prevObjIdTexture,
         textureViewFor,
       );
-      const bg = resourceCache?.bindGroup('denoiser:svgf-real:reproj', [
+      const bg = cachedBindGroup(resourceCache, 'denoiser:svgf-real:reproj', [
         common.hdrColorTexture,
         radRead,
         common.motionVectorTexture,
@@ -311,7 +312,7 @@ export class SVGFRealDenoiser implements Denoiser {
         histWrite,
         momWrite,
         this._reprojUboRef.buf,
-      ], buildBg) ?? buildBg();
+      ], buildBg);
       const pass = encoder.beginComputePass(computeDesc('svgf-real-reproj'));
       pass.setPipeline(this._reprojPipeline);
       pass.setBindGroup(0, bg);
@@ -329,11 +330,11 @@ export class SVGFRealDenoiser implements Denoiser {
         histWrite,
         textureViewFor,
       );
-      const bg = resourceCache?.bindGroup('denoiser:svgf-real:moments', [
+      const bg = cachedBindGroup(resourceCache, 'denoiser:svgf-real:moments', [
         momWrite,
         histWrite,
         svgf.svgfVarianceMomentsIntermedTexture,
-      ], buildBg) ?? buildBg();
+      ], buildBg);
       const pass = encoder.beginComputePass(computeDesc('svgf-real-moments'));
       pass.setPipeline(this._momentsPipeline);
       pass.setBindGroup(0, bg);
@@ -350,12 +351,12 @@ export class SVGFRealDenoiser implements Denoiser {
         histWrite,
         textureViewFor,
       );
-      const bg = resourceCache?.bindGroup('denoiser:svgf-real:fallback', [
+      const bg = cachedBindGroup(resourceCache, 'denoiser:svgf-real:fallback', [
         common.hdrColorTexture,
         histWrite,
         svgf.svgfVarianceMomentsIntermedTexture,
         svgf.svgfVarianceTexture,
-      ], buildBg) ?? buildBg();
+      ], buildBg);
       const pass = encoder.beginComputePass(computeDesc('svgf-real-7x7'));
       pass.setPipeline(this._fallbackPipeline);
       pass.setBindGroup(0, bg);
@@ -402,13 +403,13 @@ export class SVGFRealDenoiser implements Denoiser {
           iterUbo,
           `svgf-real-atrous-bg-${iter}`,
         );
-        return resourceCache?.bindGroup(`denoiser:svgf-real:atrous:${iter}`, [
+        return cachedBindGroup(resourceCache, `denoiser:svgf-real:atrous:${iter}`, [
           iterUbo,
           inputTex,
           outputTex,
           common.gNormalDepthTexture,
           svgf.svgfVarianceTexture,
-        ], buildBg) ?? buildBg();
+        ], buildBg);
       },
       labelFor: (iter) => `svgf-real-atrous-${iter}` as PassLabel,
     });

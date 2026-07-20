@@ -350,7 +350,7 @@ export async function decodeSceneTextures(
     const material = materialForPrimitive(primitive);
     let nextMaterial: MaterialSpec | null = null;
     for (const field of MATERIAL_TEXTURE_FIELDS) {
-      const ref = material[field] as TextureRef | undefined;
+      const ref = material[field];
       if (!ref) continue;
       const scenePath = `scene.primitives[${primitiveIndex}].material.${field}`;
       const source = gltfTextureRefSource(ref);
@@ -1185,7 +1185,7 @@ function withDecodedTextureMetadata<T extends GltfCpuTextureHandle>(
       originalHeight,
       ...(typeof maxTextureSize === 'number' && maxTextureSize > 0 ? { maxTextureSize } : {}),
     },
-  } as T;
+  };
 }
 
 export function inferDecodedChannels(data: ArrayLike<number>, width: number, height: number): 1 | 2 | 3 | 4 {

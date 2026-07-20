@@ -46,14 +46,11 @@ export class ShadePass extends SharedBindGroupPass {
     // guards the few overshoot threads (px >= W) with the existing bounds
     // check. Y stays full-res (one compacted thread per row). Workgroup size
     // is 8×8 (matches shade.wgsl @workgroup_size(8, 8, 1)).
-    const compactCols = Math.ceil(ctx.width / 2);
-    const cbWgX = Math.ceil(compactCols / 8);
-    const cbWgY = Math.ceil(ctx.height / 8);
     dispatchSharedBindGroupPass(ctx, this._pipeline, {
       label: 'shade',
       useHybridLayers: this.useHybridLayers,
       useShadeHybridLayers: this.useShadeHybridLayers,
-      dispatchOverride: { x: cbWgX, y: cbWgY },
+      dispatchOverride: { x: ctx.checkerboardWgX, y: ctx.checkerboardWgY },
     });
   }
 }

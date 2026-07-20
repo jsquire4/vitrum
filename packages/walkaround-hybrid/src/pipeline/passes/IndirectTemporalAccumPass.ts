@@ -22,6 +22,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import type { PingPongRef } from './passRefs.js';
 
 export class IndirectTemporalAccumPass implements Pass {
@@ -74,11 +75,11 @@ export class IndirectTemporalAccumPass implements Pass {
       resourceCache?.textureView(indirectAccumPrev) ?? indirectAccumPrev.createView(),
       resourceCache?.textureView(indirectAccumOut) ?? indirectAccumOut.createView(),
     );
-    const bg = resourceCache?.bindGroup('pass:indirect-temporal-accum', [
+    const bg = cachedBindGroup(resourceCache, 'pass:indirect-temporal-accum', [
       common.hdrIndirectTexture,
       indirectAccumPrev,
       indirectAccumOut,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'indirect-temporal-accum', { wg16: true });
 
     // Publish the output handle for the downstream atrous chain.

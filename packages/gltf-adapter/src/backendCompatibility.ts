@@ -153,9 +153,7 @@ interface CompatibilityEmitContext {
 }
 
 function emitExtensionIssues(ctx: CompatibilityEmitContext): void {
-  const { report, profile, ledger, addIssue, counts } = ctx;
-  const { backend } = profile;
-  const profileId = profile.id;
+  const { report, addIssue } = ctx;
   for (const ext of report.extensions.unsupportedRequired) {
     addIssue({
       category: 'extension',
@@ -374,9 +372,7 @@ function emitPrimitiveIssues(ctx: CompatibilityEmitContext): void {
 }
 
 function emitSceneIssues(ctx: CompatibilityEmitContext): void {
-  const { report, profile, ledger, addIssue, counts } = ctx;
-  const { backend } = profile;
-  const profileId = profile.id;
+  const { report, addIssue } = ctx;
   if (report.sceneGraph.cameras > 0) {
     addIssue({
       category: 'scene',
@@ -401,9 +397,7 @@ function emitSceneIssues(ctx: CompatibilityEmitContext): void {
 }
 
 function emitAnimationIssues(ctx: CompatibilityEmitContext): void {
-  const { report, profile, ledger, addIssue, counts } = ctx;
-  const { backend } = profile;
-  const profileId = profile.id;
+  const { report, addIssue } = ctx;
   for (const targetPath of report.animations.unsupportedTargetPaths) {
     addIssue({
       category: 'animation',
@@ -450,8 +444,6 @@ function emitAnimationIssues(ctx: CompatibilityEmitContext): void {
 
 function emitMaterialIssues(ctx: CompatibilityEmitContext): void {
   const { report, profile, ledger, addIssue, counts } = ctx;
-  const { backend } = profile;
-  const profileId = profile.id;
   if (report.materials.specularGlossinessMaterialCount > 0) {
     addIssue({
       category: 'material',

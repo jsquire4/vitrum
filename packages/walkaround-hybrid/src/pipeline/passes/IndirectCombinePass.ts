@@ -19,6 +19,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 export class IndirectCombinePass implements Pass {
   readonly id = 'indirect-combine' as const;
@@ -52,12 +53,12 @@ export class IndirectCombinePass implements Pass {
       // Item 24 — re-modulate denoised indirect by albedo (Schied 2017 §4.1).
       resourceCache?.textureView(resources.common.albedoTexture) ?? resources.common.albedoTexture.createView(),
     );
-    const bg = resourceCache?.bindGroup('pass:indirect-combine', [
+    const bg = cachedBindGroup(resourceCache, 'pass:indirect-combine', [
       frameState.denoisedDirect,
       frameState.denoisedIndirect,
       combinedTex,
       resources.common.albedoTexture,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'indirect-combine', { wg16: true });
     frameState.combinedDenoised = combinedTex;
   }

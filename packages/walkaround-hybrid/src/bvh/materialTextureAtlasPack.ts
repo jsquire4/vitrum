@@ -234,7 +234,7 @@ function srgbToLinear(v: number): number {
 
 function asTextureRef(value: unknown): TextureRef | null {
   if (value == null || typeof value !== 'object') return null;
-  if ('handle' in value) return value as TextureRef;
+  if ('handle' in value) return value;
   return { handle: value };
 }
 
@@ -279,6 +279,36 @@ function textureRefSourceMetadata(ref: TextureRef): TextureRefSourceMetadata | u
     };
   }
   return undefined;
+}
+
+/**
+ * Diagnostic source-provenance fields, spread verbatim into every
+ * material-texture-atlas diagnostic. Emits ONLY the fields present on
+ * `source` (so a diagnostic never carries `undefined` provenance keys —
+ * matching the historical `...(source?.x !== undefined ? {x} : {})` chain
+ * that was copy-pasted at every diagnostic site). Note the `path → sourcePath`
+ * rename mirrors the original per-site spread exactly.
+ */
+function sourceMetaFields(source: TextureRefSourceMetadata | undefined): {
+  sourcePath?: string;
+  textureIndex?: number;
+  imageIndex?: number;
+  samplerIndex?: number;
+  imageUri?: string;
+  imageMimeType?: string;
+  textureSourceExtension?: string;
+} {
+  return {
+    ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
+    ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
+    ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
+    ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
+    ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
+    ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
+    ...(source?.textureSourceExtension !== undefined
+      ? { textureSourceExtension: source.textureSourceExtension }
+      : {}),
+  };
 }
 
 function hasAuthoredSamplerPolicy(ref: TextureRef): boolean {
@@ -505,7 +535,7 @@ export function packMaterialTextureAtlas(
     if (field === 'backLayer.normalMap') {
       return asTextureRef(material?.backLayer?.normalMap);
     }
-    const topLevelField = field as Exclude<AtlasMapField, 'frontLayer.normalMap' | 'backLayer.normalMap'>;
+    const topLevelField = field;
     return asTextureRef(material?.[topLevelField]);
   };
 
@@ -526,15 +556,7 @@ export function packMaterialTextureAtlas(
         field,
         colorSpace,
         texCoord,
-        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
-        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
-        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
-        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
-        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
-        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
-        ...(source?.textureSourceExtension !== undefined
-          ? { textureSourceExtension: source.textureSourceExtension }
-          : {}),
+        ...sourceMetaFields(source),
         message:
           `${field} texture uses unsupported texCoord ${texCoord} ` +
           `(walkaround material atlas supports UV sets 0 and 1 only)` +
@@ -553,15 +575,7 @@ export function packMaterialTextureAtlas(
         ...(ref.magFilter !== undefined ? { magFilter: ref.magFilter } : {}),
         ...(ref.minFilter !== undefined ? { minFilter: ref.minFilter } : {}),
         ...(ref.mipFilter !== undefined ? { mipFilter: ref.mipFilter } : {}),
-        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
-        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
-        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
-        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
-        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
-        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
-        ...(source?.textureSourceExtension !== undefined
-          ? { textureSourceExtension: source.textureSourceExtension }
-          : {}),
+        ...sourceMetaFields(source),
         message:
           `${field} texture authors sampler filter/mip policy ` +
           `(mag=${ref.magFilter ?? 'default'}, min=${ref.minFilter ?? 'default'}, mip=${ref.mipFilter ?? 'default'})` +
@@ -582,15 +596,7 @@ export function packMaterialTextureAtlas(
         colorSpace,
         texCoord,
         transformComponents,
-        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
-        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
-        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
-        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
-        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
-        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
-        ...(source?.textureSourceExtension !== undefined
-          ? { textureSourceExtension: source.textureSourceExtension }
-          : {}),
+        ...sourceMetaFields(source),
         message:
           `${field} texture transform contains non-finite component(s) ` +
           `${transformComponents.join(', ')}` +
@@ -613,15 +619,7 @@ export function packMaterialTextureAtlas(
         materialIndex,
         field,
         colorSpace,
-        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
-        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
-        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
-        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
-        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
-        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
-        ...(source?.textureSourceExtension !== undefined
-          ? { textureSourceExtension: source.textureSourceExtension }
-          : {}),
+        ...sourceMetaFields(source),
         message:
           `${field} texture handle is not CPU-readable ` +
           `(expected raw {width,height,data} or DataTexture-shaped image)` +
@@ -640,15 +638,7 @@ export function packMaterialTextureAtlas(
         valueCount: read.ambiguousStride.valueCount,
         width: read.ambiguousStride.width,
         height: read.ambiguousStride.height,
-        ...(source?.path !== undefined ? { sourcePath: source.path } : {}),
-        ...(source?.textureIndex !== undefined ? { textureIndex: source.textureIndex } : {}),
-        ...(source?.imageIndex !== undefined ? { imageIndex: source.imageIndex } : {}),
-        ...(source?.samplerIndex !== undefined ? { samplerIndex: source.samplerIndex } : {}),
-        ...(source?.imageUri !== undefined ? { imageUri: source.imageUri } : {}),
-        ...(source?.imageMimeType !== undefined ? { imageMimeType: source.imageMimeType } : {}),
-        ...(source?.textureSourceExtension !== undefined
-          ? { textureSourceExtension: source.textureSourceExtension }
-          : {}),
+        ...sourceMetaFields(source),
         message:
           `${field} texture handle has ambiguous pixel stride ${read.ambiguousStride.pixelStride} ` +
           `(${read.ambiguousStride.valueCount} values / ` +
@@ -726,6 +716,17 @@ export function packMaterialTextureAtlas(
     baseColorMetaData[b1 + 3] = Math.sin(rotation);
   };
 
+  // Single-scalar meta texel: value in .x, .yzw zeroed. Shared by the
+  // normal-scale / clearcoat-normal-scale / face-layer-normal-scale /
+  // light-map-intensity / env-map-intensity closures (identical 4-line body).
+  const writeScalarMeta = (texel: number, value: number): void => {
+    const b = texel * 4;
+    baseColorMetaData[b] = value;
+    baseColorMetaData[b + 1] = 0;
+    baseColorMetaData[b + 2] = 0;
+    baseColorMetaData[b + 3] = 0;
+  };
+
   const writeAlphaCoverageMeta = (mat: MaterialSpec | undefined, texel: number): void => {
     const b = texel * 4;
     baseColorMetaData[b] = alphaModeIndex(mat?.alphaMode);
@@ -735,46 +736,30 @@ export function packMaterialTextureAtlas(
   };
 
   const writeNormalScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
-    const b = texel * 4;
-    baseColorMetaData[b] = Number.isFinite(mat?.normalScale)
+    writeScalarMeta(texel, Number.isFinite(mat?.normalScale)
       ? Math.max(0, mat?.normalScale ?? 1)
-      : 1;
-    baseColorMetaData[b + 1] = 0;
-    baseColorMetaData[b + 2] = 0;
-    baseColorMetaData[b + 3] = 0;
+      : 1);
   };
 
   const writeFaceLayerNormalScaleMeta = (
-    layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
+    layer: MaterialSpec['frontLayer']   | undefined,
     texel: number,
   ): void => {
-    const b = texel * 4;
-    baseColorMetaData[b] = Number.isFinite(layer?.normalScale)
+    writeScalarMeta(texel, Number.isFinite(layer?.normalScale)
       ? Math.max(0, layer?.normalScale ?? 1)
-      : 1;
-    baseColorMetaData[b + 1] = 0;
-    baseColorMetaData[b + 2] = 0;
-    baseColorMetaData[b + 3] = 0;
+      : 1);
   };
 
   const writeClearcoatNormalScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
-    const b = texel * 4;
-    baseColorMetaData[b] = Number.isFinite(mat?.clearcoatNormalScale)
+    writeScalarMeta(texel, Number.isFinite(mat?.clearcoatNormalScale)
       ? Math.max(0, mat?.clearcoatNormalScale ?? 1)
-      : 1;
-    baseColorMetaData[b + 1] = 0;
-    baseColorMetaData[b + 2] = 0;
-    baseColorMetaData[b + 3] = 0;
+      : 1);
   };
 
   const writeLightMapIntensityMeta = (mat: MaterialSpec | undefined, texel: number): void => {
-    const b = texel * 4;
-    baseColorMetaData[b] = Number.isFinite(mat?.lightMapIntensity)
+    writeScalarMeta(texel, Number.isFinite(mat?.lightMapIntensity)
       ? Math.max(0, mat?.lightMapIntensity ?? 1)
-      : 1;
-    baseColorMetaData[b + 1] = 0;
-    baseColorMetaData[b + 2] = 0;
-    baseColorMetaData[b + 3] = 0;
+      : 1);
   };
 
   const writeSpecularMeta = (mat: MaterialSpec | undefined, texel: number): void => {
@@ -842,15 +827,11 @@ export function packMaterialTextureAtlas(
   };
 
   const writeEnvMapIntensityMeta = (mat: MaterialSpec | undefined, texel: number): void => {
-    const b = texel * 4;
-    baseColorMetaData[b] = clampedNonNegative(mat?.envMapIntensity, 1);
-    baseColorMetaData[b + 1] = 0;
-    baseColorMetaData[b + 2] = 0;
-    baseColorMetaData[b + 3] = 0;
+    writeScalarMeta(texel, clampedNonNegative(mat?.envMapIntensity, 1));
   };
 
   const writeFaceLayerMeta = (
-    layer: MaterialSpec['frontLayer'] | MaterialSpec['backLayer'] | undefined,
+    layer: MaterialSpec['frontLayer']   | undefined,
     texel: number,
   ): void => {
     const b = texel * 4;

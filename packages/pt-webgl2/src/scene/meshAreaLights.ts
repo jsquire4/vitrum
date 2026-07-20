@@ -55,6 +55,7 @@ import {
   type BarycentricWeights,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
+import { luminance, vecCross as cross, vecLength as length } from '@vitrum/shared-samplers';
 
 /** Triangle-light type id — must match the GLSL `#define TRI_AREA_LIGHT_TYPE`. */
 export const TRI_AREA_LIGHT_TYPE = 5;
@@ -117,16 +118,13 @@ function sub(a: Vec3, b: Vec3): Vec3 {
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
-function cross(a: Vec3, b: Vec3): Vec3 {
-  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-}
-
-function length(a: Vec3): number {
-  return Math.hypot(a[0], a[1], a[2]);
-}
-
+// `cross`, `length`, and `luminanceRgb` are single-sourced in
+// `@vitrum/shared-samplers` (`vecCross`/`vecLength`/`luminance`, imported above
+// under the local aliases `cross`/`length`). `luminanceRgb` is a thin tuple
+// wrapper over the shared Rec.709 `luminance(r,g,b)` so the emitted-power field
+// stays byte-for-byte identical.
 function luminanceRgb(rgb: Vec3): number {
-  return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+  return luminance(rgb[0], rgb[1], rgb[2]);
 }
 
 function clamp01(value: number): number {

@@ -1830,6 +1830,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const wgY16 = Math.ceil(H / 16);
     const halfWgX = Math.ceil(Math.floor(W / 2) / 8);
     const halfWgY = Math.ceil(Math.floor(H / 2) / 8);
+    // Checkerboard sparse-dispatch workgroup counts (ceil-based, NOT the
+    // floor-based half-res `halfWgX/halfWgY`): each row has at most ceil(W/2)
+    // active-parity pixels compacted into 8-wide workgroups; Y stays full-res
+    // (one compacted thread per row). Shared by RIS/Shade/SpatialReservoir when
+    // `checkerboardOn` — single source of truth for the compaction math.
+    const checkerboardWgX = Math.ceil(Math.ceil(W / 2) / 8);
+    const checkerboardWgY = Math.ceil(H / 8);
 
     // Helper: build a GPUComputePassDescriptor without an undefined timestampWrites
     // property — required by exactOptionalPropertyTypes. We spread the optional
@@ -1903,6 +1910,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       shadeHybridLayersBindGroup: bgShadeHybrid,
       lightTreeBindGroup: bgLightTree,
       wgX, wgY, wgX16, wgY16, halfWgX, halfWgY,
+      checkerboardWgX, checkerboardWgY,
       // Checkerboard sparse dispatch state. When ON, ShadePass + SpatialReservoirPass
       // each compact their dispatch to ~half the threads (one per active-parity
       // pixel), and ResolvePass gap-fills the complementary half. This is the

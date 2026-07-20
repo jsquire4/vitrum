@@ -45,6 +45,7 @@ import type {
   OIDNFinalDispatcherOptions,
   DenoisedFrame,
   OIDNBridgeLoader,
+  OIDNDerivedState,
 } from '@vitrum/shared-denoisers';
 
 /** Input type for the pt-webgpu readback callback. */
@@ -94,24 +95,19 @@ export class OIDNFinalDispatcher {
   /**
    * Current denoiser state for `FrameStats.denoiserState` population.
    *
-   * Derives status from the core state machine:
+   * Delegates to the shared core's single-source status ladder
+   * ({@link OIDNDispatcherCore.deriveState}):
    *  - `'in-flight'`  — async inference cycle is running.
    *  - `'failed'`     — last cycle threw; `reason` = error message; retryable.
    *  - `'ready'`      — last cycle succeeded and the result is available.
    *  - `'fallback'`   — no inference has completed yet (first frame).
+   *
+   * pt-webgpu never enters the union's `'warming-up'` branch (no async
+   * model-preload phase distinct from the inference cycle); that member exists
+   * for walkaround-hybrid's warmup-aware reuse.
    */
-  getState(): { status: 'ready' | 'in-flight' | 'fallback' | 'failed'; reason: string | null; retryable?: boolean } {
-    const lastError = this.#core.getLastError();
-    if (lastError !== null) {
-      return { status: 'failed', reason: lastError, retryable: true };
-    }
-    if (this.#core.isInFlight()) {
-      return { status: 'in-flight', reason: null };
-    }
-    if (this.#core.getLatestDenoised() !== null) {
-      return { status: 'ready', reason: null };
-    }
-    return { status: 'fallback', reason: 'waiting for first OIDN inference' };
+  getState(): OIDNDerivedState {
+    return this.#core.deriveState();
   }
 
   invalidate(): void {

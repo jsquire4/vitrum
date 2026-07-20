@@ -4,12 +4,13 @@
 // `analyzeGltfAsset` from here; the extension/texture-source sets are exported for
 // backendCompatibility.ts (which imports TEXTURE_SOURCE_EXTENSIONS).
 
-import { BACKEND_PROMISE_LEDGER, type MaterialSpec } from '@vitrum/core';
+import { type MaterialSpec } from '@vitrum/core';
 import {
   accessorBufferViewRange,
   componentByteSize,
   typeComponentCount,
 } from './accessors.js';
+import { GltfComponentType } from './gltfTypes.js';
 import type {
   GltfAnimationChannel,
   GltfAnimationSampler,
@@ -372,7 +373,7 @@ function collectTextureSourceExtensionUses(
         required: requiredUse,
         hasBaseSource,
         requiresHook: requiredUse || selectedUse || !hasBaseSource,
-        ...(gltf.images?.[source]?.mimeType !== undefined ? { mimeType: gltf.images[source]!.mimeType } : {}),
+        ...(gltf.images?.[source]?.mimeType !== undefined ? { mimeType: gltf.images[source].mimeType } : {}),
       });
     }
   }
@@ -955,9 +956,9 @@ function primitiveImportBlockers(
 
 function indexAccessorIsReadableByImporter(accessor: NonNullable<GltfJson['accessors']>[number]): boolean {
   if (accessor.type !== 'SCALAR') return false;
-  return accessor.componentType === 5121 ||
-    accessor.componentType === 5123 ||
-    accessor.componentType === 5125;
+  return accessor.componentType === GltfComponentType.UNSIGNED_BYTE ||
+    accessor.componentType === GltfComponentType.UNSIGNED_SHORT ||
+    accessor.componentType === GltfComponentType.UNSIGNED_INT;
 }
 
 function floatAccessorComponentTypeIsReadableByImporter(componentType: number): boolean {
@@ -1650,8 +1651,8 @@ function analyzeMaterials(
 
   return {
     count: materialEntries.length,
-    materialFields: sorted(fields) as (keyof MaterialSpec)[],
-    textureFields: sorted(textureFields) as (keyof MaterialSpec)[],
+    materialFields: sorted(fields),
+    textureFields: sorted(textureFields),
     samplerPolicies: samplerPolicies.sort((a, b) =>
       a.path.localeCompare(b.path) || String(a.materialField).localeCompare(String(b.materialField)),
     ),
@@ -2584,7 +2585,7 @@ function primitiveAttributesUseQuantizedAccessors(gltf: GltfJson, primitive: Glt
   const usesQuantizedAccessor = (accessorIndex: number | undefined): boolean => {
     if (accessorIndex === undefined) return false;
     const componentType = gltf.accessors?.[accessorIndex]?.componentType;
-    return componentType !== undefined && componentType !== 5126;
+    return componentType !== undefined && componentType !== GltfComponentType.FLOAT;
   };
 
   for (const accessorIndex of Object.values(primitive.attributes ?? {})) {
@@ -2612,7 +2613,7 @@ function collectNestedExtensionNames(
   const obj = value as Record<string, unknown>;
   const ext = obj['extensions'];
   if (ext && typeof ext === 'object' && !Array.isArray(ext)) {
-    for (const key of Object.keys(ext as Record<string, unknown>)) {
+    for (const key of Object.keys(ext)) {
       out.add(key);
       addSourcePath(sourcePaths, key, path === '' ? `extensions.${key}` : `${path}.extensions.${key}`);
     }

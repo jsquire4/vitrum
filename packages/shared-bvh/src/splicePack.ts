@@ -62,3 +62,23 @@ export function copyVec4Strided(
   dstTriMaterialIds[dstTri] = srcTriMaterialIds[srcTri] ?? 0;
 }
 
+/**
+ * Copy a packed slice's local `indexWords` (vec4u-strided) into `dst` starting at
+ * word `dstWordBase`, adding `vertexStart` to each of the three global vertex refs
+ * (`.x.y.z`) while leaving the `.w` padding lane (`i % 4 === 3`) verbatim (D12-4).
+ *
+ * Shared by the same-size splice and the resize splice — both rebase the changed
+ * primitive's new index words to its (unchanged) `vertexStart`.
+ */
+export function rebaseIndexWords(
+  dst: Uint32Array,
+  dstWordBase: number,
+  indexWords: ArrayLike<number>,
+  vertexStart: number,
+): void {
+  for (let i = 0; i < indexWords.length; i += 1) {
+    const localIdx = indexWords[i] ?? 0;
+    dst[dstWordBase + i] = i % 4 === 3 ? localIdx : localIdx + vertexStart;
+  }
+}
+

@@ -21,6 +21,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import { SAMPLE_BUDGET_UBO, SAMPLE_COUNT_UBO } from './uboLayouts.js';
 
 export class SampleBudgetPass implements Pass {
@@ -87,12 +88,12 @@ export class SampleBudgetPass implements Pass {
       this._budgetUboRef.buf!,
       this._sampleCountUboRef.buf!,
     );
-    const bg = ctx.resourceCache?.bindGroup('pass:sample-budget', [
+    const bg = cachedBindGroup(ctx.resourceCache, 'pass:sample-budget', [
       varianceTex,
       resources.common.tierTexture,
       this._budgetUboRef.buf,
       this._sampleCountUboRef.buf,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'sample-budget');
   }
 

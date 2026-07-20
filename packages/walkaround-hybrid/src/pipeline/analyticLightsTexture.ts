@@ -1,13 +1,13 @@
 import {
   assertBvhTextureFitsDevice,
   assertBvhTextureRefreshCapacity,
+  uploadElementTexture,
+  writeElementTexture,
 } from './bvhTextureLimits.js';
 
 const ANALYTIC_LIGHT_TEX_WIDTH = 4096;
 const ANALYTIC_LIGHT_HEADER_VEC4S = 1;
 const ANALYTIC_LIGHT_STRIDE_VEC4S = 4;
-const TEX_BINDING = 0x04;
-const COPY_DST = 0x02;
 
 export interface AnalyticLightsTexture {
   texture: GPUTexture;
@@ -31,13 +31,16 @@ export function uploadAnalyticLightsTexture(
   const vec4Count = Math.max(4, ANALYTIC_LIGHT_HEADER_VEC4S + count * ANALYTIC_LIGHT_STRIDE_VEC4S);
   const { width, height } = analyticLightsTextureSize(vec4Count);
   assertBvhTextureFitsDevice('analyticLights', device, width, height, vec4Count);
-  const texture = device.createTexture({
+  const texture = uploadElementTexture(device, {
     label: 'vitrum.analyticLights.rgba32float',
-    size: { width, height, depthOrArrayLayers: 1 },
     format: 'rgba32float',
-    usage: TEX_BINDING | COPY_DST,
+    width,
+    height,
+    bytesPerTexel: 16,
+    elementsPerTexel: 4,
+    makePadded: (n) => new Float32Array(n),
+    fill: (padded) => fillAnalyticLights(padded, packed, count),
   });
-  writeAnalyticLightsTexture(device, texture, packed, count, width, height);
   return { texture, width, height };
 }
 
@@ -54,29 +57,24 @@ export function refreshAnalyticLightsTexture(
     tex.height,
     Math.max(4, ANALYTIC_LIGHT_HEADER_VEC4S + count * ANALYTIC_LIGHT_STRIDE_VEC4S),
   );
-  writeAnalyticLightsTexture(device, tex.texture, packed, count, tex.width, tex.height);
+  writeElementTexture(device, tex.texture, {
+    width: tex.width,
+    height: tex.height,
+    bytesPerTexel: 16,
+    elementsPerTexel: 4,
+    makePadded: (n) => new Float32Array(n),
+    fill: (padded) => fillAnalyticLights(padded, packed, count),
+  });
 }
 
-function writeAnalyticLightsTexture(
-  device: GPUDevice,
-  texture: GPUTexture,
-  packed: Float32Array,
-  lightCount: number,
-  width: number,
-  height: number,
-): void {
-  const padded = new Float32Array(width * height * 4);
+/** Populate the padded rgba32float grid: light count in texel 0, packed
+ *  point/spot payload starting at the header offset. */
+function fillAnalyticLights(padded: Float32Array, packed: Float32Array, lightCount: number): void {
   padded[0] = lightCount;
   const payloadOffset = ANALYTIC_LIGHT_HEADER_VEC4S * 4;
   const payloadFloats = lightCount * ANALYTIC_LIGHT_STRIDE_VEC4S * 4;
   padded.set(
     packed.subarray(0, Math.min(packed.length, payloadFloats, padded.length - payloadOffset)),
     payloadOffset,
-  );
-  device.queue.writeTexture(
-    { texture },
-    padded.buffer,
-    { bytesPerRow: width * 4 * 4, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 },
   );
 }

@@ -877,7 +877,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
 
     expectCloseArray(
       bumpPerturbedNormalReference(gradient, 0.25),
-      [-0.21878586532124316, -0.3704062336207192, 0.9022097549339923],
+      [-0.21878586532124317, -0.3704062336207192, 0.9022097549339922],
     );
   });
 

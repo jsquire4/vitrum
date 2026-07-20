@@ -160,76 +160,90 @@
  * warning/truthfulness surface rather than silently rendered as native.
  */
 
-/** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid. */
-export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> = new Set<string>([
-  'baseColor',
-  'roughness',
-  'metallic',
-  'shadingModel',
-  'emissive',
-  'emissiveIntensity',
-  'emissiveMap',
-  'lightMap',
-  'lightMapIntensity',
-  'envMapIntensity',
-  'specularColor',
-  'specularIntensity',
-  'specularColorMap',
-  'specularIntensityMap',
-  'clearcoat',
-  'clearcoatRoughness',
-  'clearcoatMap',
-  'clearcoatRoughnessMap',
-  'clearcoatNormalMap',
-  'clearcoatNormalScale',
-  'sheen',
-  'sheenColor',
-  'sheenRoughness',
-  'sheenColorMap',
-  'sheenRoughnessMap',
-  'anisotropy',
-  'anisotropyRotation',
-  'anisotropyMap',
-  'iridescence',
-  'iridescenceIor',
-  'iridescenceThicknessRange',
-  'iridescenceMap',
-  'iridescenceThicknessMap',
-  'frontLayer',
-  'frontLayer.normalMap',
-  'frontLayer.normalScale',
-  'backLayer',
-  'backLayer.normalMap',
-  'backLayer.normalScale',
-  'alphaMode',
-  'alphaCutoff',
-  'opacity',
-  'transmission',
-  'transmissionMap',
-  'scatteringCoefficient',
-  'scatteringAnisotropy',
-  'scatteringCoefficientRGB',
-  'attenuationColor',
-  'attenuationDistance',
-  'thickness',
-  'thicknessMap',
-  'ior',
-  'extensions',
-  'baseColorMap',
-  'normalMap',
-  'normalScale',
-  'bumpMap',
-  'bumpScale',
-  'displacementMap',
-  'displacementScale',
-  'displacementBias',
-  'displacementSubdivisions',
-  'roughnessMap',
-  'metallicMap',
-  'aoMap',
-  'aoMapIntensity',
-  'alphaMap',
-]);
+/**
+ * Keyed doc record: each consumed `MaterialSpec` field → a one-line note on
+ * where/how walkaround-hybrid reads it. This is the SINGLE SOURCE of the
+ * allowlist — {@link CONSUMED_MATERIAL_FIELDS} is derived from its keys, so a
+ * field can never be in the allowlist without a doc entry (or vice versa). The
+ * full narrative sites live in this module's header JSDoc; these entries are the
+ * machine-checkable index (guarded by `consumedMaterialFieldDocs.test.ts`, which
+ * asserts key parity with the Set — D6-5).
+ */
+export const CONSUMED_MATERIAL_FIELD_DOCS: Readonly<Record<string, string>> = {
+  baseColor: 'packingHelpers packBVHIndexWFromCore via materialSpecTriColor',
+  roughness: 'packingHelpers packBVHRoughMetalFromCore via resolveRoughMetal',
+  metallic: 'packBVHIndexWFromCore isMetal flag + packBVHRoughMetalFromCore',
+  shadingModel: 'packBVHRoughMetalFromCore encodes unlit as a material flag',
+  emissive: 'packingHelpers packBVHEmissiveLeFromCore via materialSpecEmissiveLe',
+  emissiveIntensity: 'same as emissive',
+  emissiveMap: 'materialAtlas.wgsl camera-visible emitter glow + exact texel sub-triangles',
+  lightMap: 'materialAtlas.wgsl camera-visible baked outgoing radiance',
+  lightMapIntensity: 'light-map atlas metadata multiplier',
+  envMapIntensity: 'material atlas metadata → shade HDRI ReSTIR-DI env lighting',
+  specularColor: 'material atlas metadata → dielectric GGX F0 tint',
+  specularIntensity: 'scalar specular metadata path',
+  specularColorMap: 'readable sRGB maps multiply scalar specularColor',
+  specularIntensityMap: 'readable linear maps multiply specularIntensity from alpha',
+  clearcoat: 'material atlas metadata → fixed-F0 GGX top-coat lobe',
+  clearcoatRoughness: 'scalar clearcoat metadata path',
+  clearcoatMap: 'readable linear maps multiply scalar clearcoat from red',
+  clearcoatRoughnessMap: 'readable linear maps multiply clearcoatRoughness from green',
+  clearcoatNormalMap: 'readable normal maps perturb the clearcoat lobe (derived TBN)',
+  clearcoatNormalScale: 'metadata scale for clearcoatNormalMap',
+  sheen: 'material atlas metadata → Charlie sheen lobe',
+  sheenColor: 'scalar sheen metadata path',
+  sheenRoughness: 'scalar sheen metadata path',
+  sheenColorMap: 'readable sRGB maps multiply scalar sheenColor',
+  sheenRoughnessMap: 'readable linear maps multiply sheenRoughness from alpha',
+  anisotropy: 'material atlas metadata → anisotropic GGX branch',
+  anisotropyRotation: 'metadata rotation for the anisotropic GGX frame',
+  anisotropyMap: 'readable linear KHR anisotropy maps (strength B, direction RG)',
+  iridescence: 'material atlas metadata → thin-film F0 approximation',
+  iridescenceIor: 'metadata thin-film IOR',
+  iridescenceThicknessRange: 'metadata min/max thickness (nm)',
+  iridescenceMap: 'readable linear KHR iridescence maps multiply from red',
+  iridescenceThicknessMap: 'readable linear thickness maps select from green',
+  frontLayer: 'per-face transmission/roughness/normal in material atlas',
+  'frontLayer.normalMap': 'layer-local normal map for the front face layer',
+  'frontLayer.normalScale': 'metadata scale for frontLayer.normalMap',
+  backLayer: 'same per-face material atlas path as frontLayer',
+  'backLayer.normalMap': 'layer-local normal map for the back face layer',
+  'backLayer.normalScale': 'metadata scale for backLayer.normalMap',
+  alphaMode: 'packBVHRoughMetalFromCore encodes mask/blend into bvh_material bit 2',
+  alphaCutoff: 'scalar cutout path (mask cutoff default 0.5)',
+  opacity: 'scalar cutout path; fractional blend diagnosed by HybridEngine',
+  transmission: 'packBVHIndexWFromCore trans4 lane + resolveRoughMetal glass branch',
+  transmissionMap: 'materialAtlas.wgsl readable linear R glass gating',
+  scatteringCoefficient: 'volume scattering meta (materialTextureAtlas)',
+  scatteringAnisotropy: 'volume scattering meta (materialTextureAtlas)',
+  scatteringCoefficientRGB: 'volume scattering meta (materialTextureAtlas)',
+  attenuationColor: 'shared-bvh Beer-Lambert lane (bvh_beer buffer)',
+  attenuationDistance: 'same Beer-Lambert path',
+  thickness: 'same Beer-Lambert path',
+  thicknessMap: 'materialAtlas.wgsl readable linear KHR volume maps from G',
+  ior: 'shared-bvh coreMaterialToMaterialEntry → DDGI material upload',
+  extensions: 'surfaceTextureId → texType3 lane; skipEmitter',
+  baseColorMap: 'pipeline/materialTextureAtlas packs readable uv0 RGBA32F atlas',
+  normalMap: 'material atlas path; shade.wgsl per-triangle TBN perturbation',
+  normalScale: 'normal-map atlas metadata applied to tangent-space xy',
+  bumpMap: 'readable linear height field finite-differenced into a normal perturbation',
+  bumpScale: 'bump-map atlas metadata applied to the height gradient',
+  displacementMap: 'shared-bvh vertex displacement (mesh microdisplacement)',
+  displacementScale: 'displacement magnitude scalar',
+  displacementBias: 'displacement offset scalar',
+  displacementSubdivisions: 'displacement subdivision level',
+  roughnessMap: 'material atlas + metadata; shade.wgsl multiplies scalar roughness (glTF G)',
+  metallicMap: 'material atlas + metadata; shade.wgsl multiplies scalar metallic (glTF B)',
+  aoMap: 'material atlas + metadata; shade.wgsl multiplies runtime GTAO (glTF R)',
+  aoMapIntensity: 'packBVHRoughMetalFromCore stores occlusion strength in material-word bits 3-7',
+  alphaMap: 'materialAtlas.wgsl alpha maps in primary/RIS/GI casts; mask + OIT',
+};
+
+/** The set of `MaterialSpec` keys actually consumed by walkaround-hybrid.
+ *  Derived from {@link CONSUMED_MATERIAL_FIELD_DOCS} keys so the allowlist and
+ *  the doc index cannot drift (D6-5). */
+export const CONSUMED_MATERIAL_FIELDS: ReadonlySet<string> =
+  new Set<string>(Object.keys(CONSUMED_MATERIAL_FIELD_DOCS));
 
 /** Structured payload for the residual emissive-map texel-PDF warning. */
 export const EMISSIVE_MAP_TEXEL_PDF_APPROXIMATION_DETAILS = {
@@ -589,7 +603,7 @@ export function collectApproximateVolumeLayerFieldsForMaterial(
     const value = material[key];
     if (value == null) return false;
     if (typeof value !== 'object') return true;
-    return Object.keys(value as Record<string, unknown>).length > 0;
+    return Object.keys(value).length > 0;
   };
 
   if (Math.abs(scalar('scatteringCoefficient', 0)) > 1e-6) fields.add('scatteringCoefficient');
@@ -660,6 +674,27 @@ export function collectApproximateRichMaterialFieldsForMaterial(
   return [...fields].sort();
 }
 
+/**
+ * Stringify a scene emitter `meshId` (declared `unknown`) into a Set key. Output
+ * is identical to `String(meshId)` — primitives stringify as-is, objects fall
+ * back to their `toString()` — but written with explicit narrowing so it does
+ * not trip the `no-base-to-string` lint.
+ */
+function stringifyMeshId(meshId: unknown): string {
+  if (typeof meshId === 'string') return meshId;
+  if (
+    typeof meshId === 'number' ||
+    typeof meshId === 'boolean' ||
+    typeof meshId === 'bigint' ||
+    typeof meshId === 'symbol' ||
+    meshId == null
+  ) {
+    return String(meshId);
+  }
+  // Object / function: mirror String()'s fallback to the value's own toString.
+  return (meshId as { toString(): string }).toString();
+}
+
 function collectLitMeshAreaEmitterMeshIds(
   emitters: ReadonlyArray<{
     readonly kind: string;
@@ -672,7 +707,7 @@ function collectLitMeshAreaEmitterMeshIds(
   for (const emitter of emitters) {
     if (emitter.kind !== 'mesh-area' || emitter.meshId === undefined) continue;
     if (!emitterEnergyIsNonZero(emitter)) continue;
-    meshIds.add(String(emitter.meshId));
+    meshIds.add(stringifyMeshId(emitter.meshId));
   }
   return meshIds;
 }
@@ -686,7 +721,7 @@ function effectiveScalarBlendOpacity(material: Record<string, unknown>): number 
   return Math.min(1, Math.max(0, opacity * baseAlpha));
 }
 
-function asTextureHandle(value: unknown): unknown | null {
+function asTextureHandle(value: unknown): unknown {
   if (value == null) return null;
   if (typeof value === 'object' && 'handle' in value) {
     return (value as { readonly handle?: unknown }).handle ?? null;

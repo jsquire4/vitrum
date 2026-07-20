@@ -29,6 +29,7 @@
 
 import type { EngineWarning } from '@vitrum/core';
 import { composeWgsl } from './wgslComposer.js';
+import { checkShaderCompile } from './shaderUtils.js';
 import {
   ATROUS_MODULE,
   CB_PREFILL_MODULE,
@@ -216,18 +217,12 @@ export async function compilePipelines(
     ['transparent-oit', transparentOitSM],
   ];
   for (const [label, sm] of modules) {
-    const info = await sm.getCompilationInfo();
-    const errors = info.messages.filter(m => m.type === 'error');
-    if (errors.length > 0) {
-      console.error(`[ReSTIR] Shader compile errors in '${label}':`, errors.map(e => `line ${e.lineNum}: ${e.message}`));
-      throw new Error(`[ReSTIR] Shader compile error in '${label}': ${errors[0]!.message} (line ${errors[0]!.lineNum})`);
-    }
-    const warns = info.messages.filter(m => m.type === 'warning');
-    if (warns.length > 0) {
-      emitShaderCompilationWarnings(label, warns, {
+    await checkShaderCompile(sm, label, {
+      prefix: '[ReSTIR]',
+      onWarnings: (warns) => emitShaderCompilationWarnings(label, warns, {
         ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
-      });
-    }
+      }),
+    });
   }
 
   // Pipeline layouts.
@@ -469,18 +464,12 @@ export async function compilePipelines(
       requires: ['luminance', 'ppgTreeLayout'] as const,
     };
     const ppgUpdateSM = device.createShaderModule({ label: 'ppg-update', code: composeWgsl(ppgUpdateModule, wgslModules) });
-    const info = await ppgUpdateSM.getCompilationInfo();
-    const errs = info.messages.filter(m => m.type === 'error');
-    if (errs.length > 0) {
-      console.error('[ReSTIR] PPG shader compile errors in \'ppg-update\':', errs.map(e => `line ${e.lineNum}: ${e.message}`));
-      throw new Error(`[ReSTIR] PPG shader compile error in 'ppg-update': ${errs[0]!.message}`);
-    }
-    const warns = info.messages.filter((m) => m.type === 'warning');
-    if (warns.length > 0) {
-      emitShaderCompilationWarnings('ppg-update', warns, {
+    await checkShaderCompile(ppgUpdateSM, 'ppg-update', {
+      prefix: '[ReSTIR]',
+      onWarnings: (warns) => emitShaderCompilationWarnings('ppg-update', warns, {
         ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
-      });
-    }
+      }),
+    });
     pipelineDraft['ppgUpdatePipeline'] = await device.createComputePipelineAsync({
       label: 'ppg-update', layout: 'auto',
       compute: { module: ppgUpdateSM, entryPoint: 'ppgUpdateMain' },
@@ -499,19 +488,12 @@ export async function compilePipelines(
       label: 'regir-build',
       code: composeWgsl(REGIR_BUILD_MODULE, wgslModules),
     });
-    const info = await regirBuildSM.getCompilationInfo();
-    const errs = info.messages.filter((m) => m.type === 'error');
-    if (errs.length > 0) {
-      console.error('[ReSTIR] ReGIR shader compile errors in \'regir-build\':',
-        errs.map((e) => `line ${e.lineNum}: ${e.message}`));
-      throw new Error(`[ReSTIR] ReGIR shader compile error in 'regir-build': ${errs[0]!.message}`);
-    }
-    const warns = info.messages.filter((m) => m.type === 'warning');
-    if (warns.length > 0) {
-      emitShaderCompilationWarnings('regir-build', warns, {
+    await checkShaderCompile(regirBuildSM, 'regir-build', {
+      prefix: '[ReSTIR]',
+      onWarnings: (warns) => emitShaderCompilationWarnings('regir-build', warns, {
         ...(opts?.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
-      });
-    }
+      }),
+    });
     const regirBuildLayout = device.createPipelineLayout({
       bindGroupLayouts: [getRegirBuildBindGroupLayout(device, bglCache)],
     });

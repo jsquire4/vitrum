@@ -27,6 +27,7 @@ import type { PassLabel } from '../timestampQueries.js';
 import type { BGLCache } from '../bindGroupLayouts.js';
 import type { ReGIRCoordinator } from '../ReGIRCoordinator.js';
 import { buildRegirBuildBindGroup } from '../bindGroupBuilders.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 /** Resources the grid-build pass binds — resolved per frame so buffer
  *  re-uploads (emitter rebuild) are picked up without re-registering the pass. */
@@ -85,11 +86,11 @@ export class ReGIRBuildPass implements Pass {
       res.emitterBuffer,
       res.uboBuffer,
     );
-    const bg = ctx.resourceCache?.bindGroup('pass:regir-build', [
+    const bg = cachedBindGroup(ctx.resourceCache, 'pass:regir-build', [
       res.combinedLightTreeBuffer,
       res.emitterBuffer,
       res.uboBuffer,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     const pass = ctx.encoder.beginComputePass(ctx.computeDesc('regir-build'));
     pass.setPipeline(this._pipeline);
     pass.setBindGroup(0, bg);

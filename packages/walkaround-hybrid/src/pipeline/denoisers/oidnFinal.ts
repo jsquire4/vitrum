@@ -49,6 +49,7 @@
 import {
   preloadOIDNModel,
   denoiseFinal,
+  deriveOidnState,
   releaseOIDNCacheEntry,
   type OIDNDenoiseInputs,
 } from '@vitrum/shared-denoisers';
@@ -194,16 +195,7 @@ export class OIDNFinalDenoiser implements Denoiser {
     // Owned output texture — full-res rgba16float, same layout / usage as
     // the SVGF-real / atrous-variance ping-pongs so downstream
     // temporalAccum can sample it identically.
-    this._denoisedOutputTexture = ctx.device.createTexture({
-      label: 'oidn-final-denoised-output',
-      size: [ctx.width, ctx.height],
-      format: 'rgba16float',
-      usage:
-        GPUTextureUsage.STORAGE_BINDING |
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_DST |
-        GPUTextureUsage.COPY_SRC,
-    });
+    this._denoisedOutputTexture = OIDNFinalDenoiser._createOutputTexture(ctx.device, ctx.width, ctx.height);
 
     // Pre-warm the ONNX runtime + session so the first dispatch doesn't
     // pay the ~500 ms — 5 s "first run" cost on top of the inference cost.
@@ -243,16 +235,29 @@ export class OIDNFinalDenoiser implements Denoiser {
     if (this._warmupInFlight) {
       return { status: 'warming-up', reason: 'preloading OIDN model' };
     }
-    if (this._inFlight) {
-      return { status: 'in-flight', reason: 'OIDN inference cycle in flight' };
-    }
     if (this._device == null || this._denoisedOutputTexture == null) {
       return { status: 'warming-up', reason: 'OIDN denoiser is not initialized' };
     }
-    if (!this._haveDenoisedOutput) {
-      return { status: 'fallback', reason: 'waiting for first OIDN output' };
+    // Reuse the shared OIDN status ladder for the in-flight / ready / fallback
+    // tail (single source of truth with the pt-webgl2 / pt-webgpu wrappers via
+    // `deriveOidnState`). The disabled / disposed / failed / warmup /
+    // not-initialized branches above are wh-local ORCHESTRATION and have
+    // already short-circuited, so `lastError` is null here. wh keeps its own
+    // reason strings (pinned by denoiserState.test) — only the STATUS value is
+    // shared. `_haveDenoisedOutput` is wh's cohort-completed flag.
+    const derived = deriveOidnState({
+      lastError: null,
+      inFlight: this._inFlight,
+      haveCompleted: this._haveDenoisedOutput,
+    });
+    switch (derived.status) {
+      case 'in-flight':
+        return { status: 'in-flight', reason: 'OIDN inference cycle in flight' };
+      case 'ready':
+        return DENOISER_READY_STATE;
+      default:
+        return { status: 'fallback', reason: 'waiting for first OIDN output' };
     }
-    return DENOISER_READY_STATE;
   }
 
   dispatch(ctx: DenoiserDispatchContext): GPUTexture | null {
@@ -495,17 +500,23 @@ export class OIDNFinalDenoiser implements Denoiser {
     this._haveDenoisedOutput = false;
     if (this._denoisedOutputTexture && this._device) {
       try { this._denoisedOutputTexture.destroy(); } catch { /* ignore */ }
-      this._denoisedOutputTexture = this._device.createTexture({
-        label: 'oidn-final-denoised-output',
-        size: [width, height],
-        format: 'rgba16float',
-        usage:
-          GPUTextureUsage.STORAGE_BINDING |
-          GPUTextureUsage.TEXTURE_BINDING |
-          GPUTextureUsage.COPY_DST |
-          GPUTextureUsage.COPY_SRC,
-      });
+      this._denoisedOutputTexture = OIDNFinalDenoiser._createOutputTexture(this._device, width, height);
     }
+  }
+
+  /** Full-res rgba16float owned output texture (STORAGE|TEXTURE|COPY_DST|COPY_SRC).
+   *  Single source of truth for the descriptor shared by `initialize` + `resize`. */
+  private static _createOutputTexture(device: GPUDevice, width: number, height: number): GPUTexture {
+    return device.createTexture({
+      label: 'oidn-final-denoised-output',
+      size: [width, height],
+      format: 'rgba16float',
+      usage:
+        GPUTextureUsage.STORAGE_BINDING |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.COPY_SRC,
+    });
   }
 
   dispose(): void {

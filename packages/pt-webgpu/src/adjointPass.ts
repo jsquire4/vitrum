@@ -18,7 +18,6 @@
 import {
   analyticPrimitiveToMesh,
   asMat4,
-  type AnalyticPrimitive,
   type FrameInput,
   type Scene,
   type ScenePrimitive,
@@ -514,7 +513,7 @@ function adjointReplayPrimitive(
   if (isAdjointReplayMeshPrimitive(primitive)) return primitive;
   if (primitive.kind === 'analytic') {
     if (!supportedAnalyticShapes.has(primitive.shape)) return null;
-    return analyticPrimitiveToMesh(primitive as AnalyticPrimitive);
+    return analyticPrimitiveToMesh(primitive);
   }
   return null;
 }

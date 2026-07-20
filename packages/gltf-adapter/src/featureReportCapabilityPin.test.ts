@@ -53,7 +53,7 @@ describe('featureReport capability tables — drift pin against core BackendSupp
   it('PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS are all valid keys of the pt-webgpu core materials matrix', () => {
     // Drift guard: if core renames/removes a MaterialSpec field the lite table
     // references, this fails (the field would no longer be an audited core row).
-    const coreMaterials = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails!.materials as
+    const coreMaterials = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials as
       Readonly<Partial<Record<keyof MaterialSpec, unknown>>>;
     const missing: string[] = [];
     for (const field of PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS) {
@@ -66,7 +66,7 @@ describe('featureReport capability tables — drift pin against core BackendSupp
     // The lite tier is what makes these fields unsupported; if the FULL backend
     // itself already declared one unsupported, the adapter table would be
     // double-encoding a core promise and would drift. Assert full-tier support.
-    const coreMaterials = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails!.materials as
+    const coreMaterials = BACKEND_PROMISE_LEDGER['pt-webgpu'].supportDetails.materials as
       Readonly<Partial<Record<keyof MaterialSpec, string>>>;
     const wronglyUnsupportedAtFull: string[] = [];
     for (const field of PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS) {

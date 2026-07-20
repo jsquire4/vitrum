@@ -26,6 +26,13 @@ export * from './sceneBvh.js';
 export * from './materialEntry.js';
 export * from './emitterClassify.js';
 export {
+  emitterToCanonical,
+  canonicalizeEmitter,
+  canonicalMeshAreaIncluded,
+  type CanonicalEmitter,
+  type CanonicalEmitterKind,
+} from './emitterCanonical.js';
+export {
   mergeWorldSpaceFromCore,
   mergeUv1FromCore,
   materialSig,

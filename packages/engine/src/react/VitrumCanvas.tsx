@@ -54,7 +54,10 @@ import {
   type GltfProgressiveEngineResult,
   type LoadGltfWithEngineOptions,
 } from '../gltf.js';
-import { createProgressiveEngine, type ProgressiveEngineHandle } from '../createProgressiveEngine.js';
+import {
+  createProgressiveEngine,
+  progressiveHandleAsEngine,
+} from '../createProgressiveEngine.js';
 
 export type VitrumCanvasGltfOptions = Omit<
   LoadGltfWithEngineOptions,
@@ -80,71 +83,6 @@ function disposePendingGltfEngine(result: VitrumCanvasGltfResult | undefined): v
   } catch {
     // The attach path is already being abandoned; cleanup stays best-effort.
   }
-}
-
-function progressiveHandleAsEngine(handle: ProgressiveEngineHandle): EngineWithBackendId {
-  const coordinator = handle.coordinator;
-  const engine = {
-    backendId: 'pt-webgpu' as const,
-    get state() { return handle.realtime.state; },
-    get capabilities() { return handle.realtime.capabilities; },
-    setScene: (scene: Scene) => coordinator.setScene(scene),
-    getScene: () => coordinator.getScene() ?? handle.realtime.getScene?.() ?? null,
-    updatePrimitive: (id: string, patch: Parameters<NonNullable<EngineWithBackendId['updatePrimitive']>>[1]) =>
-      coordinator.updatePrimitive(id, patch),
-    addPrimitive: (primitive: Parameters<NonNullable<EngineWithBackendId['addPrimitive']>>[0]) =>
-      coordinator.addPrimitive(primitive),
-    removePrimitive: (id: Parameters<NonNullable<EngineWithBackendId['removePrimitive']>>[0]) =>
-      coordinator.removePrimitive(id),
-    setSize: (width: number, height: number) => {
-      handle.realtime.setSize?.(width, height);
-      handle.converged.setSize?.(width, height);
-    },
-    renderFrame: (input: FrameInput) => coordinator.frame(input).output,
-    // V1-1 / R2 — presentation source for attachVitrum's offscreen blit. The
-    // coordinator returns the converged (offscreen pt-webgpu) engine's texture
-    // once it hands off, and null while the swapchain realtime engine is driving
-    // (it presents itself). This is what unfreezes the canvas after handoff.
-    getPresentationSource: () => coordinator.getPresentationSource(),
-    reset: () => {
-      handle.realtime.reset();
-      handle.converged.reset();
-      coordinator.reset();
-    },
-    pause: () => {
-      handle.realtime.pause();
-      handle.converged.pause();
-    },
-    resume: () => {
-      handle.realtime.resume();
-      handle.converged.resume();
-    },
-    dispose: () => handle.dispose(),
-    onFrame: (cb: Parameters<NonNullable<EngineWithBackendId['onFrame']>>[0]) => {
-      const unsubs = [handle.realtime.onFrame?.(cb), handle.converged.onFrame?.(cb)]
-        .filter((fn): fn is () => void => typeof fn === 'function');
-      return () => {
-        for (const unsub of unsubs) unsub();
-      };
-    },
-    onProgress: (cb: Parameters<NonNullable<EngineWithBackendId['onProgress']>>[0]) =>
-      handle.converged.onProgress?.(cb) ?? (() => {}),
-    onError: (cb: Parameters<NonNullable<EngineWithBackendId['onError']>>[0]) => {
-      const unsubs = [handle.realtime.onError?.(cb), handle.converged.onError?.(cb)]
-        .filter((fn): fn is () => void => typeof fn === 'function');
-      return () => {
-        for (const unsub of unsubs) unsub();
-      };
-    },
-    onWarning: (cb: Parameters<NonNullable<EngineWithBackendId['onWarning']>>[0]) => {
-      const unsubs = [handle.realtime.onWarning?.(cb), handle.converged.onWarning?.(cb)]
-        .filter((fn): fn is () => void => typeof fn === 'function');
-      return () => {
-        for (const unsub of unsubs) unsub();
-      };
-    },
-  };
-  return engine as EngineWithBackendId;
 }
 
 function vitrumCanvasPlaybackEnabled(playback: AttachVitrumSceneControllerPlayback | undefined): boolean {

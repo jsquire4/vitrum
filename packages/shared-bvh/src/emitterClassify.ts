@@ -20,6 +20,7 @@ import {
   MATERIAL_EMITTER_SUN_DOT_THRESHOLD,
   MATERIAL_DEFAULT_TRI_COLOR,
 } from './materialEntry.js';
+import { srgbToLinear, resolveReadableTexture } from './textureDecode.js';
 
 interface ReadableTextureHandle {
   readonly width?: number;
@@ -53,20 +54,6 @@ interface TextureCellInterval {
   readonly lo: number;
   readonly hi: number;
   readonly texel: number;
-}
-
-function halfToFloat(h: number): number {
-  const s = (h & 0x8000) >> 15;
-  const e = (h & 0x7c00) >> 10;
-  const f = h & 0x03ff;
-  if (e === 0) return (s ? -1 : 1) * 2 ** -14 * (f / 1024);
-  if (e === 0x1f) return f ? NaN : (s ? -1 : 1) * Infinity;
-  return (s ? -1 : 1) * 2 ** (e - 15) * (1 + f / 1024);
-}
-
-function srgbToLinear(v: number): number {
-  const c = Math.max(0, Math.min(1, v));
-  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 }
 
 function textureHint(handle: ReadableTextureHandle): TextureHandleHint | undefined {
@@ -114,38 +101,16 @@ function averageReadableTextureRgb(
 ): [number, number, number] | null {
   const handle = ref?.handle as ReadableTextureHandle | null | undefined;
   if (handle == null) return null;
-
-  const src = handle.data ?? handle.image?.data;
-  const width = Number(handle.width ?? handle.image?.width ?? 0);
-  const height = Number(handle.height ?? handle.image?.height ?? 0);
-  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
-    return null;
-  }
-
-  const pixelCount = Math.floor(width) * Math.floor(height);
-  if (pixelCount <= 0) return null;
   const hint = textureHint(handle);
-  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
-  const stride = hint?.channels ?? heuristicStride;
-  if (stride < 1 || stride > 4 || src.length < pixelCount * stride) {
-    return null;
-  }
-
-  const isFloat = src instanceof Float32Array;
-  const useHalf = hint?.dataType != null
-    ? hint.dataType === 'float16' || hint.dataType === 'half-float'
-    : false;
-  const useUint16 = hint?.dataType != null ? hint.dataType === 'uint16' : src instanceof Uint16Array;
-  const useFloat = hint?.dataType != null ? hint.dataType === 'float32' : isFloat;
-  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
-  const intMax = useHalf || useUint16 || useFloat ? 0 : 2 ** (8 * bpe) - 1;
-  const decode = (v: number): number => (
-    useHalf ? halfToFloat(v) :
-      useFloat ? v :
-      useUint16 ? Math.min(1, Math.max(0, v / 65535)) :
-      intMax > 0 ? v / intMax : v
+  const resolved = resolveReadableTexture(
+    handle,
+    fieldColorSpace,
+    hint?.channels,
+    hint?.dataType,
+    hint?.colorSpace,
   );
-  const needsSrgbDecode = fieldColorSpace === 'srgb' && hint?.colorSpace !== 'linear';
+  if (resolved == null) return null;
+  const { src, pixelCount, stride, decode, needsSrgbDecode } = resolved;
 
   let r = 0;
   let g = 0;
@@ -209,37 +174,16 @@ function readTextureRgbAtTexel(
 ): [number, number, number] | null {
   const handle = ref?.handle as ReadableTextureHandle | null | undefined;
   if (handle == null) return null;
-
-  const src = handle.data ?? handle.image?.data;
-  const width = Math.floor(Number(handle.width ?? handle.image?.width ?? 0));
-  const height = Math.floor(Number(handle.height ?? handle.image?.height ?? 0));
-  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
-    return null;
-  }
-
-  const pixelCount = width * height;
   const hint = textureHint(handle);
-  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
-  const stride = hint?.channels ?? heuristicStride;
-  if (stride < 1 || stride > 4 || src.length < pixelCount * stride) {
-    return null;
-  }
-
-  const isFloat = src instanceof Float32Array;
-  const useHalf = hint?.dataType != null
-    ? hint.dataType === 'float16' || hint.dataType === 'half-float'
-    : false;
-  const useUint16 = hint?.dataType != null ? hint.dataType === 'uint16' : src instanceof Uint16Array;
-  const useFloat = hint?.dataType != null ? hint.dataType === 'float32' : isFloat;
-  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
-  const intMax = useHalf || useUint16 || useFloat ? 0 : 2 ** (8 * bpe) - 1;
-  const decode = (v: number): number => (
-    useHalf ? halfToFloat(v) :
-      useFloat ? v :
-      useUint16 ? Math.min(1, Math.max(0, v / 65535)) :
-      intMax > 0 ? v / intMax : v
+  const resolved = resolveReadableTexture(
+    handle,
+    fieldColorSpace,
+    hint?.channels,
+    hint?.dataType,
+    hint?.colorSpace,
   );
-  const needsSrgbDecode = fieldColorSpace === 'srgb' && hint?.colorSpace !== 'linear';
+  if (resolved == null) return null;
+  const { src, width, height, stride, decode, needsSrgbDecode } = resolved;
 
   const ix = Math.min(width - 1, Math.max(0, Math.floor(x)));
   const iy = Math.min(height - 1, Math.max(0, Math.floor(y)));
@@ -272,37 +216,16 @@ export function sampleReadableTextureRgbAtUv(
 ): [number, number, number] | null {
   const handle = ref?.handle as ReadableTextureHandle | null | undefined;
   if (handle == null || ref == null) return null;
-
-  const src = handle.data ?? handle.image?.data;
-  const width = Math.floor(Number(handle.width ?? handle.image?.width ?? 0));
-  const height = Math.floor(Number(handle.height ?? handle.image?.height ?? 0));
-  if (src == null || typeof src.length !== 'number' || width <= 0 || height <= 0) {
-    return null;
-  }
-
-  const pixelCount = width * height;
   const hint = textureHint(handle);
-  const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
-  const stride = hint?.channels ?? heuristicStride;
-  if (stride < 1 || stride > 4 || src.length < pixelCount * stride) {
-    return null;
-  }
-
-  const isFloat = src instanceof Float32Array;
-  const useHalf = hint?.dataType != null
-    ? hint.dataType === 'float16' || hint.dataType === 'half-float'
-    : false;
-  const useUint16 = hint?.dataType != null ? hint.dataType === 'uint16' : src instanceof Uint16Array;
-  const useFloat = hint?.dataType != null ? hint.dataType === 'float32' : isFloat;
-  const bpe = (src as { readonly BYTES_PER_ELEMENT?: number }).BYTES_PER_ELEMENT ?? 1;
-  const intMax = useHalf || useUint16 || useFloat ? 0 : 2 ** (8 * bpe) - 1;
-  const decode = (v: number): number => (
-    useHalf ? halfToFloat(v) :
-      useFloat ? v :
-      useUint16 ? Math.min(1, Math.max(0, v / 65535)) :
-      intMax > 0 ? v / intMax : v
+  const resolved = resolveReadableTexture(
+    handle,
+    fieldColorSpace,
+    hint?.channels,
+    hint?.dataType,
+    hint?.colorSpace,
   );
-  const needsSrgbDecode = fieldColorSpace === 'srgb' && hint?.colorSpace !== 'linear';
+  if (resolved == null) return null;
+  const { src, width, height, stride, decode, needsSrgbDecode } = resolved;
 
   const wrapped = transformTextureUv(ref, uv);
   const x = Math.min(width - 1, Math.max(0, Math.floor(wrapped[0] * width)));

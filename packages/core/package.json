@@ -13,7 +13,8 @@
     ".": "./src/index.ts",
     "./scene": "./src/scene/index.ts",
     "./engine": "./src/engine/index.ts",
-    "./frame": "./src/frame.ts"
+    "./frame": "./src/frame.ts",
+    "./inverse-scaffolding": "./src/inverse-scaffolding.ts"
   },
   "files": ["src", "README.md"],
   "repository": {

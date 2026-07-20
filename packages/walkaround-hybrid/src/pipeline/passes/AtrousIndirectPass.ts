@@ -37,6 +37,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { runAtrousChain } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 const ATROUS_INDIRECT_ITERATIONS = 4;
 
@@ -104,12 +105,12 @@ export class AtrousIndirectPass implements Pass {
           gNormalDepthView, gNormalDepthView,
           byteOffset,
         );
-        return resourceCache?.bindGroup(`pass:atrous-indirect:${iter}`, [
+        return cachedBindGroup(resourceCache, `pass:atrous-indirect:${iter}`, [
           this._uboRef,
           inputTex,
           outputTex,
           resources.common.gNormalDepthTexture,
-        ], buildBg) ?? buildBg();
+        ], buildBg);
       },
       labelFor: (iter) => `atrous-indirect-${iter}` as PassLabel,
     });

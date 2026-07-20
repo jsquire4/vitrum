@@ -16,6 +16,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@vitrum/core/inverse-scaffolding': path.join(coreRoot, 'src/inverse-scaffolding.ts'),
       '@vitrum/core': path.join(coreRoot, 'src/index.ts'),
       '@vitrum/shared-bvh': path.join(sharedBvhRoot, 'src/index.ts'),
       '@vitrum/shared-denoisers': path.join(sharedDenoisersRoot, 'src/index.ts'),

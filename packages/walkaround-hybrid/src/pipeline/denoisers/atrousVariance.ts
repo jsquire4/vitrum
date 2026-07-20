@@ -42,6 +42,7 @@ import type { UboRef } from '../bindGroupBuilders.js';
 import { buildAtrousVarianceAtrousBindGroup } from '../bindGroupBuilders.js';
 import { checkShaderCompile } from '../shaderUtils.js';
 import { runAtrousChain } from '../passes/dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
@@ -272,12 +273,12 @@ export class AtrousVarianceDenoiser implements Denoiser {
       );
       const pass = encoder.beginComputePass(computeDesc('welford-temporal'));
       pass.setPipeline(wf);
-      pass.setBindGroup(0, resourceCache?.bindGroup('denoiser:atrous-variance:welford', [
+      pass.setBindGroup(0, cachedBindGroup(resourceCache, 'denoiser:atrous-variance:welford', [
         common.hdrTotalTexture,
         welfordRead,
         welfordWrite,
         this._welfordUboRef.buf,
-      ], buildBg) ?? buildBg());
+      ], buildBg));
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
     }
@@ -297,12 +298,12 @@ export class AtrousVarianceDenoiser implements Denoiser {
       );
       const pass = encoder.beginComputePass(computeDesc('atrous-variance-variance'));
       pass.setPipeline(sv);
-      pass.setBindGroup(0, resourceCache?.bindGroup('denoiser:atrous-variance:variance', [
+      pass.setBindGroup(0, cachedBindGroup(resourceCache, 'denoiser:atrous-variance:variance', [
         common.hdrColorTexture,
         welfordWrite,
         common.atrousVarianceEstimateTexture,
         this._varianceUboRef.buf,
-      ], buildBg) ?? buildBg());
+      ], buildBg));
       pass.dispatchWorkgroups(wgX16, wgY16, 1);
       pass.end();
     }
@@ -337,13 +338,13 @@ export class AtrousVarianceDenoiser implements Denoiser {
           `atrous-variance-atrous-bg-${iter}`,
           atrousUboByteOffset,
         );
-        return resourceCache?.bindGroup(`denoiser:atrous-variance:atrous:${iter}`, [
+        return cachedBindGroup(resourceCache, `denoiser:atrous-variance:atrous:${iter}`, [
           this._atrousUboRef.buf,
           inputTex,
           outputTex,
           resources.common.gNormalDepthTexture,
           common.atrousVarianceEstimateTexture,
-        ], buildBg) ?? buildBg();
+        ], buildBg);
       },
       labelFor: (iter) => `atrous-variance-atrous-${iter}` as PassLabel,
     });

@@ -237,46 +237,24 @@ export function estimateFrameResourcesMemory(
   // ── Walk each FrameResources sub-struct ────────────────────────────────
   // Cast to a record-of-records so we can iterate the public sub-struct
   // names declared in resourceManager.ts.
+  // NOTE on the `?? {}` + `byCategory[cat] = catBytes` guarantee below:
+  // `addSection` uses `(byCategory[cat] ?? 0) + catBytes`, and each KNOWN
+  // category is visited exactly once here, so the first (and only) write per
+  // known category is `0 + catBytes` — identical to the prior direct
+  // assignment. Empty/absent sub-structs still emit a `byCategory[cat] = 0`
+  // key (the contract surface expects all known categories present), because
+  // `addSection` always writes the key even for a zero-byte section.
+  //
+  // Samplers / frozen empty placeholders contribute 0: `addSection` skips any
+  // field lacking the texture (`format`+`width`+`height`) or buffer
+  // (`size`+`usage`) brand. WebGPU drivers allocate a per-sampler descriptor
+  // block (~64 bytes) but the spec doesn't expose it and the rounding error
+  // against the 100+ MB texture budget is entirely in the noise.
   const sections = res as unknown as Record<string, Record<string, unknown>>;
   const KNOWN_CATEGORIES = ['common', 'restirDI', 'restirGI', 'ddgi', 'gtao', 'svgf', 'ppg', 'neural'] as const;
 
   for (const cat of KNOWN_CATEGORIES) {
-    const section = sections[cat] ?? {};
-    let catBytes = 0;
-    for (const fieldName of Object.keys(section)) {
-      const obj = section[fieldName] as Record<string, unknown> | null | undefined;
-      if (obj == null) continue;
-
-      // Texture branch — has a string `format` plus width/height.
-      if (typeof obj.format === 'string' &&
-          typeof obj.width === 'number' &&
-          typeof obj.height === 'number') {
-        const tex = obj as unknown as MeasurableTexture;
-        const bytes = textureBytes(tex);
-        catBytes += bytes;
-        byTextureFormat[tex.format] = (byTextureFormat[tex.format] ?? 0) + bytes;
-        continue;
-      }
-
-      // Buffer branch — has a numeric `size` plus a numeric `usage`.
-      if (typeof obj.size === 'number' &&
-          typeof obj.usage === 'number') {
-        const buf = obj as unknown as MeasurableBuffer;
-        const bytes = buf.size;
-        catBytes += bytes;
-        const usageClass = classifyBufferUsage(buf.usage);
-        byBufferUsage[usageClass] = (byBufferUsage[usageClass] ?? 0) + bytes;
-        continue;
-      }
-
-      // Anything else (samplers, frozen empty placeholders) contributes 0.
-      // We don't attempt to size GPUSampler; WebGPU drivers typically allocate
-      // a per-sampler descriptor block (~64 bytes) but the spec doesn't expose
-      // it and the rounding error against the 100+ MB texture budget is
-      // entirely in the noise.
-    }
-    byCategory[cat] = catBytes;
-    total += catBytes;
+    addSection(cat, sections[cat] ?? {});
   }
 
   for (const [cat, section] of Object.entries(externalSections)) {

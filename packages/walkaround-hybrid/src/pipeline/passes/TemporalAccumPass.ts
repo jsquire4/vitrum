@@ -27,6 +27,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 export class TemporalAccumPass implements Pass {
   readonly id = 'temporalAccum' as const;
@@ -59,12 +60,12 @@ export class TemporalAccumPass implements Pass {
       resourceCache?.textureView(frameState.readAccum) ?? frameState.readAccum.createView(),
       resourceCache?.textureView(frameState.writeAccum) ?? frameState.writeAccum.createView(),
     );
-    const bg = resourceCache?.bindGroup('pass:temporal-accum', [
+    const bg = cachedBindGroup(resourceCache, 'pass:temporal-accum', [
       this._uboRef,
       frameState.combinedDenoised,
       frameState.readAccum,
       frameState.writeAccum,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'temporalAccum', { wg16: true });
   }
 

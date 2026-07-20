@@ -84,14 +84,26 @@ function parseStringSupportObject(source, name) {
 
 /** @param {string} source */
 function parseConsumedMaterialFields(source) {
-  const start = source.indexOf("export const CONSUMED_MATERIAL_FIELDS");
-  if (start < 0) fail("missing CONSUMED_MATERIAL_FIELDS declaration");
-  const open = source.indexOf("[", start);
-  if (open < 0) fail("CONSUMED_MATERIAL_FIELDS set has no opening bracket");
-  const close = source.indexOf("]);", open);
+  // Wave T5 derived CONSUMED_MATERIAL_FIELDS from the keyed doc record
+  // (`new Set(Object.keys(CONSUMED_MATERIAL_FIELD_DOCS))`), so the allowlist is
+  // no longer a bracketed literal. Parse the top-level keys of the record — each
+  // is the single source of a consumed field. Keys are either bare identifiers
+  // (`baseColor:`) or single-quoted dotted paths (`'frontLayer.normalMap':`).
+  const start = source.indexOf("export const CONSUMED_MATERIAL_FIELD_DOCS");
+  if (start < 0) fail("missing CONSUMED_MATERIAL_FIELD_DOCS declaration");
+  const open = source.indexOf("{", start);
+  if (open < 0) fail("CONSUMED_MATERIAL_FIELD_DOCS record has no opening brace");
+  const close = source.indexOf("\n};", open);
   if (close < 0) fail("CONSUMED_MATERIAL_FIELDS set is not closed as expected");
-  const block = source.slice(open, close + 1);
-  return new Set([...block.matchAll(/'([^']+)'/g)].map((match) => match[1]));
+  const block = source.slice(open, close);
+  // Top-level keys sit at exactly 2-space indentation inside the record.
+  const fields = new Set(
+    [...block.matchAll(/^ {2}(?:'([^']+)'|([A-Za-z_$][\w$]*)):/gm)].map(
+      (match) => match[1] ?? match[2],
+    ),
+  );
+  if (fields.size === 0) fail("CONSUMED_MATERIAL_FIELD_DOCS record parsed no keys");
+  return fields;
 }
 
 /** @param {string} source */
@@ -1950,24 +1962,46 @@ for (const needle of [
 
 const walkaroundRisGi = await readText("packages/walkaround-hybrid/src/shaders/risGi.wgsl.ts");
 const walkaroundRisGiNrc = await readText("packages/walkaround-hybrid/src/shaders/risGiNrc.wgsl.ts");
+// Wave T4 single-sourced the primary-glass GI walk span (byte-identical dedup):
+// the `_g` reservoir loop + visibility tail now live in risGiGlassWalk.wgsl.ts
+// and are interpolated into BOTH risGi and risGiNrc via
+// RIS_GI_GLASS_RESERVOIR_LOOP_WGSL / RIS_GI_GLASS_VISIBILITY_TAIL_WGSL. Check the
+// PPG-defensive-mixture needles where they now live, and separately pin that
+// each consumer imports and interpolates the shared span (so neither can drop
+// the glass PPG parity by silently omitting the fragment).
+const walkaroundRisGiGlassWalk = await readText(
+  "packages/walkaround-hybrid/src/shaders/risGiGlassWalk.wgsl.ts",
+);
+for (const needle of [
+  "let ppgGuidedOn_g = (ubo.ppgEnabled == 1u);",
+  "let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);",
+  "wi = ppgSampleGuidedDir(walkHitPos, &rng);",
+  "let pGuide_g = ppgEvalPdf(walkHitPos, wi);",
+  "let pSrc_g = alpha_g * pGuide_g + (1.0 - alpha_g) * pCos_g;",
+]) {
+  if (!walkaroundRisGiGlassWalk.includes(needle)) {
+    fail(`walkaround risGiGlassWalk primary-glass GI span must retain PPG defensive mixture: ${needle}`);
+  }
+}
 for (const [name, source] of [
   ["risGi", walkaroundRisGi],
   ["risGiNrc", walkaroundRisGiNrc],
 ]) {
   for (const needle of [
-    "let ppgGuidedOn_g = (ubo.ppgEnabled == 1u);",
-    "let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);",
-    "wi = ppgSampleGuidedDir(walkHitPos, &rng);",
-    "let pGuide_g = ppgEvalPdf(walkHitPos, wi);",
-    "let pSrc_g = alpha_g * pGuide_g + (1.0 - alpha_g) * pCos_g;",
+    "RIS_GI_GLASS_RESERVOIR_LOOP_WGSL",
+    "RIS_GI_GLASS_VISIBILITY_TAIL_WGSL",
+    "./risGiGlassWalk.wgsl.js",
   ]) {
     if (!source.includes(needle)) {
-      fail(`walkaround ${name} primary-glass GI branch must retain PPG defensive mixture: ${needle}`);
+      fail(`walkaround ${name} must import + interpolate the shared primary-glass PPG GI span: ${needle}`);
     }
   }
   if (source.includes("PPG is off for glass pixels")) {
     fail(`walkaround ${name} must not claim PPG is off for glass pixels after primary-glass PPG parity`);
   }
+}
+if (walkaroundRisGiGlassWalk.includes("PPG is off for glass pixels")) {
+  fail("walkaround risGiGlassWalk must not claim PPG is off for glass pixels after primary-glass PPG parity");
 }
 const walkaroundRestirGiMaterialParityTest = await readText("packages/walkaround-hybrid/src/__tests__/restirGiMaterialParity.test.ts");
 if (!walkaroundRestirGiMaterialParityTest.includes("keeps primary-glass GI branches on the same PPG defensive mixture as opaque GI")) {

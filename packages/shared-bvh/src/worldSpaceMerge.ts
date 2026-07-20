@@ -34,17 +34,35 @@
  *
  */
 
-import type { Mat4, MaterialSpec, Scene, SceneNodeId, ScenePrimitive, TextureRef } from '@vitrum/core';
+import type { Mat4, MaterialSpec, Scene, SceneNodeId, ScenePrimitive } from '@vitrum/core';
 import type { PlainAabb } from './aabb.js';
 import { buildArrayBvh } from './buildArrayBvh.js';
-import { maybeDisplaceMeshPositions, maybeMicrodisplaceMeshGeometry } from './vertexDisplacement.js';
+import { maybeMicrodisplaceMeshGeometry, resolveDisplacedGeometry } from './vertexDisplacement.js';
+import {
+  IDENTITY_MAT4,
+  applyMatrix4,
+  finiteVec3,
+  getNormalMatrix3,
+  applyNormalMatrix,
+  applyDirectionMatrix4,
+  determinant4,
+} from './worldTransforms.js';
+import { materialSig } from './materialSignature.js';
 
-const IDENTITY_MAT4: readonly number[] = [
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, 0, 1,
-];
+// D12-9: the transform kernels + the material-dedup signature were extracted to
+// `worldTransforms.ts` / `materialSignature.ts` (pure move). Re-export so the
+// package entrypoint and existing importers (incl. the wsl-gpu oracles that
+// import `materialSig`/`HandleIdRegistry` from `@vitrum/shared-bvh`) keep working.
+export {
+  IDENTITY_MAT4,
+  applyMatrix4,
+  finiteVec3,
+  getNormalMatrix3,
+  applyNormalMatrix,
+  applyDirectionMatrix4,
+  determinant4,
+} from './worldTransforms.js';
+export { materialSig, HandleIdRegistry } from './materialSignature.js';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public types
@@ -292,363 +310,6 @@ function bakeConstantVertexColorIntoMaterial(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// World transforms — bit-for-bit mirrors of THREE / StaticGeometryGenerator
-// ──────────────────────────────────────────────────────────────────────────
-
-/**
- * `worldPos = m · localPos` for a column-major 4×4 `m` (= THREE's
- * `Vector3.applyMatrix4`, including the perspective divide). Identical
- * arithmetic to `scenePack.ts:transformPoint` BUT keeps the THREE `w`-divide
- * convention (`w = 1/(…); xyz *= w`) so the f32 round-off matches SGG exactly.
- */
-function applyMatrix4(m: ArrayLike<number>, x: number, y: number, z: number): [number, number, number] {
-  const e0 = m[0] ?? 0, e4 = m[4] ?? 0, e8 = m[8] ?? 0, e12 = m[12] ?? 0;
-  const e1 = m[1] ?? 0, e5 = m[5] ?? 0, e9 = m[9] ?? 0, e13 = m[13] ?? 0;
-  const e2 = m[2] ?? 0, e6 = m[6] ?? 0, e10 = m[10] ?? 0, e14 = m[14] ?? 0;
-  const e3 = m[3] ?? 0, e7 = m[7] ?? 0, e11 = m[11] ?? 0, e15 = m[15] ?? 0;
-  const w = 1 / (e3 * x + e7 * y + e11 * z + e15);
-  return [
-    (e0 * x + e4 * y + e8 * z + e12) * w,
-    (e1 * x + e5 * y + e9 * z + e13) * w,
-    (e2 * x + e6 * y + e10 * z + e14) * w,
-  ];
-}
-
-function finiteVec3(v: readonly [number, number, number]): boolean {
-  return Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]);
-}
-
-/**
- * Normal matrix (upper-left 3×3 inverse-transpose) of a column-major 4×4, as a
- * length-9 row-major-by-THREE-convention array — bit-for-bit THREE's
- * `Matrix3.getNormalMatrix(m4) = setFromMatrix4(m4).invert().transpose()`.
- *
- * `setFromMatrix4` lays out the upper-left 3×3 of the column-major m4 into the
- * Matrix3 as: n11=m[0], n21=m[1], n31=m[2], n12=m[4], n22=m[5], n32=m[6],
- * n13=m[8], n23=m[9], n33=m[10] (so te = [m0,m1,m2, m4,m5,m6, m8,m9,m10]).
- * `invert()` then writes te' via THREE's exact cofactor expressions, and
- * `transpose()` swaps the off-diagonal pairs. We fold invert+transpose into the
- * final element assignment so there's a single, mirror-able expression set.
- */
-function getNormalMatrix3(m: ArrayLike<number>): Float64Array {
-  // setFromMatrix4(m4) → Matrix3 elements (te):
-  const n11 = m[0] ?? 0, n21 = m[1] ?? 0, n31 = m[2] ?? 0;
-  const n12 = m[4] ?? 0, n22 = m[5] ?? 0, n32 = m[6] ?? 0;
-  const n13 = m[8] ?? 0, n23 = m[9] ?? 0, n33 = m[10] ?? 0;
-
-  // invert(): THREE's exact cofactor formula (Matrix3.invert).
-  const t11 = n33 * n22 - n32 * n23;
-  const t12 = n32 * n13 - n33 * n12;
-  const t13 = n23 * n12 - n22 * n13;
-  const det = n11 * t11 + n21 * t12 + n31 * t13;
-
-  const inv = new Float64Array(9);
-  if (det === 0) {
-    // THREE sets all nine elements to 0 on a singular matrix.
-    return inv;
-  }
-  const detInv = 1 / det;
-  // inv = te' (the inverted Matrix3), THREE's exact element assignments.
-  inv[0] = t11 * detInv;
-  inv[1] = (n31 * n23 - n33 * n21) * detInv;
-  inv[2] = (n32 * n21 - n31 * n22) * detInv;
-  inv[3] = t12 * detInv;
-  inv[4] = (n33 * n11 - n31 * n13) * detInv;
-  inv[5] = (n31 * n12 - n32 * n11) * detInv;
-  inv[6] = t13 * detInv;
-  inv[7] = (n21 * n13 - n23 * n11) * detInv;
-  inv[8] = (n22 * n11 - n21 * n12) * detInv;
-
-  // transpose() in place: swap (1,3),(2,6),(5,7).
-  const out = new Float64Array(9);
-  out[0] = inv[0]!; out[4] = inv[4]!; out[8] = inv[8]!;
-  out[1] = inv[3]!; out[3] = inv[1]!;
-  out[2] = inv[6]!; out[6] = inv[2]!;
-  out[5] = inv[7]!; out[7] = inv[5]!;
-  return out;
-}
-
-/**
- * `worldN = normalize( normalMatrix · localN )` — bit-for-bit THREE's
- * `Vector3.applyNormalMatrix(m3) = applyMatrix3(m3).normalize()`. `nm` is the
- * length-9 Matrix3 from {@link getNormalMatrix3}; `applyMatrix3` reads it as
- * `x' = nm0·x + nm3·y + nm6·z`, etc. (THREE's `Vector3.applyMatrix3`).
- */
-function applyNormalMatrix(
-  nm: ArrayLike<number>,
-  x: number,
-  y: number,
-  z: number,
-): [number, number, number] {
-  const nx = (nm[0] ?? 0) * x + (nm[3] ?? 0) * y + (nm[6] ?? 0) * z;
-  const ny = (nm[1] ?? 0) * x + (nm[4] ?? 0) * y + (nm[7] ?? 0) * z;
-  const nz = (nm[2] ?? 0) * x + (nm[5] ?? 0) * y + (nm[8] ?? 0) * z;
-  // THREE's Vector3.normalize: divide by length, or by 1 when length 0.
-  const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-  return [nx / len, ny / len, nz / len];
-}
-
-/** Transform a tangent/vector direction by the upper-left 3×3 of a column-major
- * matrix and normalize it. Unlike normals, tangents are ordinary directions, so
- * they use the direct linear transform rather than the inverse-transpose. */
-function applyDirectionMatrix4(
-  m: ArrayLike<number>,
-  x: number,
-  y: number,
-  z: number,
-): [number, number, number] {
-  const tx = (m[0] ?? 0) * x + (m[4] ?? 0) * y + (m[8] ?? 0) * z;
-  const ty = (m[1] ?? 0) * x + (m[5] ?? 0) * y + (m[9] ?? 0) * z;
-  const tz = (m[2] ?? 0) * x + (m[6] ?? 0) * y + (m[10] ?? 0) * z;
-  const len = Math.sqrt(tx * tx + ty * ty + tz * tz);
-  if (len <= 1e-12) return [0, 0, 0];
-  return [tx / len, ty / len, tz / len];
-}
-
-/** Full 4×4 determinant of a column-major matrix — = THREE's
- *  `Matrix4.determinant()` (used to detect the winding flip). */
-function determinant4(m: ArrayLike<number>): number {
-  const n11 = m[0] ?? 0, n12 = m[4] ?? 0, n13 = m[8] ?? 0, n14 = m[12] ?? 0;
-  const n21 = m[1] ?? 0, n22 = m[5] ?? 0, n23 = m[9] ?? 0, n24 = m[13] ?? 0;
-  const n31 = m[2] ?? 0, n32 = m[6] ?? 0, n33 = m[10] ?? 0, n34 = m[14] ?? 0;
-  const n41 = m[3] ?? 0, n42 = m[7] ?? 0, n43 = m[11] ?? 0, n44 = m[15] ?? 0;
-  return (
-    n41 * (
-      +n14 * n23 * n32 - n13 * n24 * n32 - n14 * n22 * n33 +
-      n12 * n24 * n33 + n13 * n22 * n34 - n12 * n23 * n34
-    ) +
-    n42 * (
-      +n11 * n23 * n34 - n11 * n24 * n33 + n14 * n21 * n33 -
-      n13 * n21 * n34 + n13 * n24 * n31 - n14 * n23 * n31
-    ) +
-    n43 * (
-      +n11 * n24 * n32 - n11 * n22 * n34 - n14 * n21 * n32 +
-      n12 * n21 * n34 + n14 * n22 * n31 - n12 * n24 * n31
-    ) +
-    n44 * (
-      -n13 * n22 * n31 - n11 * n23 * n32 + n11 * n22 * n33 +
-      n13 * n21 * n32 - n12 * n21 * n33 + n12 * n23 * n31
-    )
-  );
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Material dedup — mirrors snapshotPreBuildMaterials' value-dedup signature
-// ──────────────────────────────────────────────────────────────────────────
-
-type TextureMapField = Extract<{
-  [K in keyof MaterialSpec]: MaterialSpec[K] extends TextureRef | undefined ? K : never;
-}[keyof MaterialSpec], string>;
-
-const TEXTURE_MAP_FIELDS: readonly TextureMapField[] = [
-  'baseColorMap',
-  'normalMap',
-  'roughnessMap',
-  'metallicMap',
-  'transmissionMap',
-  'thicknessMap',
-  'emissiveMap',
-  'alphaMap',
-  'aoMap',
-  'clearcoatMap',
-  'clearcoatRoughnessMap',
-  'clearcoatNormalMap',
-  'sheenColorMap',
-  'sheenRoughnessMap',
-  'iridescenceMap',
-  'iridescenceThicknessMap',
-  'anisotropyMap',
-  'specularColorMap',
-  'specularIntensityMap',
-  'bumpMap',
-  'displacementMap',
-  'lightMap',
-];
-
-function finiteSig(value: number | undefined, fallback: number): string {
-  const v = Number.isFinite(value) ? (value as number) : fallback;
-  return String(Math.fround(v));
-}
-
-function rawNumberSig(value: number | undefined, fallback: number): string {
-  if (value === undefined) return finiteSig(undefined, fallback);
-  return Number.isFinite(value) ? String(Math.fround(value)) : String(value);
-}
-
-function vecSig(
-  value: readonly number[] | undefined,
-  fallback: readonly number[],
-  count: 2 | 3,
-): string {
-  const parts: string[] = [];
-  for (let i = 0; i < count; i += 1) {
-    parts.push(finiteSig(value?.[i], fallback[i] ?? 0));
-  }
-  return parts.join(',');
-}
-
-function rawVecSig(
-  value: readonly number[] | undefined,
-  fallback: readonly number[],
-  count: 2,
-): string {
-  const parts: string[] = [];
-  for (let i = 0; i < count; i += 1) {
-    parts.push(rawNumberSig(value?.[i], fallback[i] ?? 0));
-  }
-  return parts.join(',');
-}
-
-function textureRefLike(value: unknown): TextureRef | undefined {
-  if (value == null || typeof value !== 'object') return undefined;
-  if ('handle' in value) return value as TextureRef;
-  return { handle: value };
-}
-
-function textureTexCoordSig(texCoord: number | undefined): string {
-  const uv = texCoord ?? 0;
-  if (uv === 0 || uv === 1) return `uv${uv}`;
-  return `uvUnsupported=${rawNumberSig(uv, 0)}`;
-}
-
-function textureRefSig(value: unknown): string {
-  const ref = textureRefLike(value);
-  if (ref?.handle == null) return '';
-  const transform = ref.transform;
-  return [
-    handleId(ref.handle),
-    textureTexCoordSig(ref.texCoord),
-    `off=${rawVecSig(transform?.offset, [0, 0], 2)}`,
-    `scale=${rawVecSig(transform?.scale, [1, 1], 2)}`,
-    `rot=${rawNumberSig(transform?.rotation, 0)}`,
-    `wrap=${ref.wrapS ?? 'repeat'},${ref.wrapT ?? 'repeat'}`,
-    `filter=${ref.magFilter ?? ''},${ref.minFilter ?? ''},${ref.mipFilter ?? ''}`,
-  ].join(';');
-}
-
-function textureMapSig(m: MaterialSpec): string {
-  return TEXTURE_MAP_FIELDS
-    .map((field) => `${field}=${textureRefSig(m[field])}`)
-    .join('|');
-}
-
-function stableJsonSig(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(4) : String(value);
-  if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJsonSig).join(',')}]`;
-  if (typeof value === 'object') {
-    return `{${Object.keys(value as Record<string, unknown>)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableJsonSig((value as Record<string, unknown>)[key])}`)
-      .join(',')}}`;
-  }
-  return String(value);
-}
-
-/**
- * Structural material signature — the core `MaterialSpec` counterpart to
- * `legacy/bvhCommon.ts:snapshotPreBuildMaterials`'s `matSig`. Hashes the fields
- * the merged-BVH GI/PT consumers read: base PBR/alpha/transmission scalars,
- * lobe-extension scalars, Beer-Lambert fields, all packed texture-map refs
- * including handle identity + UV transform/sampler metadata, and pt-webgl2's
- * folded mesh-emitter shadow flag. Numeric tokens use the same Float32 precision
- * as the GPU payloads, so atlas/material metadata differences that survive upload
- * cannot be rounded away by the dedup key. Map identity uses the opaque
- * `TextureRef.handle` (the core analogue of THREE's `texture.uuid`).
- *
- * Beer-Lambert fields (`attenuationColor`, `attenuationDistance`, `thickness`) are
- * included to match `materialSetHashFloats` in `sceneBvh.ts`. Infinity
- * `attenuationDistance` is normalised to the token `'Inf'` so the signature remains
- * a stable string (JSON.stringify of Infinity produces `null`).
- */
-export function materialSig(m: MaterialSpec): string {
-  const colS = vecSig(m.baseColor, [0, 0, 0], 3);
-  const emS = vecSig(m.emissive, [0, 0, 0], 3);
-  // Beer-Lambert fields — must match materialSetHashFloats in sceneBvh.ts.
-  const acS = vecSig(m.attenuationColor, [1, 1, 1], 3);
-  const adRaw = m.attenuationDistance;
-  const adS = adRaw == null
-    ? 'Inf'
-    : !isFinite(adRaw)
-      ? 'Inf'
-      : adRaw.toFixed(4);
-  const meshEmitterShadow = (m as MaterialSpec & {
-    meshEmitterCastShadowDisabled?: boolean;
-  }).meshEmitterCastShadowDisabled === true ? '1' : '0';
-  return [
-    `base=${colS}`,
-    `em=${emS}`,
-    `emI=${finiteSig(m.emissiveIntensity, 1)}`,
-    `rough=${finiteSig(m.roughness, 0.5)}`,
-    `metal=${finiteSig(m.metallic, 0)}`,
-    `shade=${m.shadingModel ?? 'pbr'}`,
-    `alpha=${m.alphaMode ?? 'opaque'},${finiteSig(m.alphaCutoff, 0.5)},${finiteSig(m.opacity, 1)}`,
-    `trans=${finiteSig(m.transmission, 0)}`,
-    `ior=${finiteSig(m.ior, 1.5)}`,
-    `beer=${acS},${adS},${finiteSig(m.thickness, 0)}`,
-    `mapScalar=${finiteSig(m.normalScale, 1)},${finiteSig(m.clearcoatNormalScale, 1)},${finiteSig(m.aoMapIntensity, 1)},${finiteSig(m.bumpScale, 1)},${finiteSig(m.lightMapIntensity, 1)},${finiteSig(m.envMapIntensity, 1)}`,
-    `spec=${vecSig(m.specularColor, [1, 1, 1], 3)},${finiteSig(m.specularIntensity, 1)}`,
-    `coatSheen=${finiteSig(m.clearcoat, 0)},${finiteSig(m.clearcoatRoughness, 0)},${finiteSig(m.sheen, 0)},${vecSig(m.sheenColor, [0, 0, 0], 3)},${finiteSig(m.sheenRoughness, 0)}`,
-    `aniso=${finiteSig(m.anisotropy, 0)},${finiteSig(m.anisotropyRotation, 0)}`,
-    `iridescence=${finiteSig(m.iridescence, 0)},${finiteSig(m.iridescenceIor, 1.3)},${vecSig(m.iridescenceThicknessRange, [100, 400], 2)}`,
-    `reservedDisp=${textureRefSig(m.displacementMap)},${finiteSig(m.displacementScale, 1)},${finiteSig(m.displacementBias, 0)},${finiteSig(m.displacementSubdivisions, 0)}`,
-    `volume=${finiteSig(m.scatteringCoefficient, 0)},${finiteSig(m.scatteringAnisotropy, 0)},${vecSig(m.scatteringCoefficientRGB, [0, 0, 0], 3)}`,
-    `spectral=${stableJsonSig(m.spectralAttenuation)},${finiteSig(m.dispersionAbbeNumber, 0)}`,
-    `layers=${stableJsonSig(m.frontLayer)},${stableJsonSig(m.backLayer)},${stableJsonSig(m.thinFilmStack)}`,
-    `maps=${textureMapSig(m)}`,
-    `meshEmitterShadow=${meshEmitterShadow}`,
-  ].join('|');
-}
-
-/**
- * Stable per-object identity registry for the material dedup signature.
- *
- * The module-level WeakMap is LOAD-BEARING: handle identity must persist
- * ACROSS merge calls so the same object (e.g. the same decoded ImageBitmap)
- * always maps to the same signature token. Wrapping it in an exported object
- * enables test-time reset without exposing the raw module globals.
- *
- * `reset()` is intentionally not called in production — it would invalidate
- * cached signatures and break dedup continuity. Call it only in test teardown
- * to prevent cross-test object-identity bleed.
- */
-export const HandleIdRegistry = {
-  _ids: new WeakMap<object, string>(),
-  _seq: 0,
-  /** Return the stable id for `handle`. Assigns a new one on first encounter. */
-  get(handle: object): string {
-    let id = this._ids.get(handle);
-    if (id === undefined) {
-      id = `h${this._seq++}`;
-      this._ids.set(handle, id);
-    }
-    return id;
-  },
-  /**
-   * Reset the registry — for TEST USE ONLY.
-   * Clears all assigned ids and resets the sequence counter.
-   * Do NOT call in production: existing handle ids become stale.
-   */
-  reset(): void {
-    this._ids = new WeakMap();
-    this._seq = 0;
-  },
-};
-
-/** A stable per-handle identity string for the dedup signature. Objects use
- *  {@link HandleIdRegistry}; primitives stringify directly; absent handles
- *  contribute the empty string. */
-function handleId(handle: unknown): string {
-  if (handle == null) return '';
-  if (typeof handle === 'object' || typeof handle === 'function') {
-    return HandleIdRegistry.get(handle);
-  }
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- at this point handle is a primitive (guarded: not object/function), String() is safe
-  return String(handle);
-}
-
-// ──────────────────────────────────────────────────────────────────────────
 // Public API
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -747,25 +408,15 @@ export function mergeWorldSpaceFromCore(
         ? primitive.instances
         : [primitive.transform];
 
-    const microdisplaced = maybeMicrodisplaceMeshGeometry({
-      primitiveId: primitive.id,
-      material: primitive.material,
-      positions: primitive.positions,
-      normals: primitive.normals,
-      ...(primitive.indices != null ? { indices: primitive.indices } : {}),
-      ...(primitive.uvs != null ? { uvs: primitive.uvs } : {}),
-      ...(primitive.uv1 != null ? { uv1: primitive.uv1 } : {}),
-      ...(primitive.tangents != null ? { tangents: primitive.tangents } : {}),
-      ...(primitive.colors != null ? { colors: primitive.colors } : {}),
-      onWarning: warn,
-    });
-    const basePositions = microdisplaced?.positions ?? primitive.positions;
-    const baseNormals = microdisplaced?.normals ?? primitive.normals;
-    const baseTangents = microdisplaced?.tangents ?? primitive.tangents;
-    const baseColors = microdisplaced?.colors ?? primitive.colors;
-    const baseUvs = microdisplaced?.uvs ?? primitive.uvs; // optional; (0,0) per vertex when absent
-    const baseUv1 = microdisplaced?.uv1 ?? primitive.uv1;
-    const baseIndicesSource = microdisplaced?.indices ?? primitive.indices;
+    const {
+      basePositions,
+      baseNormals,
+      baseTangents,
+      baseColors,
+      baseUvs, // optional; (0,0) per vertex when absent
+      baseIndicesSource,
+      sourcePositions,
+    } = resolveDisplacedGeometry(primitive, warn);
     const localVertexCount = Math.floor(basePositions.length / 3);
     const hasCompleteTangents = baseTangents != null && baseTangents.length >= localVertexCount * 4;
     const colorStride = baseColors != null && baseColors.length >= localVertexCount * 4
@@ -774,17 +425,6 @@ export function mergeWorldSpaceFromCore(
         ? 3
         : 0;
     if (localVertexCount < 3) continue;
-    const sourcePositions = microdisplaced == null
-      ? maybeDisplaceMeshPositions({
-          primitiveId: primitive.id,
-          material: primitive.material,
-          positions: basePositions,
-          normals: baseNormals,
-          ...(baseUvs != null ? { uvs: baseUvs } : {}),
-          ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
-          onWarning: warn,
-        }) ?? basePositions
-      : basePositions;
 
     // Sequential index when the primitive carries none (triangle-list), matching
     // `packOneMeshLikePrimitive` / SGG's index synthesis.

@@ -551,20 +551,23 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       ? engine.onError((err) => {
           // Always deliver to the host first, before any internal handling.
           try { opts.onEngineError?.(err); } catch { /* host error callback must not propagate — ignore */ }
-          if (err.fatal) handleFatalEngineError(err);
+          if (err.fatal) autoRecreateController.handleFatalEngineError(err);
         })
       : undefined;
   };
-  subscribeToEngine();
 
-  // ── Auto-recreate state machine ──────────────────────────────────────────
+  // ── Auto-recreate controller ─────────────────────────────────────────────
+  // The fatal-loss state machine (retry budget, GI-state save/restore, teardown,
+  // recreate) is grouped into one named controller so its ownership and mutation
+  // surface are explicit and it can be reasoned about as a unit. It still closes
+  // over the outer `engine`, `stopped`, `rafHandle`, `disposed`,
+  // `presenter*`, `unsubFrame/Progress/Error`, `subscribeToEngine`, and `tick`
+  // bindings by lexical scope — those remain outer-scope because they are shared
+  // with the RAF loop and dispose path. Constructed after `subscribeToEngine`'s
+  // definition (its onError callback references the controller lazily at
+  // fire-time) and before the first `subscribeToEngine()` invocation.
+  const createAutoRecreateController = (): { handleFatalEngineError: (err: EngineError) => void } => {
   // Retry budget: at most AUTO_RECREATE_MAX_ATTEMPTS within AUTO_RECREATE_WINDOW_MS.
-  //
-  // State is grouped into a named object so its ownership and mutation surface
-  // are explicit.  The functions close over the outer `engine`, `stopped`,
-  // `rafHandle`, `disposed`, `unsubFrame/Progress/Error`, `subscribeToEngine`,
-  // and `tick` bindings — those remain outer-scope because they are shared with
-  // the RAF loop and dispose path.
   const autoRecreateMachine = {
     times: [] as number[],
     recreating: false,
@@ -649,40 +652,36 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     // lifecycle tracks explicit handle.engine.setScene(...) calls, but whole-
     // primitive/controller fast paths can mutate the backend scene through
     // add/remove/update routes without passing through that wrapper.
+    //
+    // The two snapshot-unavailable warnings (getScene() returned null vs. the
+    // engine has no getScene()) are byte-identical except for the middle clause,
+    // so they share one emitter to keep the code + details shape single-source.
+    const warnSceneSnapshotUnavailable = (becauseClause: string): void => {
+      reportWarning({
+        code: 'attachVitrum.auto-recreate-scene-snapshot-unavailable',
+        backend: engine.backendId,
+        phase: 'lifecycle',
+        method: 'attachVitrum',
+        message:
+          '[attachVitrum] auto-recreate could not snapshot the backend-retained live scene because ' +
+          becauseClause +
+          '; recreating from the latest scene seen by attachVitrum.',
+        details: {
+          backendId: engine.backendId,
+          fallback: 'tracked-scene',
+        },
+      });
+    };
     try {
       if (typeof engine.getScene === 'function') {
         const liveScene = engine.getScene();
         if (liveScene != null) {
           currentScene = liveScene;
         } else {
-          reportWarning({
-            code: 'attachVitrum.auto-recreate-scene-snapshot-unavailable',
-            backend: engine.backendId,
-            phase: 'lifecycle',
-            method: 'attachVitrum',
-            message:
-              '[attachVitrum] auto-recreate could not snapshot the backend-retained live scene because ' +
-              'getScene() returned null; recreating from the latest scene seen by attachVitrum.',
-            details: {
-              backendId: engine.backendId,
-              fallback: 'tracked-scene',
-            },
-          });
+          warnSceneSnapshotUnavailable('getScene() returned null');
         }
       } else {
-        reportWarning({
-          code: 'attachVitrum.auto-recreate-scene-snapshot-unavailable',
-          backend: engine.backendId,
-          phase: 'lifecycle',
-          method: 'attachVitrum',
-          message:
-            '[attachVitrum] auto-recreate could not snapshot the backend-retained live scene because ' +
-            'the current engine does not implement getScene(); recreating from the latest scene seen by attachVitrum.',
-          details: {
-            backendId: engine.backendId,
-            fallback: 'tracked-scene',
-          },
-        });
+        warnSceneSnapshotUnavailable('the current engine does not implement getScene()');
       }
     } catch (err) {
       reportError(err, {
@@ -765,6 +764,12 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     }
   };
 
+    return { handleFatalEngineError };
+  };
+  const autoRecreateController = createAutoRecreateController();
+
+  subscribeToEngine();
+
   // ── Offscreen-backend presentation ───────────────────────────────────────
   // V1-1 / R2 — offscreen-texture backends (pt-webgpu, and the progressive
   // walkaround→PT facade once it hands off to pt-webgpu) render to an internal
@@ -783,12 +788,11 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   let presenterDevice: GPUDevice | undefined;
   let presenterContext: GPUCanvasContext | undefined;
   const presentOffscreenFrame = (output: FrameOutput): void => {
-    const getSource = engine.getPresentationSource;
-    if (typeof getSource !== 'function') return;
+    if (typeof engine.getPresentationSource !== 'function') return;
     if (output.kind !== 'rendered') return;
     let source: { device: unknown; texture: unknown } | null;
     try {
-      source = getSource.call(engine);
+      source = engine.getPresentationSource();
     } catch (err) {
       reportError(err, { phase: 'attach:present', recoverable: true });
       return;
@@ -802,7 +806,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         // (Re)build the presenter for this device. A prior presenter (from an
         // auto-recreated device) is dropped; the render pipeline/sampler GC with it.
         presenter?.dispose();
-        const ctx = presenterContext ?? (opts.canvas.getContext('webgpu') as GPUCanvasContext | null) ?? undefined;
+        const ctx = presenterContext ?? (opts.canvas.getContext('webgpu')) ?? undefined;
         if (ctx == null) return;
         presenterContext = ctx;
         presenter = createOffscreenPresenter({ device, canvas: opts.canvas, context: ctx });

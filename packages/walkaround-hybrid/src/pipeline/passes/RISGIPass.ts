@@ -22,7 +22,7 @@
  * the GRIS-class regression discipline (f8df9a4).
  */
 
-import type { Pass, PassDispatchContext, PassInitContext } from '../Pass.js';
+import { dispatchSharedBindGroupPass, type Pass, type PassDispatchContext, type PassInitContext } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 
 export class RISGIPass implements Pass {
@@ -57,17 +57,19 @@ export class RISGIPass implements Pass {
     if (this._nrcBindGroup !== undefined) {
       this._nrcClearSlotClaims?.(ctx.encoder);
     }
-    const pass = ctx.encoder.beginComputePass(ctx.computeDesc('gi-ris'));
-    pass.setPipeline(this._pipeline);
-    pass.setBindGroup(0, ctx.risGiFrameBindGroup);
-    pass.setBindGroup(1, ctx.sceneBindGroup);
-    pass.setBindGroup(2, ctx.uboBindGroup);
-    pass.setBindGroup(3, ctx.hybridLayersBindGroup);
-    if (this._nrcBindGroup !== undefined) {
-      pass.setBindGroup(4, this._nrcBindGroup());
-    }
-    pass.dispatchWorkgroups(ctx.halfWgX, ctx.halfWgY, 1);
-    pass.end();
+    dispatchSharedBindGroupPass(ctx, this._pipeline, {
+      label: 'gi-ris',
+      // gi-ris binds its dedicated GI reservoir+frame group at slot 0 (not the
+      // shared frameBindGroup), the DDGI hybrid-layers group at slot 3, and —
+      // only when the compile-time NRC variant was built — the host-owned NRC
+      // @group(4) group at slot 4. Half-res dispatch (W/2 × H/2).
+      frameBindGroupOverride: ctx.risGiFrameBindGroup,
+      useHybridLayers: true,
+      halfRes: true,
+      ...(this._nrcBindGroup !== undefined
+        ? { extraGroups: [{ slot: 4, group: this._nrcBindGroup() }] }
+        : {}),
+    });
   }
 
   dispose(): void {}

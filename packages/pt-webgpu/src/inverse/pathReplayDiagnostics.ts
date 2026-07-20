@@ -1023,7 +1023,7 @@ function pathReplayAlphaCoverage(
   return { known, min, affectedInputs: inputs };
 }
 
-function asTextureHandle(value: unknown): unknown | null {
+function asTextureHandle(value: unknown): unknown {
   if (value == null) return null;
   if (typeof value === 'object' && 'handle' in value) {
     return (value as { readonly handle?: unknown }).handle ?? null;
@@ -1285,10 +1285,7 @@ function pathReplayLightingIssue(
     };
   }
 
-  const environmentIssue = pathReplayEnvironmentIssue(scene.environment as unknown as {
-    readonly kind?: string;
-    readonly intensity?: number;
-  });
+  const environmentIssue = pathReplayEnvironmentIssue(scene.environment);
   if (environmentIssue != null) {
     return environmentIssue;
   }
@@ -1354,10 +1351,7 @@ function directLightCandidateLabels(
     if (!implicitEmissiveMeshContributes(scene, primitive, context)) continue;
     candidates.push(`implicit-emissive-mesh:${primitive.id}`);
   }
-  if (environmentContributesDirectLight(scene.environment as unknown as {
-    readonly kind?: string;
-    readonly intensity?: number;
-  } | undefined)) {
+  if (environmentContributesDirectLight(scene.environment)) {
     candidates.push(`environment:${scene.environment.kind}`);
   }
   return candidates;

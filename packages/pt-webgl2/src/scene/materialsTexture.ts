@@ -21,7 +21,14 @@ import type {
   TextureWrapMode,
   Vec3,
 } from '@vitrum/core';
-import { rgbToSpectralCoefficients } from '@vitrum/shared-samplers';
+import {
+  rgbToSpectralCoefficients,
+  dispersionStrengthFromAbbe,
+  resolveEmissiveIntensity,
+  sampleSpectralCurve as sharedSampleSpectralCurve,
+  sigmaAFromAttenuation as sharedSigmaAFromAttenuation,
+  type SpectralCurveSampleOptions,
+} from '@vitrum/shared-samplers';
 import type { MaterialsTextureData } from './sceneTextures.js';
 import type { TextureAtlasLayerMap, TextureSampleColorSpace } from './texturesArray.js';
 
@@ -72,18 +79,24 @@ const UNLIT_BIT = 1 << 5;
 /** MESH_EMITTER_CAST_SHADOW_DISABLED_BIT — folded mesh-area emitter skips forward BSDF emission. */
 const MESH_EMITTER_CAST_SHADOW_DISABLED_BIT = 1 << 6;
 
-// Dispersion: Abbe → strength, evaluated at the Fraunhofer C/F lines.
-const FRAUNHOFER_C_NM = 656.3;
-const FRAUNHOFER_F_NM = 486.1;
-
 // Uniform-grid spectral attenuation μ(λ): 32 samples, 380→780 nm inclusive.
 const SPECTRAL_GRID_SAMPLE_COUNT = 32;
 const SPECTRAL_GRID_START_NM = 380.0;
 const SPECTRAL_GRID_END_NM = 780.0;
 
+// pt-webgl2's spectral-curve edge handling (fork port): require ≥ 2 values, fall
+// back to the 380/780 nm grid bounds when wavelengthStart/End are non-finite.
+// Passed to shared-samplers `sampleSpectralCurve` to keep the exact prior lookup.
+const PT_WEBGL2_SPECTRAL_CURVE_OPTIONS: SpectralCurveSampleOptions = {
+  minValueCount: 2,
+  fallbackStartNm: SPECTRAL_GRID_START_NM,
+  fallbackEndNm: SPECTRAL_GRID_END_NM,
+};
+
 // Thin-film stack: 35 layers × [ior, thicknessNm, extinction].
-const THIN_FILM_LAYER_LIMIT = 35;
-const ATTENUATION_TRANSMITTANCE_EPSILON = 1e-4;
+// Declared per-backend in `@vitrum/core` `BackendSupportDetails.thinFilmLayerLimit`
+// (D1 = Option B); pt-webgl2 keeps its 35-layer GLSL stride.
+export const THIN_FILM_LAYER_LIMIT = 35;
 const MEDIUM_EPSILON = 1e-6;
 
 /** ceil(sqrt(n)) — the square dimension that holds `n` texels row-major (mirrors fork). */
@@ -99,24 +112,6 @@ function nonNegativeFinite(value: number | undefined, fallback = 0.0): number {
   return Math.max(0.0, finiteOr(value, fallback));
 }
 
-function sigmaAFromAttenuation(attenuationColor: Vec3, attenuationDistance: number): Vec3 {
-  if (!Number.isFinite(attenuationDistance) || attenuationDistance <= 0.0) {
-    return [0.0, 0.0, 0.0];
-  }
-  const sigmaAChannel = (channel: number): number => {
-    const transmittance = Math.min(
-      Math.max(finiteOr(channel, 1.0), ATTENUATION_TRANSMITTANCE_EPSILON),
-      1.0,
-    );
-    return Math.max(-Math.log(transmittance) / attenuationDistance, 0.0);
-  };
-  return [
-    sigmaAChannel(attenuationColor[0]),
-    sigmaAChannel(attenuationColor[1]),
-    sigmaAChannel(attenuationColor[2]),
-  ];
-}
-
 function resolveSssMedium(
   m: PackedMaterialSpec,
   attenuationColor: Vec3,
@@ -130,7 +125,7 @@ function resolveSssMedium(
         nonNegativeFinite(m.scatteringCoefficientRGB[2], 0.0),
       ]
     : [scalarSigmaS, scalarSigmaS, scalarSigmaS];
-  const sigmaA = sigmaAFromAttenuation(attenuationColor, attenuationDistance);
+  const sigmaA = sharedSigmaAFromAttenuation(attenuationColor, attenuationDistance);
   const sigmaTMax = Math.max(
     sigmaA[0] + sigmaS[0],
     sigmaA[1] + sigmaS[1],
@@ -144,38 +139,9 @@ function resolveSssMedium(
   };
 }
 
-/**
- * Dispersion strength from the Abbe number V_d and IOR — exact port of the fork's
- * `dispersionStrengthFromAbbe`. 0 when abbe<=0 || ior<=1 (no dispersion).
- */
-function dispersionStrengthFromAbbe(ior: number, abbe: number): number {
-  if (abbe <= 0 || ior <= 1) return 0;
-  const denom =
-    1 / (FRAUNHOFER_F_NM * FRAUNHOFER_F_NM) - 1 / (FRAUNHOFER_C_NM * FRAUNHOFER_C_NM);
-  if (Math.abs(denom) < 1e-12) return 0;
-  return Math.max(0, (ior - 1) / (abbe * denom));
-}
-
-/**
- * Sample a `@vitrum/core` `SpectralCurve` at `lambdaNm` with linear interpolation —
- * port of the fork's `sampleSpectralCurve`, reading the core curve shape
- * (`wavelengthStart` / `wavelengthEnd` / `values`).
- */
-function sampleSpectralCurve(curve: MaterialSpec['spectralAttenuation'], lambdaNm: number): number {
-  if (!curve) return 0.0;
-  const values = curve.values;
-  if (!values || values.length < 2) return 0.0;
-  const lambdaStart = Number.isFinite(curve.wavelengthStart) ? curve.wavelengthStart : 380.0;
-  const lambdaEnd = Number.isFinite(curve.wavelengthEnd) ? curve.wavelengthEnd : 780.0;
-  const denom = Math.max(lambdaEnd - lambdaStart, 1e-6);
-  const t = Math.min(1.0, Math.max(0.0, (lambdaNm - lambdaStart) / denom));
-  const f = t * (values.length - 1);
-  const i0 = Math.floor(f);
-  const i1 = Math.min(i0 + 1, values.length - 1);
-  const a = Number(values[i0] ?? 0.0);
-  const b = Number(values[i1] ?? a);
-  return a + (b - a) * (f - i0);
-}
+// `dispersionStrengthFromAbbe` and `sampleSpectralCurve` are single-sourced with
+// pt-webgpu via shared-samplers. pt-webgl2's spectral edge handling (≥2 values,
+// 380/780 fallback) is preserved via `PT_WEBGL2_SPECTRAL_CURVE_OPTIONS`.
 
 /**
  * Texture id as a PLAIN FLOAT (-1 = none). The fork stores texture indices as
@@ -274,6 +240,50 @@ function unsupportedTexCoordWarning(
       fallback: 'map-ignored',
     },
   };
+}
+
+/**
+ * D1 (2026-07-20, Option B) — structured truthfulness warning for a material
+ * whose `thinFilmStack.layers` exceed pt-webgl2's declared `THIN_FILM_LAYER_LIMIT`
+ * (35). Layers beyond the limit are dropped by `packThinFilm`; this surfaces the
+ * truncation to the host so it can reconcile against the backend's declared
+ * `BackendSupportDetails.thinFilmLayerLimit`. Warning-only — no texel bytes change
+ * for ≤35-layer scenes.
+ */
+function thinFilmLayerLimitWarning(
+  materialIndex: number,
+  requested: number,
+  options: PackMaterialsTextureOptions,
+): EngineWarning {
+  const message =
+    `[vitrum/pt-webgl2] material ${materialIndex} declares ${requested} thin-film layers; ` +
+    `this backend packs at most ${THIN_FILM_LAYER_LIMIT} — ${requested - THIN_FILM_LAYER_LIMIT} ` +
+    `excess layer(s) are dropped.`;
+  return {
+    code: 'thin-film-layer-limit-exceeded',
+    backend: 'pt-webgl2',
+    phase: options.warningPhase ?? 'setScene',
+    method: options.warningMethod ?? 'setScene',
+    message,
+    details: {
+      materialIndex,
+      requested,
+      limit: THIN_FILM_LAYER_LIMIT,
+      dropped: requested - THIN_FILM_LAYER_LIMIT,
+    },
+  };
+}
+
+function emitThinFilmLayerLimitWarning(
+  materialIndex: number,
+  m: MaterialSpec,
+  options: PackMaterialsTextureOptions,
+): void {
+  const requested = m.thinFilmStack?.layers?.length ?? 0;
+  if (requested <= THIN_FILM_LAYER_LIMIT) return;
+  const warning = thinFilmLayerLimitWarning(materialIndex, requested, options);
+  options.onWarning?.(warning);
+  console.warn(warning.message.replace('[vitrum/pt-webgl2] ', '[pt-webgl2] '));
 }
 
 function createUnsupportedTexCoordWarner(options: PackMaterialsTextureOptions): UnsupportedTexCoordWarner {
@@ -462,7 +472,7 @@ function packScalarSlots(
   // Contract default: pt-webgpu (materialTextures.ts) and walkaround-hybrid both
   // default emissiveIntensity to 1.0 when the field is absent; 0.0 would silently
   // black-out any emissive material whose host did not explicitly set the field.
-  const emissiveIntensity = m.emissiveIntensity ?? 1.0;
+  const emissiveIntensity = resolveEmissiveIntensity(m.emissiveIntensity);
   const emissive: Vec3 = m.emissive ?? [0.0, 0.0, 0.0];
   const normalScale = m.normalScale ?? 1.0; // core carries a scalar; fork stores (x,y)
   const clearcoat = m.clearcoat ?? 0.0;
@@ -659,7 +669,11 @@ function packSpectralGrid(data: Float32Array, index: number, m: MaterialSpec): n
     if (hasSpectral) {
       const t = s / spectralDenom;
       const lambdaNm = SPECTRAL_GRID_START_NM + t * (SPECTRAL_GRID_END_NM - SPECTRAL_GRID_START_NM);
-      data[index++] = sampleSpectralCurve(spectralCurve, lambdaNm);
+      data[index++] = sharedSampleSpectralCurve(
+        spectralCurve,
+        lambdaNm,
+        PT_WEBGL2_SPECTRAL_CURVE_OPTIONS,
+      );
     } else {
       data[index++] = 0.0;
     }
@@ -850,6 +864,10 @@ export function packMaterialsTexture(
     const base = index; // first float of this material's block
 
     const ids = packLayerIds(m, layerOf, i, warnUnsupportedTexCoord);
+
+    // D1 — warn (truthfulness) when this material's thin-film stack exceeds the
+    // 35-layer backend limit; excess layers are dropped by packThinFilm below.
+    emitThinFilmLayerLimitWarning(i, m, options);
 
     // samples 0..19: scalar fields, layer ids, SSS, thin-film metadata
     index = packScalarSlots(data, index, m, ids);

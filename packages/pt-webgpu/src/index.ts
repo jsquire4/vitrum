@@ -46,7 +46,6 @@ import {
   scenePackResultFromPacked,
   uploadPackedScene,
   PT_WEBGPU_ANALYTIC_SHAPES,
-  PT_WEBGPU_SUPPORT,
   type UploadedSceneBuffers,
 } from './scene/uploadSceneBuffers.js';
 import {
@@ -58,7 +57,7 @@ import { type ScenePackResult, pickPrimitiveCpu, type PickCamera } from '@vitrum
 import { FrameParamsSlot } from './scene/frameParamsLayout.js';
 import { packFrameParams } from './frameParamsPacker.js';
 import { SceneMutationRouter } from './sceneMutationRouter.js';
-import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
+import { type PtWebgpuTraceTier } from './traceTier.js';
 import {
   PT_WEBGPU_LITE_MATERIALS,
   collectUnsupportedMaterialFieldsForTraceTier,
@@ -82,12 +81,6 @@ import {
   OCTAHEDRAL_CORE_WGSL,
   TONEMAP_MODE_INDEX,
 } from '@vitrum/shared-samplers';
-import {
-  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
-  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
-  PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
-  PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
-} from './webgpuLimits.js';
 import {
   sppmInitialRadius,
 } from './sppmParams.js';

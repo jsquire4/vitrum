@@ -366,6 +366,34 @@ export function buildArrayBvh(
 
   const nodes: NodeBuild[] = [];
   const orderedTriangles: number[] = [];
+
+  /**
+   * Emit `subset` as a leaf on `node` and return `nodeIndex` (D12-5). Shared by
+   * the three leaf-emit sites (too-few-to-split, SAH-not-cheaper, and
+   * degenerate-partition). `label` names the site in the >0xFFFF overflow error.
+   * Byte-identical to the former inline blocks: throw on >0xFFFF, append triangle
+   * indices at the current `orderedTriangles` tail, set `node.rightChildOrTriOffset`
+   * to that offset and `node.splitAxisOrTriCount = LEAFNODE_FLAG | subset.length`.
+   */
+  const makeLeaf = (
+    node: NodeBuild,
+    subset: readonly TriangleRecord[],
+    nodeIndex: number,
+    label: string,
+  ): number => {
+    if (subset.length > 0xffff) {
+      throw new Error(
+        `[@vitrum/shared-bvh/buildArrayBvh] ${label}triangle count ${subset.length} exceeds the ` +
+        `16-bit limit (0xFFFF = 65535). Split the mesh into smaller primitives before packing.`,
+      );
+    }
+    const leafOffset = orderedTriangles.length;
+    for (const r of subset) orderedTriangles.push(r.triIndex);
+    node.rightChildOrTriOffset = leafOffset;
+    node.splitAxisOrTriCount = LEAFNODE_FLAG | subset.length;
+    return nodeIndex;
+  };
+
   const bins: BinData[] = Array.from({ length: numBins }, makeEmptyBin);
   const prefixMinX = new Float32Array(numBins);
   const prefixMinY = new Float32Array(numBins);
@@ -417,17 +445,7 @@ export function buildArrayBvh(
 
     // Leaf: too few triangles to split profitably.
     if (subset.length <= maxLeafTriangles) {
-      if (subset.length > 0xffff) {
-        throw new Error(
-          `[@vitrum/shared-bvh/buildArrayBvh] Leaf triangle count ${subset.length} exceeds the ` +
-          `16-bit limit (0xFFFF = 65535). Split the mesh into smaller primitives before packing.`,
-        );
-      }
-      const leafOffset = orderedTriangles.length;
-      for (const r of subset) orderedTriangles.push(r.triIndex);
-      node.rightChildOrTriOffset = leafOffset;
-      node.splitAxisOrTriCount = LEAFNODE_FLAG | subset.length;
-      return nodeIndex;
+      return makeLeaf(node, subset, nodeIndex, 'Leaf ');
     }
 
     // Compute centroid AABB for bin placement.
@@ -541,17 +559,7 @@ export function buildArrayBvh(
     // (This happens when all centroids are co-planar on every axis, or when
     // the SAH cost exceeds N.)
     if (bestCost >= leafCost || bestCost === Infinity) {
-      if (subset.length > 0xffff) {
-        throw new Error(
-          `[@vitrum/shared-bvh/buildArrayBvh] Forced-leaf triangle count ${subset.length} exceeds the ` +
-          `16-bit limit (0xFFFF = 65535). Split the mesh into smaller primitives before packing.`,
-        );
-      }
-      const leafOffset = orderedTriangles.length;
-      for (const r of subset) orderedTriangles.push(r.triIndex);
-      node.rightChildOrTriOffset = leafOffset;
-      node.splitAxisOrTriCount = LEAFNODE_FLAG | subset.length;
-      return nodeIndex;
+      return makeLeaf(node, subset, nodeIndex, 'Forced-leaf ');
     }
 
     // Partition at the chosen bin boundary.
@@ -571,17 +579,7 @@ export function buildArrayBvh(
     // Degenerate partition: SAH chose a split that put everything on one side.
     // Fall back to a leaf to avoid infinite recursion.
     if (left.length === 0 || right.length === 0) {
-      if (subset.length > 0xffff) {
-        throw new Error(
-          `[@vitrum/shared-bvh/buildArrayBvh] Degenerate-partition leaf triangle count ${subset.length} exceeds the ` +
-          `16-bit limit (0xFFFF = 65535). Split the mesh into smaller primitives before packing.`,
-        );
-      }
-      const leafOffset = orderedTriangles.length;
-      for (const r of subset) orderedTriangles.push(r.triIndex);
-      node.rightChildOrTriOffset = leafOffset;
-      node.splitAxisOrTriCount = LEAFNODE_FLAG | subset.length;
-      return nodeIndex;
+      return makeLeaf(node, subset, nodeIndex, 'Degenerate-partition leaf ');
     }
 
     // Recurse. Left subtree is built first (its root is nodeIndex + 1).

@@ -137,6 +137,67 @@ export interface ReadbackResult {
 }
 
 /**
+ * Status derived from the shared cohort state machine, for population into a
+ * backend's denoiser-state telemetry surface.
+ *
+ * The `'warming-up'` member exists so the walkaround-hybrid `OIDNFinalDenoiser`
+ * (whose richer `DenoiserState` includes an async model-preload/warmup phase it
+ * orchestrates locally) can share the *same* status vocabulary as the two
+ * converged backends. The core state machine itself never PRODUCES
+ * `'warming-up'` from its own fields — it has no warmup concept; the member is
+ * present in the union so wh can layer its warmup phase on top of
+ * {@link OIDNDispatcherCore.deriveState} without a separate enum.
+ */
+export interface OIDNDerivedState {
+  readonly status: 'ready' | 'warming-up' | 'in-flight' | 'fallback' | 'failed';
+  readonly reason: string | null;
+  readonly retryable?: boolean;
+}
+
+/**
+ * Inputs to {@link deriveOidnState} — the three cohort-state facts the status
+ * ladder branches on. Extracting them lets consumers that don't own an
+ * {@link OIDNDispatcherCore} instance (the walkaround-hybrid `OIDNFinalDenoiser`,
+ * which drives the bridge directly and tracks its own in-flight orchestration)
+ * reuse the SAME status mapping without duplicating the ladder.
+ */
+export interface OIDNDerivedStateInputs {
+  /** Message of the last unrecovered inference error, or null when healthy. */
+  readonly lastError: string | null;
+  /** True while an inference cycle is currently unresolved. */
+  readonly inFlight: boolean;
+  /** True once at least one inference has completed for the current cohort. */
+  readonly haveCompleted: boolean;
+}
+
+/**
+ * Pure status-ladder shared by every OIDN dispatcher/denoiser. Single source of
+ * truth for the previously byte-identical `getState()` ladders (pt-webgl2,
+ * pt-webgpu) AND the tail of walkaround-hybrid's richer `state()`:
+ *
+ *  - `'failed'`    — `lastError` set; retryable; `reason` = the message.
+ *  - `'in-flight'` — an inference cycle is running.
+ *  - `'ready'`     — the last cycle succeeded and a result is available.
+ *  - `'fallback'`  — no inference has completed yet (first frame / post-invalidate).
+ *
+ * Never returns `'warming-up'` — that is a caller-local phase (wh's async model
+ * preload) layered on top of this ladder; the union member exists so wh can
+ * share the vocabulary.
+ */
+export function deriveOidnState(inputs: OIDNDerivedStateInputs): OIDNDerivedState {
+  if (inputs.lastError !== null) {
+    return { status: 'failed', reason: inputs.lastError, retryable: true };
+  }
+  if (inputs.inFlight) {
+    return { status: 'in-flight', reason: null };
+  }
+  if (inputs.haveCompleted) {
+    return { status: 'ready', reason: null };
+  }
+  return { status: 'fallback', reason: 'waiting for first OIDN inference' };
+}
+
+/**
  * Type of the async callback supplied by each backend.
  *
  * `TInput` is the backend-specific readback source:
@@ -274,6 +335,27 @@ export class OIDNDispatcherCore<TInput> {
    */
   getLastError(): string | null {
     return this.#lastErrorMessage;
+  }
+
+  /**
+   * Derive the backend's public denoiser status from the shared cohort state
+   * machine. Single source of truth for the previously byte-identical
+   * `getState()` ladders in the pt-webgl2 and pt-webgpu wrappers:
+   *
+   *  - `'failed'`    — the last cycle threw; `reason` = error message; retryable.
+   *  - `'in-flight'` — an async inference cycle is currently running.
+   *  - `'ready'`     — the last cycle succeeded and a result is available.
+   *  - `'fallback'`  — no inference has completed yet (first frame / post-invalidate).
+   *
+   * Never returns `'warming-up'`: that member of {@link OIDNDerivedState} exists
+   * only so wh's warmup-aware wrapper can share the union (see the type doc).
+   */
+  deriveState(): OIDNDerivedState {
+    return deriveOidnState({
+      lastError: this.#lastErrorMessage,
+      inFlight: this.#inFlight,
+      haveCompleted: this.#latest !== null,
+    });
   }
 
   /**

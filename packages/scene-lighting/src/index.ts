@@ -17,8 +17,8 @@ export * from './sunGeometry.js';
 export { computeLightingState } from './lightingState.js';
 export type { LightingState, LightingStateInputs } from './lightingState.js';
 
-export { skyParamsFor, worldSunPosition, SUN_LIGHT_DISTANCE } from './skyParams.js';
-export type { SkyParams } from './skyParams.js';
+export { skyParamsFor, worldSunPosition, SUN_LIGHT_DISTANCE, SUN_Z_DEPTH_SCALE } from './skyParams.js';
+export type { SkyParams, SkyParamsOptions } from './skyParams.js';
 
 export {
   COLOR_TEMP_HEX,

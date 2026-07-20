@@ -539,12 +539,8 @@ async function captureCanvasPng(page) {
       }
     }
 
-    try {
-      captureStep = 'canvas-data-url';
-      return await captureAttempt('canvas-data-url', () => captureCanvasDataUrlPng(page, engineError, screenshotError, clipError));
-    } catch (dataUrlError) {
-      throw dataUrlError;
-    }
+    captureStep = 'canvas-data-url';
+    return await captureAttempt('canvas-data-url', () => captureCanvasDataUrlPng(page, engineError, screenshotError, clipError));
   } finally {
     if (canvasPaused) await resumeExampleRendering(page, 1000);
   }

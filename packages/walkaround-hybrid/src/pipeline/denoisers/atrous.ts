@@ -28,6 +28,7 @@ import {
   writeAtrousUbo,
 } from '../bindGroupBuilders.js';
 import { runAtrousChain } from '../passes/dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
   DENOISER_PASS_LABELS,
@@ -105,12 +106,12 @@ export class AtrousDenoiser implements Denoiser {
           gNormalDepthView, gNormalDepthView,
           byteOffset,
         );
-        return resourceCache?.bindGroup(`denoiser:atrous:${iter}`, [
+        return cachedBindGroup(resourceCache, `denoiser:atrous:${iter}`, [
           this._uboRef,
           inputTex,
           outputTex,
           resources.common.gNormalDepthTexture,
-        ], buildBg) ?? buildBg();
+        ], buildBg);
       },
       labelFor: (iter) => `atrous-${iter}` as PassLabel,
     });

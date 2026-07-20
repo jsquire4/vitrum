@@ -4,28 +4,11 @@
 // match the methods' own no-op semantics (export → null, import → false).
 
 import { describe, it, expect, vi } from 'vitest';
-import type { Engine, EngineCapabilities, EngineState } from '@vitrum/core';
+import type { Engine } from '@vitrum/core';
 import type { GIStateSnapshot } from '@vitrum/walkaround-hybrid';
 import { wrapWithIdempotentDispose } from '../createEngine.js';
 import type { GIStatePersistable } from '../idempotentDispose.js';
-
-function baseCapabilities(): EngineCapabilities {
-  return {
-    supportsIncrementalScene: false,
-    supportsAddRemovePrimitive: false,
-    supportsAuxBuffers: false,
-    accumulates: true,
-    maxSamplesPerPixel: 1,
-    maxBounces: 1,
-    supportedAnalyticShapes: new Set(),
-    supportedEmitterKinds: new Set(),
-    supportedPrimitiveKinds: new Set(),
-    supportedEnvironmentKinds: new Set(),
-    presentationMode: 'offscreen-texture',
-    experimentalFeatures: new Set(),
-    causticStrategy: 'none',
-  } as unknown as EngineCapabilities;
-}
+import { stubEngine } from './fixtures/stubEngine.js';
 
 const SNAPSHOT = {
   dims: { x: 2, y: 2, z: 2 },
@@ -37,14 +20,7 @@ function makeEngine(withGiState: boolean) {
   const exportFn = vi.fn(async (): Promise<GIStateSnapshot | null> => SNAPSHOT);
   const importFn = vi.fn((_s: GIStateSnapshot): boolean => true);
   const engine: Engine & Partial<GIStatePersistable> = {
-    get state(): EngineState { return 'ready'; },
-    get capabilities() { return baseCapabilities(); },
-    setScene: vi.fn(),
-    renderFrame: vi.fn(() => ({ kind: 'skipped', samplesAccumulated: 0, isConverged: false })),
-    reset: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    dispose: vi.fn(),
+    ...stubEngine(),
     ...(withGiState ? { exportGIState: exportFn, importGIState: importFn } : {}),
   };
   return { engine, exportFn, importFn };

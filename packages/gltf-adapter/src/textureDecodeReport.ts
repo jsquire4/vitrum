@@ -31,7 +31,7 @@ export function buildTextureDecodeReport(scene: Scene): GltfTextureDecodeReport 
   for (const [primitiveIndex, primitive] of scene.primitives.entries()) {
     const material = materialForPrimitive(primitive);
     for (const field of MATERIAL_TEXTURE_FIELDS) {
-      const ref = material[field] as TextureRef | undefined;
+      const ref = material[field];
       if (!ref) continue;
       uniqueHandles.add(ref.handle);
       const handleKind = classifyTextureHandle(ref.handle);

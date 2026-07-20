@@ -36,10 +36,23 @@ export interface SkyParamsOptions {
    * (Documented 2026-06-11; was previously a hardcoded stained-glass calibration constant.)
    */
   zBias?: number;
+  /**
+   * Scale applied to the `-cos(theta)` term of the sun Z depth. Default 0.5
+   * (`SUN_Z_DEPTH_SCALE`) — the noon/horizon Z swing amplitude before `zBias`.
+   * Together with `zBias` it controls how far the solar arc travels along the
+   * panel-normal (Z) axis over the day.
+   */
+  zScale?: number;
 }
 
+/**
+ * Default amplitude of the sun's Z-depth swing (`-cos(theta) * SUN_Z_DEPTH_SCALE`)
+ * before `zBias`. Previously a bare `0.5` literal at the sunZ site.
+ */
+export const SUN_Z_DEPTH_SCALE = 0.5;
+
 export function skyParamsFor(timeOfDay: number, opts: SkyParamsOptions = {}): SkyParams {
-  const { yScale = 0.4, zBias = -0.5 } = opts;
+  const { yScale = 0.4, zBias = -0.5, zScale = SUN_Z_DEPTH_SCALE } = opts;
   const t = Math.max(0, Math.min(1, timeOfDay));
   // Solar arc: theta swings from -PI/2 (east) through 0 (zenith) to +PI/2 (west)
   const theta = (t - 0.5) * Math.PI;
@@ -49,7 +62,7 @@ export function skyParamsFor(timeOfDay: number, opts: SkyParamsOptions = {}): Sk
   // the top of the building" artifact reported 2026-05-08.
   const sunY = Math.max(0.05, y * yScale);
   // zBias pushes the sun behind the panel (-Z) so glass reads as backlit.
-  const sunZ = -Math.cos(theta) * 0.5 + zBias;
+  const sunZ = -Math.cos(theta) * zScale + zBias;
 
   const horizonProx = 1 - y; // 0 at noon, ~1 at horizons
   const turbidity = 2 + horizonProx * 6; // 2..8

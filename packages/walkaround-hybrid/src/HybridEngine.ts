@@ -1444,7 +1444,7 @@ export class HybridEngine implements Engine {
           ...(solved.tangents ? { tangents: solved.tangents } : {}),
           ...(solved.uvs ? { uvs: solved.uvs } : {}),
           ...(solved.uv1 ? { uv1: solved.uv1 } : {}),
-        } as Partial<ScenePrimitive>;
+        };
       }
     }
     if (solvedAttributes != null) {

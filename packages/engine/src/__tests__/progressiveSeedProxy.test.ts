@@ -12,29 +12,10 @@ import { describe, it, expect, vi } from 'vitest';
 import type {
   Engine,
   EngineCapabilities,
-  EngineState,
   BackendTexture,
 } from '@vitrum/core';
 import { wrapWithIdempotentDispose } from '../createEngine.js';
-
-function capabilities(over: Partial<EngineCapabilities>): EngineCapabilities {
-  return {
-    supportsIncrementalScene: false,
-    supportsAddRemovePrimitive: false,
-    supportsAuxBuffers: false,
-    accumulates: true,
-    maxSamplesPerPixel: 1,
-    maxBounces: 1,
-    supportedAnalyticShapes: new Set(),
-    supportedEmitterKinds: new Set(),
-    supportedPrimitiveKinds: new Set(),
-    supportedEnvironmentKinds: new Set(),
-    presentationMode: 'offscreen-texture',
-    experimentalFeatures: new Set(),
-    causticStrategy: 'none',
-    ...over,
-  } as unknown as EngineCapabilities;
-}
+import { stubCapabilities, stubEngine } from './fixtures/stubEngine.js';
 
 const FAKE_TEX = { __seed: true } as unknown as BackendTexture;
 const SEED_RESULT = { texture: FAKE_TEX, width: 320, height: 180 };
@@ -47,14 +28,7 @@ function makeEngine(opts: {
   const getProgressiveSeedTexture = vi.fn(() => SEED_RESULT);
   const seedAccumulator = vi.fn();
   const engine: Engine = {
-    get state(): EngineState { return 'ready'; },
-    get capabilities() { return capabilities(opts.caps); },
-    setScene: vi.fn(),
-    renderFrame: vi.fn(() => ({ kind: 'skipped', samplesAccumulated: 0, isConverged: false })),
-    reset: vi.fn(),
-    pause: vi.fn(),
-    resume: vi.fn(),
-    dispose: vi.fn(),
+    ...stubEngine(stubCapabilities(opts.caps)),
     ...(opts.withSource ? { getProgressiveSeedTexture } : {}),
     ...(opts.withSink ? { seedAccumulator } : {}),
   };

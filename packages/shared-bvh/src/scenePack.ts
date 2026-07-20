@@ -10,8 +10,8 @@ import { buildArrayBvh, isLeafSplit } from './buildArrayBvh.js';
 import { BVH_NODE_FLOATS, VERTEX_STRIDE_F32, MAT4_STRIDE_F32 } from './strides.js';
 import { buildTlas, refitTlas } from './tlas.js';
 import { invertMat4 as _invertMat4 } from './mathUtils.js';
-import { rebaseLeafTriOffset as _rebaseLeafTriOffset, copyVec4Strided as _copyVec4Strided } from './splicePack.js';
-import { maybeDisplaceMeshPositions, maybeMicrodisplaceMeshGeometry } from './vertexDisplacement.js';
+import { rebaseLeafTriOffset as _rebaseLeafTriOffset, copyVec4Strided as _copyVec4Strided, rebaseIndexWords as _rebaseIndexWords } from './splicePack.js';
+import { resolveDisplacedGeometry } from './vertexDisplacement.js';
 
 // ── Back-compat re-export from extracted module ───────────────────────────────
 // invertMat4 was previously defined in this file; now canonical in mathUtils.
@@ -117,32 +117,7 @@ function transformPoint(m: Mat4, p: Vec3): [number, number, number] {
   return [tx, ty, tz];
 }
 
-export function computeLocalAabb(positions: Float32Array): {
-  min: readonly [number, number, number];
-  max: readonly [number, number, number];
-} | null {
-  if (positions.length < 3) return null;
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let minZ = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  let maxZ = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i + 2 < positions.length; i += 3) {
-    const x = positions[i] ?? 0;
-    const y = positions[i + 1] ?? 0;
-    const z = positions[i + 2] ?? 0;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    minZ = Math.min(minZ, z);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-    maxZ = Math.max(maxZ, z);
-  }
-  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
-}
-
-function computeStridedLocalAabb(positions: Float32Array, stride: number): {
+export function computeLocalAabb(positions: Float32Array, stride = 3): {
   min: readonly [number, number, number];
   max: readonly [number, number, number];
 } | null {
@@ -276,25 +251,16 @@ function packOneMeshLikePrimitive(
   matId: number,
 ): PackOneMeshLikeResult {
   const warnings: string[] = [];
-  const microdisplaced = maybeMicrodisplaceMeshGeometry({
-    primitiveId: primitive.id,
-    material: primitive.material,
-    positions: primitive.positions,
-    normals: primitive.normals,
-    ...(primitive.indices != null ? { indices: primitive.indices } : {}),
-    ...(primitive.uvs != null ? { uvs: primitive.uvs } : {}),
-    ...(primitive.uv1 != null ? { uv1: primitive.uv1 } : {}),
-    ...(primitive.tangents != null ? { tangents: primitive.tangents } : {}),
-    ...(primitive.colors != null ? { colors: primitive.colors } : {}),
-    onWarning: (warning) => warnings.push(warning),
-  });
-  const basePositions = microdisplaced?.positions ?? primitive.positions;
-  const baseNormals = microdisplaced?.normals ?? primitive.normals;
-  const baseIndicesSource = microdisplaced?.indices ?? primitive.indices;
-  const baseUvs = microdisplaced?.uvs ?? primitive.uvs;
-  const baseUv1 = microdisplaced?.uv1 ?? primitive.uv1;
-  const baseTangents = microdisplaced?.tangents ?? primitive.tangents;
-  const baseColors = microdisplaced?.colors ?? primitive.colors;
+  const {
+    basePositions,
+    baseNormals,
+    baseIndicesSource,
+    baseUvs,
+    baseUv1,
+    baseTangents,
+    baseColors,
+    sourcePositions,
+  } = resolveDisplacedGeometry(primitive, (warning) => warnings.push(warning));
   const vertexCount = Math.floor(basePositions.length / 3);
   if (vertexCount < 3) {
     warnings.push(`Primitive "${primitive.id}" has fewer than 3 vertices; skipping.`);
@@ -337,17 +303,6 @@ function packOneMeshLikePrimitive(
       `expected at least ${vertexCount * 3}. Ignoring authored vertex colors.`,
     );
   }
-  const sourcePositions = microdisplaced == null
-    ? maybeDisplaceMeshPositions({
-        primitiveId: primitive.id,
-        material: primitive.material,
-        positions: basePositions,
-        normals: baseNormals,
-        ...(baseUvs != null ? { uvs: baseUvs } : {}),
-        ...(baseUv1 != null ? { uv1: baseUv1 } : {}),
-        onWarning: (warning) => warnings.push(warning),
-      }) ?? basePositions
-    : basePositions;
   for (let i = 0; i < vertexCount; i += 1) {
     localPositions[i * VERTEX_STRIDE_F32] = sourcePositions[i * 3] ?? 0;
     localPositions[i * VERTEX_STRIDE_F32 + 1] = sourcePositions[i * 3 + 1] ?? 0;
@@ -433,7 +388,7 @@ function packOneMeshLikePrimitive(
     );
   }
 
-  const localAabb = computeStridedLocalAabb(localPositions, VERTEX_STRIDE_F32);
+  const localAabb = computeLocalAabb(localPositions, VERTEX_STRIDE_F32);
   if (localAabb == null) return { slice: null, warnings };
 
   return {
@@ -584,6 +539,65 @@ function collectTlasInstancesFromBindings(
  *   bvhNodes — 8 words/node at blasRoot*8. Leaf word[6] = GLOBAL tri offset
  *     (local + triStart); interior word[6] = RELATIVE child offset (unchanged).
  */
+/** The mutated buffer set + counts shared by both splice paths' return value. */
+interface SplicedPackBuffers {
+  readonly positions: Float32Array;
+  readonly normals: Float32Array;
+  readonly uvs: Float32Array;
+  readonly tangents: Float32Array;
+  readonly colors: Float32Array;
+  readonly indices: Uint32Array;
+  readonly triMaterialIds: Uint32Array;
+  readonly bvhNodes: Float32Array;
+  readonly triangleCount: number;
+}
+
+/**
+ * Rebuild the TLAS over `primitiveTlasBindings` and assemble the spliced pack
+ * result (D12-4). Shared by the same-size and resize splice paths — both, after
+ * mutating the BLAS buffers, collect TLAS instances (falling back to a full
+ * `packSceneFromCore` when a transform became non-invertible), build the TLAS,
+ * and return `{ ok, strategy: 'splice', pack }`. Behavior is bit-for-bit
+ * identical to the former inline tails.
+ */
+function finalizeSplicedPack(
+  prev: ScenePackResult,
+  scene: Scene,
+  opts: ScenePackOptions,
+  buffers: SplicedPackBuffers,
+  primitiveTlasBindings: readonly PrimitiveTlasBinding[],
+  sliceWarnings: readonly string[],
+): RebuildPrimitiveBlasResult {
+  const collected = collectTlasInstancesFromBindings(scene, primitiveTlasBindings);
+  if (!collected.ok) {
+    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
+  }
+  const tlasBuild = buildTlasFromInstances(collected.instances);
+  return {
+    ok: true,
+    strategy: 'splice',
+    pack: {
+      positions: buffers.positions,
+      normals: buffers.normals,
+      uvs: buffers.uvs,
+      tangents: buffers.tangents,
+      colors: buffers.colors,
+      indices: buffers.indices,
+      triMaterialIds: buffers.triMaterialIds,
+      bvhNodes: buffers.bvhNodes,
+      triangleCount: buffers.triangleCount,
+      tlasNodes: tlasBuild.tlasNodes,
+      tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
+      tlasBlasRoots: tlasBuild.tlasBlasRoots,
+      tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
+      tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
+      tlasNodeCount: tlasBuild.tlasNodeCount,
+      primitiveTlasBindings,
+      warnings: [...prev.warnings, ...sliceWarnings],
+    },
+  };
+}
+
 function spliceResizedPrimitiveBlasIntoPack(
   prev: ScenePackResult,
   bindingIndex: number,
@@ -661,10 +675,7 @@ function spliceResizedPrimitiveBlasIntoPack(
   triMaterialIds.set(prev.triMaterialIds.subarray(0, oldTriStart), 0);
   // Changed primitive's new index words rebased to its (unchanged) vertexStart.
   const newTriStart = oldTriStart; // unchanged for the spliced primitive
-  for (let i = 0; i < slice.indexWords.length; i += 1) {
-    const localIdx = slice.indexWords[i] ?? 0;
-    indices[newTriStart * 4 + i] = i % 4 === 3 ? localIdx : localIdx + binding.vertexStart;
-  }
+  _rebaseIndexWords(indices, newTriStart * 4, slice.indexWords, binding.vertexStart);
   for (let t = 0; t < slice.triMaterialIds.length; t += 1) {
     triMaterialIds[newTriStart + t] = slice.triMaterialIds[t] ?? 0;
   }
@@ -716,35 +727,14 @@ function spliceResizedPrimitiveBlasIntoPack(
 
   // BLAS roots moved (and the changed primitive's local AABB changed), so the
   // TLAS must be fully rebuilt from the updated bindings.
-  const collected = collectTlasInstancesFromBindings(scene, primitiveTlasBindings);
-  if (!collected.ok) {
-    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
-  }
-  const tlasBuild = buildTlasFromInstances(collected.instances);
-
-  return {
-    ok: true,
-    strategy: 'splice',
-    pack: {
-      positions,
-      normals,
-      uvs,
-      tangents,
-      colors,
-      indices,
-      triMaterialIds,
-      bvhNodes,
-      triangleCount: newTotalTris,
-      tlasNodes: tlasBuild.tlasNodes,
-      tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
-      tlasBlasRoots: tlasBuild.tlasBlasRoots,
-      tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
-      tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
-      tlasNodeCount: tlasBuild.tlasNodeCount,
-      primitiveTlasBindings,
-      warnings: [...prev.warnings, ...slice.warnings],
-    },
-  };
+  return finalizeSplicedPack(
+    prev,
+    scene,
+    opts,
+    { positions, normals, uvs, tangents, colors, indices, triMaterialIds, bvhNodes, triangleCount: newTotalTris },
+    primitiveTlasBindings,
+    slice.warnings,
+  );
 }
 
 function splicePrimitiveBlasIntoPack(
@@ -795,11 +785,7 @@ function splicePrimitiveBlasIntoPack(
   colors.set(slice.localColors, vertOff);
 
   const indexOff = binding.triStart * 4;
-  for (let i = 0; i < slice.indexWords.length; i += 1) {
-    const localIdx = slice.indexWords[i] ?? 0;
-    indices[indexOff + i] =
-      i % 4 === 3 ? localIdx : localIdx + binding.vertexStart;
-  }
+  _rebaseIndexWords(indices, indexOff, slice.indexWords, binding.vertexStart);
   for (let t = 0; t < slice.triMaterialIds.length; t += 1) {
     triMaterialIds[binding.triStart + t] = slice.triMaterialIds[t] ?? 0;
   }
@@ -820,35 +806,14 @@ function splicePrimitiveBlasIntoPack(
       : b,
   );
 
-  const collected = collectTlasInstancesFromBindings(scene, primitiveTlasBindings);
-  if (!collected.ok) {
-    return { ok: true, pack: packSceneFromCore(scene, opts), strategy: 'full' };
-  }
-  const tlasBuild = buildTlasFromInstances(collected.instances);
-
-  return {
-    ok: true,
-    strategy: 'splice',
-    pack: {
-      positions,
-      normals,
-      uvs,
-      tangents,
-      colors,
-      indices,
-      triMaterialIds,
-      bvhNodes,
-      triangleCount: prev.triangleCount,
-      tlasNodes: tlasBuild.tlasNodes,
-      tlasInstanceIndices: tlasBuild.tlasInstanceIndices,
-      tlasBlasRoots: tlasBuild.tlasBlasRoots,
-      tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
-      tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
-      tlasNodeCount: tlasBuild.tlasNodeCount,
-      primitiveTlasBindings,
-      warnings: [...prev.warnings, ...slice.warnings],
-    },
-  };
+  return finalizeSplicedPack(
+    prev,
+    scene,
+    opts,
+    { positions, normals, uvs, tangents, colors, indices, triMaterialIds, bvhNodes, triangleCount: prev.triangleCount },
+    primitiveTlasBindings,
+    slice.warnings,
+  );
 }
 
 /**
@@ -1156,10 +1121,7 @@ export function computeWorldAabbForBindings(
   min: readonly [number, number, number];
   max: readonly [number, number, number];
 } | null {
-  const byId = new Map<string, ScenePrimitive>();
-  for (const primitive of scene.primitives) {
-    byId.set(primitive.id, primitive);
-  }
+  const byId = mapPrimitivesById(scene);
   let minX = Number.POSITIVE_INFINITY;
   let minY = Number.POSITIVE_INFINITY;
   let minZ = Number.POSITIVE_INFINITY;

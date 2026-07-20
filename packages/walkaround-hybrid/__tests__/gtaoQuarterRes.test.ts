@@ -300,6 +300,7 @@ function makeDispatchCtx(
     lightTreeBindGroup: {} as unknown as GPUBindGroup,
     wgX: Math.ceil(width / 8), wgY: Math.ceil(height / 8),
     wgX16: 0, wgY16: 0, halfWgX: 0, halfWgY: 0,
+    checkerboardWgX: 0, checkerboardWgY: 0,
     checkerboardOn: false, frameParity: 0,
     welfordPing: 0,
     gtaoDownscale,

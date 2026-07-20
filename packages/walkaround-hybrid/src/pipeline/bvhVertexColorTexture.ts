@@ -6,22 +6,18 @@
  * the sampled value directly into baseColor/alpha without a presence bit.
  */
 
-import { maxTextureDimension2D } from './bvhTextureLimits.js';
+import {
+  assertBvhTextureFitsDevice,
+  normalizeBvhTextureTriangleCount as normalizeVertexCount,
+  uploadElementTexture,
+} from './bvhTextureLimits.js';
 
 export const BVH_VERTEX_COLOR_TEX_WIDTH = 4096;
-
-const TEX_BINDING = 0x04;
-const COPY_DST = 0x02;
 
 export interface VertexColorTexture {
   texture: GPUTexture;
   width: number;
   height: number;
-}
-
-function normalizeVertexCount(vertexCount: number): number {
-  if (!Number.isFinite(vertexCount)) return 1;
-  return Math.max(1, Math.floor(vertexCount));
 }
 
 function vertexColorTextureSize(vertexCount: number): { width: number; height: number } {
@@ -31,38 +27,27 @@ function vertexColorTextureSize(vertexCount: number): { width: number; height: n
   return { width, height };
 }
 
-function assertFitsDevice(device: GPUDevice, width: number, height: number, vertexCount: number): void {
-  const maxDim = maxTextureDimension2D(device);
-  if (width <= maxDim && height <= maxDim) return;
-  throw new RangeError(
-    `[vitrum/walkaround-hybrid] bvhVertexColor texture requires ${width}x${height} texels ` +
-    `for ${normalizeVertexCount(vertexCount)} vertices, which exceeds ` +
-    `device.limits.maxTextureDimension2D=${maxDim}. Reduce vertex count or split ` +
-    'the scene before creating walkaround-hybrid vertex-color textures.',
-  );
-}
-
 export function uploadVertexColorTexture(
   device: GPUDevice,
   colors: Float32Array,
   vertexCount: number,
 ): VertexColorTexture {
   const { width, height } = vertexColorTextureSize(vertexCount);
-  assertFitsDevice(device, width, height, vertexCount);
-  const texture = device.createTexture({
+  assertBvhTextureFitsDevice('bvhVertexColor', device, width, height, vertexCount, 'vertex', 'vertex-color textures');
+  const texture = uploadElementTexture(device, {
     label: 'vitrum.bvhVertexColors.rgba32float',
-    size: { width, height, depthOrArrayLayers: 1 },
     format: 'rgba32float',
-    usage: TEX_BINDING | COPY_DST,
+    width,
+    height,
+    bytesPerTexel: 16,
+    elementsPerTexel: 4,
+    makePadded: (n) => new Float32Array(n),
+    fill: (padded) => {
+      // Missing authored colors default to white (fill 1), then overwrite with
+      // the authored prefix.
+      padded.fill(1);
+      padded.set(colors.subarray(0, Math.min(colors.length, normalizeVertexCount(vertexCount) * 4)));
+    },
   });
-  const padded = new Float32Array(width * height * 4);
-  padded.fill(1);
-  padded.set(colors.subarray(0, Math.min(colors.length, normalizeVertexCount(vertexCount) * 4)));
-  device.queue.writeTexture(
-    { texture },
-    padded.buffer,
-    { bytesPerRow: width * 4 * 4, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 },
-  );
   return { texture, width, height };
 }

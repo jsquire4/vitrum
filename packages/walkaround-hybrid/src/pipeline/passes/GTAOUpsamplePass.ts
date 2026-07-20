@@ -15,6 +15,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 export class GTAOUpsamplePass implements Pass {
   readonly id = 'gtao-upsample' as const;
@@ -45,12 +46,12 @@ export class GTAOUpsamplePass implements Pass {
       resourceCache?.textureView(resources.gtao.aoFullTexture) ?? resources.gtao.aoFullTexture.createView(),
       resources.gtao.gtaoUboBuffer,
     );
-    const bg = resourceCache?.bindGroup('pass:gtao-upsample', [
+    const bg = cachedBindGroup(resourceCache, 'pass:gtao-upsample', [
       resources.gtao.aoHalfTexture,
       resources.common.gNormalDepthTexture,
       resources.gtao.aoFullTexture,
       resources.gtao.gtaoUboBuffer,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gtao-upsample');
   }
 

@@ -42,6 +42,7 @@ import {
 import { composeWgsl } from '../wgslComposer.js';
 import { BMFR_MODULE, WGSL_MODULES } from '../wgslModules.js';
 import { checkShaderCompile } from '../shaderUtils.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import {
   DENOISER_PASS_LABELS,
   DENOISER_READY_STATE,
@@ -150,13 +151,13 @@ export class BmfrDenoiser implements Denoiser {
         { binding: 5, resource: { buffer: this._ubo } },
       ],
     });
-    const bg = resourceCache?.bindGroup('denoiser:bmfr', [
+    const bg = cachedBindGroup(resourceCache, 'denoiser:bmfr', [
       common.hdrColorTexture,
       common.gNormalDepthTexture,
       histRead,
       histWrite,
       this._ubo,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
 
     // One workgroup per 32×32 block. Each thread owns a 2×2 patch, so a
     // 16×16 workgroup covers a full block.

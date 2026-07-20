@@ -21,6 +21,28 @@ import {
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
 } from './webgpuLimits.js';
 
+/**
+ * Stringify a host-supplied option value for a diagnostic message. Behaviour is
+ * identical to `String(value)`: primitives stringify as-is and objects fall back
+ * to their `toString()` (typically `'[object Object]'`). Written with explicit
+ * narrowing so the value's declared `unknown` type does not trip the
+ * `no-base-to-string` lint.
+ */
+function stringifyRequestedValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
+    typeof value === 'symbol' ||
+    value == null
+  ) {
+    return String(value);
+  }
+  // Object / function: mirror String()'s fallback to the value's own toString.
+  return (value as { toString(): string }).toString();
+}
+
 export const EXPERIMENTAL_MAX_BOUNCES = 8;
 export const BDPT_MAX_LIGHT_BOUNCES = 8;
 // D2 (2026-07-20): raised 1 → 2 unconditionally. With maxLv=2 the kernel
@@ -261,7 +283,7 @@ export function validatePtWebgpuOptions(opts: PTEngineWebGPUOptions): ValidatedP
       phase: 'construction',
       method: 'createPTEngine_WebGPU',
       message:
-        `[vitrum/pt-webgpu] sampling="${String(requestedSampling)}" requested, but only ` +
+        `[vitrum/pt-webgpu] sampling="${stringifyRequestedValue(requestedSampling)}" requested, but only ` +
         "'pcg' and 'sobol' are wired. Degrading to the default PCG stream.",
       details: { requested: requestedSampling },
     });
@@ -299,7 +321,7 @@ export function validatePtWebgpuOptions(opts: PTEngineWebGPUOptions): ValidatedP
       phase: 'construction',
       method: 'createPTEngine_WebGPU',
       message:
-        `[vitrum/pt-webgpu] bvhTraversal="${String(requestedBvhTraversal)}" requested, but only ` +
+        `[vitrum/pt-webgpu] bvhTraversal="${stringifyRequestedValue(requestedBvhTraversal)}" requested, but only ` +
         "'binary' and 'cwbvh-closest-experimental' are wired. Degrading to binary traversal.",
       details: { requested: requestedBvhTraversal, fallback: 'binary' },
     });

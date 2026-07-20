@@ -26,6 +26,13 @@
 //   RECT_AREA = 0, CIRC_AREA = 1, SPOT = 2, DIR = 3, POINT = 4
 
 import type { SceneEmitter, Vec3 } from '@vitrum/core';
+import {
+  luminance,
+  vecCross as cross,
+  vecLength as lengthOf,
+  vecNormalize as normalize,
+  tangentBasis,
+} from '@vitrum/shared-samplers';
 import type { LightsTextureData } from './sceneTextures.js';
 
 // ── D10.10: dev-only slot-cursor guard ────────────────────────────────────────
@@ -66,44 +73,12 @@ const SPOT_LIGHT = 2;
 const DIR_LIGHT = 3;
 const POINT_LIGHT = 4;
 
-/** Rec.709 relative luminance — identical coefficients to the fork's
- *  `luminance()` so the packed `power` field matches byte-for-byte. */
-function luminance(r: number, g: number, b: number): number {
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
-function lengthOf(v: Vec3): number {
-  return Math.hypot(v[0], v[1], v[2]);
-}
-
-function cross(a: Vec3, b: Vec3): Vec3 {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
-}
-
-function normalize(v: Vec3): Vec3 {
-  const len = lengthOf(v);
-  if (len < 1e-12) return [0, 0, 0];
-  return [v[0] / len, v[1] / len, v[2] / len];
-}
-
-/**
- * Build two unit tangent vectors spanning the plane perpendicular to `n`.
- * Used to synthesize the (u, v) basis for a disc-area emitter, whose core
- * representation gives only a centre, a normal and a radius (no explicit
- * in-plane axes). Deterministic so the packed data is stable across calls.
- */
-function tangentBasis(n: Vec3): { t: Vec3; b: Vec3 } {
-  const nn = normalize(n);
-  // Pick the world axis least aligned with nn to avoid degeneracy.
-  const ref: Vec3 = Math.abs(nn[0]) > 0.9 ? [0, 1, 0] : [1, 0, 0];
-  const t = normalize(cross(ref, nn));
-  const b = normalize(cross(nn, t));
-  return { t, b };
-}
+// Rec.709 luminance + the cross/normalize/tangentBasis/length Vec3 helpers are
+// single-sourced in `@vitrum/shared-samplers` (imported above under the local
+// aliases `luminance`/`cross`/`lengthOf`/`normalize`/`tangentBasis`). The
+// shared `vecNormalize` preserves this packer's historical `<1e-12 → [0,0,0]`
+// degeneracy contract, and the shared `luminance` uses the same Rec.709
+// coefficients, so the packed `power` field stays byte-for-byte identical.
 
 // ── D11-12: shared s0/s1 header helpers ───────────────────────────────────────
 // Every light kind writes the same two leading texels:

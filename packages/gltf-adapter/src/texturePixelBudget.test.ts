@@ -49,7 +49,7 @@ function sceneWith(handle: PixelHandle): Scene {
     ],
     emitters: [],
     environment: { kind: 'none' },
-  } as Scene;
+  };
 }
 
 /**
@@ -66,7 +66,7 @@ async function withFloat32AllocSpy(fn: () => Promise<void>): Promise<{ maxLen: n
     },
   });
   (globalThis as unknown as { Float32Array: typeof Float32Array }).Float32Array =
-    Spy as unknown as typeof Float32Array;
+    Spy;
   try {
     await fn();
   } finally {

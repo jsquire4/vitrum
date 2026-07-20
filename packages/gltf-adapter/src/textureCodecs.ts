@@ -347,5 +347,7 @@ export function numberProp(value: unknown, key: string): number | undefined {
 }
 
 export function closeBitmap(bitmap: unknown): void {
-  if (isRecord(bitmap) && typeof bitmap.close === 'function') bitmap.close();
+  if (isRecord(bitmap) && typeof bitmap.close === 'function') {
+    (bitmap.close as () => void)();
+  }
 }

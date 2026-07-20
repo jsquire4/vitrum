@@ -104,6 +104,15 @@ export interface BackendSupportDetails {
    *  value is implemented by this backend or will be rejected/degraded. */
   readonly denoisers: Readonly<Record<EngineDenoiserMode, BackendSupportMode>>;
   readonly mutations: BackendMutationSupportDetails;
+  /** D1 (2026-07-20) — maximum number of `MaterialSpec.thinFilmStack.layers`
+   *  this backend packs; layers beyond this count are dropped and the backend
+   *  emits a `thin-film-layer-limit-exceeded` structured warning. Additive/
+   *  optional: a backend that does not declare it makes no thin-film-capacity
+   *  promise (walkaround omits it — `thinFilmStack` is `unsupported` there).
+   *  pt-webgpu = 8 (WGSL loop stride); pt-webgl2 = 35 (GLSL stride). The value
+   *  MUST stay in lockstep with each backend's packer constant — pinned by each
+   *  backend's `thinFilmLayerLimit.test.ts` drift-guard. */
+  readonly thinFilmLayerLimit?: number;
 }
 
 export type FramePresentationMode =

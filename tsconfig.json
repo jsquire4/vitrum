@@ -6,6 +6,7 @@
     "jsx": "react-jsx",
     "paths": {
       "@vitrum/core": ["packages/core/src/index.ts"],
+      "@vitrum/core/inverse-scaffolding": ["packages/core/src/inverse-scaffolding.ts"],
       "@vitrum/dev": ["packages/dev/src/index.ts"],
       "@vitrum/engine": ["packages/engine/src/index.ts"],
       "@vitrum/pt-webgl2": ["packages/pt-webgl2/src/index.ts"],

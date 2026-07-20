@@ -8,6 +8,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 /**
  * MotionVectorsPass — computes per-pixel screen-space motion vectors for
@@ -45,11 +46,11 @@ export class MotionVectorsPass implements Pass {
       resourceCache?.textureView(resources.common.motionVectorTexture) ?? resources.common.motionVectorTexture.createView(),
       resources.common.uboBuffer,
     );
-    const bg = resourceCache?.bindGroup('pass:motion-vectors', [
+    const bg = cachedBindGroup(resourceCache, 'pass:motion-vectors', [
       resources.common.gNormalDepthTexture,
       resources.common.motionVectorTexture,
       resources.common.uboBuffer,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'motion-vectors');
   }
 

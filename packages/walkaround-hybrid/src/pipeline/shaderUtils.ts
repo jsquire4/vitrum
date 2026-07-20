@@ -18,16 +18,36 @@
  * @param label  Human-readable label used in the error message (e.g. `'bmfr'`
  *               or `'svgf-reproj'`).
  */
-export async function checkShaderCompile(sm: GPUShaderModule, label: string): Promise<void> {
+export interface CheckShaderCompileOptions {
+  /** Bracketed prefix for the logged/thrown messages. Defaults to `[shader]`.
+   *  The ReSTIR pipeline compiler passes `[ReSTIR]` to preserve its historical
+   *  log-scraping surface. */
+  readonly prefix?: string;
+  /** Optional sink invoked with any compilation *warnings* (type === 'warning').
+   *  When omitted, warnings are ignored (the pre-extension behavior for the
+   *  denoiser callers). */
+  readonly onWarnings?: (warnings: readonly GPUCompilationMessage[]) => void;
+}
+
+export async function checkShaderCompile(
+  sm: GPUShaderModule,
+  label: string,
+  options: CheckShaderCompileOptions = {},
+): Promise<void> {
+  const prefix = options.prefix ?? '[shader]';
   const info = await sm.getCompilationInfo();
   const errors = info.messages.filter((m) => m.type === 'error');
   if (errors.length > 0) {
     console.error(
-      `[shader] Compile errors in '${label}':`,
+      `${prefix} Compile errors in '${label}':`,
       errors.map((e) => `line ${e.lineNum}: ${e.message}`),
     );
     throw new Error(
-      `[shader] Compile error in '${label}': ${errors[0]!.message} (line ${errors[0]!.lineNum})`,
+      `${prefix} Compile error in '${label}': ${errors[0]!.message} (line ${errors[0]!.lineNum})`,
     );
+  }
+  if (options.onWarnings !== undefined) {
+    const warns = info.messages.filter((m) => m.type === 'warning');
+    if (warns.length > 0) options.onWarnings(warns);
   }
 }

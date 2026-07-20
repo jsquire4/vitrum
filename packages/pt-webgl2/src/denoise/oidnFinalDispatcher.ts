@@ -5,6 +5,7 @@ import {
 import type {
   DenoisedFrame,
   OIDNBridgeLoader,
+  OIDNDerivedState,
   OIDNFinalDispatcherOptions,
   ReadbackResult,
 } from '@vitrum/shared-denoisers';
@@ -65,18 +66,12 @@ export class OIDNFinalDispatcher {
     return this.#core.isInFlight();
   }
 
-  getState(): { status: 'ready' | 'in-flight' | 'fallback' | 'failed'; reason: string | null; retryable?: boolean } {
-    const lastError = this.#core.getLastError();
-    if (lastError !== null) {
-      return { status: 'failed', reason: lastError, retryable: true };
-    }
-    if (this.#core.isInFlight()) {
-      return { status: 'in-flight', reason: null };
-    }
-    if (this.#core.getLatestDenoised() !== null) {
-      return { status: 'ready', reason: null };
-    }
-    return { status: 'fallback', reason: 'waiting for first OIDN inference' };
+  getState(): OIDNDerivedState {
+    // Single source of truth: the shared core owns the status ladder
+    // (OIDNDispatcherCore.deriveState). This wrapper never enters the
+    // 'warming-up' branch of the union (pt-webgl2 has no async model-preload
+    // phase); that member exists for walkaround-hybrid's warmup-aware reuse.
+    return this.#core.deriveState();
   }
 
   invalidate(): void {

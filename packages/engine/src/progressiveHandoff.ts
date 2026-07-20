@@ -273,33 +273,60 @@ export class ProgressiveHandoffCoordinator {
     this.reset();
   }
 
-  /** Patch a primitive on both engines (where supported) and restart at real-time. */
-  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
-    const nextScene = this.#scene != null ? patchPrimitiveInScene(this.#scene, id, patch) : null;
-    const rtUpdate = this.#realtime.updatePrimitive;
-    const cvUpdate = this.#converged.updatePrimitive;
-    if (rtUpdate == null || cvUpdate == null) {
+  /**
+   * Shared skeleton for the primitive mutators (update/add/remove). Each op
+   * differs only in (a) the precomputed authoritative `nextScene`, (b) the
+   * optional Engine method probed on each sub-engine, (c) the closure that
+   * invokes both, and (d) the method name for the "both engines must implement"
+   * error. The applied policy — try both engines and commit `nextScene`, else
+   * fall back to `setScene(nextScene)` (when an authoritative scene exists) or
+   * throw — is identical across all three and lives here once. `reset()` is
+   * called by the caller on the success path so the mutator body reads clearly.
+   *
+   * @returns true when the op ran on both engines (caller should `reset()`);
+   *          false when it delegated to `setScene` (which already reset).
+   */
+  #applyToBothEngines(
+    method: 'updatePrimitive' | 'addPrimitive' | 'removePrimitive',
+    bothSupported: boolean,
+    perform: () => void,
+    nextScene: Scene | null,
+  ): boolean {
+    if (!bothSupported) {
       if (nextScene != null) {
         this.setScene(nextScene);
-        return;
+        return false;
       }
       throw new Error(
-        'ProgressiveHandoffCoordinator.updatePrimitive: both engines must implement updatePrimitive ' +
+        `ProgressiveHandoffCoordinator.${method}: both engines must implement ${method} ` +
           'unless the coordinator was constructed with an authoritative scene fallback.',
       );
     }
     try {
-      rtUpdate.call(this.#realtime, id, patch);
-      cvUpdate.call(this.#converged, id, patch);
+      perform();
       if (nextScene != null) this.#scene = nextScene;
     } catch (err) {
       if (nextScene != null) {
         this.setScene(nextScene);
-        return;
+        return false;
       }
       throw err;
     }
-    this.reset();
+    return true;
+  }
+
+  /** Patch a primitive on both engines (where supported) and restart at real-time. */
+  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+    const nextScene = this.#scene != null ? patchPrimitiveInScene(this.#scene, id, patch) : null;
+    const bothSupported =
+      typeof this.#realtime.updatePrimitive === 'function' &&
+      typeof this.#converged.updatePrimitive === 'function';
+    if (this.#applyToBothEngines('updatePrimitive', bothSupported, () => {
+      this.#realtime.updatePrimitive!(id, patch);
+      this.#converged.updatePrimitive!(id, patch);
+    }, nextScene)) {
+      this.reset();
+    }
   }
 
   /** Add a primitive to both engines (where supported) and restart at real-time. */
@@ -311,30 +338,15 @@ export class ProgressiveHandoffCoordinator {
       }
       nextScene = { ...this.#scene, primitives: [...this.#scene.primitives, primitive] };
     }
-    const rtAdd = this.#realtime.addPrimitive;
-    const cvAdd = this.#converged.addPrimitive;
-    if (rtAdd == null || cvAdd == null) {
-      if (nextScene != null) {
-        this.setScene(nextScene);
-        return;
-      }
-      throw new Error(
-        'ProgressiveHandoffCoordinator.addPrimitive: both engines must implement addPrimitive ' +
-          'unless the coordinator was constructed with an authoritative scene fallback.',
-      );
+    const bothSupported =
+      typeof this.#realtime.addPrimitive === 'function' &&
+      typeof this.#converged.addPrimitive === 'function';
+    if (this.#applyToBothEngines('addPrimitive', bothSupported, () => {
+      this.#realtime.addPrimitive!(primitive);
+      this.#converged.addPrimitive!(primitive);
+    }, nextScene)) {
+      this.reset();
     }
-    try {
-      rtAdd.call(this.#realtime, primitive);
-      cvAdd.call(this.#converged, primitive);
-      if (nextScene != null) this.#scene = nextScene;
-    } catch (err) {
-      if (nextScene != null) {
-        this.setScene(nextScene);
-        return;
-      }
-      throw err;
-    }
-    this.reset();
   }
 
   /** Remove a primitive from both engines (where supported) and restart at real-time. */
@@ -349,30 +361,15 @@ export class ProgressiveHandoffCoordinator {
         primitives: this.#scene.primitives.filter((p) => String(p.id) !== String(id)),
       };
     }
-    const rtRemove = this.#realtime.removePrimitive;
-    const cvRemove = this.#converged.removePrimitive;
-    if (rtRemove == null || cvRemove == null) {
-      if (nextScene != null) {
-        this.setScene(nextScene);
-        return;
-      }
-      throw new Error(
-        'ProgressiveHandoffCoordinator.removePrimitive: both engines must implement removePrimitive ' +
-          'unless the coordinator was constructed with an authoritative scene fallback.',
-      );
+    const bothSupported =
+      typeof this.#realtime.removePrimitive === 'function' &&
+      typeof this.#converged.removePrimitive === 'function';
+    if (this.#applyToBothEngines('removePrimitive', bothSupported, () => {
+      this.#realtime.removePrimitive!(id);
+      this.#converged.removePrimitive!(id);
+    }, nextScene)) {
+      this.reset();
     }
-    try {
-      rtRemove.call(this.#realtime, id);
-      cvRemove.call(this.#converged, id);
-      if (nextScene != null) this.#scene = nextScene;
-    } catch (err) {
-      if (nextScene != null) {
-        this.setScene(nextScene);
-        return;
-      }
-      throw err;
-    }
-    this.reset();
   }
 
   /**
@@ -453,9 +450,8 @@ export class ProgressiveHandoffCoordinator {
   getPresentationSource(): { device: unknown; texture: import('@vitrum/core').BackendTexture } | null {
     const active = this.#lastActive;
     if (active == null) return null;
-    const getSource = active.getPresentationSource;
-    if (typeof getSource !== 'function') return null;
-    return getSource.call(active);
+    if (typeof active.getPresentationSource !== 'function') return null;
+    return active.getPresentationSource();
   }
 
   /** Seed the converged accumulator from the real-time engine's last frame (the

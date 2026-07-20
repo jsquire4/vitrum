@@ -34,6 +34,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 import { RESOLVE_UBO } from './uboLayouts.js';
 
 export class ResolvePass implements Pass {
@@ -94,13 +95,13 @@ export class ResolvePass implements Pass {
       resourceCache?.textureView(resources.common.motionVectorTexture) ?? resources.common.motionVectorTexture.createView(),
       resourceCache?.textureView(resources.common.resolvedTexture) ?? resources.common.resolvedTexture.createView(),
     );
-    const bg = resourceCache?.bindGroup('pass:resolve', [
+    const bg = cachedBindGroup(resourceCache, 'pass:resolve', [
       this._uboRef.buf,
       frameState.writeAccum,
       frameState.readAccum,
       resources.common.motionVectorTexture,
       resources.common.resolvedTexture,
-    ], buildBg) ?? buildBg();
+    ], buildBg);
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'resolve');
   }
 

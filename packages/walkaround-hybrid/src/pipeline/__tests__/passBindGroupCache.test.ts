@@ -114,6 +114,8 @@ function baseCtx(overrides: Record<string, unknown> = {}) {
     wgY16: 2,
     halfWgX: 4,
     halfWgY: 2,
+    checkerboardWgX: 4,
+    checkerboardWgY: 4,
     computeDesc: vi.fn((label: string) => ({ label })),
     resourceCache: new PipelineResourceCache(),
     ...overrides,

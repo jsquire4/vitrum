@@ -24,7 +24,6 @@ vi.mock('../createEngine.js', () => ({
 
 import { attachVitrum } from '../lifecycle/vanilla.js';
 import { createOffscreenPresenter } from '../presentOffscreen.js';
-import type { EngineWithBackendId } from '../createEngineInternals.js';
 
 const sceneA: Scene = { primitives: [], emitters: [], environment: { kind: 'none' } };
 

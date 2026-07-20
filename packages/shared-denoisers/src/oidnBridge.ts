@@ -90,7 +90,15 @@ interface OIDNModelTensorNames {
   readonly albedo?: string;
   /**
    * Primary output tensor name from the ONNX model.
-   * Default tries `"output"` then `"color"` if unset.
+   *
+   * Default (when unset): the bridge looks up the tensor named `"output"`
+   * first, then falls back to the literal `"color"` key. The `"color"`
+   * fallback is a documented back-compat alias — some legacy OIDN ONNX
+   * exports name their single output tensor `"color"` (matching the input
+   * tensor name) rather than `"output"`. This is intentional and retained:
+   * see the `results[outputPrimaryKey] ?? results['color']` lookup in
+   * `denoiseFinal`. Set this field explicitly to pin a non-standard output
+   * name and bypass the `"color"` fallback.
    */
   readonly output?: string;
 }
@@ -198,8 +206,10 @@ export async function denoiseFinal(
 
   const outputPrimaryKey = tn.output ?? 'output';
   // `tn.output ?? 'output'` covers both the explicit-name path and the
-  // 'output' fallback in a single lookup; 'color' remains as a secondary
-  // alias some legacy models use.
+  // 'output' fallback in a single lookup; the literal 'color' below is the
+  // documented back-compat alias for legacy models that name their output
+  // tensor 'color' (see OIDNModelTensorNames.output JSDoc — D14-4). Pin
+  // `tensorNames.output` explicitly to bypass this fallback.
   const outputTensor = results[outputPrimaryKey] ?? results['color'];
   if (outputTensor == null) {
     throw new Error(

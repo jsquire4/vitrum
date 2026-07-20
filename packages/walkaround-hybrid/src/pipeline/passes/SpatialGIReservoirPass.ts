@@ -39,6 +39,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { dispatchSingleBindGroup } from './dispatchHelpers.js';
+import { cachedBindGroup } from '../PipelineResourceCache.js';
 
 export class SpatialGIReservoirPass implements Pass {
   readonly id = 'gi-spatial-2' as const; // shade depends on this terminal label.
@@ -80,11 +81,11 @@ export class SpatialGIReservoirPass implements Pass {
       const buildBg = (): GPUBindGroup => buildSpatialGiBindGroup(
         device, bglCache, inBuf, outBuf, resources.common.uboBuffer, bgLabel,
       );
-      const bg = resourceCache?.bindGroup(`pass:gi-spatial:${bgLabel}`, [
+      const bg = cachedBindGroup(resourceCache, `pass:gi-spatial:${bgLabel}`, [
         inBuf,
         outBuf,
         resources.common.uboBuffer,
-      ], buildBg) ?? buildBg();
+      ], buildBg);
       dispatchSingleBindGroup(ctx, this._pipeline, bg, label, { half: true, ...giExtra });
     };
 

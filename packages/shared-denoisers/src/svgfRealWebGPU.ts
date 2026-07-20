@@ -25,7 +25,6 @@
 import { SVGF_REAL_REPROJECTION_WORKGROUP_SIZE } from './wgsl/svgfReprojection.wgsl.js';
 import { SVGF_VARIANCE_FROM_MOMENTS_WORKGROUP_SIZE } from './wgsl/svgfVarianceFromMoments.wgsl.js';
 import { SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE } from './wgsl/svgf7x7SpatialFallback.wgsl.js';
-import { ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE } from './wgsl/atrousVariance.wgsl.js';
 import { svgfRealPipelines } from './svgfRealPipelineCache.js';
 import {
   SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
@@ -37,12 +36,12 @@ import {
   SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
   SVGF_REAL_MAX_ATROUS_ITERATIONS,
 } from './svgfRealConstants.js';
-import {
-  ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-  ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS,
-  packAtrousVarianceAtrousUniforms,
-} from './atrousVarianceBindings.js';
+import { ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS } from './atrousVarianceBindings.js';
 import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
+import { buildAtrousChain, makeResourceTracker } from './atrousChain.js';
+// NOTE: albedo demodulation differs INTENTIONALLY between this real-SVGF path
+// and atrousVarianceWebGPU.ts — see the demodulation cross-reference comment at
+// the `rgbForChain`/`prevForChain` site below.
 import { demodulateAlbedo, remodulateAlbedo } from './albedoModulation.js';
 import {
   uploadRgbAsRgba16f,
@@ -213,16 +212,8 @@ export async function runSVGFRealWebGPU(
     errorLabel: 'runSVGFRealWebGPU',
   });
 
-  const textures: GPUTexture[] = [];
-  const buffers: GPUBuffer[] = [];
-  const trackTexture = (texture: GPUTexture): GPUTexture => {
-    textures.push(texture);
-    return texture;
-  };
-  const trackBuffer = (buffer: GPUBuffer): GPUBuffer => {
-    buffers.push(buffer);
-    return buffer;
-  };
+  const { trackTexture, trackBuffer, dispose: disposeResources } =
+    makeResourceTracker(destroyEphemeral);
 
   try {
     const { reprojPipeline, momentsPipeline, fallbackPipeline, atrousPipeline } =
@@ -403,6 +394,17 @@ export async function runSVGFRealWebGPU(
     // share the same depth + normal. After the à-trous chain finishes, we
     // multiply the filtered lighting back by albedo to restore physically
     // correct outgoing radiance.
+    //
+    // ── Demodulation cross-reference (D14-3) ─────────────────────────────────
+    // This is DELIBERATELY BROADER than atrousVarianceWebGPU.ts's demodulation.
+    // Here BOTH current AND previous radiance are demodulated up front so the
+    // ENTIRE chain — reprojection blending, moment tracking, variance
+    // estimation, and the à-trous spatial filter — operates on lighting L = c/ρ
+    // (this path carries real temporal moments). In atrousVarianceWebGPU.ts only
+    // the à-trous input is demodulated while the variance pass reads the
+    // original noisy `rgb` (no temporal moments there). The divergence is
+    // intentional — do NOT unify; the algorithms differ (Schied SVGF vs
+    // à-trous lookup).
     const px = w * h;
     const rgbForChain =
       opts.albedoRgb != null ? svgfRealDemodulateAlbedo(opts.rgb, opts.albedoRgb, px) : opts.rgb;
@@ -491,24 +493,8 @@ export async function runSVGFRealWebGPU(
     );
     device.queue.writeBuffer(reprojUboGpu, 0, reprojUboScratch);
 
-    // Atrous UBOs (one per iteration)
-    const atrousUbos: GPUBuffer[] = [];
-    const atrousScratch = new ArrayBuffer(ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES);
-    for (let iter = 0; iter < atrousIterations; iter++) {
-      const ubo = trackBuffer(
-        device.createBuffer({
-          label: `svgf-real-atrous-ubo-${iter}`,
-          size: ATROUS_VARIANCE_ATROUS_UNIFORMS_SIZE_BYTES,
-          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        }),
-      );
-      packAtrousVarianceAtrousUniforms(
-        { iteration: iter, sigmaColor, sigmaNormal, sigmaDepth },
-        atrousScratch,
-      );
-      device.queue.writeBuffer(ubo, 0, atrousScratch);
-      atrousUbos.push(ubo);
-    }
+    // Atrous UBOs + alternating ping-pong bind groups are built by the shared
+    // buildAtrousChain (atrousChain.ts) during command encoding below.
 
     // ── Bind groups ───────────────────────────────────────────────────────────
     const reprojBG = device.createBindGroup({
@@ -554,28 +540,16 @@ export async function runSVGFRealWebGPU(
     // Initial copy of colorOut → pingTex for atrous input
     // We need a dummy variance UBO and varianceIn for the svgfVarianceMain we won't use —
     // Instead we skip the atrous-variance's own variance pass and use varFinalTex directly
-    // as the varianceMap in all atrous iterations.
-
-    const atrousBGs = atrousUbos.map((ubo, iter) => {
-      const isEven = iter % 2 === 0;
-      return device.createBindGroup({
-        layout: atrousPipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: (isEven ? pingTex : pongTex).createView() },
-          { binding: 1, resource: (isEven ? pongTex : pingTex).createView() },
-          { binding: 2, resource: currNormTex.createView() },
-          { binding: 3, resource: currDepthTex.createView() },
-          { binding: 4, resource: varFinalTex.createView() },
-          { binding: 5, resource: { buffer: ubo } },
-        ],
-      });
-    });
+    // as the varianceMap in all atrous iterations. The à-trous ping-pong itself
+    // (per-iter UBOs + alternating bind groups + dispatch) is delegated to the
+    // shared buildAtrousChain (atrousChain.ts) during command encoding below.
 
     // ── Command encoding ──────────────────────────────────────────────────────
     const wg = SVGF_REAL_REPROJECTION_WORKGROUP_SIZE;
     const wg2 = SVGF_VARIANCE_FROM_MOMENTS_WORKGROUP_SIZE;
     const wg3 = SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE;
-    const wgA = ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE;
+    // The à-trous workgroup size (ATROUS_VARIANCE_COMPUTE_WORKGROUP_SIZE) is
+    // owned by buildAtrousChain (atrousChain.ts) now.
 
     const encoder = device.createCommandEncoder({ label: 'svgf-real-batched' });
 
@@ -609,19 +583,31 @@ export async function runSVGFRealWebGPU(
     // 4. Copy colorOut → pingTex (atrous input for iter 0)
     encoder.copyTextureToTexture({ texture: colorOutTex }, { texture: pingTex }, [w, h]);
 
-    // 5. À-trous chain
-    for (let iter = 0; iter < atrousIterations; iter++) {
-      const pass = encoder.beginComputePass({ label: `svgf-atrous-${iter}` });
-      pass.setPipeline(atrousPipeline);
-      pass.setBindGroup(0, atrousBGs[iter]);
-      pass.dispatchWorkgroups(Math.ceil(w / wgA), Math.ceil(h / wgA));
-      pass.end();
-    }
+    // 5. À-trous chain — shared ping-pong (atrousChain.ts). Single source of
+    // truth with atrousVarianceWebGPU.ts: per-iter UBOs + alternating bind
+    // groups + parity-based readTex. Feeds the current-frame g-buffer (normal /
+    // depth) and the merged variance (varFinalTex) into every iteration.
+    const readTex = buildAtrousChain({
+      device,
+      atrousPipeline,
+      encoder,
+      atrousIterations,
+      width: w,
+      height: h,
+      sigmaColor,
+      sigmaNormal,
+      sigmaDepth,
+      pingTex,
+      pongTex,
+      normalView: currNormTex.createView(),
+      depthView: currDepthTex.createView(),
+      varianceView: varFinalTex.createView(),
+      uboLabelPrefix: 'svgf-real-atrous-ubo-',
+      trackBuffer,
+    });
 
     device.queue.submit([encoder.finish()]);
 
-    // Read result: after N iterations, last write is in pong (odd) or ping (even).
-    const readTex = atrousIterations % 2 === 0 ? pingTex : pongTex;
     const result = await readRgba16fToRgb(device, readTex, w, h);
 
     // Schied 2017 §4.1 — albedo re-modulation: multiply the filtered lighting
@@ -644,8 +630,6 @@ export async function runSVGFRealWebGPU(
 
     return { rgb: result };
   } finally {
-    for (const buffer of buffers) buffer.destroy();
-    for (const texture of textures) texture.destroy();
-    destroyEphemeral();
+    disposeResources();
   }
 }

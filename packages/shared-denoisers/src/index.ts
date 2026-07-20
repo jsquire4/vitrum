@@ -79,6 +79,11 @@ export {
 } from './atrousVarianceWebGPU.js';
 export type { AtrousVarianceWebGPUOptions, AtrousVarianceSyntheticGbufferFallback } from './atrousVarianceWebGPU.js';
 
+// Shared à-trous ping-pong scaffolding — consumed by both the à-trous+variance
+// and the real-SVGF host paths (single source of truth for the chain skeleton).
+export { buildAtrousChain, makeResourceTracker } from './atrousChain.js';
+export type { AtrousChainArgs, ResourceTracker } from './atrousChain.js';
+
 // ── T2.H1 — Real Schied 2017 SVGF ('svgf-real' mode) ─────────────────────────
 // Implements bilinear reprojection + disocclusion test + per-pixel history +
 // variance-from-moments (Eq. 1–5) + 7×7 spatial fallback (§4.3).
@@ -179,6 +184,7 @@ export type { BmfrWebGPUOptions } from './bmfrWebGPU.js';
 // ── OIDNDispatcherCore — shared cohort state machine for converged backends ──
 export {
   OIDNDispatcherCore,
+  deriveOidnState,
   _defaultLoader as oidnDefaultLoader,
 } from './oidnDispatcherCore.js';
 export type {
@@ -189,6 +195,8 @@ export type {
   ReadbackResult,
   ReadbackFn,
   OIDNDispatcherCoreOptions,
+  OIDNDerivedState,
+  OIDNDerivedStateInputs,
 } from './oidnDispatcherCore.js';
 
 // ── Cross-package primitives (consumed by walkaround-hybrid OIDN denoiser) ───

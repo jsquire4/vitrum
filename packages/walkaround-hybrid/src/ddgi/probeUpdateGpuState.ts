@@ -4,67 +4,56 @@
 import type { ProbeUpdateBvhGpuBuffers } from './probeUpdateBvhBuffers.js';
 
 /**
- * D6.4 — Bind-group cache entry for the probe-update passes.
+ * D6.4 / D6-7 — Generic keyed bind-group cache for the probe-update passes.
  *
  * Bind groups are created once per unique resource-identity set and reused
  * until any participating resource changes (BVH rebuild, emitter update,
- * atlas resize, etc.). The cache is keyed on the buffer/texture object
- * references that appear in each bind group.
+ * atlas resize, ping-pong swap, etc.). Each slot is keyed by an ordered list
+ * of the exact buffer/texture/view object references its bind group binds —
+ * an entry is rebuilt iff ANY key reference changes (`Object.is` per key).
  *
- * Layout:
- *  - raysGroup0 / raysGroup1: stable (keyed on bvhBuf + materialsBuf + material/tangent/color atlas views)
- *  - raysGroup2:              per-frame (keyed on irrReadTex + rayResultsBuf + envMapView)
- *  - blendIrrGroup0/1:        stable/per-frame (keyed on rayResultsBuf / irrRead+irrWriteTex)
- *  - blendVisGroup0/1:        stable/per-frame
- *  - borderGroup0:            per-atlas (keyed on scratchTex + visWriteTex)
+ * This replaces the former ~45-field flat struct + paired invalidation `if`s
+ * (one comparison chain + one write-back per slot). The single keyed list per
+ * slot makes the compare-set and the assign-set impossible to drift apart —
+ * the drift-bug class this file documented.
+ *
+ * Slots (id → keyed on):
+ *  - `raysG0`       BVH buffers (11 entries) — keyed on `bvhBuf` (all 11 rebuild atomically).
+ *  - `raysG1`       materials/lights/emitters/atlas/tangent/color — keyed on all six identities.
+ *  - `raysG2`       per-frame — keyed on irrReadTex + rayResultsBuf + activeProbesBuf + envMapView.
+ *  - `blendIrrG0`   stable buffers — keyed on rayResultsBuf + activeProbesBuf.
+ *  - `blendIrrG1`   atlas textures — keyed on irrReadTex + irrWriteTex.
+ *  - `blendVisG0`   stable buffers — keyed on rayResultsBuf + activeProbesBuf.
+ *  - `blendVisG1`   atlas textures — keyed on visReadTex + visWriteTex.
+ *  - `borderG0`     per-atlas — keyed on scratchTex + writeAtlas.
  */
-export interface DispatchBindGroupCache {
-  // Rays pass — group 0: BVH buffers (11 entries). Epoch key = bvhBuf.
-  raysG0Key: GPUBuffer | null;
-  raysG0: GPUBindGroup | null;
-  // Rays pass — group 1: materials + lights + emitters + material atlas + tangent/color streams.
-  // Key = materialsBuf + emitterTrisBuf + atlas/tangent/color views.
-  raysG1Key0: GPUBuffer | null;
-  raysG1Key1: GPUBuffer | null;
-  raysG1KeyAtlas: GPUTextureView | null;
-  raysG1KeyAtlasMeta: GPUTextureView | null;
-  raysG1KeyTangent: GPUTextureView | null;
-  raysG1KeyVertexColor: GPUTextureView | null;
-  raysG1: GPUBindGroup | null;
-  // Rays pass — group 2: per-frame (changes every atlas swap).
-  // Key = irrReadTex + rayResultsBuf + activeProbesBuf + envMapView.
-  raysG2KeyTex: GPUTexture | null;
-  raysG2KeyBuf: GPUBuffer | null;
-  raysG2KeyProbes: GPUBuffer | null;
-  raysG2KeyEnv: GPUTextureView | null;
-  raysG2IrrView: GPUTextureView | null;
-  raysG2: GPUBindGroup | null;
-  // Blend irr — group 0: buffers (stable). Key = rayResultsBuf + activeProbesBuf.
-  blendIrrG0Key: GPUBuffer | null;
-  blendIrrG0KeyProbes: GPUBuffer | null;
-  blendIrrG0: GPUBindGroup | null;
-  // Blend irr — group 1: atlas textures (per-frame). Key = irrReadTex + irrWriteTex.
-  blendIrrG1KeyRead: GPUTexture | null;
-  blendIrrG1KeyWrite: GPUTexture | null;
-  blendIrrG1ReadView: GPUTextureView | null;
-  blendIrrG1WriteView: GPUTextureView | null;
-  blendIrrG1: GPUBindGroup | null;
-  // Blend vis — group 0: buffers (stable). Key = rayResultsBuf + activeProbesBuf.
-  blendVisG0Key: GPUBuffer | null;
-  blendVisG0KeyProbes: GPUBuffer | null;
-  blendVisG0: GPUBindGroup | null;
-  // Blend vis — group 1: atlas textures (per-frame). Key = visReadTex + visWriteTex.
-  blendVisG1KeyRead: GPUTexture | null;
-  blendVisG1KeyWrite: GPUTexture | null;
-  blendVisG1ReadView: GPUTextureView | null;
-  blendVisG1WriteView: GPUTextureView | null;
-  blendVisG1: GPUBindGroup | null;
-  // Border vis — group 0: per-atlas scratch + write. Key = scratchTex + writeAtlas.
-  borderG0KeyScratch: GPUTexture | null;
-  borderG0KeyWrite: GPUTexture | null;
-  borderG0ScratchView: GPUTextureView | null;
-  borderG0WriteView: GPUTextureView | null;
-  borderG0: GPUBindGroup | null;
+export interface DispatchBindGroupCacheEntry {
+  keys: readonly unknown[];
+  group: GPUBindGroup;
+}
+
+export type DispatchBindGroupCache = Map<string, DispatchBindGroupCacheEntry>;
+
+/**
+ * Return the cached bind group for `id` when every key in `keys` is
+ * reference-identical to the cached entry's keys (same length + `Object.is`
+ * per position); otherwise build a fresh group via `build`, cache it, and
+ * return it. Preserves the exact "rebuild iff any keyed resource changed"
+ * invalidation the probe-update passes rely on.
+ */
+export function getOrCreateBindGroup(
+  cache: DispatchBindGroupCache,
+  id: string,
+  keys: readonly unknown[],
+  build: () => GPUBindGroup,
+): GPUBindGroup {
+  const hit = cache.get(id);
+  if (hit && hit.keys.length === keys.length && hit.keys.every((k, i) => Object.is(k, keys[i]))) {
+    return hit.group;
+  }
+  const group = build();
+  cache.set(id, { keys: [...keys], group });
+  return group;
 }
 
 export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
